@@ -60,7 +60,15 @@ use crate::ControlState;
 pub(crate) enum Principal {
     /// full access: the configured admin token, or a session for a
     /// `is_superadmin` user; also the open-mode default (no admin token set)
-    Superadmin,
+    Superadmin {
+        /// the account the request is signed in as, when it is a session for
+        /// an `is_superadmin` user. `None` for the admin token and open mode,
+        /// which are credentials rather than people. Authorization never reads
+        /// it (a superadmin passes every check); it exists so a record of who
+        /// did something can name a superadmin whose account holds no
+        /// membership, which [`Principal::account_id`] hands out
+        account: Option<Uuid>,
+    },
     /// a logged-in local account, authorized per-scope via [`resolve_role`]
     User(User),
 }
@@ -75,7 +83,7 @@ impl FromRequestParts<ControlState> for Principal {
         // open mode: no admin token configured → preserve today's pass-through
         // behavior by treating everyone as superadmin
         let Some(expected) = state.admin_token.as_deref() else {
-            return Ok(Principal::Superadmin);
+            return Ok(Principal::Superadmin { account: None });
         };
 
         // the machine/bootstrap token: constant-time so it can't be recovered
@@ -87,7 +95,7 @@ impl FromRequestParts<ControlState> for Principal {
                 expected.as_bytes(),
             ))
         {
-            return Ok(Principal::Superadmin);
+            return Ok(Principal::Superadmin { account: None });
         }
 
         // otherwise the bearer must be a live session token
@@ -339,7 +347,7 @@ pub(crate) async fn authorize(
     requirement: Requirement,
 ) -> ApiResult<()> {
     let user = match principal {
-        Principal::Superadmin => return Ok(()),
+        Principal::Superadmin { .. } => return Ok(()),
         Principal::User(user) => user,
     };
     let required = match requirement.authority {
@@ -378,9 +386,27 @@ impl Principal {
     /// refused what any org admin may do (#1847).
     pub(crate) fn for_user(user: User) -> Self {
         if user.is_superadmin {
-            Principal::Superadmin
+            Principal::Superadmin {
+                account: Some(user.id),
+            }
         } else {
             Principal::User(user)
+        }
+    }
+
+    /// The signed-in account behind this principal, for a record of who did
+    /// something: a plain user's own id, and a superadmin's when the request
+    /// carried their session. `None` means the admin token or open mode, where
+    /// no person is signed in to name.
+    ///
+    /// Matching `Principal::User` alone loses a superadmin session, because
+    /// [`Principal::for_user`] turns that account into
+    /// [`Principal::Superadmin`] and the account holds no membership to find it
+    /// by (#2813).
+    pub(crate) fn account_id(&self) -> Option<Uuid> {
+        match self {
+            Principal::Superadmin { account } => *account,
+            Principal::User(user) => Some(user.id),
         }
     }
 }
@@ -407,7 +433,7 @@ impl ScopeFilter {
         requirement: Requirement,
     ) -> ApiResult<Self> {
         let (superadmin, memberships, grants) = match principal {
-            Principal::Superadmin => (true, Vec::new(), Vec::new()),
+            Principal::Superadmin { .. } => (true, Vec::new(), Vec::new()),
             Principal::User(user) => (
                 false,
                 MembershipRepo(pool(state)).list_for_user(user.id).await?,
@@ -531,7 +557,7 @@ pub(crate) async fn holds_admin(
     chain: ScopeChain,
 ) -> ApiResult<bool> {
     let user = match principal {
-        Principal::Superadmin => return Ok(true),
+        Principal::Superadmin { .. } => return Ok(true),
         Principal::User(user) => user,
     };
     Ok(effective_role(state, user, chain)
@@ -549,7 +575,7 @@ pub(crate) async fn policy_allows(
     minimum_role: &str,
 ) -> ApiResult<bool> {
     let user = match principal {
-        Principal::Superadmin => return Ok(true),
+        Principal::Superadmin { .. } => return Ok(true),
         Principal::User(user) => user,
     };
     // one fetch each, reused for both the role decision and the team scan. This
@@ -600,7 +626,7 @@ pub(crate) async fn policy_allows(
 /// table.
 fn require_superadmin(principal: &Principal) -> ApiResult<()> {
     match principal {
-        Principal::Superadmin => Ok(()),
+        Principal::Superadmin { .. } => Ok(()),
         Principal::User(_) => Err(ApiError::Forbidden),
     }
 }
@@ -980,7 +1006,7 @@ mod tests {
 
     #[test]
     fn require_superadmin_allows_only_superadmin() {
-        assert!(require_superadmin(&Principal::Superadmin).is_ok());
+        assert!(require_superadmin(&Principal::Superadmin { account: None }).is_ok());
         // a plain user — even one flagged is_superadmin at the row level is a
         // `Principal::Superadmin`, so the `User` variant is always non-super
         let user = Principal::User(user_with_superadmin(false));
@@ -1006,16 +1032,20 @@ mod tests {
     #[test]
     fn authorize_superadmin_denies_users_and_scoped_requirements() {
         let user = Principal::User(user_with_superadmin(false));
-        assert!(
-            authorize_superadmin(&Principal::Superadmin, Requirement::unscoped_superadmin())
-                .is_ok()
-        );
+        assert!(authorize_superadmin(
+            &Principal::Superadmin { account: None },
+            Requirement::unscoped_superadmin()
+        )
+        .is_ok());
         assert!(matches!(
             authorize_superadmin(&user, Requirement::unscoped_superadmin()),
             Err(ApiError::Forbidden)
         ));
         assert!(matches!(
-            authorize_superadmin(&Principal::Superadmin, scoped_viewer_requirement()),
+            authorize_superadmin(
+                &Principal::Superadmin { account: None },
+                scoped_viewer_requirement()
+            ),
             Err(ApiError::Forbidden)
         ));
     }

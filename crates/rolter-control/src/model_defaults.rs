@@ -107,7 +107,7 @@ async fn update_model_defaults(
     publish_config_change(&state).await?;
     let actor = match &principal {
         Principal::User(user) => Some(user.id),
-        Principal::Superadmin => None,
+        Principal::Superadmin { .. } => None,
     };
     if let Err(err) = AuditLogRepo(pool(&state))
         .create(

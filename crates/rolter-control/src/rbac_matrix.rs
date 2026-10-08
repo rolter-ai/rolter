@@ -1061,7 +1061,7 @@ async fn get_effective(
         project: query.project_id,
     };
     let (superadmin, memberships, grants, policies) = match &principal {
-        Principal::Superadmin => (true, Vec::new(), Vec::new(), Vec::new()),
+        Principal::Superadmin { .. } => (true, Vec::new(), Vec::new(), Vec::new()),
         Principal::User(user) => {
             let profiles = AccessProfileRepo(pool(&state));
             (

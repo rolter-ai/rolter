@@ -77,7 +77,15 @@ implicitly.
 Creating is authorized at the scope the invitation grants: `scope_type` and
 `scope_id` name an org, a team or a project, and the caller needs `invitation`
 create there or above, the same admin bar as granting a role directly.
-`invited_by` records the caller, and is `null` for the admin token.
+`invited_by` records the signed-in account behind the request, superadmin or
+not, and is `null` only when no account is signed in: the admin token, or open
+mode. A superadmin session is not a `Principal::User` (`Principal::for_user`
+turns it into `Principal::Superadmin`, and the operator `rolter-seed` creates
+holds no membership at all), so `Principal::Superadmin` carries the account it
+came from and `Principal::account_id()` is the one way to read it
+([#2813](https://github.com/rolter-ai/rolter/issues/2813)). Read the sender from
+`account_id()`, never by matching `Principal::User` alone, or a superadmin's
+records go missing.
 
 `GET /api/v1/orgs/{org_id}/invitations` answers every invitation of the org,
 accepted and revoked ones included. An org admin gets all of them; below the org
@@ -106,7 +114,16 @@ section waits for the capability answer and is absent on an explicit
 `invitation:read` refusal or a `403` from the list, so a viewer who may open the
 screen never meets a `forbidden` error for it. "Sent by" is the users-list entry
 for `invited_by`, since the row carries the id only
-([#2325](https://github.com/rolter-ai/rolter/issues/2325)).
+([#2325](https://github.com/rolter-ai/rolter/issues/2325)). A superadmin's own
+list is read with `include_unassigned=true`, so a sender who holds no role
+anywhere is in it; an org admin's list is not, and shows such a sender as
+"unknown" rather than leaking an account outside their organization.
+
+The accept screen (`ui/src/pages/AcceptInvite.tsx`) names the role through
+`roleLabel`, the same `shell.roles.*` keys the invite dialog and the pending
+list use, so the invitee reads "Member" as the inviter did and not the stored id
+`member`. A role the catalog has no key for is shown as the control plane sent it
+([#2813](https://github.com/rolter-ai/rolter/issues/2813)).
 
 ## Existing accounts
 

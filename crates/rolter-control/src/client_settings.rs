@@ -188,7 +188,7 @@ async fn update_client_settings(
 
     let actor = match &principal {
         Principal::User(user) => Some(user.id),
-        Principal::Superadmin => None,
+        Principal::Superadmin { .. } => None,
     };
     // names only — an injected header value is deployment credential material
     let injected_names: Vec<&String> = injected.keys().collect();

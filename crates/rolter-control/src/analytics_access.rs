@@ -288,7 +288,7 @@ async fn resolve(
     if state.pool.is_some() {
         use crate::rbac::Principal;
         return match Principal::from_request_parts(parts, state).await {
-            Ok(Principal::Superadmin) => Ok(AnalyticsAccess::unrestricted()),
+            Ok(Principal::Superadmin { .. }) => Ok(AnalyticsAccess::unrestricted()),
             Ok(Principal::User(user)) => scoped::for_user(state, &user, reads)
                 .await
                 .map_err(IntoResponse::into_response),

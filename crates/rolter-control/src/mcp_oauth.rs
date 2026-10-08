@@ -119,7 +119,7 @@ async fn owner_filter(
         return Ok(None);
     }
     Ok(match principal {
-        Principal::Superadmin => None,
+        Principal::Superadmin { .. } => None,
         Principal::User(user) => Some(user.id),
     })
 }
@@ -1145,7 +1145,7 @@ async fn may_revoke(
     }
     authorize(state, principal, ScopeChain::org(org_id), requirement).await?;
     match principal {
-        Principal::Superadmin => Ok(()),
+        Principal::Superadmin { .. } => Ok(()),
         Principal::User(user) if user.id == owner_id => Ok(()),
         Principal::User(_) => Err(ApiError::Forbidden),
     }
@@ -1169,7 +1169,7 @@ async fn revoke_grant(
     .await?;
     let actor = match &principal {
         Principal::User(user) => Some(user.id),
-        Principal::Superadmin => None,
+        Principal::Superadmin { .. } => None,
     };
     // revoking the consent revokes its sessions in the same transaction
     let revoked = repo.revoke_grant(id, actor).await?;

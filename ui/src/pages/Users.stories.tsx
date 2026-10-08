@@ -1770,6 +1770,69 @@ export const PendingInvitationsAreListed: Story = {
   },
 };
 
+// the operator `rolter-seed --admin-email` creates: a superadmin who holds no
+// role anywhere, so no org's membership list names them (#2804)
+const OPERATOR: UserRow = {
+  id: "user-operator",
+  email: "operator@example.com",
+  is_superadmin: true,
+  deactivated_at: null,
+  created_at: "2026-01-01T00:00:00Z",
+};
+
+let operatorReads: Recorder;
+/**
+ * An invitation a superadmin sent from an account that holds no role anywhere
+ * names them. The control plane records the signed-in account whichever kind of
+ * principal it is (#2813), and the screen resolves the id through the users
+ * list, where that account is only present because a superadmin asks for the
+ * accounts no org lists (#2804). The row shows the address, never "not
+ * recorded", which is for the admin token.
+ */
+export const PendingInvitationSentByASuperadminNamesThem: Story = {
+  render: () => {
+    const sent: Invitation[] = [
+      {
+        ...INVITATIONS[0],
+        id: "inv-operator",
+        email: "from-operator@example.com",
+        invited_by: OPERATOR.id,
+      },
+      INVITATIONS[2],
+    ];
+    operatorReads = recording(
+      scoped(async (input) => {
+        const url = String(input);
+        if (url.includes("/invitations")) return json(sent);
+        if (url.includes("/memberships")) return json(MEMBERSHIPS);
+        if (url.includes("/users")) {
+          return json(url.includes("include_unassigned=true") ? [...USERS, OPERATOR] : USERS);
+        }
+        return json([]);
+      }),
+    );
+    return (
+      <SignedInAs user={OPERATOR}>
+        <Harness fetchStub={operatorReads.stub}>
+          <Users />
+        </Harness>
+      </SignedInAs>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const section = within(await pendingSection(canvasElement));
+    const row = (email: string) =>
+      within(section.getByText(email).closest('[role="row"]') as HTMLElement);
+    await expect(await section.findByText("from-operator@example.com")).toBeVisible();
+    await expect(await row("from-operator@example.com").findByText(OPERATOR.email)).toBeVisible();
+    await expect(row("from-operator@example.com").queryByText("not recorded")).toBeNull();
+    await expect(row("from-operator@example.com").queryByText("unknown")).toBeNull();
+    // the admin token still names nobody, and says so
+    await expect(row("everyone@example.com").getByText("not recorded")).toBeVisible();
+    await operatorReads.expectSent("GET", "include_unassigned=true");
+  },
+};
+
 /** The list is a read of its own: while it is in flight the section is a skeleton, not "no invitations". */
 export const PendingInvitationsLoading: Story = {
   render: () => (

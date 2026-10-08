@@ -571,7 +571,7 @@ pub(crate) async fn log_audit(
 ) {
     let actor = match principal {
         Principal::User(user) => Some(user.id),
-        Principal::Superadmin => None,
+        Principal::Superadmin { .. } => None,
     };
     if let Err(err) = AuditLogRepo(pool(state))
         .create(
@@ -5557,7 +5557,7 @@ async fn list_users(
     Query(query): Query<ListUsersQuery>,
 ) -> ApiResult<Json<Vec<User>>> {
     let repo = UserRepo(pool(&state));
-    let users = if query.include_unassigned && matches!(principal, Principal::Superadmin) {
+    let users = if query.include_unassigned && matches!(principal, Principal::Superadmin { .. }) {
         repo.list_in_org_with_unassigned(org_id).await?
     } else {
         repo.list_in_org(org_id).await?
@@ -6004,7 +6004,7 @@ async fn delete_membership(
     // a superadmin can always repair an org, so only the other callers are
     // kept from leaving it without an admin (#2311)
     if MembershipRepo(pool)
-        .delete_guarded(id, !matches!(principal, Principal::Superadmin))
+        .delete_guarded(id, !matches!(principal, Principal::Superadmin { .. }))
         .await?
         == LockoutGuard::WouldLockOut
     {

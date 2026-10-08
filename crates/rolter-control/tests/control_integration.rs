@@ -11041,6 +11041,111 @@ async fn invitations_onboard_accounts_once_and_expire_closed() {
     assert!(actions.iter().any(|a| a == "invitation.revoke"));
 }
 
+/// An invitation names its sender whichever signed-in account created it
+/// (#2813). A superadmin session is not a `Principal::User`, and the operator
+/// `rolter-seed` creates holds no membership anywhere, so the sender used to be
+/// dropped for exactly the account that sets a deployment up. The admin token is
+/// a credential rather than a person and stays unrecorded.
+#[tokio::test]
+async fn an_invitation_records_its_sender_for_a_superadmin_with_no_membership() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app =
+        rolter_control::test_app_with_admin_token(pool.clone(), Some(admin_token().to_string()))
+            .await
+            .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let acme: uuid::Uuid =
+        sqlx::query_scalar("insert into orgs (name, slug) values ('Acme', 'acme') returning id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let operator = seed_user(&pool, "operator@example.com", true).await;
+    let manager = seed_user(&pool, "manager@example.com", false).await;
+    seed_membership(&pool, manager, Some(acme), None, None, "admin").await;
+    let operator_session = seed_session(&pool, operator, "invite_sender_operator").await;
+    let manager_session = seed_session(&pool, manager, "invite_sender_manager").await;
+
+    // the premise of the bug: the superadmin is on no org's membership list
+    let operator_grants: i64 =
+        sqlx::query_scalar("select count(*) from memberships where user_id = $1")
+            .bind(operator)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(operator_grants, 0);
+
+    let invite = |bearer: String, email: &'static str| {
+        let client = client.clone();
+        let url = format!("{base}/api/v1/orgs/{acme}/invitations");
+        async move {
+            let response = client
+                .post(url)
+                .bearer_auth(bearer)
+                .json(&json!({"email": email, "role": "member"}))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 200);
+            let created: Value = response.json().await.unwrap();
+            created["invitation"].clone()
+        }
+    };
+    let by_operator = invite(operator_session.clone(), "by-operator@example.com").await;
+    let by_manager = invite(manager_session, "by-manager@example.com").await;
+    let by_token = invite(admin_token().to_string(), "by-token@example.com").await;
+
+    // what the create answered with is what is stored
+    assert_eq!(by_operator["invited_by"], operator.to_string());
+    assert_eq!(by_manager["invited_by"], manager.to_string());
+    assert_eq!(by_token["invited_by"], Value::Null);
+
+    // and the pending list the dashboard reads carries it
+    let listed: Vec<Value> = client
+        .get(format!("{base}/api/v1/orgs/{acme}/invitations"))
+        .bearer_auth(&operator_session)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let sender_of = |email: &str| {
+        listed
+            .iter()
+            .find(|row| row["email"] == email)
+            .map(|row| row["invited_by"].clone())
+    };
+    assert_eq!(
+        sender_of("by-operator@example.com"),
+        Some(json!(operator.to_string()))
+    );
+    assert_eq!(
+        sender_of("by-manager@example.com"),
+        Some(json!(manager.to_string()))
+    );
+    assert_eq!(sender_of("by-token@example.com"), Some(Value::Null));
+
+    // the column holds it, not only the response
+    let stored: Vec<(String, Option<uuid::Uuid>)> =
+        sqlx::query_as("select email, invited_by from invitations order by email")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        stored,
+        vec![
+            ("by-manager@example.com".to_string(), Some(manager)),
+            ("by-operator@example.com".to_string(), Some(operator)),
+            ("by-token@example.com".to_string(), None),
+        ]
+    );
+}
+
 /// Inviting an address again replaces its pending invitation (#2324): the old
 /// link stops working like a revoked one, an expired invitation no longer holds
 /// the address, the match ignores case, and parallel creates neither 500 nor

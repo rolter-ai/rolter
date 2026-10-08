@@ -803,7 +803,7 @@ async fn create_token(
     let (secret, hash) = generate_scim_token(&session_pepper());
     let actor = match &principal {
         Principal::User(user) => Some(user.id),
-        Principal::Superadmin => None,
+        Principal::Superadmin { .. } => None,
     };
     let token = ScimTokenRepo(pool(&state))
         .create(org_id, &body.name, &hash, actor)

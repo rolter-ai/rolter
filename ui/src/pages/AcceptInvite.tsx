@@ -15,6 +15,7 @@ import {
 import { useAuth } from "@/lib/auth";
 import { useDocumentTitle } from "@/lib/document-title";
 import { describeError, type ErrorCopy } from "@/lib/error-copy";
+import { roleLabel } from "@/lib/roles";
 
 // the invitee may have no account yet, so this screen renders outside the
 // signed-in shell. the token in the url is the only credential it has, and it
@@ -76,6 +77,9 @@ export default function AcceptInvite({ token }: { token: string }) {
     }
   };
 
+  // the role by the name the inviter picked it under in the invite dialog, not
+  // the id the control plane stores (#2813)
+  const role = invite ? roleLabel(t, invite.role) : "";
   const mismatch = confirm.length > 0 && confirm !== pw;
   const ready = invite?.has_account ? !pending : pw.length >= 8 && !mismatch && !pending;
 
@@ -107,7 +111,7 @@ export default function AcceptInvite({ token }: { token: string }) {
                       signInReason === "existing_account"
                         ? "pages.acceptInvite.doneExisting"
                         : "pages.acceptInvite.doneSecondFactor",
-                      { role: invite.role, org: invite.org_name },
+                      { role, org: invite.org_name },
                     )}
                   </p>
                 ) : (
@@ -118,7 +122,7 @@ export default function AcceptInvite({ token }: { token: string }) {
                           ? "pages.acceptInvite.existingIntro"
                           : "pages.acceptInvite.intro"
                       }
-                      values={{ email: invite.email, role: invite.role }}
+                      values={{ email: invite.email, role }}
                       components={{ strong: <strong /> }}
                     />
                   </p>
