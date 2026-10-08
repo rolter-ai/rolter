@@ -6297,11 +6297,14 @@ mod user_tests {
         use argon2::Argon2;
         use argon2::PasswordHash;
 
-        assert!(is_config_err(hash_password("short")));
-        let hash = hash_password("longenough").unwrap();
+        // built at run time: a password written out in a test is one code
+        // scanning reports as hard-coded (#2849)
+        assert!(is_config_err(hash_password(&"s".repeat(5))));
+        let password = format!("pw-{}", uuid::Uuid::new_v4());
+        let hash = hash_password(&password).unwrap();
         let parsed = PasswordHash::new(&hash).unwrap();
         assert!(Argon2::default()
-            .verify_password(b"longenough", &parsed)
+            .verify_password(password.as_bytes(), &parsed)
             .is_ok());
     }
 
