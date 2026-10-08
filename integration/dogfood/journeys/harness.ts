@@ -90,15 +90,19 @@ export async function snap(page: Page, id: string): Promise<string> {
   return path;
 }
 
-let browser: Browser | null = null;
-export async function launch(): Promise<Browser> {
+// the promise, not the browser, is what is shared: `survey.ts` signs seven personas in at once,
+// and caching only the resolved browser let each of them launch its own and leave six running
+// after `close()`, so the script finished its work and then never exited
+let browser: Promise<Browser> | null = null;
+export function launch(): Promise<Browser> {
   // CHROMIUM_PATH points at a system Chromium; unset, playwright's own is used
-  browser ??= await chromium.launch({ executablePath: process.env.CHROMIUM_PATH || undefined, headless: true });
+  browser ??= chromium.launch({ executablePath: process.env.CHROMIUM_PATH || undefined, headless: true });
   return browser;
 }
 export async function close() {
-  await browser?.close();
+  const open = browser;
   browser = null;
+  await (await open)?.close();
 }
 
 export interface Session {
@@ -232,20 +236,43 @@ export async function tenancy() {
   };
 }
 
-/** what the scope switcher (the popover under the rail's brand) resolved to, plus its message if any */
+/**
+ * what the scope switcher (the popover under the rail's brand) resolved to, plus its message if any.
+ *
+ * The three pickers fill in one after another (the team list waits on the org, the project list on
+ * the team), so the popover can be open with the Organization row set and the rest still loading.
+ * Reading it then reports a blank team and project for a persona who has both (#2823), so this
+ * waits until no picker is still loading and the three values have stopped changing.
+ */
 export async function scopeOf(page: Page, _email: string) {
   const trigger = page.getByRole("button", { name: /^Scope: / }).first();
-  const footer = (await trigger.innerText().catch(() => "")).replace(/\s+/g, " ");
   await trigger.click();
   await page.getByRole("combobox", { name: "Organization", exact: true }).first().waitFor({ timeout: 8000 }).catch(() => {});
-  const read = async (name: string) => {
-    const box = page.getByRole("combobox", { name, exact: true }).first();
-    if (!(await box.count())) return "";
-    return (await box.inputValue().catch(() => "")) || "";
-  };
-  const org = await read("Organization");
-  const team = await read("Team");
-  const project = await read("Project");
+  const rows = ["Organization", "Team", "Project"];
+  const readRows = async () =>
+    await Promise.all(
+      rows.map(async (name) => {
+        const box = page.getByRole("combobox", { name, exact: true }).first();
+        if (!(await box.count())) return { value: "", loading: false };
+        const value = (await box.inputValue().catch(() => "")) || "";
+        const placeholder = (await box.getAttribute("placeholder").catch(() => "")) || "";
+        return { value, loading: !value && /^Loading/i.test(placeholder) };
+      }),
+    );
+  // three identical reads with nothing loading, 200 ms apart; a level the persona truly has none of
+  // settles empty, so this ends within the bound either way
+  let last = "";
+  let stable = 0;
+  for (const end = Date.now() + 8000; Date.now() < end && stable < 3; ) {
+    const now = await readRows();
+    const key = JSON.stringify(now);
+    stable = key === last && !now.some((r) => r.loading) ? stable + 1 : 0;
+    last = key;
+    await page.waitForTimeout(200);
+  }
+  const [org, team, project] = (await readRows()).map((r) => r.value);
+  // the trigger's own path, read once the levels have arrived: it is the same three names
+  const footer = (await trigger.innerText().catch(() => "")).replace(/\s+/g, " ");
   const body = await page.locator("body").innerText().catch(() => "");
   const message = /failed to load (orgs|teams|projects)|no (org|team|project) configured[^\n]*/i.exec(body)?.[0] ?? "";
   await page.keyboard.press("Escape");

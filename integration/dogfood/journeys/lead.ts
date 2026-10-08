@@ -38,7 +38,7 @@ await step("T2.1", "create a project for a new workstream", async () => {
   assert(r.status === 200, `create project ${r.status} ${JSON.stringify(r.json).slice(0, 160)}`);
   projectId = r.json.id;
   cleanup.push(() => api("DELETE", `/api/v1/projects/${projectId}`, ADMIN_TOKEN));
-  return ["pass", "POST /api/v1/teams/{id}/projects → 200 as team admin (the switcher's + is out of reach: #1846)"];
+  return ["pass", "POST /api/v1/teams/{id}/projects → 200 as team admin (API only; the switcher's Project actions → New project is not driven here)"];
 });
 
 let inviteeToken = "";
