@@ -17,6 +17,8 @@ import {
   ListTable,
   PageBody,
   Pill,
+  PRIMARY_COLUMN_FLOOR,
+  primaryColumn,
   RowIconButton,
   SearchInput,
   SortLabel,
@@ -577,5 +579,158 @@ export const SummaryIsAPoliteLiveRegion: Story = {
     // the same node, so the change is announced rather than the node being new
     await expect(canvas.getByRole("status")).toBe(region);
     await expect(region).toHaveTextContent("1 providers");
+  },
+};
+
+// --- the identifying column and clipped text (#2812) ---
+
+const LONG_NAME = "vllm-a10g-eu-west-prod-cluster-b-with-a-very-long-suffix";
+
+/** a three-column list in a frame as wide as `width`, the first column `grid`'s */
+function NarrowList({
+  grid,
+  width,
+  rows,
+}: {
+  grid: string;
+  width: number;
+  rows: { name: string; address: string; title?: string }[];
+}) {
+  return (
+    <div style={{ width }}>
+      <ListTable label="Providers" minWidth={480}>
+        <ListHeader grid={grid}>
+          <ListHeaderCell>Provider</ListHeaderCell>
+          <ListHeaderCell>Address</ListHeaderCell>
+          <ListHeaderCell>Slug</ListHeaderCell>
+        </ListHeader>
+        {rows.map((row) => (
+          <ListRow key={row.name} grid={grid}>
+            <ListCell className="min-w-0">
+              <span className="block truncate font-mono text-sm" title={row.title}>
+                {row.name}
+              </span>
+            </ListCell>
+            <ListCell className="truncate font-mono text-xs">{row.address}</ListCell>
+            <ListCell className="truncate font-mono text-xs">{row.name.slice(0, 4)}</ListCell>
+          </ListRow>
+        ))}
+      </ListTable>
+    </div>
+  );
+}
+
+const cellWidth = (el: HTMLElement) =>
+  (el.closest('[role="cell"]') as HTMLElement).getBoundingClientRect().width;
+
+/**
+ * A bare `fr` first column gets what the others leave, and a table at its floor
+ * leaves little: the provider name in Providers was 70px wide at a 1024px
+ * window and the key name in Virtual keys 104px. `primaryColumn` is the same
+ * share with a floor under it, so it is the others that give way.
+ */
+export const PrimaryColumnKeepsItsFloor: Story = {
+  render: () => (
+    <div className="flex flex-col gap-6 p-4">
+      <NarrowList
+        grid="1fr 1fr 1fr"
+        width={520}
+        rows={[{ name: "vllm-a10g-prod", address: "https://vllm.internal/v1" }]}
+      />
+      <NarrowList
+        grid={`${primaryColumn(1)} 1fr 1fr`}
+        width={520}
+        rows={[{ name: "vllm-a10g-prod", address: "https://vllm.internal/v1" }]}
+      />
+    </div>
+  ),
+  play: async ({ canvasElement }) => {
+    const [bare, floored] = within(canvasElement).getAllByText("vllm-a10g-prod");
+    const floor = parseFloat(PRIMARY_COLUMN_FLOOR) * 16;
+    // the premise: without the floor the name column is the third of what is left
+    await expect(cellWidth(bare)).toBeLessThan(floor);
+    await expect(cellWidth(floored)).toBeGreaterThanOrEqual(floor - 1);
+    // and a name that fits the floor is shown whole
+    await expect(floored.scrollWidth).toBeLessThanOrEqual(floored.clientWidth);
+  },
+};
+
+/**
+ * The table names what it clipped, once, for every screen: pointing at a cell
+ * that ends in an ellipsis gives it the full text as its tooltip; one that
+ * fits has nothing to add, and a `title` its author wrote is left alone.
+ */
+export const ClippedCellsSayThemselvesWhole: Story = {
+  render: () => (
+    <NarrowList
+      grid={`${primaryColumn(1)} 1fr 1fr`}
+      width={520}
+      rows={[
+        { name: LONG_NAME, address: "https://vllm-b.internal.example.com/openai/v1" },
+        { name: "short", address: "https://a.example/v1" },
+        { name: `${LONG_NAME}-2`, address: "https://c.example/v1", title: "written by the screen" },
+      ]}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const long = canvas.getByText(LONG_NAME);
+    await expect(long).not.toHaveAttribute("title");
+    await userEvent.hover(long);
+    await expect(long).toHaveAttribute("title", LONG_NAME);
+
+    // a cell that is itself the clipped element, with no span inside it
+    const address = canvas.getByText("https://vllm-b.internal.example.com/openai/v1");
+    await userEvent.hover(address);
+    await expect(address).toHaveAttribute("title", "https://vllm-b.internal.example.com/openai/v1");
+
+    // text that fits is not given a tooltip that repeats it
+    const short = canvas.getByText("short");
+    await userEvent.hover(short);
+    await expect(short).not.toHaveAttribute("title");
+    const fits = canvas.getByText("https://a.example/v1");
+    await userEvent.hover(fits);
+    await expect(fits).not.toHaveAttribute("title");
+
+    // the screen's own title is the screen's choice
+    const written = canvas.getByText(`${LONG_NAME}-2`);
+    await userEvent.hover(written);
+    await expect(written).toHaveAttribute("title", "written by the screen");
+  },
+};
+
+/**
+ * A title the table set is its own to take back: widen the frame and the same
+ * cell no longer ends in an ellipsis, so the next pass over it removes the
+ * tooltip rather than leaving a stale copy of text that is fully on screen.
+ */
+export const ARevealedTitleGoesWhenTheRoomComes: Story = {
+  render: () => {
+    function Widening() {
+      const [wide, setWide] = React.useState(false);
+      return (
+        <div>
+          <button type="button" onClick={() => setWide(true)}>
+            Widen
+          </button>
+          <NarrowList
+            grid={`${primaryColumn(1)} 1fr 1fr`}
+            width={wide ? 1600 : 520}
+            rows={[{ name: LONG_NAME, address: "https://a.example/v1" }]}
+          />
+        </div>
+      );
+    }
+    return <Widening />;
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const long = canvas.getByText(LONG_NAME);
+    await userEvent.hover(long);
+    await expect(long).toHaveAttribute("title", LONG_NAME);
+    await userEvent.click(canvas.getByRole("button", { name: "Widen" }));
+    await userEvent.unhover(long);
+    await userEvent.hover(long);
+    await expect(long).not.toHaveAttribute("title");
   },
 };

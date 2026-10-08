@@ -20,7 +20,7 @@ import {
   withCapabilities,
   type FetchStub,
 } from "./pages/story-harness";
-import type { InvocationRow } from "@/lib/api";
+import type { InvocationRow, ProviderRow, SubsystemStability, VirtualKeyRow } from "@/lib/api";
 import { DEFAULT_LOCALE, LOCALE_NAMES, setLocale } from "@/lib/i18n";
 import en from "@/lib/i18n/locales/en.json";
 import ru from "@/lib/i18n/locales/ru.json";
@@ -28,9 +28,12 @@ import { SHORTCUTS, chordText, shortcutChord } from "@/lib/shortcuts";
 import { withPageA11y } from "@/lib/story-a11y";
 import {
   atMobile,
+  atSplit,
   atTablet,
+  expectInFrame,
   expectInViewport,
   expectNoHorizontalOverflow,
+  expectNotTruncated,
 } from "@/lib/story-viewport";
 
 // The assembled shell (#1239): rail + header + screen, signed in.
@@ -814,6 +817,263 @@ export const ExperimentalMarkerOnIconRail: Story = {
     await expectNoHorizontalOverflow();
   },
 };
+
+// A 1024px window (#2812). The rail is the full 232px one and the screen beside
+// it has what is left, which is where the livetest pass met a sheet subtitle
+// cut mid-sentence, "Репоз…" in place of "Репозиторий навыков" and a key named
+// "Pl…". These stories mount the whole shell at that width, in both locales,
+// since the Russian copy runs a third longer than the English.
+
+/** the three entries that sit in the rail's tightest places: top level, nested, a short one */
+const SPLIT_SUBSYSTEMS: SubsystemStability[] = [
+  {
+    id: "skills_repository",
+    stability: "experimental",
+    note: "a skill resolves only through the control-plane API",
+    nav_keys: ["skills-repo"],
+  },
+  {
+    id: "mcp_settings",
+    stability: "experimental",
+    note: "organization MCP defaults are stored but not yet read by the proxy",
+    nav_keys: ["mcp-settings"],
+  },
+  EXPERIMENTAL_SUBSYSTEM,
+];
+
+/**
+ * An experimental entry shows its whole name and its marker, in `locale`.
+ *
+ * The marker used to hold its size and the name gave way: at 232px the label of
+ * "Репозиторий навыков" was left with room for four letters. Now the name is
+ * measured, not just found, and so is the badge, which has to stay inside the
+ * rail it is drawn in.
+ */
+function entriesStayWhole(locale: "en" | "ru") {
+  const cat = locale === "ru" ? ru : en;
+  const labels = cat.nav as Record<string, string>;
+  const word = cat.shell.experimental;
+  return {
+    ...atSplit,
+    globals: { ...atSplit.globals, locale },
+    render: () => (
+      <AppShell route="/dashboard" fetchStub={shellStubWithStability(SPLIT_SUBSYSTEMS)} />
+    ),
+    play: async ({ canvasElement }: { canvasElement: HTMLElement }) => {
+      const rail = await railOf(canvasElement, cat.shell.navLabel);
+      const whole = async (entry: HTMLElement, name: string) => {
+        await expectNotTruncated(within(entry).getByText(name));
+        // and nothing inside the entry is wider than the entry
+        await expect(entry.scrollWidth).toBeLessThanOrEqual(entry.clientWidth);
+        const badge = within(entry).getByText(word);
+        await expectInFrame(badge, entry);
+        await expectInFrame(badge, rail);
+        await expect(badge).toBeVisible();
+      };
+
+      // a top-level entry
+      const skills = await within(rail).findByRole("button", {
+        name: `${labels["skills-repo"]} ${word}`,
+      });
+      await whole(skills, labels["skills-repo"]);
+      // one nested under its group, which has the least room of all
+      await userEvent.click(within(rail).getByRole("button", { name: labels.mcp }));
+      const settings = await within(rail).findByRole("button", {
+        name: `${labels["mcp-settings"]} ${word}`,
+      });
+      await whole(settings, labels["mcp-settings"]);
+      await expectNoHorizontalOverflow();
+    },
+  };
+}
+
+export const ExperimentalEntriesStayWholeAt1024: Story = entriesStayWhole("en");
+export const ExperimentalEntriesStayWholeAt1024InRussian: Story = entriesStayWhole("ru");
+
+/**
+ * The folded rail's flyout draws the same entry, so it keeps the same promise:
+ * the name whole, the marker beside it or under it.
+ */
+export const ExperimentalEntriesStayWholeInTheFlyoutInRussian: Story = {
+  ...atSplit,
+  globals: { ...atSplit.globals, locale: "ru" },
+  render: () => (
+    <AppShell route="/dashboard" fetchStub={shellStubWithStability(SPLIT_SUBSYSTEMS)} />
+  ),
+  play: async ({ canvasElement }) => {
+    const rail = await railOf(canvasElement, ru.shell.navLabel);
+    await userEvent.click(
+      await within(rail).findByRole("button", { name: ru.shell.collapseSidebar }),
+    );
+    await waitFor(() => expect(rail.getBoundingClientRect().width).toBe(52));
+    await userEvent.click(within(rail).getByRole("button", { name: ru.nav.mcp }));
+    const flyout = within(await within(rail).findByRole("group", { name: ru.nav.mcp }));
+    const entry = flyout.getByRole("button", {
+      name: `${ru.nav["mcp-settings"]} ${ru.shell.experimental}`,
+    });
+    await expectNotTruncated(within(entry).getByText(ru.nav["mcp-settings"]));
+    await expectInViewport(within(entry).getByText(ru.shell.experimental));
+  },
+};
+
+const LONG_PROVIDER = "vllm-a10g-eu-west-prod-cluster-b";
+
+const SPLIT_PROVIDERS: ProviderRow[] = [
+  {
+    id: "p-1",
+    org_id: "org-1",
+    name: "vllm-a10g-prod",
+    slug: "vllm-a10g",
+    kind: "openai_compatible",
+    api_base: "https://vllm.internal.example.com/v1",
+    api_key_env: "VLLM_API_KEY",
+    egress_proxies: [],
+    created_at: "2026-01-02T00:00:00Z",
+  },
+  {
+    id: "p-2",
+    org_id: "org-1",
+    name: LONG_PROVIDER,
+    slug: "vllm-a10g-eu-west",
+    kind: "openai_compatible",
+    api_base: "https://vllm-b.internal.example.com/v1",
+    api_key_env: "VLLM_B_API_KEY",
+    egress_proxies: [],
+    created_at: "2026-01-03T00:00:00Z",
+  },
+];
+
+/** what the screen's first column must at least hold, in px (11rem at 16px) */
+const IDENTIFYING_FLOOR = 176;
+
+/**
+ * The provider's name is the column a row is found by, and at 1024px it was
+ * given what the other six columns left over: "vllm-a10…" for a 14-character
+ * name. It keeps a floor now, and a name longer than the column still says
+ * itself in full on hover.
+ */
+function providersKeepTheirNames(locale: "en" | "ru") {
+  const cat = locale === "ru" ? ru : en;
+  return {
+    ...atSplit,
+    globals: { ...atSplit.globals, locale },
+    render: () => (
+      <AppShell
+        route="/providers"
+        fetchStub={shellStub([
+          ["/api/v1/stability", () => []],
+          ["/providers", () => SPLIT_PROVIDERS],
+          ["/config/problems", () => ({ problems: [] })],
+        ])}
+      />
+    ),
+    play: async ({ canvasElement }: { canvasElement: HTMLElement }) => {
+      const canvas = within(canvasElement);
+      const table = await canvas.findByRole("table", { name: cat.screens.providers.title });
+      const name = await within(table).findByText("vllm-a10g-prod");
+      await expectNotTruncated(name);
+      const cell = name.closest('[role="cell"]') as HTMLElement;
+      await expect(cell.getBoundingClientRect().width).toBeGreaterThanOrEqual(
+        IDENTIFYING_FLOOR - 1,
+      );
+      // a name wider than its column is cut by the column, and says itself
+      // whole once the pointer is on it; one that fits has nothing to add
+      const long = within(table).getByText(LONG_PROVIDER);
+      await userEvent.hover(long);
+      await expect(long).toHaveAttribute("title", LONG_PROVIDER);
+      await userEvent.hover(name);
+      await expect(name).not.toHaveAttribute("title");
+      await expectNoHorizontalOverflow();
+    },
+  };
+}
+
+export const ProviderNamesKeepTheirColumnAt1024: Story = providersKeepTheirNames("en");
+export const ProviderNamesKeepTheirColumnAt1024InRussian: Story = providersKeepTheirNames("ru");
+
+const SPLIT_KEYS: VirtualKeyRow[] = [
+  {
+    id: "vk-1",
+    project_id: "project-1",
+    key_hash: "hash-1",
+    key_prefix: "sk-rolter-play",
+    name: "Playground",
+    models: ["gpt-4o"],
+    providers: [],
+    created_by: "user-1",
+    business_unit_id: null,
+    customer_id: null,
+    disabled: false,
+    expires_at: "2026-07-01T00:30:00Z",
+    cache_enabled: null,
+    purpose: "playground",
+    created_at: "2026-07-01T00:00:00Z",
+  },
+  {
+    id: "vk-2",
+    project_id: "project-1",
+    key_hash: "hash-2",
+    key_prefix: "sk-rolter-ci",
+    name: "ci-nightly-regression-runner-eu-west",
+    models: [],
+    providers: [],
+    created_by: null,
+    business_unit_id: null,
+    customer_id: null,
+    disabled: false,
+    expires_at: null,
+    cache_enabled: null,
+    created_at: "2026-07-01T00:00:00Z",
+  },
+];
+
+/**
+ * "Playground" beside its badge was cut to "Pl…" at this width: the badge held
+ * its size and the name took the rest of a column that was 104px wide. Name and
+ * badge share the line while they fit and the badge drops under the name when
+ * they do not; the name is never what gives way.
+ */
+function keysKeepTheirNames(locale: "en" | "ru") {
+  const cat = locale === "ru" ? ru : en;
+  return {
+    ...atSplit,
+    globals: { ...atSplit.globals, locale },
+    render: () => (
+      <AppShell
+        route="/virtual-keys"
+        fetchStub={shellStub([
+          ["/api/v1/stability", () => []],
+          ["/virtual-keys", () => SPLIT_KEYS],
+        ])}
+      />
+    ),
+    play: async ({ canvasElement }: { canvasElement: HTMLElement }) => {
+      const canvas = within(canvasElement);
+      const table = await canvas.findByRole("table", { name: cat.screens["virtual-keys"].title });
+      const row = (
+        await within(table).findByText("Playground", { selector: "span.font-semibold" })
+      ).closest('[role="row"]') as HTMLElement;
+      const name = within(row).getByText("Playground", { selector: "span.font-semibold" });
+      await expectNotTruncated(name);
+      const cell = name.closest('[role="cell"]') as HTMLElement;
+      await expect(cell.getBoundingClientRect().width).toBeGreaterThanOrEqual(
+        IDENTIFYING_FLOOR - 1,
+      );
+      // the badge is beside the name or under it, and inside the column either way
+      await expectInFrame(within(row).getByTitle(cat.pages.virtualKeys.playgroundHint), cell);
+      const longName = "ci-nightly-regression-runner-eu-west";
+      const long = within(table).getByText(longName);
+      await userEvent.hover(long);
+      await expect(long).toHaveAttribute("title", longName);
+      await userEvent.hover(name);
+      await expect(name).not.toHaveAttribute("title");
+      await expectNoHorizontalOverflow();
+    },
+  };
+}
+
+export const KeyNamesKeepTheirColumnAt1024: Story = keysKeepTheirNames("en");
+export const KeyNamesKeepTheirColumnAt1024InRussian: Story = keysKeepTheirNames("ru");
 
 /**
  * ⌘K from anywhere in the shell (#1198): the palette opens with focus already

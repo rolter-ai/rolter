@@ -6,7 +6,13 @@ import { Button } from "./button";
 import { Field } from "./field";
 import { Input } from "./input";
 import { Sheet, SheetActions, SheetBody, SheetError, SheetFooter, SheetHeader } from "./sheet";
-import { atMobile, expectInViewport } from "@/lib/story-viewport";
+import {
+  atMobile,
+  atSplit,
+  expectInViewport,
+  expectNotTruncated,
+  animationsSettled,
+} from "@/lib/story-viewport";
 
 const meta = {
   title: "Overlays/Sheet",
@@ -214,5 +220,63 @@ export const ActionsInARowOnADesktop: Story = {
     await expect(s.top).toBe(c.top);
     await expect(t.right).toBeLessThan(c.left);
     await expect(s.left).toBeGreaterThan(c.right);
+  },
+};
+
+/**
+ * The line under a sheet's title says what the sheet is for, and it wraps (#2812).
+ *
+ * It was clipped to one line with an ellipsis, so at a 1024px window "Create
+ * virtual key" lost the end of "the plaintext key is shown once, right after
+ * creation — copy it then": the warning the line exists to give. The panel is
+ * 580px at most, so a sentence this long takes a second line, and the story
+ * measures that rather than finding the text, which a clipped line still holds.
+ */
+const LONG_DESCRIPTION =
+  "The plaintext key is shown once, right after creation — copy it then, because nothing on this screen can show it again";
+
+function WithDescription({ subtitle }: { subtitle: string }) {
+  return (
+    <Sheet open onOpenChange={() => {}}>
+      <SheetHeader title="Create virtual key" subtitle={subtitle} onClose={() => {}} />
+      <SheetBody>
+        <Field label="Name" htmlFor="name">
+          <Input id="name" />
+        </Field>
+      </SheetBody>
+    </Sheet>
+  );
+}
+
+export const LongDescriptionWraps: Story = {
+  ...atSplit,
+  render: () => <WithDescription subtitle={LONG_DESCRIPTION} />,
+  play: async () => {
+    const dialog = await within(document.body).findByRole("dialog");
+    const description = within(dialog).getByText(LONG_DESCRIPTION);
+    await animationsSettled();
+    await expectNotTruncated(description);
+    // two lines at least: the text is more than a line of a 580px panel
+    const line = parseFloat(getComputedStyle(description).lineHeight);
+    await expect(description.getBoundingClientRect().height).toBeGreaterThan(line * 1.5);
+    await expectInViewport(description);
+  },
+};
+
+/**
+ * A value with no place to break (an id, a URL) is the case `overflow-wrap`
+ * exists for: it breaks inside the line instead of widening the panel past the
+ * window or being clipped at its edge.
+ */
+export const UnbrokenDescriptionStaysInThePanel: Story = {
+  ...atSplit,
+  render: () => <WithDescription subtitle={`route ${"a1b2c3d4".repeat(14)}`} />,
+  play: async () => {
+    const dialog = await within(document.body).findByRole("dialog");
+    const description = within(dialog).getByText(/^route a1b2/);
+    await animationsSettled();
+    await expectNotTruncated(description);
+    await expectInViewport(description);
+    await expect(dialog.scrollWidth).toBeLessThanOrEqual(dialog.clientWidth);
   },
 };

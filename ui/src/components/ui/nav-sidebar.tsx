@@ -182,6 +182,35 @@ function holds(it: NavItem, key: string | undefined): boolean {
 }
 
 /**
+ * An entry's name, and the word marking it when its subsystem is experimental.
+ *
+ * The name is what the entry is for, so it is never shortened to make room for
+ * the marker (#2812): the old row held the badge at its size and truncated the
+ * label, which at the rail's default 232px left "Репоз…" of "Репозиторий навыков"
+ * beside "Экспериментально". Here the two share a wrapping line instead. When
+ * both fit they sit on one row with the badge at the end; when they do not, the
+ * badge drops under the name, still readable and still carrying its note, and a
+ * name longer than the rail wraps rather than being clipped. The same renderer
+ * draws the full rail and the folded rail's flyout, so the two cannot disagree.
+ *
+ * An entry with no marker keeps the single truncating line every long name
+ * already makes. The marker's word stays inside the button, so the accessible
+ * name is still "<label> <experimental>".
+ */
+function NavLabel({ item }: { item: NavItem }) {
+  const { t } = useTranslation();
+  if (!item.experimental) return <span className="min-w-0 truncate">{item.label}</span>;
+  return (
+    <span className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1">
+      <span className="min-w-0 break-words">{item.label}</span>
+      <Badge tone="warning" title={item.experimentalNote} className="flex-none">
+        {t("shell.experimental")}
+      </Badge>
+    </span>
+  );
+}
+
+/**
  * A group's screens, opened beside its icon on the folded rail (#2803).
  *
  * The panel is `AnchoredPanel`'s: `fixed` and placed from the icon's rectangle,
@@ -210,7 +239,6 @@ function GroupFlyout({
   onSelect: (key: string) => void;
   onClose: (restoreFocus: boolean) => void;
 }) {
-  const { t } = useTranslation();
   const ref = React.useRef<HTMLDivElement>(null);
   const headingId = React.useId();
 
@@ -258,12 +286,7 @@ function GroupFlyout({
           className={cn(itemBase, c.key === activeKey ? itemActive : itemIdle)}
         >
           {c.icon}
-          <span className="min-w-0 truncate">{c.label}</span>
-          {c.experimental && (
-            <Badge tone="warning" title={c.experimentalNote} className="ml-auto flex-none">
-              {t("shell.experimental")}
-            </Badge>
-          )}
+          <NavLabel item={c} />
           {c.count != null && (
             <span className="ml-auto font-mono text-[0.6875rem] text-[color:var(--text-subtle)]">
               {c.count}
@@ -508,12 +531,7 @@ export function NavSidebar({
               className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-[color:var(--status-warning)]"
             />
           )}
-          {!folded && <span className="min-w-0 truncate">{it.label}</span>}
-          {!folded && it.experimental && (
-            <Badge tone="warning" title={it.experimentalNote} className="ml-auto flex-none">
-              {t("shell.experimental")}
-            </Badge>
-          )}
+          {!folded && <NavLabel item={it} />}
           {!folded && it.count != null && (
             <span className="ml-auto font-mono text-[0.6875rem] text-[color:var(--text-subtle)]">
               {it.count}

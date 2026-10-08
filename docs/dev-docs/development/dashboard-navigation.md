@@ -451,7 +451,14 @@ Two shapes, because the rail has two widths:
 - **Full width** — a `Badge` beside the label carrying `shell.experimental`,
   with the build's own one-line note as its `title`. The badge is inside the
   button, so the entry's accessible name is "Tool groups Experimental" and a
-  screen reader gets the marker without having to find a sibling element.
+  screen reader gets the marker without having to find a sibling element. The
+  name never gives way to it (#2812): `NavLabel` puts the two on one wrapping
+  line, so they share a row while both fit and the badge drops under the name
+  when they do not. The rail's default 232px left "Репозиторий навыков" four
+  letters ("Репоз…") beside "Экспериментально" when the badge held its size and
+  the label truncated, and a name longer than the rail wraps instead of being
+  clipped. An entry with no marker keeps the single truncating line. The
+  folded rail's flyout draws the same `NavLabel`, so the two cannot disagree.
 - **Folded to icons** — no room for a word, so the marker is a decorative dot
   on the corner of the entry's icon, mirroring the footer's update hint. The
   word moves into `shell.experimentalItem`, the button's `title`; on a button
@@ -462,9 +469,14 @@ and the rail is where an operator is choosing what to rely on.
 
 Stories: `ExperimentalItems`, `ExperimentalItemsCollapsed` and
 `ExperimentalItemsNarrow` in `nav-sidebar.stories.tsx` cover the two shapes and
-the narrowest width the rail can be dragged to; `ExperimentalMarker` and
+the narrowest width the rail can be dragged to, with
+`ExperimentalItemWithALongNameWraps` and
+`ExperimentalMarkerBesideTheNameWhenItFits` for the wrap; `ExperimentalMarker` and
 `ExperimentalMarkerOnIconRail` in `App.stories.tsx` cover the whole path from
-the endpoint's answer to the marked entry.
+the endpoint's answer to the marked entry, and
+`ExperimentalEntriesStayWholeAt1024` (also `…InRussian` and
+`…InTheFlyoutInRussian`) measure the name and the badge in the full rail, under a
+group and in the flyout at a 1024px window.
 
 ## The tab strip
 

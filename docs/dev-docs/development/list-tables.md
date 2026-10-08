@@ -98,6 +98,35 @@ the header and the rows. It tells the header apart by type, which means the
   the table. The same rule applies: the scroller's width must not come from its
   content, which holds while it keeps `w-full` and does not in a row flex with
   that swapped for `w-auto`.
+- **The first column is the identifying one, and it keeps a floor.** Write it
+  `${primaryColumn(1.2)}` (`ui/src/components/screen.tsx`), not a bare `1.2fr`:
+  `minmax(11rem, 1.2fr)`, its share of the free space but never less than
+  `PRIMARY_COLUMN_FLOOR`. A bare share is what the other columns leave over, and
+  a table at its floor leaves little. At a 1024px window, with the rail taking
+  232px of it, Providers drew the provider name 70px wide ("vllm-a10…") and
+  Virtual keys the key name 104px ("Pl…"), while columns of secondary text kept
+  their room (#2812). With the floor it is the columns around it that give way.
+  `ui/scripts/list-grids.test.ts` reads every screen that renders a `ListTable`
+  and fails a `…GRID` whose first track is a bare `fr`; a list that opens on a
+  fixed column (a timestamp, an icon) is left alone.
+- **Raise `minWidth` when the floor takes more than the column had.** The floor
+  is taken out of the other columns, so a table that was already tight (the
+  default 760 is) squeezes them further, and a table scrolls sideways rather
+  than squeezing columns past what is readable (#1203). Where the name's share
+  at the table's floor is under 11rem, add the difference to `minWidth`:
+  Providers (860), Virtual keys and Provider groups (840) did. A name beside a
+  badge (Virtual keys' Playground tag) wraps the badge under the name rather
+  than shortening it.
+- **A clipped cell says what it holds.** Any cell, or element inside one, that
+  ends in an ellipsis (`truncate`) gets its full text as a `title` when the
+  pointer is over it: `ListTable` does it once for every screen
+  (`revealClippedText`), so a column is never wired up by hand. Text that fits
+  gets nothing, a `title` the screen wrote is left alone, and one the table set
+  is taken back when the cell has been given room. The text is in the document
+  whole either way, so a screen reader reads all of it. A screen that clips with
+  anything other than `text-overflow: ellipsis` has to give the full text some
+  other way. The data-driven `Table` in `ui/src/components/ui/table.tsx` does
+  not clip: its cells size to their content.
 - **Hand the state rows the query, not a condition.** Write the skeleton as
   `<ListLoadingRow read={query}>` and the empty state as
   `<ListEmptyRow read={query} rows={rows.length}>`, where `query` is the
@@ -154,6 +183,13 @@ Provisioning each assert it at 375px in `en` and `ru` (`EmptyFitsThePhone`,
 hold the placeholder in the frame while the table scrolls
 (`EmptyStaysInFrameWhenTheTableScrolls`) and as wide as the table and its header
 row at desktop width (`EmptySpansTheTableAtDesktopWidth`).
+
+`PrimaryColumnKeepsItsFloor`, `ClippedCellsSayThemselvesWhole` and
+`ARevealedTitleGoesWhenTheRoomComes` under **Display/ScreenPrimitives** hold the
+floor and the tooltip; the screens meet them at a 1024px window in
+`ProviderNamesKeepTheirColumnAt1024` and `KeyNamesKeepTheirColumnAt1024` (each
+also in Russian) in `App.stories.tsx`, which mount the whole shell, since the
+width a table has depends on the rail beside it.
 
 The primitive's own stories, under **Display/ScreenPrimitives**, assert the
 roles (`TableSemantics`), the `aria-sort` cycle and the hidden arrow

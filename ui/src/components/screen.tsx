@@ -83,6 +83,57 @@ export function Pill({
   );
 }
 
+/**
+ * The grid track of a list's identifying column: the name a row is found by.
+ *
+ * A column written as a bare `1.2fr` is a share of what the other columns leave,
+ * and a table at its floor leaves little: at a 1024px window the provider name
+ * got 70px and the key name 104px, "vllm-a10…" and "Pl…" of names a reader had
+ * typed themselves (#2812). This track takes `weight` of the free space like
+ * any other, but never less than `PRIMARY_COLUMN_FLOOR`, so the columns around
+ * it give way first. `weight` is a number of `fr`, or a ready track such as
+ * `"1.2fr"`. Every list's first column goes through here, which
+ * `scripts/list-grids.test.ts` holds it to.
+ */
+export const PRIMARY_COLUMN_FLOOR = "11rem";
+export function primaryColumn(weight: number | `${number}fr`): string {
+  const fr = typeof weight === "number" ? `${weight}fr` : weight;
+  return `minmax(${PRIMARY_COLUMN_FLOOR}, ${fr})`;
+}
+
+/**
+ * Names whatever the pointer is over that the table has clipped.
+ *
+ * A cell that does not fit ends in an ellipsis, and the rest of the text was
+ * nowhere on screen. Every list screen clips (`truncate` on a name, an address,
+ * a key prefix), so the table answers once for all of them rather than each
+ * screen wiring a `title` onto each cell: on pointer over, the elements from the
+ * target up to the table are read, and the first one that is cut short with an
+ * ellipsis gets its full text as a `title`, the browser's own tooltip. An
+ * element whose `title` its author wrote keeps it, and one that has since been
+ * given room, a wider window or a resized rail, loses the title this set. The
+ * text is also in the document in full, so a screen reader reads it all.
+ */
+const REVEALED = "data-rl-revealed";
+function revealClippedText(e: React.PointerEvent<HTMLElement>) {
+  const table = e.currentTarget;
+  for (let el = e.target as HTMLElement | null; el && el !== table; el = el.parentElement) {
+    const mine = el.hasAttribute(REVEALED);
+    if (el.hasAttribute("title") && !mine) continue;
+    const clipped =
+      el.scrollWidth > el.clientWidth + 1 && getComputedStyle(el).textOverflow === "ellipsis";
+    if (clipped && el.textContent) {
+      el.setAttribute("title", el.textContent);
+      el.setAttribute(REVEALED, "");
+      return;
+    }
+    if (mine) {
+      el.removeAttribute("title");
+      el.removeAttribute(REVEALED);
+    }
+  }
+}
+
 // the bordered list-table container: css-grid header row
 // over css-grid data rows, columns supplied per screen.
 //
@@ -115,6 +166,7 @@ export function ListTable({
   className,
   minWidth = 760,
   style,
+  onPointerOver,
   children,
   ...props
 }: React.HTMLAttributes<HTMLDivElement> & { label: string; minWidth?: number }) {
@@ -139,6 +191,10 @@ export function ListTable({
         className,
       )}
       style={{ "--rl-list-min-w": `${minWidth}px`, ...style } as React.CSSProperties}
+      onPointerOver={(e) => {
+        revealClippedText(e);
+        onPointerOver?.(e);
+      }}
       {...props}
     >
       {parts.filter(isHeader)}

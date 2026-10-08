@@ -12,7 +12,13 @@ import {
   type NavUserMenu,
 } from "./nav-sidebar";
 import en from "@/lib/i18n/locales/en.json";
-import { atMobile, atTablet, expectNoHorizontalOverflow } from "@/lib/story-viewport";
+import {
+  atMobile,
+  atTablet,
+  expectInFrame,
+  expectNoHorizontalOverflow,
+  expectNotTruncated,
+} from "@/lib/story-viewport";
 
 const meta = {
   title: "Navigation/NavSidebar",
@@ -395,9 +401,10 @@ export const ExperimentalItemsCollapsed: Story = {
   },
 };
 
-// the narrowest the rail can be dragged is where a badge would crowd a label
-// if it were allowed to: the marker holds its size and the label truncates,
-// which is the same bargain every long entry already makes at this width
+// the narrowest the rail can be dragged is where a badge crowds a label. The
+// label does not give way (#2812): the marker drops under the name, and the
+// name is the whole of itself — which is the opposite of the bargain every
+// plain long entry makes, and the one an entry's own name is owed
 export const ExperimentalItemsNarrow: Story = {
   args: { ...resizable("experimental"), groups: mixedGroups, activeKey: "playground" },
   play: async ({ canvasElement }) => {
@@ -407,10 +414,62 @@ export const ExperimentalItemsNarrow: Story = {
     handle.focus();
     await userEvent.keyboard("{Home}");
     await expectWidth(nav, NAV_MIN_WIDTH);
-    await expect(
-      canvas.getByRole("button", { name: `Tool groups ${en.shell.experimental}` }),
-    ).toBeVisible();
+    const marked = canvas.getByRole("button", { name: `Tool groups ${en.shell.experimental}` });
+    await expect(marked).toBeVisible();
+    await expectNotTruncated(within(marked).getByText("Tool groups"));
+    await expectInFrame(within(marked).getByText(en.shell.experimental), marked);
     await expectNoHorizontalOverflow();
+  },
+};
+
+// the name is the entry, so a name longer than the rail wraps rather than
+// being clipped behind its marker, and the marker stays whole beneath it
+export const ExperimentalItemWithALongNameWraps: Story = {
+  args: {
+    ...resizable("experimental-long"),
+    activeKey: "playground",
+    groups: [
+      {
+        items: [
+          { key: "playground", label: "Playground", icon: <Play /> },
+          {
+            key: "tool-groups",
+            label: "Organisation-wide tool group manifests and their access boundaries",
+            icon: <Boxes />,
+            experimental: true,
+            experimentalNote: EXPERIMENTAL_NOTE,
+          },
+        ],
+      },
+    ],
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const marked = await canvas.findByRole("button", {
+      name: /Organisation-wide tool group manifests/,
+    });
+    const name = within(marked).getByText(/^Organisation-wide/);
+    await expectNotTruncated(name);
+    const line = parseFloat(getComputedStyle(name).lineHeight);
+    await expect(name.getBoundingClientRect().height).toBeGreaterThan(line * 1.5);
+    await expectInFrame(within(marked).getByText(en.shell.experimental), marked);
+    await expectNoHorizontalOverflow();
+  },
+};
+
+// the marker sits beside the name while the two fit one line, as it always did,
+// and under it when they do not; either way the entry keeps one accessible name
+export const ExperimentalMarkerBesideTheNameWhenItFits: Story = {
+  args: { groups: mixedGroups, activeKey: "playground" },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const marked = canvas.getByRole("button", { name: `Tool groups ${en.shell.experimental}` });
+    const name = within(marked).getByText("Tool groups").getBoundingClientRect();
+    const badge = within(marked).getByText(en.shell.experimental).getBoundingClientRect();
+    await expect(badge.left).toBeGreaterThanOrEqual(name.right);
+    await expect(
+      Math.abs(badge.top + badge.height / 2 - (name.top + name.height / 2)),
+    ).toBeLessThan(name.height);
   },
 };
 

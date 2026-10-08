@@ -61,6 +61,16 @@ export function Sheet({ open, onOpenChange, onDismiss, children }: SheetProps) {
 
 const TitleIdContext = React.createContext<string | undefined>(undefined);
 
+/**
+ * The sheet's title and the line under it.
+ *
+ * The line under the title says what the sheet is for, often a sentence ("the
+ * plaintext key is shown once, right after creation — copy it then"), and the
+ * panel is 580px at most, so it wraps. It used to be clipped to one line with an
+ * ellipsis, which at a 1024px window cut the very warning the line exists to
+ * give (#2812). Nothing here truncates: a long unbroken value (a model id, a
+ * URL) breaks inside the line instead of widening the panel.
+ */
 export function SheetHeader({
   title,
   subtitle,
@@ -81,7 +91,7 @@ export function SheetHeader({
         <h2 id={titleId} className="text-lg font-semibold tracking-tight">
           {title}
         </h2>
-        <p className="mt-0.5 truncate font-mono text-xs text-muted-foreground">{subtitle}</p>
+        <p className="mt-0.5 break-words font-mono text-xs text-muted-foreground">{subtitle}</p>
       </div>
       <button
         type="button"

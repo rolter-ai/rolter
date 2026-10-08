@@ -45,7 +45,13 @@ import type { Invitation, MembershipRow, UpdateUserInput, UserRow } from "@/lib/
 import { AuthProvider } from "@/lib/auth";
 import en from "@/lib/i18n/locales/en.json";
 import ru from "@/lib/i18n/locales/ru.json";
-import { atMobile, expectNoHorizontalOverflow } from "@/lib/story-viewport";
+import {
+  atMobile,
+  atSplit,
+  expectInViewport,
+  expectNoHorizontalOverflow,
+  expectNotTruncated,
+} from "@/lib/story-viewport";
 import { UxScreenProvider } from "@/lib/ux-react";
 
 const USERS: UserRow[] = [
@@ -2914,3 +2920,30 @@ export const InvitingAPendingAddressSaysItReplacesTheOldLink: Story = {
     ).toBeVisible();
   },
 };
+
+/**
+ * The invite sheet explains its two ways in, and the explanation is a sentence
+ * the panel has to hold whole: at a 1024px window it was cut at "…or create the
+ * account with a password y…" (#2812). It wraps, in both locales.
+ */
+function inviteSubtitleIsWhole(locale: "en" | "ru") {
+  const cat = locale === "ru" ? ru : en;
+  return {
+    ...atSplit,
+    globals: { ...atSplit.globals, locale },
+    render: () => (
+      <Harness fetchStub={loaded}>
+        <Users />
+      </Harness>
+    ),
+    play: async ({ canvasElement }: { canvasElement: HTMLElement }) => {
+      await clickWhenEnabled(canvasElement, new RegExp(cat.pages.users.inviteAction, "i"));
+      const subtitle = await within(sheet()).findByText(cat.pages.users.inviteSubtitle);
+      await expectNotTruncated(subtitle);
+      await expectInViewport(subtitle);
+    },
+  };
+}
+
+export const InviteSubtitleIsWholeAt1024: Story = inviteSubtitleIsWhole("en");
+export const InviteSubtitleIsWholeAt1024InRussian: Story = inviteSubtitleIsWhole("ru");

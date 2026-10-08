@@ -39,9 +39,11 @@ import en from "@/lib/i18n/locales/en.json";
 import ru from "@/lib/i18n/locales/ru.json";
 import {
   atMobile,
+  atSplit,
   atTablet,
   expectInViewport,
   expectNoHorizontalOverflow,
+  expectNotTruncated,
   phoneFits,
 } from "@/lib/story-viewport";
 import { UxScreenProvider } from "@/lib/ux-react";
@@ -995,3 +997,31 @@ const keysFit = phoneFits({
 export const MobileInRussian: Story = keysFit("mobile", "ru");
 export const SmallPhone: Story = keysFit("small", "en");
 export const SmallPhoneInRussian: Story = keysFit("small", "ru");
+
+/**
+ * The create sheet's subtitle is the warning that the key is shown once, and at
+ * a 1024px window it was cut to "…copy" (#2812). It wraps, in both locales, so
+ * the sentence is on screen to its last word.
+ */
+function createSubtitleIsWhole(locale: "en" | "ru") {
+  const cat = locale === "ru" ? ru : en;
+  return {
+    ...atSplit,
+    globals: { ...atSplit.globals, locale },
+    render: () => (
+      <Harness fetchStub={withKeys(KEYS)}>
+        <Keys />
+      </Harness>
+    ),
+    play: async ({ canvasElement }: { canvasElement: HTMLElement }) => {
+      await clickWhenEnabled(canvasElement, new RegExp(cat.pages.virtualKeys.add, "i"));
+      const dialog = within(sheet());
+      const subtitle = await dialog.findByText(cat.pages.virtualKeys.createSubtitle);
+      await expectNotTruncated(subtitle);
+      await expectInViewport(subtitle);
+    },
+  };
+}
+
+export const CreateSubtitleIsWholeAt1024: Story = createSubtitleIsWhole("en");
+export const CreateSubtitleIsWholeAt1024InRussian: Story = createSubtitleIsWhole("ru");
