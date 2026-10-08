@@ -40,10 +40,52 @@ type FetchStub = (input: RequestInfo | URL, init?: RequestInit) => Promise<Respo
 
 /// Answer the probe with a fixed outcome; everything else is inert. The sheet
 /// only calls the network when the operator presses the button.
+// what the control plane answers for the kinds these stories open: the endpoint
+// each is sent to and the header its key travels in, as the forwarder has them
+const CHAT = "/v1/chat/completions";
 const KINDS = [
-  { kind: "openai", base_includes_v1: false },
-  { kind: "openai_compatible", base_includes_v1: false },
-  { kind: "mistral", base_includes_v1: true },
+  {
+    kind: "openai",
+    base_includes_v1: false,
+    request: "chat",
+    request_path: CHAT,
+    auth_header: "authorization",
+  },
+  {
+    kind: "openai_compatible",
+    base_includes_v1: false,
+    request: "chat",
+    request_path: CHAT,
+    auth_header: "authorization",
+  },
+  {
+    kind: "anthropic",
+    base_includes_v1: false,
+    request: "chat",
+    request_path: "/v1/messages",
+    auth_header: "x-api-key",
+  },
+  {
+    kind: "tei",
+    base_includes_v1: false,
+    request: "embeddings",
+    request_path: "/v1/embeddings",
+    auth_header: "authorization",
+  },
+  {
+    kind: "gemini_native",
+    base_includes_v1: false,
+    request: "chat",
+    request_path: "/models/{model}:generateContent",
+    auth_header: "x-goog-api-key",
+  },
+  {
+    kind: "mistral",
+    base_includes_v1: true,
+    request: "chat",
+    request_path: CHAT,
+    auth_header: "authorization",
+  },
 ];
 
 function stub(test: () => Promise<Response>): FetchStub {
@@ -678,5 +720,265 @@ export const EgressProxyHintSaysWhatItTakes: Story = {
     await expect(proxy).toHaveAccessibleDescription(/Only this provider's upstream calls/);
     await expect(proxy).toHaveAccessibleDescription(/http, https, socks5 or socks5h/);
     await expect(proxy).toHaveAccessibleDescription(/\$\{ENV_VAR\}/);
+  },
+};
+
+// ------------------------------------------------ the sheet follows the kind (#2811)
+
+/** a saved provider of `kind`, so the sheet opens on it with the base filled in */
+const ofKind = (kind: string, api_base: string): ProviderRow => ({
+  ...PROVIDER,
+  name: `${kind}-primary`,
+  slug: `${kind}-primary`,
+  kind,
+  api_base,
+});
+
+const previewOf = (
+  kind: string,
+  apiBase: string,
+  expected: { url: string; label: string; keyHint: string; kindName: string },
+): Story => ({
+  render: () => (
+    <Harness fetchStub={stub(async () => json(result()))} provider={ofKind(kind, apiBase)} />
+  ),
+  play: async () => {
+    const canvas = screen();
+    // the address is the kind's own endpoint, from the control plane's table
+    const url = await canvas.findByText(expected.url);
+    await expect(url).toBeVisible();
+    await expect(url.parentElement).toHaveTextContent(expected.label);
+    await expect(canvas.getByRole("combobox", { name: "Kind" })).toHaveValue(expected.kindName);
+    // and the key hint says how this kind's API reads the key
+    await expect(canvas.getByLabelText(/^Provider key \(optional\)/)).toHaveAccessibleDescription(
+      new RegExp(expected.keyHint),
+    );
+    await expect(canvas.queryByText(/remove the trailing/i)).not.toBeInTheDocument();
+  },
+});
+
+/** an OpenAI-compatible server: chat completions, key as a bearer token */
+export const PreviewForAnOpenaiCompatibleServer: Story = previewOf(
+  "openai_compatible",
+  "http://vllm.internal:8000",
+  {
+    url: "http://vllm.internal:8000/v1/chat/completions",
+    label: "Chat requests resolve to",
+    keyHint: "Sent upstream as a bearer token",
+    kindName: "OpenAI-compatible",
+  },
+);
+
+/** Anthropic is called at /v1/messages with x-api-key, which the sheet used to get wrong on both counts */
+export const PreviewForAnthropic: Story = previewOf("anthropic", "https://api.anthropic.com", {
+  url: "https://api.anthropic.com/v1/messages",
+  label: "Chat requests resolve to",
+  keyHint: "Sent upstream in the x-api-key header",
+  kindName: "Anthropic",
+});
+
+/** a text-embeddings server is asked for embeddings, not a chat completion it would 404 */
+export const PreviewForTextEmbeddingsInference: Story = previewOf("tei", "http://tei.internal:80", {
+  url: "http://tei.internal:80/v1/embeddings",
+  label: "Embedding requests resolve to",
+  keyHint: "Sent upstream as a bearer token",
+  kindName: "Text Embeddings Inference",
+});
+
+/** native gemini carries the model in the path, shown as the placeholder it is */
+export const PreviewForNativeGemini: Story = previewOf(
+  "gemini_native",
+  "https://generativelanguage.googleapis.com/v1beta",
+  {
+    url: "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+    label: "Chat requests resolve to",
+    keyHint: "Sent upstream in the x-goog-api-key header",
+    kindName: "Google Gemini (native)",
+  },
+);
+
+/**
+ * Picking another kind in the create sheet moves the address, the label and the
+ * key hint with it, and the picker lists display names with a line each.
+ */
+export const KindPickerFollowsThroughToThePreview: Story = {
+  render: () => <Harness mode="add" fetchStub={createStub()} />,
+  play: async () => {
+    const canvas = screen();
+    await userEvent.type(await canvas.findByLabelText("API base"), "https://gw.example.com");
+    const kind = canvas.getByRole("combobox", { name: "Kind" });
+    // the default kind is the first the control plane lists
+    await expect(
+      await canvas.findByText("https://gw.example.com/v1/chat/completions"),
+    ).toBeVisible();
+
+    await userEvent.click(kind);
+    const listbox = await canvas.findByRole("listbox");
+    // names, not ids, each with what it is for; the id is kept for the filter
+    const options = within(listbox).getAllByRole("option");
+    await expect(options.map((o) => o.textContent)).toContain(
+      "OpenAI-compatiblevLLM, TGI, LM Studio or any server that speaks the OpenAI API",
+    );
+    await expect(within(listbox).getByRole("option", { name: /^Anthropic/ })).toBeVisible();
+    await expect(within(listbox).queryByText("openai_compatible")).toBeNull();
+
+    await userEvent.click(within(listbox).getByRole("option", { name: /^Anthropic/ }));
+    await waitFor(() => expect(kind).toHaveValue("Anthropic"));
+    await expect(await canvas.findByText("https://gw.example.com/v1/messages")).toBeVisible();
+    // the stored id and the one-line description sit under the picker
+    await expect(kind).toHaveAccessibleDescription(/Anthropic's Messages API for Claude models/);
+    await expect(kind).toHaveAccessibleDescription(/anthropic/);
+    await expect(canvas.getByLabelText(/^Provider key \(optional\)/)).toHaveAccessibleDescription(
+      /Sent upstream in the x-api-key header/,
+    );
+
+    await userEvent.click(kind);
+    await userEvent.click(
+      await within(await canvas.findByRole("listbox")).findByRole("option", {
+        name: /^Text Embeddings Inference/,
+      }),
+    );
+    await expect(await canvas.findByText("https://gw.example.com/v1/embeddings")).toBeVisible();
+    await expect(canvas.getByText(/Embedding requests resolve to/)).toBeVisible();
+    await expect(canvas.queryByText(/Chat requests resolve to/)).toBeNull();
+  },
+};
+
+/** the filter matches the display name, the description and the stored id alike */
+export const KindPickerFiltersByNameDescriptionAndId: Story = {
+  render: () => <Harness mode="add" fetchStub={createStub()} />,
+  play: async () => {
+    const canvas = screen();
+    const kind = await canvas.findByRole("combobox", { name: "Kind" });
+    await userEvent.click(kind);
+    await userEvent.keyboard("claude");
+    const listbox = await canvas.findByRole("listbox");
+    await waitFor(() => expect(within(listbox).getAllByRole("option")).toHaveLength(1));
+    await expect(within(listbox).getByRole("option")).toHaveTextContent("Anthropic");
+    await userEvent.clear(kind);
+    await userEvent.keyboard("openai_compat");
+    await waitFor(() => expect(within(listbox).getAllByRole("option")).toHaveLength(1));
+    await expect(within(listbox).getByRole("option")).toHaveTextContent("OpenAI-compatible");
+  },
+};
+
+/** the names and descriptions are in the Russian catalog too */
+export const KindNamesAreTranslated: Story = {
+  globals: { locale: "ru" },
+  render: () => (
+    <Harness
+      fetchStub={stub(async () => json(result()))}
+      provider={ofKind("openai_compatible", "http://vllm.internal:8000")}
+    />
+  ),
+  play: async () => {
+    const canvas = screen();
+    const kind = await canvas.findByRole("combobox", { name: ru.providerSheet.fields.kind });
+    await expect(kind).toHaveValue("OpenAI-совместимый");
+    await expect(kind).toHaveAccessibleDescription(/vLLM, TGI, LM Studio/);
+    await expect(
+      await canvas.findByText("http://vllm.internal:8000/v1/chat/completions"),
+    ).toBeVisible();
+    await expect(canvas.getByText(ru.providerSheet.apiBase.resolvesTo.chat)).toBeVisible();
+  },
+};
+
+/**
+ * The slug placeholder is what the control plane will derive from the name, so
+ * the hint that says "derived from the name" shows the result instead of a
+ * fixed example.
+ */
+export const SlugPlaceholderFollowsTheName: Story = {
+  render: () => <Harness mode="add" fetchStub={createStub()} />,
+  play: async () => {
+    const canvas = screen();
+    const slug = await canvas.findByLabelText("Slug (optional)");
+    await expect(slug).toHaveAttribute("placeholder", "openai-primary");
+
+    await userEvent.type(canvas.getByLabelText("Name"), "My vLLM Fleet (EU)");
+    await expect(slug).toHaveAttribute("placeholder", "my-vllm-fleet-eu");
+    // a placeholder is a preview, not a value: the field stays empty
+    await expect(slug).toHaveValue("");
+
+    // a name with nothing to derive from falls back to the example
+    await userEvent.clear(canvas.getByLabelText("Name"));
+    await userEvent.type(canvas.getByLabelText("Name"), "非");
+    await expect(slug).toHaveAttribute("placeholder", "openai-primary");
+
+    // typing a slug of one's own wins, and the placeholder is out of the way
+    await userEvent.type(slug, "eu-fleet");
+    await expect(slug).toHaveValue("eu-fleet");
+  },
+};
+
+/**
+ * Whose environment: the variable is read by the gateway for every request and
+ * by the control plane for Test connection, and the hint says both.
+ */
+export const EnvVarHintNamesBothProcesses: Story = {
+  render: () => <Harness mode="add" fetchStub={createStub()} />,
+  play: async () => {
+    const env = await screen().findByLabelText("Provider key env var (optional)");
+    await expect(env).toHaveAccessibleDescription(/gateway's environment/);
+    await expect(env).toHaveAccessibleDescription(/control plane's/);
+    await expect(env).toHaveAccessibleDescription(/Test connection runs/);
+  },
+};
+
+/** the test failure for a variable the control plane does not have says so and which process to fix */
+export const UnsetEnvVarFailureNamesTheProcess: Story = {
+  render: () => (
+    <Harness
+      fetchStub={stub(async () =>
+        json(
+          result({
+            reachable: false,
+            status: 401,
+            models_found: null,
+            credential: "env (unset)",
+            error:
+              "401: the upstream rejected the request, and the key's environment variable OPENAI_API_KEY is not set in the control plane's environment (resolved from: env (unset)). This test runs in the control plane, so set OPENAI_API_KEY there; the gateway reads it from its own environment, so set it there too.",
+          }),
+        ),
+      )}
+    />
+  ),
+  play: async () => {
+    const canvas = screen();
+    await press();
+    await waitFor(() =>
+      expect(canvas.getByText(/not set in the control plane's environment/)).toBeVisible(),
+    );
+    await expect(canvas.getByText(/the gateway reads it from its own environment/)).toBeVisible();
+  },
+};
+
+/**
+ * Until the control plane has said which endpoint the kind is sent to there is
+ * no address to preview, and the sheet does not guess one: a chat-completions
+ * guess is the wrong address for Anthropic and TEI. The picker still lists the
+ * kinds from the bundled list.
+ */
+export const NoPreviewUntilTheKindIsKnown: Story = {
+  render: () => (
+    <Harness
+      mode="add"
+      fetchStub={async (input) => {
+        if (String(input).includes("/provider-kinds")) return json({ error: "down" }, 500);
+        return json({});
+      }}
+    />
+  ),
+  play: async () => {
+    const canvas = screen();
+    await userEvent.type(await canvas.findByLabelText("API base"), "https://gw.example.com");
+    // the picker works from the bundled list, with display names
+    await userEvent.click(canvas.getByRole("combobox", { name: "Kind" }));
+    await expect(
+      await within(await canvas.findByRole("listbox")).findByRole("option", { name: /^Anthropic/ }),
+    ).toBeVisible();
+    await userEvent.keyboard("{Escape}");
+    await expect(canvas.queryByText(/requests resolve to/)).toBeNull();
+    await expect(canvas.queryByText(/chat\/completions/)).toBeNull();
   },
 };

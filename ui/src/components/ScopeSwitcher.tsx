@@ -40,6 +40,7 @@ import {
   updateProjectSettings,
 } from "@/lib/api";
 import { useCreateProjectOpener, useScope } from "@/lib/scope";
+import { slugify } from "@/lib/slug";
 import { errorDetail, useToast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 
@@ -634,14 +635,6 @@ function ProjectSettingsDialog({
       </DialogFooter>
     </Dialog>
   );
-}
-
-function slugify(name: string): string {
-  return name
-    .toLowerCase()
-    .trim()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/(^-|-$)/g, "");
 }
 
 function CreateScopeDialog({

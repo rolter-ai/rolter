@@ -40,6 +40,7 @@ import { useFormat } from "@/lib/i18n/format";
 import { isAwaiting, type ReadState } from "@/lib/read-state";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useScope } from "@/lib/scope";
+import { slugify } from "@/lib/slug";
 import {
   isTimeWindow,
   useTimeWindow,
@@ -102,14 +103,6 @@ const UNATTRIBUTED_ID = "";
 const SLUG = /^[a-z0-9][a-z0-9-]{0,62}$/;
 
 const UNASSIGNED = "__none__";
-
-function slugify(name: string): string {
-  return name
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 63);
-}
 
 // a retired unit or customer keeps its history and stops being offered for new
 // attribution; deleting one removes it outright

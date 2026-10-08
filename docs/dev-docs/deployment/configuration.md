@@ -20,7 +20,7 @@ The gateway boots from a TOML file (`--config`, default `rolter.toml`); see [`ro
 - `kind` (`openai` | `anthropic` | `openai_compatible` | `ollama` | `ollama_cloud` | `llama_cpp` | `openrouter` | `tei` | `azure_openai` | `bedrock` | `vertex` | `gemini` | `gemini_native` | `gemini_interactions` | `mistral` | `groq` | `xai` | `meta_llama_api` | `cohere` | `perplexity` | `together` | `fireworks` | `databricks` | `aleph_alpha` | `nebius` | `ovhcloud` | `scaleway` | `deepseek` | `qwen` | `zhipu` | `kimi` | `ernie` | `doubao` | `hunyuan` | `yi` | `minimax` | `baichuan` | `gigachat` | `yandex_gpt` | `cloud_ru` | `mts_ai` | `naver` | `upstage` | `rinna` | `rakuten` | `sarvam` | `krutrim` | `falcon`)
 - `api_base` (string) — base URL, no trailing slash
 - `api_key` (string, optional) — prefer `api_key_env`
-- `api_key_env` (string, optional) — environment variable to read the key from
+- `api_key_env` (string, optional) — environment variable to read the key from. It is read from the environment of each process that needs the key: the gateway reads it for every request, and the control plane reads it for **Test connection**, so a deployment that runs them apart sets it in both (#2811)
 - `role_profile` (`openai` | `system_only` | `anthropic`, optional) — explicit instruction-role semantics. The default is `openai` for `kind = "openai"`, `anthropic` for `kind = "anthropic"`, and conservative `system_only` for every OpenAI-compatible kind. `system_only` converts leading `developer` messages to `system` in place; it rejects a `system` or `developer` message after a user/assistant/tool turn with `role_capability_unsupported` rather than silently changing it.
 - `model_role_profiles` (table, optional) — upstream-model-specific `role_profile` overrides. Use this only for a custom template whose developer-role support is explicitly known; rolter never probes a vLLM template at runtime.
 
@@ -44,6 +44,46 @@ sent every key as a bearer token, Anthropic's API ignores one, and a valid key
 read as rejected. A new kind that authenticates differently from a bearer token
 is added to `auth_header` and to the test beside it that names each non-bearer
 kind.
+
+#### Where a kind's requests are sent, and how the dashboard learns it
+
+Which upstream path a request reaches depends on the kind, and the provider
+sheet previews the resulting address as the operator types an `api_base`. Both
+read one table in `rolter-core` (`crates/rolter-core/src/upstream.rs`), so the
+preview cannot disagree with the forwarder:
+
+| Kind                  | Request the sheet previews | Upstream path (before the `/v1` rule) |
+| --------------------- | -------------------------- | ------------------------------------- |
+| `anthropic`           | a chat completion          | `/v1/messages`                        |
+| `tei`                 | an embedding               | `/v1/embeddings`                      |
+| `gemini_native`       | a chat completion          | `/models/{model}:generateContent`     |
+| `gemini_interactions` | a chat completion          | `/interactions`                       |
+| every other kind      | a chat completion          | `/v1/chat/completions`                |
+
+`ProviderKind::primary_upstream_path` names the path, and
+`TranslationPlan::upstream_path` in `rolter-proxy` returns the same constants
+rather than literals of its own. The `/v1` rule (`base_includes_v1`) then
+applies to it exactly as it does to a forwarded request
+(`ProviderKind::resolve_upstream_url`). A proxy test,
+`the_previewed_address_is_the_one_the_forwarder_builds`, walks
+`ProviderKind::ALL` and fails when the forwarder builds another address than
+`ProviderKind::primary_upstream_url` for any kind, so a new kind that is routed
+differently has to be added to `primary_upstream_path` in the same change.
+
+The dashboard learns the table from `GET /api/v1/provider-kinds`, one entry per
+kind:
+
+| Field              | Meaning                                                                     |
+| ------------------ | --------------------------------------------------------------------------- |
+| `kind`             | the wire value stored in `providers.kind`                                   |
+| `base_includes_v1` | whether `api_base` must already end in the version prefix                   |
+| `request`          | `chat` or `embeddings`, the request the preview is for                      |
+| `request_path`     | the upstream path above; `{model}` stands for the upstream model name       |
+| `auth_header`      | the lowercase header the key travels in (`authorization` is a bearer token) |
+
+The kind's display name and one-line description are dashboard copy, not
+served: `providerSheet.kinds.<kind>.name` and `.description` in every catalog.
+A kind the deployment gains shows its id until a release names it.
 
 #### Role-capability profiles
 

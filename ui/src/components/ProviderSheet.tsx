@@ -20,6 +20,7 @@ import {
   SheetFooter,
   SheetHeader,
 } from "@/components/ui/sheet";
+import { slugify } from "@/lib/slug";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useFormTelemetry } from "@/lib/ux-react";
 import {
@@ -224,14 +225,26 @@ export function ProviderSheet({
     const known = kinds.data?.length ? kinds.data.map((k) => k.kind) : [...PROVIDER_KINDS];
     return known.includes(draft.kind) || !draft.kind ? known : [draft.kind, ...known];
   }, [kinds.data, draft.kind]);
+  const kindInfo = kinds.data?.find((k) => k.kind === draft.kind);
   // default to the openai-shaped rule: it is the default kind, and it is the
   // one the old static ".../v1" placeholder got wrong
-  const baseIncludesV1 = kinds.data?.find((k) => k.kind === draft.kind)?.base_includes_v1 ?? false;
-  const resolvedUrl = resolveUpstreamUrl(draft.apiBase, baseIncludesV1);
+  const baseIncludesV1 = kindInfo?.base_includes_v1 ?? false;
+  // the preview names the endpoint the kind is sent to, which the control plane
+  // answers from the forwarder's own table. until it has answered there is no
+  // address to show, rather than a chat-completions guess that is wrong for
+  // anthropic, tei and both native gemini kinds (#2811)
+  const resolvedUrl = kindInfo
+    ? resolveUpstreamUrl(draft.apiBase, baseIncludesV1, kindInfo.request_path)
+    : "";
   const baseDoublesV1 = apiBaseDoublesV1(draft.apiBase, baseIncludesV1);
 
   const dirty = initialRef.current !== "" && JSON.stringify(draft) !== initialRef.current;
   const { t } = useTranslation();
+  // a kind's display name and one-line description, with the stored id as the
+  // fallback for a kind the deployment gained and this catalog has not named
+  const kindName = (kind: string) => t(`providerSheet.kinds.${kind}.name`, { defaultValue: kind });
+  const kindDescription = (kind: string) =>
+    t(`providerSheet.kinds.${kind}.description`, { defaultValue: "" });
 
   // edit mode uses the backend's tri-state semantics: omit a field to leave it
   // unchanged, send "" to clear it, send a value to set/rotate it. api_key is
@@ -392,7 +405,9 @@ export function ProviderSheet({
             <Input
               value={draft.slug}
               onChange={(e) => set({ slug: e.target.value })}
-              placeholder="openai-primary"
+              // what the control plane will derive from the name, so the hint
+              // that says "derived from the name" shows the result
+              placeholder={slugify(draft.name) || "openai-primary"}
               className="font-mono"
             />
           </Field>
@@ -432,11 +447,23 @@ export function ProviderSheet({
           mayWiden={mayWiden}
         />
 
-        <Field label={t("providerSheet.fields.kind")}>
+        <Field
+          label={t("providerSheet.fields.kind")}
+          hint={
+            <>
+              {kindDescription(draft.kind) && <>{kindDescription(draft.kind)} · </>}
+              <span className="font-mono">{draft.kind}</span>
+            </>
+          }
+        >
           <Combobox
             value={draft.kind}
             onChange={(kind) => set({ kind })}
-            options={kindOptions.map((k) => ({ value: k, label: k }))}
+            options={kindOptions.map((k) => ({
+              value: k,
+              label: kindName(k),
+              description: kindDescription(k) || undefined,
+            }))}
           />
         </Field>
 
@@ -469,7 +496,11 @@ export function ProviderSheet({
                   : "mt-1.5 text-xs text-muted-foreground"
               }
             >
-              {t("providerSheet.apiBase.resolvesTo")}{" "}
+              {t(
+                kindInfo?.request === "embeddings"
+                  ? "providerSheet.apiBase.resolvesTo.embeddings"
+                  : "providerSheet.apiBase.resolvesTo.chat",
+              )}{" "}
               <span className="font-mono break-all">{resolvedUrl}</span>
             </p>
           )}
@@ -482,6 +513,12 @@ export function ProviderSheet({
               {editing
                 ? t("providerSheet.fields.providerKeyHintEdit")
                 : t("providerSheet.fields.providerKeyHintAdd")}{" "}
+              {/* how this kind's API reads the key, from the same function the
+                  gateway authenticates with, so a probe and a request agree */}
+              {kindInfo &&
+                (kindInfo.auth_header === "authorization"
+                  ? t("providerSheet.fields.keySentBearer")
+                  : t("providerSheet.fields.keySentHeader", { header: kindInfo.auth_header }))}{" "}
               {/* the hint stands alone; the link only adds depth, and is absent
                   on a deployment that configured no documentation host (#1164) */}
               <DocsLink page="whichKey" label={t("docs.link.whichKey")} />

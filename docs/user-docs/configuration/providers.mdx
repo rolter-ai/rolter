@@ -8,7 +8,9 @@ A provider is one upstream endpoint plus the credential Rolter uses to reach it.
 
 Add them from **Providers** in the dashboard, or through the management API. Every column of the list sorts: click a heading for ascending, again for descending, and a third time to go back to the order the control plane sent.
 
-The name is fixed once the provider is created, and the form says so. The slug, which is the `provider-slug/model` address, is fixed too.
+The name is fixed once the provider is created, and the form says so. The slug, which is the `provider-slug/model` address, is fixed too. Leave the slug blank and its placeholder shows the one the name will give.
+
+The **Kind** picker lists each provider by display name with a line on what it is (_OpenAI-compatible: vLLM, TGI, LM Studio or any server that speaks the OpenAI API_); the stored id sits under it. Below **API base** the form previews the address requests go to, and that depends on the kind: `/v1/messages` for Anthropic, an embeddings endpoint for Hugging Face TEI, `/v1/chat/completions` for most of the rest. The hint under **Provider key** says which header the key is sent in.
 
 ---
 
@@ -17,9 +19,11 @@ The name is fixed once the provider is created, and the form says so. The slug, 
 There are two places, and they resolve in this order:
 
 1. **A stored key** — typed into the dashboard, sealed with AES-256-GCM under `ROLTER_KEK` before it reaches the database, and never returned by the API again.
-2. **An environment variable** — `api_key_env` names a variable the process reads at snapshot time. The value never enters the database at all.
+2. **An environment variable** — `api_key_env` names a variable that is read from the environment of each process that needs the key. The value never enters the database at all.
 
 A stored key wins when both are set.
+
+An environment variable has to be set in **both** processes. The gateway reads it for every request it forwards, and the control plane reads it when you press **Test connection**, so a gateway that has the variable and a control plane that does not passes traffic and fails its test with `credential: env (unset)`. The dashboard's field hint says the same.
 
 <Warning>
 Storing a key requires `ROLTER_KEK` on the control plane. Gateways do not need it: the control plane unseals keys when it builds the snapshot, and gateways receive them over the token-guarded `/internal/snapshot`, so keep the KEK off them. With it unset, the control plane still starts and the provider row still saves — the key simply cannot be sealed or read back. Run `rolter check` before boot; it fails on exactly this.
@@ -80,7 +84,17 @@ The list is sorted, has no duplicates and stops at 2000 ids. They are the ids th
 | `models_found` | how many models the upstream listed. A provider can be reachable and still serve nothing                  |
 | `status`       | absent when the request never completed at all (DNS, TLS, connection refused, timeout)                    |
 
-A `401` names which credential source was used, so a rejected key points at the right place to fix it.
+A `401` names which credential source was used, so a rejected key points at the right place to fix it. When that source is `env (unset)`, the message names the variable and the process that is missing it:
+
+```json
+{
+  "reachable": false,
+  "credential": "env (unset)",
+  "error": "401: the upstream rejected the request, and the key's environment variable OPENAI_API_KEY is not set in the control plane's environment (resolved from: env (unset)). This test runs in the control plane, so set OPENAI_API_KEY there; the gateway reads it from its own environment, so set it there too."
+}
+```
+
+The test says where it ran. It cannot see the gateway's environment, so a green test does not prove the gateway has the variable.
 
 ### When something answers, but not with a model list
 

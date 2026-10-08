@@ -11,7 +11,7 @@ use std::task::{Context, Poll};
 use bytes::Bytes;
 use futures_util::Stream;
 use rolter_core::{
-    CompatibilityConfig, Error, ModelDefaultsConfig, ProviderKind, Result, RoleProfile,
+    upstream, CompatibilityConfig, Error, ModelDefaultsConfig, ProviderKind, Result, RoleProfile,
 };
 use serde_json::{json, Map, Value};
 
@@ -266,16 +266,18 @@ impl TranslationPlan {
     }
 
     pub fn upstream_path(self, original: &str) -> &str {
+        // the literals live in rolter-core, which the dashboard previews them
+        // from, so what the sheet shows and what is called are one string
         match self.upstream {
-            Protocol::OpenAiChat => "/v1/chat/completions",
-            Protocol::OpenAiResponses => "/v1/responses",
-            Protocol::AnthropicMessages => "/v1/messages",
+            Protocol::OpenAiChat => upstream::CHAT_COMPLETIONS_PATH,
+            Protocol::OpenAiResponses => upstream::RESPONSES_PATH,
+            Protocol::AnthropicMessages => upstream::ANTHROPIC_MESSAGES_PATH,
             // gemini builds its URL from the model + method in the forwarder;
             // the fixed path is unused for this upstream
             Protocol::GeminiGenerate => original,
             // interactions is a single model-less endpoint; the model travels
             // in the body, so the gateway route path is replaced outright
-            Protocol::GeminiInteractions => "/interactions",
+            Protocol::GeminiInteractions => upstream::GEMINI_INTERACTIONS_PATH,
             Protocol::Passthrough => original,
         }
     }

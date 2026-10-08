@@ -2032,12 +2032,28 @@ struct ProviderKindInfo {
     /// for the openai-shaped ones — including the default — where it produces
     /// `/v1/v1/chat/completions` (#947).
     base_includes_v1: bool,
+    /// the request the kind is chiefly called for: a chat completion, or an
+    /// embedding for a text-embeddings server
+    request: rolter_core::upstream::RequestKind,
+    /// the upstream path that request is sent to, before the `/v1` rule above is
+    /// applied to it; `{model}` stands for the upstream model name where the
+    /// path carries one (native Gemini)
+    ///
+    /// The sheet's "requests resolve to" preview used to be a constant
+    /// `/v1/chat/completions`, wrong for Anthropic, TEI and both native Gemini
+    /// kinds. This is the path the forwarder itself uses (#2811).
+    request_path: &'static str,
+    /// the lowercase header the provider key travels in; `authorization` means
+    /// a bearer token
+    auth_header: &'static str,
 }
 
-/// The per-kind `api_base` rule, so the dashboard states it instead of guessing.
+/// The per-kind facts the dashboard states instead of guessing: the `api_base`
+/// rule, the endpoint requests reach and the header the key is sent in.
 ///
 /// Derived from `ProviderKind::ALL` rather than re-listed, so a kind added to
-/// core shows up here without a second edit.
+/// core shows up here without a second edit, and from the same functions the
+/// forwarder and the connection test call, so it cannot disagree with them.
 async fn get_provider_kinds(_: session_guard::AnySession) -> Json<Vec<ProviderKindInfo>> {
     Json(
         rolter_core::ProviderKind::ALL
@@ -2049,6 +2065,9 @@ async fn get_provider_kinds(_: session_guard::AnySession) -> Json<Vec<ProviderKi
                     .and_then(|v| v.as_str().map(str::to_string))
                     .unwrap_or_default(),
                 base_includes_v1: kind.base_includes_v1(),
+                request: kind.primary_request(),
+                request_path: kind.primary_upstream_path(),
+                auth_header: kind.auth_header("").0,
             })
             .collect(),
     )
@@ -3109,6 +3128,53 @@ mod tests {
         assert!(rule("mistral"));
         assert!(rule("openrouter"));
         assert!(rule("azure_openai"));
+    }
+
+    /// #2811: the sheet previews the address a request goes to, so the
+    /// endpoint and the credential header are served per kind too, from the
+    /// functions the forwarder uses rather than a second table.
+    #[tokio::test]
+    async fn the_provider_kinds_endpoint_states_the_endpoint_and_key_header_per_kind() {
+        let addr = serve(build_app_with(state_with_token(None), false)).await;
+        let body: serde_json::Value = reqwest::get(format!("http://{addr}/api/v1/provider-kinds"))
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let kinds = body.as_array().expect("a list of kinds");
+        let of = |name: &str| -> &serde_json::Value {
+            kinds
+                .iter()
+                .find(|k| k["kind"] == name)
+                .unwrap_or_else(|| panic!("{name} missing from {body}"))
+        };
+
+        assert_eq!(
+            of("openai_compatible")["request_path"],
+            "/v1/chat/completions"
+        );
+        assert_eq!(of("openai_compatible")["request"], "chat");
+        assert_eq!(of("anthropic")["request_path"], "/v1/messages");
+        assert_eq!(of("tei")["request_path"], "/v1/embeddings");
+        assert_eq!(of("tei")["request"], "embeddings");
+        assert_eq!(
+            of("gemini_native")["request_path"],
+            "/models/{model}:generateContent"
+        );
+        assert_eq!(of("gemini_interactions")["request_path"], "/interactions");
+
+        assert_eq!(of("anthropic")["auth_header"], "x-api-key");
+        assert_eq!(of("azure_openai")["auth_header"], "api-key");
+        assert_eq!(of("gemini_native")["auth_header"], "x-goog-api-key");
+        assert_eq!(of("openai")["auth_header"], "authorization");
+
+        // every kind answers every field, so the dashboard never has to guess
+        for kind in kinds {
+            for field in ["request", "request_path", "auth_header"] {
+                assert!(kind[field].is_string(), "{field} missing on {kind}");
+            }
+        }
     }
 
     fn state_with_currency(currency: rolter_core::CurrencyConfig) -> ControlState {

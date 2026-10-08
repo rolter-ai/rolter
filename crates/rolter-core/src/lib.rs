@@ -29,6 +29,7 @@ pub mod redact;
 pub mod slug;
 pub mod stability;
 pub mod telemetry;
+pub mod upstream;
 
 pub use access_policy::ModelPolicy;
 pub use config::{

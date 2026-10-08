@@ -2459,6 +2459,14 @@ struct ProviderTestResult {
     error: Option<String>,
 }
 
+/// The `credential` a test reports when `api_key_env` names a variable this
+/// process does not have.
+///
+/// The control plane resolves the variable from its own environment, while the
+/// gateway resolves it from the gateway's, so this is not proof that the
+/// gateway lacks it, only that the test ran without a key (#2811).
+const ENV_UNSET: &str = "env (unset)";
+
 /// What a probe response amounts to, once the body has been read.
 struct ProbeVerdict {
     reachable: bool,
@@ -2490,6 +2498,7 @@ fn judge_probe(
     body: Option<&serde_json::Value>,
     url: &str,
     credential: &str,
+    api_key_env: Option<&str>,
 ) -> ProbeVerdict {
     // a provider that answers 200 with zero models is reachable but not yet
     // useful, and the operator should be able to see that difference
@@ -2512,10 +2521,19 @@ fn judge_probe(
                 )
             } else {
                 match status {
-                    401 | 403 => format!(
-                        "{status}: the upstream rejected the credential (resolved from: \
-                         {credential})"
-                    ),
+                    401 | 403 => match (credential, api_key_env) {
+                        (ENV_UNSET, Some(var)) => format!(
+                            "{status}: the upstream rejected the request, and the key's \
+                             environment variable {var} is not set in the control plane's \
+                             environment (resolved from: {credential}). This test runs in the \
+                             control plane, so set {var} there; the gateway reads it from its \
+                             own environment, so set it there too."
+                        ),
+                        _ => format!(
+                            "{status}: the upstream rejected the credential (resolved from: \
+                             {credential})"
+                        ),
+                    },
                     404 => format!("{status}: reached the host, but {url} is not served there"),
                     other => format!("{other}: the upstream refused the probe"),
                 }
@@ -2553,7 +2571,7 @@ async fn resolve_probe_credential(
         },
         None => match api_key_env.map(std::env::var) {
             Some(Ok(value)) => (Some(value), "env"),
-            Some(Err(_)) => (None, "env (unset)"),
+            Some(Err(_)) => (None, ENV_UNSET),
             None => (None, "none"),
         },
     })
@@ -2739,7 +2757,14 @@ async fn test_provider(
         Ok(resp) => {
             let status = resp.status().as_u16();
             let body = resp.json::<serde_json::Value>().await.ok();
-            let verdict = judge_probe(parsed_kind, status, body.as_ref(), &url, credential);
+            let verdict = judge_probe(
+                parsed_kind,
+                status,
+                body.as_ref(),
+                &url,
+                credential,
+                api_key_env.as_deref(),
+            );
             ProviderTestResult {
                 reachable: verdict.reachable,
                 probed_url: url.clone(),
@@ -3086,7 +3111,47 @@ mod probe_verdict_tests {
             body.as_ref(),
             "https://x.test/v1/models",
             "stored",
+            None,
         )
+    }
+
+    /// #2811: `401 … (resolved from: env (unset))` said a key was missing and
+    /// not whose environment it was missing from. The test runs in the control
+    /// plane, the gateway has its own environment, and the operator has to fix
+    /// the right one.
+    #[test]
+    fn an_unset_env_var_names_the_process_it_is_missing_from() {
+        let verdict = judge_probe(
+            ProviderKind::Openai,
+            401,
+            None,
+            "https://x.test/v1/models",
+            ENV_UNSET,
+            Some("OPENAI_API_KEY"),
+        );
+        let error = verdict.error.expect("a rejection explains itself");
+        assert!(error.contains("OPENAI_API_KEY"), "{error}");
+        assert!(error.contains("control plane's environment"), "{error}");
+        assert!(error.contains("gateway"), "{error}");
+        assert!(error.contains("resolved from: env (unset)"), "{error}");
+    }
+
+    /// The extra explanation is for the one credential source it is true of.
+    #[test]
+    fn a_rejected_stored_or_set_key_keeps_the_plain_message() {
+        for credential in ["stored", "env", "none"] {
+            let verdict = judge_probe(
+                ProviderKind::Openai,
+                401,
+                None,
+                "https://x.test/v1/models",
+                credential,
+                Some("OPENAI_API_KEY"),
+            );
+            let error = verdict.error.expect("a rejection explains itself");
+            assert!(error.contains("rejected the credential"), "{error}");
+            assert!(!error.contains("control plane's environment"), "{error}");
+        }
     }
 
     /// The case from #980: an upstream answering 200 with an HTML page at the

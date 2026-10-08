@@ -364,11 +364,7 @@ impl Forwarder {
         // gemini native embeds the model + method in the path
         // (`/models/{model}:generateContent`), so it is derived from the
         // request rather than the fixed openai/anthropic route path.
-        let url = if translation.is_gemini_generate() {
-            gemini_generate_url(provider, &body, upstream_model)
-        } else {
-            provider_url(provider, translation.upstream_path(path))
-        };
+        let url = request_url(provider, translation, path, &body, upstream_model);
         let compatibility = self.compatibility.load();
         let client_policy = self.client_policy.load();
         let injected = &client_policy.injected_headers;
@@ -732,6 +728,28 @@ fn apply_provider_auth_with(
         request = request.header("anthropic-version", version);
     }
     request
+}
+
+/// The upstream address a JSON request for gateway `path` is forwarded to.
+///
+/// Split out of `forward_json` so the dashboard's preview of it can be held to
+/// the real thing: a test walks every kind and compares
+/// `ProviderKind::primary_upstream_url` with this (#2811).
+fn request_url(
+    provider: &ProviderConfig,
+    translation: TranslationPlan,
+    path: &str,
+    body: &Bytes,
+    upstream_model: Option<&str>,
+) -> String {
+    // gemini native embeds the model + method in the path
+    // (`/models/{model}:generateContent`), so it is derived from the request
+    // rather than the fixed openai/anthropic route path
+    if translation.is_gemini_generate() {
+        gemini_generate_url(provider, body, upstream_model)
+    } else {
+        provider_url(provider, translation.upstream_path(path))
+    }
 }
 
 fn provider_url(provider: &ProviderConfig, path: &str) -> String {
@@ -1380,6 +1398,35 @@ mod tests {
             assert_eq!(
                 provider_url(&provider, plan.upstream_path(path)),
                 "https://generativelanguage.googleapis.com/v1beta/interactions"
+            );
+        }
+    }
+
+    /// #2811: the dashboard previews `ProviderKind::primary_upstream_url` while an
+    /// operator types an API base, so for every kind it has to be the address
+    /// the forwarder really builds for the request that kind is chiefly called
+    /// for (an embedding for TEI, a chat completion for the rest).
+    #[test]
+    fn the_previewed_address_is_the_one_the_forwarder_builds() {
+        for kind in ProviderKind::ALL {
+            let api_base = "https://upstream.example/api";
+            let provider = provider(kind, api_base.to_string());
+            let (gateway_path, body) = match kind.primary_request() {
+                rolter_core::upstream::RequestKind::Chat => (
+                    "/v1/chat/completions",
+                    // native gemini reads the model out of the body
+                    Bytes::from(r#"{"model":"{model}"}"#),
+                ),
+                rolter_core::upstream::RequestKind::Embeddings => {
+                    ("/v1/embeddings", Bytes::from(r#"{"input":"x"}"#))
+                }
+            };
+            let plan =
+                TranslationPlan::resolve(gateway_path, kind, rolter_core::RoleProfile::Openai);
+            assert_eq!(
+                kind.primary_upstream_url(api_base),
+                request_url(&provider, plan, gateway_path, &body, None),
+                "{kind:?}"
             );
         }
     }
