@@ -8,10 +8,12 @@
 # users, dashboards and alerts) or told the SigNoz release moved its api
 # (exit 2, nothing changes), and a misclassification there was only ever found
 # by reading the code (#1792, #1892). adaptive-routing.sh must fail loudly on a
-# refused call instead of printing a success line (#1817). no SigNoz, no
-# docker and no control plane is needed: the stub plays the answers from a
-# scenario file, one line per route, rewritten between cases. it runs as a
-# step of quality.yml's `static checks` job and as a prek hook.
+# refused call instead of printing a success line (#1817), and ux-capture.sh must
+# take the operator's own account and reach a ClickHouse that is not published
+# (#2794). no SigNoz, no docker and no control plane is needed: the stub plays
+# the answers from a scenario file, one line per route, rewritten between
+# cases. it runs as a step of quality.yml's `static checks` job and as a prek
+# hook.
 #
 # adding a script: write a `cases_<name>` function below that sets up scenarios
 # and calls `expect`, then add one `run_cases <name>` line at the bottom.
@@ -372,11 +374,251 @@ cases_adaptive_routing() {
       bash "$dogfood/adaptive-routing.sh" on
 }
 
+# ── ux-capture.sh ─────────────────────────────────────────────────────────────
+# the stub plays the control plane and a ClickHouse at once: its POST / is
+# ClickHouse's http interface, so every statement is answered with one scenario
+# line, which is why the read-back below is "1" for the probe row and the total
+# alike. a fake `docker` on PATH plays `docker compose exec clickhouse
+# clickhouse-client` for the team shape, where ClickHouse is not published (#2794)
+mkdir -p "$work/fake-docker"
+cat >"$work/fake-docker/docker" <<'SH'
+#!/bin/sh
+# records each call, swallows the sql file a --multiquery call is fed, and
+# answers a count query with $FAKE_DOCKER_ROWS (the probe row) or 42 (the total)
+printf '%s\n' "$*" >>"$FAKE_DOCKER_LOG"
+case "$*" in
+*--multiquery*) cat >/dev/null ;;
+esac
+case "$*" in
+*"where session_id"*) printf '%s\n' "${FAKE_DOCKER_ROWS:-1}" ;;
+*"select count() from ui_events"*) printf '42\n' ;;
+esac
+SH
+chmod +x "$work/fake-docker/docker"
+docker_log="$work/docker.log"
+: >"$docker_log"
+
+# extra VAR=value pairs for the next run, on top of a hermetic environment: the
+# account, the team-shape knobs and the urls are the caller's to set
+ux_env=()
+ux() {
+  env -u DEV_EMAIL -u DEV_PASSWORD -u DEV_TOTP -u UX_COMPOSE -u ROLTER_ENV_FILE \
+    CLICKHOUSE_URL="$stub" ROLTER_CONTROL_URL="$stub" FAKE_DOCKER_LOG="$docker_log" \
+    ${ux_env[@]+"${ux_env[@]}"} bash "$dogfood/ux-capture.sh" "$@"
+}
+
+# every answer a signed-in, healthy run needs. routes are first-match, so a case
+# that wants one of these to go wrong adds its own line before calling this
+ux_base() {
+  json POST /api/v1/auth/login 200 '{"token":"tok-1"}'
+  json POST /api/v1/ui-events 202 '{}'
+  json POST /api/v1/auth/logout 200 '{}'
+  json POST / 200 1
+}
+
+# login_sent EMAIL PASSWORD: the sign-in body carries exactly this account. read
+# back as json, so a password with a quote or a backslash in it is checked as the
+# server would read it, not as a string a shell happened to interpolate
+login_sent() {
+  python3 - "$requests" "$1" "$2" <<'PY'
+import json, sys
+
+log, email, password = sys.argv[1:4]
+for line in open(log):
+    if line.startswith("POST /api/v1/auth/login "):
+        body = json.loads(line.split(" body=", 1)[1])
+        sys.exit(0 if body == {"email": email, "password": password} else 1)
+sys.exit(1)
+PY
+}
+
+# basic_for USER PASSWORD: the Authorization header those credentials make
+basic_for() {
+  python3 -c 'import base64, sys; print("Basic " + base64.b64encode(f"{sys.argv[1]}:{sys.argv[2]}".encode()).decode())' "$1" "$2"
+}
+
+# a throwaway password, made at run time: a literal one is what secret scanners
+# are there to find
+random_secret() { python3 -c 'import secrets; print(secrets.token_hex(12))'; }
+
+cases_ux_capture() {
+  local operator_pw ch_pw team_env
+  operator_pw="Zq\"$(random_secret)\\x!"
+  ch_pw=$(random_secret)
+  team_env="$work/team.env"
+  printf 'ROLTER_CONTROL_HOST=0.0.0.0\n' >"$team_env"
+
+  reset
+  ux_base
+  ux_env=()
+  expect "no account in the environment falls back to creds.env" 0 \
+    "signed in as dev@rolter.local" "address from creds.env, password from creds.env" \
+    "the probe row is in ClickHouse" -- ux verify
+  check "the checked-in account signed in" login_sent dev@rolter.local Rolter-dev-2026
+
+  reset
+  ux_base
+  ux_env=(DEV_EMAIL=operator@example.test "DEV_PASSWORD=$operator_pw")
+  expect "the environment's account wins over creds.env" 0 \
+    "signed in as operator@example.test" "address from the environment, password from the environment" \
+    "!dev@rolter.local" -- ux verify
+  check "the operator's account signed in, password intact" login_sent operator@example.test "$operator_pw"
+  check "the probe went out with the operator's session" requested "POST /api/v1/ui-events auth=Bearer tok-1"
+  check "the session was signed out again" requested "POST /api/v1/auth/logout auth=Bearer tok-1"
+
+  reset
+  ux_base
+  ux_env=("DEV_PASSWORD=$operator_pw")
+  expect "an unset variable still falls back, one at a time" 0 \
+    "signed in as dev@rolter.local" "address from creds.env, password from the environment" -- ux verify
+  check "the stack's address pairs with the caller's password" login_sent dev@rolter.local "$operator_pw"
+
+  reset
+  ux_base
+  ux_env=(DEV_EMAIL=operator@example.test)
+  expect "a default clickhouse is read without credentials" 0 -- ux verify
+  check "no credentials went to clickhouse" requested "POST / auth= body=select count() from ui_events where session_id"
+
+  reset
+  json POST /api/v1/auth/login 401 '{"error":{"message":"invalid credentials"}}'
+  ux_env=()
+  expect "a refused sign-in names where the account came from" 1 \
+    "refused dev@rolter.local" "address from creds.env" "pass your own" -- ux verify
+  check "a refused sign-in has no session to sign out" not_requested "/api/v1/auth/logout"
+
+  reset
+  json POST /api/v1/auth/login 401 '{"error":{"message":"invalid credentials"}}'
+  ux_env=(DEV_EMAIL=operator@example.test "DEV_PASSWORD=$operator_pw")
+  expect "a refused account of the caller's own is not blamed on creds.env" 1 \
+    "refused operator@example.test" "address from the environment, password from the environment" \
+    "!creds.env is" "!pass your own" -- ux verify
+
+  reset
+  json POST /api/v1/auth/login 429 '{"error":{"message":"slow down"}}'
+  expect "a throttled sign-in says to wait" 1 "throttling sign-ins" -- ux verify
+
+  reset
+  expect "no control plane is exit 1" 1 "could not reach http://127.0.0.1:9" -- \
+    env ROLTER_CONTROL_URL=http://127.0.0.1:9 CLICKHOUSE_URL="$stub" bash "$dogfood/ux-capture.sh" verify
+
+  # a second factor: the login answers a challenge, and DEV_TOTP redeems it
+  reset
+  json POST /api/v1/auth/login 200 '{"mfa_required":true,"mfa_token":"chal-1","expires_in":300}'
+  ux_base
+  ux_env=(DEV_EMAIL=operator@example.test "DEV_PASSWORD=$operator_pw")
+  expect "an account with a second factor and no code is told how to pass one" 1 \
+    "has a second factor" "DEV_TOTP" -- ux verify
+  check "no probe without a session" not_requested "/api/v1/ui-events"
+
+  reset
+  json POST /api/v1/auth/login 200 '{"mfa_required":true,"mfa_token":"chal-1","expires_in":300}'
+  json POST /api/v1/auth/mfa/verify 200 '{"token":"tok-2"}'
+  ux_base
+  ux_env=(DEV_EMAIL=operator@example.test "DEV_PASSWORD=$operator_pw" DEV_TOTP=123456)
+  expect "DEV_TOTP redeems the challenge for a session" 0 "signed in as operator@example.test" -- ux verify
+  check "the challenge and the code went to the step-up" requested '"mfa_token":"chal-1","code":"123456"'
+  check "the probe used the step-up's session" requested "POST /api/v1/ui-events auth=Bearer tok-2"
+
+  reset
+  json POST /api/v1/auth/login 200 '{"mfa_required":true,"mfa_token":"chal-1","expires_in":300}'
+  json POST /api/v1/auth/mfa/verify 401 '{"error":{"message":"invalid credentials"}}'
+  expect "a refused code is exit 1" 1 "refused the DEV_TOTP code" -- ux verify
+
+  reset
+  json POST /api/v1/auth/login 200 '{"mfa_enrolment_required":true,"enrolment_token":"enrol-1"}'
+  ux_env=(DEV_EMAIL=operator@example.test "DEV_PASSWORD=$operator_pw" DEV_TOTP=123456)
+  expect "an unenrolled account is told to enrol first" 1 "has to enrol a second factor" -- ux verify
+
+  # what the probe says when a hop is broken
+  reset
+  json POST /api/v1/ui-events 500 '{"error":{"message":"event store did not accept the write"}}'
+  ux_base
+  ux_env=()
+  expect "a 500 from the endpoint is exit 1 and consults query_log" 1 \
+    "the endpoint answered 500" "insert errors" -- ux verify
+  check "query_log was read" requested "system.query_log"
+
+  reset
+  json POST /api/v1/ui-events 401 '{"error":{"message":"missing or invalid session"}}'
+  ux_base
+  expect "a 401 from the endpoint is exit 1" 1 "disable its UX stream" -- ux verify
+
+  reset
+  json POST / 200 0
+  ux_base
+  json GET /api/v1/logging-settings 200 '{"ui_events":true}'
+  expect "a 202 with no row is exit 1" 1 "accepted but 0 rows arrived" "!switched off" -- ux verify
+
+  reset
+  json POST / 200 0
+  ux_base
+  json GET /api/v1/logging-settings 200 '{"ui_events":false}'
+  expect "a 202 with no row while UX events are off says so" 1 \
+    "dashboard usage events are switched off" "Dashboard Usage Events" -- ux verify
+  check "the switch was read with the session" requested "GET /api/v1/logging-settings auth=Bearer tok-1"
+
+  # clickhouse over http with credentials in CLICKHOUSE_URL
+  reset
+  ux_base
+  ux_env=(DEV_EMAIL=operator@example.test "DEV_PASSWORD=$operator_pw" "CLICKHOUSE_URL=http://rolter:$ch_pw@${stub#http://}")
+  expect "credentials in CLICKHOUSE_URL are sent and never printed" 0 \
+    "the probe row is in ClickHouse" "!$ch_pw" -- ux verify
+  check "the read-back carried the credentials as basic auth" \
+    requested "POST / auth=$(basic_for rolter "$ch_pw") body=select count() from ui_events where session_id"
+
+  reset
+  ux_base
+  expect "apply-schema sends credentials with every statement" 0 "schema applied" "!$ch_pw" -- ux apply-schema
+  check "a statement carried the credentials" requested "POST / auth=$(basic_for rolter "$ch_pw") body=create table"
+
+  # the team shape: --team goes through docker compose exec, not http
+  reset
+  ux_base
+  : >"$docker_log"
+  ux_env=(DEV_EMAIL=operator@example.test "DEV_PASSWORD=$operator_pw" "ROLTER_ENV_FILE=$team_env" "PATH=$work/fake-docker:$PATH")
+  expect "--team verifies through docker compose exec" 0 \
+    "docker compose exec clickhouse" "the probe row is in ClickHouse" "!$operator_pw" -- ux --team verify
+  check "clickhouse was never read over http" not_requested "POST / auth="
+  check "the team compose files and env file were layered" \
+    grep -qF -- "-f $root/docker/docker-compose.yml -f $root/docker/docker-compose.team.yml --env-file $team_env exec -T clickhouse clickhouse-client --query" "$docker_log"
+  check "the probe row was counted by session" grep -qF "where session_id" "$docker_log"
+
+  reset
+  ux_base
+  : >"$docker_log"
+  ux_env=(DEV_EMAIL=operator@example.test "DEV_PASSWORD=$operator_pw" "ROLTER_ENV_FILE=$team_env" "PATH=$work/fake-docker:$PATH" FAKE_DOCKER_ROWS=0)
+  expect "--team with no row in clickhouse is exit 1" 1 "accepted but 0 rows arrived" -- ux --team verify
+
+  reset
+  : >"$docker_log"
+  ux_env=("ROLTER_ENV_FILE=$team_env" "PATH=$work/fake-docker:$PATH")
+  expect "--team apply-schema feeds every file to clickhouse-client" 0 "schema applied" "008_ui_events.sql" -- ux --team apply-schema
+  check "each file went through --multiquery" grep -qF -- "exec -T clickhouse clickhouse-client --multiquery" "$docker_log"
+  check "apply-schema made no http call" nothing_requested
+
+  reset
+  ux_base
+  : >"$docker_log"
+  ux_env=(DEV_EMAIL=operator@example.test "DEV_PASSWORD=$operator_pw" "UX_COMPOSE=docker compose -p mine -f custom.yml" "PATH=$work/fake-docker:$PATH")
+  expect "UX_COMPOSE is the compose command, spelled out" 0 "the probe row is in ClickHouse" -- ux verify
+  check "the command was used as given" grep -qF -- "compose -p mine -f custom.yml exec -T clickhouse clickhouse-client" "$docker_log"
+
+  reset
+  ux_env=("ROLTER_ENV_FILE=$work/no-such.env")
+  expect "--team without its env file says where it looked" 1 "no env file at $work/no-such.env" -- ux --team verify
+  check "nothing was requested without an env file" nothing_requested
+
+  reset
+  ux_env=()
+  expect "an unknown argument is a usage error" 2 "usage:" -- ux sideways
+}
+
 # ── the scripts under test ────────────────────────────────────────────────────
 # one line per script; a script's cases live in `cases_<name>`, with the dashes
 # of its file name as underscores
 run_cases provision_signoz
 run_cases adaptive_routing
+run_cases ux_capture
 
 if [ "$failures" -gt 0 ]; then
   echo "$failures of $checks dogfood script checks failed" >&2

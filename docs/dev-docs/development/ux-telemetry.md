@@ -360,6 +360,65 @@ The test creates the `ui_events` table itself, from the shipped
 let the table under test drift away from the one a deployment gets, which is the
 class of failure it exists to catch.
 
+### Against a running stack: `just dogfood-ux`
+
+The test proves the code; it cannot say whether _this_ deployment's ClickHouse has
+the table, accepts the control plane's credentials, and has `logging.ui_events`
+on. [`integration/dogfood/ux-capture.sh`](../../../integration/dogfood/ux-capture.sh)
+asks the running stack: it applies `clickhouse/*.sql` (a `chdata` volume older
+than a migration never ran it), signs in, posts a probe batch through the real
+endpoint and reads the row back out of ClickHouse. It ends green only when all
+of that held. On the default dogfood stack there is nothing to set:
+
+```bash
+just dogfood-ux
+```
+
+#### Against a team-shape stack (#2794)
+
+The compose team shape (`docker-compose.yml` + `docker-compose.team.yml`) differs
+in the three ways the script used to assume it did not: ClickHouse is not
+published and has a user and password, there is no checked-in account, and
+`ROLTER_ADMIN_TOKEN` cannot stand in for one, because `/api/v1/ui-events` takes a
+user session and answers `401` to the token. So run it on the host that runs the
+stack, from the repository, as yourself:
+
+```bash
+read -rs DEV_PASSWORD && export DEV_PASSWORD   # not on the command line: it lands in your history
+DEV_EMAIL=you@example.com just dogfood-ux-team  # ./integration/dogfood/ux-capture.sh --team
+```
+
+| It needs                 | Where it comes from                                                                                                                                                                                                                                                                           |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The account              | `DEV_EMAIL` and `DEV_PASSWORD` from the environment. `integration/dogfood/creds.env` only fills a variable the environment left unset, so the dogfood stack still needs no setup. The output names where each came from, and a refused sign-in says so                                        |
+| A second factor          | `DEV_TOTP=<current code>` when the account has one (an unspent recovery code works too). The code is accepted once, so a dashboard sign-in in the next 30 seconds has to wait for the next one. An org that requires a factor you have not enrolled has to be enrolled in the dashboard first |
+| ClickHouse               | `--team` runs every statement through `docker compose exec clickhouse clickhouse-client`, which signs in with the container's own `CLICKHOUSE_USER` and `CLICKHOUSE_PASSWORD`. Nothing is published and the password never passes through the script                                          |
+| The stack's compose file | `--team` layers `docker/docker-compose.yml` and `docker/docker-compose.team.yml` and reads the env file named by `ROLTER_ENV_FILE` (default: `.env` at the repository root, the file you gave `docker compose --env-file`)                                                                    |
+| The control plane        | `ROLTER_CONTROL_URL`, else `ROLTER_CONTROL_HOST` from that env file, else `http://127.0.0.1:4001`. A bind-all address (`0.0.0.0`) means loopback here                                                                                                                                         |
+
+Two escape hatches for layouts `--team` does not guess. `UX_COMPOSE` is the
+`docker compose` command that reaches the stack, spelled out: use it for a
+project name (`-p`), another overlay or a different compose file, and it works
+for the open stack too. And without either, `CLICKHOUSE_URL` is read over HTTP
+and may carry credentials (`http://<user>:<password>@host:8123`), for a ClickHouse
+that is reachable from where you run the script by some other route. Credentials
+in the url are sent as a `Basic` header, never printed, and never put on the
+command line of a child process; the sign-in body and the session token are
+handed to `curl` through a private temporary directory for the same reason.
+
+What it leaves behind is one `ux-preflight` row under your `user_id` and nothing
+else: the session it opened is signed out again when the script exits, and a
+failed run signs out too.
+
+When a hop is broken it names the hop. A `500` from the endpoint prints the
+`ui_events` insert exceptions `system.query_log` holds for the last five minutes
+(the response body is deliberately generic, see below), which is why the compose
+stack keeps `query_log` when it switches the other `system.*_log` tables off
+(#2795). A `202` with no row in ClickHouse checks `GET /api/v1/logging-settings`
+and says so when **Dashboard Usage Events** is off, the one case the endpoint
+reports as success. Both are best effort: a role that cannot read the logging
+settings just gets the generic line.
+
 ## Failure modes, and who notices
 
 Every row below was produced by running it, not by reading the code. The middle

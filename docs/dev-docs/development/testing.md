@@ -560,7 +560,14 @@ for a SigNoz release whose api moved (and names its version, changing nothing).
 that plays a scenario file, one `METHOD|PATH|STATUS|CONTENT-TYPE|BODY` line per
 route, so it needs no SigNoz, docker or secret and takes about 25 s. It covers
 every row of `provision-signoz.sh`'s exit-code table and, for
-`adaptive-routing.sh`, the happy path and a refused read and write. A new
+`adaptive-routing.sh`, the happy path and a refused read and write. For
+`ux-capture.sh` (#2794) the same stub plays the control plane and ClickHouse's
+http interface at once and a fake `docker` on `PATH` plays
+`docker compose exec clickhouse clickhouse-client`: the cases pin whose account
+signs in (the environment's over `creds.env`'s, one variable at a time), the
+second-factor step, what each broken hop tells the operator, credentials in
+`CLICKHOUSE_URL` reaching ClickHouse as a `Basic` header and never the output,
+and `--team` reaching ClickHouse through compose and not http. A new
 script gets a `cases_<name>` function and one `run_cases <name>` line at the
 bottom. The job also runs `shellcheck` over every
 `integration/**/*.sh`; the test alone is the prek hook `dogfood-scripts`.

@@ -307,6 +307,10 @@ dogfood:
 dogfood-ux:
     ./integration/dogfood/ux-capture.sh
 
+# the same proof against a compose team-shape stack, signed in as you (DEV_EMAIL, DEV_PASSWORD, DEV_TOTP)
+dogfood-ux-team:
+    ./integration/dogfood/ux-capture.sh --team
+
 # watch dashboard struggles and gateway traffic (WATCH_EVERY=<secs> refreshes)
 dogfood-watch minutes="30":
     ./integration/dogfood/watch.sh {{minutes}}
