@@ -58,6 +58,9 @@ describe("primaryColumn", () => {
   });
 });
 
+/** `${inner}` as source text, built so it is not mistaken for an unexpanded template */
+const interpolation = (inner: string) => "$" + "{" + inner + "}";
+
 describe("the rule", () => {
   it("reads the first track of a plain grid", () => {
     expect(firstTrack("1.2fr 1fr 96px")).toBe("1.2fr");
@@ -65,8 +68,10 @@ describe("the rule", () => {
   });
 
   it("keeps a primaryColumn call whole, spaces and all", () => {
-    expect(firstTrack("${primaryColumn(1.2)} 1fr 96px")).toBe("${primaryColumn(1.2)}");
-    expect(firstTrack("${ primaryColumn(1) } 2fr")).toBe("${ primaryColumn(1) }");
+    const tight = interpolation("primaryColumn(1.2)");
+    expect(firstTrack(`${tight} 1fr 96px`)).toBe(tight);
+    const spaced = interpolation(" primaryColumn(1) ");
+    expect(firstTrack(`${spaced} 2fr`)).toBe(spaced);
   });
 
   it("fails a list whose first column is a bare fr", () => {
@@ -75,7 +80,7 @@ describe("the rule", () => {
   });
 
   it("passes a floored first column and a fixed one", () => {
-    const floored = "<ListTable>\nconst GRID = `${primaryColumn(1.2)} 1fr`;";
+    const floored = `<ListTable>\nconst GRID = \`${interpolation("primaryColumn(1.2)")} 1fr\`;`;
     expect(unfloored(floored)).toEqual([]);
     const fixed = '<ListTable>\nconst GRID = "150px 1.1fr 1.3fr";';
     expect(unfloored(fixed)).toEqual([]);
