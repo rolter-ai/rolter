@@ -1790,18 +1790,21 @@ mod tests {
             enabled: true,
             created_at: Utc::now(),
         };
+        // a fresh nonce rather than a literal one: code scanning reports a
+        // nonce written out in source as hard-coded (#2849)
+        let nonce = format!("nonce-{}", Uuid::new_v4());
         let url = authorize_url(
             &discovery,
             &provider,
             "https://rolter.example.com/auth/sso/keycloak/callback",
             "state-1",
-            "nonce-1",
+            &nonce,
             "challenge-1",
         );
         assert!(url.starts_with("https://idp.example.com/auth?response_type=code"));
         assert!(url.contains("code_challenge=challenge-1&code_challenge_method=S256"));
         assert!(url.contains("state=state-1"));
-        assert!(url.contains("nonce=nonce-1"));
+        assert!(url.contains(&format!("nonce={nonce}")));
         // the client id and redirect are escaped, not interpolated raw
         assert!(url.contains("client_id=rolter%20dashboard"));
         assert!(url.contains(
