@@ -11733,6 +11733,132 @@ async fn an_mcp_grant_revocation_records_the_superadmin_session_that_made_it() {
     }
 }
 
+/// An org's audit log returns the account events of its people and nothing a
+/// superadmin did to the deployment (#2857). The rows with no org are matched on
+/// their actor, and a superadmin who also administers an org is one of that
+/// org's people: with the actor now recorded (#2844), a rule that looked at the
+/// actor alone handed the org's other admins every setting the superadmin
+/// changed. The deployment-wide log still has all of them.
+#[tokio::test]
+async fn an_orgs_audit_log_omits_the_deployment_changes_of_a_superadmin_it_counts_among_its_people()
+{
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app =
+        rolter_control::test_app_with_admin_token(pool.clone(), Some(admin_token().to_string()))
+            .await
+            .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let acme: uuid::Uuid =
+        sqlx::query_scalar("insert into orgs (name, slug) values ('Acme', 'acme') returning id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    // a superadmin who is also an admin of acme, and a second acme admin
+    let both = seed_user(&pool, "both@example.com", true).await;
+    seed_membership(&pool, both, Some(acme), None, None, "admin").await;
+    let manager = seed_user(&pool, "manager@example.com", false).await;
+    seed_membership(&pool, manager, Some(acme), None, None, "admin").await;
+    let both_bearer = seed_session(&pool, both, &uuid::Uuid::new_v4().simple().to_string()).await;
+    let manager_bearer =
+        seed_session(&pool, manager, &uuid::Uuid::new_v4().simple().to_string()).await;
+
+    // deployment changes, taken by the superadmin
+    let changes = [
+        (
+            "PUT",
+            "/api/v1/security-settings",
+            json!({
+                "allowed_origins": [], "allowed_headers": [], "required_headers": {},
+                "auth_bypass_routes": []
+            }),
+            "security.settings.update",
+        ),
+        (
+            "PUT",
+            "/api/v1/model-defaults",
+            json!({"enabled": false}),
+            "model_defaults.update",
+        ),
+        (
+            "POST",
+            "/api/v1/connectors",
+            json!({
+                "name": "sink", "kind": "otlp_http",
+                "endpoint": "https://collector.example.com/v1/logs", "enabled": false,
+                "sampling_rate": 1.0
+            }),
+            "connector.create",
+        ),
+    ];
+    for (method, path, body, action) in &changes {
+        let request = match *method {
+            "PUT" => client.put(format!("{base}{path}")),
+            _ => client.post(format!("{base}{path}")),
+        };
+        let response = request
+            .bearer_auth(&both_bearer)
+            .json(body)
+            .send()
+            .await
+            .unwrap();
+        assert!(
+            response.status().is_success(),
+            "{action} answered {}",
+            response.status()
+        );
+    }
+
+    // account events of the same superadmin, which the org is meant to see
+    let profile = client
+        .patch(format!("{base}/api/v1/me/profile"))
+        .bearer_auth(&both_bearer)
+        .json(&json!({"bio": "on call"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(profile.status(), 200);
+    sqlx::query(
+        "insert into audit_log (org_id, actor_user_id, action, target_type, target_id, detail)
+         values (null, $1, 'auth.login_failed', 'user', $1, '{}')",
+    )
+    .bind(both)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let page: Value = client
+        .get(format!(
+            "{base}/api/v1/orgs/{acme}/audit-log?limit=500&include_total=true"
+        ))
+        .bearer_auth(&manager_bearer)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let items = page["items"].as_array().unwrap();
+    let mut actions: Vec<&str> = items
+        .iter()
+        .map(|row| row["action"].as_str().unwrap())
+        .collect();
+    actions.sort_unstable();
+    assert_eq!(actions, ["auth.login_failed", "user.profile.update"]);
+    // the count the dashboard pages by follows the same rule as the rows
+    assert_eq!(page["total"], items.len());
+
+    // and the deployment-wide log keeps every change, under the superadmin
+    for (_, _, _, action) in &changes {
+        let actor = newest_deployment_actor(&client, &base, &both_bearer, action).await;
+        assert_eq!(actor, json!(both.to_string()), "{action}");
+    }
+}
+
 /// Inviting an address again replaces its pending invitation (#2324): the old
 /// link stops working like a revoked one, an expired invitation no longer holds
 /// the address, the match ignores case, and parallel creates neither 500 nor

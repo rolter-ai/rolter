@@ -4780,7 +4780,8 @@ impl LoggingSettingsRepo<'_> {
 /// Account events — sign-ins, failed sign-ins, second-factor changes, a
 /// break-glass reset — are written with no org, because an account is not any
 /// one org's. An org's audit log still has to show them for its own people,
-/// or the rows are written and nobody can read them (#1854).
+/// or the rows are written and nobody can read them (#1854); `org_audit_scope`
+/// is the predicate that uses this set.
 macro_rules! org_members_cte {
     () => {
         "with members as (
@@ -4790,6 +4791,28 @@ macro_rules! org_members_cte {
        left join teams pt on pt.id = p.team_id
       where m.org_id = $1 or t.org_id = $1 or pt.org_id = $1)
  "
+    };
+}
+
+/// The rows an org's audit log returns: its own (`org_id = $1`), plus the
+/// account events of its people, which are written with no org.
+///
+/// An org-less row is returned only when its action is in an account-event
+/// family, `auth.*` or `user.*`, **and** its actor or target user is one of
+/// the org's `members`. Naming the families rather than excluding the
+/// deployment-wide actions keeps a deployment action added later private by
+/// default (#2857): the actor of a deployment setting is a superadmin, who may
+/// hold a role in some org, and a rule that looked at the actor alone handed
+/// that org's admins every `security.settings.update` and `cluster_node.forget`
+/// the superadmin made. A new account-event family has to be added here to
+/// become readable, which is the failure that shows up in a test rather than
+/// as a leak.
+macro_rules! org_audit_scope {
+    () => {
+        "(org_id = $1 or (org_id is null
+                and (action like 'auth.%' or action like 'user.%')
+                and (actor_user_id in (select user_id from members)
+                     or (target_type = 'user' and target_id in (select user_id from members)))))"
     };
 }
 
@@ -4843,30 +4866,38 @@ impl AuditLogRepo<'_> {
     ) -> Result<AuditLogPage> {
         let query = match filter.direction {
             AuditLogDirection::Next => {
-                concat!(org_members_cte!(), "select id, org_id, actor_user_id, action, target_type, target_id, detail, at
+                concat!(
+                    org_members_cte!(),
+                    "select id, org_id, actor_user_id, action, target_type, target_id, detail, at
                  from audit_log
-                 where (org_id = $1 or (org_id is null and (actor_user_id in (select user_id from members) \
-                        or (target_type = 'user' and target_id in (select user_id from members)))))
+                 where ",
+                    org_audit_scope!(),
+                    "
                    and ($2::uuid is null or actor_user_id = $2)
                    and ($3::text is null or action = $3)
                    and ($4::text is null or target_type = $4)
                    and ($5::timestamptz is null or at >= $5)
                    and ($6::timestamptz is null or at <= $6)
                    and ($7::timestamptz is null or (at, id) < ($7, $8))
-                 order by at desc, id desc limit $9")
+                 order by at desc, id desc limit $9"
+                )
             }
             AuditLogDirection::Previous => {
-                concat!(org_members_cte!(), "select id, org_id, actor_user_id, action, target_type, target_id, detail, at
+                concat!(
+                    org_members_cte!(),
+                    "select id, org_id, actor_user_id, action, target_type, target_id, detail, at
                  from audit_log
-                 where (org_id = $1 or (org_id is null and (actor_user_id in (select user_id from members) \
-                        or (target_type = 'user' and target_id in (select user_id from members)))))
+                 where ",
+                    org_audit_scope!(),
+                    "
                    and ($2::uuid is null or actor_user_id = $2)
                    and ($3::text is null or action = $3)
                    and ($4::text is null or target_type = $4)
                    and ($5::timestamptz is null or at >= $5)
                    and ($6::timestamptz is null or at <= $6)
                    and ($7::timestamptz is null or (at, id) > ($7, $8))
-                 order by at asc, id asc limit $9")
+                 order by at asc, id asc limit $9"
+                )
             }
         };
         let entries: Vec<AuditLogEntry> = sqlx::query_as(query)
@@ -4972,8 +5003,9 @@ impl AuditLogRepo<'_> {
         sqlx::query_scalar(concat!(
             org_members_cte!(),
             "select count(*) from audit_log
-             where (org_id = $1 or (org_id is null and (actor_user_id in (select user_id from members) \
-                    or (target_type = 'user' and target_id in (select user_id from members)))))
+             where ",
+            org_audit_scope!(),
+            "
                and ($2::uuid is null or actor_user_id = $2)
                and ($3::text is null or action = $3)
                and ($4::text is null or target_type = $4)
