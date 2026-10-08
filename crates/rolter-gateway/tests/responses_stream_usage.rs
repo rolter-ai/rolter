@@ -1,5 +1,5 @@
 //! Token usage, cost and budget spend for streamed Responses API answers
-//! (#2819).
+//! (#2819), and the prompt-cache discount on them (#2847).
 //!
 //! A buffered Responses answer reports `usage` at the top level of the body,
 //! which the request log has always read. A streamed one reports it only on
@@ -136,6 +136,18 @@ fn counts() -> Value {
     })
 }
 
+/// The same answer with most of the prompt served from the provider's cache:
+/// `cached_tokens` is part of `input_tokens`, as OpenAI reports it.
+fn cached_counts() -> Value {
+    json!({
+        "input_tokens": 2000,
+        "input_tokens_details": {"cached_tokens": 1500},
+        "output_tokens": 3,
+        "output_tokens_details": {"reasoning_tokens": 0},
+        "total_tokens": 2003
+    })
+}
+
 /// An upstream whose `/v1/responses` answers with `body` as `content_type`.
 async fn responses_upstream(content_type: &'static str, body: String) -> SocketAddr {
     async fn handler(
@@ -152,8 +164,8 @@ async fn responses_upstream(content_type: &'static str, body: String) -> SocketA
 }
 
 /// A config with one `test-model` route over a single provider of `kind`, a
-/// price of one dollar per token, an org budget, and request logs going to
-/// `clickhouse`.
+/// price of one dollar per token (a tenth of that for a cached input token), an
+/// org budget, and request logs going to `clickhouse`.
 fn config(
     kind: ProviderKind,
     upstream: SocketAddr,
@@ -207,7 +219,8 @@ fn config(
         serde_json::from_value(json!({
             "model": "test-model",
             "input_per_mtok": 1_000_000,
-            "output_per_mtok": 1_000_000
+            "output_per_mtok": 1_000_000,
+            "cached_input_per_mtok": 100_000
         }))
         .unwrap(),
     );
@@ -397,6 +410,76 @@ async fn a_responses_stream_translated_from_chat_completions_is_logged_with_its_
 
     assert!(body.contains("event: response.completed"), "answer body");
     assert_billed(&rows.row_for("streamed-translated").await);
+}
+
+/// 500 fresh input tokens at one dollar, 1500 cached ones at ten cents and 3
+/// output tokens at one dollar. Priced as if the cache had not been hit it is
+/// 2003 dollars, which is what the row said before #2847.
+fn assert_billed_at_the_cached_rate(row: &Value) {
+    assert_eq!(row["prompt_tokens"], 2000, "request-log row");
+    assert_eq!(row["cache_read_tokens"], 1500, "request-log row");
+    assert_eq!(row["completion_tokens"], 3, "request-log row");
+    assert_eq!(row["cost_usd"], 653.0, "request-log row");
+    assert_eq!(row["unpriced"], 0, "request-log row");
+    assert_eq!(row["usage_unknown"], 0, "request-log row");
+}
+
+/// #2847, buffered: the Responses API reports a prompt-cache hit as
+/// `usage.input_tokens_details.cached_tokens`, which a price row with
+/// `cached_input_per_mtok` turns into a discount.
+#[tokio::test]
+async fn a_buffered_responses_answer_with_cached_input_is_priced_at_the_cached_rate() {
+    let upstream = responses_upstream(
+        "application/json",
+        json!({
+            "id": "resp_1", "object": "response", "status": "completed",
+            "usage": cached_counts()
+        })
+        .to_string(),
+    )
+    .await;
+    let rows = Rows::default();
+    let clickhouse = rows.serve().await;
+    let gw = gateway(
+        &config(
+            ProviderKind::Openai,
+            upstream,
+            clickhouse,
+            "org-cached-buffered",
+        ),
+        None,
+    )
+    .await;
+
+    respond(gw, "buffered-cached", false).await;
+
+    assert_billed_at_the_cached_rate(&rows.row_for("buffered-cached").await);
+}
+
+/// #2847, streamed: the same figure on `response.completed`, under `response`.
+#[tokio::test]
+async fn a_streamed_responses_answer_with_cached_input_is_priced_at_the_cached_rate() {
+    let upstream = responses_upstream(
+        "text/event-stream",
+        responses_stream("response.completed", "completed", cached_counts()),
+    )
+    .await;
+    let rows = Rows::default();
+    let clickhouse = rows.serve().await;
+    let gw = gateway(
+        &config(
+            ProviderKind::Openai,
+            upstream,
+            clickhouse,
+            "org-cached-streamed",
+        ),
+        None,
+    )
+    .await;
+
+    respond(gw, "streamed-cached", true).await;
+
+    assert_billed_at_the_cached_rate(&rows.row_for("streamed-cached").await);
 }
 
 // ── budget counters: need redis ─────────────────────────────────────────────
