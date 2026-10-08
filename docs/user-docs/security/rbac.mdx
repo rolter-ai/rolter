@@ -153,6 +153,23 @@ Account events of someone with no role in any organization — a superadmin's ow
 
 In the dashboard, a superadmin sees a scope switch on **Governance → Audit Logs**: **Whole deployment** reads that endpoint with the same filters and paging as the organization view. Rows with no organization are marked **No org**, and a sign-in attempt against an unregistered address shows **Unknown address** as its actor. Nobody else is offered the switch.
 
+## Who an entry names as the actor
+
+Each audit entry records the account that took the action: the **Actor** column in the dashboard, `actor_user_id` in the API. What is recorded depends on how the caller signed in, and it is the same for every audited action:
+
+| Caller                                       | Recorded as the actor                                                                                                                           |
+| -------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| A signed-in member, whatever their role      | Their own account                                                                                                                               |
+| A signed-in superadmin                       | Their own account, including a superadmin who holds no role anywhere, such as the operator `rolter-seed --admin-email` creates                  |
+| The admin token (`ROLTER_ADMIN_TOKEN`)       | Nobody. The token is a credential whoever holds it can use, not a person                                                                        |
+| Open mode (no admin token configured)        | Nobody. Nobody signed in                                                                                                                        |
+| An identity provider, through its SCIM token | Nobody in the actor column. The entry's detail carries the `scim_token_id` that made the change                                                 |
+| A virtual key                                | Not applicable. A virtual key calls the gateway, which writes request logs rather than audit entries, and the control plane does not accept one |
+
+A superadmin's own account is therefore on every entry they cause, which is what lets you ask who changed a setting or issued a token. The same account fills the other "who did this" fields: `created_by` on a SCIM token, `invited_by` on an invitation, and `revoked_by` on an MCP consent that was revoked. The admin token and open mode leave those empty as well.
+
+Changes to deployment-wide settings — feature flags, security, runtime, compatibility and adaptive routing policy, log settings, model defaults, client settings, connectors, alert channels and cluster nodes — belong to no organization, so a superadmin reads them through the deployment-wide `GET /api/v1/audit-log`. Pass `actor=<account id>` to list everything one superadmin did. An organization's audit log lists such an entry too when its actor holds a role in that organization, by the same rule as the account events above.
+
 ## Ask the server what a role can do
 
 Rolter publishes its own permission table, so you never have to keep a copy in sync with the deployment:

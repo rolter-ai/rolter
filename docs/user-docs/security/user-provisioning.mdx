@@ -65,7 +65,7 @@ A provisioned account is deliberately minimal:
 
 - A `PATCH` carrying `displayName` renames the account the same way, and if two organizations provision the same account the most recent sync from either decides the name.
 
-Every provisioning action is written to the [audit log](/observability/logs-and-cost) with the token id as the actor, since the change was made by a machine and not by a person.
+Every provisioning action is written to the [audit log](/observability/logs-and-cost) with the token id as the actor, since the change was made by a machine and not by a person. Issuing and revoking a token are operator actions and name the operator instead: the token's **created by** field and the `scim_token.create` entry carry the account that issued it, including a superadmin who holds no role in the org. A token issued with the admin token, or in open mode, names nobody. See [who an entry names as the actor](/security/rbac#who-an-entry-names-as-the-actor).
 
 ## Supported operations
 
