@@ -1,5 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
+import type { TFunction } from "i18next";
 import {
+  ArrowLeft,
   ChevronLeft,
   ChevronRight,
   CircleAlert,
@@ -83,6 +85,65 @@ function verdictTone(status: number): "success" | "warning" | "danger" {
   if (status === 0 || status >= 500) return "danger";
   if (status >= 400) return "warning";
   return "success";
+}
+
+/**
+ * What the request did upstream, in the words the drawer and the status cell
+ * use (#2837). `status` is what the caller was told; when the gateway answered
+ * with an error of its own, only the upstream columns say which upstream
+ * caused it and how many tries it took.
+ *
+ * `answered` is the upstream's status with the attempts it took (0 when the
+ * row does not say), `silent` a request whose upstream gave no status line,
+ * `refused` one the gateway turned away before any upstream. A row says
+ * nothing more than it knows: an attempts count of 0 is also a cache hit, the
+ * built-in model and every row older than the columns, so only a failed
+ * request with no provider and no target is called a refusal, and a missing
+ * field reads as 0 with nothing extra shown.
+ */
+type UpstreamNote =
+  | { kind: "answered"; status: number; attempts: number }
+  | { kind: "silent"; attempts: number }
+  | { kind: "refused" };
+
+function upstreamNote(row: InvocationRow): UpstreamNote | null {
+  const status = num(row.status);
+  const upstream = num(row.upstream_status);
+  const attempts = num(row.attempts);
+  const failed = status === 0 || status >= 400;
+  if (upstream > 0) {
+    // a plain success on the first try needs no sentence; a failure, an
+    // answer the caller was not given as it came, or a failover does
+    return failed || upstream !== status || attempts > 1
+      ? { kind: "answered", status: upstream, attempts }
+      : null;
+  }
+  if (attempts === 0) {
+    return status >= 400 && !row.provider && !row.target ? { kind: "refused" } : null;
+  }
+  return failed ? { kind: "silent", attempts } : null;
+}
+
+function upstreamSentence(t: TFunction, note: UpstreamNote): string {
+  switch (note.kind) {
+    case "refused":
+      return t("pages.logs.detail.upstream.refused");
+    case "silent":
+      return t("pages.logs.detail.upstream.silent", { count: note.attempts });
+    case "answered":
+      return note.attempts === 0
+        ? t("pages.logs.detail.upstream.answeredBare", { status: note.status })
+        : t("pages.logs.detail.upstream.answered", {
+            status: note.status,
+            count: note.attempts,
+          });
+  }
+}
+
+// the upstream's own status, when it is not the one the caller got
+function upstreamHint(row: InvocationRow): number | null {
+  const upstream = num(row.upstream_status);
+  return upstream > 0 && upstream !== num(row.status) ? upstream : null;
 }
 
 // a row is one request at one instant; polling hands back fresh objects for
@@ -893,7 +954,9 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
               {/* what is left once the fixed ones have theirs */}
               <col />
               <col className="hidden w-[148px] @min-[840px]:table-column" />
-              <col className="w-[58px] @min-[480px]:w-[68px]" />
+              {/* wide enough from 600px for the upstream's status beside the
+                  caller's; narrower, it wraps under the badge */}
+              <col className="w-[58px] @min-[480px]:w-[68px] @min-[600px]:w-[104px]" />
               <col className="hidden w-24 @min-[600px]:table-column" />
               <col className="hidden w-[88px] @min-[720px]:table-column" />
               <col className="w-[84px] @min-[480px]:w-24" />
@@ -987,12 +1050,15 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
                         "@max-[479px]:col-start-2 @max-[479px]:row-start-1 @max-[479px]:justify-self-end",
                       )}
                     >
-                      <Badge
-                        tone={verdictTone(st)}
-                        className="font-mono text-[0.6875rem] font-semibold"
-                      >
-                        {st || "ERR"}
-                      </Badge>
+                      <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1">
+                        <Badge
+                          tone={verdictTone(st)}
+                          className="font-mono text-[0.6875rem] font-semibold"
+                        >
+                          {st || "ERR"}
+                        </Badge>
+                        <UpstreamHint row={r} />
+                      </div>
                     </td>
                     <td
                       className={cn(
@@ -1357,20 +1423,23 @@ function Verdict({ row }: { row: InvocationRow }) {
   const status = num(row.status);
   return (
     <div className="flex flex-col gap-3">
-      <p className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
-        <span className="sr-only">{t("pages.logs.status")}</span>
-        {/* status 0 is a request the gateway never got an answer to: a
-            refused connection or a timeout, with no http status to show */}
-        <Badge
-          tone={verdictTone(status)}
-          className={cn("text-[0.6875rem] font-semibold", status !== 0 && "font-mono")}
-        >
-          {status === 0 ? t("pages.logs.detail.noResponse") : status}
-        </Badge>
-        <time dateTime={row.ts} className="font-mono text-xs text-foreground">
-          {fmt.dateTimeMs(row.ts)}
-        </time>
-      </p>
+      <div className="flex flex-col gap-1.5">
+        <p className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+          <span className="sr-only">{t("pages.logs.status")}</span>
+          {/* status 0 is a request the gateway never got an answer to: a
+              refused connection or a timeout, with no http status to show */}
+          <Badge
+            tone={verdictTone(status)}
+            className={cn("text-[0.6875rem] font-semibold", status !== 0 && "font-mono")}
+          >
+            {status === 0 ? t("pages.logs.detail.noResponse") : status}
+          </Badge>
+          <time dateTime={row.ts} className="font-mono text-xs text-foreground">
+            {fmt.dateTimeMs(row.ts)}
+          </time>
+        </p>
+        <UpstreamSentence row={row} />
+      </div>
       <dl className={DETAIL_GRID}>
         <DetailId
           label={t("pages.logs.detail.requestId")}
@@ -1390,6 +1459,42 @@ function Verdict({ row }: { row: InvocationRow }) {
         />
       </dl>
     </div>
+  );
+}
+
+/**
+ * One line under the verdict that says what the upstream did, so a status the
+ * gateway made up is explained beside the badge (#2837). Nothing is printed for
+ * a request with nothing to add.
+ */
+function UpstreamSentence({ row }: { row: InvocationRow }) {
+  const { t } = useTranslation();
+  const note = upstreamNote(row);
+  if (!note) return null;
+  return <p className="text-xs text-[color:var(--text-secondary)]">{upstreamSentence(t, note)}</p>;
+}
+
+/**
+ * The upstream's status beside the caller's in the table, when they differ:
+ * a 503 the gateway made after the provider's 429. The number is the glance;
+ * the sentence is the title and what a screen reader hears (#2837).
+ */
+function UpstreamHint({ row }: { row: InvocationRow }) {
+  const { t } = useTranslation();
+  const upstream = upstreamHint(row);
+  // a status that differs from the caller's always has a sentence to go with it
+  const note = upstreamNote(row);
+  if (upstream === null || note === null) return null;
+  const sentence = upstreamSentence(t, note);
+  return (
+    <span
+      title={sentence}
+      className="inline-flex items-center gap-0.5 font-mono text-[0.6875rem] text-[color:var(--text-subtle)]"
+    >
+      <ArrowLeft aria-hidden className="h-3 w-3 flex-none" />
+      <span aria-hidden>{upstream}</span>
+      <span className="sr-only">{sentence}</span>
+    </span>
   );
 }
 

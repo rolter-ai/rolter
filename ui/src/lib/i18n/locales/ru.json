@@ -2818,6 +2818,18 @@
         "copyTraceId": "Скопировать ID трассировки",
         "traceNotSent": "Клиент не передал",
         "noResponse": "Нет ответа",
+        "upstream": {
+          "answered_one": "Апстрим вернул {{status}} после {{count}} попытки",
+          "answered_few": "Апстрим вернул {{status}} после {{count}} попыток",
+          "answered_many": "Апстрим вернул {{status}} после {{count}} попыток",
+          "answered_other": "Апстрим вернул {{status}} после {{count}} попытки",
+          "answeredBare": "Апстрим вернул {{status}}",
+          "silent_one": "Апстрим не ответил после {{count}} попытки",
+          "silent_few": "Апстрим не ответил после {{count}} попыток",
+          "silent_many": "Апстрим не ответил после {{count}} попыток",
+          "silent_other": "Апстрим не ответил после {{count}} попытки",
+          "refused": "Отклонён до обращения к апстриму"
+        },
         "routing": "Маршрутизация",
         "providerTarget": "Провайдер → цель",
         "providerToTarget": "{{provider}} → {{target}}",

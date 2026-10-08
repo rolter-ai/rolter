@@ -420,6 +420,15 @@ export interface InvocationRow {
   status: number | string;
   stream: number | string;
   cache_hit: number | string;
+  /// what the request did upstream, beside what the caller was told in
+  /// `status` (#2807). `upstream_status` is the HTTP status of the last
+  /// upstream attempt that answered, 0 when none did (a refusal, a cache hit,
+  /// the built-in model, a connection that failed first). `attempts` is how
+  /// many upstream attempts were made, 0 when it never reached one. both are
+  /// absent from a control plane that predates them, so a reader treats a
+  /// missing field as 0 and says nothing extra
+  upstream_status?: number | string;
+  attempts?: number | string;
   cache_read_tokens: number | string;
   cache_write_tokens: number | string;
   prompt_tokens: number | string;

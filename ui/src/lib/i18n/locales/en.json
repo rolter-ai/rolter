@@ -2670,6 +2670,14 @@
         "copyTraceId": "Copy trace ID",
         "traceNotSent": "Not sent by the caller",
         "noResponse": "No response",
+        "upstream": {
+          "answered_one": "Upstream returned {{status}} after {{count}} attempt",
+          "answered_other": "Upstream returned {{status}} after {{count}} attempts",
+          "answeredBare": "Upstream returned {{status}}",
+          "silent_one": "Upstream did not respond after {{count}} attempt",
+          "silent_other": "Upstream did not respond after {{count}} attempts",
+          "refused": "Refused before reaching an upstream"
+        },
         "routing": "Routing",
         "providerTarget": "Provider → target",
         "providerToTarget": "{{provider}} → {{target}}",
