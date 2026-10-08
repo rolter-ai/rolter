@@ -726,7 +726,12 @@ export function NavSidebar({
 
       {(footerLinks?.length || footerExtra || version || update) && (
         <div className={cn("flex flex-col gap-1.5", folded && "items-center")}>
-          <div className={cn("flex items-center gap-1 px-1", folded && "flex-col px-0")}>
+          {/* the update pill's text ends in an ellipsis when the links, the
+              language code and the version have taken the row (#2861) */}
+          <div
+            className={cn("flex items-center gap-1 px-1", folded && "flex-col px-0")}
+            onPointerOver={revealClippedText}
+          >
             {footerLinks?.map((l) =>
               l.href ? (
                 <a
@@ -804,6 +809,9 @@ export function NavSidebar({
             aria-haspopup={userMenu ? "menu" : undefined}
             aria-expanded={userMenu ? userOpen : undefined}
             title={folded && typeof user.name === "string" ? user.name : undefined}
+            // the full card cuts a long name or role with an ellipsis (#2861);
+            // folded, the title above already names the whole account
+            onPointerOver={folded ? undefined : revealClippedText}
             // folded, the initials are all the button says: the name is what a
             // reader hears, not a lone letter
             aria-label={folded && typeof user.name === "string" ? user.name : undefined}
