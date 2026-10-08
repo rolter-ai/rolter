@@ -702,8 +702,9 @@ instead of from Dependabot. A package that only arrives transitively through
 `bun.lock` raises no alert at all: every transitive `ui` alert was marked
 `fixed` the moment `package-lock.json` was deleted, with no version having
 changed. The nightly `ui lockfile audit` job closes that gap by reading the
-lockfile itself (see [UI lockfile audit](#ui-lockfile-audit)); #1931 and #2660
-track the vulnerable transitive packages it reports today.
+lockfile itself (see [UI lockfile audit](#ui-lockfile-audit)); #1931, #2660 and
+#2848 cleared the vulnerable transitive packages it reported, and #2850 tracks
+the one that has no patched release yet.
 
 ### UI lockfile audit
 
@@ -729,8 +730,25 @@ package still fails. All three fields are required; the script rejects a row wit
 no reason or no tracking issue. A row whose advisory is no longer reported is
 flagged as stale, so remove it. Run the audit locally with
 `cd ui && bun install --frozen-lockfile && bun scripts/audit-lockfile.ts`.
-`ui-security-updates.yml` does not list these findings under "left for a hand
-bump": that workflow plans from Dependabot alerts alone.
+
+Clear a finding in this order:
+
+1. `cd ui && bun audit fix --dry-run`. It moves a vulnerable package to the lowest
+   patched release that still satisfies every dependent's range, so each major
+   line of a package (`brace-expansion` is locked at 1.x, 2.x and 5.x behind three
+   `minimatch` majors) is fixed inside its own major and no 1.x consumer is pushed
+   onto 5.x. Run it without `--dry-run` and commit the `bun.lock` change; it
+   leaves `package.json` alone unless an exact pin has to move (#2848).
+2. When no patched release fits a parent's range, raise the parent, or add an
+   `overrides` entry held within the range that parent asks for and explain it in
+   `"//overrides"` in `ui/package.json` with its GHSA ids and the parent to drop it
+   with (#1931). A flat override applies to every dependent of that name, so it
+   cannot express a per-major fix.
+3. When no patched release exists at all, `bun audit fix` says "no published
+   version fixes". Accept the advisory through `ui/audit-accepted.json` with a
+   tracking issue rather than inventing a version (`sprintf-js`, #2850).
+   `ui-security-updates.yml` does not list these findings under "left for a hand
+   bump": that workflow plans from Dependabot alerts alone.
 
 ### UI security updates
 
