@@ -27,6 +27,7 @@ import {
   type CurrencySettings,
   type ModelPriceRow,
 } from "@/lib/api";
+import { useErrorVisibility } from "@/lib/error-visibility";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useScreenReady } from "@/lib/ux-react";
 
@@ -228,6 +229,9 @@ export default function Pricing() {
   );
 }
 
+/** the fields of the price form, for the errors a refused save puts on screen */
+type PriceField = "model" | "input" | "output" | "cached" | "currency";
+
 function UpsertPriceDialog({
   open,
   onOpenChange,
@@ -251,7 +255,7 @@ function UpsertPriceDialog({
   const [cachedInputPerMtok, setCachedInputPerMtok] = React.useState("");
   const baseCurrency = settings?.base ?? "USD";
   const [currency, setCurrency] = React.useState(baseCurrency);
-  const [attempted, setAttempted] = React.useState(false);
+  const visibility = useErrorVisibility<PriceField>();
 
   // names worth offering: the routes the gateway serves and the models seen in
   // traffic. both are suggestions — an analytics store may be absent
@@ -290,7 +294,7 @@ function UpsertPriceDialog({
 
   React.useEffect(() => {
     if (open) {
-      setAttempted(false);
+      visibility.reset();
       setModel(existing?.model ?? "");
       setInputPerMtok(existing?.input_per_mtok ?? "");
       setOutputPerMtok(existing?.output_per_mtok ?? "");
@@ -348,7 +352,8 @@ function UpsertPriceDialog({
     currency: currency.trim() ? undefined : t("pages.pricing.currencyRequired"),
   };
   const invalid = Object.values(errors).some(Boolean);
-  const shown: Partial<typeof errors> = attempted ? errors : {};
+  // a field's error waits for a refused save, so the form opens with none
+  const shown = (field: PriceField) => (visibility.shows(field) ? errors[field] : undefined);
 
   const dirty =
     model.trim() !== (existing?.model ?? "") ||
@@ -375,12 +380,12 @@ function UpsertPriceDialog({
       saving={submit.isPending}
       onSave={() => {
         // the refusal is shown at the fields, not by greying the button out
-        setAttempted(true);
+        visibility.attempt();
         if (!invalid) submit.mutate();
       }}
     >
       <div className="space-y-3">
-        <Field label={t("pages.pricing.modelName")} error={shown.model}>
+        <Field label={t("pages.pricing.modelName")} error={shown("model")}>
           <Combobox
             allowCustom
             options={modelOptions}
@@ -393,7 +398,7 @@ function UpsertPriceDialog({
         <Field
           label={t("pages.pricing.inputPrice")}
           hint={t("pages.pricing.priceUnit", { currency })}
-          error={shown.input}
+          error={shown("input")}
         >
           <Input
             type="number"
@@ -406,7 +411,7 @@ function UpsertPriceDialog({
         <Field
           label={t("pages.pricing.outputPrice")}
           hint={t("pages.pricing.priceUnit", { currency })}
-          error={shown.output}
+          error={shown("output")}
         >
           <Input
             type="number"
@@ -419,7 +424,7 @@ function UpsertPriceDialog({
         <Field
           label={t("pages.pricing.cachedInputPrice")}
           hint={t("pages.pricing.priceUnit", { currency })}
-          error={shown.cached}
+          error={shown("cached")}
         >
           <Input
             type="number"
@@ -438,7 +443,7 @@ function UpsertPriceDialog({
               : t("pages.pricing.unconvertible", { code: currency, base: baseCurrency })
           }
           info={t("pages.pricing.currencyInfo")}
-          error={shown.currency}
+          error={shown("currency")}
         >
           <Combobox allowCustom options={currencyOptions} value={currency} onChange={setCurrency} />
         </Field>

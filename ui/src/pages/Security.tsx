@@ -18,6 +18,7 @@ import {
   type SecuritySettingsDto,
   type UpdateSecuritySettingsInput,
 } from "@/lib/api";
+import { useErrorVisibility } from "@/lib/error-visibility";
 import { gatewayPickup, type Pickup } from "@/lib/gateway-pickup";
 import { useFormat } from "@/lib/i18n/format";
 import {
@@ -120,7 +121,7 @@ function SecurityScreen() {
   // a list is checked as it is typed, but its errors wait for the caret to
   // leave it: `h` on the way to `https://` is not a mistake yet. a problem the
   // form was loaded with is shown from the start, since nobody typed it
-  const [touched, setTouched] = React.useState<Partial<Record<ListKey, boolean>>>({});
+  const visibility = useErrorVisibility<ListKey>();
   // the loosenings a save is waiting on, kept after the dialog closes so its
   // body does not empty while it fades
   const [confirming, setConfirming] = React.useState<{ open: boolean; items: Loosening[] }>({
@@ -140,7 +141,7 @@ function SecurityScreen() {
       // value it already had; the refetch is what makes the save stick (#1197)
       void queryClient.invalidateQueries({ queryKey: ["security-settings"] });
       commit(fromDto(dto));
-      setTouched({});
+      visibility.reset();
       setConfirming((c) => ({ ...c, open: false }));
       setSavedAt(Date.now());
       toast.push({
@@ -206,14 +207,14 @@ function SecurityScreen() {
     changed: changed.includes(key),
     problems,
     // a problem in a field nobody has edited came from the store
-    showProblems: touched[key] === true || !changed.includes(key),
+    showProblems: visibility.shows(key) || !changed.includes(key),
     onChange: (value: string) => set({ [key]: value } as Pick<FormState, ListKey>),
-    onBlur: () => setTouched((prev) => ({ ...prev, [key]: true })),
+    onBlur: () => visibility.touch(key),
   });
 
   const discard = () => {
     reset();
-    setTouched({});
+    visibility.reset();
     save.reset();
   };
 

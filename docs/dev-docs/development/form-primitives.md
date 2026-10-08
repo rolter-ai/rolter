@@ -139,9 +139,9 @@ const shown = (field) => (visibility.shows(field) ? found[field] : "");
   hold a problem are opened by the refused save, so the field it names is on
   screen.
 
-`Pricing`'s and `Plugins`' `attempted` flags and `Security`'s `touched` map
-solved the same question for themselves; they are the two halves of this, and
-moving them onto the hook is #2825.
+`Pricing` and `Plugins` use only `attempt()`: their errors wait for a refused
+save, as they always did. `Security` uses `touch()` on a list's blur, and shows a
+problem in a list nobody has edited from the start, since it came from the store.
 
 `DialogBody` (`ui/src/components/ui/dialog.tsx`) holds a dialog form's fields,
 between `DialogHeader` and `DialogFooter`. A panel with a body caps itself at
