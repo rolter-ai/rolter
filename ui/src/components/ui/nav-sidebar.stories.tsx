@@ -1,4 +1,15 @@
-import { Boxes, KeyRound, LogOut, Play, ScrollText, UserCog } from "lucide-react";
+import {
+  BookOpen,
+  Boxes,
+  Bug,
+  Keyboard,
+  KeyRound,
+  LogOut,
+  Play,
+  ScrollText,
+  Search,
+  UserCog,
+} from "lucide-react";
 import type { Meta, StoryObj } from "@storybook/react";
 import * as React from "react";
 import { expect, fn, userEvent, waitFor, within } from "storybook/test";
@@ -1134,6 +1145,141 @@ export const ClippedLabelInAFlyoutNamesItself: Story = {
     const short = labelOf(flyout, "Usage");
     await userEvent.hover(short);
     await expect(short).not.toHaveAttribute("title");
+  },
+};
+
+// the footer's account card cuts a long name or role with an ellipsis, and so
+// does the update pill beside the version; the rail names what it cut, once the
+// pointer is over it, and leaves what fits alone (#2861)
+const LONG_NAME = "release-engineering-service-account@internal.example-organisation.com";
+const LONG_ROLE = "Organisation administrator with billing and audit access";
+
+const cardText = (card: HTMLElement, text: string) =>
+  within(card).getByText(text, { selector: "button span" });
+
+const accountCard = (scope: HTMLElement) =>
+  within(scope).getByRole("button", { name: new RegExp(LONG_NAME.slice(0, 12)) });
+
+export const ClippedAccountCardNamesItself: Story = {
+  args: { user: { name: LONG_NAME, role: LONG_ROLE, initials: "R" } },
+  play: async ({ canvasElement }) => {
+    const nav = canvasElement.querySelector("nav") as HTMLElement;
+    await expectWidth(nav, 232);
+    const card = accountCard(canvasElement);
+    const name = cardText(card, LONG_NAME);
+    const role = cardText(card, LONG_ROLE);
+
+    // both really are cut, or the rest proves nothing
+    await expect(name.scrollWidth).toBeGreaterThan(name.clientWidth + 1);
+    await expect(role.scrollWidth).toBeGreaterThan(role.clientWidth + 1);
+    await expect(name).not.toHaveAttribute("title");
+    await expect(role).not.toHaveAttribute("title");
+
+    await userEvent.hover(name);
+    await expect(name).toHaveAttribute("title", LONG_NAME);
+    await expect(role).not.toHaveAttribute("title");
+    await userEvent.hover(role);
+    await expect(role).toHaveAttribute("title", LONG_ROLE);
+
+    // the card itself stays untitled: only the text that is cut names itself
+    await expect(card).not.toHaveAttribute("title");
+
+    // a name that has since been given room takes the title back
+    nav.style.width = "2000px";
+    await waitFor(() => expect(name.scrollWidth).toBeLessThanOrEqual(name.clientWidth + 1));
+    await userEvent.unhover(name);
+    await userEvent.hover(name);
+    await expect(name).not.toHaveAttribute("title");
+  },
+};
+
+export const AccountCardThatFitsNamesNothing: Story = {
+  play: async ({ canvasElement }) => {
+    const nav = canvasElement.querySelector("nav") as HTMLElement;
+    await expectWidth(nav, 232);
+    const card = within(canvasElement).getByRole("button", { name: /admin@rolter\.dev/ });
+    const name = cardText(card, "admin@rolter.dev");
+    const role = cardText(card, "Admin");
+    await expect(name.scrollWidth).toBeLessThanOrEqual(name.clientWidth + 1);
+
+    await userEvent.hover(name);
+    await expect(name).not.toHaveAttribute("title");
+    await userEvent.hover(role);
+    await expect(role).not.toHaveAttribute("title");
+    await expect(card).not.toHaveAttribute("title");
+  },
+};
+
+export const FoldedAccountCardNamesTheWholeAccount: Story = {
+  args: {
+    defaultCollapsed: true,
+    user: { name: LONG_NAME, role: LONG_ROLE, initials: "R" },
+  },
+  play: async ({ canvasElement }) => {
+    const nav = canvasElement.querySelector("nav") as HTMLElement;
+    await expectWidth(nav, 52);
+    // the strip has room for the initials only: the button carries the name,
+    // and there is no text left inside it to cut
+    const card = within(canvasElement).getByRole("button", { name: LONG_NAME });
+    await expect(card).toHaveAttribute("title", LONG_NAME);
+    await expect(card).not.toHaveTextContent(LONG_NAME);
+    await userEvent.hover(card.firstElementChild as HTMLElement);
+    await expect(card.querySelector("[title]")).toBeNull();
+  },
+};
+
+// the real footer: four icon links, the language picker, the version and the
+// pill, all in a 232px row
+const crowdedFooter = {
+  footerLinks: [
+    { key: "palette", title: "Open the command palette", icon: <Search />, onClick: fn() },
+    { key: "shortcuts", title: "Keyboard shortcuts", icon: <Keyboard />, onClick: fn() },
+    { key: "docs", title: "Documentation", icon: <BookOpen />, href: "https://rolter.dev" },
+    { key: "bug", title: "Report a bug", icon: <Bug />, href: "https://rolter.dev/issues" },
+  ],
+  footerExtra: (collapsed: boolean) => <LocalePicker collapsed={collapsed} />,
+  version: "v0.1.0",
+  update,
+};
+
+const pillText = (scope: HTMLElement) =>
+  within(scope).getByRole("link", { name: hintName }).querySelector("span.truncate") as HTMLElement;
+
+export const ClippedUpdatePillNamesItself: Story = {
+  args: crowdedFooter,
+  play: async ({ canvasElement }) => {
+    const nav = canvasElement.querySelector("nav") as HTMLElement;
+    await expectWidth(nav, 232);
+    const text = pillText(canvasElement);
+    await expect(text).toHaveTextContent("v0.2.0 available");
+    // the row really cuts the pill, or the rest proves nothing
+    await expect(text.scrollWidth).toBeGreaterThan(text.clientWidth + 1);
+    await expect(text).not.toHaveAttribute("title");
+
+    await userEvent.hover(text);
+    await expect(text).toHaveAttribute("title", "v0.2.0 available");
+
+    // the link keeps the sentence that says where it goes
+    const link = within(canvasElement).getByRole("link", { name: hintName });
+    await expect(link).toHaveAttribute("title", expect.stringMatching(hintName));
+
+    // the footer's own icon links keep the titles their authors wrote
+    const docs = within(canvasElement).getByRole("link", { name: "Documentation" });
+    await userEvent.hover(docs);
+    await expect(docs).toHaveAttribute("title", "Documentation");
+    await expect(docs.querySelector("[title]")).toBeNull();
+  },
+};
+
+export const UpdatePillThatFitsNamesNothing: Story = {
+  args: { version: "v0.1.0", update },
+  play: async ({ canvasElement }) => {
+    const nav = canvasElement.querySelector("nav") as HTMLElement;
+    await expectWidth(nav, 232);
+    const text = pillText(canvasElement);
+    await expect(text.scrollWidth).toBeLessThanOrEqual(text.clientWidth + 1);
+    await userEvent.hover(text);
+    await expect(text).not.toHaveAttribute("title");
   },
 };
 

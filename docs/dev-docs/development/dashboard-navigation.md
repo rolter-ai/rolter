@@ -275,11 +275,25 @@ the label it has cut, and only for that one:
   way, so the accessible name never depended on it.
 - An experimental entry does not clip at all: its name wraps beside or above its
   badge (#2812), so there is nothing to reveal.
+- The footer cuts two more things the same way, and answers the same way (#2861).
+  The account card's name and role are cut at the default width by a long e-mail
+  address or a long role name, so the card button hands `revealClippedText` to its
+  own `onPointerOver`. The update pill's text ("v0.2.0 available") is cut when
+  the footer's four icon links, the language code and the version have taken the
+  row, so the row that holds them does the same. The pill's link keeps the
+  sentence it already carries as `title` and `aria-label`; the text inside it
+  names only itself, and an icon link's author-written `title` is left alone.
+- Folded, the card has no text left to cut: its `title` and `aria-label` already
+  carry the whole name, and the handler is not attached.
 
 Stories: `ClippedRailLabelNamesItself` and `ClippedLabelInAFlyoutNamesItself` in
 `nav-sidebar.stories.tsx`, and `RailLabelsNameThemselvesWhenCutInRussian` in
 `App.stories.tsx`, which opens every group of the real navigation at 1024px in
-`ru` and checks each label that is cut and one that is not.
+`ru` and checks each label that is cut and one that is not. For the footer,
+`ClippedAccountCardNamesItself` and `ClippedUpdatePillNamesItself` cut a long
+e-mail, a long role and the crowded footer at 232px, and
+`AccountCardThatFitsNamesNothing`, `UpdatePillThatFitsNamesNothing` and
+`FoldedAccountCardNamesTheWholeAccount` hold the cases that must stay quiet.
 
 ## Resize
 
