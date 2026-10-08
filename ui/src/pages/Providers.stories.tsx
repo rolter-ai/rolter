@@ -604,6 +604,106 @@ export const EveryColumnSorts: Story = {
   },
 };
 
+// ------------------------------------------------------- kind display names (#2839)
+
+const row = (id: string, name: string, kind: string): ProviderRow => ({
+  ...SPARE,
+  id,
+  name,
+  slug: name,
+  kind,
+});
+
+// ids in the order `openai_compatible`, `qwen`, `brand_new_kind`; the names they
+// show sort `Alibaba Qwen`, `OpenAI-compatible`, so the two orders disagree
+const KINDS = routes([
+  [
+    "/providers",
+    () => [
+      row("p-10", "vllm-local", "openai_compatible"),
+      row("p-11", "qwen-cn", "qwen"),
+      row("p-12", "edge-gw", "brand_new_kind"),
+    ],
+  ],
+  ["/config/problems", () => ({ problems: [] })],
+]);
+
+/** the type cell of every body row, in the order the list shows them */
+const typeCells = (canvas: ReturnType<typeof within>) =>
+  canvas
+    .getAllByRole("row")
+    .slice(1)
+    .map((r: HTMLElement) => within(r).getAllByRole("cell")[1]?.textContent);
+
+/**
+ * The type column prints the kind's display name, not the stored id, and a kind
+ * the catalog does not name keeps its id. The id and the name both find the
+ * row, and the column sorts by what it shows.
+ */
+export const KindShowsItsDisplayName: Story = {
+  render: () => (
+    <Harness fetchStub={KINDS}>
+      <Providers />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getAllByText("vllm-local").length).toBeGreaterThan(0));
+    await expect(typeCells(canvas)).toEqual([
+      "OpenAI-compatible",
+      "Alibaba Qwen",
+      "brand_new_kind",
+    ]);
+    await expect(canvas.queryByText("openai_compatible")).toBeNull();
+
+    // the stored id still finds the row, and so does the name it is shown as
+    const search = canvas.getByLabelText("Search providers");
+    await userEvent.type(search, "openai_compatible");
+    await waitFor(() => expect(typeCells(canvas)).toEqual(["OpenAI-compatible"]));
+    await userEvent.clear(search);
+    await userEvent.type(search, "alibaba");
+    await waitFor(() => expect(typeCells(canvas)).toEqual(["Alibaba Qwen"]));
+    await userEvent.clear(search);
+    await waitFor(() => expect(typeCells(canvas)).toHaveLength(3));
+
+    // the type column sorts by the names, not by the ids behind them
+    const type = canvas.getByRole("columnheader", { name: "Type" });
+    await userEvent.click(within(type).getByRole("button"));
+    await expect(type).toHaveAttribute("aria-sort", "ascending");
+    await expect(typeCells(canvas)).toEqual([
+      "Alibaba Qwen",
+      "brand_new_kind",
+      "OpenAI-compatible",
+    ]);
+    await userEvent.click(within(type).getByRole("button"));
+    await expect(type).toHaveAttribute("aria-sort", "descending");
+    await expect(typeCells(canvas)).toEqual([
+      "OpenAI-compatible",
+      "brand_new_kind",
+      "Alibaba Qwen",
+    ]);
+  },
+};
+
+/** The same names in Russian, where `openai_compatible` reads "OpenAI-совместимый". */
+export const KindShowsItsDisplayNameInRussian: Story = {
+  globals: { locale: "ru" },
+  render: () => (
+    <Harness fetchStub={KINDS}>
+      <Providers />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getAllByText("vllm-local").length).toBeGreaterThan(0));
+    await expect(typeCells(canvas)).toEqual([
+      "OpenAI-совместимый",
+      "Alibaba Qwen",
+      "brand_new_kind",
+    ]);
+  },
+};
+
 // ------------------------------------------------ test right after a create (#2142)
 
 const CREATED: ProviderRow = {

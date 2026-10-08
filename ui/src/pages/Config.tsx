@@ -26,6 +26,7 @@ import {
   type RouteDto,
   type VirtualKeyDto,
 } from "@/lib/api";
+import { providerKindName } from "@/lib/provider-kinds";
 import { errorDetail, useToast } from "@/lib/toast";
 import type { ReadState } from "@/lib/read-state";
 import { useScreenReady } from "@/lib/ux-react";
@@ -160,7 +161,9 @@ function ProvidersTable({ read, providers }: { read: ReadState; providers: Provi
         {providers.map((p, i) => (
           <ListRow key={`${p.name}-${i}`} grid={PROVIDER_GRID}>
             <ListCell className={VALUE}>{p.name}</ListCell>
-            <ListCell className={`${VALUE} text-[color:var(--text-secondary)]`}>{p.kind}</ListCell>
+            <ListCell className="min-w-0 text-xs text-[color:var(--text-secondary)]">
+              {providerKindName(p.kind, t)}
+            </ListCell>
             <ListCell className={`${VALUE} text-muted-foreground`}>{p.api_base}</ListCell>
           </ListRow>
         ))}

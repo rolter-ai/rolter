@@ -53,7 +53,12 @@ function Stage({
 // a slice of what GET /api/v1/config returns: the three tabled sections plus
 // a handful of the ~40 generic ones the screen renders collapsed (#1204)
 const CONFIG = {
-  providers: [{ name: "openai-prod", kind: "openai", api_base: "https://api.openai.com/v1" }],
+  providers: [
+    { name: "openai-prod", kind: "openai", api_base: "https://api.openai.com/v1" },
+    { name: "vllm-local", kind: "openai_compatible", api_base: "http://vllm.internal:8000/v1" },
+    // a kind a later control plane gained, which this catalog does not name
+    { name: "edge-gw", kind: "brand_new_kind", api_base: "https://edge.example.com" },
+  ],
   routes: [
     {
       model: "gpt-4o",
@@ -95,6 +100,13 @@ export const Loaded: Story = {
     await expectListTable(canvasElement, "Providers");
     await expectListTable(canvasElement, "Routes");
     await expectListTable(canvasElement, "Virtual keys (from the config file)");
+    // the kind column reads the catalog's display name, and a kind it does not
+    // name keeps its stored id
+    const providers = canvas.getByRole("table", { name: "Providers" });
+    await expect(within(providers).getByText("OpenAI")).toBeVisible();
+    await expect(within(providers).getByText("OpenAI-compatible")).toBeVisible();
+    await expect(within(providers).queryByText("openai_compatible")).toBeNull();
+    await expect(within(providers).getByText("brand_new_kind")).toBeVisible();
     // a target names its provider, the model it calls and a labelled weight
     await expect(canvas.getByText("model gpt-4o-2024-08-06", { exact: false })).toBeVisible();
     await expect(canvas.getByText("weight 3", { exact: false })).toBeVisible();
@@ -113,6 +125,18 @@ export const Loaded: Story = {
     const region = await canvas.findByRole("region", { name: /^cache/ });
     await expect(region).toBeVisible();
     await waitFor(() => expect(region).toHaveTextContent(/"ttl_secs": 300/));
+  },
+};
+
+// the display name follows the dashboard's language, the id never leaks through
+export const KindNamesInRussian: Story = {
+  globals: { locale: "ru" },
+  render: () => <Stage fetchStub={loaded} />,
+  play: async ({ canvasElement }) => {
+    const providers = await within(canvasElement).findByRole("table", { name: "Провайдеры" });
+    await expect(within(providers).getByText("OpenAI-совместимый")).toBeVisible();
+    await expect(within(providers).queryByText("openai_compatible")).toBeNull();
+    await expect(within(providers).getByText("brand_new_kind")).toBeVisible();
   },
 };
 

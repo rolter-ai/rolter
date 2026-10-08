@@ -22,6 +22,7 @@ import {
 } from "@/components/ui/sheet";
 import { slugify } from "@/lib/slug";
 import { errorDetail, useToast } from "@/lib/toast";
+import { providerKindDescription, providerKindName } from "@/lib/provider-kinds";
 import { useFormTelemetry } from "@/lib/ux-react";
 import {
   apiBaseDoublesV1,
@@ -242,9 +243,8 @@ export function ProviderSheet({
   const { t } = useTranslation();
   // a kind's display name and one-line description, with the stored id as the
   // fallback for a kind the deployment gained and this catalog has not named
-  const kindName = (kind: string) => t(`providerSheet.kinds.${kind}.name`, { defaultValue: kind });
-  const kindDescription = (kind: string) =>
-    t(`providerSheet.kinds.${kind}.description`, { defaultValue: "" });
+  const kindName = (kind: string) => providerKindName(kind, t);
+  const kindDescription = (kind: string) => providerKindDescription(kind, t);
 
   // edit mode uses the backend's tri-state semantics: omit a field to leave it
   // unchanged, send "" to clear it, send a value to set/rotate it. api_key is
