@@ -45,6 +45,7 @@ import {
   RowIconButton,
   SearchInput,
   Toolbar,
+  primaryColumn,
 } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -221,7 +222,7 @@ export default function Users() {
 
   // the roles column holds one line per grant, each with its own two controls,
   // so it takes the widest share and the table a floor that fits a grant line
-  const GRID = "1.5fr 2.2fr 110px 0.9fr 110px";
+  const GRID = `${primaryColumn(1.5)} 2.2fr 110px 0.9fr 110px`;
 
   return (
     <PageBody>
@@ -1678,7 +1679,7 @@ function ChangeRoleDialog({
 }
 
 // columns of the pending table: invitee, role, scope, who sent it, expiry, revoke
-const PENDING_GRID = "1.5fr 0.8fr 1fr 1.3fr 1fr 56px";
+const PENDING_GRID = `${primaryColumn(1.5)} 0.8fr 1fr 1.3fr 1fr 56px`;
 
 /** the link no longer works, but the invitation still holds its address until it is revoked */
 function isExpired(invitation: Invitation): boolean {

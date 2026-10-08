@@ -51,6 +51,7 @@ import {
   PageBody,
   RowIconButton,
   SearchInput,
+  primaryColumn,
 } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -198,7 +199,7 @@ export default function Keys() {
     URL.revokeObjectURL(a.href);
   };
 
-  const GRID = "1.2fr 1fr 1.4fr 1.4fr 1.1fr 60px 68px";
+  const GRID = `${primaryColumn(1.2)} 1fr 1.4fr 1.4fr 1.1fr 60px 68px`;
 
   return (
     <PageBody>
@@ -248,7 +249,8 @@ export default function Keys() {
         </p>
       )}
 
-      <ListTable label={t("screens.virtual-keys.title")}>
+      {/* as on Providers, the table's floor carries the name column's (#2812) */}
+      <ListTable label={t("screens.virtual-keys.title")} minWidth={840}>
         <ListHeader grid={GRID}>
           <ListHeaderCell>{t("pages.virtualKeys.colName")}</ListHeaderCell>
           <ListHeaderCell>{t("pages.virtualKeys.colKey")}</ListHeaderCell>
@@ -273,7 +275,9 @@ export default function Keys() {
             className={key.disabled ? "bg-[color:var(--surface-subtle)]/60" : undefined}
           >
             <ListCell className="min-w-0">
-              <div className="flex min-w-0 items-center gap-1.5">
+              {/* the badge wraps under the name rather than taking the name's
+                  room: the name is what the row is found by (#2812) */}
+              <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1">
                 <span className="truncate text-sm font-semibold">
                   {key.name ?? t("pages.virtualKeys.unnamed")}
                 </span>

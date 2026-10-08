@@ -157,6 +157,18 @@ any dialog with more than a couple of fields. A hand-written
 `DialogFooter` wraps as well. The primary action is its last child, so a wrapped
 footer leaves it at the bottom right, where it was.
 
+`SheetHeader` (same file) is the title and the line under it. That line says what the sheet is for, often a whole
+sentence ("the plaintext key is shown once, right after creation — copy it
+then"), so it wraps and nothing clips it (#2812). It was one line with an
+ellipsis, and at a 1024px window Create virtual key and Invite user lost the end
+of the sentence: the part of it that mattered. A value with no place to break
+(an id, a URL) breaks inside the line (`overflow-wrap`) instead of widening the
+panel. A sheet passes its subtitle and never styles it, and a new sheet that
+needs a shorter header shortens the sentence, not the line. Stories:
+`LongDescriptionWraps` and `UnbrokenDescriptionStaysInThePanel` under
+**Overlays/Sheet**, and `CreateSubtitleIsWholeAt1024` and
+`InviteSubtitleIsWholeAt1024` (each also in Russian) on Virtual Keys and Users.
+
 ## Copy
 
 The primitives carry the small amount of copy they own under `common.*` in the

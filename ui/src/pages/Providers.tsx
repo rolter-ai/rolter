@@ -25,6 +25,7 @@ import {
   SortLabel,
   Toolbar,
   useSort,
+  primaryColumn,
 } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -250,7 +251,7 @@ export default function Providers() {
   });
   const filtering = !!q || !!labelFilter;
 
-  const GRID = "1fr 1.1fr 1.7fr 1fr 1fr 1fr 108px";
+  const GRID = `${primaryColumn(1)} 1.1fr 1.7fr 1fr 1fr 1fr 108px`;
 
   return (
     <PageBody>
@@ -296,7 +297,9 @@ export default function Providers() {
         />
       )}
 
-      <ListTable label={t("screens.providers.title")}>
+      {/* the name column holds at least its floor, which the other columns used to
+          give up at this width, so the table's floor carries it too (#2812) */}
+      <ListTable label={t("screens.providers.title")} minWidth={860}>
         <ListHeader grid={GRID}>
           <SortLabel
             label={t("pages.providers.colName")}

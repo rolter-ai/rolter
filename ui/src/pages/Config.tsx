@@ -14,6 +14,7 @@ import {
   ListHeaderCell,
   ListRow,
   ListTable,
+  primaryColumn,
 } from "@/components/screen";
 import { CodeBlock } from "@/components/ui/code-block";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -128,9 +129,9 @@ export default function Config() {
   );
 }
 
-const PROVIDER_GRID = "1fr 1.1fr 2fr";
-const ROUTE_GRID = "1.2fr 1.1fr 2fr";
-const KEY_GRID = "1fr 2fr";
+const PROVIDER_GRID = `${primaryColumn(1)} 1.1fr 2fr`;
+const ROUTE_GRID = `${primaryColumn(1.2)} 1.1fr 2fr`;
+const KEY_GRID = `${primaryColumn(1)} 2fr`;
 // values here are config the operator reads in full: a base url or a model name
 // wraps rather than truncating, so nothing is only readable by resizing
 const VALUE = "min-w-0 break-all font-mono text-xs";

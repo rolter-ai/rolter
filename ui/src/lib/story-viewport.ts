@@ -26,6 +26,13 @@ export const WIDE = { width: 1440, height: 900 } as const;
  */
 export const LAPTOP = { width: 1100, height: 800 } as const;
 /**
+ * A laptop window split in two, the width the #1789 livetest pass met the
+ * truncations of #2812 at: 1024 is the narrowest the rail is still the full,
+ * resizable one (`BELOW_LG` ends at 1023.98), and the screens beside it have
+ * 1024 less the rail's 232 to draw their tables and sheets in
+ */
+export const SPLIT = { width: 1024, height: 768 } as const;
+/**
  * A 1280×720 screen at 200 % zoom, the short window #2003 lost a dialog's
  * title and buttons in. WCAG 1.4.10 asks for reflow at that size
  */
@@ -37,6 +44,7 @@ const OPTIONS = {
   rolterTablet: { name: "Tablet 768", styles: { width: "768px", height: "1024px" } },
   rolterWide: { name: "Wide 1440", styles: { width: "1440px", height: "900px" } },
   rolterLaptop: { name: "Laptop 1100", styles: { width: "1100px", height: "800px" } },
+  rolterSplit: { name: "Split 1024", styles: { width: "1024px", height: "768px" } },
   rolterShort: { name: "Short 640×360", styles: { width: "640px", height: "360px" } },
 };
 
@@ -64,6 +72,11 @@ export const atWide = {
 export const atLaptop = {
   parameters: { viewportSize: LAPTOP, viewport: { options: OPTIONS } },
   globals: { viewport: { value: "rolterLaptop", isRotated: false } },
+};
+
+export const atSplit = {
+  parameters: { viewportSize: SPLIT, viewport: { options: OPTIONS } },
+  globals: { viewport: { value: "rolterSplit", isRotated: false } },
 };
 
 export const atShort = {
@@ -133,6 +146,24 @@ export async function expectInFrame(el: Element | Range, frame: Element): Promis
   const left = frame.getBoundingClientRect().left + frame.clientLeft;
   await expect(box.left).toBeGreaterThanOrEqual(left - 0.5);
   await expect(box.right).toBeLessThanOrEqual(left + frame.clientWidth + 0.5);
+}
+
+/**
+ * The text of `el` is shown whole: nothing is cut by the element's own edge, so
+ * no ellipsis is drawn, and a line that did not fit wrapped instead.
+ *
+ * `toBeVisible` passes a clipped label, and the computed `text-overflow` of a
+ * `truncate` element reads `ellipsis` whether or not it truncates anything, so
+ * this reads the geometry: the content may not be wider than the element, and
+ * the text's own rectangle (a `Range` over its contents) must end inside the
+ * element's padding box. `el` has to be a block, flex or grid item: an inline
+ * element reports a `clientWidth` of 0 whatever it holds.
+ */
+export async function expectNotTruncated(el: HTMLElement): Promise<void> {
+  await expect(el.scrollWidth).toBeLessThanOrEqual(el.clientWidth + 1);
+  const text = document.createRange();
+  text.selectNodeContents(el);
+  await expectInFrame(text, el);
 }
 
 /**

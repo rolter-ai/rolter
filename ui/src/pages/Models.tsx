@@ -27,6 +27,7 @@ import {
   StatusDot,
   useSort,
   Toolbar,
+  primaryColumn,
 } from "@/components/screen";
 import { Button } from "@/components/ui/button";
 import { DeleteIconButton } from "@/components/ui/delete-icon-button";
@@ -58,7 +59,7 @@ import { useScreenReady } from "@/lib/ux-react";
 // and the actions for a db row's three buttons in russian, the longer catalog:
 // at 108px they spilled over the price cell, which the weight column beside it
 // used to hide
-const GRID = "1.25fr 0.8fr 1.05fr 0.85fr 1fr 0.95fr 168px";
+const GRID = `${primaryColumn(1.25)} 0.8fr 1.05fr 0.85fr 1fr 0.95fr 168px`;
 
 type Origin = "all" | "config" | "db";
 

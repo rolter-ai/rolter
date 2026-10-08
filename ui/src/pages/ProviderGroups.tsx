@@ -25,6 +25,7 @@ import {
   SortLabel,
   useSort,
   Toolbar,
+  primaryColumn,
 } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -42,7 +43,7 @@ import { useScope } from "@/lib/scope";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useScreenReady } from "@/lib/ux-react";
 
-const GRID = "1.2fr 1fr 1.2fr 1fr 2fr 108px";
+const GRID = `${primaryColumn(1.2)} 1fr 1.2fr 1fr 2fr 108px`;
 
 export default function ProviderGroups() {
   const { t } = useTranslation();
@@ -155,7 +156,8 @@ export default function ProviderGroups() {
         />
       )}
 
-      <ListTable label={t("screens.provider-groups.title")}>
+      {/* as on Providers, the table's floor carries the name column's (#2812) */}
+      <ListTable label={t("screens.provider-groups.title")} minWidth={840}>
         <ListHeader grid={GRID}>
           <SortLabel
             label={t("pages.providerGroups.columns.name")}

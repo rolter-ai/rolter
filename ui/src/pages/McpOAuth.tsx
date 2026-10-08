@@ -27,6 +27,7 @@ import {
   PageBody,
   Pill,
   RowIconButton,
+  primaryColumn,
 } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -63,8 +64,8 @@ import { useScreenReady } from "@/lib/ux-react";
 // grant is the unit of consent (revoking it cascades to its sessions), and a
 // listing only ever carries rows the caller is allowed to see (#561)
 
-const GRANT_GRID = "1.2fr 1.3fr 1.6fr 150px 130px 96px 44px";
-const SESSION_GRID = "1.1fr 1.2fr 1.4fr 140px 130px 150px 44px 44px";
+const GRANT_GRID = `${primaryColumn(1.2)} 1.3fr 1.6fr 150px 130px 96px 44px`;
+const SESSION_GRID = `${primaryColumn(1.1)} 1.2fr 1.4fr 140px 130px 150px 44px 44px`;
 
 // the org's grants, sessions and the lookup tables that give them names. The
 // users listing is best-effort: a member may not be allowed to read it, and
