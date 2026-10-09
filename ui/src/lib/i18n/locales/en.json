@@ -655,6 +655,7 @@
         "db": "DB-managed",
         "config": "Config"
       },
+      "originFilterAria": "Filter models by origin",
       "configLegend": "shipped in config · immutable",
       "columns": {
         "model": "Model",
