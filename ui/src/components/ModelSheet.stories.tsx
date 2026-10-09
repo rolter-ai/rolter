@@ -1355,10 +1355,11 @@ export const PricingLinksToRolterDocs: Story = {
 };
 
 /**
- * The price table with one row for `gpt-4o`, carrying `cacheWrite` as the
- * control plane returns it: decimal text, six places, or null for no rate.
+ * The price table with one row for `gpt-4o`, carrying the two cache-write rates
+ * as the control plane returns them: decimal text, six places, or null for no
+ * rate.
  */
-function pricedAt(cacheWrite: string | null): FetchStub {
+function pricedAt(cacheWrite: string | null, cacheWrite1h: string | null = null): FetchStub {
   const row: ModelPriceRow = {
     id: "price-1",
     model: "gpt-4o",
@@ -1366,6 +1367,7 @@ function pricedAt(cacheWrite: string | null): FetchStub {
     output_per_mtok: "10.000000",
     cached_input_per_mtok: "1.250000",
     cache_write_per_mtok: cacheWrite,
+    cache_write_1h_per_mtok: cacheWrite1h,
     currency: "USD",
     created_at: "2026-07-01T00:00:00Z",
   };
@@ -1384,16 +1386,19 @@ const STALE_RATE_ROUTE: RouteRow = {
   advanced: { ...ADVANCED_ROUTE.advanced, pricing: { cache_write_per_mtok: 9 } },
 };
 
-const WRITE_LABEL = "Cache-write USD/Mtok";
+const WRITE_LABEL = "5 minute cache-write USD/Mtok";
+const WRITE_1H_LABEL = "1 hour cache-write USD/Mtok";
 
 /**
- * The cache-write input is the price row's (#2890). It opens on the rate the
+ * The cache-write inputs are the price row's (#2890). They open on the rates the
  * row holds, never on the route's own `advanced.pricing` copy, which nothing
- * reads and which a stored blob can still carry. Saving without touching it
- * names no rate, so the control plane keeps the one it holds (#2876).
+ * reads and which a stored blob can still carry. Saving without touching them
+ * names no rate, so the control plane keeps the ones it holds (#2876, #2902).
  */
 export const ReadsTheCacheWriteRateFromThePriceRow: Story = {
-  render: () => <Stage mode="edit" route={STALE_RATE_ROUTE} stub={pricedAt("3.750000")} />,
+  render: () => (
+    <Stage mode="edit" route={STALE_RATE_ROUTE} stub={pricedAt("3.750000", "6.000000")} />
+  ),
   play: async () => {
     const dialog = within(sheet());
     await seeded(dialog);
@@ -1401,7 +1406,14 @@ export const ReadsTheCacheWriteRateFromThePriceRow: Story = {
     const write = dialog.getByLabelText(WRITE_LABEL);
     await expect(write).toHaveValue(3.75);
     await expect(write).toHaveAccessibleDescription(
-      "Leave empty to price tokens written to the prompt cache at the input rate.",
+      "Anthropic's 5 minute cache, and any write a provider reports without a cache lifetime. Leave empty to price them at the input rate.",
+    );
+    // the 1 hour input is the price row's too, and says what empty falls back to
+    const hour = dialog.getByLabelText(WRITE_1H_LABEL);
+    await expect(hour).toHaveValue(6);
+    await expect(hour).toHaveAttribute("placeholder", "5 minute rate");
+    await expect(hour).toHaveAccessibleDescription(
+      "Anthropic's 1 hour cache only. Leave empty to price those writes at the 5 minute rate, or the input rate when that is empty too.",
     );
 
     await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
@@ -1548,6 +1560,129 @@ export const AsksForAnInputRateBesideACacheWriteRate: Story = {
       input_per_mtok: "3",
       output_per_mtok: "0",
       cache_write_per_mtok: "3.75",
+      currency: "USD",
+    });
+  },
+};
+
+/** A 1 hour rate typed into the sheet goes with the price row under its own key, and the 5 minute rate is left alone. */
+export const SavesTheOneHourCacheWriteRateOnThePriceRow: Story = {
+  render: () => <Stage mode="edit" route={ROUTE} stub={pricedAt("3.750000")} />,
+  play: async () => {
+    const dialog = within(sheet());
+    await seeded(dialog);
+    await userEvent.click(dialog.getByRole("button", { name: "Pricing override" }));
+    const hour = dialog.getByLabelText(WRITE_1H_LABEL);
+    await expect(hour).toHaveValue(null);
+    await userEvent.type(hour, "6");
+
+    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
+    const price = (await calls.expectSentBody("PUT", "/api/v1/model-prices")) as Record<
+      string,
+      unknown
+    >;
+    await expect(price.cache_write_1h_per_mtok).toBe("6");
+    await expect(price).not.toHaveProperty("cache_write_per_mtok");
+  },
+};
+
+/**
+ * Emptying the 1 hour input is `null` on the wire, which falls back to the 5
+ * minute rate; the other input, left alone, names nothing.
+ */
+export const ClearsTheOneHourCacheWriteRateOnThePriceRow: Story = {
+  render: () => <Stage mode="edit" route={ROUTE} stub={pricedAt("3.750000", "6.000000")} />,
+  play: async () => {
+    const dialog = within(sheet());
+    await seeded(dialog);
+    await userEvent.click(dialog.getByRole("button", { name: "Pricing override" }));
+    const hour = dialog.getByLabelText(WRITE_1H_LABEL);
+    await expect(hour).toHaveValue(6);
+    await userEvent.clear(hour);
+
+    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
+    const price = (await calls.expectSentBody("PUT", "/api/v1/model-prices")) as Record<
+      string,
+      unknown
+    >;
+    await expect(price).toHaveProperty("cache_write_1h_per_mtok", null);
+    await expect(price).not.toHaveProperty("cache_write_per_mtok");
+  },
+};
+
+/**
+ * A 1 hour rate that is not a number of 0 or more is stated at its own input
+ * after a refused save, which opens the section it is in and puts focus there.
+ * The 5 minute input beside it stays clean, nothing is sent, and a number lets
+ * the same press through.
+ */
+export const RefusesAnInvalidOneHourCacheWriteRate: Story = {
+  render: () => <Stage mode="edit" route={ROUTE} stub={pricedAt(null)} />,
+  play: async () => {
+    const dialog = within(sheet());
+    await seeded(dialog);
+    const toggle = dialog.getByRole("button", { name: "Pricing override" });
+    await userEvent.click(toggle);
+    const hour = dialog.getByLabelText(WRITE_1H_LABEL);
+    await userEvent.type(hour, "-1");
+    // the sheet says nothing until a save is refused
+    await expect(hour).not.toHaveAttribute("aria-invalid");
+    // folded away, so the refusal has to open it again to be read
+    await userEvent.click(toggle);
+    await expect(dialog.queryByLabelText(WRITE_1H_LABEL)).not.toBeInTheDocument();
+
+    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
+    const field = await dialog.findByLabelText(WRITE_1H_LABEL);
+    await waitFor(() => expect(field).toHaveAttribute("aria-invalid", "true"));
+    await waitFor(() => expect(field).toHaveFocus());
+    await expect(field).toHaveAccessibleDescription(/Enter a 1 hour cache-write rate of 0 or more/);
+    await expect(dialog.getByLabelText(WRITE_LABEL)).not.toHaveAttribute("aria-invalid");
+    await expect(dialog.getByRole("alert")).toHaveTextContent(
+      "1 field needs attention before this route can be saved.",
+    );
+    calls.expectNotSent("PUT", "/api/v1/model-prices");
+
+    await userEvent.clear(field);
+    await userEvent.type(field, "7.5");
+    await waitFor(() => expect(field).not.toHaveAttribute("aria-invalid"));
+    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
+    const price = (await calls.expectSentBody("PUT", "/api/v1/model-prices")) as Record<
+      string,
+      unknown
+    >;
+    await expect(price.cache_write_1h_per_mtok).toBe("7.5");
+  },
+};
+
+/** The 1 hour rate is saved with the price row too, so it asks for the input or output rate beside it. */
+export const AsksForAnInputRateBesideAOneHourCacheWriteRate: Story = {
+  render: () => <Stage mode="add" />,
+  play: async () => {
+    const dialog = within(sheet());
+    await seededBlank(dialog);
+    await userEvent.type(dialog.getByLabelText("Route name"), "claude-sonnet");
+    await pickOption(dialog.getByLabelText("Target 1 provider"), "vllm-cluster");
+    await userEvent.click(dialog.getByRole("button", { name: "Pricing override" }));
+    const hour = dialog.getByLabelText(WRITE_1H_LABEL);
+    await userEvent.type(hour, "6");
+
+    await userEvent.click(dialog.getByRole("button", { name: "Add route" }));
+    await waitFor(() => expect(hour).toHaveAttribute("aria-invalid", "true"));
+    await expect(hour).toHaveAccessibleDescription(/Set the input or output rate too/);
+    calls.expectNotSent("POST", `/projects/${PROJECT.id}/routes`);
+
+    await userEvent.type(dialog.getByLabelText("Output USD/Mtok"), "15");
+    await waitFor(() => expect(hour).not.toHaveAttribute("aria-invalid"));
+    await userEvent.click(dialog.getByRole("button", { name: "Add route" }));
+    const price = (await calls.expectSentBody("PUT", "/api/v1/model-prices")) as Record<
+      string,
+      unknown
+    >;
+    await expect(price).toEqual({
+      model: "claude-sonnet",
+      input_per_mtok: "0",
+      output_per_mtok: "15",
+      cache_write_1h_per_mtok: "6",
       currency: "USD",
     });
   },

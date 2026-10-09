@@ -124,6 +124,7 @@ const PRICE: ModelPriceRow = {
   output_per_mtok: "10.00",
   cached_input_per_mtok: null,
   cache_write_per_mtok: null,
+  cache_write_1h_per_mtok: null,
   currency: "USD",
   created_at: "2026-07-01T00:00:00Z",
 };

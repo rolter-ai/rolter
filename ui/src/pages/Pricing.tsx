@@ -27,8 +27,9 @@ import {
   type CurrencySettings,
   type ModelPriceRow,
 } from "@/lib/api";
-import { cacheWritePatch } from "@/lib/cache-write-rate";
+import { cacheWrite1hPatch, cacheWritePatch } from "@/lib/cache-write-rate";
 import { useErrorVisibility } from "@/lib/error-visibility";
+import { serverFieldError } from "@/lib/field-errors";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useScreenReady } from "@/lib/ux-react";
 
@@ -160,6 +161,14 @@ export default function Pricing() {
                   })}
                 </Badge>
               )}
+              {price.cache_write_1h_per_mtok && (
+                <Badge tone="neutral">
+                  {t("pages.pricing.cacheWrite1hPrice", {
+                    value: price.cache_write_1h_per_mtok,
+                    currency: price.currency,
+                  })}
+                </Badge>
+              )}
             </div>
             {!isConvertible(currency.data, price.currency) && (
               <p className="text-xs text-[color:var(--status-warning-text)]">
@@ -239,7 +248,19 @@ export default function Pricing() {
 }
 
 /** the fields of the price form, for the errors a refused save puts on screen */
-type PriceField = "model" | "input" | "output" | "cached" | "cacheWrite" | "currency";
+type PriceField =
+  "model" | "input" | "output" | "cached" | "cacheWrite" | "cacheWrite1h" | "currency";
+
+/**
+ * The rate inputs a rejected save can be pinned to (#2902). A negative or
+ * non-numeric rate is refused before the request is sent; what only the control
+ * plane knows is a rate the stored column cannot hold, so that refusal is placed
+ * on its input instead of surfacing as a toast.
+ */
+const WIRE_FIELDS: Record<string, "cacheWrite" | "cacheWrite1h"> = {
+  cache_write_per_mtok: "cacheWrite",
+  cache_write_1h_per_mtok: "cacheWrite1h",
+};
 
 function UpsertPriceDialog({
   open,
@@ -263,9 +284,25 @@ function UpsertPriceDialog({
   const [outputPerMtok, setOutputPerMtok] = React.useState("");
   const [cachedInputPerMtok, setCachedInputPerMtok] = React.useState("");
   const [cacheWritePerMtok, setCacheWritePerMtok] = React.useState("");
+  const [cacheWrite1hPerMtok, setCacheWrite1hPerMtok] = React.useState("");
+  // what the control plane refused, by field; it holds until that input is edited
+  const [serverErrors, setServerErrors] = React.useState<Partial<Record<PriceField, string>>>({});
   const baseCurrency = settings?.base ?? "USD";
   const [currency, setCurrency] = React.useState(baseCurrency);
   const visibility = useErrorVisibility<PriceField>();
+  const idBase = React.useId();
+  const writeIds = {
+    cacheWrite: `${idBase}-cache-write`,
+    cacheWrite1h: `${idBase}-cache-write-1h`,
+  };
+
+  // editing an input retires the control plane's refusal of its old value
+  const clearRefusal = (field: PriceField) =>
+    setServerErrors((prev) => {
+      if (!(field in prev)) return prev;
+      const { [field]: _gone, ...rest } = prev;
+      return rest;
+    });
 
   // names worth offering: the routes the gateway serves and the models seen in
   // traffic. both are suggestions — an analytics store may be absent
@@ -310,6 +347,8 @@ function UpsertPriceDialog({
       setOutputPerMtok(existing?.output_per_mtok ?? "");
       setCachedInputPerMtok(existing?.cached_input_per_mtok ?? "");
       setCacheWritePerMtok(existing?.cache_write_per_mtok ?? "");
+      setCacheWrite1hPerMtok(existing?.cache_write_1h_per_mtok ?? "");
+      setServerErrors({});
       setCurrency(existing?.currency ?? baseCurrency);
     }
   }, [open, existing]);
@@ -324,6 +363,7 @@ function UpsertPriceDialog({
         // the write rate is the one a save does not replace: it goes only when
         // it was edited, a value to set it and null to clear it (#2876)
         ...cacheWritePatch(cacheWritePerMtok, existing?.cache_write_per_mtok ?? ""),
+        ...cacheWrite1hPatch(cacheWrite1hPerMtok, existing?.cache_write_1h_per_mtok ?? ""),
         currency,
       }),
     onSuccess: () => {
@@ -342,6 +382,14 @@ function UpsertPriceDialog({
       onOpenChange(false);
     },
     onError: (error) => {
+      // a refusal that names one of the rate inputs stays on that input, with
+      // the sheet still open and focus on it, rather than in a toast
+      const named = serverFieldError(error, WIRE_FIELDS);
+      if (named) {
+        setServerErrors({ [named.field]: named.message });
+        document.getElementById(writeIds[named.field])?.focus();
+        return;
+      }
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: model }),
@@ -364,11 +412,13 @@ function UpsertPriceDialog({
     // an optional price is only wrong when it was typed and is not a number
     cached: cachedInputPerMtok.trim() ? priceError(cachedInputPerMtok) : undefined,
     cacheWrite: cacheWritePerMtok.trim() ? priceError(cacheWritePerMtok) : undefined,
+    cacheWrite1h: cacheWrite1hPerMtok.trim() ? priceError(cacheWrite1hPerMtok) : undefined,
     currency: currency.trim() ? undefined : t("pages.pricing.currencyRequired"),
   };
   const invalid = Object.values(errors).some(Boolean);
   // a field's error waits for a refused save, so the form opens with none
-  const shown = (field: PriceField) => (visibility.shows(field) ? errors[field] : undefined);
+  const shown = (field: PriceField) =>
+    (visibility.shows(field) ? errors[field] : undefined) ?? serverErrors[field];
 
   const dirty =
     model.trim() !== (existing?.model ?? "") ||
@@ -376,6 +426,7 @@ function UpsertPriceDialog({
     outputPerMtok !== (existing?.output_per_mtok ?? "") ||
     cachedInputPerMtok !== (existing?.cached_input_per_mtok ?? "") ||
     cacheWritePerMtok !== (existing?.cache_write_per_mtok ?? "") ||
+    cacheWrite1hPerMtok !== (existing?.cache_write_1h_per_mtok ?? "") ||
     currency !== (existing?.currency ?? baseCurrency);
 
   return (
@@ -390,7 +441,11 @@ function UpsertPriceDialog({
       }
       subtitle={t("pages.pricing.editSubtitle")}
       dirty={dirty}
-      errorMessage={submit.isError ? (submit.error as Error).message : undefined}
+      errorMessage={
+        submit.isError && Object.keys(serverErrors).length === 0
+          ? (submit.error as Error).message
+          : undefined
+      }
       saveLabel={t("common.save")}
       canSave
       saving={submit.isPending}
@@ -458,12 +513,35 @@ function UpsertPriceDialog({
           error={shown("cacheWrite")}
         >
           <Input
+            id={writeIds.cacheWrite}
             type="number"
             min={0}
             step="0.000001"
             value={cacheWritePerMtok}
-            onChange={(e) => setCacheWritePerMtok(e.target.value)}
+            onChange={(e) => {
+              setCacheWritePerMtok(e.target.value);
+              clearRefusal("cacheWrite");
+            }}
             placeholder={t("pages.pricing.cacheWritePlaceholder")}
+          />
+        </Field>
+        <Field
+          label={t("pages.pricing.cacheWrite1hInputPrice")}
+          hint={t("pages.pricing.priceUnit", { currency })}
+          info={t("pages.pricing.cacheWrite1hInfo")}
+          error={shown("cacheWrite1h")}
+        >
+          <Input
+            id={writeIds.cacheWrite1h}
+            type="number"
+            min={0}
+            step="0.000001"
+            value={cacheWrite1hPerMtok}
+            onChange={(e) => {
+              setCacheWrite1hPerMtok(e.target.value);
+              clearRefusal("cacheWrite1h");
+            }}
+            placeholder={t("pages.pricing.cacheWrite1hPlaceholder")}
           />
         </Field>
         <Field

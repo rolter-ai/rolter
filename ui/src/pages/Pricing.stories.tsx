@@ -36,6 +36,7 @@ const price = (
   currency: string,
   id = model,
   cacheWrite: string | null = null,
+  cacheWrite1h: string | null = null,
 ): ModelPriceRow => ({
   id,
   model,
@@ -43,6 +44,7 @@ const price = (
   output_per_mtok: "10.00",
   cached_input_per_mtok: "1.25",
   cache_write_per_mtok: cacheWrite,
+  cache_write_1h_per_mtok: cacheWrite1h,
   currency,
   created_at: "2026-07-01T00:00:00Z",
 });
@@ -53,6 +55,13 @@ const PRICES: ModelPriceRow[] = [
   // priced in a code this deployment's rate table carries — #965's whole point
   price("yandex-gpt", "RUB"),
   // the control plane returns a rate as decimal text, six places (#2876)
+  price("claude-sonnet", "USD", "claude-sonnet", "3.750000"),
+];
+
+/** prices that set the 1 hour write rate: beside a 5 minute one, and alone (#2902) */
+const SPLIT_PRICES: ModelPriceRow[] = [
+  price("claude-opus", "USD", "claude-opus", "3.750000", "6.000000"),
+  price("claude-haiku", "USD", "claude-haiku", null, "2.000000"),
   price("claude-sonnet", "USD", "claude-sonnet", "3.750000"),
 ];
 
@@ -124,9 +133,45 @@ export const ShowsTheCacheWriteRate: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(await canvas.findByText("claude-sonnet")).toBeInTheDocument();
-    const badges = canvas.getAllByText(/^cache write /);
+    const badges = canvas.getAllByText(/cache write /);
     await expect(badges).toHaveLength(1);
-    await expect(badges[0]).toHaveTextContent("cache write 3.750000 USD/Mtok");
+    await expect(badges[0]).toHaveTextContent("5 minute cache write 3.750000 USD/Mtok");
+  },
+};
+
+/**
+ * The 1 hour write rate has a badge of its own, told apart from the 5 minute
+ * one by its name, and a card that sets neither shows neither (#2902). A price
+ * with only a 1 hour rate shows that badge alone.
+ */
+export const ShowsTheOneHourCacheWriteRate: Story = {
+  render: () => (
+    <Harness fetchStub={withCurrency(CONFIGURED, SPLIT_PRICES)}>
+      <Pricing />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const card = async (model: string) => within((await canvas.findByText(model)).parentElement!);
+
+    const both = await card("claude-opus");
+    await expect(both.getByText(/^5 minute cache write /)).toHaveTextContent(
+      "5 minute cache write 3.750000 USD/Mtok",
+    );
+    await expect(both.getByText(/^1 hour cache write /)).toHaveTextContent(
+      "1 hour cache write 6.000000 USD/Mtok",
+    );
+
+    const alone = await card("claude-haiku");
+    await expect(alone.getByText(/^1 hour cache write /)).toHaveTextContent(
+      "1 hour cache write 2.000000 USD/Mtok",
+    );
+    await expect(alone.queryByText(/^5 minute cache write /)).toBeNull();
+
+    // a price that never set the 1 hour rate does not claim one
+    const plain = await card("claude-sonnet");
+    await expect(plain.getByText(/^5 minute cache write /)).toBeInTheDocument();
+    await expect(plain.queryByText(/1 hour cache write/)).toBeNull();
   },
 };
 
@@ -220,9 +265,15 @@ export const AddsAPrice: Story = {
     await expect(form.getByLabelText("Input price per Mtok")).toHaveValue(null);
     await expect(form.getByLabelText("Output price per Mtok")).toHaveValue(null);
     // the optional rates start empty too, and say what empty means
-    const write = form.getByLabelText("Cache-write price per Mtok (optional)");
+    const write = form.getByLabelText("5 minute cache-write price per Mtok (optional)");
     await expect(write).toHaveValue(null);
     await expect(write).toHaveAttribute("placeholder", "defaults to input price");
+    // the 1 hour rate is a field of its own, named apart from the 5 minute one,
+    // and says it falls back to that rate rather than to the input rate (#2902)
+    const hour = form.getByLabelText("1 hour cache-write price per Mtok (optional)");
+    await expect(hour).not.toBe(write);
+    await expect(hour).toHaveValue(null);
+    await expect(hour).toHaveAttribute("placeholder", "defaults to 5 minute price");
   },
 };
 
@@ -253,7 +304,8 @@ export const EmptySubmitIsRefused: Story = {
     await expect(input).toHaveAccessibleDescription(/Enter a price/);
     await expect(form.getByLabelText("Output price per Mtok")).toBeInvalid();
     await expect(form.getByLabelText("Cached input price per Mtok (optional)")).toBeValid();
-    await expect(form.getByLabelText("Cache-write price per Mtok (optional)")).toBeValid();
+    await expect(form.getByLabelText("5 minute cache-write price per Mtok (optional)")).toBeValid();
+    await expect(form.getByLabelText("1 hour cache-write price per Mtok (optional)")).toBeValid();
     emptySubmit.expectNotSent("PUT", "/model-prices");
 
     // zero is allowed, but has to be typed
@@ -326,12 +378,12 @@ export const PicksAModelAndACurrency: Story = {
  * one the control plane does not replace on every save (absent keeps it, `null`
  * clears it), so each story below reads what the form put on the wire.
  */
-function pricesWithSave(): Recorder {
+function pricesWithSave(prices = PRICES): Recorder {
   return recording(
     scoped(async (input, init) =>
       init?.method === "PUT"
         ? json(price("claude-sonnet", "USD", "claude-sonnet", "3.750000"))
-        : withCurrency(CONFIGURED)(input, init),
+        : withCurrency(CONFIGURED, prices)(input, init),
     ),
   );
 }
@@ -352,7 +404,7 @@ export const SetsTheCacheWriteRate: Story = {
   play: async ({ canvasElement }) => {
     await clickWhenEnabled(canvasElement, "Edit the price for gpt-4o");
     const form = within(sheet());
-    const write = await form.findByLabelText("Cache-write price per Mtok (optional)");
+    const write = await form.findByLabelText("5 minute cache-write price per Mtok (optional)");
     await expect(write).toHaveValue(null);
     await userEvent.type(write, "3.75");
     await userEvent.click(form.getByRole("button", { name: "Save" }));
@@ -393,9 +445,9 @@ export const LeavesTheCacheWriteRateAloneWhenUntouched: Story = {
     await clickWhenEnabled(canvasElement, "Edit the price for claude-sonnet");
     const form = within(sheet());
     // a number input reads back numeric, so the six-place text shows as typed by a person
-    await expect(await form.findByLabelText("Cache-write price per Mtok (optional)")).toHaveValue(
-      3.75,
-    );
+    await expect(
+      await form.findByLabelText("5 minute cache-write price per Mtok (optional)"),
+    ).toHaveValue(3.75);
     const output = form.getByLabelText("Output price per Mtok");
     await userEvent.clear(output);
     await userEvent.type(output, "12");
@@ -435,7 +487,7 @@ export const ClearsTheCacheWriteRate: Story = {
   play: async ({ canvasElement }) => {
     await clickWhenEnabled(canvasElement, "Edit the price for claude-sonnet");
     const form = within(sheet());
-    const write = await form.findByLabelText("Cache-write price per Mtok (optional)");
+    const write = await form.findByLabelText("5 minute cache-write price per Mtok (optional)");
     await expect(write).toHaveValue(3.75);
     await userEvent.clear(write);
     await userEvent.click(form.getByRole("button", { name: "Save" }));
@@ -469,7 +521,7 @@ export const RefusesAnInvalidCacheWriteRate: Story = {
   play: async ({ canvasElement }) => {
     await clickWhenEnabled(canvasElement, "Edit the price for gpt-4o");
     const form = within(sheet());
-    const write = await form.findByLabelText("Cache-write price per Mtok (optional)");
+    const write = await form.findByLabelText("5 minute cache-write price per Mtok (optional)");
     await userEvent.type(write, "-3");
     // typing alone says nothing: the message waits for a refused save
     await expect(write).not.toHaveAttribute("aria-invalid");
@@ -493,6 +545,284 @@ export const RefusesAnInvalidCacheWriteRate: Story = {
     );
     // zero is a rate: writes that cost nothing, not writes at the input rate
     await expect(body).toHaveProperty("cache_write_per_mtok", "0");
+  },
+};
+
+const WRITE_5M = "5 minute cache-write price per Mtok (optional)";
+const WRITE_1H = "1 hour cache-write price per Mtok (optional)";
+
+/** a 1 hour rate typed into a price that has none is sent, and the 5 minute rate is not named */
+let setsHourRate: Recorder;
+export const SetsTheOneHourCacheWriteRate: Story = {
+  render: () => {
+    setsHourRate = pricesWithSave();
+    return (
+      <Harness fetchStub={setsHourRate.stub}>
+        <Toasted>
+          <Pricing />
+        </Toasted>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, "Edit the price for gpt-4o");
+    const form = within(sheet());
+    const hour = await form.findByLabelText(WRITE_1H);
+    await expect(hour).toHaveValue(null);
+    await userEvent.type(hour, "6");
+    await userEvent.click(form.getByRole("button", { name: "Save" }));
+
+    await expect(
+      await setsHourRate.expectSentBody<Record<string, unknown>>("PUT", "/model-prices"),
+    ).toEqual({
+      model: "gpt-4o",
+      input_per_mtok: "2.50",
+      output_per_mtok: "10.00",
+      cached_input_per_mtok: "1.25",
+      cache_write_1h_per_mtok: "6",
+      currency: "USD",
+    });
+    await expectSheetClosed();
+  },
+};
+
+/**
+ * The form opens on both rates, and a save that touched neither names neither,
+ * so the control plane keeps what it holds: a 1 hour rate set through the API
+ * since the card was drawn survives an edit of something else (#2902).
+ */
+let keepsHourRate: Recorder;
+export const LeavesTheOneHourCacheWriteRateAloneWhenUntouched: Story = {
+  render: () => {
+    keepsHourRate = pricesWithSave(SPLIT_PRICES);
+    return (
+      <Harness fetchStub={keepsHourRate.stub}>
+        <Toasted>
+          <Pricing />
+        </Toasted>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, "Edit the price for claude-opus");
+    const form = within(sheet());
+    // a number input reads back numeric, so the six-place text shows as typed by a person
+    await expect(await form.findByLabelText(WRITE_1H)).toHaveValue(6);
+    await expect(form.getByLabelText(WRITE_5M)).toHaveValue(3.75);
+    const output = form.getByLabelText("Output price per Mtok");
+    await userEvent.clear(output);
+    await userEvent.type(output, "12");
+    await userEvent.click(form.getByRole("button", { name: "Save" }));
+
+    const body = await keepsHourRate.expectSentBody<Record<string, unknown>>(
+      "PUT",
+      "/model-prices",
+    );
+    await expect(body).toEqual({
+      model: "claude-opus",
+      input_per_mtok: "2.50",
+      output_per_mtok: "12",
+      cached_input_per_mtok: "1.25",
+      currency: "USD",
+    });
+    await expect(body).not.toHaveProperty("cache_write_1h_per_mtok");
+    await expect(body).not.toHaveProperty("cache_write_per_mtok");
+  },
+};
+
+/**
+ * Emptying the 1 hour input sends `null`, which falls back to the 5 minute rate;
+ * leaving the key out would keep the rate. Each input has its own key, so
+ * emptying one and editing the other says both, each under its own name.
+ */
+let clearsHourRate: Recorder;
+export const ClearsTheOneHourCacheWriteRate: Story = {
+  render: () => {
+    clearsHourRate = pricesWithSave(SPLIT_PRICES);
+    return (
+      <Harness fetchStub={clearsHourRate.stub}>
+        <Toasted>
+          <Pricing />
+        </Toasted>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, "Edit the price for claude-opus");
+    const form = within(sheet());
+    const hour = await form.findByLabelText(WRITE_1H);
+    await expect(hour).toHaveValue(6);
+    await userEvent.clear(hour);
+    await userEvent.click(form.getByRole("button", { name: "Save" }));
+
+    const body = await clearsHourRate.expectSentBody<Record<string, unknown>>(
+      "PUT",
+      "/model-prices",
+    );
+    await expect(body).toHaveProperty("cache_write_1h_per_mtok", null);
+    await expect(body).not.toHaveProperty("cache_write_per_mtok");
+    await expectSheetClosed();
+  },
+};
+
+let editsBothRates: Recorder;
+export const SendsEachCacheWriteRateUnderItsOwnKey: Story = {
+  render: () => {
+    editsBothRates = pricesWithSave(SPLIT_PRICES);
+    return (
+      <Harness fetchStub={editsBothRates.stub}>
+        <Toasted>
+          <Pricing />
+        </Toasted>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, "Edit the price for claude-opus");
+    const form = within(sheet());
+    const five = await form.findByLabelText(WRITE_5M);
+    await userEvent.clear(five);
+    const hour = form.getByLabelText(WRITE_1H);
+    await userEvent.clear(hour);
+    await userEvent.type(hour, "7.5");
+    await userEvent.click(form.getByRole("button", { name: "Save" }));
+
+    const body = await editsBothRates.expectSentBody<Record<string, unknown>>(
+      "PUT",
+      "/model-prices",
+    );
+    await expect(body).toHaveProperty("cache_write_per_mtok", null);
+    await expect(body).toHaveProperty("cache_write_1h_per_mtok", "7.5");
+  },
+};
+
+/**
+ * Same rule as every price: a 1 hour rate that is not a number of 0 or more is
+ * refused at its own input after a save is pressed, and only that input is
+ * flagged; zero is a rate (#2902).
+ */
+let refusesHourRate: Recorder;
+export const RefusesAnInvalidOneHourCacheWriteRate: Story = {
+  render: () => {
+    refusesHourRate = pricesWithSave();
+    return (
+      <Harness fetchStub={refusesHourRate.stub}>
+        <Toasted>
+          <Pricing />
+        </Toasted>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, "Edit the price for gpt-4o");
+    const form = within(sheet());
+    const hour = await form.findByLabelText(WRITE_1H);
+    await userEvent.type(hour, "-2");
+    await expect(hour).not.toHaveAttribute("aria-invalid");
+
+    await userEvent.click(form.getByRole("button", { name: "Save" }));
+    await expect(hour).toHaveAttribute("aria-invalid", "true");
+    await expect(hour).toHaveAccessibleDescription("Enter a price of 0 or more.");
+    refusesHourRate.expectNotSent("PUT", "/model-prices");
+    await expect(form.getByLabelText(WRITE_5M)).toBeValid();
+
+    await userEvent.clear(hour);
+    await userEvent.type(hour, "0");
+    await expect(hour).toBeValid();
+    await userEvent.click(form.getByRole("button", { name: "Save" }));
+    const body = await refusesHourRate.expectSentBody<Record<string, unknown>>(
+      "PUT",
+      "/model-prices",
+    );
+    await expect(body).toHaveProperty("cache_write_1h_per_mtok", "0");
+    await expect(body).not.toHaveProperty("cache_write_per_mtok");
+  },
+};
+
+/**
+ * A rate the form lets through and the control plane refuses (one the stored
+ * column cannot hold) is placed on the input the `400` names. The sheet stays
+ * open with focus on that input, no toast repeats it, and editing the input
+ * retires the message (#2902).
+ */
+const refusedRate = (field: string) =>
+  recording(
+    scoped(async (input, init) =>
+      init?.method === "PUT"
+        ? json(
+            {
+              error: {
+                message: `${field} must be a number from 0 up to 999999.999999`,
+                code: "invalid_field",
+                field,
+              },
+            },
+            400,
+          )
+        : withCurrency(CONFIGURED)(input, init),
+    ),
+  );
+
+async function expectRefusalOnTheInput(
+  canvasElement: HTMLElement,
+  label: string,
+  field: string,
+): Promise<void> {
+  await clickWhenEnabled(canvasElement, "Edit the price for gpt-4o");
+  const form = within(sheet());
+  const rate = await form.findByLabelText(label);
+  await userEvent.type(rate, "1000000");
+  // under the form's own limit, so only the control plane can say no
+  await expect(rate).toBeValid();
+  await userEvent.click(form.getByRole("button", { name: "Save" }));
+
+  await waitFor(() => expect(rate).toHaveAttribute("aria-invalid", "true"));
+  await expect(rate).toHaveAccessibleDescription(
+    `${field} must be a number from 0 up to 999999.999999`,
+  );
+  await waitFor(() => expect(rate).toHaveFocus());
+  await expect(sheet()).toBeVisible();
+  // the refusal is at the input, not repeated as a toast or above the buttons
+  await expect(within(document.body).queryByText(/Could not save/)).toBeNull();
+  await expect(form.getAllByText(new RegExp(field))).toHaveLength(1);
+  await userEvent.type(rate, "0");
+  await waitFor(() => expect(rate).not.toHaveAttribute("aria-invalid"));
+}
+
+let refusedHour: Recorder;
+export const PinsAnOneHourRateTheServerRefusesToItsInput: Story = {
+  render: () => {
+    refusedHour = refusedRate("cache_write_1h_per_mtok");
+    return (
+      <Harness fetchStub={refusedHour.stub}>
+        <Toasted>
+          <Pricing />
+        </Toasted>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    await expectRefusalOnTheInput(canvasElement, WRITE_1H, "cache_write_1h_per_mtok");
+    // only the input the error names is flagged
+    await expect(within(sheet()).getByLabelText(WRITE_5M)).toBeValid();
+  },
+};
+
+let refusedFiveMinute: Recorder;
+export const PinsAFiveMinuteRateTheServerRefusesToItsInput: Story = {
+  render: () => {
+    refusedFiveMinute = refusedRate("cache_write_per_mtok");
+    return (
+      <Harness fetchStub={refusedFiveMinute.stub}>
+        <Toasted>
+          <Pricing />
+        </Toasted>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    await expectRefusalOnTheInput(canvasElement, WRITE_5M, "cache_write_per_mtok");
+    await expect(within(sheet()).getByLabelText(WRITE_1H)).toBeValid();
   },
 };
 
