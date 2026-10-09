@@ -4299,14 +4299,10 @@ fn validate_advanced(advanced: &AdvancedModelConfig) -> ApiResult<()> {
             )));
         }
     }
+    // `pricing.cache_write_per_mtok` is deliberately absent: it is deprecated
+    // and nothing reads it (#2890), so refusing a bad value would only turn an
+    // older dashboard's save into a 400 over a number with no effect
     for (field, value) in [
-        (
-            "cache_write_per_mtok",
-            advanced
-                .pricing
-                .as_ref()
-                .and_then(|p| p.cache_write_per_mtok),
-        ),
         (
             "image_per_unit",
             advanced.pricing.as_ref().and_then(|p| p.image_per_unit),
@@ -5376,23 +5372,21 @@ fn require_known_currency(state: &ControlState, currency: &str) -> ApiResult<()>
     ))))
 }
 
-fn require_numeric(value: &str, field: &str) -> ApiResult<()> {
-    if value.trim().parse::<f64>().is_err() {
-        return Err(invalid_field(field, format!("{field} must be numeric")));
-    }
-    Ok(())
-}
+/// The first value the `numeric(12, 6)` rate columns cannot hold: one that
+/// rounds to a million at six places overflows, and the database error would
+/// reach the client as a 500 (#2898).
+const RATE_CEILING: f64 = 999_999.999_999_5;
 
-/// [`require_numeric`] for a rate that must also be a real, non-negative
-/// number. `parse::<f64>` accepts `NaN` and `inf`, which `numeric` would store
-/// and the snapshot loader could not read back, and a negative rate would turn
-/// a request into a credit against a budget.
+/// A price rate must be a real number the column can store, and not below zero.
+/// `parse::<f64>` accepts `NaN` and `inf`, which `numeric` would store (`NaN`
+/// at least) and the snapshot loader could not read back, and a negative rate
+/// would turn a request into a credit against a budget (#2889).
 fn require_rate(value: &str, field: &str) -> ApiResult<()> {
     match value.trim().parse::<f64>() {
-        Ok(rate) if rate.is_finite() && rate >= 0.0 => Ok(()),
+        Ok(rate) if rate.is_finite() && (0.0..RATE_CEILING).contains(&rate) => Ok(()),
         Ok(_) => Err(invalid_field(
             field,
-            format!("{field} must be a finite non-negative number"),
+            format!("{field} must be a number from 0 up to 999999.999999"),
         )),
         Err(_) => Err(invalid_field(field, format!("{field} must be numeric"))),
     }
@@ -5407,10 +5401,10 @@ async fn upsert_model_price(
 ) -> ApiResult<Json<ModelPrice>> {
     authorize_superadmin(&principal, superadmin_cap!("model_price", Update))?;
     require_non_empty(&body.model, "model")?;
-    require_numeric(&body.input_per_mtok, "input_per_mtok")?;
-    require_numeric(&body.output_per_mtok, "output_per_mtok")?;
+    require_rate(&body.input_per_mtok, "input_per_mtok")?;
+    require_rate(&body.output_per_mtok, "output_per_mtok")?;
     if let Some(cached) = &body.cached_input_per_mtok {
-        require_numeric(cached, "cached_input_per_mtok")?;
+        require_rate(cached, "cached_input_per_mtok")?;
     }
     if let Some(Some(write)) = &body.cache_write_per_mtok {
         require_rate(write, "cache_write_per_mtok")?;
@@ -6402,6 +6396,69 @@ mod user_tests {
         advanced.headers.clear();
         advanced.limits.output_tokens = Some(0);
         assert!(is_config_err(validate_advanced(&advanced)));
+    }
+
+    // #2890: the route-level cache-write rate is deprecated and read by
+    // nothing, so a value in it is no reason to refuse a save
+    #[test]
+    fn advanced_model_validation_ignores_the_deprecated_cache_write_rate() {
+        let mut advanced = AdvancedModelConfig::default();
+        for rate in [3.75, -1.0, f64::NAN, f64::INFINITY] {
+            advanced
+                .pricing
+                .get_or_insert_with(Default::default)
+                .cache_write_per_mtok = Some(rate);
+            assert!(validate_advanced(&advanced).is_ok(), "{rate}");
+        }
+
+        // the neighbours are still held to it
+        advanced
+            .pricing
+            .get_or_insert_with(Default::default)
+            .image_per_unit = Some(-1.0);
+        assert!(is_config_err(validate_advanced(&advanced)));
+    }
+
+    #[test]
+    fn a_price_rate_must_be_a_finite_non_negative_number() {
+        // "-0" is zero, which is a rate: a self-hosted model costs nothing
+        for good in [
+            "0",
+            "-0",
+            "0.000000",
+            "3.75",
+            " 2 ",
+            "1e3",
+            ".5",
+            "999999.999999",
+            "999999.9999994",
+        ] {
+            assert!(require_rate(good, "input_per_mtok").is_ok(), "{good:?}");
+        }
+        for bad in [
+            "-1",
+            "-0.000001",
+            "NaN",
+            "nan",
+            "inf",
+            "-inf",
+            "Infinity",
+            "1e999",
+            // what `numeric(12, 6)` cannot hold, which was a 500 (#2898)
+            "999999.9999995",
+            "1000000",
+            "1e20",
+            "",
+            "abc",
+        ] {
+            assert!(
+                matches!(
+                    require_rate(bad, "input_per_mtok"),
+                    Err(ApiError::InvalidField { field, .. }) if field == "input_per_mtok"
+                ),
+                "{bad:?} should be refused"
+            );
+        }
     }
 
     #[test]

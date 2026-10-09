@@ -330,6 +330,116 @@ async fn crud_create_round_trip_reflects_in_snapshot() {
     assert_eq!(route["advanced"]["headers"]["x-model-region"], "eu");
 }
 
+/// #2890: a route's `advanced.pricing.cache_write_per_mtok` is deprecated, and
+/// nothing reads it. An older dashboard that still sends it is not refused
+/// (not even for a value that would once have been a 400), and a stored blob
+/// that carries it keeps parsing, reaching the snapshot and reading back.
+#[tokio::test]
+async fn a_deprecated_route_cache_write_rate_is_accepted_and_ignored() {
+    skip_without_db!();
+    let (app, _db) = fresh_app().await;
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    async fn post(client: &reqwest::Client, url: String, body: Value) -> Value {
+        let resp = client.post(&url).json(&body).send().await.unwrap();
+        let status = resp.status();
+        let json: Value = resp.json().await.unwrap();
+        assert!(status.is_success(), "POST {url} failed ({status}): {json}");
+        json
+    }
+
+    let org = post(
+        &client,
+        format!("{base}/api/v1/orgs"),
+        json!({"name": "Acme", "slug": "acme"}),
+    )
+    .await;
+    let org_id = org["id"].as_str().expect("org id");
+    let team = post(
+        &client,
+        format!("{base}/api/v1/orgs/{org_id}/teams"),
+        json!({"name": "Platform"}),
+    )
+    .await;
+    let team_id = team["id"].as_str().expect("team id");
+    let project = post(
+        &client,
+        format!("{base}/api/v1/teams/{team_id}/projects"),
+        json!({"name": "Gateway"}),
+    )
+    .await;
+    let project_id = project["id"].as_str().expect("project id");
+    let provider = post(
+        &client,
+        format!("{base}/api/v1/orgs/{org_id}/providers"),
+        json!({"name": "openai", "kind": "openai", "api_base": "https://api.openai.com"}),
+    )
+    .await;
+    let provider_id = provider["id"].as_str().expect("provider id");
+    let route = post(
+        &client,
+        format!("{base}/api/v1/projects/{project_id}/routes"),
+        json!({"model": "claude", "strategy": "round_robin"}),
+    )
+    .await;
+    let route_id = route["id"].as_str().expect("route id");
+    post(
+        &client,
+        format!("{base}/api/v1/routes/{route_id}/targets"),
+        json!({"provider_id": provider_id, "weight": 1}),
+    )
+    .await;
+
+    // the value is not validated: it is applied to nothing, so refusing a
+    // negative one would only break an older dashboard's save
+    for rate in [json!(3.75), json!(-1.0)] {
+        let saved = client
+            .put(format!("{base}/api/v1/routes/{route_id}/advanced"))
+            .json(&json!({"advanced": {"pricing": {
+                "cache_write_per_mtok": rate, "image_per_unit": 0.04,
+            }}}))
+            .send()
+            .await
+            .unwrap();
+        let status = saved.status();
+        let saved: Value = saved.json().await.unwrap();
+        assert!(status.is_success(), "{rate} should be accepted: {saved}");
+        assert_eq!(
+            saved["advanced"]["pricing"]["cache_write_per_mtok"], rate,
+            "{saved}"
+        );
+    }
+
+    // the other pricing fields are still validated
+    let refused = client
+        .put(format!("{base}/api/v1/routes/{route_id}/advanced"))
+        .json(&json!({"advanced": {"pricing": {"image_per_unit": -1.0}}}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), 400);
+
+    // and the stored blob loads into the snapshot whole
+    let snap: Value = client
+        .get(format!("{base}/internal/snapshot"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let route = snap["config"]["routes"]
+        .as_array()
+        .expect("routes")
+        .iter()
+        .find(|r| r["model"] == "claude")
+        .unwrap_or_else(|| panic!("route missing from the snapshot: {snap}"));
+    assert_eq!(route["advanced"]["pricing"]["cache_write_per_mtok"], -1.0);
+    assert_eq!(route["advanced"]["pricing"]["image_per_unit"], 0.04);
+}
+
 /// Pausing a dashboard guardrail rule that a route still names in an override
 /// must not turn every later snapshot into a 500: the override is pruned and
 /// reported instead (#2306).
@@ -16914,6 +17024,208 @@ async fn a_model_price_carries_a_cache_write_rate_an_older_client_cannot_reset()
     assert!(cleared["cache_write_per_mtok"].is_null(), "{cleared}");
     let price = snapshot_price(&client, &base, "claude").await;
     assert!(price["cache_write_per_mtok"].is_null(), "{price}");
+}
+
+/// #2889: every rate on a price is a finite number of at least zero. A
+/// negative one made `cost` negative, so a request credited its budget, and
+/// `NaN` parses as a float, is a valid `numeric` and could not be read back, so
+/// the snapshot priced the model at zero.
+#[tokio::test]
+async fn a_model_price_rate_must_be_a_finite_non_negative_number() {
+    skip_without_db!();
+    let (app, _db) = fresh_app().await;
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let (status, good) = put_model_price(
+        &client,
+        &base,
+        json!({
+            "model": "claude", "input_per_mtok": "3", "output_per_mtok": "15",
+            "cached_input_per_mtok": "0.3", "cache_write_per_mtok": "3.75",
+        }),
+    )
+    .await;
+    assert!(status.is_success(), "{good}");
+
+    for field in [
+        "input_per_mtok",
+        "output_per_mtok",
+        "cached_input_per_mtok",
+        "cache_write_per_mtok",
+    ] {
+        for bad in [
+            "-1",
+            "-0.000001",
+            "NaN",
+            "nan",
+            "inf",
+            "-inf",
+            "Infinity",
+            "1e999",
+            // `numeric(12, 6)` cannot hold a million, and the refusal used to
+            // be the database's, which reached the client as a 500 (#2898)
+            "999999.9999995",
+            "1000000",
+            "1e20",
+            "abc",
+            "",
+        ] {
+            let mut body = json!({
+                "model": "claude", "input_per_mtok": "4", "output_per_mtok": "20",
+                "cached_input_per_mtok": "0.4", "cache_write_per_mtok": "5",
+            });
+            body[field] = json!(bad);
+            let (status, error) = put_model_price(&client, &base, body).await;
+            assert_eq!(status, 400, "{field} = {bad:?} should be refused: {error}");
+            assert_eq!(error["error"]["field"], field, "{error}");
+        }
+    }
+
+    // none of the refusals touched the row
+    let price = snapshot_price(&client, &base, "claude").await;
+    assert_eq!(price["input_per_mtok"], 3.0, "{price}");
+    assert_eq!(price["output_per_mtok"], 15.0, "{price}");
+    assert_eq!(price["cached_input_per_mtok"], 0.3, "{price}");
+    assert_eq!(price["cache_write_per_mtok"], 3.75, "{price}");
+
+    // zero is a rate: a self-hosted model costs nothing to call
+    let (status, free) = put_model_price(
+        &client,
+        &base,
+        json!({
+            "model": "local", "input_per_mtok": "0", "output_per_mtok": "0.000000",
+            "cached_input_per_mtok": "0",
+        }),
+    )
+    .await;
+    assert!(status.is_success(), "{free}");
+    assert_eq!(free["input_per_mtok"], "0.000000", "{free}");
+
+    // and the largest the columns hold is still a rate
+    let (status, top) = put_model_price(
+        &client,
+        &base,
+        json!({
+            "model": "dear", "input_per_mtok": "999999.999999", "output_per_mtok": "999999.9999994",
+            "cached_input_per_mtok": "999999.999999", "cache_write_per_mtok": "999999.999999",
+        }),
+    )
+    .await;
+    assert!(status.is_success(), "{top}");
+    assert_eq!(top["output_per_mtok"], "999999.999999", "{top}");
+}
+
+/// #2889: a price already stored with a rate that cannot be charged does not
+/// 500 `/internal/snapshot` for every tenant, and does not price its model at
+/// zero either. It is left out with a problem line, so the model is unpriced,
+/// and saving a good rate puts it back.
+#[tokio::test]
+async fn a_stored_price_with_an_unchargeable_rate_is_omitted_from_the_snapshot() {
+    skip_without_db!();
+    let (app, db) = fresh_app().await;
+    let pool = db.pool().clone();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    // the database as an older control plane left it: the API let both through
+    // and nothing stopped the row going in. 0084 adds its constraints `not
+    // valid` on such a database, which is what is recreated here
+    let checks = [
+        "model_prices_input_per_mtok_rate",
+        "model_prices_output_per_mtok_rate",
+        "model_prices_cached_input_per_mtok_rate",
+        "model_prices_cache_write_per_mtok_rate",
+    ];
+    for name in checks {
+        sqlx::query(&format!("alter table model_prices drop constraint {name}"))
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    sqlx::query(
+        "insert into model_prices (model, input_per_mtok, output_per_mtok, cached_input_per_mtok)
+         values ('gpt-4o', 2.5, 10, 1.25),
+                ('negative-output', 3, -10, null),
+                ('nan-input', 'NaN', 10, null)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    for (name, column) in [
+        (checks[0], "input_per_mtok"),
+        (checks[1], "output_per_mtok"),
+        (checks[2], "cached_input_per_mtok"),
+        (checks[3], "cache_write_per_mtok"),
+    ] {
+        sqlx::query(&format!(
+            "alter table model_prices add constraint {name}
+             check ({column} >= 0 and {column} <> 'NaN'::numeric) not valid"
+        ))
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+
+    let snap: Value = client
+        .get(format!("{base}/internal/snapshot"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let models: Vec<&str> = snap["config"]["model_prices"]
+        .as_array()
+        .expect("model_prices")
+        .iter()
+        .filter_map(|price| price["model"].as_str())
+        .collect();
+    assert_eq!(models, ["gpt-4o"], "{snap}");
+    let lines = snap["problems"]
+        .as_array()
+        .expect("problems in the snapshot");
+    assert_eq!(lines.len(), 1, "{snap}");
+    let line = lines[0].as_str().unwrap();
+    assert!(
+        line.contains("'negative-output'") && line.contains("output_per_mtok"),
+        "{line}"
+    );
+
+    // the dashboard's list names both, the NaN one included
+    let problems: Value = client
+        .get(format!("{base}/api/v1/config/problems"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let lines: Vec<&str> = problems["problems"]
+        .as_array()
+        .expect("problems")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert_eq!(lines.len(), 2, "{problems}");
+    assert!(
+        lines.iter().any(|l| l.contains("'negative-output'")),
+        "{lines:?}"
+    );
+    assert!(lines.iter().any(|l| l.contains("'nan-input'")), "{lines:?}");
+
+    // correcting a rate through the API restores the model
+    let (status, fixed) = put_model_price(
+        &client,
+        &base,
+        json!({"model": "nan-input", "input_per_mtok": "3", "output_per_mtok": "10"}),
+    )
+    .await;
+    assert!(status.is_success(), "{fixed}");
+    let price = snapshot_price(&client, &base, "nan-input").await;
+    assert_eq!(price["input_per_mtok"], 3.0, "{price}");
 }
 
 /// The auto label the pricing catalog produces, and the fact that no request

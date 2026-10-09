@@ -3127,12 +3127,21 @@ fn governance_schemas(p: &Prim) -> Value {
             "required": ["model", "input_per_mtok", "output_per_mtok"],
             "properties": {
                 "model": string,
-                "input_per_mtok": string,
-                "output_per_mtok": string,
-                "cached_input_per_mtok": nullable_string,
+                "input_per_mtok": {
+                    "type": "string",
+                    "description": "a number from 0 up to 999999.999999, as text; a negative value, NaN, infinity or anything the decimal(12,6) column cannot hold is a 400 naming the field"
+                },
+                "output_per_mtok": {
+                    "type": "string",
+                    "description": "a number from 0 up to 999999.999999, as text; a negative value, NaN, infinity or anything the decimal(12,6) column cannot hold is a 400 naming the field"
+                },
+                "cached_input_per_mtok": {
+                    "type": ["string", "null"],
+                    "description": "a number from 0 up to 999999.999999, as text, or null to price cache hits at input_per_mtok; a negative value, NaN, infinity or anything the decimal(12,6) column cannot hold is a 400 naming the field"
+                },
                 "cache_write_per_mtok": {
                     "type": ["string", "null"],
-                    "description": "rate for input tokens written to the prompt cache, a finite non-negative number. Omit to leave the stored rate unchanged, send null to clear it (writes are then priced at input_per_mtok). Unlike the other rates, which a PUT replaces, so a client that predates the field cannot reset it"
+                    "description": "rate for input tokens written to the prompt cache, a number from 0 up to 999999.999999. Omit to leave the stored rate unchanged, send null to clear it (writes are then priced at input_per_mtok). Unlike the other rates, which a PUT replaces, so a client that predates the field cannot reset it"
                 },
                 "currency": {"type": "string", "default": "USD"}
             },

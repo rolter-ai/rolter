@@ -176,6 +176,26 @@ sections of a model's sheet, and saving the sheet writes them back to the route.
 | `visibility.project_only`                                              | `true` serves the model only to keys minted in the route's own project. Omitted (the default), every key in the organization may use it |
 | `visibility.allowed_team_ids` / `allowed_key_ids` / `allowed_user_ids` | Restrict the model to specific teams, virtual keys or users. Each entry is an **id**, not a name                                        |
 
+The block also has a `pricing` object for prices whose unit is not a token
+(`image_per_unit`, `audio_input_per_minute`, `audio_output_per_minute`). Token
+rates, including what a cache write costs, belong on the model's price instead,
+which is what the **Pricing override** section of the sheet writes. The route's
+`pricing.cache_write_per_mtok` is **deprecated and ignored**. It never changed a
+cost: the rate that prices cache writes is `cache_write_per_mtok` on the price
+row (see [Cache writes](/observability/logs-and-cost#cache-writes)). A route
+that still carries the key keeps loading and saving without complaint, and
+Rolter does not validate the value or copy it into the price. The next time you
+save the model's sheet in the dashboard it drops the key from the route. It is
+not migrated on purpose, since doing so would start charging by a number that
+never took effect. To find the routes that still carry one, and decide whether
+to move the value to the price row first:
+
+```sql
+select model, advanced -> 'pricing' ->> 'cache_write_per_mtok' as cache_write_per_mtok
+from routes
+where advanced -> 'pricing' ? 'cache_write_per_mtok';
+```
+
 A route is only ever served to keys of the organization it belongs to. For a
 key from another organization the route does not exist: the key gets `404` with
 code `model_not_found`, as for a model nobody configured, and does not see it in
