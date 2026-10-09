@@ -37,3 +37,8 @@
 
 **Learning:** User-facing configuration fields on `ProviderConfig` in `crates/rolter-core/src/config.rs` (`slug`, `status_page_url`, `ca_bundles`) can quietly drift from `docs/user-docs/configuration/config-file.mdx` if drift guard tests only cover `ServerConfig` and `VirtualKeyConfig`.
 **Action:** Guard `ProviderConfig` documentation completeness using `all_provider_config_fields_are_documented_in_config_file_reference` in `crates/rolter/tests/env_var_names.rs`.
+
+## 2026-10-10 - ModelDefaultsConfig fields drifting from config-file reference docs
+
+**Learning:** Configuration fields on `ModelDefaultsConfig` in `crates/rolter-core/src/config.rs` (`enabled`, `default_model`, `temperature`, `top_p`, `max_tokens`) can quietly drift from `docs/user-docs/configuration/config-file.mdx` if individual config structs lack automated drift guards.
+**Action:** Guard `ModelDefaultsConfig` documentation completeness using `all_model_defaults_config_fields_are_documented_in_config_file_reference` in `crates/rolter/tests/env_var_names.rs`.
