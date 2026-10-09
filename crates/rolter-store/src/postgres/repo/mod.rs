@@ -3535,6 +3535,26 @@ impl UserRepo<'_> {
         .map_err(store_err)
     }
 
+    /// every account in the deployment, whatever it belongs to, in one
+    /// email-ordered list: members of any org, members of none, deactivated
+    /// ones.
+    ///
+    /// The listings above answer for one org, so an account that only belongs
+    /// to another org is invisible to them. This is the read behind the
+    /// deployment-wide audit log, where an actor can be from anywhere (#2871).
+    /// It names no org, so the caller must be a superadmin.
+    pub async fn list_all(&self) -> Result<Vec<User>> {
+        sqlx::query_as(
+            "select id, email, password_hash, is_superadmin, deactivated_at, created_at,
+                    display_name, bio
+             from users
+             order by email, id",
+        )
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)
+    }
+
     /// create a local account. `password_hash` is a pre-computed argon2id digest
     /// (the repo never sees plaintext); pass `None` for an sso-only shell account
     pub async fn create(

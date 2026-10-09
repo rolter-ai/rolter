@@ -826,7 +826,7 @@ fn invocations_sql(status_expr: &str) -> String {
                 business_unit_id, customer_id, \
                 model, provider, target, variant, status, stream, cache_hit, cache_read_tokens, cache_write_tokens, \
                 prompt_tokens, completion_tokens, total_tokens, cost_usd, unpriced, latency_ms, ttft_ms, error, \
-                upstream_status, attempts, \
+                upstream_status, attempts, lifecycle_operation, \
                 if({PAYLOAD_VISIBLE}, payload.request_payload, '') as request_payload, \
                 if({PAYLOAD_VISIBLE}, payload.response_payload, '') as response_payload, \
                 toUInt8(not {PAYLOAD_VISIBLE} \
@@ -1437,6 +1437,16 @@ mod tests {
         // an error of its own, only these two say which upstream status caused
         // it and how many attempts it took to get there (#2807)
         assert!(sql.contains("error, upstream_status, attempts"));
+    }
+
+    #[test]
+    fn invocations_sql_selects_which_lifecycle_call_a_row_records() {
+        let sql = invocations_sql(status_predicate("all").expect("all is whitelisted"));
+        // a `GET` and a `DELETE` of one stored response share a model and a
+        // provider, carry no tokens and cost nothing: only this column says
+        // which call the row is (#2865). it is `String default ''`, so a row
+        // older than the column and every model request read back as ''
+        assert!(sql.contains("attempts, lifecycle_operation,"));
     }
 
     #[test]

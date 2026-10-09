@@ -420,12 +420,15 @@ async fn start_authorize(
         cap!("mcp_oauth_grant", Create),
     )
     .await?;
-    // consent belongs to a person: a superadmin acting as nobody has no
-    // identity to hang a grant off, and inventing one would put a token in the
+    // consent belongs to a person. a signed-in superadmin is one (the session
+    // carries the account, and `account_id` reads it where matching
+    // `Principal::User` alone would turn them away, #2859); the admin token and
+    // open mode are nobody, and inventing an owner would put a token in the
     // org that no user can see or revoke
-    let Principal::User(user) = &principal else {
+    let Some(account_id) = principal.account_id() else {
         return Err(invalid(
-            "MCP consent is granted by a user; a superadmin token has no identity to grant it",
+            "MCP consent is granted by a signed-in account; the admin token and open mode \
+             have no account to own the grant, so sign in as a user or a superadmin",
         ));
     };
     let resource = ResourceUri::parse(&server.url).map_err(|e| invalid(e.to_string()))?;
@@ -446,7 +449,7 @@ async fn start_authorize(
             NewMcpLogin {
                 state: &csrf_state,
                 server_id: server.id,
-                user_id: user.id,
+                user_id: account_id,
                 code_verifier: &verifier,
                 scopes: &requested,
                 redirect_uri: &redirect,
@@ -468,7 +471,7 @@ async fn start_authorize(
         "mcp_server",
         server.id,
         serde_json::json!({
-            "user_id": user.id,
+            "user_id": account_id,
             "endpoints": client.source,
             "issuer": client.issuer,
             "resource": resource.as_str(),

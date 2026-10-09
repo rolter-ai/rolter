@@ -168,6 +168,7 @@
               "api/public-url",
               "api/change-password",
               "api/org-projects",
+              "api/deployment-users",
               "api/providers",
               "api/attribution-listings",
               "api/project-settings",

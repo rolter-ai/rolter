@@ -116,9 +116,14 @@ presents to the server's authorization server. The dashboard does this on
 </Steps>
 
 <Note>
-  Consent belongs to a person. Connect signs in as *you* — a superadmin token
-  with no user identity is refused, since the grant would belong to nobody and
-  no one could see or revoke it.
+  Consent belongs to a person. Connect signs in as *you*, so the grant is owned
+  by the account you are signed in with. A user may connect a server in an
+  organization they hold a role in, and a signed-in **superadmin** may connect
+  any server as themselves, even one in an organization they hold no role in. The
+  grant is theirs: they see it, and revoke it, like any owner. The admin token
+  and open mode (no `ROLTER_ADMIN_TOKEN`) are not a person, so a consent started
+  with either is refused with a `400` that says so. The grant would belong to
+  nobody, and no one could see or revoke it. Sign in as an account to connect.
 </Note>
 
 ## Where consent ends

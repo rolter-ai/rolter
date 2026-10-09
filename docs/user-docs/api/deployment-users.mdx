@@ -1,0 +1,92 @@
+---
+title: "Listing Every Account in the Deployment"
+sidebarTitle: "Deployment users"
+description: "GET /api/v1/users returns every account in the deployment, whichever organization it belongs to, ordered by e-mail. Superadmin only; it is what names an actor in the deployment-wide audit log."
+---
+
+`GET /api/v1/orgs/{org_id}/users` answers for one organization: it lists the
+people who hold a role in that organization, its teams or its projects. An
+account that belongs only to another organization is not on it, and neither is
+an account that holds no role anywhere. That is the right answer for managing an
+organization's people and the wrong one for reading the **whole deployment**,
+where the person behind an audit-log row can be anyone.
+
+`GET /api/v1/users` is the list that has no organization in it.
+
+## Request
+
+```http
+GET /api/v1/users
+Authorization: Bearer <superadmin session or admin token>
+```
+
+```bash
+curl -s https://control.example.com/api/v1/users \
+  -H "Authorization: Bearer $ROLTER_SESSION_TOKEN"
+```
+
+There are no query parameters. The list is not paged: it holds one row per
+account, which is what a client needs to turn the actor ids on deployment-wide
+audit-log rows into e-mail addresses.
+
+## Response
+
+```json
+[
+  {
+    "id": "6d0f1f9c-6f0e-4d1a-9d3f-2a5d8f3a1b22",
+    "email": "ada@example.com",
+    "is_superadmin": false,
+    "deactivated_at": null,
+    "created_at": "2026-01-14T09:03:11.482Z",
+    "display_name": "Ada Lovelace",
+    "bio": null
+  },
+  {
+    "id": "c41d7e02-3a8b-4f19-8f2c-5d9e1a7b3c04",
+    "email": "root@example.com",
+    "is_superadmin": true,
+    "deactivated_at": null,
+    "created_at": "2026-01-02T08:00:00.000Z",
+    "display_name": null,
+    "bio": null
+  }
+]
+```
+
+The rows are the same `User` rows `GET /api/v1/orgs/{org_id}/users` returns, with
+the same fields, and no password hash is ever part of one. They are ordered by
+e-mail address.
+
+The list includes every kind of account:
+
+- people in any organization, and people who hold no role anywhere, such as the
+  first administrator `rolter-seed --admin-email` creates;
+- superadmins, whether or not they hold a role in an organization;
+- deactivated accounts, which keep their row, so an old audit entry still names
+  the person who made it.
+
+An account that has been **deleted** is not on the list, but its audit entries
+stay. A client that resolves ids against the list needs a fallback for the ones
+it does not find, for example the first eight characters of the uuid.
+
+## Authorization
+
+Superadmin only: the `deployment_user` capability's read action, published by
+`GET /api/v1/rbac/matrix`. A signed-in superadmin and the admin token may read
+it. Everyone else, organization admins included, is refused with `403` and an
+unauthenticated caller with `401`, in the standard error shape:
+
+```json
+{
+  "error": {
+    "message": "forbidden",
+    "type": "forbidden",
+    "code": "forbidden"
+  }
+}
+```
+
+An organization admin has no use for it and may not have it: this list names the
+people of organizations the caller has no role in. Use
+`GET /api/v1/orgs/{org_id}/users` to list your own organization's people.
