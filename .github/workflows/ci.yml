@@ -193,14 +193,14 @@ jobs:
         run: cargo fetch --locked
       - name: initialize codeql
         if: matrix.leg != 'rust' || steps.scope.outputs.analyze != 'false'
-        uses: github/codeql-action/init@f58f0d11ebf5dedd870fab2f999275f7602cfa46 # codeql-bundle-v2.26.0
+        uses: github/codeql-action/init@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
         with:
           languages: ${{ matrix.languages }}
           build-mode: none
           config-file: ./.github/codeql/codeql-config.yml
       - name: analyze
         if: matrix.leg == 'rust' && steps.scope.outputs.analyze != 'false'
-        uses: github/codeql-action/analyze@f58f0d11ebf5dedd870fab2f999275f7602cfa46 # codeql-bundle-v2.26.0
+        uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
         with:
           category: "/language:rust"
       # analyze takes one `category` for every language it ran, and the cli
@@ -211,25 +211,25 @@ jobs:
       # failed analyze still uploads its debugging sarif (`failure-only`)
       - name: analyze (actions, javascript-typescript, python)
         if: matrix.leg != 'rust'
-        uses: github/codeql-action/analyze@f58f0d11ebf5dedd870fab2f999275f7602cfa46 # codeql-bundle-v2.26.0
+        uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
         with:
           upload: failure-only
           output: ${{ runner.temp }}/codeql-sarif
       - name: upload actions results
         if: matrix.leg != 'rust'
-        uses: github/codeql-action/upload-sarif@f58f0d11ebf5dedd870fab2f999275f7602cfa46 # codeql-bundle-v2.26.0
+        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
         with:
           sarif_file: ${{ runner.temp }}/codeql-sarif/actions.sarif
           category: "/language:actions"
       - name: upload javascript-typescript results
         if: matrix.leg != 'rust'
-        uses: github/codeql-action/upload-sarif@f58f0d11ebf5dedd870fab2f999275f7602cfa46 # codeql-bundle-v2.26.0
+        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
         with:
           sarif_file: ${{ runner.temp }}/codeql-sarif/javascript.sarif
           category: "/language:javascript-typescript"
       - name: upload python results
         if: matrix.leg != 'rust'
-        uses: github/codeql-action/upload-sarif@f58f0d11ebf5dedd870fab2f999275f7602cfa46 # codeql-bundle-v2.26.0
+        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
         with:
           sarif_file: ${{ runner.temp }}/codeql-sarif/python.sarif
           category: "/language:python"

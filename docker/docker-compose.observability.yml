@@ -25,7 +25,7 @@
 
 services:
   otel-collector:
-    image: otel/opentelemetry-collector-contrib:0.158.0
+    image: otel/opentelemetry-collector-contrib:0.162.0
     restart: unless-stopped
     command: ["--config=/etc/otelcol-contrib/config.yaml"]
     volumes:
@@ -39,7 +39,7 @@ services:
   # dev aid, so there is no volume to collide with rolter's own and nothing
   # survives a restart by design
   jaeger:
-    image: jaegertracing/jaeger:2.20.0
+    image: jaegertracing/jaeger:2.22.0
     restart: unless-stopped
     ports:
       - "16686:16686" # trace UI

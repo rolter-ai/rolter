@@ -7,7 +7,7 @@ inputs:
   version:
     description: "typos version to install"
     required: false
-    default: "1.50.0"
+    default: "1.51.1"
   config:
     description: "path to the typos config file"
     required: false
