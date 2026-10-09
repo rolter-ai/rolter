@@ -101,7 +101,7 @@ streams, all partitioned by day with a 90-day TTL and written in batches off the
 hot path. Schema lives in [`clickhouse/`](../../../clickhouse/), applied by the
 container's init directory:
 
-- `request_logs` — one row per proxied request, with cost and token counts. `cache_write_tokens` is every prompt token written to the provider's cache, and `cache_write_1h_tokens` (`017_cache_write_1h.sql`, #2891) the part of it written to a 1 hour cache; the control plane does not select the latter yet.
+- `request_logs` — one row per proxied request, with cost and token counts. `cache_write_tokens` is every prompt token written to the provider's cache, and `cache_write_1h_tokens` (`017_cache_write_1h.sql`, #2891) the part of it written to a 1 hour cache. The invocation list returns it, selecting it only when the table has the column (#2903); see [Optional `request_logs` columns](observability.md#optional-request_logs-columns-2903).
 - `provider_health_events` — per-target health observations from every signal, each carrying the owning provider's `org_id` (empty for a config-file provider or a row from before `013_provider_health_org.sql`).
 - `mcp_tool_call_logs` — MCP tool invocations.
 

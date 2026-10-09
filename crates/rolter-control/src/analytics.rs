@@ -12,7 +12,8 @@
 //! `Query`, not axum's, so a `since`/`until` ClickHouse would misread as the
 //! epoch is a `400` before any SQL is built (#1192).
 
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -23,6 +24,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::analytics_access::{AnalyticsAccess, PAYLOAD_VISIBLE, ROW_VISIBLE};
+use crate::request_log_columns::{ColumnCache, Columns, PROBE_SQL};
 use crate::time_bounds::{is_time_bound, InvalidParam, Query, TimeBounds};
 
 /// Minimal ClickHouse HTTP read client.
@@ -30,6 +32,9 @@ use crate::time_bounds::{is_time_bound, InvalidParam, Query, TimeBounds};
 pub struct ClickHouseClient {
     base: String,
     client: reqwest::Client,
+    /// what the last `system.columns` probe found, shared by every clone so the
+    /// whole control plane asks once per window (#2903)
+    columns: Arc<ColumnCache>,
 }
 
 /// How long a connection to ClickHouse may take to open. A healthy server on
@@ -110,6 +115,7 @@ impl ClickHouseClient {
         Self {
             base: url.trim_end_matches('/').to_string(),
             client: build_http(connect, request, pool_idle),
+            columns: Arc::new(ColumnCache::new()),
         }
     }
 
@@ -145,6 +151,48 @@ impl ClickHouseClient {
             .and_then(|d| d.as_array())
             .cloned()
             .unwrap_or_default())
+    }
+
+    /// Which of the optional `request_logs` columns this server has, so a
+    /// select can name the ones that exist and read a default for the rest
+    /// instead of failing the whole statement (#2903).
+    ///
+    /// The answer is cached on the client (see [`crate::request_log_columns`])
+    /// and shared by its clones. A server that cannot be reached is an error,
+    /// since the select that follows would fail on the same connection; one that
+    /// answers but cannot say, because it refuses `system.columns` or lists no
+    /// column for the table, reads as "every column is there", which is what a
+    /// select assumed before the probe existed.
+    pub(crate) async fn request_log_columns(&self) -> anyhow::Result<Columns> {
+        let now = Instant::now();
+        if let Some(columns) = self.columns.fresh(now) {
+            return Ok(columns);
+        }
+        let found = match self.query(PROBE_SQL, &[]).await {
+            Ok(rows) => Columns::from_rows(&rows),
+            Err(err) if is_transport(&err) => return Err(err),
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    "could not read the columns of request_logs; selecting every optional column"
+                );
+                None
+            }
+        };
+        let columns = self.columns.store(now, found);
+        if !columns.complete() {
+            tracing::info!(
+                missing = ?columns.missing(),
+                "request_logs lacks columns the control plane can read; apply the clickhouse/ migrations to keep them"
+            );
+        }
+        Ok(columns)
+    }
+
+    /// Forget what the probe found, so the next list probes again. A select
+    /// that failed may have failed because the table changed under the answer.
+    pub(crate) fn forget_request_log_columns(&self) {
+        self.columns.forget();
     }
 
     /// Apply the admin-configured retention clocks to the log tables. Both
@@ -536,6 +584,13 @@ pub(crate) fn query_failed(what: &'static str, err: &anyhow::Error) -> Response 
         .into_response()
 }
 
+/// Whether the request never got an answer from ClickHouse: a refused or
+/// timed-out connection, as opposed to a status line carrying its error.
+fn is_transport(err: &anyhow::Error) -> bool {
+    err.chain()
+        .any(|cause| cause.downcast_ref::<reqwest::Error>().is_some())
+}
+
 /// Whether any error in the chain is a `reqwest` timeout, however much context
 /// a caller wrapped around it.
 fn is_timeout(err: &anyhow::Error) -> bool {
@@ -807,6 +862,14 @@ impl TimeBounds for InvocationsQuery {
 /// reason the attribution dimensions do: a page cut first and filtered after
 /// would hold fewer rows than `limit` asked for.
 ///
+/// Four columns are optional: `upstream_status`, `attempts` (`015`),
+/// `lifecycle_operation` (`016`) and `cache_write_1h_tokens` (`017`). An
+/// existing deployment applies those files by hand, possibly after it has
+/// upgraded the control plane, and a select that names a column the table lacks
+/// fails the whole list. `columns` says which of them the table has; one it
+/// lacks is read as the default ClickHouse would have filled in for an older
+/// row, under its own name, so the row has the same shape either way (#2903).
+///
 /// Paging is a keyset over `(ts, request_id)`, never an offset. `request_logs`
 /// is written continuously by the gateway, so rows land above the window
 /// between one page and the next; counting from the top then shows a row twice
@@ -819,14 +882,19 @@ impl TimeBounds for InvocationsQuery {
 /// is not a total order and ClickHouse may return tied rows in any order it
 /// likes (#1344). With `request_id` in both the sort and the cursor, tied
 /// timestamps have one order and the cursor names exactly one row.
-fn invocations_sql(status_expr: &str) -> String {
+fn invocations_sql(status_expr: &str, columns: &Columns) -> String {
     let cursor = keyset_predicate("request_id");
+    let cache_write_1h_tokens = columns.select("cache_write_1h_tokens");
+    let upstream_status = columns.select("upstream_status");
+    let attempts = columns.select("attempts");
+    let lifecycle_operation = columns.select("lifecycle_operation");
     format!(
         "select ts, request_id, trace_id, org_id, team_id, project_id, virtual_key_id, \
                 business_unit_id, customer_id, \
                 model, provider, target, variant, status, stream, cache_hit, cache_read_tokens, cache_write_tokens, \
+                {cache_write_1h_tokens}, \
                 prompt_tokens, completion_tokens, total_tokens, cost_usd, unpriced, latency_ms, ttft_ms, error, \
-                upstream_status, attempts, lifecycle_operation, \
+                {upstream_status}, {attempts}, {lifecycle_operation}, \
                 if({PAYLOAD_VISIBLE}, payload.request_payload, '') as request_payload, \
                 if({PAYLOAD_VISIBLE}, payload.response_payload, '') as response_payload, \
                 toUInt8(not {PAYLOAD_VISIBLE} \
@@ -885,7 +953,13 @@ async fn invocations(
         Err(message) => return InvalidParam::cursor(message).into_response(),
     };
     let limit = clamp_limit(q.limit);
-    let sql = invocations_sql(status_expr);
+    // after the request is known to be well formed, so a refused one costs
+    // ClickHouse nothing
+    let columns = match ch.request_log_columns().await {
+        Ok(columns) => columns,
+        Err(error) => return query_failed("analytics query failed", &error),
+    };
+    let sql = invocations_sql(status_expr, &columns);
     let request_id = q.request_id.clone().unwrap_or_default();
     let trace_id = q.trace_id.clone().unwrap_or_default();
     // a pasted id names one request wherever it sits in the retained log: the
@@ -929,7 +1003,12 @@ async fn invocations(
             let next_cursor = next_keyset_cursor(&data, "request_id");
             Json(json!({"data": data, "next_cursor": next_cursor})).into_response()
         }
-        Err(error) => query_failed("analytics query failed", &error),
+        Err(error) => {
+            // the table may have changed under the cached answer (a column
+            // dropped, the table recreated): look again on the next request
+            ch.forget_request_log_columns();
+            query_failed("analytics query failed", &error)
+        }
     }
 }
 
@@ -1209,7 +1288,10 @@ mod tests {
 
     #[test]
     fn invocations_sql_aliases_the_payload_columns() {
-        let sql = invocations_sql(status_predicate("all").expect("all is whitelisted"));
+        let sql = invocations_sql(
+            status_predicate("all").expect("all is whitelisted"),
+            &Columns::default(),
+        );
         // an unaliased qualified column is named `payload.request_payload` in
         // clickhouse's JSON output, which the dashboard never reads (#1177)
         assert!(!sql.contains("payload.request_payload, payload.response_payload"));
@@ -1219,7 +1301,10 @@ mod tests {
 
     #[test]
     fn invocations_sql_filters_rows_and_masks_bodies_the_caller_may_not_read() {
-        let sql = invocations_sql(status_predicate("all").expect("all is whitelisted"));
+        let sql = invocations_sql(
+            status_predicate("all").expect("all is whitelisted"),
+            &Columns::default(),
+        );
         // every row is narrowed to the caller's tenancy, and each body is blanked
         // unless the payload floor is met at the row's own scope (#1820)
         assert!(sql.contains(&format!("and {ROW_VISIBLE}")));
@@ -1234,7 +1319,10 @@ mod tests {
 
     #[test]
     fn invocations_sql_binds_each_body_to_its_own_log_row() {
-        let sql = invocations_sql(status_predicate("all").expect("all is whitelisted"));
+        let sql = invocations_sql(
+            status_predicate("all").expect("all is whitelisted"),
+            &Columns::default(),
+        );
         // request_id is whatever the caller sent as x-request-id, so joining on
         // it alone hands one tenant's captured body to another tenant's row
         // under the same id. the log row's own ts is what names the request
@@ -1274,7 +1362,10 @@ mod tests {
     fn the_dashboard_reads_filter_rows_as_the_invocation_list_does() {
         // one predicate, word for word, so a filter means the same rows on the
         // dashboard as on llm logs (#2453)
-        let sql = invocations_sql(status_predicate("all").expect("all is whitelisted"));
+        let sql = invocations_sql(
+            status_predicate("all").expect("all is whitelisted"),
+            &Columns::default(),
+        );
         assert!(sql.contains(DASHBOARD_FILTERS), "{sql}");
     }
 
@@ -1394,7 +1485,10 @@ mod tests {
 
     #[test]
     fn invocations_sql_filters_both_attribution_dimensions_as_params() {
-        let sql = invocations_sql(status_predicate("all").expect("all is whitelisted"));
+        let sql = invocations_sql(
+            status_predicate("all").expect("all is whitelisted"),
+            &Columns::default(),
+        );
         // both are bound, never spliced: they arrive as caller-supplied uuids
         assert!(sql.contains("has(splitByChar(',', {business_unit:String}), business_unit_id)"));
         assert!(sql.contains("has(splitByChar(',', {customer:String}), customer_id)"));
@@ -1414,7 +1508,10 @@ mod tests {
     /// id from another tenant finds nothing rather than that tenant's row.
     #[test]
     fn invocations_sql_looks_a_request_up_by_its_ids_as_params() {
-        let sql = invocations_sql(status_predicate("all").expect("all is whitelisted"));
+        let sql = invocations_sql(
+            status_predicate("all").expect("all is whitelisted"),
+            &Columns::default(),
+        );
         assert!(sql.contains("({request_id:String} = '' or request_id = {request_id:String})"));
         assert!(sql.contains("({trace_id:String} = '' or trace_id = {trace_id:String})"));
         assert!(sql.contains(ROW_VISIBLE));
@@ -1423,7 +1520,10 @@ mod tests {
 
     #[test]
     fn invocations_sql_selects_the_unpriced_flag_next_to_cost() {
-        let sql = invocations_sql(status_predicate("all").expect("all is whitelisted"));
+        let sql = invocations_sql(
+            status_predicate("all").expect("all is whitelisted"),
+            &Columns::default(),
+        );
         // a zero cost_usd is ambiguous on its own: free, or no price row at all.
         // the flag the gateway recorded per request has to travel with it, or
         // the dashboard re-derives it from the live catalogue and drifts (#1226)
@@ -1432,7 +1532,10 @@ mod tests {
 
     #[test]
     fn invocations_sql_selects_what_the_request_did_upstream_next_to_its_error() {
-        let sql = invocations_sql(status_predicate("all").expect("all is whitelisted"));
+        let sql = invocations_sql(
+            status_predicate("all").expect("all is whitelisted"),
+            &Columns::default(),
+        );
         // `status` is what the caller was told. when the gateway answered with
         // an error of its own, only these two say which upstream status caused
         // it and how many attempts it took to get there (#2807)
@@ -1441,7 +1544,10 @@ mod tests {
 
     #[test]
     fn invocations_sql_selects_which_lifecycle_call_a_row_records() {
-        let sql = invocations_sql(status_predicate("all").expect("all is whitelisted"));
+        let sql = invocations_sql(
+            status_predicate("all").expect("all is whitelisted"),
+            &Columns::default(),
+        );
         // a `GET` and a `DELETE` of one stored response share a model and a
         // provider, carry no tokens and cost nothing: only this column says
         // which call the row is (#2865). it is `String default ''`, so a row
@@ -1451,7 +1557,10 @@ mod tests {
 
     #[test]
     fn invocations_sql_filters_unpriced_on_the_recorded_flag_as_a_param() {
-        let sql = invocations_sql(status_predicate("all").expect("all is whitelisted"));
+        let sql = invocations_sql(
+            status_predicate("all").expect("all is whitelisted"),
+            &Columns::default(),
+        );
         // the flag the gateway recorded, bound as a value: the filter must not
         // re-derive "unpriced" from the live catalogue (#1226), and an unset
         // filter has to let every row through
@@ -1476,7 +1585,10 @@ mod tests {
     #[test]
     fn invocations_sql_orders_by_a_total_key_so_paging_cannot_repeat_a_row() {
         for status in ["all", "error", "success"] {
-            let sql = invocations_sql(status_predicate(status).expect("status is whitelisted"));
+            let sql = invocations_sql(
+                status_predicate(status).expect("status is whitelisted"),
+                &Columns::default(),
+            );
             // ts is a DateTime64(3): a burst of concurrent requests shares one
             // millisecond even though every row carries its own request time,
             // so ordering on ts alone leaves tied rows in an arbitrary order
@@ -1490,7 +1602,10 @@ mod tests {
 
     #[test]
     fn invocations_sql_binds_filters_as_params_and_splices_only_the_status() {
-        let sql = invocations_sql(status_predicate("error").expect("error is whitelisted"));
+        let sql = invocations_sql(
+            status_predicate("error").expect("error is whitelisted"),
+            &Columns::default(),
+        );
         assert!(sql.contains("and status >= 400"));
         assert!(sql.contains("{model:String}"));
         assert!(sql.contains("{key:String}"));
@@ -1503,7 +1618,10 @@ mod tests {
 
     #[test]
     fn invocations_sql_pages_on_a_keyset_over_a_total_sort_key() {
-        let sql = invocations_sql(status_predicate("all").expect("all is whitelisted"));
+        let sql = invocations_sql(
+            status_predicate("all").expect("all is whitelisted"),
+            &Columns::default(),
+        );
         // an offset counts rows from the top of a table the gateway is still
         // writing to, so a row ingested between two pages repeats or hides one
         // (#1394)
@@ -1516,7 +1634,10 @@ mod tests {
 
     #[test]
     fn an_absent_invocations_cursor_is_never_strict_parsed() {
-        let sql = invocations_sql(status_predicate("all").expect("all is whitelisted"));
+        let sql = invocations_sql(
+            status_predicate("all").expect("all is whitelisted"),
+            &Columns::default(),
+        );
         // clickhouse evaluates the parse of the bound constant even when the
         // `= ''` disjunct short-circuits it, so a strict parse fails the whole
         // first page (#1177)
@@ -1796,5 +1917,318 @@ mod query_failed_tests {
             !text.contains("request_logs") && !text.contains("10.0.0.9"),
             "{text}"
         );
+    }
+}
+
+/// The invocation list against a table that may lack the hand-applied columns
+/// (#2903). The stub answers the way ClickHouse does for the two statements the
+/// list sends: a `system.columns` probe, and a select that fails on a column
+/// the table does not have, so a regression to naming one unconditionally is a
+/// `502` here as it is in front of a deployment that has not run the file.
+#[cfg(test)]
+mod optional_column_tests {
+    use super::*;
+    use crate::request_log_columns::{ColumnCache, OPTIONAL_COLUMNS};
+    use axum::body::{to_bytes, Body};
+    use axum::http::Request;
+    use parking_lot::Mutex;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use tower::ServiceExt;
+
+    /// What a table from before `015` has: no optional column.
+    const REQUIRED: &[&str] = &["ts", "request_id", "status", "cache_write_tokens"];
+
+    fn every_optional() -> Vec<&'static str> {
+        OPTIONAL_COLUMNS.iter().map(|column| column.name).collect()
+    }
+
+    #[derive(Clone)]
+    struct Stub {
+        /// the columns the stub's `request_logs` has
+        columns: Arc<Mutex<Vec<&'static str>>>,
+        /// every statement received, in order
+        statements: Arc<Mutex<Vec<String>>>,
+        refuse_probe: Arc<AtomicBool>,
+        fail_list: Arc<AtomicBool>,
+        url: String,
+    }
+
+    impl Stub {
+        async fn start(columns: &[&'static str]) -> Self {
+            let mut stub = Self {
+                columns: Arc::new(Mutex::new(columns.to_vec())),
+                statements: Arc::default(),
+                refuse_probe: Arc::default(),
+                fail_list: Arc::default(),
+                url: String::new(),
+            };
+            let app = Router::new()
+                .fallback(axum::routing::post(answer))
+                .with_state(stub.clone());
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind a local port");
+            stub.url = format!("http://{}", listener.local_addr().expect("a local address"));
+            tokio::spawn(async move { axum::serve(listener, app).await });
+            stub
+        }
+
+        fn probes(&self) -> usize {
+            self.statements
+                .lock()
+                .iter()
+                .filter(|sql| sql.contains("system.columns"))
+                .count()
+        }
+
+        /// the last select the list sent
+        fn list_sql(&self) -> String {
+            self.statements
+                .lock()
+                .iter()
+                .rfind(|sql| sql.contains("from request_logs"))
+                .cloned()
+                .expect("the list reached clickhouse")
+        }
+    }
+
+    async fn answer(State(stub): State<Stub>, sql: String) -> Response {
+        stub.statements.lock().push(sql.clone());
+        if sql.contains("system.columns") {
+            if stub.refuse_probe.load(Ordering::SeqCst) {
+                return (
+                    StatusCode::FORBIDDEN,
+                    "Code: 497. DB::Exception: Not enough privileges",
+                )
+                    .into_response();
+            }
+            let rows: Vec<Value> = stub
+                .columns
+                .lock()
+                .iter()
+                .map(|name| json!({ "name": name }))
+                .collect();
+            return Json(json!({ "data": rows })).into_response();
+        }
+        // a select that names a column the table lacks is an error, as it is
+        // in clickhouse; it only does so when the name stands bare in the list
+        let missing = every_optional().into_iter().find(|name| {
+            !stub.columns.lock().contains(name) && sql.contains(&format!(", {name},"))
+        });
+        if let Some(name) = missing {
+            return (
+                StatusCode::NOT_FOUND,
+                format!("Code: 47. DB::Exception: Unknown expression identifier `{name}`"),
+            )
+                .into_response();
+        }
+        if stub.fail_list.swap(false, Ordering::SeqCst) {
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Code: 241. Memory limit").into_response();
+        }
+        Json(json!({ "data": [] })).into_response()
+    }
+
+    fn app_over(ch: ClickHouseClient) -> Router {
+        let mut state = crate::tests::state_with_token(None);
+        state.clickhouse = Some(ch);
+        router().with_state(state)
+    }
+
+    async fn list(app: &Router, query: &str) -> (StatusCode, Value) {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::get(format!("/api/v1/analytics/invocations{query}"))
+                    .body(Body::empty())
+                    .expect("a valid request"),
+            )
+            .await
+            .expect("the router answers");
+        let status = response.status();
+        let body = to_bytes(response.into_body(), 1 << 20)
+            .await
+            .expect("a readable body");
+        (status, serde_json::from_slice(&body).unwrap_or(Value::Null))
+    }
+
+    #[test]
+    fn every_optional_column_is_named_through_the_probe_result() {
+        let present = invocations_sql("true", &Columns::default());
+        let absent = invocations_sql("true", &Columns::lacking(&every_optional()));
+        for column in OPTIONAL_COLUMNS {
+            let bare = format!(", {},", column.name);
+            let stood_in = format!(", {} as {},", column.default, column.name);
+            assert!(present.contains(&bare), "{} is not selected", column.name);
+            assert!(!present.contains(&stood_in), "{}", column.name);
+            assert!(absent.contains(&stood_in), "{} has no default", column.name);
+            assert!(!absent.contains(&bare), "{} is still named", column.name);
+        }
+    }
+
+    #[test]
+    fn invocations_sql_selects_the_one_hour_share_of_a_cache_write() {
+        let sql = invocations_sql("true", &Columns::default());
+        // beside the total it is part of, so a reader sees the pair (#2891)
+        assert!(sql.contains("cache_write_tokens, cache_write_1h_tokens,"));
+    }
+
+    #[tokio::test]
+    async fn a_table_with_every_column_is_selected_in_full() {
+        let mut columns = REQUIRED.to_vec();
+        columns.extend(every_optional());
+        let stub = Stub::start(&columns).await;
+        let app = app_over(ClickHouseClient::new(&stub.url));
+
+        let (status, body) = list(&app, "").await;
+
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let sql = stub.list_sql();
+        for name in every_optional() {
+            assert!(sql.contains(&format!(", {name},")), "{name}: {sql}");
+        }
+        assert!(!sql.contains("toUInt32(0) as"), "{sql}");
+    }
+
+    #[tokio::test]
+    async fn a_table_without_the_columns_still_lists_requests() {
+        let stub = Stub::start(REQUIRED).await;
+        let app = app_over(ClickHouseClient::new(&stub.url));
+
+        let (status, body) = list(&app, "").await;
+
+        assert_eq!(status, StatusCode::OK, "the list failed: {body}");
+        let sql = stub.list_sql();
+        assert!(
+            sql.contains("toUInt32(0) as cache_write_1h_tokens"),
+            "{sql}"
+        );
+        assert!(sql.contains("toUInt16(0) as upstream_status"), "{sql}");
+        assert!(sql.contains("toUInt8(0) as attempts"), "{sql}");
+        assert!(sql.contains("'' as lifecycle_operation"), "{sql}");
+    }
+
+    #[tokio::test]
+    async fn only_the_column_the_table_lacks_is_replaced() {
+        // a deployment that applied 015 and 016 but not 017
+        let stub = Stub::start(&["ts", "upstream_status", "attempts", "lifecycle_operation"]).await;
+        let app = app_over(ClickHouseClient::new(&stub.url));
+
+        let (status, body) = list(&app, "").await;
+
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let sql = stub.list_sql();
+        assert!(sql.contains(", upstream_status, attempts, lifecycle_operation,"));
+        assert!(sql.contains("toUInt32(0) as cache_write_1h_tokens"));
+    }
+
+    #[tokio::test]
+    async fn the_probe_is_asked_once_for_many_lists() {
+        let stub = Stub::start(REQUIRED).await;
+        let app = app_over(ClickHouseClient::new(&stub.url));
+
+        for _ in 0..3 {
+            let (status, body) = list(&app, "").await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+        }
+
+        assert_eq!(stub.probes(), 1);
+    }
+
+    #[tokio::test]
+    async fn applying_the_migration_later_shows_without_a_restart() {
+        let stub = Stub::start(REQUIRED).await;
+        let mut ch = ClickHouseClient::new(&stub.url);
+        // an answer that names a missing column is looked at again at once
+        // instead of a minute on, which is the only difference from production
+        ch.columns = Arc::new(ColumnCache::with_lifetimes(
+            Duration::from_secs(600),
+            Duration::ZERO,
+        ));
+        let app = app_over(ch);
+
+        let (status, _) = list(&app, "").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(stub
+            .list_sql()
+            .contains("toUInt32(0) as cache_write_1h_tokens"));
+
+        // the operator runs the files against ClickHouse
+        let mut columns = REQUIRED.to_vec();
+        columns.extend(every_optional());
+        *stub.columns.lock() = columns;
+
+        let (status, body) = list(&app, "").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(stub.list_sql().contains(", cache_write_1h_tokens,"));
+        assert_eq!(stub.probes(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_server_that_will_not_say_is_read_as_having_every_column() {
+        // the behaviour before the probe existed, so a user with no grant on
+        // `system.columns` is no worse off than it was
+        let mut columns = REQUIRED.to_vec();
+        columns.extend(every_optional());
+        let stub = Stub::start(&columns).await;
+        stub.refuse_probe.store(true, Ordering::SeqCst);
+        let app = app_over(ClickHouseClient::new(&stub.url));
+
+        for _ in 0..2 {
+            let (status, body) = list(&app, "").await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+        }
+
+        assert!(stub.list_sql().contains(", cache_write_1h_tokens,"));
+        // and it is not asked again for every page of the list
+        assert_eq!(stub.probes(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_failed_list_makes_the_next_one_probe_again() {
+        let stub = Stub::start(REQUIRED).await;
+        let app = app_over(ClickHouseClient::new(&stub.url));
+        stub.fail_list.store(true, Ordering::SeqCst);
+
+        let (status, _) = list(&app, "").await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        assert_eq!(stub.probes(), 1);
+
+        let (status, body) = list(&app, "").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(stub.probes(), 2, "the failed list left the answer in place");
+    }
+
+    #[tokio::test]
+    async fn a_refused_request_does_not_probe() {
+        let stub = Stub::start(REQUIRED).await;
+        let app = app_over(ClickHouseClient::new(&stub.url));
+
+        let (status, _) = list(&app, "?status=bogus").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (status, _) = list(&app, "?since=not-a-date").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        assert!(stub.statements.lock().is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_clickhouse_is_an_error_and_not_a_default() {
+        // a closed port: nothing answers, so assuming a table would hide it
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind a local port");
+        let url = format!("http://{}", listener.local_addr().expect("a local address"));
+        drop(listener);
+        let ch = ClickHouseClient::new(&url);
+
+        let err = ch
+            .request_log_columns()
+            .await
+            .expect_err("nothing is listening");
+        assert!(is_transport(&err), "{err:#}");
+        // and the failure is not remembered as an answer
+        assert!(ch.columns.fresh(Instant::now()).is_none());
+
+        let (status, body) = list(&app_over(ch), "").await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY, "{body}");
+        assert_eq!(body["error"]["code"], "analytics_query_failed");
     }
 }

@@ -627,6 +627,10 @@ mod tests {
                 "{path}"
             );
             assert_eq!(bindings["param_cursor_id"], "row-1", "{path}");
+            // the invocation list asks which columns the table has before it
+            // selects (#2903): that statement stays out of the next route's
+            // "nothing reached clickhouse" check
+            seen.lock().clear();
         }
         let expected = if cfg!(feature = "postgres") { 2 } else { 1 };
         assert_eq!(checked, expected);

@@ -11,8 +11,9 @@
 -- A gateway inserts with `input_format_skip_unknown_fields=1` and leaves the
 -- field out of a row whose share is 0, so one upgraded before this is applied
 -- keeps logging, and loses the share only on the requests that wrote to the
--- 1 hour cache. The control plane does not read the column yet, so applying
--- this file is not a precondition of upgrading it; apply it to keep the share.
+-- 1 hour cache. The control plane returns the column on the invocation list when
+-- the table has it and reads 0 when it does not (#2903), so applying this file
+-- is not a precondition of upgrading it; apply it to keep the share.
 
 alter table request_logs
     add column if not exists cache_write_1h_tokens UInt32 default 0;

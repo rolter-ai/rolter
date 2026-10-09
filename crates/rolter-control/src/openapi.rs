@@ -1846,7 +1846,13 @@ fn operations() -> Vec<Op> {
                 "Page the request records the caller's roles reach, bodies withheld below the payload floor. \
                  A row's `lifecycle_operation` names the call on a stored response it records \
                  (`retrieve`, `delete`, `cancel`, `input_items`, `compact`, `input_tokens`) and is an \
-                 empty string for a model request and for a row older than the column",
+                 empty string for a model request and for a row older than the column. A row's \
+                 `cache_write_1h_tokens` (a number) is the part of `cache_write_tokens` written to the \
+                 provider's 1 hour prompt cache, so the 5 minute share is the difference; it is `0` for a \
+                 provider that reports no split. `upstream_status`, `attempts`, `lifecycle_operation` and \
+                 `cache_write_1h_tokens` come from ClickHouse files an operator applies by hand \
+                 (`clickhouse/015` to `017`): on a table that lacks one the field is still on every row, \
+                 as `0` (an empty string for `lifecycle_operation`), and the list does not fail",
             )
             .clickhouse_read()
             .query(INVOCATIONS_QUERY),

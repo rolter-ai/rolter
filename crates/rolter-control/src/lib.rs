@@ -96,6 +96,7 @@ mod public_url;
 mod rbac;
 #[cfg(feature = "postgres")]
 mod rbac_matrix;
+mod request_log_columns;
 #[cfg(feature = "postgres")]
 mod runtime_policy;
 #[cfg(feature = "postgres")]
