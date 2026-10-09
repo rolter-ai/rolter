@@ -1000,6 +1000,18 @@
       ]
     },
     {
+      "resource": "deployment_user",
+      "scope": "deployment",
+      "actions": [
+        {
+          "action": "read",
+          "minimum_role": null,
+          "superadmin_only": true,
+          "authenticated_only": false
+        }
+      ]
+    },
+    {
       "resource": "invitation",
       "scope": "org",
       "actions": [

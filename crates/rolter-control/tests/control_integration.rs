@@ -13460,11 +13460,12 @@ async fn a_superadmin_session_grants_mcp_consent_as_its_own_account() {
     let grant_id: uuid::Uuid = consented["grant_id"].as_str().unwrap().parse().unwrap();
 
     // the grant is owned by the signed-in account, not by nobody
-    let owner: uuid::Uuid = sqlx::query_scalar("select user_id from mcp_oauth_grants where id = $1")
-        .bind(grant_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let owner: uuid::Uuid =
+        sqlx::query_scalar("select user_id from mcp_oauth_grants where id = $1")
+            .bind(grant_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(owner, superadmin_id);
     let started_by: Option<String> = sqlx::query_scalar(
         "select detail->>'user_id' from audit_log where action = 'mcp_oauth_grant.authorize'
@@ -21635,4 +21636,144 @@ async fn org_admin_scim_mapping_delete_keeps_the_last_admin_grant() {
     assert_eq!(res.status(), 204);
     assert_eq!(org_admin_rows(&pool, ada, org).await, vec!["scim"]);
     assert_eq!(last_admin_kept_audits(&pool, org).await, 1);
+}
+
+// ---------------------------------------------------------------------------
+// every account in the deployment, for a superadmin (#2871)
+// ---------------------------------------------------------------------------
+
+/// `GET /api/v1/users` lists accounts of every org, accounts with no role
+/// anywhere and deactivated ones, e-mail ordered and without a password hash.
+/// A superadmin session and the admin token read it; an org admin, a plain
+/// member and a caller with no credential do not.
+#[tokio::test]
+async fn the_deployment_user_list_is_every_account_and_superadmin_only() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app =
+        rolter_control::test_app_with_admin_token(pool.clone(), Some(admin_token().to_string()))
+            .await
+            .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let mut orgs = Vec::new();
+    for slug in ["north-users", "south-users"] {
+        let org: Value = client
+            .post(format!("{base}/api/v1/orgs"))
+            .bearer_auth(admin_token())
+            .json(&json!({"name": slug, "slug": slug}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        orgs.push(org["id"].as_str().unwrap().parse::<uuid::Uuid>().unwrap());
+    }
+    let (north, south) = (orgs[0], orgs[1]);
+
+    // inserted out of e-mail order, so the ordering is the query's
+    let zed = seed_user(&pool, "zed@example.com", false).await;
+    seed_membership(&pool, zed, Some(south), None, None, "member").await;
+    let manager = seed_user(&pool, "manager@example.com", false).await;
+    seed_membership(&pool, manager, Some(north), None, None, "admin").await;
+    let operator = seed_user(&pool, "operator@example.com", true).await;
+    let gone = seed_user(&pool, "gone@example.com", false).await;
+    sqlx::query("update users set deactivated_at = now() where id = $1")
+        .bind(gone)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let member = seed_user(&pool, "member@example.com", false).await;
+    seed_membership(&pool, member, Some(north), None, None, "member").await;
+
+    let operator_bearer = seed_session(&pool, operator, "deployment_users_operator").await;
+    let manager_bearer = seed_session(&pool, manager, "deployment_users_manager").await;
+    let member_bearer = seed_session(&pool, member, "deployment_users_member").await;
+
+    let emails_of = |page: &Value| -> Vec<String> {
+        page.as_array()
+            .expect("a list")
+            .iter()
+            .map(|user| user["email"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let everyone = vec![
+        "gone@example.com",
+        "manager@example.com",
+        "member@example.com",
+        "operator@example.com",
+        "zed@example.com",
+    ];
+
+    // the premise of the issue: an org's list cannot name another org's people
+    let north_list: Value = client
+        .get(format!("{base}/api/v1/orgs/{north}/users"))
+        .bearer_auth(admin_token())
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(!emails_of(&north_list).contains(&"zed@example.com".to_string()));
+
+    for (who, bearer) in [
+        ("the admin token", admin_token()),
+        ("a superadmin session", operator_bearer.as_str()),
+    ] {
+        let response = client
+            .get(format!("{base}/api/v1/users"))
+            .bearer_auth(bearer)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200, "{who} reads the list");
+        let page: Value = response.json().await.unwrap();
+        assert_eq!(emails_of(&page), everyone, "{who} gets every account");
+        let operator_row = page
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|user| user["email"] == "operator@example.com")
+            .unwrap();
+        assert_eq!(operator_row["is_superadmin"], true);
+        assert_eq!(operator_row["id"], operator.to_string());
+        let gone_row = page
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|user| user["email"] == "gone@example.com")
+            .unwrap();
+        assert!(
+            gone_row["deactivated_at"].is_string(),
+            "a deactivated account keeps its row, so an old audit entry still names it"
+        );
+        assert!(
+            !page.to_string().contains("password_hash"),
+            "no hash leaves the control plane"
+        );
+    }
+
+    for (who, bearer) in [
+        ("an org admin", manager_bearer.as_str()),
+        ("a plain member", member_bearer.as_str()),
+    ] {
+        let response = client
+            .get(format!("{base}/api/v1/users"))
+            .bearer_auth(bearer)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 403, "{who} is refused");
+    }
+    let anonymous = client
+        .get(format!("{base}/api/v1/users"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(anonymous.status(), 401, "no credential, no list");
 }
