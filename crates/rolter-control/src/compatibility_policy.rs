@@ -96,10 +96,7 @@ async fn update_compatibility_policy(
         .update(&body.anthropic_version, body.default_max_tokens)
         .await?;
     publish_config_change(&state).await?;
-    let actor = match &principal {
-        Principal::User(user) => Some(user.id),
-        Principal::Superadmin { .. } => None,
-    };
+    let actor = principal.account_id();
     if let Err(err) = AuditLogRepo(pool(&state))
         .create(
             None,

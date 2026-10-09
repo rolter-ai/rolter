@@ -813,8 +813,8 @@ path, `GET /api/v1/orgs/{org_id}/audit-log`, filtered on the org column, so none
 of them reached an API or a screen.
 
 The org read now joins on membership: a row with no org is returned to an org
-when its actor, or its target user, holds a role in the org, one of its teams
-or one of its projects. That puts an org member's failed sign-ins, a second
+when it is an account event and its actor, or its target user, holds a role in
+the org, one of its teams or one of its projects. That puts an org member's failed sign-ins, a second
 factor being removed and a break-glass reset in front of the people who
 administer that org, in **Governance → Audit Logs**, where the `auth.*` actions
 are filterable. It never shows one org another org's people. `user.delete` is
@@ -831,6 +831,23 @@ the account events of the people it has now, including events from before they
 joined, and stops seeing someone's once they hold no role in it. Deactivation
 keeps memberships, so a deactivated leaver stays visible; `user.delete`, which
 removes them, is written per org for that reason.
+
+"Account event" is a list of action families, not a property of the row: the
+predicate (`org_audit_scope!` in `AuditLogRepo`, shared by `list_page` and
+`count`) accepts an org-less row only when its action starts with `auth.` or
+`user.`. Those are the families the control plane writes about a person — sign-ins
+and lockouts, second-factor changes, a password change, profile, preferences,
+saved views, account edits and deletion. Everything else with no org is a
+deployment-wide change: the settings and policies a superadmin edits, connectors,
+alert channels, cluster nodes, guardrail rules, model labels, `org.delete`. Their
+actor is a superadmin, who may well hold a role in some org (#2844 records the
+account), and matching on the actor alone (#2857) showed that org's other admins
+every setting the superadmin changed. They are read through
+`GET /api/v1/audit-log` only. The families are named rather than the deployment
+actions excluded so that an action added later stays private until someone
+decides it is an account event; a new account-event family must be added to the
+predicate, and the test that proves the split is
+`an_orgs_audit_log_omits_the_deployment_changes_of_a_superadmin_it_counts_among_its_people`.
 
 Rows no org can claim — the account events of someone with no membership
 anywhere, above all a superadmin's own sign-ins, and attempts against an address

@@ -590,14 +590,36 @@ on a fresh deployment — could not mint a personal key or open the Playground.
 Account events — sign-ins and failed sign-ins, second-factor changes,
 break-glass resets, account edits and deletions — belong to a person rather
 than an org, so they are written with no org. `GET /api/v1/orgs/{org_id}/audit-log`
-returns them for the org's own people: a row with no org is included when its
-actor, or its target user, holds a role in the org, its teams or its projects.
+returns them for the org's own people: a row with no org is included when it is
+an account event (an `auth.*` or `user.*` action, #2857) and its actor, or its
+target user, holds a role in the org, its teams or its projects.
 `user.delete` is written once per org the account belonged to, because its
 memberships are deleted with it and nothing would tie an org-less row back to
 those orgs afterwards. Rows no org can claim — a superadmin's own sign-ins,
 attempts against an unregistered address — are not readable through the API
 yet; the deployment-wide read is #1858. See
 [security: who reads account events](security.md#who-reads-account-events-1854).
+
+### Who an audit row names as the actor (#2844)
+
+`audit_log.actor_user_id` and the other "who did this" columns (`scim_tokens.created_by`, `invitations.invited_by`, `mcp_oauth_grants.revoked_by`) are filled from `Principal::account_id()`, never by matching the variant. `Principal::for_user` turns a superadmin account into `Principal::Superadmin { account: Some(id) }` (#2813), and that account holds no membership anywhere when it is the operator `rolter-seed` creates, so a `match` that keeps `Principal::User` and sends `Superadmin` to `None` drops exactly the actor an audit trail matters most for. Until #2844 about sixteen handlers carried that `match`.
+
+| Caller                     | Principal                               | `account_id()`                                                            |
+| -------------------------- | --------------------------------------- | ------------------------------------------------------------------------- |
+| A member session           | `User(user)`                            | `Some(user.id)`                                                           |
+| A superadmin session       | `Superadmin { account: Some(user.id) }` | `Some(user.id)`, with or without any membership                           |
+| The admin token            | `Superadmin { account: None }`          | `None`                                                                    |
+| Open mode (no admin token) | `Superadmin { account: None }`          | `None`                                                                    |
+| A SCIM provisioning token  | `ScimPrincipal`, not a `Principal`      | no account: `audit_scim` writes `scim_token_id`                           |
+| A virtual key              | rejected by the extractor               | not applicable: the control plane takes sessions and the admin token only |
+
+The shared writer is `crud::log_audit`, which takes the principal and reads the actor from it. A handler that writes the row itself (`AuditLogRepo::create` with an org of `None`, for the deployment-wide settings: `model_defaults`, `security`, `cluster`, `client_settings`, `alerting`, `logging_settings`, `adaptive_policy`, `runtime_policy`, `compatibility_policy`, `feature_flags`, `connectors`) writes `principal.account_id()` into the same argument. Three further sites feed a column rather than a row: `scim::create_token` (`created_by`), `invitations::create_invitation` (`invited_by`) and `mcp_oauth::revoke_grant` (`revoked_by`). A new audit write calls `account_id()`; there is no second spelling to copy.
+
+Two kinds of site are deliberately not on this rule. Handlers that start from the session (`CurrentUser`: sign-in, password, profile, saved views, MFA) have the account in hand and write its id. System writes with no caller, such as `membership.last_admin_kept` during an IdP reconciliation, write no actor. `mcp_oauth::owner_filter` and the owner checks in `may_revoke` match on `Principal` too, but they decide what a caller may see, not who acted, so they stay `match`es. `mcp_oauth_flow::start_authorize` still requires `Principal::User` for consent and so refuses a signed-in superadmin ([#2859](https://github.com/rolter-ai/rolter/issues/2859)).
+
+The actor now being a superadmin is why the org read had to be narrowed (#2857): the org-less branch used to key on the actor alone, so a superadmin who also holds a role in an org would have made their deployment-wide rows (`security.settings.update`, `cluster_node.forget`, ...) readable by that org's admins. It names the account-event families instead, see [who reads account events](security.md#who-reads-account-events-1854).
+
+The tests are in `crates/rolter-control/tests/control_integration.rs`: `an_audited_action_names_the_superadmin_session_that_took_it` (the shared writer), `hand_written_audit_rows_name_the_superadmin_session_that_wrote_them` (a table with a row per hand-written site above, each for a membership-less superadmin session and for the admin token), `a_scim_token_records_the_superadmin_session_that_minted_it` and `an_mcp_grant_revocation_records_the_superadmin_session_that_made_it`. `an_orgs_audit_log_omits_the_deployment_changes_of_a_superadmin_it_counts_among_its_people` covers the org read. The dashboard half is [#2858](https://github.com/rolter-ai/rolter/issues/2858): the Actor column resolves ids against the org's membership list and shows a short uuid for an account that is not on it.
 
 ### Custom roles and access profiles
 

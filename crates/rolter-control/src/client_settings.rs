@@ -186,10 +186,7 @@ async fn update_client_settings(
         .await?;
     publish_config_change(&state).await?;
 
-    let actor = match &principal {
-        Principal::User(user) => Some(user.id),
-        Principal::Superadmin { .. } => None,
-    };
+    let actor = principal.account_id();
     // names only — an injected header value is deployment credential material
     let injected_names: Vec<&String> = injected.keys().collect();
     if let Err(err) = AuditLogRepo(pool(&state))

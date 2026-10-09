@@ -1167,10 +1167,7 @@ async fn revoke_grant(
         cap!("mcp_oauth_grant", Delete),
     )
     .await?;
-    let actor = match &principal {
-        Principal::User(user) => Some(user.id),
-        Principal::Superadmin { .. } => None,
-    };
+    let actor = principal.account_id();
     // revoking the consent revokes its sessions in the same transaction
     let revoked = repo.revoke_grant(id, actor).await?;
     publish_config_change(&state).await?;

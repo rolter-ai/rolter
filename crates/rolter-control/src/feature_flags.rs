@@ -150,10 +150,7 @@ async fn update_feature_flags(
         )
         .await?;
     publish_config_change(&state).await?;
-    let actor = match &principal {
-        Principal::User(user) => Some(user.id),
-        Principal::Superadmin { .. } => None,
-    };
+    let actor = principal.account_id();
     if let Err(err) = AuditLogRepo(pool(&state))
         .create(
             None,

@@ -11146,6 +11146,719 @@ async fn an_invitation_records_its_sender_for_a_superadmin_with_no_membership() 
     );
 }
 
+// ---------------------------------------------------------------------------
+// who an audit row and a `created_by` column name (#2844)
+// ---------------------------------------------------------------------------
+
+/// The callers whose recorded identity differs: a superadmin session that holds
+/// no membership anywhere (the operator `rolter-seed` creates), and an org
+/// admin. The admin token is the third kind and needs no account.
+struct Actors {
+    operator: uuid::Uuid,
+    operator_bearer: String,
+    manager: uuid::Uuid,
+    manager_bearer: String,
+}
+
+/// Seed the two accounts. The sessions are generated per run, so no test reuses
+/// another's bearer string.
+async fn seed_actors(pool: &sqlx::PgPool, org: uuid::Uuid) -> Actors {
+    let operator = seed_user(pool, "operator@example.com", true).await;
+    let manager = seed_user(pool, "manager@example.com", false).await;
+    seed_membership(pool, manager, Some(org), None, None, "admin").await;
+    // the premise of the bug: nothing on the membership list names the operator
+    let operator_grants: i64 =
+        sqlx::query_scalar("select count(*) from memberships where user_id = $1")
+            .bind(operator)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    assert_eq!(operator_grants, 0);
+    let operator_bearer =
+        seed_session(pool, operator, &uuid::Uuid::new_v4().simple().to_string()).await;
+    let manager_bearer =
+        seed_session(pool, manager, &uuid::Uuid::new_v4().simple().to_string()).await;
+    Actors {
+        operator,
+        operator_bearer,
+        manager,
+        manager_bearer,
+    }
+}
+
+/// The `actor_user_id` of the newest row with `action` in the deployment-wide
+/// audit log, read the way the dashboard reads it, or `Null` for a row with no
+/// actor.
+async fn newest_deployment_actor(
+    client: &reqwest::Client,
+    base: &str,
+    reader: &str,
+    action: &str,
+) -> Value {
+    let page: Value = client
+        .get(format!("{base}/api/v1/audit-log?action={action}&limit=1"))
+        .bearer_auth(reader)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let items = page["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1, "no {action} row in the audit log");
+    items[0]["actor_user_id"].clone()
+}
+
+/// The shared audit helper (`crud::log_audit`) records the signed-in account
+/// behind every action that goes through it. A superadmin session used to be
+/// written with no actor, so the audit log could not say which superadmin
+/// created an org or removed a team -- the account an audit trail matters most
+/// for. The admin token is a credential rather than a person and stays
+/// unrecorded.
+#[tokio::test]
+async fn an_audited_action_names_the_superadmin_session_that_took_it() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app =
+        rolter_control::test_app_with_admin_token(pool.clone(), Some(admin_token().to_string()))
+            .await
+            .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let acme: uuid::Uuid =
+        sqlx::query_scalar("insert into orgs (name, slug) values ('Acme', 'acme') returning id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let actors = seed_actors(&pool, acme).await;
+
+    // an org-scoped row (`team.create`) taken by each kind of caller
+    let create_team = |bearer: String, name: &'static str| {
+        let client = client.clone();
+        let url = format!("{base}/api/v1/orgs/{acme}/teams");
+        async move {
+            let response = client
+                .post(url)
+                .bearer_auth(bearer)
+                .json(&json!({ "name": name }))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 200);
+            let team: Value = response.json().await.unwrap();
+            team["id"].as_str().unwrap().to_string()
+        }
+    };
+    let by_operator = create_team(actors.operator_bearer.clone(), "by-operator").await;
+    let by_manager = create_team(actors.manager_bearer.clone(), "by-manager").await;
+    let by_token = create_team(admin_token().to_string(), "by-token").await;
+
+    let page: Value = client
+        .get(format!(
+            "{base}/api/v1/orgs/{acme}/audit-log?action=team.create"
+        ))
+        .bearer_auth(&actors.operator_bearer)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let actor_of = |team: &str| {
+        page["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["target_id"] == team)
+            .map(|row| row["actor_user_id"].clone())
+    };
+    assert_eq!(
+        actor_of(&by_operator),
+        Some(json!(actors.operator.to_string()))
+    );
+    assert_eq!(
+        actor_of(&by_manager),
+        Some(json!(actors.manager.to_string()))
+    );
+    assert_eq!(actor_of(&by_token), Some(Value::Null));
+
+    // a row scoped to the org the superadmin has just made: the org's own log
+    // names who created it
+    let created: Value = client
+        .post(format!("{base}/api/v1/orgs"))
+        .bearer_auth(&actors.operator_bearer)
+        .json(&json!({"name": "Globex", "slug": "globex"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let globex = created["id"].as_str().unwrap().to_string();
+    let globex_log: Value = client
+        .get(format!(
+            "{base}/api/v1/orgs/{globex}/audit-log?action=org.create"
+        ))
+        .bearer_auth(&actors.operator_bearer)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        globex_log["items"][0]["actor_user_id"],
+        json!(actors.operator.to_string())
+    );
+
+    // and the deployment-wide log can be asked what one superadmin did
+    let by_actor: Value = client
+        .get(format!("{base}/api/v1/audit-log?actor={}", actors.operator))
+        .bearer_auth(&actors.operator_bearer)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let mut actions: Vec<&str> = by_actor["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["action"].as_str().unwrap())
+        .collect();
+    actions.sort_unstable();
+    assert_eq!(actions, ["org.create", "team.create"]);
+}
+
+/// The audit rows written by hand name the signed-in account too: each of the
+/// deployment-wide settings, the connector and alert-channel helpers, and the
+/// cluster inventory (#2844). They are the rows with no org, so the
+/// deployment-wide audit log is where they are read. A table, because the sites
+/// are separate copies of one rule and a missed one is a silent gap.
+#[tokio::test]
+async fn hand_written_audit_rows_name_the_superadmin_session_that_wrote_them() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app =
+        rolter_control::test_app_with_admin_token(pool.clone(), Some(admin_token().to_string()))
+            .await
+            .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let acme: uuid::Uuid =
+        sqlx::query_scalar("insert into orgs (name, slug) values ('Acme', 'acme') returning id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let actors = seed_actors(&pool, acme).await;
+
+    // (method, path, body for the caller named, the audit action it writes)
+    type Case = (&'static str, &'static str, fn(&str) -> Value, &'static str);
+    let cases: [Case; 10] = [
+        (
+            "PUT",
+            "/api/v1/feature-flags",
+            |_| {
+                json!({
+                    "response_cache": true, "cache_aware_routing": true, "circuit_breaker": true,
+                    "active_health_checks": true, "complexity_routing": true, "guardrails": true
+                })
+            },
+            "feature_flags.update",
+        ),
+        (
+            "PUT",
+            "/api/v1/runtime-policy",
+            |_| {
+                json!({
+                    "retry_max_retries": 4, "retry_base_ms": 150, "retry_max_ms": 1500,
+                    "timeout_connect_s": 20, "timeout_request_s": 180, "queue_enabled": true,
+                    "queue_capacity": 1024, "queue_workers": 16, "queue_backpressure": "block",
+                    "queue_block_ms": 5000
+                })
+            },
+            "runtime_policy.update",
+        ),
+        (
+            "PUT",
+            "/api/v1/compatibility-policy",
+            |_| {
+                json!({
+                    "anthropic_version": "2023-06-01", "default_max_tokens": 1024
+                })
+            },
+            "compatibility_policy.update",
+        ),
+        (
+            "PUT",
+            "/api/v1/adaptive-routing-policy",
+            |_| {
+                json!({
+                    "enabled": true, "latency_weight": 0.5, "cost_weight": 0.3, "load_weight": 0.2,
+                    "exploration_ratio": 0.05, "min_samples": 50
+                })
+            },
+            "adaptive_routing_policy.update",
+        ),
+        (
+            "PUT",
+            "/api/v1/logging-settings",
+            |_| {
+                json!({
+                    "sample_rate": 0.25, "payload_capture_enabled": false,
+                    "payload_capture_max_bytes": 4096, "payload_capture_redact_fields": [],
+                    "payload_capture_models": [], "payload_capture_virtual_key_ids": [],
+                    "retention_days": 30, "payload_retention_hours": 24
+                })
+            },
+            "logging_settings.update",
+        ),
+        (
+            "PUT",
+            "/api/v1/model-defaults",
+            |_| json!({"enabled": false}),
+            "model_defaults.update",
+        ),
+        (
+            "PUT",
+            "/api/v1/client-settings",
+            |_| {
+                json!({
+                    "forwarded_headers": [], "injected_headers": {}, "request_id_header": "x-request-id"
+                })
+            },
+            "client_settings.update",
+        ),
+        (
+            "PUT",
+            "/api/v1/security-settings",
+            |_| {
+                json!({
+                    "allowed_origins": [], "allowed_headers": [], "required_headers": {},
+                    "auth_bypass_routes": []
+                })
+            },
+            "security.settings.update",
+        ),
+        (
+            "POST",
+            "/api/v1/connectors",
+            |who| {
+                json!({
+                    "name": format!("sink-{who}"), "kind": "otlp_http",
+                    "endpoint": "https://collector.example.com/v1/logs", "enabled": false,
+                    "sampling_rate": 1.0
+                })
+            },
+            "connector.create",
+        ),
+        (
+            "POST",
+            "/api/v1/alert-channels",
+            |who| {
+                json!({
+                    "name": format!("hook-{who}"), "endpoint": "https://hooks.example.com/alert",
+                    "enabled": false
+                })
+            },
+            "alert.channel.create",
+        ),
+    ];
+
+    let callers = [
+        (
+            "operator",
+            actors.operator_bearer.clone(),
+            json!(actors.operator.to_string()),
+        ),
+        ("admin-token", admin_token().to_string(), Value::Null),
+    ];
+    // collected rather than asserted one by one, so a failing run names every
+    // site that records the wrong actor instead of stopping at the first
+    let mut wrong: Vec<String> = Vec::new();
+    for (method, path, body, action) in cases {
+        for (who, bearer, expected) in &callers {
+            let request = match method {
+                "PUT" => client.put(format!("{base}{path}")),
+                _ => client.post(format!("{base}{path}")),
+            };
+            let response = request
+                .bearer_auth(bearer)
+                .json(&body(who))
+                .send()
+                .await
+                .unwrap();
+            assert!(
+                response.status().is_success(),
+                "{action} as {who} answered {}",
+                response.status()
+            );
+            let actor =
+                newest_deployment_actor(&client, &base, &actors.operator_bearer, action).await;
+            if &actor != expected {
+                wrong.push(format!("{action} as {who}"));
+            }
+        }
+    }
+
+    // the cluster inventory: two writes, each by both kinds of caller
+    for node in ["gw-1", "gw-2", "gw-3"] {
+        let polled = client
+            .get(format!("{base}/internal/snapshot?version=0"))
+            .bearer_auth(admin_token())
+            .header("x-rolter-node-id", node)
+            .header("x-rolter-node-role", "gateway")
+            .send()
+            .await
+            .unwrap();
+        assert!(polled.status().is_success());
+    }
+    for (who, bearer, expected) in &callers {
+        let drained = client
+            .put(format!("{base}/api/v1/cluster/nodes/gw-1/drain"))
+            .bearer_auth(bearer)
+            .json(&json!({"draining": *who == "operator"}))
+            .send()
+            .await
+            .unwrap();
+        assert!(drained.status().is_success(), "drain as {who}");
+        let actor = newest_deployment_actor(
+            &client,
+            &base,
+            &actors.operator_bearer,
+            "cluster_node.set_drain",
+        )
+        .await;
+        if &actor != expected {
+            wrong.push(format!("cluster_node.set_drain as {who}"));
+        }
+    }
+    for ((who, bearer, expected), node) in callers.iter().zip(["gw-2", "gw-3"]) {
+        let forgotten = client
+            .delete(format!("{base}/api/v1/cluster/nodes/{node}"))
+            .bearer_auth(bearer)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(forgotten.status(), 204, "forget as {who}");
+        let actor = newest_deployment_actor(
+            &client,
+            &base,
+            &actors.operator_bearer,
+            "cluster_node.forget",
+        )
+        .await;
+        if &actor != expected {
+            wrong.push(format!("cluster_node.forget as {who}"));
+        }
+    }
+    assert!(wrong.is_empty(), "recorded the wrong actor: {wrong:?}");
+}
+
+/// A SCIM token names the account that minted it in `created_by`, and in the
+/// `scim_token.create` audit row, for a superadmin session as for an org admin
+/// (#2844). Minted with the admin token it names nobody. The response carries the
+/// plaintext token once, so nothing here prints it.
+#[tokio::test]
+async fn a_scim_token_records_the_superadmin_session_that_minted_it() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app =
+        rolter_control::test_app_with_admin_token(pool.clone(), Some(admin_token().to_string()))
+            .await
+            .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let acme: uuid::Uuid =
+        sqlx::query_scalar("insert into orgs (name, slug) values ('Acme', 'acme') returning id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let actors = seed_actors(&pool, acme).await;
+
+    let callers = [
+        (
+            "operator",
+            actors.operator_bearer.clone(),
+            json!(actors.operator.to_string()),
+        ),
+        (
+            "manager",
+            actors.manager_bearer.clone(),
+            json!(actors.manager.to_string()),
+        ),
+        ("admin-token", admin_token().to_string(), Value::Null),
+    ];
+    let mut minted = Vec::new();
+    for (who, bearer, expected) in &callers {
+        let response = client
+            .post(format!("{base}/api/v1/orgs/{acme}/scim-tokens"))
+            .bearer_auth(bearer)
+            .json(&json!({ "name": format!("idp-{who}") }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200, "mint as {who}");
+        let created: Value = response.json().await.unwrap();
+        // what the response answered with is what is stored
+        assert_eq!(&created["created_by"], expected, "response for {who}");
+        let id: uuid::Uuid = created["id"].as_str().unwrap().parse().unwrap();
+        let stored: Option<uuid::Uuid> =
+            sqlx::query_scalar("select created_by from scim_tokens where id = $1")
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            stored.map_or(Value::Null, |id| json!(id.to_string())),
+            *expected,
+            "column for {who}"
+        );
+        minted.push((who, id, expected));
+    }
+
+    // the audit row for the mint names the same account
+    let page: Value = client
+        .get(format!(
+            "{base}/api/v1/orgs/{acme}/audit-log?action=scim_token.create"
+        ))
+        .bearer_auth(&actors.operator_bearer)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    for (who, id, expected) in minted {
+        let row = page["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["target_id"] == id.to_string())
+            .unwrap_or_else(|| panic!("no scim_token.create row for {who}"));
+        assert_eq!(&row["actor_user_id"], expected, "audit row for {who}");
+    }
+}
+
+/// Revoking an MCP consent records who revoked it in `revoked_by` and in the
+/// audit row (#2844). A superadmin revokes a member's grant without holding a
+/// membership, and the column used to stay empty for them.
+#[tokio::test]
+async fn an_mcp_grant_revocation_records_the_superadmin_session_that_made_it() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app =
+        rolter_control::test_app_with_admin_token(pool.clone(), Some(admin_token().to_string()))
+            .await
+            .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let acme: uuid::Uuid =
+        sqlx::query_scalar("insert into orgs (name, slug) values ('Acme', 'acme') returning id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let actors = seed_actors(&pool, acme).await;
+    let owner = seed_user(&pool, "owner@example.com", false).await;
+    seed_membership(&pool, owner, Some(acme), None, None, "member").await;
+    let server: uuid::Uuid = sqlx::query_scalar(
+        "insert into mcp_servers (org_id, name, slug, url) \
+         values ($1, 'Docs', 'docs', 'https://mcp.example.com') returning id",
+    )
+    .bind(acme)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    let callers = [
+        (
+            "operator",
+            actors.operator_bearer.clone(),
+            Some(actors.operator),
+        ),
+        (
+            "manager",
+            actors.manager_bearer.clone(),
+            Some(actors.manager),
+        ),
+        ("admin-token", admin_token().to_string(), None),
+    ];
+    for (who, bearer, expected) in &callers {
+        // a live grant per round: the partial unique index allows one at a time
+        let grant: uuid::Uuid = sqlx::query_scalar(
+            "insert into mcp_oauth_grants (server_id, user_id, scopes) \
+             values ($1, $2, '{tools:read}') returning id",
+        )
+        .bind(server)
+        .bind(owner)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let response = client
+            .delete(format!("{base}/api/v1/mcp/grants/{grant}"))
+            .bearer_auth(bearer)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200, "revoke as {who}");
+        let revoked_by: Option<uuid::Uuid> =
+            sqlx::query_scalar("select revoked_by from mcp_oauth_grants where id = $1")
+                .bind(grant)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(&revoked_by, expected, "revoked_by for {who}");
+        let audited: Option<uuid::Uuid> = sqlx::query_scalar(
+            "select actor_user_id from audit_log \
+             where action = 'mcp_oauth_grant.revoke' and target_id = $1",
+        )
+        .bind(grant)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(&audited, expected, "audit row for {who}");
+    }
+}
+
+/// An org's audit log returns the account events of its people and nothing a
+/// superadmin did to the deployment (#2857). The rows with no org are matched on
+/// their actor, and a superadmin who also administers an org is one of that
+/// org's people: with the actor now recorded (#2844), a rule that looked at the
+/// actor alone handed the org's other admins every setting the superadmin
+/// changed. The deployment-wide log still has all of them.
+#[tokio::test]
+async fn an_orgs_audit_log_omits_the_deployment_changes_of_a_superadmin_it_counts_among_its_people()
+{
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app =
+        rolter_control::test_app_with_admin_token(pool.clone(), Some(admin_token().to_string()))
+            .await
+            .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let acme: uuid::Uuid =
+        sqlx::query_scalar("insert into orgs (name, slug) values ('Acme', 'acme') returning id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    // a superadmin who is also an admin of acme, and a second acme admin
+    let both = seed_user(&pool, "both@example.com", true).await;
+    seed_membership(&pool, both, Some(acme), None, None, "admin").await;
+    let manager = seed_user(&pool, "manager@example.com", false).await;
+    seed_membership(&pool, manager, Some(acme), None, None, "admin").await;
+    let both_bearer = seed_session(&pool, both, &uuid::Uuid::new_v4().simple().to_string()).await;
+    let manager_bearer =
+        seed_session(&pool, manager, &uuid::Uuid::new_v4().simple().to_string()).await;
+
+    // deployment changes, taken by the superadmin
+    let changes = [
+        (
+            "PUT",
+            "/api/v1/security-settings",
+            json!({
+                "allowed_origins": [], "allowed_headers": [], "required_headers": {},
+                "auth_bypass_routes": []
+            }),
+            "security.settings.update",
+        ),
+        (
+            "PUT",
+            "/api/v1/model-defaults",
+            json!({"enabled": false}),
+            "model_defaults.update",
+        ),
+        (
+            "POST",
+            "/api/v1/connectors",
+            json!({
+                "name": "sink", "kind": "otlp_http",
+                "endpoint": "https://collector.example.com/v1/logs", "enabled": false,
+                "sampling_rate": 1.0
+            }),
+            "connector.create",
+        ),
+    ];
+    for (method, path, body, action) in &changes {
+        let request = match *method {
+            "PUT" => client.put(format!("{base}{path}")),
+            _ => client.post(format!("{base}{path}")),
+        };
+        let response = request
+            .bearer_auth(&both_bearer)
+            .json(body)
+            .send()
+            .await
+            .unwrap();
+        assert!(
+            response.status().is_success(),
+            "{action} answered {}",
+            response.status()
+        );
+    }
+
+    // account events of the same superadmin, which the org is meant to see
+    let profile = client
+        .patch(format!("{base}/api/v1/me/profile"))
+        .bearer_auth(&both_bearer)
+        .json(&json!({"bio": "on call"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(profile.status(), 200);
+    sqlx::query(
+        "insert into audit_log (org_id, actor_user_id, action, target_type, target_id, detail)
+         values (null, $1, 'auth.login_failed', 'user', $1, '{}')",
+    )
+    .bind(both)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let page: Value = client
+        .get(format!(
+            "{base}/api/v1/orgs/{acme}/audit-log?limit=500&include_total=true"
+        ))
+        .bearer_auth(&manager_bearer)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let items = page["items"].as_array().unwrap();
+    let mut actions: Vec<&str> = items
+        .iter()
+        .map(|row| row["action"].as_str().unwrap())
+        .collect();
+    actions.sort_unstable();
+    assert_eq!(actions, ["auth.login_failed", "user.profile.update"]);
+    // the count the dashboard pages by follows the same rule as the rows
+    assert_eq!(page["total"], items.len());
+
+    // and the deployment-wide log keeps every change, under the superadmin
+    for (_, _, _, action) in &changes {
+        let actor = newest_deployment_actor(&client, &base, &both_bearer, action).await;
+        assert_eq!(actor, json!(both.to_string()), "{action}");
+    }
+}
+
 /// Inviting an address again replaces its pending invitation (#2324): the old
 /// link stops working like a revoked one, an expired invitation no longer holds
 /// the address, the match ignores case, and parallel creates neither 500 nor

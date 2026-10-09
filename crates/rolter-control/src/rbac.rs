@@ -402,7 +402,9 @@ impl Principal {
     /// Matching `Principal::User` alone loses a superadmin session, because
     /// [`Principal::for_user`] turns that account into
     /// [`Principal::Superadmin`] and the account holds no membership to find it
-    /// by (#2813).
+    /// by (#2813). Every audit row and `created_by`-style column is filled from
+    /// here (#2844), so there is one rule for who acted rather than a `match`
+    /// per handler.
     pub(crate) fn account_id(&self) -> Option<Uuid> {
         match self {
             Principal::Superadmin { account } => *account,

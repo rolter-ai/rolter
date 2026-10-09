@@ -1253,10 +1253,7 @@ async fn audit(
     target: Uuid,
     detail: serde_json::Value,
 ) {
-    let actor = match principal {
-        Principal::User(user) => Some(user.id),
-        Principal::Superadmin { .. } => None,
-    };
+    let actor = principal.account_id();
     if let Err(error) = AuditLogRepo(pool(state))
         .create(
             None,
