@@ -146,6 +146,31 @@ function upstreamHint(row: InvocationRow): number | null {
   return upstream > 0 && upstream !== num(row.status) ? upstream : null;
 }
 
+// the calls the gateway records on a stored response, each with its own copy
+// (#2836). a value this build has no copy for is printed as the control plane
+// sent it rather than hidden, so an operation a newer gateway adds is still read
+const LIFECYCLE_COPY = new Map<string, string>([
+  ["retrieve", "pages.logs.detail.lifecycle.operations.retrieve"],
+  ["delete", "pages.logs.detail.lifecycle.operations.delete"],
+  ["cancel", "pages.logs.detail.lifecycle.operations.cancel"],
+  ["input_items", "pages.logs.detail.lifecycle.operations.input_items"],
+  ["compact", "pages.logs.detail.lifecycle.operations.compact"],
+  ["input_tokens", "pages.logs.detail.lifecycle.operations.input_tokens"],
+]);
+
+// what the row did to a stored response, or null for a request that ran a
+// model, a row older than the column and a control plane that predates it
+function lifecycleLabel(t: TFunction, row: InvocationRow): string | null {
+  const operation = row.lifecycle_operation;
+  if (!operation) return null;
+  const key = LIFECYCLE_COPY.get(operation);
+  return key ? t(key) : operation;
+}
+
+// a call on a response id that does not exist has no model to name it by, so
+// the row is named by the call instead of by nothing
+const rowName = (t: TFunction, row: InvocationRow) => row.model || lifecycleLabel(t, row) || "";
+
 // a row is one request at one instant; polling hands back fresh objects for
 // the same rows, so the open row is matched on this rather than on identity
 const rowKey = (row: InvocationRow) => `${row.request_id}-${row.ts}`;
@@ -314,6 +339,9 @@ const TD =
 const TR_STACKED =
   "@max-[479px]:grid @max-[479px]:grid-cols-[minmax(0,1fr)_auto_1.75rem] @max-[479px]:items-center @max-[479px]:gap-x-2 @max-[479px]:border-b @max-[479px]:border-[color:var(--border-subtle)] @max-[479px]:px-3 @max-[479px]:py-2";
 const TD_STACKED = "@max-[479px]:border-b-0 @max-[479px]:p-0";
+// the model's name beside the operation badge: it wraps in a wide row and is cut
+// with an ellipsis in a stacked one, so the badge keeps its room either way
+const MODEL_BESIDE_BADGE = "min-w-0 [overflow-wrap:anywhere] @max-[479px]:truncate";
 const PROVIDER_COL = "hidden @min-[840px]:table-cell";
 const TOKENS_COL = "hidden @min-[720px]:table-cell";
 const LATENCY_COL = "hidden @min-[600px]:table-cell";
@@ -621,6 +649,7 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
   // table at `lg`, a sheet over it below that. it reads in the order a
   // failed row is investigated (#1983): the verdict and the ids to quote,
   // then why it failed, then how it was routed, what it cost and who pays
+  const selectedLifecycle = selected ? lifecycleLabel(t, selected) : null;
   const detail = selected && (
     <div className="flex flex-col gap-5">
       <Verdict row={selected} />
@@ -637,6 +666,12 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
         </section>
       )}
       <DetailSection title={t("pages.logs.detail.routing")}>
+        {/* a call on a stored response is routed to wherever the response is
+            held, so what it asked for opens the group; a request that ran a
+            model has no such row */}
+        {selectedLifecycle && (
+          <DetailRow label={t("pages.logs.detail.lifecycle.label")}>{selectedLifecycle}</DetailRow>
+        )}
         <DetailRow label={t("pages.logs.detail.providerTarget")} mono>
           {selected.provider || selected.target ? (
             t("pages.logs.detail.providerToTarget", {
@@ -997,6 +1032,7 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
                 // row it describes, so the open row says so, to the eye and
                 // to a screen reader (#1983)
                 const isOpen = selected != null && rowKey(selected) === rowKey(r);
+                const lifecycle = lifecycleLabel(t, r);
                 return (
                   <tr
                     key={rowKey(r)}
@@ -1032,7 +1068,14 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
                         "[overflow-wrap:anywhere] @max-[479px]:col-start-1 @max-[479px]:row-start-1 @max-[479px]:truncate @max-[479px]:whitespace-nowrap @max-[479px]:text-sm",
                       )}
                     >
-                      {r.model}
+                      {lifecycle ? (
+                        <span className="flex min-w-0 items-baseline gap-1.5">
+                          {r.model && <span className={MODEL_BESIDE_BADGE}>{r.model}</span>}
+                          <LifecycleBadge label={lifecycle} />
+                        </span>
+                      ) : (
+                        r.model
+                      )}
                     </td>
                     <td
                       className={cn(
@@ -1101,7 +1144,7 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
                           into the same drawer */}
                       <button
                         type="button"
-                        aria-label={t("analytics.openDetails", { model: r.model })}
+                        aria-label={t("analytics.openDetails", { model: rowName(t, r) })}
                         onClick={(e) => {
                           e.stopPropagation();
                           setSelected(r);
@@ -1206,7 +1249,7 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
                 the header names the model the row was opened by */}
             <SheetHeader
               title={t("analytics.details")}
-              subtitle={selected.model}
+              subtitle={rowName(t, selected)}
               onClose={() => setSelected(null)}
             />
             <SheetBody>{detail}</SheetBody>
@@ -1218,7 +1261,7 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
             className="w-[380px] flex-none overflow-y-auto border-l border-[color:var(--border-subtle)] bg-background focus-visible:outline-none"
           >
             <div className="flex items-center gap-2.5 border-b border-[color:var(--border-subtle)] px-[18px] py-3.5">
-              <h2 className="min-w-0 truncate font-mono text-sm">{selected.model}</h2>
+              <h2 className="min-w-0 truncate font-mono text-sm">{rowName(t, selected)}</h2>
               <button
                 type="button"
                 aria-label={t("pages.logs.closeDetails")}
@@ -1495,6 +1538,26 @@ function UpstreamHint({ row }: { row: InvocationRow }) {
       <span aria-hidden>{upstream}</span>
       <span className="sr-only">{sentence}</span>
     </span>
+  );
+}
+
+/**
+ * The call a row made on a stored response, beside the model the response was
+ * created for (#2865). It is a quiet outline badge: it says what kind of row
+ * this is, not whether it went well, which the status column already does, so
+ * it takes none of the status hues. Sans, because the cell it sits in is
+ * monospace for the model's name and this is a word.
+ */
+function LifecycleBadge({ label }: { label: string }) {
+  const { t } = useTranslation();
+  return (
+    <Badge
+      tone="outline"
+      className="flex-none font-sans"
+      title={t("pages.logs.detail.lifecycle.title", { operation: label })}
+    >
+      {label}
+    </Badge>
   );
 }
 

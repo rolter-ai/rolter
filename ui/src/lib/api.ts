@@ -450,6 +450,12 @@ export interface InvocationRow {
   /// screen say "hidden for your role" instead of "payload logging is off",
   /// which is what an empty body means otherwise (#1820)
   payload_withheld?: number | string;
+  /// which call on a stored response (`/v1/responses/{id}`) the row records:
+  /// `retrieve`, `delete`, `cancel`, `input_items`, `compact` or
+  /// `input_tokens` (#2836). "" for a request that ran a model and for a row
+  /// older than the column, and absent from a control plane that predates it,
+  /// so a reader treats all three as "not a lifecycle call" and says nothing
+  lifecycle_operation?: string;
 }
 
 export interface InvocationsQuery extends AnalyticsWindow {
@@ -2702,6 +2708,15 @@ export function fetchUsers(
 ): Promise<UserRow[]> {
   const query = includeUnassigned ? "?include_unassigned=true" : "";
   return getJson<UserRow[]>(`/api/v1/orgs/${orgId}/users${query}`);
+}
+
+// every account in the deployment, whichever org it belongs to, email-ordered
+// and deactivated ones included. superadmin-only (`deployment_user:read`), a
+// 403 for anyone else, so a caller asks only on an explicit yes from the gate.
+// it is a separate read from the org's list: that one is reached through
+// memberships, so an actor who belongs only to another org is not on it (#2871)
+export function fetchDeploymentUsers(): Promise<UserRow[]> {
+  return getJson<UserRow[]>("/api/v1/users");
 }
 
 // create/invite an account and grant it a role in the org atomically
