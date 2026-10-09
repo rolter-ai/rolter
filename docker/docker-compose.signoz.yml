@@ -41,7 +41,7 @@
 
 services:
   signoz-zookeeper:
-    image: signoz/zookeeper:3.7.1
+    image: signoz/zookeeper:3.7.2
     restart: unless-stopped
     user: root
     environment:
@@ -52,7 +52,7 @@ services:
       - signoz-zookeeper:/bitnami/zookeeper
 
   signoz-clickhouse:
-    image: clickhouse/clickhouse-server:25.5.6
+    image: clickhouse/clickhouse-server:25.5.11
     restart: unless-stopped
     tty: true
     depends_on:
@@ -167,7 +167,7 @@ services:
   #
   # With no key set the container still starts but every call is unauthorized.
   signoz-mcp:
-    image: signoz/signoz-mcp-server:latest
+    image: signoz/signoz-mcp-server:v0.15.0
     restart: unless-stopped
     depends_on:
       - signoz

@@ -10,7 +10,7 @@
 
   one file serves three servers: rolter's own clickhouse (docker-compose.yml, and
   through it the team shape and the dogfood stack), signoz-clickhouse
-  (docker-compose.signoz.yml, 25.5.6) and the e2e stack's (integration/e2e).
+  (docker-compose.signoz.yml, 25.5.11) and the e2e stack's (integration/e2e).
   signoz reads no `system.*_log` table either: its query service, schema migrator
   and collector read system.tables, columns, disks, clusters, databases,
   mutations and distributed_ddl_queue, and the only log table either binary names

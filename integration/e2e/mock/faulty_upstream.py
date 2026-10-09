@@ -1,7 +1,7 @@
 """a deliberately-misbehaving OpenAI-compatible upstream for chaos tests.
 
 a single stdlib HTTP server (no third-party deps, so it runs in a bare
-``python:3.13-alpine`` container) that speaks just enough of the OpenAI
+``python:3.14-alpine`` container) that speaks just enough of the OpenAI
 ``/v1/chat/completions`` surface for the rolter proxy to forward to it, and
 injects a failure mode selected by the ``FAULT`` env var:
 
