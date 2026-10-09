@@ -231,13 +231,16 @@ async fn ensure_database(maintenance_url: &str, name: &str, root: &str) -> Resul
         // `create database` cannot run inside a transaction, so it goes out as
         // a bare statement; the name is derived here and contains only ascii
         // lowercase, digits and underscores
-        conn.execute(format!("create database {name}").as_str())
+        conn.execute(sqlx::AssertSqlSafe(format!("create database {name}")))
             .await?;
     }
     // the comment is the only record of which worktree owns the database, and
     // is what makes the sweep below possible
-    conn.execute(format!("comment on database {name} is '{}'", escape(root)).as_str())
-        .await?;
+    conn.execute(sqlx::AssertSqlSafe(format!(
+        "comment on database {name} is '{}'",
+        escape(root)
+    )))
+    .await?;
 
     if let Err(err) = sweep_abandoned(&mut conn, name).await {
         // housekeeping must never fail the suite
@@ -275,7 +278,9 @@ async fn sweep_abandoned(conn: &mut PgConnection, keep: &str) -> Result<(), sqlx
         }
         eprintln!("dropping test database {name}: its worktree {root} is gone");
         if let Err(err) = conn
-            .execute(format!("drop database if exists {name}").as_str())
+            .execute(sqlx::AssertSqlSafe(format!(
+                "drop database if exists {name}"
+            )))
             .await
         {
             eprintln!("failed to drop test database {name}: {err}");

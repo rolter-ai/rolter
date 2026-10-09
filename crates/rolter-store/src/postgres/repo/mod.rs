@@ -123,9 +123,9 @@ const CLIENT_SETTINGS_COLUMNS: &str = "public_base_url, forwarded_headers, injec
 
 impl ClientSettingsRepo<'_> {
     pub async fn get(&self) -> Result<ClientSettings> {
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "select {CLIENT_SETTINGS_COLUMNS} from client_settings where id = true"
-        ))
+        )))
         .fetch_one(self.0)
         .await
         .map_err(store_err)
@@ -138,13 +138,13 @@ impl ClientSettingsRepo<'_> {
         injected_headers: &serde_json::Value,
         request_id_header: &str,
     ) -> Result<ClientSettings> {
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "update client_settings set \
                 public_base_url = $1, forwarded_headers = $2, injected_headers = $3, \
                 request_id_header = $4, updated_at = now() \
              where id = true \
              returning {CLIENT_SETTINGS_COLUMNS}"
-        ))
+        )))
         .bind(public_base_url)
         .bind(forwarded_headers)
         .bind(injected_headers)
@@ -161,9 +161,9 @@ const MODEL_DEFAULTS_COLUMNS: &str = "enabled, default_model, default_temperatur
 
 impl ModelDefaultsRepo<'_> {
     pub async fn get(&self) -> Result<ModelDefaults> {
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "select {MODEL_DEFAULTS_COLUMNS} from model_defaults where id = true"
-        ))
+        )))
         .fetch_one(self.0)
         .await
         .map_err(store_err)
@@ -177,13 +177,13 @@ impl ModelDefaultsRepo<'_> {
         default_top_p: Option<f64>,
         default_max_tokens: Option<i32>,
     ) -> Result<ModelDefaults> {
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "update model_defaults set \
                 enabled = $1, default_model = $2, default_temperature = $3, \
                 default_top_p = $4, default_max_tokens = $5, updated_at = now() \
              where id = true \
              returning {MODEL_DEFAULTS_COLUMNS}"
-        ))
+        )))
         .bind(enabled)
         .bind(default_model)
         .bind(default_temperature)
@@ -201,9 +201,9 @@ const ADAPTIVE_POLICY_COLUMNS: &str = "enabled, latency_weight, cost_weight, loa
 
 impl AdaptiveRoutingPolicyRepo<'_> {
     pub async fn get(&self) -> Result<AdaptiveRoutingPolicy> {
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "select {ADAPTIVE_POLICY_COLUMNS} from adaptive_routing_policy where id = true"
-        ))
+        )))
         .fetch_one(self.0)
         .await
         .map_err(store_err)
@@ -219,12 +219,12 @@ impl AdaptiveRoutingPolicyRepo<'_> {
         exploration_ratio: f32,
         min_samples: i32,
     ) -> Result<AdaptiveRoutingPolicy> {
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "update adaptive_routing_policy set \
                 enabled = $1, latency_weight = $2, cost_weight = $3, load_weight = $4, \
                 exploration_ratio = $5, min_samples = $6, updated_at = now() \
              where id = true returning {ADAPTIVE_POLICY_COLUMNS}"
-        ))
+        )))
         .bind(enabled)
         .bind(latency_weight)
         .bind(cost_weight)
@@ -965,9 +965,9 @@ const PLUGIN_COLUMNS: &str = "id, org_id, project_id, name, slug, description, k
 
 impl PluginRepo<'_> {
     pub async fn list(&self, org_id: Uuid) -> Result<Vec<PluginInstance>> {
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "select {PLUGIN_COLUMNS} from plugin_instances where org_id=$1 order by position, name"
-        ))
+        )))
         .bind(org_id)
         .fetch_all(self.0)
         .await
@@ -979,19 +979,19 @@ impl PluginRepo<'_> {
     /// but the filter is explicit so a future non-webhook kind does not
     /// silently reach a dispatcher that only knows how to call a URL.
     pub async fn list_all_enabled(&self) -> Result<Vec<PluginInstance>> {
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "select {PLUGIN_COLUMNS} from plugin_instances \
              where enabled and kind = 'webhook' order by org_id, position, name"
-        ))
+        )))
         .fetch_all(self.0)
         .await
         .map_err(store_err)
     }
 
     pub async fn get(&self, id: Uuid) -> Result<PluginInstance> {
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "select {PLUGIN_COLUMNS} from plugin_instances where id=$1"
-        ))
+        )))
         .bind(id)
         .fetch_optional(self.0)
         .await
@@ -1016,11 +1016,11 @@ impl PluginRepo<'_> {
         secret_env: Option<&str>,
         config: &serde_json::Value,
     ) -> Result<PluginInstance> {
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "insert into plugin_instances (org_id, project_id, name, slug, description, kind, \
              stage, enabled, position, failure_mode, endpoint, secret_env, config) values \
              ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) returning {PLUGIN_COLUMNS}"
-        ))
+        )))
         .bind(org_id)
         .bind(project_id)
         .bind(name)
@@ -1054,11 +1054,11 @@ impl PluginRepo<'_> {
         secret_env: Option<&str>,
         config: &serde_json::Value,
     ) -> Result<PluginInstance> {
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "update plugin_instances set project_id=$2, name=$3, description=$4, stage=$5, \
              enabled=$6, position=$7, failure_mode=$8, endpoint=$9, secret_env=$10, config=$11, \
              updated_at=now() where id=$1 returning {PLUGIN_COLUMNS}"
-        ))
+        )))
         .bind(id)
         .bind(project_id)
         .bind(name)
@@ -1746,12 +1746,12 @@ impl SsoRepo<'_> {
             Some((c, n)) => (Some(c), Some(n)),
             None => (None, None),
         };
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "insert into sso_providers (org_id, name, slug, issuer, client_id, \
                     secret_ciphertext, secret_nonce, scopes, group_claim, default_role) \
              values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
              returning {SSO_PROVIDER_COLUMNS}"
-        ))
+        )))
         .bind(org_id)
         .bind(name)
         .bind(slug)
@@ -1804,7 +1804,7 @@ impl SsoRepo<'_> {
                 return Ok(LockoutGuard::WouldLockOut);
             }
         }
-        let row = sqlx::query_as(&format!(
+        let row = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "update sso_providers set \
                     name = $2, issuer = $3, client_id = $4, \
                     secret_ciphertext = case when $5 then $6 else secret_ciphertext end, \
@@ -1812,7 +1812,7 @@ impl SsoRepo<'_> {
                     scopes = $8, group_claim = $9, default_role = $10, enabled = $11 \
              where id = $1 \
              returning {SSO_PROVIDER_COLUMNS}"
-        ))
+        )))
         .bind(id)
         .bind(update.name)
         .bind(update.issuer)
@@ -1833,9 +1833,9 @@ impl SsoRepo<'_> {
     }
 
     pub async fn list_providers(&self, org_id: Uuid) -> Result<Vec<SsoProvider>> {
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "select {SSO_PROVIDER_COLUMNS} from sso_providers where org_id = $1 order by name"
-        ))
+        )))
         .bind(org_id)
         .fetch_all(self.0)
         .await
@@ -1843,9 +1843,9 @@ impl SsoRepo<'_> {
     }
 
     pub async fn get_provider(&self, id: Uuid) -> Result<SsoProvider> {
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "select {SSO_PROVIDER_COLUMNS} from sso_providers where id = $1"
-        ))
+        )))
         .bind(id)
         .fetch_optional(self.0)
         .await
@@ -1857,9 +1857,9 @@ impl SsoRepo<'_> {
     /// login URL carries no org, so a duplicate slug across orgs is ambiguous
     /// and rejected rather than resolved arbitrarily.
     pub async fn find_provider_by_slug(&self, slug: &str) -> Result<Option<SsoProvider>> {
-        let mut rows: Vec<SsoProvider> = sqlx::query_as(&format!(
+        let mut rows: Vec<SsoProvider> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "select {SSO_PROVIDER_COLUMNS} from sso_providers where slug = $1 and enabled limit 2"
-        ))
+        )))
         .bind(slug)
         .fetch_all(self.0)
         .await
@@ -1881,7 +1881,7 @@ impl SsoRepo<'_> {
     pub async fn list_sign_in_providers(&self) -> Result<Vec<SsoProvider>> {
         // `not exists` rather than a join, so the shared column list needs no
         // table prefix and a missing policy row reads as sso on (#2339)
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "select {SSO_PROVIDER_COLUMNS} from sso_providers
              where enabled
                and not exists (
@@ -1889,7 +1889,7 @@ impl SsoRepo<'_> {
                    where p.org_id = sso_providers.org_id and not p.allow_sso
                )
              order by name"
-        ))
+        )))
         .fetch_all(self.0)
         .await
         .map_err(store_err)
@@ -2135,10 +2135,10 @@ impl ScimTokenRepo<'_> {
         token_hash: &str,
         created_by: Option<Uuid>,
     ) -> Result<ScimToken> {
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "insert into scim_tokens (org_id, name, token_hash, created_by) \
              values ($1, $2, $3, $4) returning {SCIM_TOKEN_COLUMNS}"
-        ))
+        )))
         .bind(org_id)
         .bind(name)
         .bind(token_hash)
@@ -2149,10 +2149,10 @@ impl ScimTokenRepo<'_> {
     }
 
     pub async fn list(&self, org_id: Uuid) -> Result<Vec<ScimToken>> {
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "select {SCIM_TOKEN_COLUMNS} from scim_tokens where org_id = $1 \
              order by created_at desc"
-        ))
+        )))
         .bind(org_id)
         .fetch_all(self.0)
         .await
@@ -2160,9 +2160,9 @@ impl ScimTokenRepo<'_> {
     }
 
     pub async fn get(&self, id: Uuid) -> Result<ScimToken> {
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "select {SCIM_TOKEN_COLUMNS} from scim_tokens where id = $1"
-        ))
+        )))
         .bind(id)
         .fetch_optional(self.0)
         .await
@@ -2173,10 +2173,10 @@ impl ScimTokenRepo<'_> {
     /// Resolve a presented token by digest. Revoked tokens never resolve, so a
     /// revocation takes effect on the next request with no cache to invalidate.
     pub async fn find_active_by_hash(&self, token_hash: &str) -> Result<Option<ScimToken>> {
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "select {SCIM_TOKEN_COLUMNS} from scim_tokens \
              where token_hash = $1 and revoked_at is null"
-        ))
+        )))
         .bind(token_hash)
         .fetch_optional(self.0)
         .await
@@ -2184,10 +2184,10 @@ impl ScimTokenRepo<'_> {
     }
 
     pub async fn revoke(&self, id: Uuid) -> Result<ScimToken> {
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "update scim_tokens set revoked_at = coalesce(revoked_at, now()) \
              where id = $1 returning {SCIM_TOKEN_COLUMNS}"
-        ))
+        )))
         .bind(id)
         .fetch_optional(self.0)
         .await
@@ -2223,14 +2223,14 @@ impl ScimIdentityRepo<'_> {
         user_name: &str,
         display_name: &str,
     ) -> Result<ScimIdentity> {
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "insert into scim_identities (user_id, org_id, external_id, user_name, display_name) \
              values ($1, $2, $3, $4, $5) \
              on conflict (user_id, org_id) do update set \
                  external_id = excluded.external_id, user_name = excluded.user_name, \
                  display_name = excluded.display_name, updated_at = now() \
              returning {SCIM_IDENTITY_COLUMNS}"
-        ))
+        )))
         .bind(user_id)
         .bind(org_id)
         .bind(external_id)
@@ -2242,10 +2242,10 @@ impl ScimIdentityRepo<'_> {
     }
 
     pub async fn get(&self, user_id: Uuid, org_id: Uuid) -> Result<Option<ScimIdentity>> {
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "select {SCIM_IDENTITY_COLUMNS} from scim_identities \
              where user_id = $1 and org_id = $2"
-        ))
+        )))
         .bind(user_id)
         .bind(org_id)
         .fetch_optional(self.0)
@@ -2267,10 +2267,10 @@ impl ScimIdentityRepo<'_> {
         org_id: Uuid,
         user_name: &str,
     ) -> Result<Option<ScimIdentity>> {
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "select {SCIM_IDENTITY_COLUMNS} from scim_identities \
              where org_id = $1 and user_name = $2"
-        ))
+        )))
         .bind(org_id)
         .bind(user_name)
         .fetch_optional(self.0)
@@ -2280,10 +2280,10 @@ impl ScimIdentityRepo<'_> {
 
     /// Every provisioned identity in the org, oldest first so paging is stable.
     pub async fn list(&self, org_id: Uuid) -> Result<Vec<ScimIdentity>> {
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "select {SCIM_IDENTITY_COLUMNS} from scim_identities where org_id = $1 \
              order by created_at, user_id"
-        ))
+        )))
         .bind(org_id)
         .fetch_all(self.0)
         .await
@@ -2315,10 +2315,10 @@ impl ScimGroupRepo<'_> {
         external_id: Option<&str>,
         display_name: &str,
     ) -> Result<ScimGroup> {
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "insert into scim_groups (org_id, external_id, display_name) \
              values ($1, $2, $3) returning {SCIM_GROUP_COLUMNS}"
-        ))
+        )))
         .bind(org_id)
         .bind(external_id)
         .bind(display_name)
@@ -2330,9 +2330,9 @@ impl ScimGroupRepo<'_> {
     /// Look a group up inside its org. The org is part of the predicate rather
     /// than checked afterwards, so a foreign id simply does not resolve.
     pub async fn get(&self, id: Uuid, org_id: Uuid) -> Result<Option<ScimGroup>> {
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "select {SCIM_GROUP_COLUMNS} from scim_groups where id = $1 and org_id = $2"
-        ))
+        )))
         .bind(id)
         .bind(org_id)
         .fetch_optional(self.0)
@@ -2345,10 +2345,10 @@ impl ScimGroupRepo<'_> {
         org_id: Uuid,
         display_name: &str,
     ) -> Result<Option<ScimGroup>> {
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "select {SCIM_GROUP_COLUMNS} from scim_groups \
              where org_id = $1 and display_name = $2"
-        ))
+        )))
         .bind(org_id)
         .bind(display_name)
         .fetch_optional(self.0)
@@ -2358,10 +2358,10 @@ impl ScimGroupRepo<'_> {
 
     /// Every group in the org, oldest first so paging is stable.
     pub async fn list(&self, org_id: Uuid) -> Result<Vec<ScimGroup>> {
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "select {SCIM_GROUP_COLUMNS} from scim_groups where org_id = $1 \
              order by created_at, id"
-        ))
+        )))
         .bind(org_id)
         .fetch_all(self.0)
         .await
@@ -2375,10 +2375,10 @@ impl ScimGroupRepo<'_> {
         external_id: Option<&str>,
         display_name: &str,
     ) -> Result<ScimGroup> {
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "update scim_groups set external_id = $3, display_name = $4, updated_at = now() \
              where id = $1 and org_id = $2 returning {SCIM_GROUP_COLUMNS}"
-        ))
+        )))
         .bind(id)
         .bind(org_id)
         .bind(external_id)
@@ -2497,10 +2497,10 @@ impl ScimGroupMappingRepo<'_> {
         project_id: Option<Uuid>,
         role: &str,
     ) -> Result<ScimGroupMapping> {
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "insert into scim_group_mappings (org_id, group_name, team_id, project_id, role) \
              values ($1, $2, $3, $4, $5) returning {SCIM_GROUP_MAPPING_COLUMNS}"
-        ))
+        )))
         .bind(org_id)
         .bind(group_name)
         .bind(team_id)
@@ -2512,10 +2512,10 @@ impl ScimGroupMappingRepo<'_> {
     }
 
     pub async fn list(&self, org_id: Uuid) -> Result<Vec<ScimGroupMapping>> {
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "select {SCIM_GROUP_MAPPING_COLUMNS} from scim_group_mappings \
              where org_id = $1 order by group_name, created_at"
-        ))
+        )))
         .bind(org_id)
         .fetch_all(self.0)
         .await
@@ -2528,10 +2528,10 @@ impl ScimGroupMappingRepo<'_> {
         org_id: Uuid,
         group_name: &str,
     ) -> Result<Vec<ScimGroupMapping>> {
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "select {SCIM_GROUP_MAPPING_COLUMNS} from scim_group_mappings \
              where org_id = $1 and group_name = $2 order by created_at"
-        ))
+        )))
         .bind(org_id)
         .bind(group_name)
         .fetch_all(self.0)
@@ -2540,9 +2540,9 @@ impl ScimGroupMappingRepo<'_> {
     }
 
     pub async fn get(&self, id: Uuid) -> Result<ScimGroupMapping> {
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "select {SCIM_GROUP_MAPPING_COLUMNS} from scim_group_mappings where id = $1"
-        ))
+        )))
         .bind(id)
         .fetch_optional(self.0)
         .await
@@ -4109,12 +4109,12 @@ impl InvitationRepo<'_> {
         .fetch_optional(&mut *tx)
         .await
         .map_err(store_err)?;
-        let invitation = sqlx::query_as(&format!(
+        let invitation = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "insert into invitations (org_id, email, role, team_id, project_id, token_hash, \
                     invited_by, expires_at) \
              values ($1, $2, $3, $4, $5, $6, $7, $8) \
              returning {INVITATION_COLUMNS}"
-        ))
+        )))
         .bind(org_id)
         .bind(email)
         .bind(role)
@@ -4131,10 +4131,10 @@ impl InvitationRepo<'_> {
     }
 
     pub async fn list(&self, org_id: Uuid) -> Result<Vec<Invitation>> {
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "select {INVITATION_COLUMNS} from invitations \
              where org_id = $1 order by created_at desc"
-        ))
+        )))
         .bind(org_id)
         .fetch_all(self.0)
         .await
@@ -4145,11 +4145,11 @@ impl InvitationRepo<'_> {
     /// unaccepted, unrevoked and unexpired. Spent invitations are
     /// indistinguishable from wrong ones to the caller, which is the point.
     pub async fn find_live_by_hash(&self, token_hash: &str) -> Result<Option<Invitation>> {
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "select {INVITATION_COLUMNS} from invitations \
              where token_hash = $1 and accepted_at is null and revoked_at is null \
                and expires_at > now()"
-        ))
+        )))
         .bind(token_hash)
         .fetch_optional(self.0)
         .await
@@ -4172,11 +4172,11 @@ impl InvitationRepo<'_> {
     }
 
     pub async fn revoke(&self, id: Uuid) -> Result<Invitation> {
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "update invitations set revoked_at = now() \
              where id = $1 and accepted_at is null \
              returning {INVITATION_COLUMNS}"
-        ))
+        )))
         .bind(id)
         .fetch_optional(self.0)
         .await
@@ -4185,9 +4185,9 @@ impl InvitationRepo<'_> {
     }
 
     pub async fn get(&self, id: Uuid) -> Result<Invitation> {
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "select {INVITATION_COLUMNS} from invitations where id = $1"
-        ))
+        )))
         .bind(id)
         .fetch_optional(self.0)
         .await
@@ -5247,9 +5247,9 @@ pub struct CustomRoleRepo<'a>(pub &'a PgPool);
 
 impl CustomRoleRepo<'_> {
     pub async fn list(&self, org_id: Uuid) -> Result<Vec<CustomRole>> {
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "select {CUSTOM_ROLE_COLUMNS} from custom_roles where org_id = $1 order by name"
-        ))
+        )))
         .bind(org_id)
         .fetch_all(self.0)
         .await
@@ -5257,9 +5257,9 @@ impl CustomRoleRepo<'_> {
     }
 
     pub async fn get(&self, id: Uuid) -> Result<CustomRole> {
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "select {CUSTOM_ROLE_COLUMNS} from custom_roles where id = $1"
-        ))
+        )))
         .bind(id)
         .fetch_optional(self.0)
         .await
@@ -5275,10 +5275,10 @@ impl CustomRoleRepo<'_> {
         description: Option<&str>,
         base_role: &str,
     ) -> Result<CustomRole> {
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "insert into custom_roles (org_id, slug, name, description, base_role) \
              values ($1, $2, $3, $4, $5) returning {CUSTOM_ROLE_COLUMNS}"
-        ))
+        )))
         .bind(org_id)
         .bind(slug)
         .bind(name)
@@ -5296,11 +5296,11 @@ impl CustomRoleRepo<'_> {
         description: Option<&str>,
         base_role: &str,
     ) -> Result<CustomRole> {
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "update custom_roles set name = $2, description = $3, base_role = $4, \
                     updated_at = now() \
              where id = $1 returning {CUSTOM_ROLE_COLUMNS}"
-        ))
+        )))
         .bind(id)
         .bind(name)
         .bind(description)
@@ -5396,9 +5396,9 @@ pub struct AccessProfileRepo<'a>(pub &'a PgPool);
 
 impl AccessProfileRepo<'_> {
     pub async fn list(&self, org_id: Uuid) -> Result<Vec<AccessProfile>> {
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "select {ACCESS_PROFILE_COLUMNS} from access_profiles where org_id = $1 order by name"
-        ))
+        )))
         .bind(org_id)
         .fetch_all(self.0)
         .await
@@ -5406,9 +5406,9 @@ impl AccessProfileRepo<'_> {
     }
 
     pub async fn get(&self, id: Uuid) -> Result<AccessProfile> {
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "select {ACCESS_PROFILE_COLUMNS} from access_profiles where id = $1"
-        ))
+        )))
         .bind(id)
         .fetch_optional(self.0)
         .await
@@ -5423,10 +5423,10 @@ impl AccessProfileRepo<'_> {
         name: &str,
         description: Option<&str>,
     ) -> Result<AccessProfile> {
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "insert into access_profiles (org_id, slug, name, description) \
              values ($1, $2, $3, $4) returning {ACCESS_PROFILE_COLUMNS}"
-        ))
+        )))
         .bind(org_id)
         .bind(slug)
         .bind(name)
@@ -5442,10 +5442,10 @@ impl AccessProfileRepo<'_> {
         name: &str,
         description: Option<&str>,
     ) -> Result<AccessProfile> {
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "update access_profiles set name = $2, description = $3, updated_at = now() \
              where id = $1 returning {ACCESS_PROFILE_COLUMNS}"
-        ))
+        )))
         .bind(id)
         .bind(name)
         .bind(description)
@@ -5574,10 +5574,10 @@ impl AccessProfileRepo<'_> {
     }
 
     pub async fn get_policy(&self, profile_id: Uuid) -> Result<Option<AccessProfilePolicy>> {
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "select {ACCESS_PROFILE_POLICY_COLUMNS} from access_profile_policies \
              where profile_id = $1"
-        ))
+        )))
         .bind(profile_id)
         .fetch_optional(self.0)
         .await
@@ -5592,7 +5592,7 @@ impl AccessProfileRepo<'_> {
         allowed_routes: &[String],
         denied_routes: &[String],
     ) -> Result<AccessProfilePolicy> {
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "insert into access_profile_policies \
                  (profile_id, allowed_models, denied_models, allowed_routes, denied_routes) \
              values ($1, $2, $3, $4, $5) \
@@ -5603,7 +5603,7 @@ impl AccessProfileRepo<'_> {
                  denied_routes = excluded.denied_routes, \
                  updated_at = now() \
              returning {ACCESS_PROFILE_POLICY_COLUMNS}"
-        ))
+        )))
         .bind(profile_id)
         .bind(allowed_models)
         .bind(denied_models)

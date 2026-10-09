@@ -16120,10 +16120,10 @@ async fn seed_bound_member(
         .execute(pool)
         .await
         .unwrap();
-    sqlx::query(&format!(
+    sqlx::query(sqlx::AssertSqlSafe(format!(
         "insert into org_auth_policies (org_id, mfa_policy, mfa_enforce_after)
          values ($1, $2, {enforce_after})"
-    ))
+    )))
     .bind(org_id)
     .bind(policy)
     .execute(pool)
@@ -17146,10 +17146,12 @@ async fn a_stored_price_with_an_unchargeable_rate_is_omitted_from_the_snapshot()
         "model_prices_cache_write_per_mtok_rate",
     ];
     for name in checks {
-        sqlx::query(&format!("alter table model_prices drop constraint {name}"))
-            .execute(&pool)
-            .await
-            .unwrap();
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "alter table model_prices drop constraint {name}"
+        )))
+        .execute(&pool)
+        .await
+        .unwrap();
     }
     sqlx::query(
         "insert into model_prices (model, input_per_mtok, output_per_mtok, cached_input_per_mtok)
@@ -17166,10 +17168,10 @@ async fn a_stored_price_with_an_unchargeable_rate_is_omitted_from_the_snapshot()
         (checks[2], "cached_input_per_mtok"),
         (checks[3], "cache_write_per_mtok"),
     ] {
-        sqlx::query(&format!(
+        sqlx::query(sqlx::AssertSqlSafe(format!(
             "alter table model_prices add constraint {name}
              check ({column} >= 0 and {column} <> 'NaN'::numeric) not valid"
-        ))
+        )))
         .execute(&pool)
         .await
         .unwrap();

@@ -822,6 +822,30 @@ mod tests {
         assert!(sessions.drained(Duration::from_secs(5)).await);
     }
 
+    /// A `wss://` dial builds its rustls config from the crate features alone,
+    /// and rustls panics there when two crypto providers are compiled in. The
+    /// panic is invisible to the compiler and to every plain-http test, and
+    /// reaches a user as a realtime session that never opens. The launcher
+    /// links the gateway with the control plane's store, so this only sees a
+    /// second provider in a workspace-wide build, which CI runs.
+    #[tokio::test]
+    async fn a_wss_dial_finds_its_crypto_provider() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        // accepts the tcp connection and closes it, so the dial reaches the
+        // point where the tls config is built and then fails the handshake
+        tokio::spawn(async move {
+            while let Ok((socket, _)) = listener.accept().await {
+                drop(socket);
+            }
+        });
+        let dial = tokio_tungstenite::connect_async(format!("wss://localhost:{port}/"));
+        let outcome = tokio::time::timeout(Duration::from_secs(10), dial)
+            .await
+            .expect("the dial ends");
+        assert!(outcome.is_err(), "nothing answers the handshake");
+    }
+
     #[test]
     fn converts_http_base_to_websocket_realtime_url() {
         assert_eq!(

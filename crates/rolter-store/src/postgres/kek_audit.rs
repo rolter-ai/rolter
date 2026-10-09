@@ -200,7 +200,7 @@ pub async fn audit_kek(pool: &PgPool, kek: &Kek) -> Result<KekAudit> {
             "select {}, {} from {} where {} is not null and {} is not null limit {SAMPLE_LIMIT}",
             column.ciphertext, column.nonce, column.table, column.ciphertext, column.nonce
         );
-        let rows: Vec<(Vec<u8>, Vec<u8>)> = sqlx::query_as(&sql)
+        let rows: Vec<(Vec<u8>, Vec<u8>)> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
             .fetch_all(pool)
             .await
             .map_err(store_err)?;
@@ -284,7 +284,7 @@ pub async fn rotate_kek(pool: &PgPool, from: &Kek, to: &Kek) -> Result<KekRotati
             "select ctid::text, {}, {} from {} where {} is not null and {} is not null for update",
             column.ciphertext, column.nonce, column.table, column.ciphertext, column.nonce
         );
-        let rows: Vec<(String, Vec<u8>, Vec<u8>)> = sqlx::query_as(&sql)
+        let rows: Vec<(String, Vec<u8>, Vec<u8>)> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
             .fetch_all(&mut *tx)
             .await
             .map_err(store_err)?;
@@ -305,7 +305,7 @@ pub async fn rotate_kek(pool: &PgPool, from: &Kek, to: &Kek) -> Result<KekRotati
                 "update {} set {} = $1, {} = $2 where ctid = $3::tid",
                 column.table, column.ciphertext, column.nonce
             );
-            sqlx::query(&update)
+            sqlx::query(sqlx::AssertSqlSafe(update))
                 .bind(&new_ciphertext)
                 .bind(&new_nonce)
                 .bind(ctid)

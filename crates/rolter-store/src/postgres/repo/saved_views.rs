@@ -33,11 +33,11 @@ pub struct SavedViewRepo<'a>(pub &'a PgPool);
 impl SavedViewRepo<'_> {
     /// the owner's presets, oldest first; `surface` narrows to one screen
     pub async fn list(&self, user_id: Uuid, surface: Option<&str>) -> Result<Vec<SavedView>> {
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "select {COLUMNS} from saved_views
              where user_id = $1 and ($2::text is null or surface = $2)
              order by created_at, id"
-        ))
+        )))
         .bind(user_id)
         .bind(surface)
         .fetch_all(self.0)
@@ -46,9 +46,9 @@ impl SavedViewRepo<'_> {
     }
 
     pub async fn get(&self, user_id: Uuid, id: Uuid) -> Result<Option<SavedView>> {
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "select {COLUMNS} from saved_views where user_id = $1 and id = $2"
-        ))
+        )))
         .bind(user_id)
         .bind(id)
         .fetch_optional(self.0)
@@ -84,12 +84,12 @@ impl SavedViewRepo<'_> {
         if held >= max_per_surface {
             return Ok(SavedViewWrite::LimitReached);
         }
-        let row: Option<SavedView> = sqlx::query_as(&format!(
+        let row: Option<SavedView> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "insert into saved_views (user_id, surface, name, filters)
              values ($1, $2, $3, $4)
              on conflict (user_id, surface, lower(name)) do nothing
              returning {COLUMNS}"
-        ))
+        )))
         .bind(user_id)
         .bind(surface)
         .bind(name)
@@ -110,14 +110,14 @@ impl SavedViewRepo<'_> {
         name: Option<&str>,
         filters: Option<&serde_json::Value>,
     ) -> Result<SavedViewWrite> {
-        let res = sqlx::query_as(&format!(
+        let res = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "update saved_views set
                  name = coalesce($3, name),
                  filters = coalesce($4, filters),
                  updated_at = now()
              where user_id = $1 and id = $2
              returning {COLUMNS}"
-        ))
+        )))
         .bind(user_id)
         .bind(id)
         .bind(name)

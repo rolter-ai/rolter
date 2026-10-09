@@ -327,10 +327,10 @@ async fn list_channels(
 ) -> ApiResult<Json<Vec<Channel>>> {
     authorize_superadmin(&principal, superadmin_cap!("alert_channel", Read))?;
     Ok(Json(
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "select {} from alert_channels order by name",
             channel_columns()
-        ))
+        )))
         .fetch_all(pool(&state))
         .await
         .map_err(|e| Error::Store(e.to_string()))?,
@@ -346,8 +346,8 @@ async fn create_channel(
     let endpoint = validate_channel(&input)?;
     check_egress(&state.egress, &endpoint)?;
     let secret = input.managed_secret.as_deref().map(seal).transpose()?;
-    let channel: Channel = sqlx::query_as(&format!(
-        "insert into alert_channels (name, kind, endpoint, enabled, secret_ciphertext, secret_nonce) values ($1, 'webhook', $2, $3, $4, $5) returning {}", channel_columns()))
+    let channel: Channel = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "insert into alert_channels (name, kind, endpoint, enabled, secret_ciphertext, secret_nonce) values ($1, 'webhook', $2, $3, $4, $5) returning {}", channel_columns())))
         .bind(input.name.trim()).bind(endpoint.as_str()).bind(input.enabled)
         .bind(secret.as_ref().map(|(c, _)| c.as_slice())).bind(secret.as_ref().map(|(_, n)| n.as_slice()))
         .fetch_one(pool(&state)).await.map_err(|e| Error::Store(e.to_string()))?;
@@ -394,13 +394,13 @@ async fn update_channel(
     // this request brings the new receiver's own
     let origin_changed = stored.is_none_or(|stored| stored.origin() != endpoint.origin());
     let clear_secret = origin_changed && secret.is_none();
-    let channel: Channel = sqlx::query_as(&format!(
+    let channel: Channel = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "update alert_channels set name=$2, endpoint=$3, enabled=$4, \
          secret_ciphertext = case when $7 then null else coalesce($5, secret_ciphertext) end, \
          secret_nonce = case when $7 then null else coalesce($6, secret_nonce) end, \
          updated_at=now() where id=$1 returning {}",
         channel_columns()
-    ))
+    )))
     .bind(id)
     .bind(input.name.trim())
     .bind(endpoint.as_str())
@@ -466,10 +466,10 @@ async fn list_rules(
 ) -> ApiResult<Json<Vec<Rule>>> {
     authorize_superadmin(&principal, superadmin_cap!("alert_rule", Read))?;
     Ok(Json(
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "select {} from alert_rules order by name",
             rule_columns()
-        ))
+        )))
         .fetch_all(pool(&state))
         .await
         .map_err(|e| Error::Store(e.to_string()))?,
@@ -483,7 +483,7 @@ async fn create_rule(
 ) -> ApiResult<Json<Rule>> {
     authorize_superadmin(&principal, superadmin_cap!("alert_rule", Create))?;
     validate_rule(&input)?;
-    let rule: Rule = sqlx::query_as(&format!("insert into alert_rules (name, signal, threshold, comparison, no_data, window_secs, channel_id, enabled) values ($1,$2,$3,$7,$8,$4,$5,$6) returning {}", rule_columns()))
+    let rule: Rule = sqlx::query_as(sqlx::AssertSqlSafe(format!("insert into alert_rules (name, signal, threshold, comparison, no_data, window_secs, channel_id, enabled) values ($1,$2,$3,$7,$8,$4,$5,$6) returning {}", rule_columns())))
         .bind(input.name.trim()).bind(&input.signal).bind(input.threshold).bind(input.window_secs).bind(input.channel_id).bind(input.enabled).bind(input.comparison()).bind(input.no_data())
         .fetch_one(pool(&state)).await.map_err(|e| Error::Store(e.to_string()))?;
     audit(
@@ -505,7 +505,7 @@ async fn update_rule(
 ) -> ApiResult<Json<Rule>> {
     authorize_superadmin(&principal, superadmin_cap!("alert_rule", Update))?;
     validate_rule(&input)?;
-    let rule: Rule = sqlx::query_as(&format!("update alert_rules set name=$2, signal=$3, threshold=$4, window_secs=$5, channel_id=$6, enabled=$7, comparison=coalesce($8, comparison), no_data=coalesce($9, no_data), updated_at=now() where id=$1 returning {}", rule_columns()))
+    let rule: Rule = sqlx::query_as(sqlx::AssertSqlSafe(format!("update alert_rules set name=$2, signal=$3, threshold=$4, window_secs=$5, channel_id=$6, enabled=$7, comparison=coalesce($8, comparison), no_data=coalesce($9, no_data), updated_at=now() where id=$1 returning {}", rule_columns())))
         .bind(id).bind(input.name.trim()).bind(&input.signal).bind(input.threshold).bind(input.window_secs).bind(input.channel_id).bind(input.enabled).bind(&input.comparison).bind(input.no_data_for_update())
         .fetch_optional(pool(&state)).await.map_err(|e| Error::Store(e.to_string()))?
         .ok_or_else(|| Error::NotFound(format!("alert rule {id}")))?;
@@ -683,10 +683,10 @@ async fn evaluate_one(
     let Some(Unlocked {
         rule: unlocked,
         read_at,
-    }) = sqlx::query_as(&format!(
+    }) = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "select {}, clock_timestamp() as read_at from alert_rules where id=$1{filter}",
         rule_columns()
-    ))
+    )))
     .bind(id)
     .fetch_optional(pool(state))
     .await
@@ -716,10 +716,10 @@ async fn evaluate_one(
         Lock::Wait => "for update",
         Lock::SkipLocked => "for update skip locked",
     };
-    let Some(rule): Option<Rule> = sqlx::query_as(&format!(
+    let Some(rule): Option<Rule> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "select {} from alert_rules where id=$1{filter} {locking}",
         rule_columns()
-    ))
+    )))
     .bind(id)
     .fetch_optional(&mut *tx)
     .await
@@ -777,10 +777,10 @@ async fn evaluate_one(
     let next_state = judge(&rule, value, held_state(&rule.state, &history));
     // the time the reading was taken rather than now(), so a later reading
     // can tell this one is older
-    let rule: Rule = sqlx::query_as(&format!(
+    let rule: Rule = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "update alert_rules set state=$2, last_value=$3, last_evaluated_at=$4, last_error=null, updated_at=now() where id=$1 returning {}",
         rule_columns()
-    ))
+    )))
     .bind(id)
     .bind(next_state)
     .bind(value)
@@ -1917,10 +1917,10 @@ mod tests {
         }
 
         async fn rule_row(db: &TestSchema, id: Uuid) -> Rule {
-            sqlx::query_as(&format!(
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
                 "select {} from alert_rules where id=$1",
                 rule_columns()
-            ))
+            )))
             .bind(id)
             .fetch_one(db.pool())
             .await

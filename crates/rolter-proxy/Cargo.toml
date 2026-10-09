@@ -31,9 +31,12 @@ tower.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true
+# aws-lc-rs, the one crypto provider rustls is built with in this workspace; a
+# second one makes every `ClientConfig::builder()` without an explicit provider
+# panic, in the tests that dial this server and in production alike
 tokio-rustls = { version = "0.26", default-features = false, features = [
   "logging",
-  "ring",
+  "aws-lc-rs",
   "tls12",
 ] }
 
