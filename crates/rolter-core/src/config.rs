@@ -1102,7 +1102,9 @@ impl ProviderConfig {
             return None;
         }
         if keys.len() == 1 {
-            return Some((0, keys.remove(0).0));
+            // `pop` rather than `remove(0)`: same key, no panicking call for
+            // code scanning to read as a log sink fed by the key list (#2911)
+            return keys.pop().map(|(key, _)| (0, key));
         }
         let open: Vec<usize> = (0..keys.len()).filter(|i| !blocked(*i)).collect();
         let pool: Vec<usize> = if open.is_empty() {
