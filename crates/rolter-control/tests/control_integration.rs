@@ -16790,6 +16790,132 @@ async fn custom_labels_round_trip_and_refuse_a_duplicate_key() {
     );
 }
 
+/// PUT a model price and return the status with the parsed body.
+async fn put_model_price(
+    client: &reqwest::Client,
+    base: &str,
+    body: Value,
+) -> (reqwest::StatusCode, Value) {
+    let resp = client
+        .put(format!("{base}/api/v1/model-prices"))
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    let status = resp.status();
+    (status, resp.json().await.unwrap())
+}
+
+/// The price of `model` as the gateway's snapshot carries it.
+async fn snapshot_price(client: &reqwest::Client, base: &str, model: &str) -> Value {
+    let snap: Value = client
+        .get(format!("{base}/internal/snapshot"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    snap["config"]["model_prices"]
+        .as_array()
+        .expect("model_prices")
+        .iter()
+        .find(|price| price["model"] == model)
+        .unwrap_or_else(|| panic!("{model} is not priced in the snapshot: {snap}"))
+        .clone()
+}
+
+/// #2876: a price row carries the rate for tokens written to the prompt cache.
+/// It reaches the snapshot, a body that does not name it (an older client, the
+/// dashboard until its half lands) leaves it alone, and `null` clears it.
+#[tokio::test]
+async fn a_model_price_carries_a_cache_write_rate_an_older_client_cannot_reset() {
+    skip_without_db!();
+    let (app, _db) = fresh_app().await;
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    // a row with no rate is priced at the input rate, as every row was
+    let (status, bare) = put_model_price(
+        &client,
+        &base,
+        json!({"model": "claude", "input_per_mtok": "3", "output_per_mtok": "15"}),
+    )
+    .await;
+    assert!(status.is_success(), "{bare}");
+    assert!(bare["cache_write_per_mtok"].is_null(), "{bare}");
+    let price = snapshot_price(&client, &base, "claude").await;
+    assert!(price["cache_write_per_mtok"].is_null(), "{price}");
+
+    let (status, set) = put_model_price(
+        &client,
+        &base,
+        json!({
+            "model": "claude", "input_per_mtok": "3", "output_per_mtok": "15",
+            "cached_input_per_mtok": "0.3", "cache_write_per_mtok": "3.75",
+        }),
+    )
+    .await;
+    assert!(status.is_success(), "{set}");
+    assert_eq!(set["cache_write_per_mtok"], "3.750000");
+    let price = snapshot_price(&client, &base, "claude").await;
+    assert_eq!(price["cache_write_per_mtok"], 3.75, "{price}");
+
+    // an edit from a client that has never heard of the field
+    let (status, kept) = put_model_price(
+        &client,
+        &base,
+        json!({"model": "claude", "input_per_mtok": "4", "output_per_mtok": "20"}),
+    )
+    .await;
+    assert!(status.is_success(), "{kept}");
+    assert_eq!(kept["input_per_mtok"], "4.000000", "the rest is replaced");
+    assert!(kept["cached_input_per_mtok"].is_null(), "{kept}");
+    assert_eq!(kept["cache_write_per_mtok"], "3.750000", "{kept}");
+    let listed: Value = client
+        .get(format!("{base}/api/v1/model-prices"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(listed[0]["cache_write_per_mtok"], "3.750000", "{listed}");
+
+    // a rate that is not a price is refused and changes nothing
+    for bad in ["-1", "NaN", "inf", "abc", ""] {
+        let (status, body) = put_model_price(
+            &client,
+            &base,
+            json!({
+                "model": "claude", "input_per_mtok": "4", "output_per_mtok": "20",
+                "cache_write_per_mtok": bad,
+            }),
+        )
+        .await;
+        assert_eq!(status, 400, "{bad:?} should be refused: {body}");
+        assert_eq!(body["error"]["field"], "cache_write_per_mtok", "{body}");
+    }
+    let price = snapshot_price(&client, &base, "claude").await;
+    assert_eq!(price["cache_write_per_mtok"], 3.75, "{price}");
+
+    // clearing is its own, explicit request
+    let (status, cleared) = put_model_price(
+        &client,
+        &base,
+        json!({
+            "model": "claude", "input_per_mtok": "4", "output_per_mtok": "20",
+            "cache_write_per_mtok": null,
+        }),
+    )
+    .await;
+    assert!(status.is_success(), "{cleared}");
+    assert!(cleared["cache_write_per_mtok"].is_null(), "{cleared}");
+    let price = snapshot_price(&client, &base, "claude").await;
+    assert!(price["cache_write_per_mtok"].is_null(), "{price}");
+}
+
 /// The auto label the pricing catalog produces, and the fact that no request
 /// can edit, retract or impersonate one (#985).
 #[tokio::test]

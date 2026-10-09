@@ -1105,6 +1105,7 @@ impl PostgresConfigStore {
                     input_per_mtok::text as input_per_mtok, \
                     output_per_mtok::text as output_per_mtok, \
                     cached_input_per_mtok::text as cached_input_per_mtok, \
+                    cache_write_per_mtok::text as cache_write_per_mtok, \
                     currency, created_at \
              from model_prices order by model",
         )
@@ -1123,6 +1124,7 @@ impl PostgresConfigStore {
                 input_per_mtok: r.input_per_mtok.parse().unwrap_or(Decimal::ZERO),
                 output_per_mtok: r.output_per_mtok.parse().unwrap_or(Decimal::ZERO),
                 cached_input_per_mtok: r.cached_input_per_mtok.and_then(|v| v.parse().ok()),
+                cache_write_per_mtok: r.cache_write_per_mtok.and_then(|v| v.parse().ok()),
                 // the column has always existed and the dashboard has always
                 // written it; it just never reached the config (#650), so every
                 // non-USD price was charged as if it were USD
@@ -2952,8 +2954,11 @@ mod tests {
         let pool = db.pool().clone();
 
         sqlx::query(
-            "insert into model_prices (model, input_per_mtok, output_per_mtok, cached_input_per_mtok, currency)
-             values ('gpt-4o', 3, 15, 1.5, 'USD'), ('gpt-4o-mini', 0.15, 0.6, null, 'USD')",
+            "insert into model_prices
+                    (model, input_per_mtok, output_per_mtok, cached_input_per_mtok,
+                     cache_write_per_mtok, currency)
+             values ('gpt-4o', 3, 15, 1.5, 3.75, 'USD'),
+                    ('gpt-4o-mini', 0.15, 0.6, null, null, 'USD')",
         )
         .execute(&pool)
         .await
@@ -2967,9 +2972,11 @@ mod tests {
         assert_eq!(config.model_prices[0].input_per_mtok, d("3.0"));
         assert_eq!(config.model_prices[0].output_per_mtok, d("15.0"));
         assert_eq!(config.model_prices[0].cached_input_per_mtok, Some(d("1.5")));
+        assert_eq!(config.model_prices[0].cache_write_per_mtok, Some(d("3.75")));
         assert_eq!(config.model_prices[1].model, "gpt-4o-mini");
         assert_eq!(config.model_prices[1].input_per_mtok, d("0.15"));
         assert_eq!(config.model_prices[1].cached_input_per_mtok, None);
+        assert_eq!(config.model_prices[1].cache_write_per_mtok, None);
     }
 
     #[tokio::test]

@@ -931,7 +931,14 @@ impl UsageLoggingStream {
         let cost = self
             .price
             .as_ref()
-            .map(|p| p.cost(usage.prompt, usage.completion, usage.cache_read))
+            .map(|p| {
+                p.cost(
+                    usage.prompt,
+                    usage.completion,
+                    usage.cache_read,
+                    usage.cache_write,
+                )
+            })
             .unwrap_or(rust_decimal::Decimal::ZERO);
         log.cost_usd = cost.to_f64().unwrap_or(0.0);
         log.latency_ms = self.started.elapsed().as_millis() as u32;
@@ -1974,7 +1981,12 @@ data: [DONE]\n\n";
         let body = br#"{"usage":{"prompt_tokens":90,"completion_tokens":5,
             "prompt_cache_hit_tokens":80,"prompt_cache_miss_tokens":10}}"#;
         let usage = parse_usage(false, body);
-        let cost = price.cost(usage.prompt, usage.completion, usage.cache_read);
+        let cost = price.cost(
+            usage.prompt,
+            usage.completion,
+            usage.cache_read,
+            usage.cache_write,
+        );
         assert_eq!(cost, rust_decimal::Decimal::from(23));
     }
 
@@ -2065,7 +2077,12 @@ data: {\"type\":\"message_delta\",\"usage\":{\"input_tokens\":10,\"cache_creatio
         let body = br#"{"usage":{"input_tokens":10,"cache_creation_input_tokens":30,
             "cache_read_input_tokens":80,"output_tokens":5}}"#;
         let usage = parse_usage(false, body);
-        let cost = price.cost(usage.prompt, usage.completion, usage.cache_read);
+        let cost = price.cost(
+            usage.prompt,
+            usage.completion,
+            usage.cache_read,
+            usage.cache_write,
+        );
         assert_eq!(cost, rust_decimal::Decimal::from(53));
     }
 
@@ -2933,6 +2950,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
             input_per_mtok: d("1000000.0"), // 1 usd per token, for an exact assert
             output_per_mtok: d("1000000.0"),
             cached_input_per_mtok: None,
+            cache_write_per_mtok: None,
             currency: "USD".to_string(),
         });
         let mut wrapped = UsageLoggingStream::new(
