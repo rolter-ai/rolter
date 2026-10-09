@@ -22,6 +22,7 @@ import {
   type AuditLogEntry,
 } from "@/lib/api";
 import { AUDIT_TARGET_TYPES, auditGroup, groupedActions } from "@/lib/audit-vocabulary";
+import { useOptionalAuth } from "@/lib/auth";
 import { useCan } from "@/lib/can";
 import { useFormat } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
@@ -114,10 +115,19 @@ export default function AuditLog() {
   }, [rangeIdx, cursor]);
 
   // the org's accounts, so the actor column can say who rather than the first
-  // eight hex digits of a uuid, and the actor filter can be picked by e-mail
+  // eight hex digits of a uuid, and the actor filter can be picked by e-mail.
+  // a superadmin also lists the accounts that hold no membership anywhere, such
+  // as the operator `rolter-seed --admin-email` creates: they are on no org's
+  // list yet are the actor of whatever they write (#2858). the control plane
+  // ignores the flag for anyone else. it is in the key, as on the Users screen,
+  // because ModelSheet caches the plain list under `["users", orgId]` and the
+  // two answers must not stand in for each other. the deployment-wide read has
+  // no list of its own: it reads the scope's org, which also carries the
+  // unassigned accounts, so those rows are named there as well
+  const callerIsSuperadmin = !!useOptionalAuth()?.user?.is_superadmin;
   const users = useQuery({
-    queryKey: ["users", scope.orgId],
-    queryFn: () => fetchUsers(scope.orgId as string),
+    queryKey: ["users", scope.orgId, { includeUnassigned: callerIsSuperadmin }],
+    queryFn: () => fetchUsers(scope.orgId as string, { includeUnassigned: callerIsSuperadmin }),
     enabled: !!scope.orgId,
   });
   const emailOf = (id: string) =>
@@ -302,12 +312,15 @@ export default function AuditLog() {
                 ariaLabel={t("pages.auditLog.scopeAria")}
               />
             )}
-            {!deployment && users.data && users.data.length > 0 ? (
+            {(!deployment || callerIsSuperadmin) && users.data && users.data.length > 0 ? (
               <Combobox
                 className="w-[280px]"
                 aria-label={t("pages.auditLog.actorFilterAria")}
                 value={actor}
                 onChange={setActor}
+                // the deployment-wide read spans every org but the list is one
+                // org's, so an actor outside it is still filtered by pasting its id
+                allowCustom={deployment}
                 options={[
                   { value: "", label: t("pages.auditLog.anyActor") },
                   ...users.data.map((u) => ({ value: u.id, label: u.email })),

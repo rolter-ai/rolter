@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react";
+import * as React from "react";
 import { MemoryRouter } from "react-router";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
@@ -12,14 +13,17 @@ import {
   expectSkeleton,
   expectTableStateInFrame,
   json,
+  openOptions,
   pending,
+  pickOption,
   recording,
   routes,
   scoped,
   withCapabilities,
   type FetchStub,
 } from "./story-harness";
-import type { AuditLogEntry } from "@/lib/api";
+import type { AuditLogEntry, UserRow } from "@/lib/api";
+import { AuthProvider } from "@/lib/auth";
 import ru from "@/lib/i18n/locales/ru.json";
 import { atMobile } from "@/lib/story-viewport";
 
@@ -334,5 +338,217 @@ export const TargetFilterOffersIdentityTypes: Story = {
         await within(document.body).findByRole("option", { name: kind }),
       ).toBeInTheDocument();
     }
+  },
+};
+
+// -------------------------- naming the actor (#2858)
+
+const account = (id: string, email: string, is_superadmin = false): UserRow => ({
+  id,
+  email,
+  is_superadmin,
+  deactivated_at: null,
+  created_at: "2026-01-01T00:00:00Z",
+});
+
+/** holds a role in the org, so the org's people list names them */
+const MEMBER = account("11111111-1111-1111-1111-111111111111", "ada@example.com");
+/**
+ * the operator `rolter-seed --admin-email` creates: a superadmin with no
+ * membership, so only `include_unassigned=true` lists them
+ */
+const OPERATOR = account("22222222-2222-2222-2222-222222222222", "root@example.com", true);
+/** an actor no list the caller can read carries */
+const STRANGER = "33333333-3333-3333-3333-333333333333";
+
+const byActor = [
+  entry({ id: "m-1", action: "provider.create", actor_user_id: MEMBER.id }),
+  entry({ id: "m-2", action: "route.delete", actor_user_id: OPERATOR.id }),
+  entry({ id: "m-3", action: "virtual_key.create", actor_user_id: STRANGER }),
+];
+
+/**
+ * The control plane as it answers the audit log and the org's people: the
+ * unassigned accounts ride along only when `include_unassigned=true` is asked
+ * for, and the audit read honours the `actor` filter it was sent.
+ */
+function auditWithOperator() {
+  return recording(
+    scoped(async (input) => {
+      const url = new URL(String(input), "http://localhost");
+      if (url.pathname.endsWith("/users")) {
+        return json(
+          url.searchParams.get("include_unassigned") === "true" ? [MEMBER, OPERATOR] : [MEMBER],
+        );
+      }
+      if (url.pathname.endsWith("/audit-log")) {
+        const actor = url.searchParams.get("actor");
+        return json(page(byActor.filter((row) => !actor || row.actor_user_id === actor)));
+      }
+      return json([]);
+    }),
+  );
+}
+
+/**
+ * Signed in the way a login leaves the browser, minus the token, so the
+ * provider knows the account without asking /auth/me for it. The screen reads
+ * it to tell a superadmin from anyone else.
+ */
+function SignedInAs({ user, children }: { user: UserRow; children: React.ReactNode }) {
+  React.useState(() => {
+    localStorage.setItem("rolter.session.email", user.email);
+    localStorage.setItem("rolter.session.user", JSON.stringify(user));
+    localStorage.removeItem("rolter.session.token");
+  });
+  React.useEffect(
+    () => () => {
+      localStorage.removeItem("rolter.session.email");
+      localStorage.removeItem("rolter.session.user");
+    },
+    [],
+  );
+  return <AuthProvider>{children}</AuthProvider>;
+}
+
+function SignedInScreen({
+  fetchStub,
+  user,
+  role,
+}: {
+  fetchStub: FetchStub;
+  user: UserRow;
+  role: "superadmin" | "admin";
+}) {
+  return (
+    <MemoryRouter>
+      <Harness fetchStub={fetchStub} role={role}>
+        <SignedInAs user={user}>
+          <AuditLog />
+        </SignedInAs>
+      </Harness>
+    </MemoryRouter>
+  );
+}
+
+const orgScope = auditWithOperator();
+
+/**
+ * A superadmin with no membership is on no org's people list, so the actor
+ * column named them by the first eight hex digits of their id. The screen asks
+ * for the unassigned accounts too, names them, and the actor filter picks them
+ * by e-mail. An actor nobody can resolve keeps the short id, with the whole id
+ * on hover.
+ */
+export const NamesASuperadminWithNoMembership: Story = {
+  render: () => <SignedInScreen fetchStub={orgScope.stub} user={OPERATOR} role="superadmin" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const operator = await canvas.findByText("root@example.com");
+    await expect(operator).toHaveAttribute("title", OPERATOR.id);
+    await expect(canvas.getByText("ada@example.com")).toHaveAttribute("title", MEMBER.id);
+    await expect(canvas.getByText("33333333")).toHaveAttribute("title", STRANGER);
+    await orgScope.expectSent("GET", "/orgs/org-1/users?include_unassigned=true");
+
+    await pickOption(canvas.getByRole("combobox", { name: "Filter by actor" }), "root@example.com");
+    await orgScope.expectSent("GET", `/orgs/org-1/audit-log?`);
+    await waitFor(() => expect(canvas.queryByText("provider.create")).toBeNull());
+    await expect(canvas.getByText("route.delete")).toBeVisible();
+    await expect(canvas.queryByText("virtual_key.create")).toBeNull();
+    await expect(
+      orgScope.calls.some(
+        (c) => c.url.includes(`/orgs/org-1/audit-log?`) && c.url.includes(`actor=${OPERATOR.id}`),
+      ),
+    ).toBe(true);
+  },
+};
+
+const deploymentScope = auditWithOperator();
+
+/**
+ * The whole-deployment read has no people list of its own; it reads the scope's
+ * org, whose unassigned accounts are the same everywhere. The operator is named
+ * and picked by e-mail there too.
+ */
+export const NamesASuperadminWithNoMembershipInTheWholeDeployment: Story = {
+  render: () => (
+    <SignedInScreen fetchStub={deploymentScope.stub} user={OPERATOR} role="superadmin" />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const scope = await canvas.findByRole("radiogroup", { name: "Audit log scope" });
+    await userEvent.click(within(scope).getByRole("radio", { name: "Whole deployment" }));
+    await deploymentScope.expectSent("GET", "/api/v1/audit-log?");
+    const operator = await canvas.findByText("root@example.com");
+    await expect(operator).toHaveAttribute("title", OPERATOR.id);
+    await expect(canvas.getByText("33333333")).toHaveAttribute("title", STRANGER);
+
+    const filter = canvas.getByRole("combobox", { name: "Filter by actor" });
+    const listbox = await openOptions(filter);
+    await expect(within(listbox).getByRole("option", { name: "root@example.com" })).toBeVisible();
+    await userEvent.keyboard("{Escape}");
+
+    await pickOption(filter, "root@example.com");
+    await waitFor(() =>
+      expect(
+        deploymentScope.calls.some(
+          (c) => c.url.startsWith("/api/v1/audit-log?") && c.url.includes(`actor=${OPERATOR.id}`),
+        ),
+      ).toBe(true),
+    );
+    await waitFor(() => expect(canvas.queryByText("virtual_key.create")).toBeNull());
+    await expect(canvas.getByText("route.delete")).toBeVisible();
+  },
+};
+
+const customActor = auditWithOperator();
+
+/**
+ * The list is one org's people, the read is every org's: an actor the list does
+ * not carry is filtered by typing its id in whole, which the plain org scope
+ * never needs.
+ */
+export const DeploymentFiltersToAnActorOutsideTheList: Story = {
+  render: () => <SignedInScreen fetchStub={customActor.stub} user={OPERATOR} role="superadmin" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const scope = await canvas.findByRole("radiogroup", { name: "Audit log scope" });
+    await userEvent.click(within(scope).getByRole("radio", { name: "Whole deployment" }));
+    await customActor.expectSent("GET", "/api/v1/audit-log?");
+    await expect(await canvas.findByText("virtual_key.create")).toBeVisible();
+
+    await userEvent.type(canvas.getByRole("combobox", { name: "Filter by actor" }), STRANGER);
+    await userEvent.click(await canvas.findByRole("option", { name: `Use “${STRANGER}”` }));
+    await waitFor(() => expect(canvas.queryByText("route.delete")).toBeNull());
+    await expect(canvas.getByText("virtual_key.create")).toBeVisible();
+    await expect(
+      customActor.calls.some(
+        (c) => c.url.startsWith("/api/v1/audit-log?") && c.url.includes(`actor=${STRANGER}`),
+      ),
+    ).toBe(true);
+  },
+};
+
+const asAdmin = auditWithOperator();
+
+/**
+ * Anyone who is not a superadmin never asks for the unassigned accounts: the
+ * flag would change nothing server-side. The operator stays a short id, as
+ * before, and the filter lists the org's people only.
+ */
+export const AnAdminDoesNotAskForUnassignedAccounts: Story = {
+  render: () => <SignedInScreen fetchStub={asAdmin.stub} user={MEMBER} role="admin" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("ada@example.com")).toBeVisible();
+    await expect(canvas.getByText("22222222")).toHaveAttribute("title", OPERATOR.id);
+    await expect(canvas.queryByText("root@example.com")).toBeNull();
+    await expectGateAnswered();
+    await expect(asAdmin.calls.filter((c) => c.url.includes("include_unassigned"))).toHaveLength(0);
+    await asAdmin.expectSent("GET", "/orgs/org-1/users");
+
+    const listbox = await openOptions(canvas.getByRole("combobox", { name: "Filter by actor" }));
+    await expect(within(listbox).getByRole("option", { name: "ada@example.com" })).toBeVisible();
+    await expect(within(listbox).queryByRole("option", { name: "root@example.com" })).toBeNull();
   },
 };
