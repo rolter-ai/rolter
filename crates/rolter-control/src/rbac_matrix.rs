@@ -1651,6 +1651,10 @@ mod tests {
         ("public_url.rs", include_str!("public_url.rs")),
         ("rbac.rs", include_str!("rbac.rs")),
         ("rbac_matrix.rs", include_str!("rbac_matrix.rs")),
+        (
+            "request_log_columns.rs",
+            include_str!("request_log_columns.rs"),
+        ),
         ("runtime_policy.rs", include_str!("runtime_policy.rs")),
         ("scim.rs", include_str!("scim.rs")),
         ("scim_groups.rs", include_str!("scim_groups.rs")),

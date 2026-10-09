@@ -98,17 +98,41 @@ fn push_statement(statements: &mut Vec<String>, current: &mut String) {
 /// same property `ux-capture.sh apply-schema` relies on — so a shared server
 /// that already has the tables is left as it was.
 pub async fn apply_schema(client: &reqwest::Client, base: &str) {
-    for path in migration_files() {
+    apply_schema_through(client, base, None, u32::MAX).await;
+}
+
+/// The number a migration file's name starts with (`015_upstream_attempts.sql`
+/// is 15).
+fn migration_number(path: &std::path::Path) -> u32 {
+    let name = path.file_name().and_then(|name| name.to_str());
+    name.and_then(|name| name.split('_').next())
+        .and_then(|number| number.parse().ok())
+        .unwrap_or_else(|| panic!("{}: no leading migration number", path.display()))
+}
+
+/// Apply the shipped migrations numbered `last` and below, into `database`
+/// when one is named. What an existing deployment looks like before an
+/// operator runs the later files by hand (#2903): a stop at `014` is a table
+/// without the columns `015` to `017` add.
+pub async fn apply_schema_through(
+    client: &reqwest::Client,
+    base: &str,
+    database: Option<&str>,
+    last: u32,
+) {
+    for path in migration_files()
+        .into_iter()
+        .filter(|path| migration_number(path) <= last)
+    {
         let ddl = std::fs::read_to_string(&path).expect("read shipped DDL");
         let statements = split_statements(&ddl)
             .unwrap_or_else(|err| panic!("{}: cannot split: {err}", path.display()));
         for statement in statements {
-            let response = client
-                .post(format!("{base}/"))
-                .body(statement)
-                .send()
-                .await
-                .expect("reach clickhouse");
+            let mut request = client.post(format!("{base}/")).body(statement);
+            if let Some(database) = database {
+                request = request.query(&[("database", database)]);
+            }
+            let response = request.send().await.expect("reach clickhouse");
             assert!(
                 response.status().is_success(),
                 "{}: {}",
