@@ -16,6 +16,19 @@
 //! Gemini) or beside it (Anthropic), so the figures differ per client while the
 //! row must not.
 //!
+//! Two sibling cases share the harness. Gemini reports its thinking tokens
+//! beside `candidatesTokenCount`, and its tool-use prompt tokens beside
+//! `promptTokenCount`; both are billed, so a translated answer must carry them
+//! in the completion and the prompt, and the row must price them (#2875).
+//! Providers that cache but spell the hit differently from Chat Completions
+//! (DeepSeek, Kimi, GigaChat) must be priced at the cached rate on the way
+//! through and across a dialect hop (#2877).
+//!
+//! There is no Gemini-dialect client in the gateway: the only client dialects
+//! are Chat Completions, Messages and Responses, so a native Gemini body is
+//! always translated before the client sees it or the row is built, and the two
+//! can never disagree.
+//!
 //! These tests drive the gateway over HTTP against mock upstreams and an
 //! in-process stand-in for the ClickHouse HTTP interface, like
 //! `responses_stream_usage.rs`.
@@ -265,21 +278,30 @@ fn anthropic_stream() -> (&'static str, String) {
 const CHAT_USAGE: &str = r#"{"prompt_tokens":2000,"completion_tokens":3,"total_tokens":2003,"prompt_tokens_details":{"cached_tokens":1500}}"#;
 
 fn chat_completion() -> (&'static str, String) {
+    chat_completion_with(CHAT_USAGE)
+}
+
+/// A Chat Completions answer reporting `usage` as given, whatever it spells.
+fn chat_completion_with(usage: &str) -> (&'static str, String) {
     (
         "application/json",
         format!(
-            r#"{{"id":"chat_1","model":"test-model","choices":[{{"index":0,"message":{{"role":"assistant","content":"pong"}},"finish_reason":"stop"}}],"usage":{CHAT_USAGE}}}"#
+            r#"{{"id":"chat_1","model":"test-model","choices":[{{"index":0,"message":{{"role":"assistant","content":"pong"}},"finish_reason":"stop"}}],"usage":{usage}}}"#
         ),
     )
 }
 
 fn chat_stream() -> (&'static str, String) {
+    chat_stream_with(CHAT_USAGE)
+}
+
+fn chat_stream_with(usage: &str) -> (&'static str, String) {
     let chunks = [
         r#"{"id":"chat_1","model":"test-model","choices":[{"index":0,"delta":{"content":"pong"}}]}"#
             .to_string(),
         r#"{"id":"chat_1","model":"test-model","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#
             .to_string(),
-        format!(r#"{{"id":"chat_1","model":"test-model","choices":[],"usage":{CHAT_USAGE}}}"#),
+        format!(r#"{{"id":"chat_1","model":"test-model","choices":[],"usage":{usage}}}"#),
     ];
     (
         "text/event-stream",
@@ -301,6 +323,57 @@ fn gemini_answer() -> (&'static str, String) {
 fn gemini_stream() -> (&'static str, String) {
     ("text/event-stream", format!("data: {GEMINI_CHUNK}\n\n"))
 }
+
+/// A thinking model: 2000 prompt tokens, 3 answer tokens and 20 thinking
+/// tokens, which `candidatesTokenCount` leaves out and `totalTokenCount`
+/// includes.
+const GEMINI_THINKING_CHUNK: &str = r#"{"candidates":[{"content":{"parts":[{"text":"pong"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":2000,"candidatesTokenCount":3,"thoughtsTokenCount":20,"totalTokenCount":2023}}"#;
+
+fn gemini_thinking_answer() -> (&'static str, String) {
+    ("application/json", GEMINI_THINKING_CHUNK.to_string())
+}
+
+fn gemini_thinking_stream() -> (&'static str, String) {
+    (
+        "text/event-stream",
+        format!("data: {GEMINI_THINKING_CHUNK}\n\n"),
+    )
+}
+
+/// The same request through the Interactions API: 1800 input tokens and 200
+/// that a built-in tool fed back, 3 output and 20 thinking tokens.
+const INTERACTIONS_USAGE: &str = r#"{"total_input_tokens":1800,"total_tool_use_tokens":200,"total_output_tokens":3,"total_thought_tokens":20,"total_tokens":2023}"#;
+
+fn interactions_answer() -> (&'static str, String) {
+    (
+        "application/json",
+        format!(
+            r#"{{"id":"int_1","status":"completed","model":"test-model","steps":[{{"type":"model_output","content":[{{"type":"text","text":"pong"}}]}}],"usage":{INTERACTIONS_USAGE}}}"#
+        ),
+    )
+}
+
+fn interactions_stream() -> (&'static str, String) {
+    (
+        "text/event-stream",
+        format!(
+            "data: {{\"event_type\":\"interaction.completed\",\"interaction\":{{\"status\":\"completed\",\"usage\":{INTERACTIONS_USAGE}}}}}\n\n"
+        ),
+    )
+}
+
+// ── providers that spell the cache hit differently ──────────────────────────
+// 2000 prompt tokens, 1500 of them hit, 3 output, as above
+
+/// DeepSeek: the prompt is documented as hits plus misses.
+const DEEPSEEK_USAGE: &str = r#"{"prompt_tokens":2000,"completion_tokens":3,"total_tokens":2003,"prompt_cache_hit_tokens":1500,"prompt_cache_miss_tokens":500}"#;
+
+/// Kimi: the hit at the top of `usage`.
+const KIMI_USAGE: &str =
+    r#"{"prompt_tokens":2000,"completion_tokens":3,"total_tokens":2003,"cached_tokens":1500}"#;
+
+/// GigaChat: `precached_prompt_tokens`.
+const GIGACHAT_USAGE: &str = r#"{"prompt_tokens":2000,"completion_tokens":3,"total_tokens":2003,"precached_prompt_tokens":1500}"#;
 
 // ── driving the gateway ─────────────────────────────────────────────────────
 
@@ -380,6 +453,24 @@ fn assert_priced_with_the_cache(row: &Value) {
 /// charged as input) and counted in their own column.
 fn assert_cache_write_counted(row: &Value) {
     assert_eq!(row["cache_write_tokens"], 100, "request-log row");
+}
+
+/// 2000 prompt tokens at one dollar, and 3 answer plus 20 thinking tokens at
+/// one dollar: 2023. Read for `candidatesTokenCount` alone it is 2003.
+fn assert_priced_with_the_thoughts(row: &Value) {
+    assert_eq!(row["prompt_tokens"], 2000, "request-log row");
+    assert_eq!(row["completion_tokens"], 23, "request-log row");
+    assert_eq!(row["cost_usd"], 2023.0, "request-log row");
+    assert_eq!(row["unpriced"], 0, "request-log row");
+    assert_eq!(row["usage_unknown"], 0, "request-log row");
+}
+
+/// What a chat client reads of a thinking answer: the thinking counted as
+/// completion, and the total the sum of the two counts beside it.
+fn assert_thinking_chat_usage(usage: &Value) {
+    assert_eq!(usage["prompt_tokens"], 2000, "usage shown to the client");
+    assert_eq!(usage["completion_tokens"], 23, "usage shown to the client");
+    assert_eq!(usage["total_tokens"], 2023, "usage shown to the client");
 }
 
 /// What a chat client reads: the cache inside `prompt_tokens`, named in
@@ -611,4 +702,205 @@ async fn an_anthropic_stream_to_a_messages_client_is_priced_with_its_cache() {
     .await;
     assert_priced_with_the_cache(&row);
     assert_cache_write_counted(&row);
+}
+
+// ── a Gemini thinking model (#2875) ─────────────────────────────────────────
+// the thinking tokens are billed as output but sit beside the answer's count,
+// not inside it. before they were left out of the completion, so the row and
+// the budget were charged 2003 where the provider charged 2023, and a buffered
+// body's total (the provider's 2023) did not add up to the counts beside it
+
+#[tokio::test]
+async fn gemini_thinking_answer_to_a_chat_client_is_priced_for_its_thoughts() {
+    let (body, row) = exchange(
+        "gemini-thinking-chat-buffered",
+        ProviderKind::GeminiNative,
+        Client::Chat,
+        false,
+        gemini_thinking_answer(),
+    )
+    .await;
+    assert_thinking_chat_usage(&shown_usage(&body));
+    assert_priced_with_the_thoughts(&row);
+}
+
+#[tokio::test]
+async fn gemini_thinking_stream_to_a_chat_client_is_priced_for_its_thoughts() {
+    let (body, row) = exchange(
+        "gemini-thinking-chat-streamed",
+        ProviderKind::GeminiNative,
+        Client::Chat,
+        true,
+        gemini_thinking_stream(),
+    )
+    .await;
+    assert_thinking_chat_usage(&shown_usage(&body));
+    assert_priced_with_the_thoughts(&row);
+}
+
+#[tokio::test]
+async fn gemini_thinking_answer_to_a_messages_client_is_priced_for_its_thoughts() {
+    let (body, row) = exchange(
+        "gemini-thinking-messages-buffered",
+        ProviderKind::GeminiNative,
+        Client::Messages,
+        false,
+        gemini_thinking_answer(),
+    )
+    .await;
+    let usage = shown_usage(&body);
+    assert_eq!(usage["input_tokens"], 2000, "usage shown to the client");
+    assert_eq!(usage["output_tokens"], 23, "usage shown to the client");
+    assert_priced_with_the_thoughts(&row);
+}
+
+#[tokio::test]
+async fn gemini_thinking_stream_to_a_responses_client_is_priced_for_its_thoughts() {
+    let (body, row) = exchange(
+        "gemini-thinking-responses-streamed",
+        ProviderKind::GeminiNative,
+        Client::Responses,
+        true,
+        gemini_thinking_stream(),
+    )
+    .await;
+    let usage = shown_usage(&body);
+    assert_eq!(usage["input_tokens"], 2000, "usage shown to the client");
+    assert_eq!(usage["output_tokens"], 23, "usage shown to the client");
+    assert_eq!(usage["total_tokens"], 2023, "usage shown to the client");
+    assert_priced_with_the_thoughts(&row);
+}
+
+// the Interactions API names the counts `total_thought_tokens` and
+// `total_tool_use_tokens`; the tool-use tokens a built-in tool fed back are
+// charged as input, so 1800 + 200 is the 2000 prompt tokens
+
+#[tokio::test]
+async fn interactions_answer_to_a_chat_client_is_priced_for_its_thoughts_and_tool_use() {
+    let (body, row) = exchange(
+        "interactions-thinking-chat-buffered",
+        ProviderKind::GeminiInteractions,
+        Client::Chat,
+        false,
+        interactions_answer(),
+    )
+    .await;
+    assert_thinking_chat_usage(&shown_usage(&body));
+    assert_priced_with_the_thoughts(&row);
+}
+
+#[tokio::test]
+async fn interactions_stream_to_a_responses_client_is_priced_for_its_thoughts_and_tool_use() {
+    let (body, row) = exchange(
+        "interactions-thinking-responses-streamed",
+        ProviderKind::GeminiInteractions,
+        Client::Responses,
+        true,
+        interactions_stream(),
+    )
+    .await;
+    let usage = shown_usage(&body);
+    assert_eq!(usage["input_tokens"], 2000, "usage shown to the client");
+    assert_eq!(usage["output_tokens"], 23, "usage shown to the client");
+    assert_priced_with_the_thoughts(&row);
+}
+
+// ── providers that spell the cache hit differently (#2877) ──────────────────
+// a request that goes straight through to a Chat Completions client is logged
+// from the provider's own body, so the log has to read the spelling itself; a
+// Messages or Responses client is served a translated body, so the translator
+// has to carry it. both must price the 1500 cached tokens at the cached rate
+
+#[tokio::test]
+async fn deepseek_answer_to_a_chat_client_is_priced_with_its_cache() {
+    let (_, row) = exchange(
+        "deepseek-chat-buffered",
+        ProviderKind::Deepseek,
+        Client::Chat,
+        false,
+        chat_completion_with(DEEPSEEK_USAGE),
+    )
+    .await;
+    assert_priced_with_the_cache(&row);
+}
+
+#[tokio::test]
+async fn deepseek_stream_to_a_chat_client_is_priced_with_its_cache() {
+    let (_, row) = exchange(
+        "deepseek-chat-streamed",
+        ProviderKind::Deepseek,
+        Client::Chat,
+        true,
+        chat_stream_with(DEEPSEEK_USAGE),
+    )
+    .await;
+    assert_priced_with_the_cache(&row);
+}
+
+#[tokio::test]
+async fn deepseek_answer_to_a_messages_client_is_priced_with_its_cache() {
+    let (body, row) = exchange(
+        "deepseek-messages-buffered",
+        ProviderKind::Deepseek,
+        Client::Messages,
+        false,
+        chat_completion_with(DEEPSEEK_USAGE),
+    )
+    .await;
+    assert_messages_usage(&shown_usage(&body));
+    assert_priced_with_the_cache(&row);
+}
+
+#[tokio::test]
+async fn deepseek_stream_to_a_responses_client_is_priced_with_its_cache() {
+    let (body, row) = exchange(
+        "deepseek-responses-streamed",
+        ProviderKind::Deepseek,
+        Client::Responses,
+        true,
+        chat_stream_with(DEEPSEEK_USAGE),
+    )
+    .await;
+    assert_responses_usage(&shown_usage(&body));
+    assert_priced_with_the_cache(&row);
+}
+
+#[tokio::test]
+async fn kimi_answer_to_a_chat_client_is_priced_with_its_cache() {
+    let (_, row) = exchange(
+        "kimi-chat-buffered",
+        ProviderKind::Kimi,
+        Client::Chat,
+        false,
+        chat_completion_with(KIMI_USAGE),
+    )
+    .await;
+    assert_priced_with_the_cache(&row);
+}
+
+#[tokio::test]
+async fn kimi_stream_to_a_messages_client_is_priced_with_its_cache() {
+    let (body, row) = exchange(
+        "kimi-messages-streamed",
+        ProviderKind::Kimi,
+        Client::Messages,
+        true,
+        chat_stream_with(KIMI_USAGE),
+    )
+    .await;
+    assert_messages_usage(&shown_usage(&body));
+    assert_priced_with_the_cache(&row);
+}
+
+#[tokio::test]
+async fn gigachat_answer_to_a_chat_client_is_priced_with_its_cache() {
+    let (_, row) = exchange(
+        "gigachat-chat-buffered",
+        ProviderKind::Gigachat,
+        Client::Chat,
+        false,
+        chat_completion_with(GIGACHAT_USAGE),
+    )
+    .await;
+    assert_priced_with_the_cache(&row);
 }

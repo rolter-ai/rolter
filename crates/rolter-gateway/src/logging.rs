@@ -661,14 +661,16 @@ fn merge_usage(usage: &mut Usage, value: &Value) {
         if let Some(t) = u32_field(u, "total_tokens") {
             usage.total = usage.total.max(t);
         }
-        // three spellings of the same figure: anthropic's own field, chat
-        // completions' `prompt_tokens_details`, and the responses api's
-        // `input_tokens_details`. the last two count it inside the prompt
-        // total, which is how `ModelPriceConfig::cost` reads it too (#2847)
+        // anthropic's own field, or one of the spellings that count the hit
+        // inside the prompt total, which is how `ModelPriceConfig::cost` reads
+        // it too: chat completions' and the responses api's details blocks
+        // (#2847), deepseek's `prompt_cache_hit_tokens`, kimi's top-level
+        // `cached_tokens` and gigachat's `precached_prompt_tokens` (#2877).
+        // the translators read the same list, so a body keeps its figure
+        // across a dialect hop
         let detail = |pointer: &str| u.pointer(pointer).and_then(Value::as_u64).map(|n| n as u32);
         if let Some(read) = cache_beside("cache_read_input_tokens")
-            .or_else(|| detail("/prompt_tokens_details/cached_tokens"))
-            .or_else(|| detail("/input_tokens_details/cached_tokens"))
+            .or_else(|| rolter_proxy::cached_prompt_tokens(u).map(|n| n as u32))
         {
             usage.cache_read = usage.cache_read.max(read);
         }
@@ -1879,6 +1881,101 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"
             assert_eq!(usage.cache_read, 80, "{name}");
             assert_eq!(usage.prompt, 90, "{name}");
         }
+    }
+
+    // ── cache hits spelled outside the OpenAI details blocks (#2877) ────────
+    // providers behind a Chat Completions-compatible `ProviderKind` that cache
+    // their prompts and name the hit somewhere else. each counts it inside the
+    // prompt total, so the prompt is read as stated and only `cache_read` moves
+
+    /// DeepSeek: `prompt_tokens` is documented as hit plus miss, and the miss
+    /// count is the complement, so it is not read
+    #[test]
+    fn deepseeks_prompt_cache_hit_tokens_are_the_cache_read() {
+        let body = br#"{"usage":{"prompt_tokens":90,"completion_tokens":5,"total_tokens":95,
+            "prompt_cache_hit_tokens":80,"prompt_cache_miss_tokens":10}}"#;
+        assert_eq!(
+            parse_usage(false, body),
+            Usage {
+                prompt: 90,
+                completion: 5,
+                total: 95,
+                cache_read: 80,
+                reported: true,
+                ..Usage::default()
+            }
+        );
+    }
+
+    /// Kimi: the hit sits at the top of `usage`, not in a details block
+    #[test]
+    fn a_top_level_cached_tokens_is_the_cache_read() {
+        let body = br#"{"usage":{"prompt_tokens":90,"completion_tokens":5,"total_tokens":95,
+            "cached_tokens":80}}"#;
+        assert_eq!(
+            parse_usage(false, body),
+            Usage {
+                prompt: 90,
+                completion: 5,
+                total: 95,
+                cache_read: 80,
+                reported: true,
+                ..Usage::default()
+            }
+        );
+    }
+
+    /// GigaChat: `precached_prompt_tokens`
+    #[test]
+    fn gigachats_precached_prompt_tokens_are_the_cache_read() {
+        let body = br#"{"usage":{"prompt_tokens":90,"completion_tokens":5,"total_tokens":95,
+            "precached_prompt_tokens":80}}"#;
+        let usage = parse_usage(false, body);
+        assert_eq!(usage.cache_read, 80);
+        assert_eq!(usage.prompt, 90);
+    }
+
+    /// A streamed answer reports the hit on the closing chunk like any other
+    /// figure, whichever spelling it uses
+    #[test]
+    fn a_streamed_answer_reports_a_differently_spelled_hit() {
+        let sse = b"data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n\
+data: {\"choices\":[],\"usage\":{\"prompt_tokens\":90,\"completion_tokens\":5,\"prompt_cache_hit_tokens\":80,\"prompt_cache_miss_tokens\":10}}\n\n\
+data: [DONE]\n\n";
+        let usage = parse_usage(true, sse);
+        assert_eq!(usage.cache_read, 80);
+        assert_eq!(usage.prompt, 90);
+    }
+
+    /// A provider that spells the hit twice (DeepSeek now carries it in the
+    /// details block as well) reports one figure, not the sum
+    #[test]
+    fn two_spellings_of_one_hit_are_not_added() {
+        let body = br#"{"usage":{"prompt_tokens":90,"completion_tokens":5,
+            "prompt_tokens_details":{"cached_tokens":80},"prompt_cache_hit_tokens":80}}"#;
+        assert_eq!(parse_usage(false, body).cache_read, 80);
+    }
+
+    /// An absent figure, or a `null` one, leaves the row at no cache read
+    #[test]
+    fn an_unreported_hit_is_zero() {
+        let body = br#"{"usage":{"prompt_tokens":90,"completion_tokens":5,"cached_tokens":null}}"#;
+        assert_eq!(parse_usage(false, body).cache_read, 0);
+    }
+
+    /// priced: 10 fresh input and 80 cached at the cached rate, 5 output
+    #[test]
+    fn a_deepseek_hit_is_priced_at_the_cached_rate() {
+        let price: rolter_core::ModelPriceConfig = serde_json::from_value(serde_json::json!({
+            "model": "m", "input_per_mtok": 1_000_000, "output_per_mtok": 1_000_000,
+            "cached_input_per_mtok": 100_000
+        }))
+        .unwrap();
+        let body = br#"{"usage":{"prompt_tokens":90,"completion_tokens":5,
+            "prompt_cache_hit_tokens":80,"prompt_cache_miss_tokens":10}}"#;
+        let usage = parse_usage(false, body);
+        let cost = price.cost(usage.prompt, usage.completion, usage.cache_read);
+        assert_eq!(cost, rust_decimal::Decimal::from(23));
     }
 
     // ── the cache beside `input_tokens` (#2863) ─────────────────────────────
