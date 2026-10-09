@@ -27,6 +27,7 @@ import {
   type CurrencySettings,
   type ModelPriceRow,
 } from "@/lib/api";
+import { cacheWritePatch } from "@/lib/cache-write-rate";
 import { useErrorVisibility } from "@/lib/error-visibility";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useScreenReady } from "@/lib/ux-react";
@@ -151,6 +152,14 @@ export default function Pricing() {
                   })}
                 </Badge>
               )}
+              {price.cache_write_per_mtok && (
+                <Badge tone="neutral">
+                  {t("pages.pricing.cacheWritePrice", {
+                    value: price.cache_write_per_mtok,
+                    currency: price.currency,
+                  })}
+                </Badge>
+              )}
             </div>
             {!isConvertible(currency.data, price.currency) && (
               <p className="text-xs text-[color:var(--status-warning-text)]">
@@ -230,7 +239,7 @@ export default function Pricing() {
 }
 
 /** the fields of the price form, for the errors a refused save puts on screen */
-type PriceField = "model" | "input" | "output" | "cached" | "currency";
+type PriceField = "model" | "input" | "output" | "cached" | "cacheWrite" | "currency";
 
 function UpsertPriceDialog({
   open,
@@ -253,6 +262,7 @@ function UpsertPriceDialog({
   const [inputPerMtok, setInputPerMtok] = React.useState("");
   const [outputPerMtok, setOutputPerMtok] = React.useState("");
   const [cachedInputPerMtok, setCachedInputPerMtok] = React.useState("");
+  const [cacheWritePerMtok, setCacheWritePerMtok] = React.useState("");
   const baseCurrency = settings?.base ?? "USD";
   const [currency, setCurrency] = React.useState(baseCurrency);
   const visibility = useErrorVisibility<PriceField>();
@@ -299,6 +309,7 @@ function UpsertPriceDialog({
       setInputPerMtok(existing?.input_per_mtok ?? "");
       setOutputPerMtok(existing?.output_per_mtok ?? "");
       setCachedInputPerMtok(existing?.cached_input_per_mtok ?? "");
+      setCacheWritePerMtok(existing?.cache_write_per_mtok ?? "");
       setCurrency(existing?.currency ?? baseCurrency);
     }
   }, [open, existing]);
@@ -310,6 +321,9 @@ function UpsertPriceDialog({
         input_per_mtok: inputPerMtok,
         output_per_mtok: outputPerMtok,
         cached_input_per_mtok: cachedInputPerMtok.trim() || undefined,
+        // the write rate is the one a save does not replace: it goes only when
+        // it was edited, a value to set it and null to clear it (#2876)
+        ...cacheWritePatch(cacheWritePerMtok, existing?.cache_write_per_mtok ?? ""),
         currency,
       }),
     onSuccess: () => {
@@ -349,6 +363,7 @@ function UpsertPriceDialog({
     output: priceError(outputPerMtok),
     // an optional price is only wrong when it was typed and is not a number
     cached: cachedInputPerMtok.trim() ? priceError(cachedInputPerMtok) : undefined,
+    cacheWrite: cacheWritePerMtok.trim() ? priceError(cacheWritePerMtok) : undefined,
     currency: currency.trim() ? undefined : t("pages.pricing.currencyRequired"),
   };
   const invalid = Object.values(errors).some(Boolean);
@@ -360,6 +375,7 @@ function UpsertPriceDialog({
     inputPerMtok !== (existing?.input_per_mtok ?? "") ||
     outputPerMtok !== (existing?.output_per_mtok ?? "") ||
     cachedInputPerMtok !== (existing?.cached_input_per_mtok ?? "") ||
+    cacheWritePerMtok !== (existing?.cache_write_per_mtok ?? "") ||
     currency !== (existing?.currency ?? baseCurrency);
 
   return (
@@ -433,6 +449,21 @@ function UpsertPriceDialog({
             value={cachedInputPerMtok}
             onChange={(e) => setCachedInputPerMtok(e.target.value)}
             placeholder={t("pages.pricing.cachedPlaceholder")}
+          />
+        </Field>
+        <Field
+          label={t("pages.pricing.cacheWriteInputPrice")}
+          hint={t("pages.pricing.priceUnit", { currency })}
+          info={t("pages.pricing.cacheWriteInfo")}
+          error={shown("cacheWrite")}
+        >
+          <Input
+            type="number"
+            min={0}
+            step="0.000001"
+            value={cacheWritePerMtok}
+            onChange={(e) => setCacheWritePerMtok(e.target.value)}
+            placeholder={t("pages.pricing.cacheWritePlaceholder")}
           />
         </Field>
         <Field

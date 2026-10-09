@@ -2033,6 +2033,11 @@ export interface ModelPriceRow {
   input_per_mtok: string;
   output_per_mtok: string;
   cached_input_per_mtok?: string | null;
+  /**
+   * The rate for tokens written to the provider's prompt cache (#2876); `null`
+   * prices them at the input rate
+   */
+  cache_write_per_mtok: string | null;
   currency: string;
   created_at: string;
 }
@@ -2042,6 +2047,12 @@ export interface UpsertModelPriceInput {
   input_per_mtok: string;
   output_per_mtok: string;
   cached_input_per_mtok?: string;
+  /**
+   * Unlike the rates beside it, this one is not replaced by a save that leaves
+   * it out: absent keeps the stored rate, `null` clears it back to the input
+   * rate and a string sets it (#2876). Build it with `cacheWritePatch()`.
+   */
+  cache_write_per_mtok?: string | null;
   currency?: string;
 }
 

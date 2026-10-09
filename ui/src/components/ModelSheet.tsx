@@ -51,6 +51,7 @@ import {
   type RouteRow,
   type RouteTargetRow,
 } from "@/lib/api";
+import { cacheWritePatch } from "@/lib/cache-write-rate";
 import { useErrorVisibility } from "@/lib/error-visibility";
 import { providersUsableFrom } from "@/lib/provider-scope";
 import type { RouteTargetView } from "@/lib/route-targets";
@@ -308,8 +309,10 @@ function seedAdvanced(draft: ModelDraft, advanced: Record<string, unknown>) {
   draft.baseUrl = str(advanced.base_url);
   draft.description = str(advanced.description);
 
+  // the cache-write rate is the price row's, seeded from it in the effect that
+  // loads the row. `pricing.cache_write_per_mtok` here is an older field that
+  // no cost path reads (#2890), so it is no longer shown as if it applied
   const pricing = obj(advanced.pricing);
-  draft.price.cacheWrite = num(pricing.cache_write_per_mtok);
   draft.price.perRequest = num(pricing.image_per_unit);
 
   const limits = obj(advanced.limits);
@@ -397,7 +400,9 @@ function advancedToApi(
   // the audio rates have no field on this sheet, so they are carried through
   // rather than dropped by a save that never showed them
   const pricing = obj(stored.pricing);
-  put(pricing, "cache_write_per_mtok", price(draft.price.cacheWrite));
+  // the cache-write rate is saved on the price row now; the route's own copy was
+  // never read by a cost path, so a save sheds it rather than carry it (#2890)
+  delete pricing.cache_write_per_mtok;
   put(pricing, "image_per_unit", price(draft.price.perRequest));
   put(out, "pricing", Object.keys(pricing).length > 0 ? pricing : undefined);
 
@@ -569,6 +574,7 @@ function buildPreview(
   draft: ModelDraft,
   providerName: (id: string) => string,
   advanced: Record<string, unknown>,
+  seededCacheWrite: string,
 ) {
   const { params, paramPolicy } = paramsToApi(draft);
   const publicName = draft.name.trim();
@@ -588,6 +594,7 @@ function buildPreview(
           input_per_mtok: draft.price.input.trim() || "0",
           output_per_mtok: draft.price.output.trim() || "0",
           cached_input_per_mtok: draft.price.cacheRead.trim() || undefined,
+          ...cacheWritePatch(draft.price.cacheWrite, seededCacheWrite),
           currency: draft.price.currency,
         }
       : undefined,
@@ -866,7 +873,8 @@ const SECTIONS = [
 type SectionKey = (typeof SECTIONS)[number];
 
 /** the fields whose error the sheet can show, each one once */
-type FieldKey = "name" | "targets" | "provider" | "weight" | "baseUrl" | "param" | "header";
+type FieldKey =
+  "name" | "targets" | "provider" | "weight" | "baseUrl" | "param" | "header" | "cacheWrite";
 
 export interface ModelSheetProps {
   open: boolean;
@@ -932,6 +940,10 @@ export function ModelSheet({
   // the advanced payload as it was seeded, so a save can skip the extra PUT
   // when the operator changed nothing on that half of the form
   const initialAdvancedRef = React.useRef("");
+  // the cache-write rate the price row opened with, so a save can tell an input
+  // left alone (send nothing, the stored rate stays) from one that was emptied
+  // (send null, which clears it) — see `cacheWritePatch` (#2876)
+  const seededCacheWriteRef = React.useRef("");
 
   // data for edit-mode prefill
   const targets = useQuery({
@@ -1002,6 +1014,7 @@ export function ModelSheet({
         d.price.input = price.input_per_mtok;
         d.price.output = price.output_per_mtok;
         d.price.cacheRead = price.cached_input_per_mtok ?? "";
+        d.price.cacheWrite = price.cache_write_per_mtok ?? "";
         d.price.currency = price.currency || "USD";
       }
     } else if (mode === "view" && configModel) {
@@ -1010,6 +1023,7 @@ export function ModelSheet({
       d.targets = [];
     }
     setDraft(d);
+    seededCacheWriteRef.current = d.price.cacheWrite;
     visibility.reset();
     setDupFrom("");
     setSecOpen({
@@ -1107,6 +1121,19 @@ export function ModelSheet({
     p.custom && p.value.trim() !== "" && p.key.trim() === "";
   const headerRowInvalid = (h: (typeof draft.headers)[number]) =>
     h.value.trim() !== "" && h.key.trim() === "";
+  // the rate is saved with the price row, which is only written once the input
+  // or output rate is set; a rate typed without either would be dropped silently
+  const cacheWriteTyped = draft.price.cacheWrite.trim() !== "";
+  const cacheWriteRate = Number(draft.price.cacheWrite);
+  const hasPriceRow = draft.price.input.trim() !== "" || draft.price.output.trim() !== "";
+  const errCacheWrite =
+    readonly || draft.modality !== "chat" || !cacheWriteTyped
+      ? ""
+      : !(Number.isFinite(cacheWriteRate) && cacheWriteRate >= 0)
+        ? t("modelSheet.errors.cacheWrite")
+        : !hasPriceRow
+          ? t("modelSheet.errors.cacheWriteNeedsPrice")
+          : "";
   const errParam = draft.params.some(paramRowInvalid) ? t("modelSheet.errors.param") : "";
   const errHeader = draft.headers.some(headerRowInvalid) ? t("modelSheet.errors.header") : "";
   const found: Record<FieldKey, string> = {
@@ -1117,6 +1144,7 @@ export function ModelSheet({
     baseUrl: errBaseUrl,
     param: errParam,
     header: errHeader,
+    cacheWrite: errCacheWrite,
   };
   const problems = (Object.keys(found) as FieldKey[]).filter((key) => found[key]);
   // what the sheet says under each field: its error, once it may be shown
@@ -1138,6 +1166,8 @@ export function ModelSheet({
     baseUrlErr: `${fid}-base-url-err`,
     paramErr: `${fid}-param-err`,
     headerErr: `${fid}-header-err`,
+    cacheWriteHint: `${fid}-cache-write-hint`,
+    cacheWriteErr: `${fid}-cache-write-err`,
   };
 
   // -- persistence ----------------------------------------------------------
@@ -1188,6 +1218,7 @@ export function ModelSheet({
             input_per_mtok: draft.price.input.trim() || "0",
             output_per_mtok: draft.price.output.trim() || "0",
             cached_input_per_mtok: draft.price.cacheRead.trim() || undefined,
+            ...cacheWritePatch(draft.price.cacheWrite, seededCacheWriteRef.current),
             currency: draft.price.currency,
           });
         }
@@ -1222,6 +1253,7 @@ export function ModelSheet({
           input_per_mtok: draft.price.input.trim() || "0",
           output_per_mtok: draft.price.output.trim() || "0",
           cached_input_per_mtok: draft.price.cacheRead.trim() || undefined,
+          ...cacheWritePatch(draft.price.cacheWrite, seededCacheWriteRef.current),
           currency: draft.price.currency,
         });
       }
@@ -1279,6 +1311,7 @@ export function ModelSheet({
         ...open,
         params: open.params || problems.includes("param"),
         headers: open.headers || problems.includes("header"),
+        pricing: open.pricing || problems.includes("cacheWrite"),
       }));
       return;
     }
@@ -1392,21 +1425,40 @@ export function ModelSheet({
     </div>
   );
 
-  const priceInput = (key: "input" | "output" | "cacheWrite" | "cacheRead", label: string) => (
-    <div className="space-y-1">
-      <FieldLabel label={label} htmlFor={`ms-price-${key}`} />
-      <Input
-        id={`ms-price-${key}`}
-        type="number"
-        step="any"
-        className="font-mono"
-        value={draft.price[key]}
-        placeholder="0.00"
-        disabled={readonly}
-        onChange={(e) => setDeep("price", { [key]: e.target.value })}
-      />
-    </div>
-  );
+  const priceInput = (key: "input" | "output" | "cacheWrite" | "cacheRead", label: string) => {
+    // the cache-write rate is the one price input that may stay empty on a
+    // priced model, and says what empty means, so it carries a hint and an error
+    const write = key === "cacheWrite";
+    const writeError = write ? shownError("cacheWrite") : "";
+    return (
+      <div className="space-y-1">
+        <FieldLabel label={label} htmlFor={`ms-price-${key}`} />
+        <Input
+          id={`ms-price-${key}`}
+          type="number"
+          step="any"
+          className="font-mono"
+          value={draft.price[key]}
+          placeholder={write ? t("modelSheet.pricing.cacheWritePlaceholder") : "0.00"}
+          disabled={readonly}
+          aria-invalid={writeError ? true : undefined}
+          aria-describedby={
+            write ? describedBy(ids.cacheWriteHint, writeError && ids.cacheWriteErr) : undefined
+          }
+          onChange={(e) => setDeep("price", { [key]: e.target.value })}
+          onBlur={write ? () => visibility.touch("cacheWrite") : undefined}
+        />
+        {write && (
+          <>
+            <p id={ids.cacheWriteHint} className="text-xs text-muted-foreground">
+              {t("modelSheet.pricing.cacheWriteHint")}
+            </p>
+            <FieldError id={ids.cacheWriteErr} error={writeError} />
+          </>
+        )}
+      </div>
+    );
+  };
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange} onDismiss={guard}>
@@ -2092,7 +2144,7 @@ export function ModelSheet({
               block so a mistyped key or a stray quote shows up here rather
               than after saving (#949) */}
           <CodeBlock
-            value={buildPreview(draft, providerName, advancedPayload)}
+            value={buildPreview(draft, providerName, advancedPayload, seededCacheWriteRef.current)}
             language="json"
             label={t("modelSheet.configPreview")}
             maxHeight={280}
