@@ -214,5 +214,13 @@ A successful non-streaming response follows the Anthropic Messages shape:
       Tokens generated in the response.
     </ResponseField>
 
+    <ResponseField name="cache_read_input_tokens" type="integer">
+      Input tokens served from the provider's prompt cache. Present when the provider reports it, including when a Chat Completions or Gemini provider answers a Messages request, and **not** part of `input_tokens`.
+    </ResponseField>
+
+    <ResponseField name="cache_creation_input_tokens" type="integer">
+      Input tokens written to the provider's prompt cache. Present when the provider reports it, and not part of `input_tokens`.
+    </ResponseField>
+
   </Expandable>
 </ResponseField>

@@ -635,7 +635,21 @@ fn merge_usage(usage: &mut Usage, value: &Value) {
             continue;
         };
         usage.reported = true;
-        let prompt = u32_field(u, "prompt_tokens").or_else(|| u32_field(u, "input_tokens"));
+        let cache_beside = |key: &str| u32_field(u, key);
+        // `input_tokens` is two things. Anthropic's leaves its cache reads and
+        // writes out and reports them beside it, so the prompt is the three
+        // added up; the Responses api's has the cached share inside, named in
+        // `input_tokens_details`. `ModelPriceConfig::cost` wants the cached
+        // share to be part of the prompt it is handed, so an Anthropic-shaped
+        // object is folded into that convention here (#2863). That is also how
+        // a Messages body translated from a Chat Completions answer reads
+        let prompt = u32_field(u, "prompt_tokens").or_else(|| {
+            u32_field(u, "input_tokens").map(|input| {
+                input
+                    .saturating_add(cache_beside("cache_read_input_tokens").unwrap_or(0))
+                    .saturating_add(cache_beside("cache_creation_input_tokens").unwrap_or(0))
+            })
+        });
         let completion =
             u32_field(u, "completion_tokens").or_else(|| u32_field(u, "output_tokens"));
         if let Some(p) = prompt {
@@ -652,13 +666,19 @@ fn merge_usage(usage: &mut Usage, value: &Value) {
         // `input_tokens_details`. the last two count it inside the prompt
         // total, which is how `ModelPriceConfig::cost` reads it too (#2847)
         let detail = |pointer: &str| u.pointer(pointer).and_then(Value::as_u64).map(|n| n as u32);
-        if let Some(read) = u32_field(u, "cache_read_input_tokens")
+        if let Some(read) = cache_beside("cache_read_input_tokens")
             .or_else(|| detail("/prompt_tokens_details/cached_tokens"))
             .or_else(|| detail("/input_tokens_details/cached_tokens"))
         {
             usage.cache_read = usage.cache_read.max(read);
         }
-        if let Some(write) = u32_field(u, "cache_creation_input_tokens") {
+        // the write count has no OpenAI field; anthropic's own, or the
+        // `cache_write_tokens` the translators (and OpenRouter) put beside
+        // `cached_tokens`
+        if let Some(write) = cache_beside("cache_creation_input_tokens")
+            .or_else(|| detail("/prompt_tokens_details/cache_write_tokens"))
+            .or_else(|| detail("/input_tokens_details/cache_write_tokens"))
+        {
             usage.cache_write = usage.cache_write.max(write);
         }
     }
@@ -1835,8 +1855,9 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"
         );
     }
 
-    /// the three spellings of one figure all land in `cache_read`, and a
-    /// reasoning count next to them is never mistaken for it
+    /// the three spellings of one figure all land in `cache_read`, a
+    /// reasoning count next to them is never mistaken for it, and they agree
+    /// on the prompt total although Anthropic reports it without the cache
     #[test]
     fn every_dialect_reports_its_cached_input_in_cache_read() {
         for (name, usage) in [
@@ -1854,8 +1875,101 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"
             ),
         ] {
             let body = format!(r#"{{"usage":{usage}}}"#);
-            assert_eq!(parse_usage(false, body.as_bytes()).cache_read, 80, "{name}");
+            let usage = parse_usage(false, body.as_bytes());
+            assert_eq!(usage.cache_read, 80, "{name}");
+            assert_eq!(usage.prompt, 90, "{name}");
         }
+    }
+
+    // ── the cache beside `input_tokens` (#2863) ─────────────────────────────
+    // anthropic's `input_tokens` leaves the cache reads and writes out, while
+    // `ModelPriceConfig::cost` takes the cached share to be part of the prompt
+    // it is handed. an anthropic-shaped object is folded into that convention,
+    // which is also how a Messages body translated from Chat Completions reads
+
+    #[test]
+    fn an_anthropic_body_counts_its_cache_inside_the_prompt() {
+        let body = br#"{"id":"msg_1","usage":{"input_tokens":10,
+            "cache_creation_input_tokens":30,"cache_read_input_tokens":80,"output_tokens":5}}"#;
+        assert_eq!(
+            parse_usage(false, body),
+            Usage {
+                prompt: 120,
+                completion: 5,
+                total: 125,
+                cache_read: 80,
+                cache_write: 30,
+                reported: true,
+            }
+        );
+    }
+
+    /// the input side arrives on `message_start`, the output side on
+    /// `message_delta`, and newer api versions repeat the cumulative figures
+    /// there
+    #[test]
+    fn an_anthropic_stream_counts_its_cache_inside_the_prompt() {
+        let start = "event: message_start\n\
+data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":10,\"cache_creation_input_tokens\":30,\"cache_read_input_tokens\":80,\"output_tokens\":1}}}\n\n";
+        let output_only = "event: message_delta\n\
+data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":5}}\n\n";
+        let cumulative = "event: message_delta\n\
+data: {\"type\":\"message_delta\",\"usage\":{\"input_tokens\":10,\"cache_creation_input_tokens\":30,\"cache_read_input_tokens\":80,\"output_tokens\":5}}\n\n";
+        for (name, delta) in [("output only", output_only), ("cumulative", cumulative)] {
+            let usage = parse_usage(true, format!("{start}{delta}").as_bytes());
+            assert_eq!(usage.prompt, 120, "{name}");
+            assert_eq!(usage.completion, 5, "{name}");
+            assert_eq!(usage.cache_read, 80, "{name}");
+            assert_eq!(usage.cache_write, 30, "{name}");
+        }
+    }
+
+    /// a Chat Completions object that also carries anthropic's field names
+    /// (some gateways add them) already counts the cache in `prompt_tokens`
+    #[test]
+    fn a_prompt_total_that_includes_the_cache_is_not_added_to_again() {
+        let body = br#"{"usage":{"prompt_tokens":90,"completion_tokens":5,
+            "cache_read_input_tokens":80,"cache_creation_input_tokens":4}}"#;
+        let usage = parse_usage(false, body);
+        assert_eq!(usage.prompt, 90);
+        assert_eq!(usage.cache_read, 80);
+        assert_eq!(usage.cache_write, 4);
+    }
+
+    /// the cache write count has no OpenAI field; the translators (and
+    /// OpenRouter) name it beside `cached_tokens`, inside the prompt
+    #[test]
+    fn a_cache_write_count_is_read_from_the_openai_details_blocks() {
+        for details in ["prompt_tokens_details", "input_tokens_details"] {
+            let key = if details == "prompt_tokens_details" {
+                "prompt_tokens"
+            } else {
+                "input_tokens"
+            };
+            let body = format!(
+                r#"{{"usage":{{"{key}":120,"{details}":{{"cached_tokens":80,"cache_write_tokens":30}}}}}}"#
+            );
+            let usage = parse_usage(false, body.as_bytes());
+            assert_eq!(usage.prompt, 120, "{details}");
+            assert_eq!(usage.cache_read, 80, "{details}");
+            assert_eq!(usage.cache_write, 30, "{details}");
+        }
+    }
+
+    /// priced: 10 fresh input and 30 written ones at one, 80 cached at the
+    /// cached rate, 5 output at one
+    #[test]
+    fn an_anthropic_bodys_cache_is_priced_at_the_cached_rate() {
+        let price: rolter_core::ModelPriceConfig = serde_json::from_value(serde_json::json!({
+            "model": "m", "input_per_mtok": 1_000_000, "output_per_mtok": 1_000_000,
+            "cached_input_per_mtok": 100_000
+        }))
+        .unwrap();
+        let body = br#"{"usage":{"input_tokens":10,"cache_creation_input_tokens":30,
+            "cache_read_input_tokens":80,"output_tokens":5}}"#;
+        let usage = parse_usage(false, body);
+        let cost = price.cost(usage.prompt, usage.completion, usage.cache_read);
+        assert_eq!(cost, rust_decimal::Decimal::from(53));
     }
 
     /// An answer cut short by `max_output_tokens` still spent its tokens, and
