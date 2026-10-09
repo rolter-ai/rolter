@@ -277,15 +277,17 @@ docker run --rm -p 127.0.0.1:4000:4000 -p 127.0.0.1:4001:4001 \
 
 ## ClickHouse on a small host
 
-ClickHouse's default server config writes its own diagnostics into `system.text_log`, `metric_log`, `asynchronous_metric_log`, `trace_log` and the rest of the `system.*_log` family, with an insert every few seconds into each. On a small host with a slow disk (a Raspberry Pi on an SD card was the measured case) the merges those inserts cause never catch up, and an idle ClickHouse measured at 190% to 320% CPU there. Rolter reads none of those tables, so `docker/clickhouse/system-logs.xml` switches them off for the local stack and, because the team stack layers over it, the team stack too. `system.query_log` stays on. Nothing in the file needs editing.
+ClickHouse's default server config writes its own diagnostics into `system.text_log`, `metric_log`, `asynchronous_metric_log`, `trace_log` and the rest of the `system.*_log` family, with an insert every few seconds into each. On a small host with a slow disk (a Raspberry Pi on an SD card was the measured case) the merges those inserts cause never catch up, and an idle ClickHouse measured at 190% to 320% CPU there. Rolter reads none of those tables, so `docker/clickhouse/system-logs.xml` switches them off for the local stack and, because the team stack layers over it, the team stack too. The SigNoz overlay's own ClickHouse (`signoz-clickhouse`) mounts the same file, since SigNoz reads none of them either. `system.query_log` stays on. Nothing in the file needs editing.
 
 **Drop the tables an existing volume already has.** The file only stops the tables being created; ClickHouse does not drop a table because its logging was disabled. Run this once against a volume created by an earlier version. The statement list is generated, so the numbered copies (`text_log_0`) ClickHouse leaves behind after an upgrade go too. In the team stack add `--user "$ROLTER_CLICKHOUSE_USER" --password "$ROLTER_CLICKHOUSE_PASSWORD"` to both `clickhouse-client` calls, and the team `-f` and `--env-file` flags to `docker compose`:
 
 ```bash
 ch() { docker compose -f docker/docker-compose.yml exec -T clickhouse clickhouse-client "$@"; }
 ch -q "select 'drop table if exists system.' || name || ' sync;' from system.tables
-       where database = 'system' and match(name, '^(asynchronous_insert|asynchronous_metric|backup|blob_storage|error|metric|opentelemetry_span|part|processors_profile|query_metric|query_thread|query_views|session|text|trace)_log(_[0-9]+)?\$')" | ch -n
+       where database = 'system' and match(name, '^(asynchronous_insert|asynchronous_metric|backup|blob_storage|error|latency|metric|opentelemetry_span|part|processors_profile|query_metric|query_thread|query_views|s3queue|session|text|trace)_log(_[0-9]+)?\$')" | ch -n
 ```
+
+A SigNoz overlay volume created before the overlay mounted the file has the tables too: run the same two lines with `-f docker/docker-compose.signoz.yml` added and `signoz-clickhouse` in place of `clickhouse`.
 
 **Cap the caches.** ClickHouse sizes its mark and uncompressed caches for a large server (5 GiB and 8 GiB by default). Rolter does not pick a smaller figure for you, because the right one depends on the host. To set one, put a file in `docker/clickhouse/caches.xml`:
 
