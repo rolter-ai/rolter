@@ -2483,7 +2483,10 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                                 error: "",
                             });
                             last_attempt_recorded = true;
-                            state.metrics.retries_total.fetch_add(1, Relaxed);
+                            let retrying = count_retry(
+                                &state.metrics,
+                                has_untried_target(entry, &tried, vk.as_ref()),
+                            );
                             // the response is read for its reason and dropped here, so the delay
                             // is taken from it first; the reason is what the request ends with if
                             // this was the last target (#2807)
@@ -2491,7 +2494,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                             let retry_after = retry_after_secs(&response);
                             last_status = Some(StatusFailure::read(response, retry_after).await);
                             last_error = None;
-                            back_off(delay, has_untried_target(entry, &tried, vk.as_ref())).await;
+                            back_off(delay, retrying).await;
                             continue;
                         }
                     } else if is_retryable_status(status) {
@@ -2518,7 +2521,10 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                                 error: "",
                             });
                             last_attempt_recorded = true;
-                            state.metrics.retries_total.fetch_add(1, Relaxed);
+                            let retrying = count_retry(
+                                &state.metrics,
+                                has_untried_target(entry, &tried, vk.as_ref()),
+                            );
                             // the response is read for its reason and dropped here, so the delay
                             // is taken from it first; the reason is what the request ends with if
                             // this was the last target (#2807)
@@ -2526,7 +2532,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                             let retry_after = retry_after_secs(&response);
                             last_status = Some(StatusFailure::read(response, retry_after).await);
                             last_error = None;
-                            back_off(delay, has_untried_target(entry, &tried, vk.as_ref())).await;
+                            back_off(delay, retrying).await;
                             continue;
                         }
                     } else if state.breaker.on_success(&model, idx) {
@@ -2579,12 +2585,11 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                             error: last_error.as_deref().unwrap_or_default(),
                         });
                         last_attempt_recorded = true;
-                        state.metrics.retries_total.fetch_add(1, Relaxed);
-                        back_off(
-                            retry.backoff_ms(attempt + 1, jitter(started)),
+                        let retrying = count_retry(
+                            &state.metrics,
                             has_untried_target(entry, &tried, vk.as_ref()),
-                        )
-                        .await;
+                        );
+                        back_off(retry.backoff_ms(attempt + 1, jitter(started)), retrying).await;
                         continue;
                     }
                     break;
@@ -3192,7 +3197,10 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
                             error: "",
                         });
                         last_attempt_recorded = true;
-                        state.metrics.retries_total.fetch_add(1, Relaxed);
+                        let retrying = count_retry(
+                            &state.metrics,
+                            has_untried_target(entry, &tried, vk.as_ref()),
+                        );
                         // the response is read for its reason and dropped here, so the delay
                         // is taken from it first; the reason is what the request ends with if
                         // this was the last target (#2807)
@@ -3200,7 +3208,7 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
                         let retry_after = retry_after_secs(&response);
                         last_status = Some(StatusFailure::read(response, retry_after).await);
                         last_error = None;
-                        back_off(delay, has_untried_target(entry, &tried, vk.as_ref())).await;
+                        back_off(delay, retrying).await;
                         continue;
                     }
                 } else if is_retryable_status(status) {
@@ -3225,7 +3233,10 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
                             error: "",
                         });
                         last_attempt_recorded = true;
-                        state.metrics.retries_total.fetch_add(1, Relaxed);
+                        let retrying = count_retry(
+                            &state.metrics,
+                            has_untried_target(entry, &tried, vk.as_ref()),
+                        );
                         // the response is read for its reason and dropped here, so the delay
                         // is taken from it first; the reason is what the request ends with if
                         // this was the last target (#2807)
@@ -3233,7 +3244,7 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
                         let retry_after = retry_after_secs(&response);
                         last_status = Some(StatusFailure::read(response, retry_after).await);
                         last_error = None;
-                        back_off(delay, has_untried_target(entry, &tried, vk.as_ref())).await;
+                        back_off(delay, retrying).await;
                         continue;
                     }
                 } else if state.breaker.on_success(&model, idx) {
@@ -3276,12 +3287,11 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
                         error: last_error.as_deref().unwrap_or_default(),
                     });
                     last_attempt_recorded = true;
-                    state.metrics.retries_total.fetch_add(1, Relaxed);
-                    back_off(
-                        retry.backoff_ms(attempt + 1, jitter(started)),
+                    let retrying = count_retry(
+                        &state.metrics,
                         has_untried_target(entry, &tried, vk.as_ref()),
-                    )
-                    .await;
+                    );
+                    back_off(retry.backoff_ms(attempt + 1, jitter(started)), retrying).await;
                     continue;
                 }
                 break;
@@ -3695,7 +3705,10 @@ async fn forward_variants(
                             error: "",
                         });
                         out.last_attempt_recorded = true;
-                        state.metrics.retries_total.fetch_add(1, Relaxed);
+                        let retrying = count_retry(
+                            &state.metrics,
+                            has_untried_candidate(candidates.len(), &tried),
+                        );
                         // the response is read for its reason and dropped here, so the delay
                         // is taken from it first; the reason is what the request ends with if
                         // this was the last target (#2807)
@@ -3703,7 +3716,7 @@ async fn forward_variants(
                         let retry_after = retry_after_secs(&response);
                         out.last_status = Some(StatusFailure::read(response, retry_after).await);
                         out.last_error = None;
-                        back_off(delay, has_untried_candidate(candidates.len(), &tried)).await;
+                        back_off(delay, retrying).await;
                         continue;
                     }
                 } else if is_retryable_status(status) {
@@ -3728,7 +3741,10 @@ async fn forward_variants(
                             error: "",
                         });
                         out.last_attempt_recorded = true;
-                        state.metrics.retries_total.fetch_add(1, Relaxed);
+                        let retrying = count_retry(
+                            &state.metrics,
+                            has_untried_candidate(candidates.len(), &tried),
+                        );
                         // the response is read for its reason and dropped here, so the delay
                         // is taken from it first; the reason is what the request ends with if
                         // this was the last target (#2807)
@@ -3736,7 +3752,7 @@ async fn forward_variants(
                         let retry_after = retry_after_secs(&response);
                         out.last_status = Some(StatusFailure::read(response, retry_after).await);
                         out.last_error = None;
-                        back_off(delay, has_untried_candidate(candidates.len(), &tried)).await;
+                        back_off(delay, retrying).await;
                         continue;
                     }
                 } else if state.breaker.on_success(&key, ti) {
@@ -3782,12 +3798,11 @@ async fn forward_variants(
                         error: out.last_error.as_deref().unwrap_or_default(),
                     });
                     out.last_attempt_recorded = true;
-                    state.metrics.retries_total.fetch_add(1, Relaxed);
-                    back_off(
-                        retry.backoff_ms(attempt + 1, jitter(started)),
+                    let retrying = count_retry(
+                        &state.metrics,
                         has_untried_candidate(candidates.len(), &tried),
-                    )
-                    .await;
+                    );
+                    back_off(retry.backoff_ms(attempt + 1, jitter(started)), retrying).await;
                     continue;
                 }
                 break;
@@ -3884,6 +3899,22 @@ pub(crate) fn has_untried_target(
 /// counterpart of [`has_untried_target`].
 fn has_untried_candidate(candidates: usize, tried: &[usize]) -> bool {
     (0..candidates).any(|ci| !tried.contains(&ci))
+}
+
+/// Count a superseded attempt as a retry, if the loop goes on to make another
+/// one (#2866).
+///
+/// `rolter_retries_total` counts attempts retried after a transient failure. The
+/// block that supersedes an attempt runs before the loop knows whether a target
+/// is left, and on a single-target route, or on the last target of several, it
+/// is not: the next iteration finds nothing to try and the request ends with
+/// the answer this attempt got. Nothing was retried then, so the counter stays.
+/// Returns `can_retry` so the caller hands the same answer to [`back_off`].
+fn count_retry(metrics: &crate::metrics::Metrics, can_retry: bool) -> bool {
+    if can_retry {
+        metrics.retries_total.fetch_add(1, Relaxed);
+    }
+    can_retry
 }
 
 /// Wait out the backoff before the next attempt, unless there is no next

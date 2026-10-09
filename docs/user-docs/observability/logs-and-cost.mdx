@@ -39,7 +39,7 @@ Every request from a caller the gateway has identified writes one row to the `re
 | `status`              | UInt16        | HTTP status code returned to the client                                                                                                         |
 | `upstream_status`     | UInt16        | HTTP status of the last upstream attempt that answered, `0` when none did (a refusal, a cache hit, a connection that failed)                    |
 | `attempts`            | UInt8         | Upstream attempts the request made, the one that answered included; `0` when it never reached an upstream                                       |
-| `prompt_tokens`       | UInt32        | Prompt / input token count reported by the upstream                                                                                             |
+| `prompt_tokens`       | UInt32        | Prompt / input token count reported by the upstream, prompt-cache reads and writes included                                                     |
 | `completion_tokens`   | UInt32        | Completion / output token count reported by the upstream                                                                                        |
 | `cost_usd`            | Float64       | Computed cost in USD (see [Cost tracking](#cost-tracking))                                                                                      |
 | `unpriced`            | UInt8         | `1` when the model had no price row, so `cost_usd` is unknown rather than zero (see [Unpriced traffic](#unpriced-traffic))                      |
@@ -152,7 +152,7 @@ cached_input_per_mtok = 1.25   # optional; defaults to input_per_mtok when absen
     Add a `[[model_prices]]` block for each model you want to track. You can define prices for managed models (OpenAI, Anthropic) and self-hosted models alike.
   </Step>
   <Step title="Rolter computes cost per request">
-    After each completed request, Rolter multiplies the upstream-reported token counts by your configured rates. Cached input tokens use `cached_input_per_mtok` when set, falling back to `input_per_mtok`. The upstream reports them as `cache_read_input_tokens` (Anthropic Messages), `prompt_tokens_details.cached_tokens` (Chat Completions) or `input_tokens_details.cached_tokens` (Responses API); all three are read, on buffered and streamed answers alike.
+    After each completed request, Rolter multiplies the upstream-reported token counts by your configured rates. Cached input tokens use `cached_input_per_mtok` when set, falling back to `input_per_mtok`. The upstream reports them as `cache_read_input_tokens` (Anthropic Messages), `prompt_tokens_details.cached_tokens` (Chat Completions) or `input_tokens_details.cached_tokens` (Responses API); all three are read, on buffered and streamed answers alike. The same holds when the request crosses dialects (a Messages client served by a Chat Completions provider, a chat or Responses client served by an Anthropic or Gemini one): Rolter carries the cached share across, so the discount applies whichever dialect the client spoke. Anthropic reports its cache reads and writes beside `input_tokens`, not inside it, so Rolter adds them into `prompt_tokens`; tokens written to the cache are priced as ordinary input, since a price row has no rate for them.
   </Step>
   <Step title="Query spend in ClickHouse">
     Rows without a matching model price record `cost_usd = 0` **and `unpriced = 1`** — they still appear in logs, they just don't contribute to spend reports until you add a price.

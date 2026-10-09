@@ -385,7 +385,10 @@ pub struct Metrics {
     pub provider_queue_rejections_total: AtomicU64,
     /// requests that timed out waiting for a provider queue slot
     pub provider_queue_timeouts_total: AtomicU64,
-    /// upstream attempts retried after a transient failure (408/429/5xx/connect)
+    /// upstream attempts retried after a transient failure (408/429/5xx/connect).
+    /// A failed attempt counts only when another one follows it: the last
+    /// target's failure, or the only target's, is answered to the caller and
+    /// retried nothing (#2866)
     pub retries_total: AtomicU64,
     /// times a target was parked on a cooldown after a transient failure
     pub cooldowns_tripped_total: AtomicU64,
@@ -834,7 +837,7 @@ impl Metrics {
             Scalar {
                 kind: "counter",
                 name: "rolter_retries_total",
-                help: "upstream attempts retried after a transient failure",
+                help: "upstream attempts made again after a transient failure (a failure with no target left to try is not counted)",
                 value: self.retries_total.load(Relaxed),
             },
             Scalar {

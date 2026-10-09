@@ -120,6 +120,38 @@ Blocks with no equivalent in the target protocol (for example OpenAI input
 audio sent to an Anthropic Messages upstream) are preserved as opaque content
 blocks; the target may reject them rather than rolter silently dropping data.
 
+### Token usage and the prompt cache across dialects
+
+A translated answer carries the upstream's prompt-cache split in the usage
+object the client's own dialect defines (#2863). The dialects disagree on where
+the cached share sits, so the same figures read differently on each side:
+
+| Client dialect                            | Prompt total                       | Cached share                                                            |
+| ----------------------------------------- | ---------------------------------- | ----------------------------------------------------------------------- |
+| Chat Completions (`/v1/chat/completions`) | `prompt_tokens`, cache included    | `prompt_tokens_details.cached_tokens`                                   |
+| Responses (`/v1/responses`)               | `input_tokens`, cache included     | `input_tokens_details.cached_tokens`                                    |
+| Messages (`/v1/messages`)                 | `input_tokens`, **cache left out** | `cache_read_input_tokens`, and `cache_creation_input_tokens` for writes |
+
+So an Anthropic upstream that reports `input_tokens: 400`,
+`cache_read_input_tokens: 1500` and `cache_creation_input_tokens: 100` reaches a
+chat client as `prompt_tokens: 2000` with `cached_tokens: 1500`, and a chat
+upstream that reports `prompt_tokens: 2000` with `cached_tokens: 1500` reaches
+a Messages client as `input_tokens: 500` with `cache_read_input_tokens: 1500`.
+Gemini's `cachedContentTokenCount` (Interactions: `total_cached_tokens`) sits
+inside its prompt count, like Chat Completions.
+
+Chat Completions and Responses have no field for tokens written to the cache, so
+a write count travels as `cache_write_tokens` beside `cached_tokens` in the same
+details block (OpenRouter's spelling). The cache fields appear only when the
+upstream reported them: a provider without prompt caching gets none added, and
+no zero is stated that the provider never said. On a streamed Anthropic answer
+the closing chunk carries the input side from `message_start` together with the
+output side from `message_delta`.
+
+The request log and the budgets read the same body the client receives, so a
+priced model is billed the cached share at `cached_input_per_mtok` whichever
+dialect the client spoke; see [Observability](../architecture/observability.md).
+
 The Gemini dialects — `generateContent` and Interactions — are the exception:
 their wire formats are typed part unions with no opaque carrier, so an
 unrecognized part cannot be passed through. Rather than drop it, rolter fails

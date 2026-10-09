@@ -647,15 +647,8 @@ fn responses_from_openai(v: Value) -> Value {
             content.push(json!({"type":"function_call","id":call["id"],"call_id":call["id"],"name":call["function"]["name"],"arguments":call["function"]["arguments"]}));
         }
     }
-    let input = v
-        .pointer("/usage/prompt_tokens")
-        .cloned()
-        .unwrap_or_else(|| json!(0));
-    let output = v
-        .pointer("/usage/completion_tokens")
-        .cloned()
-        .unwrap_or_else(|| json!(0));
-    json!({"id":v.get("id").cloned().unwrap_or_else(|| json!("resp_rolter")),"object":"response","status":"completed","model":v.get("model").cloned().unwrap_or(Value::Null),"output":[{"id":"msg_rolter","type":"message","status":"completed","role":"assistant","content":content}],"usage":{"input_tokens":input,"output_tokens":output,"total_tokens":input.as_u64().unwrap_or(0) + output.as_u64().unwrap_or(0)}})
+    let usage = TokenUsage::from_chat_body(&v);
+    json!({"id":v.get("id").cloned().unwrap_or_else(|| json!("resp_rolter")),"object":"response","status":"completed","model":v.get("model").cloned().unwrap_or(Value::Null),"output":[{"id":"msg_rolter","type":"message","status":"completed","role":"assistant","content":content}],"usage":usage.to_responses()})
 }
 
 fn responses_from_anthropic(v: Value) -> Value {
@@ -984,6 +977,186 @@ fn anthropic_block_to_openai(block: Value) -> Value {
     }
 }
 
+/// Token counts of one usage object, held in the one shape every dialect
+/// converts through.
+///
+/// The dialects disagree on where the prompt-cache share sits. Chat
+/// Completions, the Responses API and Gemini count cached tokens *inside* the
+/// prompt total (`prompt_tokens`, `input_tokens`, `promptTokenCount`) and name
+/// them in a details block; Anthropic's `input_tokens` leaves cache reads and
+/// writes *out* and reports them beside it. `prompt` here is always the whole
+/// prompt, and the Anthropic emitter takes the cache share off again, so each
+/// side reads the figures in its own convention. That matters beyond what the
+/// client sees: the gateway prices a request from the body the client
+/// receives, and `ModelPriceConfig::cost` expects the cached share to be part
+/// of the prompt it is handed (#2863).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct TokenUsage {
+    /// every prompt token, cache reads and writes included
+    prompt: u64,
+    completion: u64,
+    /// prompt tokens served from the provider's cache. `None` when the source
+    /// said nothing about caching, so a translated body does not state a zero
+    /// the provider never reported
+    cache_read: Option<u64>,
+    /// prompt tokens written to the provider's cache
+    cache_write: Option<u64>,
+    /// the provider's own `total_tokens` when it states one (gemini adds its
+    /// thinking tokens there); the sum of prompt and completion otherwise
+    total: Option<u64>,
+}
+
+impl TokenUsage {
+    /// An Anthropic usage object. `input_tokens` excludes the cache reads and
+    /// writes, so they are added back into the prompt.
+    fn from_anthropic(usage: &Value) -> Self {
+        let count = |key: &str| usage.get(key).and_then(Value::as_u64);
+        let cache_read = count("cache_read_input_tokens");
+        let cache_write = count("cache_creation_input_tokens");
+        Self {
+            prompt: count("input_tokens")
+                .unwrap_or(0)
+                .saturating_add(cache_read.unwrap_or(0))
+                .saturating_add(cache_write.unwrap_or(0)),
+            completion: count("output_tokens").unwrap_or(0),
+            cache_read,
+            cache_write,
+            total: None,
+        }
+    }
+
+    /// A Chat Completions usage object, or a Responses API one: the counts are
+    /// spelled `prompt_tokens` / `input_tokens` and the cache share sits in
+    /// `prompt_tokens_details` / `input_tokens_details`, inside the prompt.
+    /// `cache_write_tokens` is not part of either API; gateways that report a
+    /// write count (OpenRouter) put it beside `cached_tokens`.
+    fn from_openai(usage: &Value) -> Self {
+        let count = |key: &str, alternative: &str| {
+            usage
+                .get(key)
+                .or_else(|| usage.get(alternative))
+                .and_then(Value::as_u64)
+        };
+        let detail = |field: &str| {
+            ["prompt_tokens_details", "input_tokens_details"]
+                .iter()
+                .find_map(|block| usage.get(*block)?.get(field)?.as_u64())
+        };
+        Self {
+            prompt: count("prompt_tokens", "input_tokens").unwrap_or(0),
+            completion: count("completion_tokens", "output_tokens").unwrap_or(0),
+            cache_read: detail("cached_tokens"),
+            cache_write: detail("cache_write_tokens"),
+            total: usage.get("total_tokens").and_then(Value::as_u64),
+        }
+    }
+
+    /// The usage of a whole Chat Completions body or chunk, zeros when it
+    /// carries none.
+    fn from_chat_body(body: &Value) -> Self {
+        body.get("usage")
+            .filter(|usage| usage.is_object())
+            .map(Self::from_openai)
+            .unwrap_or_default()
+    }
+
+    /// A Gemini `usageMetadata` block. `promptTokenCount` already includes the
+    /// cached content, which `cachedContentTokenCount` counts.
+    fn from_gemini(metadata: Option<&Value>) -> Self {
+        let count = |key: &str| metadata?.get(key)?.as_u64();
+        let prompt = count("promptTokenCount").unwrap_or(0);
+        let completion = count("candidatesTokenCount").unwrap_or(0);
+        Self {
+            prompt,
+            completion,
+            cache_read: count("cachedContentTokenCount"),
+            cache_write: None,
+            total: Some(count("totalTokenCount").unwrap_or(prompt + completion)),
+        }
+    }
+
+    /// Fold in a later report of the same stream. Usage in a stream is
+    /// cumulative, so each figure keeps its largest value, and a report that
+    /// omits a figure (anthropic's `message_delta` often carries the output
+    /// count alone) leaves it as it was.
+    fn absorb(&mut self, later: Self) {
+        let larger = |a: Option<u64>, b: Option<u64>| match (a, b) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (a, b) => a.or(b),
+        };
+        self.prompt = self.prompt.max(later.prompt);
+        self.completion = self.completion.max(later.completion);
+        self.cache_read = larger(self.cache_read, later.cache_read);
+        self.cache_write = larger(self.cache_write, later.cache_write);
+        self.total = larger(self.total, later.total);
+    }
+
+    fn total(&self) -> u64 {
+        self.total
+            .unwrap_or_else(|| self.prompt.saturating_add(self.completion))
+    }
+
+    /// `{cached_tokens, cache_write_tokens}`, the block both OpenAI shapes
+    /// nest under their own name. `None` when no cache figure was reported.
+    fn cache_details(&self) -> Option<Value> {
+        if self.cache_read.is_none() && self.cache_write.is_none() {
+            return None;
+        }
+        let mut details = Map::new();
+        details.insert("cached_tokens".into(), json!(self.cache_read.unwrap_or(0)));
+        if let Some(written) = self.cache_write {
+            details.insert("cache_write_tokens".into(), json!(written));
+        }
+        Some(Value::Object(details))
+    }
+
+    /// The usage object of a Chat Completions body or chunk.
+    fn to_chat(self) -> Value {
+        let mut usage = json!({
+            "prompt_tokens": self.prompt,
+            "completion_tokens": self.completion,
+            "total_tokens": self.total(),
+        });
+        if let Some(details) = self.cache_details() {
+            usage["prompt_tokens_details"] = details;
+        }
+        usage
+    }
+
+    /// The usage object of a Responses API body or `response.completed`.
+    fn to_responses(self) -> Value {
+        let mut usage = json!({
+            "input_tokens": self.prompt,
+            "output_tokens": self.completion,
+            "total_tokens": self.total(),
+        });
+        if let Some(details) = self.cache_details() {
+            usage["input_tokens_details"] = details;
+        }
+        usage
+    }
+
+    /// The usage object of an Anthropic message: `input_tokens` is what is
+    /// left of the prompt once the cache reads and writes are taken off.
+    fn to_anthropic(self) -> Value {
+        let cached = self
+            .cache_read
+            .unwrap_or(0)
+            .saturating_add(self.cache_write.unwrap_or(0));
+        let mut usage = json!({
+            "input_tokens": self.prompt.saturating_sub(cached),
+            "output_tokens": self.completion,
+        });
+        if let Some(read) = self.cache_read {
+            usage["cache_read_input_tokens"] = json!(read);
+        }
+        if let Some(written) = self.cache_write {
+            usage["cache_creation_input_tokens"] = json!(written);
+        }
+        usage
+    }
+}
+
 fn anthropic_response(v: Value) -> Value {
     let mut text = String::new();
     let mut calls = Vec::new();
@@ -1003,21 +1176,17 @@ fn anthropic_response(v: Value) -> Value {
     if !calls.is_empty() {
         message["tool_calls"] = Value::Array(calls);
     }
-    let input = v
-        .pointer("/usage/input_tokens")
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
-    let output = v
-        .pointer("/usage/output_tokens")
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
+    let usage = v
+        .get("usage")
+        .map(TokenUsage::from_anthropic)
+        .unwrap_or_default();
     json!({
         "id":v.get("id").cloned().unwrap_or_else(|| json!("chatcmpl-rolter")),
         "object":"chat.completion",
         "created":0,
         "model":v.get("model").cloned().unwrap_or(Value::Null),
         "choices":[{"index":0,"message":message,"finish_reason":anthropic_finish(v.get("stop_reason"))}],
-        "usage":{"prompt_tokens":input,"completion_tokens":output,"total_tokens":input + output}
+        "usage":usage.to_chat()
     })
 }
 
@@ -1043,7 +1212,7 @@ fn openai_response(v: Value) -> Value {
         "model":v.get("model").cloned().unwrap_or(Value::Null),
         "content":content,
         "stop_reason":openai_finish(choice.get("finish_reason")),"stop_sequence":Value::Null,
-        "usage":{"input_tokens":v.pointer("/usage/prompt_tokens").cloned().unwrap_or_else(|| json!(0)),"output_tokens":v.pointer("/usage/completion_tokens").cloned().unwrap_or_else(|| json!(0))}
+        "usage":TokenUsage::from_chat_body(&v).to_anthropic()
     })
 }
 
@@ -1322,25 +1491,14 @@ fn gemini_to_openai(v: Value) -> Value {
         message["tool_calls"] = Value::Array(calls);
         json!("tool_calls")
     };
-    let prompt = v
-        .pointer("/usageMetadata/promptTokenCount")
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
-    let completion = v
-        .pointer("/usageMetadata/candidatesTokenCount")
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
-    let total = v
-        .pointer("/usageMetadata/totalTokenCount")
-        .and_then(Value::as_u64)
-        .unwrap_or(prompt + completion);
+    let usage = TokenUsage::from_gemini(v.get("usageMetadata"));
     json!({
         "id": "chatcmpl-rolter",
         "object": "chat.completion",
         "created": 0,
         "model": v.get("modelVersion").cloned().unwrap_or(Value::Null),
         "choices": [{"index": 0, "message": message, "finish_reason": finish}],
-        "usage": {"prompt_tokens": prompt, "completion_tokens": completion, "total_tokens": total}
+        "usage": usage.to_chat()
     })
 }
 
@@ -1669,14 +1827,14 @@ fn interactions_to_openai(v: Value) -> Value {
         message["tool_calls"] = Value::Array(calls);
         json!("tool_calls")
     };
-    let (prompt, completion, total) = interaction_usage(v.get("usage"));
+    let usage = interaction_usage(v.get("usage"));
     json!({
         "id": v.get("id").cloned().unwrap_or_else(|| json!("chatcmpl-rolter")),
         "object": "chat.completion",
         "created": 0,
         "model": v.get("model").cloned().unwrap_or(Value::Null),
         "choices": [{"index": 0, "message": message, "finish_reason": finish}],
-        "usage": {"prompt_tokens": prompt, "completion_tokens": completion, "total_tokens": total}
+        "usage": usage.to_chat()
     })
 }
 
@@ -1710,24 +1868,25 @@ fn interaction_step_text(step: &Value) -> String {
     text
 }
 
-/// `(prompt, completion, total)` from the interactions usage block, tolerating
-/// both the `total_input_tokens` and short `input_tokens` spellings.
-fn interaction_usage(usage: Option<&Value>) -> (u64, u64, u64) {
-    let field = |names: [&str; 2]| -> u64 {
-        usage
-            .and_then(|usage| {
-                names
-                    .iter()
-                    .find_map(|name| usage.get(*name).and_then(Value::as_u64))
-            })
-            .unwrap_or(0)
+/// The interactions usage block as a [`TokenUsage`], tolerating both the
+/// `total_input_tokens` and short `input_tokens` spellings. The cached share
+/// is `total_cached_tokens`, which sits inside the input total.
+fn interaction_usage(usage: Option<&Value>) -> TokenUsage {
+    let field = |names: &[&str]| -> Option<u64> {
+        let usage = usage?;
+        names
+            .iter()
+            .find_map(|name| usage.get(*name).and_then(Value::as_u64))
     };
-    let prompt = field(["total_input_tokens", "input_tokens"]);
-    let completion = field(["total_output_tokens", "output_tokens"]);
-    let total = usage
-        .and_then(|usage| usage.get("total_tokens").and_then(Value::as_u64))
-        .unwrap_or(prompt + completion);
-    (prompt, completion, total)
+    let prompt = field(&["total_input_tokens", "input_tokens"]).unwrap_or(0);
+    let completion = field(&["total_output_tokens", "output_tokens"]).unwrap_or(0);
+    TokenUsage {
+        prompt,
+        completion,
+        cache_read: field(&["total_cached_tokens", "cached_tokens"]),
+        cache_write: None,
+        total: field(&["total_tokens"]),
+    }
 }
 
 /// Read a field from a streaming interactions event, which either nests the
@@ -1767,6 +1926,10 @@ struct StreamState {
     response_started: bool,
     response_completed: bool,
     response_usage: Value,
+    /// usage of an anthropic stream so far: `message_start` carries the input
+    /// side and `message_delta` the output side, and the client should see both
+    /// on the closing chunk rather than whichever event came last
+    usage: TokenUsage,
     gemini_finished: bool,
     interaction_finished: bool,
 }
@@ -1866,7 +2029,11 @@ impl SseConverter {
             Some("message_start") => {
                 self.state.id = v.pointer("/message/id").and_then(Value::as_str).unwrap_or("chatcmpl-rolter").to_string();
                 self.state.model = v.pointer("/message/model").and_then(Value::as_str).unwrap_or_default().to_string();
-                chunks.push(openai_chunk(&self.state, json!({"role":"assistant","content":""}), Value::Null, v.pointer("/message/usage")));
+                let usage = v.pointer("/message/usage").filter(|u| u.is_object()).map(TokenUsage::from_anthropic);
+                if let Some(usage) = usage {
+                    self.state.usage = usage;
+                }
+                chunks.push(openai_chunk(&self.state, json!({"role":"assistant","content":""}), Value::Null, usage.as_ref()));
             }
             Some("content_block_start") => {
                 let index = v.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
@@ -1884,7 +2051,13 @@ impl SseConverter {
                 }
                 _ => {}
             },
-            Some("message_delta") => chunks.push(openai_chunk(&self.state, json!({}), anthropic_finish(v.pointer("/delta/stop_reason")), v.get("usage"))),
+            Some("message_delta") => {
+                let usage = v.get("usage").filter(|u| u.is_object()).map(|u| {
+                    self.state.usage.absorb(TokenUsage::from_anthropic(u));
+                    self.state.usage
+                });
+                chunks.push(openai_chunk(&self.state, json!({}), anthropic_finish(v.pointer("/delta/stop_reason")), usage.as_ref()));
+            }
             Some("message_stop") => chunks.push(Bytes::from_static(b"data: [DONE]\n\n")),
             Some("error") => chunks.push(sse(None, &v)),
             _ => {}
@@ -1920,7 +2093,11 @@ impl SseConverter {
         let delta = v.pointer("/choices/0/delta").unwrap_or(&Value::Null);
         if !self.state.message_start_sent {
             self.state.message_start_sent = true;
-            out.push(sse(Some("message_start"), &json!({"type":"message_start","message":{"id":self.state.id,"type":"message","role":"assistant","model":self.state.model,"content":[],"stop_reason":Value::Null,"stop_sequence":Value::Null,"usage":{"input_tokens":v.pointer("/usage/prompt_tokens").cloned().unwrap_or_else(|| json!(0)),"output_tokens":0}}})));
+            // a stream's first chunk rarely carries usage; when it does, the
+            // output side is still unspent
+            let mut start_usage = TokenUsage::from_chat_body(&v).to_anthropic();
+            start_usage["output_tokens"] = json!(0);
+            out.push(sse(Some("message_start"), &json!({"type":"message_start","message":{"id":self.state.id,"type":"message","role":"assistant","model":self.state.model,"content":[],"stop_reason":Value::Null,"stop_sequence":Value::Null,"usage":start_usage}})));
         }
         if let Some(text) = delta.get("content").and_then(Value::as_str) {
             if !self.state.open_text {
@@ -1959,12 +2136,12 @@ impl SseConverter {
                     &json!({"type":"content_block_stop","index":block_index}),
                 ));
             }
-            out.push(sse(Some("message_delta"), &json!({"type":"message_delta","delta":{"stop_reason":openai_finish(Some(reason)),"stop_sequence":Value::Null},"usage":{"input_tokens":v.pointer("/usage/prompt_tokens").cloned().unwrap_or_else(|| json!(0)),"output_tokens":v.pointer("/usage/completion_tokens").cloned().unwrap_or_else(|| json!(0))}})));
+            out.push(sse(Some("message_delta"), &json!({"type":"message_delta","delta":{"stop_reason":openai_finish(Some(reason)),"stop_sequence":Value::Null},"usage":TokenUsage::from_chat_body(&v).to_anthropic()})));
         } else if v.get("usage").is_some() {
             // OpenAI commonly sends usage in a final choices-less chunk. Keep
             // it visible to Anthropic clients and to the gateway's accounting
             // stream instead of losing it after the finish-reason event.
-            out.push(sse(Some("message_delta"), &json!({"type":"message_delta","delta":{},"usage":{"input_tokens":v.pointer("/usage/prompt_tokens").cloned().unwrap_or_else(|| json!(0)),"output_tokens":v.pointer("/usage/completion_tokens").cloned().unwrap_or_else(|| json!(0))}})));
+            out.push(sse(Some("message_delta"), &json!({"type":"message_delta","delta":{},"usage":TokenUsage::from_chat_body(&v).to_anthropic()})));
         }
         out
     }
@@ -1995,12 +2172,8 @@ impl SseConverter {
                 .unwrap_or_default()
                 .to_string();
         }
-        if let Some(usage) = v.get("usage") {
-            self.state.response_usage = json!({
-                "input_tokens": usage.get("prompt_tokens").cloned().unwrap_or_else(|| usage.get("input_tokens").cloned().unwrap_or_else(|| json!(0))),
-                "output_tokens": usage.get("completion_tokens").cloned().unwrap_or_else(|| usage.get("output_tokens").cloned().unwrap_or_else(|| json!(0))),
-                "total_tokens": usage.get("total_tokens").cloned().unwrap_or_else(|| json!(0)),
-            });
+        if let Some(usage) = v.get("usage").filter(|u| u.is_object()) {
+            self.state.response_usage = TokenUsage::from_openai(usage).to_responses();
         }
         let mut out = Vec::new();
         if !self.state.started {
@@ -2135,10 +2308,12 @@ impl SseConverter {
             } else {
                 gemini_finish(Some(reason))
             };
-            let usage = json!({
-                "input_tokens": v.pointer("/usageMetadata/promptTokenCount").cloned().unwrap_or_else(|| json!(0)),
-                "output_tokens": v.pointer("/usageMetadata/candidatesTokenCount").cloned().unwrap_or_else(|| json!(0)),
-            });
+            // the closing chunk has always summed prompt and completion, so the
+            // stream leaves out the provider's own total (thinking tokens)
+            let usage = TokenUsage {
+                total: None,
+                ..TokenUsage::from_gemini(v.get("usageMetadata"))
+            };
             out.push(openai_chunk(&self.state, json!({}), finish, Some(&usage)));
             if emit_done {
                 out.push(Bytes::from_static(b"data: [DONE]\n\n"));
@@ -2249,8 +2424,10 @@ impl SseConverter {
                 } else {
                     interaction_finish(interaction_field(&v, "status"))
                 };
-                let (prompt, completion, _) = interaction_usage(interaction_field(&v, "usage"));
-                let usage = json!({"input_tokens": prompt, "output_tokens": completion});
+                let usage = TokenUsage {
+                    total: None,
+                    ..interaction_usage(interaction_field(&v, "usage"))
+                };
                 out.push(openai_chunk(&self.state, json!({}), finish, Some(&usage)));
                 if emit_done {
                     out.push(Bytes::from_static(b"data: [DONE]\n\n"));
@@ -2376,23 +2553,11 @@ fn openai_chunk(
     state: &StreamState,
     delta: Value,
     finish_reason: Value,
-    usage: Option<&Value>,
+    usage: Option<&TokenUsage>,
 ) -> Bytes {
     let mut value = json!({"id":state.id,"object":"chat.completion.chunk","created":0,"model":state.model,"choices":[{"index":0,"delta":delta,"finish_reason":finish_reason}]});
-    if let Some(u) = usage {
-        let prompt = u
-            .get("input_tokens")
-            .or_else(|| u.get("prompt_tokens"))
-            .cloned()
-            .unwrap_or_else(|| json!(0));
-        let completion = u
-            .get("output_tokens")
-            .or_else(|| u.get("completion_tokens"))
-            .cloned()
-            .unwrap_or_else(|| json!(0));
-        let total = prompt.as_u64().unwrap_or(0) + completion.as_u64().unwrap_or(0);
-        value["usage"] =
-            json!({"prompt_tokens":prompt,"completion_tokens":completion,"total_tokens":total});
+    if let Some(usage) = usage {
+        value["usage"] = usage.to_chat();
     }
     sse(None, &value)
 }
@@ -3181,5 +3346,373 @@ mod tests {
         assert!(text.contains("message_start"));
         assert!(text.contains("content_block_delta"));
         assert!(text.contains("message_stop"));
+    }
+
+    // ── prompt-cache usage across dialects (#2863) ──────────────────────────
+    // anthropic's `input_tokens` leaves the cache reads and writes out; chat
+    // completions, the responses api and gemini count them inside the prompt.
+    // a translated body states both in the receiving dialect's convention
+
+    /// every JSON `data:` payload of an SSE body, in order, with the `event:`
+    /// name of its frame when it has one
+    fn frames(sse: &[u8]) -> Vec<(Option<String>, Value)> {
+        String::from_utf8_lossy(sse)
+            .split("\n\n")
+            .filter_map(|frame| {
+                let event = frame
+                    .lines()
+                    .find_map(|line| line.strip_prefix("event:"))
+                    .map(|name| name.trim().to_string());
+                let data = frame.lines().find_map(|line| line.strip_prefix("data:"))?;
+                Some((event, serde_json::from_str(data.trim()).ok()?))
+            })
+            .collect()
+    }
+
+    /// the usage object of the last frame named `event` (or of the last frame
+    /// with usage when `event` is `None`)
+    fn last_usage(sse: &[u8], event: Option<&str>) -> Value {
+        frames(sse)
+            .into_iter()
+            .filter(|(name, _)| event.is_none() || name.as_deref() == event)
+            .filter_map(|(_, data)| {
+                data.pointer("/usage")
+                    .or_else(|| data.pointer("/response/usage"))
+                    .filter(|usage| usage.is_object())
+                    .cloned()
+            })
+            .next_back()
+            .unwrap_or(Value::Null)
+    }
+
+    fn translate_json_body(client: Protocol, upstream: Protocol, body: Value) -> Value {
+        let out = plan(client, upstream)
+            .translate_response(Bytes::from(serde_json::to_vec(&body).unwrap()), false);
+        serde_json::from_slice(&out).unwrap()
+    }
+
+    fn translate_sse_body(client: Protocol, upstream: Protocol, sse: &str) -> Bytes {
+        plan(client, upstream).translate_response(Bytes::copy_from_slice(sse.as_bytes()), true)
+    }
+
+    const ANTHROPIC_CACHED_USAGE: &str = r#"{"input_tokens":10,"cache_creation_input_tokens":30,"cache_read_input_tokens":80,"output_tokens":5}"#;
+
+    fn anthropic_cached_body() -> Value {
+        json!({
+            "id":"msg_1","model":"claude","content":[{"type":"text","text":"hi"}],
+            "stop_reason":"end_turn",
+            "usage": serde_json::from_str::<Value>(ANTHROPIC_CACHED_USAGE).unwrap(),
+        })
+    }
+
+    fn chat_cached_body(details: Value) -> Value {
+        json!({
+            "id":"chat_1","model":"gpt",
+            "choices":[{"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],
+            "usage":{"prompt_tokens":120,"completion_tokens":5,"total_tokens":125,
+                     "prompt_tokens_details":details},
+        })
+    }
+
+    #[test]
+    fn an_anthropic_answer_reaches_a_chat_client_with_the_cache_inside_the_prompt() {
+        let v = translate_json_body(
+            Protocol::OpenAiChat,
+            Protocol::AnthropicMessages,
+            anthropic_cached_body(),
+        );
+        // 10 fresh + 80 read + 30 written
+        assert_eq!(v["usage"]["prompt_tokens"], 120);
+        assert_eq!(v["usage"]["completion_tokens"], 5);
+        assert_eq!(v["usage"]["total_tokens"], 125);
+        assert_eq!(v["usage"]["prompt_tokens_details"]["cached_tokens"], 80);
+        assert_eq!(
+            v["usage"]["prompt_tokens_details"]["cache_write_tokens"],
+            30
+        );
+    }
+
+    #[test]
+    fn an_anthropic_answer_reaches_a_responses_client_with_the_cache_inside_the_input() {
+        let v = translate_json_body(
+            Protocol::OpenAiResponses,
+            Protocol::AnthropicMessages,
+            anthropic_cached_body(),
+        );
+        assert_eq!(v["usage"]["input_tokens"], 120);
+        assert_eq!(v["usage"]["output_tokens"], 5);
+        assert_eq!(v["usage"]["total_tokens"], 125);
+        assert_eq!(v["usage"]["input_tokens_details"]["cached_tokens"], 80);
+        assert_eq!(v["usage"]["input_tokens_details"]["cache_write_tokens"], 30);
+    }
+
+    /// an upstream that reports no caching must not have a zero stated for it
+    #[test]
+    fn a_body_without_cache_figures_gets_none_added() {
+        let anthropic = json!({"id":"m","content":[],"usage":{"input_tokens":3,"output_tokens":4}});
+        let v = translate_json_body(Protocol::OpenAiChat, Protocol::AnthropicMessages, anthropic);
+        assert_eq!(v["usage"]["prompt_tokens"], 3);
+        assert!(v["usage"].get("prompt_tokens_details").is_none());
+
+        let chat = json!({"id":"c","choices":[],"usage":{"prompt_tokens":3,"completion_tokens":4}});
+        let v = translate_json_body(
+            Protocol::AnthropicMessages,
+            Protocol::OpenAiChat,
+            chat.clone(),
+        );
+        assert_eq!(v["usage"]["input_tokens"], 3);
+        assert!(v["usage"].get("cache_read_input_tokens").is_none());
+        assert!(v["usage"].get("cache_creation_input_tokens").is_none());
+        let v = translate_json_body(Protocol::OpenAiResponses, Protocol::OpenAiChat, chat);
+        assert!(v["usage"].get("input_tokens_details").is_none());
+    }
+
+    #[test]
+    fn a_chat_answer_reaches_a_messages_client_with_the_cache_beside_the_input() {
+        let v = translate_json_body(
+            Protocol::AnthropicMessages,
+            Protocol::OpenAiChat,
+            chat_cached_body(json!({"cached_tokens":80})),
+        );
+        // anthropic's input_tokens leaves the 80 cached tokens out
+        assert_eq!(v["usage"]["input_tokens"], 40);
+        assert_eq!(v["usage"]["cache_read_input_tokens"], 80);
+        assert_eq!(v["usage"]["output_tokens"], 5);
+        assert!(v["usage"].get("cache_creation_input_tokens").is_none());
+
+        let v = translate_json_body(
+            Protocol::AnthropicMessages,
+            Protocol::OpenAiChat,
+            chat_cached_body(json!({"cached_tokens":80,"cache_write_tokens":30})),
+        );
+        assert_eq!(v["usage"]["input_tokens"], 10);
+        assert_eq!(v["usage"]["cache_read_input_tokens"], 80);
+        assert_eq!(v["usage"]["cache_creation_input_tokens"], 30);
+    }
+
+    #[test]
+    fn a_chat_answer_reaches_a_responses_client_with_the_cache_inside_the_input() {
+        let v = translate_json_body(
+            Protocol::OpenAiResponses,
+            Protocol::OpenAiChat,
+            chat_cached_body(json!({"cached_tokens":80})),
+        );
+        assert_eq!(v["usage"]["input_tokens"], 120);
+        assert_eq!(v["usage"]["input_tokens_details"]["cached_tokens"], 80);
+    }
+
+    /// a cache figure larger than the prompt it is part of is a provider bug,
+    /// not a reason to wrap a counter
+    #[test]
+    fn a_cache_larger_than_the_prompt_does_not_underflow() {
+        let v = translate_json_body(
+            Protocol::AnthropicMessages,
+            Protocol::OpenAiChat,
+            chat_cached_body(json!({"cached_tokens":500})),
+        );
+        assert_eq!(v["usage"]["input_tokens"], 0);
+        assert_eq!(v["usage"]["cache_read_input_tokens"], 500);
+    }
+
+    /// the cache count is not lost on the way through the chat intermediate
+    #[test]
+    fn anthropic_usage_survives_a_round_trip_through_chat() {
+        let original: Value = serde_json::from_str(ANTHROPIC_CACHED_USAGE).unwrap();
+        let chat = TokenUsage::from_anthropic(&original).to_chat();
+        let back = TokenUsage::from_openai(&chat).to_anthropic();
+        assert_eq!(back, original);
+    }
+
+    #[test]
+    fn gemini_cached_content_is_carried_to_every_client_dialect() {
+        let gemini = json!({
+            "candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}],
+            "usageMetadata":{"promptTokenCount":100,"cachedContentTokenCount":80,
+                             "candidatesTokenCount":5,"totalTokenCount":112}
+        });
+        // gemini counts the cached content inside promptTokenCount, like chat
+        let v = translate_json_body(
+            Protocol::OpenAiChat,
+            Protocol::GeminiGenerate,
+            gemini.clone(),
+        );
+        assert_eq!(v["usage"]["prompt_tokens"], 100);
+        assert_eq!(v["usage"]["total_tokens"], 112);
+        assert_eq!(v["usage"]["prompt_tokens_details"]["cached_tokens"], 80);
+
+        let v = translate_json_body(
+            Protocol::AnthropicMessages,
+            Protocol::GeminiGenerate,
+            gemini.clone(),
+        );
+        assert_eq!(v["usage"]["input_tokens"], 20);
+        assert_eq!(v["usage"]["cache_read_input_tokens"], 80);
+
+        let v = translate_json_body(Protocol::OpenAiResponses, Protocol::GeminiGenerate, gemini);
+        assert_eq!(v["usage"]["input_tokens"], 100);
+        assert_eq!(v["usage"]["input_tokens_details"]["cached_tokens"], 80);
+    }
+
+    #[test]
+    fn interactions_cached_tokens_are_carried_to_every_client_dialect() {
+        let interaction = json!({
+            "id":"i1","status":"completed","model":"gemini",
+            "steps":[{"type":"model_output","content":[{"type":"text","text":"hi"}]}],
+            "usage":{"total_input_tokens":100,"total_cached_tokens":80,
+                     "total_output_tokens":5,"total_tokens":105}
+        });
+        let v = translate_json_body(
+            Protocol::OpenAiChat,
+            Protocol::GeminiInteractions,
+            interaction.clone(),
+        );
+        assert_eq!(v["usage"]["prompt_tokens"], 100);
+        assert_eq!(v["usage"]["prompt_tokens_details"]["cached_tokens"], 80);
+
+        let v = translate_json_body(
+            Protocol::AnthropicMessages,
+            Protocol::GeminiInteractions,
+            interaction.clone(),
+        );
+        assert_eq!(v["usage"]["input_tokens"], 20);
+        assert_eq!(v["usage"]["cache_read_input_tokens"], 80);
+
+        let v = translate_json_body(
+            Protocol::OpenAiResponses,
+            Protocol::GeminiInteractions,
+            interaction,
+        );
+        assert_eq!(v["usage"]["input_tokens_details"]["cached_tokens"], 80);
+    }
+
+    // anthropic reports the input side on `message_start` and, depending on
+    // the API version, only the output count (or the cumulative figures) on
+    // `message_delta`
+    const ANTHROPIC_STREAM: &str = concat!(
+        "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"model\":\"claude\",\"usage\":{\"input_tokens\":10,\"cache_creation_input_tokens\":30,\"cache_read_input_tokens\":80,\"output_tokens\":1}}}\n\n",
+        "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n",
+        "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":5}}\n\n",
+        "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+    );
+
+    #[test]
+    fn an_anthropic_stream_reaches_a_chat_client_with_the_cache_on_every_usage_chunk() {
+        let out = translate_sse_body(
+            Protocol::OpenAiChat,
+            Protocol::AnthropicMessages,
+            ANTHROPIC_STREAM,
+        );
+        let usages: Vec<Value> = frames(&out)
+            .into_iter()
+            .filter_map(|(_, data)| data.get("usage").cloned())
+            .collect();
+        assert_eq!(usages.len(), 2, "message_start and message_delta");
+        // the closing chunk is what a client reads; it carries the input side
+        // from message_start and the output side from message_delta
+        let closing = &usages[1];
+        assert_eq!(closing["prompt_tokens"], 120);
+        assert_eq!(closing["completion_tokens"], 5);
+        assert_eq!(closing["total_tokens"], 125);
+        assert_eq!(closing["prompt_tokens_details"]["cached_tokens"], 80);
+        assert_eq!(closing["prompt_tokens_details"]["cache_write_tokens"], 30);
+        assert_eq!(usages[0]["prompt_tokens_details"]["cached_tokens"], 80);
+    }
+
+    /// newer api versions repeat the cumulative figures on `message_delta`
+    #[test]
+    fn a_cumulative_message_delta_does_not_double_the_cache() {
+        let sse = ANTHROPIC_STREAM.replace(
+            r#""usage":{"output_tokens":5}"#,
+            &format!(r#""usage":{ANTHROPIC_CACHED_USAGE}"#),
+        );
+        let out = translate_sse_body(Protocol::OpenAiChat, Protocol::AnthropicMessages, &sse);
+        let closing = last_usage(&out, None);
+        assert_eq!(closing["prompt_tokens"], 120);
+        assert_eq!(closing["prompt_tokens_details"]["cached_tokens"], 80);
+    }
+
+    #[test]
+    fn an_anthropic_stream_reaches_a_responses_client_with_the_cache_in_the_completed_event() {
+        let out = translate_sse_body(
+            Protocol::OpenAiResponses,
+            Protocol::AnthropicMessages,
+            ANTHROPIC_STREAM,
+        );
+        let usage = last_usage(&out, Some("response.completed"));
+        assert_eq!(usage["input_tokens"], 120);
+        assert_eq!(usage["output_tokens"], 5);
+        assert_eq!(usage["total_tokens"], 125);
+        assert_eq!(usage["input_tokens_details"]["cached_tokens"], 80);
+    }
+
+    // a chat stream reports usage once, on a chunk with no choices
+    const CHAT_STREAM: &str = concat!(
+        "data: {\"id\":\"c1\",\"model\":\"gpt\",\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":null}]}\n\n",
+        "data: {\"id\":\"c1\",\"model\":\"gpt\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+        "data: {\"id\":\"c1\",\"model\":\"gpt\",\"choices\":[],\"usage\":{\"prompt_tokens\":120,\"completion_tokens\":5,\"total_tokens\":125,\"prompt_tokens_details\":{\"cached_tokens\":80}}}\n\n",
+        "data: [DONE]\n\n"
+    );
+
+    #[test]
+    fn a_chat_stream_reaches_a_messages_client_with_the_cache_beside_the_input() {
+        let out = translate_sse_body(
+            Protocol::AnthropicMessages,
+            Protocol::OpenAiChat,
+            CHAT_STREAM,
+        );
+        let usage = last_usage(&out, Some("message_delta"));
+        assert_eq!(usage["input_tokens"], 40);
+        assert_eq!(usage["cache_read_input_tokens"], 80);
+        assert_eq!(usage["output_tokens"], 5);
+    }
+
+    #[test]
+    fn a_chat_stream_reaches_a_responses_client_with_the_cache_inside_the_input() {
+        let out = translate_sse_body(Protocol::OpenAiResponses, Protocol::OpenAiChat, CHAT_STREAM);
+        let usage = last_usage(&out, Some("response.completed"));
+        assert_eq!(usage["input_tokens"], 120);
+        assert_eq!(usage["total_tokens"], 125);
+        assert_eq!(usage["input_tokens_details"]["cached_tokens"], 80);
+    }
+
+    #[test]
+    fn a_gemini_stream_carries_cached_content_to_every_client_dialect() {
+        let sse = "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"hi\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":100,\"cachedContentTokenCount\":80,\"candidatesTokenCount\":5}}\n\n";
+        let out = translate_sse_body(Protocol::OpenAiChat, Protocol::GeminiGenerate, sse);
+        let usage = last_usage(&out, None);
+        assert_eq!(usage["prompt_tokens"], 100);
+        assert_eq!(usage["prompt_tokens_details"]["cached_tokens"], 80);
+
+        let out = translate_sse_body(Protocol::AnthropicMessages, Protocol::GeminiGenerate, sse);
+        let usage = last_usage(&out, Some("message_delta"));
+        assert_eq!(usage["input_tokens"], 20);
+        assert_eq!(usage["cache_read_input_tokens"], 80);
+
+        let out = translate_sse_body(Protocol::OpenAiResponses, Protocol::GeminiGenerate, sse);
+        let usage = last_usage(&out, Some("response.completed"));
+        assert_eq!(usage["input_tokens"], 100);
+        assert_eq!(usage["input_tokens_details"]["cached_tokens"], 80);
+    }
+
+    #[test]
+    fn an_interactions_stream_carries_cached_tokens_to_every_client_dialect() {
+        let sse = "data: {\"event_type\":\"interaction.completed\",\"interaction\":{\"status\":\"completed\",\"usage\":{\"total_input_tokens\":100,\"total_cached_tokens\":80,\"total_output_tokens\":5}}}\n\n";
+        let out = translate_sse_body(Protocol::OpenAiChat, Protocol::GeminiInteractions, sse);
+        let usage = last_usage(&out, None);
+        assert_eq!(usage["prompt_tokens"], 100);
+        assert_eq!(usage["prompt_tokens_details"]["cached_tokens"], 80);
+
+        let out = translate_sse_body(
+            Protocol::AnthropicMessages,
+            Protocol::GeminiInteractions,
+            sse,
+        );
+        let usage = last_usage(&out, Some("message_delta"));
+        assert_eq!(usage["input_tokens"], 20);
+        assert_eq!(usage["cache_read_input_tokens"], 80);
+
+        let out = translate_sse_body(Protocol::OpenAiResponses, Protocol::GeminiInteractions, sse);
+        let usage = last_usage(&out, Some("response.completed"));
+        assert_eq!(usage["input_tokens_details"]["cached_tokens"], 80);
     }
 }

@@ -124,12 +124,14 @@ The following metrics are included in the Prometheus output. All are counters or
 
 | Metric                           | Description                                                        |
 | -------------------------------- | ------------------------------------------------------------------ |
-| `rolter_retries_total`           | Total retry attempts triggered by transient upstream failures      |
+| `rolter_retries_total`           | Attempts made again after a transient upstream failure (see below) |
 | `rolter_cooldowns_tripped_total` | Number of times a target was placed on cooldown after a failure    |
 | `rolter_breaker_opened_total`    | Number of times a circuit breaker tripped open                     |
 | `rolter_breaker_closed_total`    | Number of times a circuit breaker closed after a successful probe  |
 | `rolter_rate_limit_blocks_total` | Requests rejected due to RPM or TPM rate limits                    |
 | `rolter_budget_blocks_total`     | Requests and realtime sessions refused or closed by a spent budget |
+
+`rolter_retries_total` counts an attempt only when another one follows it: a retryable status (`408`, `429`, `5xx`) or a connection error, and a target left to try, whether a sibling target, the same target on another key of a multi-key provider, or the next candidate of a variant. A route with a single target, or the last target of several, has nothing to retry on: its failure is answered to the caller and the counter does not move.
 
 ## Prometheus scrape config
 
