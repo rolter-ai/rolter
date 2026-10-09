@@ -731,6 +731,11 @@ no reason or no tracking issue. A row whose advisory is no longer reported is
 flagged as stale, so remove it. Run the audit locally with
 `cd ui && bun install --frozen-lockfile && bun scripts/audit-lockfile.ts`.
 
+To refresh every locked version inside the ranges `package.json` allows, run
+`cd ui && bun update` and commit the `bun.lock` change. Deleting `bun.lock` and
+reinstalling resolves the same versions but also rewrites `lockfileVersion` from 1
+to 2, a format change that belongs in its own pull request.
+
 Clear a finding in this order:
 
 1. `cd ui && bun audit fix --dry-run`. It moves a vulnerable package to the lowest
@@ -743,7 +748,10 @@ Clear a finding in this order:
    `overrides` entry held within the range that parent asks for and explain it in
    `"//overrides"` in `ui/package.json` with its GHSA ids and the parent to drop it
    with (#1931). A flat override applies to every dependent of that name, so it
-   cannot express a per-major fix.
+   cannot express a per-major fix. Re-check each override whenever the dependencies
+   are refreshed and drop it once every parent's own range excludes the advisory's
+   affected versions: `baseline-browser-mapping` and `nanoid` went that way in
+   #2906.
 3. When no patched release exists at all, `bun audit fix` says "no published
    version fixes". Accept the advisory through `ui/audit-accepted.json` with a
    tracking issue rather than inventing a version (`sprintf-js`, #2850).
