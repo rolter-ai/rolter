@@ -25,7 +25,7 @@ mod clickhouse_ddl;
 use std::net::SocketAddr;
 
 use axum::body::Bytes;
-use axum::extract::{RawQuery, State};
+use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Router;
@@ -120,14 +120,19 @@ struct Target {
     client: reqwest::Client,
 }
 
-async fn forward(State(target): State<Target>, RawQuery(query): RawQuery, body: Bytes) -> Response {
-    let query = match query {
-        Some(query) if !query.is_empty() => format!("{query}&database={}", target.database),
-        _ => format!("database={}", target.database),
-    };
+/// The incoming query pairs are re-attached as query parameters of a request to
+/// the fixed server url, never spliced into its text: nothing the control plane
+/// sent decides where this request goes.
+async fn forward(
+    State(target): State<Target>,
+    Query(pairs): Query<Vec<(String, String)>>,
+    body: Bytes,
+) -> Response {
     let upstream = match target
         .client
-        .post(format!("{}/?{query}", target.base))
+        .post(format!("{}/", target.base))
+        .query(&pairs)
+        .query(&[("database", target.database.as_str())])
         .body(body)
         .send()
         .await
