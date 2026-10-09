@@ -776,6 +776,7 @@ fn to_base_currency(
         output_per_mtok: price.output_per_mtok * factor,
         cached_input_per_mtok: price.cached_input_per_mtok.map(|rate| rate * factor),
         cache_write_per_mtok: price.cache_write_per_mtok.map(|rate| rate * factor),
+        cache_write_1h_per_mtok: price.cache_write_1h_per_mtok.map(|rate| rate * factor),
         currency: base.to_string(),
     })
 }
@@ -1176,6 +1177,7 @@ mod tests {
             output_per_mtok: output,
             cached_input_per_mtok: None,
             cache_write_per_mtok: None,
+            cache_write_1h_per_mtok: None,
             currency: "USD".to_string(),
         }
     }
@@ -1226,6 +1228,7 @@ mod tests {
             output_per_mtok: d("6.0"),
             cached_input_per_mtok: None,
             cache_write_per_mtok: None,
+            cache_write_1h_per_mtok: None,
             currency: "EUR".to_string(),
         });
         let loads = crate::load::LoadTracker::new();
@@ -1238,13 +1241,13 @@ mod tests {
         assert_eq!(price.input_per_mtok, d("2.200"), "{price:?}");
         assert_eq!(price.output_per_mtok, d("6.600"), "{price:?}");
         // 1M input + 1M output: EUR 8.00 -> USD 8.80, not USD 8.00
-        assert_eq!(price.cost(1_000_000, 1_000_000, 0, 0), d("8.800000"));
+        assert_eq!(price.cost(1_000_000, 1_000_000, 0, 0, 0), d("8.800000"));
         assert_eq!(snap.base_currency, "USD");
     }
 
-    /// Every rate moves with the currency, the cache-write one included
-    /// (#2876): converting the others and leaving it behind would price a
-    /// write in EUR as if it were USD.
+    /// Every rate moves with the currency, the cache-write ones included
+    /// (#2876, #2891): converting the others and leaving one behind would price
+    /// a write in EUR as if it were USD.
     #[test]
     fn the_cache_write_rate_is_converted_with_the_other_rates() {
         let mut config = GatewayConfig::default();
@@ -1255,6 +1258,7 @@ mod tests {
             output_per_mtok: d("15.0"),
             cached_input_per_mtok: Some(d("0.3")),
             cache_write_per_mtok: Some(d("3.75")),
+            cache_write_1h_per_mtok: Some(d("6.0")),
             currency: "EUR".to_string(),
         });
         let loads = crate::load::LoadTracker::new();
@@ -1262,8 +1266,14 @@ mod tests {
 
         let price = snap.prices.get("claude").expect("price kept");
         assert_eq!(price.cache_write_per_mtok, Some(d("4.125")), "{price:?}");
+        assert_eq!(price.cache_write_1h_per_mtok, Some(d("6.600")), "{price:?}");
         // 1M tokens written: EUR 3.75 -> USD 4.125
-        assert_eq!(price.cost(1_000_000, 0, 0, 1_000_000), d("4.125"));
+        assert_eq!(price.cost(1_000_000, 0, 0, 1_000_000, 0), d("4.125"));
+        // and the same 1M, all of them in the 1 hour cache: EUR 6 -> USD 6.60
+        assert_eq!(
+            price.cost(1_000_000, 0, 0, 1_000_000, 1_000_000),
+            d("6.600")
+        );
     }
 
     #[test]
@@ -1277,6 +1287,7 @@ mod tests {
             output_per_mtok: d("6.0"),
             cached_input_per_mtok: None,
             cache_write_per_mtok: None,
+            cache_write_1h_per_mtok: None,
             currency: "DBL".to_string(),
         });
         let loads = crate::load::LoadTracker::new();
@@ -1297,6 +1308,7 @@ mod tests {
             output_per_mtok: d("0.0"),
             cached_input_per_mtok: None,
             cache_write_per_mtok: None,
+            cache_write_1h_per_mtok: None,
             currency: "USD".to_string(),
         });
         let loads = crate::load::LoadTracker::new();

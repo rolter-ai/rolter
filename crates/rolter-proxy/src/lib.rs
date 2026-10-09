@@ -18,8 +18,9 @@ pub mod pool;
 mod translation;
 
 pub use translation::{
-    cache_written_prompt_tokens, cached_prompt_tokens, reasoning_tokens_beside_completion,
-    Protocol, TranslatedStream, TranslationPlan,
+    anthropic_cache_written_tokens, cache_written_one_hour_tokens, cache_written_prompt_tokens,
+    cached_prompt_tokens, reasoning_tokens_beside_completion, Protocol, TranslatedStream,
+    TranslationPlan,
 };
 
 use std::path::{Path, PathBuf};

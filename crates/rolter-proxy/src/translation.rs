@@ -1037,6 +1037,54 @@ pub fn cache_written_prompt_tokens(usage: &Value) -> Option<u64> {
         .find_map(|pointer| usage.pointer(pointer)?.as_u64())
 }
 
+/// The tokens of a cache write that went to the provider's **1 hour** cache
+/// (#2891), for a provider that bills it apart from the 5 minute one. The write
+/// total (`cache_creation_input_tokens`, or one of the spellings of
+/// [`cache_written_prompt_tokens`]) is the 5 minute and 1 hour shares added up,
+/// so this is a share of it, never an addition:
+///
+/// - `cache_creation.ephemeral_1h_input_tokens`: Anthropic's Messages API,
+///   reported beside `ephemeral_5m_input_tokens`
+/// - `prompt_tokens_details.cache_write_1h_tokens` and
+///   `input_tokens_details.cache_write_1h_tokens`: the name the translators
+///   give it on the two OpenAI shapes, beside `cache_write_tokens`, so the
+///   split survives a dialect hop. No provider's own Chat Completions or
+///   Responses usage is known to spell it
+///
+/// The first spelling present wins. `None` when the provider reported no
+/// split, and then every written token is priced at the plain write rate.
+pub fn cache_written_one_hour_tokens(usage: &Value) -> Option<u64> {
+    const SPELLINGS: [&str; 3] = [
+        "/cache_creation/ephemeral_1h_input_tokens",
+        "/prompt_tokens_details/cache_write_1h_tokens",
+        "/input_tokens_details/cache_write_1h_tokens",
+    ];
+    SPELLINGS
+        .iter()
+        .find_map(|pointer| usage.pointer(pointer)?.as_u64())
+}
+
+/// The tokens an Anthropic `usage` object says were written to the cache:
+/// `cache_creation_input_tokens`, or the `cache_creation` breakdown added up
+/// when a body states the breakdown without the total. Anthropic documents the
+/// total as the sum of the breakdown, and either may be `null` for a request
+/// that did not touch the cache.
+pub fn anthropic_cache_written_tokens(usage: &Value) -> Option<u64> {
+    usage
+        .get("cache_creation_input_tokens")
+        .and_then(Value::as_u64)
+        .or_else(|| {
+            let breakdown = usage.get("cache_creation").filter(|b| b.is_object())?;
+            let count = |key: &str| breakdown.get(key).and_then(Value::as_u64);
+            let (short, long) = (
+                count("ephemeral_5m_input_tokens"),
+                count("ephemeral_1h_input_tokens"),
+            );
+            (short.is_some() || long.is_some())
+                .then(|| short.unwrap_or(0).saturating_add(long.unwrap_or(0)))
+        })
+}
+
 /// The reasoning share of an OpenAI-shaped `usage` object's completion, from
 /// the details block of either API: `completion_tokens_details` on Chat
 /// Completions, `output_tokens_details` on the Responses API (#2881).
@@ -1112,6 +1160,10 @@ struct TokenUsage {
     cache_read: Option<u64>,
     /// prompt tokens written to the provider's cache
     cache_write: Option<u64>,
+    /// the part of `cache_write` that went to the 1 hour cache (#2891). `None`
+    /// when the source did not split the write, so a translated body does not
+    /// state a split the provider never reported
+    cache_write_1h: Option<u64>,
     /// the tokens of `completion` the model spent thinking. `None` when the
     /// source did not break it out, so a translated body does not state a zero
     /// the provider never reported
@@ -1129,7 +1181,7 @@ impl TokenUsage {
     fn from_anthropic(usage: &Value) -> Self {
         let count = |key: &str| usage.get(key).and_then(Value::as_u64);
         let cache_read = count("cache_read_input_tokens");
-        let cache_write = count("cache_creation_input_tokens");
+        let cache_write = anthropic_cache_written_tokens(usage);
         Self {
             prompt: count("input_tokens")
                 .unwrap_or(0)
@@ -1138,6 +1190,7 @@ impl TokenUsage {
             completion: count("output_tokens").unwrap_or(0),
             cache_read,
             cache_write,
+            cache_write_1h: cache_written_one_hour_tokens(usage),
             reasoning: None,
             total: None,
         }
@@ -1167,6 +1220,7 @@ impl TokenUsage {
                 .saturating_add(reasoning_tokens_beside_completion(usage).unwrap_or(0)),
             cache_read: cached_prompt_tokens(usage),
             cache_write: cache_written_prompt_tokens(usage),
+            cache_write_1h: cache_written_one_hour_tokens(usage),
             reasoning: reasoning_completion_tokens(usage),
             total: usage.get("total_tokens").and_then(Value::as_u64),
         }
@@ -1200,6 +1254,7 @@ impl TokenUsage {
                 .saturating_add(count("thoughtsTokenCount").unwrap_or(0)),
             cache_read: count("cachedContentTokenCount"),
             cache_write: None,
+            cache_write_1h: None,
             reasoning: count("thoughtsTokenCount"),
             total: None,
         }
@@ -1218,6 +1273,10 @@ impl TokenUsage {
         self.completion = self.completion.max(later.completion);
         self.cache_read = larger(self.cache_read, later.cache_read);
         self.cache_write = larger(self.cache_write, later.cache_write);
+        // anthropic states the split on `message_start` only; the closing
+        // `message_delta` carries the cumulative total and nothing to split it
+        // by, so a report without one must leave the split as it was
+        self.cache_write_1h = larger(self.cache_write_1h, later.cache_write_1h);
         self.reasoning = larger(self.reasoning, later.reasoning);
         self.total = larger(self.total, later.total);
     }
@@ -1227,8 +1286,10 @@ impl TokenUsage {
             .unwrap_or_else(|| self.prompt.saturating_add(self.completion))
     }
 
-    /// `{cached_tokens, cache_write_tokens}`, the block both OpenAI shapes
-    /// nest under their own name. `None` when no cache figure was reported.
+    /// `{cached_tokens, cache_write_tokens, cache_write_1h_tokens}`, the block
+    /// both OpenAI shapes nest under their own name. `None` when no cache
+    /// figure was reported; the 1 hour share is stated only when the source
+    /// split its writes (#2891).
     fn cache_details(&self) -> Option<Value> {
         if self.cache_read.is_none() && self.cache_write.is_none() {
             return None;
@@ -1237,6 +1298,10 @@ impl TokenUsage {
         details.insert("cached_tokens".into(), json!(self.cache_read.unwrap_or(0)));
         if let Some(written) = self.cache_write {
             details.insert("cache_write_tokens".into(), json!(written));
+            // a share of the writes, so never stated beyond them
+            if let Some(long) = self.cache_write_1h {
+                details.insert("cache_write_1h_tokens".into(), json!(long.min(written)));
+            }
         }
         Some(Value::Object(details))
     }
@@ -1297,6 +1362,16 @@ impl TokenUsage {
         }
         if let Some(written) = self.cache_write {
             usage["cache_creation_input_tokens"] = json!(written);
+            // the breakdown Anthropic reports beside the total, stated only
+            // when the source split its writes (#2891); the two shares add up
+            // to the total, as Anthropic's do
+            if let Some(long) = self.cache_write_1h {
+                let long = long.min(written);
+                usage["cache_creation"] = json!({
+                    "ephemeral_5m_input_tokens": written - long,
+                    "ephemeral_1h_input_tokens": long,
+                });
+            }
         }
         usage
     }
@@ -2041,6 +2116,7 @@ fn interaction_usage(usage: Option<&Value>) -> TokenUsage {
         completion: completion.saturating_add(thoughts.unwrap_or(0)),
         cache_read: field(&["total_cached_tokens", "cached_tokens"]),
         cache_write: None,
+        cache_write_1h: None,
         reasoning: thoughts,
         total: None,
     }
@@ -3865,6 +3941,254 @@ mod tests {
         let out = translate_sse_body(Protocol::OpenAiResponses, Protocol::GeminiInteractions, sse);
         let usage = last_usage(&out, Some("response.completed"));
         assert_eq!(usage["input_tokens_details"]["cached_tokens"], 80);
+    }
+
+    // ── the 5 minute / 1 hour split of cache writes (#2891) ─────────────────
+    // anthropic bills the two caches at different rates and reports them in
+    // `usage.cache_creation`, beside the total. the gateway prices a request
+    // from the body the client receives, so the split has to survive every hop
+
+    /// 148 tokens written to the 5 minute cache and 100 to the 1 hour one, as in
+    /// Anthropic's prompt-caching guide
+    const ANTHROPIC_SPLIT_USAGE: &str = r#"{"input_tokens":2048,"cache_read_input_tokens":1800,"cache_creation_input_tokens":248,"cache_creation":{"ephemeral_5m_input_tokens":148,"ephemeral_1h_input_tokens":100},"output_tokens":503}"#;
+
+    fn anthropic_split_body() -> Value {
+        json!({
+            "id":"msg_1","model":"claude","content":[{"type":"text","text":"hi"}],
+            "stop_reason":"end_turn",
+            "usage": serde_json::from_str::<Value>(ANTHROPIC_SPLIT_USAGE).unwrap(),
+        })
+    }
+
+    #[test]
+    fn the_split_is_read_from_an_anthropic_usage_object() {
+        let usage: Value = serde_json::from_str(ANTHROPIC_SPLIT_USAGE).unwrap();
+        assert_eq!(cache_written_one_hour_tokens(&usage), Some(100));
+        let read = TokenUsage::from_anthropic(&usage);
+        assert_eq!(read.cache_write, Some(248));
+        assert_eq!(read.cache_write_1h, Some(100));
+        // the prompt holds every class once, the shares of the write included
+        assert_eq!(read.prompt, 2048 + 1800 + 248);
+
+        // no breakdown, no split: a write the provider did not divide
+        let plain: Value = serde_json::from_str(ANTHROPIC_CACHED_USAGE).unwrap();
+        assert_eq!(cache_written_one_hour_tokens(&plain), None);
+        assert_eq!(TokenUsage::from_anthropic(&plain).cache_write_1h, None);
+        // `null` is how a request that did not touch the cache reports it
+        let null =
+            json!({"input_tokens":3,"cache_creation":null,"cache_creation_input_tokens":null});
+        assert_eq!(cache_written_one_hour_tokens(&null), None);
+        assert_eq!(anthropic_cache_written_tokens(&null), None);
+        assert_eq!(TokenUsage::from_anthropic(&null).cache_write, None);
+    }
+
+    /// the breakdown is documented as adding up to the total; a body that
+    /// states only the breakdown still has its writes counted
+    #[test]
+    fn a_breakdown_without_a_total_is_still_a_write() {
+        let usage = json!({
+            "input_tokens":10,
+            "cache_creation":{"ephemeral_5m_input_tokens":3,"ephemeral_1h_input_tokens":4},
+        });
+        assert_eq!(anthropic_cache_written_tokens(&usage), Some(7));
+        let read = TokenUsage::from_anthropic(&usage);
+        assert_eq!(read.cache_write, Some(7));
+        assert_eq!(read.cache_write_1h, Some(4));
+        assert_eq!(read.prompt, 17);
+        // the total, when there is one, is the provider's own figure
+        let both = json!({
+            "input_tokens":10,"cache_creation_input_tokens":9,
+            "cache_creation":{"ephemeral_5m_input_tokens":3,"ephemeral_1h_input_tokens":4},
+        });
+        assert_eq!(anthropic_cache_written_tokens(&both), Some(9));
+        // a body that names no figure at all states no write
+        assert_eq!(
+            anthropic_cache_written_tokens(&json!({"input_tokens":1})),
+            None
+        );
+        assert_eq!(
+            anthropic_cache_written_tokens(&json!({"cache_creation":{}})),
+            None
+        );
+    }
+
+    #[test]
+    fn an_anthropic_answer_keeps_its_split_for_a_chat_client() {
+        let v = translate_json_body(
+            Protocol::OpenAiChat,
+            Protocol::AnthropicMessages,
+            anthropic_split_body(),
+        );
+        let details = &v["usage"]["prompt_tokens_details"];
+        assert_eq!(v["usage"]["prompt_tokens"], 2048 + 1800 + 248);
+        assert_eq!(details["cached_tokens"], 1800);
+        // the total stays the total, and the 1 hour share is part of it
+        assert_eq!(details["cache_write_tokens"], 248);
+        assert_eq!(details["cache_write_1h_tokens"], 100);
+    }
+
+    #[test]
+    fn an_anthropic_answer_keeps_its_split_for_a_responses_client() {
+        let v = translate_json_body(
+            Protocol::OpenAiResponses,
+            Protocol::AnthropicMessages,
+            anthropic_split_body(),
+        );
+        let details = &v["usage"]["input_tokens_details"];
+        assert_eq!(details["cache_write_tokens"], 248);
+        assert_eq!(details["cache_write_1h_tokens"], 100);
+    }
+
+    /// a body whose provider did not split its writes states no split
+    #[test]
+    fn an_unsplit_write_is_translated_without_a_split() {
+        let v = translate_json_body(
+            Protocol::OpenAiChat,
+            Protocol::AnthropicMessages,
+            anthropic_cached_body(),
+        );
+        let details = &v["usage"]["prompt_tokens_details"];
+        assert_eq!(details["cache_write_tokens"], 30);
+        assert!(details.get("cache_write_1h_tokens").is_none(), "{details}");
+
+        let v = translate_json_body(
+            Protocol::AnthropicMessages,
+            Protocol::OpenAiChat,
+            chat_cached_body(json!({"cached_tokens":80,"cache_write_tokens":30})),
+        );
+        assert_eq!(v["usage"]["cache_creation_input_tokens"], 30);
+        assert!(v["usage"].get("cache_creation").is_none(), "{}", v["usage"]);
+    }
+
+    #[test]
+    fn a_split_chat_answer_reaches_a_messages_client_as_a_breakdown_that_adds_up() {
+        let v = translate_json_body(
+            Protocol::AnthropicMessages,
+            Protocol::OpenAiChat,
+            chat_cached_body(json!({
+                "cached_tokens":80,"cache_write_tokens":30,"cache_write_1h_tokens":12,
+            })),
+        );
+        assert_eq!(v["usage"]["cache_creation_input_tokens"], 30);
+        assert_eq!(
+            v["usage"]["cache_creation"]["ephemeral_1h_input_tokens"],
+            12
+        );
+        assert_eq!(
+            v["usage"]["cache_creation"]["ephemeral_5m_input_tokens"],
+            18
+        );
+
+        // and the Responses spelling of the same block
+        let responses = json!({
+            "id":"r1","model":"gpt","status":"completed","output":[],
+            "usage":{"input_tokens":120,"output_tokens":5,"total_tokens":125,
+                     "input_tokens_details":{"cached_tokens":80,"cache_write_tokens":30,
+                                             "cache_write_1h_tokens":12}},
+        });
+        let read = TokenUsage::from_openai(&responses["usage"]);
+        assert_eq!(read.cache_write_1h, Some(12));
+    }
+
+    /// a share larger than the write it is part of is a provider bug, and the
+    /// breakdown a client reads must not add up to more than the total
+    #[test]
+    fn a_split_larger_than_the_write_is_stated_within_it() {
+        let v = translate_json_body(
+            Protocol::AnthropicMessages,
+            Protocol::OpenAiChat,
+            chat_cached_body(json!({
+                "cached_tokens":80,"cache_write_tokens":30,"cache_write_1h_tokens":500,
+            })),
+        );
+        assert_eq!(v["usage"]["cache_creation_input_tokens"], 30);
+        assert_eq!(
+            v["usage"]["cache_creation"]["ephemeral_1h_input_tokens"],
+            30
+        );
+        assert_eq!(v["usage"]["cache_creation"]["ephemeral_5m_input_tokens"], 0);
+
+        // and a chat client is never shown more than was written
+        let usage = TokenUsage::from_openai(&json!({
+            "prompt_tokens":120,
+            "prompt_tokens_details":{"cache_write_tokens":30,"cache_write_1h_tokens":500},
+        }));
+        assert_eq!(
+            usage.to_chat()["prompt_tokens_details"]["cache_write_1h_tokens"],
+            30
+        );
+    }
+
+    /// a 1 hour figure with no write count to be a share of states nothing
+    #[test]
+    fn a_split_without_a_write_count_is_not_stated() {
+        let usage = TokenUsage::from_openai(&json!({
+            "prompt_tokens":120,
+            "prompt_tokens_details":{"cached_tokens":80,"cache_write_1h_tokens":12},
+        }));
+        assert_eq!(usage.cache_write, None);
+        assert!(usage.to_chat()["prompt_tokens_details"]
+            .get("cache_write_1h_tokens")
+            .is_none());
+        assert!(usage.to_anthropic().get("cache_creation").is_none());
+    }
+
+    #[test]
+    fn the_split_survives_a_round_trip_through_chat() {
+        let original: Value = serde_json::from_str(ANTHROPIC_SPLIT_USAGE).unwrap();
+        let chat = TokenUsage::from_anthropic(&original).to_chat();
+        let back = TokenUsage::from_openai(&chat).to_anthropic();
+        assert_eq!(back, original);
+    }
+
+    // the split is on `message_start` only: `message_delta` repeats the
+    // cumulative totals and has nothing to divide them by
+    const ANTHROPIC_SPLIT_STREAM: &str = concat!(
+        "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"model\":\"claude\",\"usage\":{\"input_tokens\":2048,\"cache_creation_input_tokens\":248,\"cache_read_input_tokens\":1800,\"cache_creation\":{\"ephemeral_5m_input_tokens\":148,\"ephemeral_1h_input_tokens\":100},\"output_tokens\":1}}}\n\n",
+        "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n",
+        "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"input_tokens\":2048,\"cache_creation_input_tokens\":248,\"cache_read_input_tokens\":1800,\"output_tokens\":503}}\n\n",
+        "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+    );
+
+    #[test]
+    fn an_anthropic_stream_keeps_its_split_on_the_closing_chat_chunk() {
+        let out = translate_sse_body(
+            Protocol::OpenAiChat,
+            Protocol::AnthropicMessages,
+            ANTHROPIC_SPLIT_STREAM,
+        );
+        let closing = last_usage(&out, None);
+        let details = &closing["prompt_tokens_details"];
+        assert_eq!(closing["prompt_tokens"], 2048 + 1800 + 248);
+        assert_eq!(closing["completion_tokens"], 503);
+        assert_eq!(details["cache_write_tokens"], 248);
+        assert_eq!(details["cache_write_1h_tokens"], 100);
+    }
+
+    #[test]
+    fn an_anthropic_stream_keeps_its_split_in_the_responses_completed_event() {
+        let out = translate_sse_body(
+            Protocol::OpenAiResponses,
+            Protocol::AnthropicMessages,
+            ANTHROPIC_SPLIT_STREAM,
+        );
+        let usage = last_usage(&out, Some("response.completed"));
+        assert_eq!(usage["input_tokens_details"]["cache_write_tokens"], 248);
+        assert_eq!(usage["input_tokens_details"]["cache_write_1h_tokens"], 100);
+    }
+
+    #[test]
+    fn a_split_chat_stream_reaches_a_messages_client_with_the_breakdown() {
+        let sse = CHAT_STREAM.replace(
+            r#""prompt_tokens_details":{"cached_tokens":80}"#,
+            r#""prompt_tokens_details":{"cached_tokens":80,"cache_write_tokens":30,"cache_write_1h_tokens":12}"#,
+        );
+        assert_ne!(sse, CHAT_STREAM, "the fixture must change");
+        let out = translate_sse_body(Protocol::AnthropicMessages, Protocol::OpenAiChat, &sse);
+        let usage = last_usage(&out, Some("message_delta"));
+        assert_eq!(usage["cache_creation_input_tokens"], 30);
+        assert_eq!(usage["cache_creation"]["ephemeral_1h_input_tokens"], 12);
+        assert_eq!(usage["cache_creation"]["ephemeral_5m_input_tokens"], 18);
     }
 
     // ── thinking and tool-use tokens (#2875) ────────────────────────────────

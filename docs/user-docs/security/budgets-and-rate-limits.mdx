@@ -34,6 +34,10 @@ Before budgets can track spend, Rolter needs to know the cost of each model's to
   Cost per million input tokens written to the provider's prompt cache. Defaults to `input_per_mtok` when omitted, so a price without it charges a cache write as ordinary input. See [Cache writes](/observability/logs-and-cost#cache-writes).
 </ParamField>
 
+<ParamField path="cache_write_1h_per_mtok" type="float">
+  Cost per million input tokens written to the provider's 1 hour prompt cache, for a provider that reports the split (Anthropic). Defaults to `cache_write_per_mtok` when omitted, and from there to `input_per_mtok`. See [Cache writes](/observability/logs-and-cost#cache-writes).
+</ParamField>
+
 <ParamField path="currency" type="string" default="USD">
   Currency the rates above are denominated in. Any code works — ISO-4217, a crypto unit, an internal credit — as long as `[currency.rates]` can convert it to the base currency.
 </ParamField>
@@ -65,6 +69,7 @@ model = "claude"
 input_per_mtok = 3.0
 output_per_mtok = 15.0
 cache_write_per_mtok = 3.75
+cache_write_1h_per_mtok = 6.0
 ```
 
 <Info>

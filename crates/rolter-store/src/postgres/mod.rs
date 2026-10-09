@@ -1380,6 +1380,7 @@ fn price_from_row(row: &ModelPrice) -> std::result::Result<ModelPriceConfig, Str
         output_per_mtok: rate("output_per_mtok", &row.output_per_mtok)?,
         cached_input_per_mtok: optional("cached_input_per_mtok", &row.cached_input_per_mtok)?,
         cache_write_per_mtok: optional("cache_write_per_mtok", &row.cache_write_per_mtok)?,
+        cache_write_1h_per_mtok: optional("cache_write_1h_per_mtok", &row.cache_write_1h_per_mtok)?,
         // the column has always existed and the dashboard has always written
         // it; it just never reached the config (#650), so every non-USD price
         // was charged as if it were USD
@@ -2979,9 +2980,9 @@ mod tests {
         sqlx::query(
             "insert into model_prices
                     (model, input_per_mtok, output_per_mtok, cached_input_per_mtok,
-                     cache_write_per_mtok, currency)
-             values ('gpt-4o', 3, 15, 1.5, 3.75, 'USD'),
-                    ('gpt-4o-mini', 0.15, 0.6, null, null, 'USD')",
+                     cache_write_per_mtok, cache_write_1h_per_mtok, currency)
+             values ('gpt-4o', 3, 15, 1.5, 3.75, 6, 'USD'),
+                    ('gpt-4o-mini', 0.15, 0.6, null, null, null, 'USD')",
         )
         .execute(&pool)
         .await
@@ -2996,10 +2997,12 @@ mod tests {
         assert_eq!(config.model_prices[0].output_per_mtok, d("15.0"));
         assert_eq!(config.model_prices[0].cached_input_per_mtok, Some(d("1.5")));
         assert_eq!(config.model_prices[0].cache_write_per_mtok, Some(d("3.75")));
+        assert_eq!(config.model_prices[0].cache_write_1h_per_mtok, Some(d("6")));
         assert_eq!(config.model_prices[1].model, "gpt-4o-mini");
         assert_eq!(config.model_prices[1].input_per_mtok, d("0.15"));
         assert_eq!(config.model_prices[1].cached_input_per_mtok, None);
         assert_eq!(config.model_prices[1].cache_write_per_mtok, None);
+        assert_eq!(config.model_prices[1].cache_write_1h_per_mtok, None);
     }
 
     /// Every constraint 0084 puts on `model_prices`, to take them off again and
@@ -3020,13 +3023,15 @@ mod tests {
         }
     }
 
-    /// Which of the rate constraints are validated, by name.
+    /// Which of 0084's rate constraints are validated, by name. 0085's check on
+    /// the 1 hour rate is not among them: it came with its column, validated.
     async fn validated_rate_checks(pool: &PgPool) -> Vec<(String, bool)> {
         sqlx::query_as(
             "select conname::text, convalidated from pg_constraint
-             where conrelid = 'model_prices'::regclass and conname like '%\\_rate'
+             where conrelid = 'model_prices'::regclass and conname = any($1)
              order by conname",
         )
+        .bind(RATE_CHECKS.map(String::from).to_vec())
         .fetch_all(pool)
         .await
         .unwrap()
@@ -3190,6 +3195,98 @@ mod tests {
         }
         let fixed = validated_rate_checks(&pool).await;
         assert!(fixed.iter().all(|(_, validated)| *validated), "{fixed:?}");
+    }
+
+    // #2891: the 1 hour rate is held to the same rule from the day it exists:
+    // at least zero and not `NaN`, which `numeric` sorts above every number
+    #[tokio::test]
+    async fn the_one_hour_rate_is_held_to_the_same_check_as_the_others() {
+        if !test_database::is_configured() {
+            eprintln!("skipping: {} not set", test_database::URL_ENV);
+            return;
+        }
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
+
+        let validated: Vec<(String, bool)> = sqlx::query_as(
+            "select conname::text, convalidated from pg_constraint
+             where conrelid = 'model_prices'::regclass
+               and conname = 'model_prices_cache_write_1h_per_mtok_rate'",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            validated,
+            [(
+                "model_prices_cache_write_1h_per_mtok_rate".to_string(),
+                true
+            )]
+        );
+
+        for value in ["'NaN'", "-0.5"] {
+            let insert = format!(
+                "insert into model_prices (model, cache_write_1h_per_mtok) values ('new', {value})"
+            );
+            assert!(
+                sqlx::query(&insert).execute(&pool).await.is_err(),
+                "cache_write_1h_per_mtok = {value} should be refused"
+            );
+        }
+        sqlx::query(
+            "insert into model_prices (model, input_per_mtok, output_per_mtok, cache_write_1h_per_mtok)
+             values ('free', 0, 0, 0), ('unset', 0, 0, null)",
+        )
+        .execute(&pool)
+        .await
+        .expect("zero and absent are rates");
+    }
+
+    // #2891: like the other rates, a 1 hour rate no `Decimal` can hold is left
+    // out of the snapshot and reported, never read as zero, and a negative one
+    // is for `sanitize_for_snapshot` to omit
+    #[tokio::test]
+    async fn a_price_with_a_nan_one_hour_rate_is_left_out_and_reported() {
+        if !test_database::is_configured() {
+            eprintln!("skipping: {} not set", test_database::URL_ENV);
+            return;
+        }
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
+        // a database that predates the check, as the 0084 tests recreate one
+        sqlx::query(
+            "alter table model_prices drop constraint model_prices_cache_write_1h_per_mtok_rate",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "insert into model_prices (model, input_per_mtok, output_per_mtok, cache_write_1h_per_mtok)
+             values ('good', 3, 15, 6), ('nan-long', 3, 15, 'NaN'), ('negative-long', 3, 15, -1)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let store = PostgresConfigStore::new(pool);
+        let models: Vec<String> = store
+            .load()
+            .await
+            .unwrap()
+            .model_prices
+            .into_iter()
+            .map(|price| price.model)
+            .collect();
+        assert_eq!(models, ["good", "negative-long"]);
+
+        let problems = store.load_problems().await.unwrap();
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(
+            problems[0].contains("'nan-long'")
+                && problems[0].contains("cache_write_1h_per_mtok")
+                && problems[0].contains("unpriced"),
+            "{problems:?}"
+        );
     }
 
     #[tokio::test]

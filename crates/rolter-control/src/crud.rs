@@ -5344,6 +5344,11 @@ struct UpsertModelPrice {
     /// must not reset a rate set since (#2876)
     #[serde(default, deserialize_with = "explicit_null")]
     cache_write_per_mtok: Option<Option<String>>,
+    /// the rate for tokens written to the 1 hour prompt cache (#2891), with the
+    /// same tri-state as `cache_write_per_mtok` and for the same reason; `null`
+    /// clears it back to the 5 minute write rate
+    #[serde(default, deserialize_with = "explicit_null")]
+    cache_write_1h_per_mtok: Option<Option<String>>,
     #[serde(default = "default_currency")]
     currency: String,
 }
@@ -5409,6 +5414,9 @@ async fn upsert_model_price(
     if let Some(Some(write)) = &body.cache_write_per_mtok {
         require_rate(write, "cache_write_per_mtok")?;
     }
+    if let Some(Some(write)) = &body.cache_write_1h_per_mtok {
+        require_rate(write, "cache_write_1h_per_mtok")?;
+    }
     require_known_currency(&state, &body.currency)?;
     Ok(Json(
         ModelPriceRepo(pool(&state))
@@ -5418,6 +5426,7 @@ async fn upsert_model_price(
                 &body.output_per_mtok,
                 body.cached_input_per_mtok.as_deref(),
                 body.cache_write_per_mtok.as_ref().map(Option::as_deref),
+                body.cache_write_1h_per_mtok.as_ref().map(Option::as_deref),
                 &body.currency,
             )
             .await?,

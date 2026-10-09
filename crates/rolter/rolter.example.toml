@@ -324,6 +324,10 @@ disabled = false # revoke without deleting
 # cache_write_per_mtok = 3.75    # optional; tokens written to the provider's prompt cache
 #                                # (anthropic bills these above the input rate);
 #                                # defaults to input_per_mtok
+# cache_write_1h_per_mtok = 6.0  # optional; the part of those writes that went to the
+#                                # provider's 1 hour cache, which anthropic bills above
+#                                # the 5 minute one and reports apart; defaults to
+#                                # cache_write_per_mtok
 # currency = "USD"               # optional; defaults to the base currency below
 
 # --- currency and conversion rates ---

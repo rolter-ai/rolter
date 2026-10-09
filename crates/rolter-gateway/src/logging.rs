@@ -135,6 +135,10 @@ impl UsageBufferPool {
     }
 }
 
+fn is_zero(n: &u32) -> bool {
+    *n == 0
+}
+
 /// One row of the ClickHouse `request_logs` table. Field names match the column
 /// names so the struct serializes directly as a `JSONEachRow` line.
 #[derive(Debug, Clone, Serialize)]
@@ -176,6 +180,16 @@ pub struct RequestLog {
     pub cache_read_tokens: u32,
     /// provider-native prompt-cache tokens written/created for this request
     pub cache_write_tokens: u32,
+    /// the part of `cache_write_tokens` that went to the provider's 1 hour
+    /// cache, for a provider that reports the split (#2891; Anthropic's
+    /// `usage.cache_creation`). `cache_write_tokens` stays the total, so this
+    /// is a share of it and the two never add. `0` when the provider reported
+    /// no split, which prices every write at the plain write rate. Not
+    /// serialized when `0`, so a row that never used the 1 hour cache is byte
+    /// for byte what it was before the column, and a ClickHouse that has not
+    /// had `clickhouse/017_cache_write_1h.sql` applied keeps accepting it
+    #[serde(skip_serializing_if = "is_zero")]
+    pub cache_write_1h_tokens: u32,
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
     pub total_tokens: u32,
@@ -277,6 +291,7 @@ impl Default for RequestLog {
             cache_hit: 0,
             cache_read_tokens: 0,
             cache_write_tokens: 0,
+            cache_write_1h_tokens: 0,
             prompt_tokens: 0,
             completion_tokens: 0,
             total_tokens: 0,
@@ -559,6 +574,11 @@ pub struct Usage {
     pub total: u32,
     pub cache_read: u32,
     pub cache_write: u32,
+    /// the part of `cache_write` the provider says went to its 1 hour cache,
+    /// for a provider that bills it apart from the 5 minute one (#2891).
+    /// Anthropic's `usage.cache_creation.ephemeral_1h_input_tokens`; `0` when
+    /// the body reported no split, and never part of `cache_write` twice
+    pub cache_write_1h: u32,
     /// whether the body carried a usage object at all. Without it an all-zero
     /// usage is indistinguishable from an upstream that said nothing (#1478)
     pub reported: bool,
@@ -636,6 +656,9 @@ fn merge_usage(usage: &mut Usage, value: &Value) {
         };
         usage.reported = true;
         let cache_beside = |key: &str| u32_field(u, key);
+        // anthropic's write count: its own total, or the 5 minute and 1 hour
+        // breakdown added up for a body that states only that
+        let anthropic_write = rolter_proxy::anthropic_cache_written_tokens(u).map(|n| n as u32);
         // `input_tokens` is two things. Anthropic's leaves its cache reads and
         // writes out and reports them beside it, so the prompt is the three
         // added up; the Responses api's has the cached share inside, named in
@@ -647,7 +670,7 @@ fn merge_usage(usage: &mut Usage, value: &Value) {
             u32_field(u, "input_tokens").map(|input| {
                 input
                     .saturating_add(cache_beside("cache_read_input_tokens").unwrap_or(0))
-                    .saturating_add(cache_beside("cache_creation_input_tokens").unwrap_or(0))
+                    .saturating_add(anthropic_write.unwrap_or(0))
             })
         });
         // reasoning tokens are inside the completion except for a provider
@@ -687,10 +710,19 @@ fn merge_usage(usage: &mut Usage, value: &Value) {
         // (and OpenRouter, Perplexity) put beside `cached_tokens`, qwen's
         // `cache_creation_input_tokens` in the details block (#2879) and
         // vllm's `created_cache_tokens`
-        if let Some(write) = cache_beside("cache_creation_input_tokens")
+        if let Some(write) = anthropic_write
             .or_else(|| rolter_proxy::cache_written_prompt_tokens(u).map(|n| n as u32))
         {
             usage.cache_write = usage.cache_write.max(write);
+        }
+        // the share of those writes that went to the 1 hour cache, which a
+        // provider bills at its own rate (#2891). anthropic states the split
+        // on `message_start` only, and its closing `message_delta` repeats the
+        // totals without it, so the largest figure seen is kept like the
+        // others. the translators name it the same way on the two OpenAI
+        // shapes, so a request served across dialects keeps its split
+        if let Some(long) = rolter_proxy::cache_written_one_hour_tokens(u) {
+            usage.cache_write_1h = usage.cache_write_1h.max(long as u32);
         }
     }
 }
@@ -922,6 +954,8 @@ impl UsageLoggingStream {
         log.total_tokens = usage.total;
         log.cache_read_tokens = usage.cache_read;
         log.cache_write_tokens = usage.cache_write;
+        // a share of the writes, never more than them
+        log.cache_write_1h_tokens = usage.cache_write_1h.min(usage.cache_write);
         // cache_hit accounting arrives with the response-cache phase; price the
         // full prompt as fresh input for now
         // the price arrives already denominated in the deployment's base
@@ -946,6 +980,7 @@ impl UsageLoggingStream {
                     usage.completion,
                     usage.cache_read,
                     usage.cache_write,
+                    usage.cache_write_1h,
                 )
             })
             .unwrap_or(rust_decimal::Decimal::ZERO);
@@ -1995,6 +2030,7 @@ data: [DONE]\n\n";
             usage.completion,
             usage.cache_read,
             usage.cache_write,
+            usage.cache_write_1h,
         );
         assert_eq!(cost, rust_decimal::Decimal::from(23));
     }
@@ -2018,6 +2054,7 @@ data: [DONE]\n\n";
                 cache_read: 80,
                 cache_write: 30,
                 reported: true,
+                ..Usage::default()
             }
         );
     }
@@ -2212,8 +2249,163 @@ data: {\"type\":\"message_delta\",\"usage\":{\"input_tokens\":10,\"cache_creatio
             usage.completion,
             usage.cache_read,
             usage.cache_write,
+            usage.cache_write_1h,
         );
         assert_eq!(cost, rust_decimal::Decimal::from(53));
+    }
+
+    // ── the 5 minute / 1 hour split of cache writes (#2891) ─────────────────
+    // anthropic reports a write to each cache in `usage.cache_creation`, beside
+    // the combined `cache_creation_input_tokens`, and bills them at different
+    // rates. `cache_write` stays the total; `cache_write_1h` is a share of it
+
+    /// Anthropic's own example from the prompt-caching guide: 148 tokens
+    /// written to the 5 minute cache and 100 to the 1 hour one
+    const SPLIT_BODY: &[u8] = br#"{"id":"msg_1","usage":{"input_tokens":2048,
+        "cache_read_input_tokens":1800,"cache_creation_input_tokens":248,
+        "cache_creation":{"ephemeral_5m_input_tokens":148,"ephemeral_1h_input_tokens":100},
+        "output_tokens":503}}"#;
+
+    #[test]
+    fn an_anthropic_split_is_read_beside_the_combined_write() {
+        assert_eq!(
+            parse_usage(false, SPLIT_BODY),
+            Usage {
+                // 2048 uncached + 1800 read + 248 written
+                prompt: 4096,
+                completion: 503,
+                total: 4599,
+                cache_read: 1800,
+                // the total, not the 5 minute share and not the sum of both
+                cache_write: 248,
+                cache_write_1h: 100,
+                reported: true,
+            }
+        );
+    }
+
+    /// the split is on `message_start`, and `message_delta` repeats the
+    /// totals without it: the split must survive the closing event
+    #[test]
+    fn an_anthropic_stream_keeps_the_split_from_message_start() {
+        let start = "event: message_start\n\
+data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":2048,\"cache_creation_input_tokens\":248,\"cache_read_input_tokens\":1800,\"cache_creation\":{\"ephemeral_5m_input_tokens\":148,\"ephemeral_1h_input_tokens\":100},\"output_tokens\":1}}}\n\n";
+        let output_only = "event: message_delta\n\
+data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":503}}\n\n";
+        let cumulative = "event: message_delta\n\
+data: {\"type\":\"message_delta\",\"usage\":{\"input_tokens\":2048,\"cache_creation_input_tokens\":248,\"cache_read_input_tokens\":1800,\"output_tokens\":503}}\n\n";
+        for (name, delta) in [("output only", output_only), ("cumulative", cumulative)] {
+            let usage = parse_usage(true, format!("{start}{delta}").as_bytes());
+            assert_eq!(usage.prompt, 4096, "{name}");
+            assert_eq!(usage.cache_write, 248, "{name}");
+            assert_eq!(usage.cache_write_1h, 100, "{name}");
+        }
+    }
+
+    /// a body that states the breakdown and no total still has its writes
+    /// counted, in the prompt as well
+    #[test]
+    fn a_breakdown_without_a_total_is_counted() {
+        let body = br#"{"usage":{"input_tokens":10,"output_tokens":5,
+            "cache_creation":{"ephemeral_5m_input_tokens":3,"ephemeral_1h_input_tokens":4}}}"#;
+        let usage = parse_usage(false, body);
+        assert_eq!(usage.cache_write, 7);
+        assert_eq!(usage.cache_write_1h, 4);
+        assert_eq!(usage.prompt, 17);
+    }
+
+    /// no breakdown, `null` or not an object: nothing is split, so every write
+    /// is priced at the plain write rate as it was before the split existed
+    #[test]
+    fn a_write_the_provider_did_not_split_has_no_one_hour_share() {
+        for body in [
+            &br#"{"usage":{"input_tokens":10,"cache_creation_input_tokens":30,"output_tokens":5}}"#[..],
+            br#"{"usage":{"input_tokens":10,"cache_creation_input_tokens":30,"cache_creation":null,"output_tokens":5}}"#,
+            br#"{"usage":{"input_tokens":10,"cache_creation_input_tokens":30,"cache_creation":{},"output_tokens":5}}"#,
+            br#"{"usage":{"prompt_tokens":40,"completion_tokens":5,"prompt_tokens_details":{"cache_write_tokens":30}}}"#,
+        ] {
+            let usage = parse_usage(false, body);
+            assert_eq!(usage.cache_write, 30, "{}", String::from_utf8_lossy(body));
+            assert_eq!(usage.cache_write_1h, 0, "{}", String::from_utf8_lossy(body));
+        }
+    }
+
+    /// the translators name the share `cache_write_1h_tokens` in the details
+    /// block of both OpenAI shapes, so a request served across dialects (a
+    /// Messages upstream behind a chat client) keeps its split
+    #[test]
+    fn a_translated_body_carries_its_split_in_the_details_block() {
+        let chat = br#"{"usage":{"prompt_tokens":4096,"completion_tokens":503,"total_tokens":4599,
+            "prompt_tokens_details":{"cached_tokens":1800,"cache_write_tokens":248,
+            "cache_write_1h_tokens":100}}}"#;
+        let responses = br#"{"usage":{"input_tokens":4096,"output_tokens":503,"total_tokens":4599,
+            "input_tokens_details":{"cached_tokens":1800,"cache_write_tokens":248,
+            "cache_write_1h_tokens":100}}}"#;
+        let expected = Usage {
+            prompt: 4096,
+            completion: 503,
+            total: 4599,
+            cache_read: 1800,
+            cache_write: 248,
+            cache_write_1h: 100,
+            reported: true,
+        };
+        assert_eq!(parse_usage(false, chat), expected);
+        assert_eq!(parse_usage(false, responses), expected);
+    }
+
+    /// priced at the rates in Anthropic's multiples of a 3.00 input rate:
+    /// 2048 fresh at 3, 1800 read at 0.30, 148 written at 3.75, 100 written
+    /// to the 1 hour cache at 6.00, 503 out at 15
+    #[test]
+    fn each_cache_is_priced_at_its_own_rate() {
+        let price: rolter_core::ModelPriceConfig = serde_json::from_value(serde_json::json!({
+            "model": "claude", "input_per_mtok": 3.0, "output_per_mtok": 15.0,
+            "cached_input_per_mtok": 0.3, "cache_write_per_mtok": 3.75,
+            "cache_write_1h_per_mtok": 6.0
+        }))
+        .unwrap();
+        let usage = parse_usage(false, SPLIT_BODY);
+        let cost = price.cost(
+            usage.prompt,
+            usage.completion,
+            usage.cache_read,
+            usage.cache_write,
+            usage.cache_write_1h,
+        );
+        // 6144 + 540 + 555 + 600 + 7545 = 15384 / 1e6
+        assert_eq!(cost, rust_decimal::Decimal::new(15384, 6));
+        // a row with no 1 hour rate prices the same 100 tokens at 3.75
+        let mut no_long = price.clone();
+        no_long.cache_write_1h_per_mtok = None;
+        let cost = no_long.cost(
+            usage.prompt,
+            usage.completion,
+            usage.cache_read,
+            usage.cache_write,
+            usage.cache_write_1h,
+        );
+        // 6144 + 540 + 248 * 3.75 (930) + 7545 = 15159 / 1e6
+        assert_eq!(cost, rust_decimal::Decimal::new(15159, 6));
+    }
+
+    /// `cache_write_tokens` stays the total and the new column only appears
+    /// on a row that has a share to record, so every other row is what it was
+    /// before the column existed
+    #[test]
+    fn the_one_hour_column_is_serialized_only_when_there_is_a_share() {
+        let plain = serde_json::to_value(RequestLog::default()).unwrap();
+        assert!(plain.get("cache_write_1h_tokens").is_none(), "{plain}");
+        assert_eq!(plain["cache_write_tokens"], 0);
+
+        let split = serde_json::to_value(RequestLog {
+            cache_write_tokens: 248,
+            cache_write_1h_tokens: 100,
+            ..RequestLog::default()
+        })
+        .unwrap();
+        assert_eq!(split["cache_write_tokens"], 248);
+        assert_eq!(split["cache_write_1h_tokens"], 100);
     }
 
     /// An answer cut short by `max_output_tokens` still spent its tokens, and
@@ -3081,6 +3273,7 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
             output_per_mtok: d("1000000.0"),
             cached_input_per_mtok: None,
             cache_write_per_mtok: None,
+            cache_write_1h_per_mtok: None,
             currency: "USD".to_string(),
         });
         let mut wrapped = UsageLoggingStream::new(
