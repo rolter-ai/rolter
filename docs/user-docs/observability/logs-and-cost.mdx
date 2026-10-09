@@ -162,6 +162,10 @@ cache_write_per_mtok = 3.125   # optional; defaults to input_per_mtok when absen
   </Step>
 </Steps>
 
+<Note>
+  A rate is a number from `0` up to `999999.999999`, the most a price column holds. A negative rate would turn a request into a credit against its budget, so `PUT /api/v1/model-prices` refuses one, and `NaN`, infinity and a rate of a million or more, with a `400` that names the field in `error.field`. A `rolter.toml` with a negative rate fails its startup check. A price stored with a bad rate by an older release is left out of the config snapshot and reported by `GET /api/v1/config/problems`, so its model is **unpriced** rather than priced at zero; see [Upgrading](/deployment/upgrading#model-price-rates) for how to find and correct the row.
+</Note>
+
 ### Cached prompts and thinking tokens
 
 Rolter reads the prompt-cache hit from the field the provider reports it in, and records it as `cache_read_tokens`. Every spelling below counts the hit **inside** the prompt total except Anthropic's, which Rolter adds back in, so `prompt_tokens` is always the whole prompt and the cached share is priced at `cached_input_per_mtok`:

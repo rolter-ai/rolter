@@ -83,6 +83,37 @@ ClickHouse migrations under `clickhouse/` add columns that newer gateways write,
 
 The Logs screen attaches a captured body to its log row by the request id and the row's timestamp. Gateways from v0.1.0 and earlier left both timestamps to ClickHouse, which stamped the log row and the payload row separately, so they never match. Once the control plane is upgraded, bodies those gateways captured stop showing in the log drawer, and they stay hidden until `payload_retention_hours` removes them (7 days by default). Nothing is exposed and nothing is lost from the log rows themselves; only the payload panel goes empty for those requests. Upgrading the gateways first keeps the window of new bodies written that way as short as the rollout.
 
+## Model price rates
+
+The migration that adds `0084_model_price_rate_checks.sql` makes the database refuse a model price whose rate is negative or `NaN`. Before it, `PUT /api/v1/model-prices` accepted both: a negative rate turned a request into a credit against its budget, and `NaN` was stored but could not be read back, so the model was priced at zero. The API refuses both now (`400`, naming the field), and so does a `rolter.toml` with a negative rate. It also refuses a rate of a million or more, which the `numeric(12, 6)` columns cannot hold and which used to be a `500`.
+
+The migration cannot fail on a database that already holds such a row. It adds each check as `NOT VALID`, which binds every insert and update from then on and leaves the rows already there alone, then validates the ones it can. A database with no bad row ends with all four checks validated and needs nothing from you. A check whose column does hold a bad row stays `NOT VALID`, and the migration prints a notice naming it.
+
+Until you correct the row, Rolter leaves it out rather than guess a price for it. The model is **unpriced**, not free: its `cost_usd` is recorded as `0` with `unpriced = 1`, and `unpriced_policy` and any budget's override decide what that means, exactly as for a model you never priced. The omission is listed by `GET /api/v1/config/problems`, and logged by the control plane as it builds the snapshot.
+
+To see whether any check is still unvalidated, and which rows break it:
+
+```sql
+select conname, convalidated
+from pg_constraint
+where conrelid = 'model_prices'::regclass and conname like '%\_rate';
+
+select model, input_per_mtok, output_per_mtok, cached_input_per_mtok, cache_write_per_mtok
+from model_prices
+where input_per_mtok < 0 or input_per_mtok = 'NaN'
+   or output_per_mtok < 0 or output_per_mtok = 'NaN'
+   or cached_input_per_mtok < 0 or cached_input_per_mtok = 'NaN'
+   or cache_write_per_mtok < 0 or cache_write_per_mtok = 'NaN';
+```
+
+Correct each row on the **Pricing** screen (saving a model's price replaces its input, output and cached-input rates), or delete the price to leave the model unpriced on purpose. Then validate whatever the first query still shows as `convalidated = false`:
+
+```sql
+alter table model_prices validate constraint model_prices_input_per_mtok_rate;
+```
+
+The four names are `model_prices_input_per_mtok_rate`, `model_prices_output_per_mtok_rate`, `model_prices_cached_input_per_mtok_rate` and `model_prices_cache_write_per_mtok_rate`. Validating is optional: an unvalidated check protects new writes just the same. It only changes what `convalidated` reports.
+
 ## A checklist
 
 1. Back up the control-plane database, and confirm you have `ROLTER_KEK` outside it.

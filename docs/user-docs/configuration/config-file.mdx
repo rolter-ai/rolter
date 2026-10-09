@@ -416,7 +416,7 @@ disabled = false
 
 ### \[\[model_prices\]\]
 
-Define per-model token pricing so Rolter can compute a `cost_usd` value on every request log. Models without a price entry log a cost of `0`. Rates are in USD per million tokens, matching the convention used by major providers.
+Define per-model token pricing so Rolter can compute a `cost_usd` value on every request log. Models without a price entry log a cost of `0`. Rates are in USD per million tokens, matching the convention used by major providers. Every rate must be zero or more: a negative rate is a config error, because it would turn a request into a credit against its budget.
 
 <ParamField path="model" type="string" required>
   The public model name this price applies to. Must match a route's `model` field.

@@ -1264,8 +1264,14 @@ pub struct AdvancedModelConfig {
 pub struct ModelUsagePricing {
     /// Stored and validated, but read by nothing: no cost path consults a
     /// route's `advanced` block. The rate that prices cache writes is
-    /// [`ModelPriceConfig::cache_write_per_mtok`] (#2876); this field is kept
-    /// only so a blob that already carries it still parses.
+    /// [`ModelPriceConfig::cache_write_per_mtok`] (#2876).
+    ///
+    /// **Deprecated (#2890): accepted and ignored.** The field stays so a stored
+    /// blob that carries it keeps parsing and round-tripping, and so an older
+    /// dashboard that still sends it is not refused, but nothing validates or
+    /// applies the value. Existing values are not migrated into the price row:
+    /// they never affected a cost, and starting to bill by them on upgrade would
+    /// change spend nobody saw change before.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_write_per_mtok: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1837,6 +1843,27 @@ pub struct ModelPriceConfig {
 }
 
 impl ModelPriceConfig {
+    /// Every rate on this price that no price can have, one sentence each.
+    ///
+    /// A rate below zero would make [`Self::cost`] negative, so a request would
+    /// credit its budget instead of spending it. The rates are [`Decimal`], so
+    /// this cannot see `NaN` or infinity: those cannot be represented, and the
+    /// store drops a row carrying one before it gets here (#2889).
+    pub fn rate_problems(&self) -> Vec<String> {
+        [
+            ("input_per_mtok", Some(self.input_per_mtok)),
+            ("output_per_mtok", Some(self.output_per_mtok)),
+            ("cached_input_per_mtok", self.cached_input_per_mtok),
+            ("cache_write_per_mtok", self.cache_write_per_mtok),
+        ]
+        .into_iter()
+        .filter_map(|(field, rate)| {
+            rate.filter(|rate| *rate < Decimal::ZERO)
+                .map(|rate| format!("{field} is {rate}, and a rate cannot be negative"))
+        })
+        .collect()
+    }
+
     /// Compute request cost, denominated in this price's own [`Self::currency`]
     /// — convert it to the base before it reaches a budget counter.
     ///
@@ -3255,6 +3282,7 @@ impl GatewayConfig {
     pub fn sanitize_for_snapshot(&mut self) -> Vec<String> {
         let mut warnings = Vec::new();
         self.prune_invalid_prompt_templates(&mut warnings);
+        self.prune_invalid_model_prices(&mut warnings);
 
         // a provider whose own definition is invalid cannot serve traffic, but
         // it is exactly one row: withholding the other fourteen providers and
@@ -3501,6 +3529,32 @@ impl GatewayConfig {
         if before != 0 && self.prompt_templates.templates.is_empty() {
             self.prompt_templates.enabled = false;
         }
+    }
+
+    /// Drop a price whose rates cannot be charged, with a warning naming the
+    /// model.
+    ///
+    /// A negative rate makes the request a credit against its budget, and
+    /// repairing it to zero would turn a priced model into a free one; neither
+    /// is a guess to make for the operator. Omitting the row leaves the model
+    /// unpriced, which `unpriced_policy` already has an answer for, and it is
+    /// exactly one row, so it must not 500 the snapshot for every tenant
+    /// (#2889). The control plane refuses such a rate on write, so this covers
+    /// a row stored before that check, or written some other way.
+    fn prune_invalid_model_prices(&mut self, warnings: &mut Vec<String>) {
+        self.model_prices.retain(|price| {
+            let problems = price.rate_problems();
+            if problems.is_empty() {
+                return true;
+            }
+            warnings.push(format!(
+                "model price '{}' omitted from the snapshot: {}; the model is unpriced \
+                 until the rate is corrected",
+                price.model,
+                problems.join("; ")
+            ));
+            false
+        });
     }
 
     /// Every problem with `provider` considered on its own — everything
@@ -3758,6 +3812,11 @@ impl GatewayConfig {
         // the wrong number, pricing it at zero bills nothing. reject the config
         // instead, so the failure lands on the operator rather than on spend
         for price in &self.model_prices {
+            // a store-sourced snapshot has had these pruned already (see
+            // `sanitize_for_snapshot`), so only a file config can fail here
+            for problem in price.rate_problems() {
+                problems.push(format!("model_prices['{}'] {problem}", price.model));
+            }
             if self.currency.rate(&price.currency).is_none() {
                 problems.push(format!(
                     "model_prices['{}'] is priced in '{}', which has no rate in [currency.rates] \
@@ -5905,6 +5964,91 @@ mod tests {
         let problems = config.validate().err().unwrap_or_default();
         assert!(
             !problems.iter().any(|p| p.contains("gpt-4o")),
+            "{problems:?}"
+        );
+    }
+
+    fn price_with(model: &str, input: &str, cached: Option<&str>) -> ModelPriceConfig {
+        ModelPriceConfig {
+            model: model.to_string(),
+            input_per_mtok: d(input),
+            output_per_mtok: d("10.0"),
+            cached_input_per_mtok: cached.map(d),
+            cache_write_per_mtok: None,
+            currency: "USD".to_string(),
+        }
+    }
+
+    #[test]
+    fn a_negative_rate_is_named_by_its_field() {
+        let mut price = price_with("gpt-4o", "2.5", Some("-0.1"));
+        price.output_per_mtok = d("-1");
+        price.cache_write_per_mtok = Some(d("-3.75"));
+        let problems = price.rate_problems();
+        assert_eq!(problems.len(), 3, "{problems:?}");
+        assert!(
+            problems[0].starts_with("output_per_mtok is -1"),
+            "{problems:?}"
+        );
+        assert!(problems[1].starts_with("cached_input_per_mtok is -0.1"));
+        assert!(problems[2].starts_with("cache_write_per_mtok is -3.75"));
+
+        // zero is a legitimate rate: a self-hosted model is free to call
+        let mut free = price_with("local", "0", Some("0"));
+        free.output_per_mtok = d("0");
+        free.cache_write_per_mtok = Some(d("0"));
+        assert!(free.rate_problems().is_empty());
+    }
+
+    // #2889: the control plane refuses a negative rate on write, but a row
+    // stored before that check still reaches the snapshot, and one of them
+    // must neither 500 it for every tenant nor credit a budget
+    #[test]
+    fn sanitize_omits_only_the_price_with_a_negative_rate() {
+        let mut config = GatewayConfig::default();
+        config
+            .model_prices
+            .push(price_with("gpt-4o", "2.5", Some("1.25")));
+        config
+            .model_prices
+            .push(price_with("negative-input", "-1", None));
+        config
+            .model_prices
+            .push(price_with("negative-cached", "2.5", Some("-0.5")));
+
+        let warnings = config.sanitize_for_snapshot();
+
+        let kept: Vec<&str> = config
+            .model_prices
+            .iter()
+            .map(|p| p.model.as_str())
+            .collect();
+        assert_eq!(kept, ["gpt-4o"]);
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        assert!(
+            warnings[0].contains("'negative-input'") && warnings[0].contains("input_per_mtok"),
+            "{warnings:?}"
+        );
+        assert!(
+            warnings[1].contains("'negative-cached'")
+                && warnings[1].contains("cached_input_per_mtok"),
+            "{warnings:?}"
+        );
+        assert!(config.validate_snapshot().is_ok());
+    }
+
+    #[test]
+    fn a_file_config_with_a_negative_rate_still_fails_validation() {
+        let mut config = GatewayConfig::default();
+        config
+            .model_prices
+            .push(price_with("negative-input", "-1", None));
+        let problems = config.validate().expect_err("a negative rate is refused");
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.contains("model_prices['negative-input']")
+                    && p.contains("input_per_mtok")),
             "{problems:?}"
         );
     }

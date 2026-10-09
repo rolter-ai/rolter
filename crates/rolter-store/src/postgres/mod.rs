@@ -1100,35 +1100,17 @@ impl PostgresConfigStore {
     }
 
     async fn load_model_prices(&self) -> Result<Vec<ModelPriceConfig>> {
-        let rows: Vec<ModelPrice> = sqlx::query_as(
-            "select id, model, \
-                    input_per_mtok::text as input_per_mtok, \
-                    output_per_mtok::text as output_per_mtok, \
-                    cached_input_per_mtok::text as cached_input_per_mtok, \
-                    cache_write_per_mtok::text as cache_write_per_mtok, \
-                    currency, created_at \
-             from model_prices order by model",
-        )
-        .fetch_all(&self.pool)
-        .await
-        .map_err(store_err)?;
+        let rows = repo::ModelPriceRepo(&self.pool).list().await?;
         Ok(rows
-            .into_iter()
-            .map(|r| ModelPriceConfig {
-                model: r.model,
-                // the columns are `numeric(12,6)` cast to text, and parsed
-                // straight into `Decimal` — this is the read #967 is about,
-                // where the exactness the column was chosen for used to be
-                // discarded into an `f64`. a malformed value still prices at
-                // zero, which `numeric` cannot actually produce
-                input_per_mtok: r.input_per_mtok.parse().unwrap_or(Decimal::ZERO),
-                output_per_mtok: r.output_per_mtok.parse().unwrap_or(Decimal::ZERO),
-                cached_input_per_mtok: r.cached_input_per_mtok.and_then(|v| v.parse().ok()),
-                cache_write_per_mtok: r.cache_write_per_mtok.and_then(|v| v.parse().ok()),
-                // the column has always existed and the dashboard has always
-                // written it; it just never reached the config (#650), so every
-                // non-USD price was charged as if it were USD
-                currency: r.currency,
+            .iter()
+            .filter_map(|row| match price_from_row(row) {
+                Ok(price) => Some(price),
+                // one unreadable price is one unpriced model, not a reason to
+                // withhold every tenant's config (#2889)
+                Err(problem) => {
+                    tracing::warn!(model = %row.model, "{problem}");
+                    None
+                }
             })
             .collect())
     }
@@ -1367,6 +1349,44 @@ impl PostgresConfigStore {
     }
 }
 
+/// Read one `model_prices` row into the config type, or say why it cannot be.
+///
+/// The columns are `numeric(12,6)` cast to text and parsed straight into
+/// [`Decimal`], so the exactness the column was chosen for is kept (#967). A
+/// `numeric` can also hold `NaN`, which a [`Decimal`] cannot, and the control
+/// plane accepted it until #2889. Reading that as zero, as this used to, turned
+/// a priced model into a free one without a word; the row is left out instead,
+/// which makes the model unpriced, the state `unpriced_policy` has an answer for.
+/// A negative rate does parse and is left for
+/// [`GatewayConfig::sanitize_for_snapshot`] to omit with its own problem line.
+fn price_from_row(row: &ModelPrice) -> std::result::Result<ModelPriceConfig, String> {
+    let rate = |field: &str, text: &str| {
+        text.parse::<Decimal>().map_err(|_| {
+            format!(
+                "model price '{}' has a {field} of '{text}', which is not a number a rate can be, \
+                 so the model is left out of the snapshot and unpriced; set the rate to a number \
+                 or delete the price",
+                row.model
+            )
+        })
+    };
+    let optional = |field: &str, text: &Option<String>| match text {
+        Some(text) => rate(field, text).map(Some),
+        None => Ok(None),
+    };
+    Ok(ModelPriceConfig {
+        model: row.model.clone(),
+        input_per_mtok: rate("input_per_mtok", &row.input_per_mtok)?,
+        output_per_mtok: rate("output_per_mtok", &row.output_per_mtok)?,
+        cached_input_per_mtok: optional("cached_input_per_mtok", &row.cached_input_per_mtok)?,
+        cache_write_per_mtok: optional("cache_write_per_mtok", &row.cache_write_per_mtok)?,
+        // the column has always existed and the dashboard has always written
+        // it; it just never reached the config (#650), so every non-USD price
+        // was charged as if it were USD
+        currency: row.currency.clone(),
+    })
+}
+
 /// Map the free-text `budgets.period` column to a [`BudgetPeriod`]. Accepts both
 /// the human names and the duration shorthands (`1d`, `30d`), defaulting to
 /// monthly for anything unrecognized.
@@ -1595,7 +1615,10 @@ impl ConfigStore for PostgresConfigStore {
         .fetch_all(&self.pool)
         .await
         .map_err(store_err)?;
-        Ok(unrecognised_budget_periods(&budgets))
+        let mut problems = unrecognised_budget_periods(&budgets);
+        let prices = repo::ModelPriceRepo(&self.pool).list().await?;
+        problems.extend(prices.iter().filter_map(|row| price_from_row(row).err()));
+        Ok(problems)
     }
 }
 
@@ -2977,6 +3000,196 @@ mod tests {
         assert_eq!(config.model_prices[1].input_per_mtok, d("0.15"));
         assert_eq!(config.model_prices[1].cached_input_per_mtok, None);
         assert_eq!(config.model_prices[1].cache_write_per_mtok, None);
+    }
+
+    /// Every constraint 0084 puts on `model_prices`, to take them off again and
+    /// stand in for a database that was written before they existed.
+    const RATE_CHECKS: [&str; 4] = [
+        "model_prices_input_per_mtok_rate",
+        "model_prices_output_per_mtok_rate",
+        "model_prices_cached_input_per_mtok_rate",
+        "model_prices_cache_write_per_mtok_rate",
+    ];
+
+    async fn drop_rate_checks(pool: &PgPool) {
+        for name in RATE_CHECKS {
+            sqlx::query(&format!("alter table model_prices drop constraint {name}"))
+                .execute(pool)
+                .await
+                .unwrap();
+        }
+    }
+
+    /// Which of the rate constraints are validated, by name.
+    async fn validated_rate_checks(pool: &PgPool) -> Vec<(String, bool)> {
+        sqlx::query_as(
+            "select conname::text, convalidated from pg_constraint
+             where conrelid = 'model_prices'::regclass and conname like '%\\_rate'
+             order by conname",
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap()
+    }
+
+    // #2889: the control plane accepted `NaN` as a rate, `numeric` stores it,
+    // and a `Decimal` cannot hold it. The loader used to read it as zero, which
+    // priced the model at nothing; it now leaves that one row out, says so, and
+    // loads the rest
+    #[tokio::test]
+    async fn a_price_with_a_nan_rate_is_left_out_and_reported_not_priced_at_zero() {
+        if !test_database::is_configured() {
+            eprintln!("skipping: {} not set", test_database::URL_ENV);
+            return;
+        }
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
+        // an older database has no constraint to stop the row going in
+        drop_rate_checks(&pool).await;
+        sqlx::query(
+            "insert into model_prices
+                    (model, input_per_mtok, output_per_mtok, cached_input_per_mtok,
+                     cache_write_per_mtok)
+             values ('good', 3, 15, 1.5, 3.75),
+                    ('nan-input', 'NaN', 15, null, null),
+                    ('nan-cached', 3, 15, 'NaN', null),
+                    ('nan-write', 3, 15, null, 'NaN'),
+                    ('negative', -1, 15, null, null)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let store = PostgresConfigStore::new(pool);
+        let models: Vec<String> = store
+            .load()
+            .await
+            .unwrap()
+            .model_prices
+            .into_iter()
+            .map(|price| price.model)
+            .collect();
+        // a negative rate does parse: it is `sanitize_for_snapshot`'s to omit,
+        // with its own problem line
+        assert_eq!(models, ["good", "negative"]);
+
+        let problems = store.load_problems().await.unwrap();
+        assert_eq!(problems.len(), 3, "{problems:?}");
+        for (model, field) in [
+            ("nan-cached", "cached_input_per_mtok"),
+            ("nan-input", "input_per_mtok"),
+            ("nan-write", "cache_write_per_mtok"),
+        ] {
+            assert!(
+                problems
+                    .iter()
+                    .any(|p| p.contains(&format!("'{model}'")) && p.contains(field)),
+                "{model}: {problems:?}"
+            );
+        }
+        assert!(
+            problems.iter().all(|p| p.contains("unpriced")),
+            "{problems:?}"
+        );
+    }
+
+    // #2889: a migration must not brick a deployment that already holds a bad
+    // row, and the rule must still bind every write from then on
+    #[tokio::test]
+    async fn the_rate_checks_migration_applies_over_a_bad_row_and_binds_new_writes() {
+        if !test_database::is_configured() {
+            eprintln!("skipping: {} not set", test_database::URL_ENV);
+            return;
+        }
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
+
+        // a database migrated cleanly has every constraint validated
+        let clean = validated_rate_checks(&pool).await;
+        assert_eq!(clean.len(), 4, "{clean:?}");
+        assert!(clean.iter().all(|(_, validated)| *validated), "{clean:?}");
+
+        // the same database as an older control plane left it: no constraints,
+        // a NaN input and a negative output (and 0083's own check, which lets
+        // NaN through, gone with the rest)
+        drop_rate_checks(&pool).await;
+        sqlx::query(
+            "insert into model_prices (model, input_per_mtok, output_per_mtok)
+             values ('good', 3, 15), ('nan-input', 'NaN', 15), ('negative-output', 3, -1)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        sqlx::raw_sql(include_str!(
+            "../../migrations/0084_model_price_rate_checks.sql"
+        ))
+        .execute(&pool)
+        .await
+        .expect("the migration applies over a row that breaks it");
+
+        // unvalidated where a row breaks the rule, validated where none does
+        assert_eq!(
+            validated_rate_checks(&pool).await,
+            [
+                ("model_prices_cache_write_per_mtok_rate".to_string(), true),
+                ("model_prices_cached_input_per_mtok_rate".to_string(), true),
+                ("model_prices_input_per_mtok_rate".to_string(), false),
+                ("model_prices_output_per_mtok_rate".to_string(), false),
+            ]
+        );
+
+        // every write from now on is held to it, whichever column it is in
+        for (column, value) in [
+            ("input_per_mtok", "'NaN'"),
+            ("input_per_mtok", "-0.5"),
+            ("output_per_mtok", "'NaN'"),
+            ("output_per_mtok", "-0.5"),
+            ("cached_input_per_mtok", "'NaN'"),
+            ("cached_input_per_mtok", "-0.5"),
+            ("cache_write_per_mtok", "'NaN'"),
+            ("cache_write_per_mtok", "-0.5"),
+        ] {
+            let insert =
+                format!("insert into model_prices (model, {column}) values ('new', {value})");
+            assert!(
+                sqlx::query(&insert).execute(&pool).await.is_err(),
+                "{column} = {value} should be refused"
+            );
+            let update = format!("update model_prices set {column} = {value} where model = 'good'");
+            assert!(
+                sqlx::query(&update).execute(&pool).await.is_err(),
+                "{column} = {value} should be refused on update"
+            );
+        }
+        sqlx::query(
+            "insert into model_prices (model, input_per_mtok, output_per_mtok, cached_input_per_mtok,
+                                       cache_write_per_mtok)
+             values ('free', 0, 0, 0, 0)",
+        )
+        .execute(&pool)
+        .await
+        .expect("zero is a rate");
+
+        // the operator's fix: correct the rows, then validate
+        sqlx::query("update model_prices set input_per_mtok = 3 where model = 'nan-input'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("update model_prices set output_per_mtok = 15 where model = 'negative-output'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        for name in RATE_CHECKS {
+            sqlx::query(&format!(
+                "alter table model_prices validate constraint {name}"
+            ))
+            .execute(&pool)
+            .await
+            .unwrap_or_else(|e| panic!("{name} should validate once the rows are fixed: {e}"));
+        }
+        let fixed = validated_rate_checks(&pool).await;
+        assert!(fixed.iter().all(|(_, validated)| *validated), "{fixed:?}");
     }
 
     #[tokio::test]

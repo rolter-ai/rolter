@@ -739,6 +739,22 @@ async fn import_model_prices(pool: &PgPool, config: &GatewayConfig) -> anyhow::R
         return Ok(());
     }
     let prices = ModelPriceRepo(pool);
+    // checked before the first write, so a file with one bad price imports
+    // none of them rather than half. the database would refuse the row anyway
+    // (0084), but with a constraint name where this says which price and why
+    let problems: Vec<String> = config
+        .model_prices
+        .iter()
+        .flat_map(|price| {
+            price
+                .rate_problems()
+                .into_iter()
+                .map(|problem| format!("[[model_prices]] '{}': {problem}", price.model))
+        })
+        .collect();
+    if !problems.is_empty() {
+        anyhow::bail!("refusing to import: {}", problems.join("; "));
+    }
     for price in &config.model_prices {
         // the column is `numeric`, so the rate crosses as text rather than
         // through a float bind that would round it on the way in
@@ -1075,6 +1091,36 @@ weight = 1
             .await
             .unwrap();
         assert_eq!(stored().await, None);
+    }
+
+    /// #2889: a negative rate is refused before anything is written, and says
+    /// which price it is, instead of surfacing as a constraint violation on
+    /// whichever row the database reached first.
+    #[tokio::test]
+    async fn a_negative_rate_in_the_import_file_imports_nothing() {
+        let Some(db) = scratch_db().await else {
+            return;
+        };
+        let pool = db.pool().clone();
+        let (org_id, project_id) = bootstrap_org(&pool).await;
+        let dir = tempdir("negative-rate");
+        let path = dir.join("rolter.toml");
+        std::fs::write(
+            &path,
+            "[[model_prices]]\nmodel = \"fine\"\ninput_per_mtok = 3.0\noutput_per_mtok = 15.0\n\n\
+             [[model_prices]]\nmodel = \"refunds\"\ninput_per_mtok = 3.0\n\
+             output_per_mtok = 15.0\ncached_input_per_mtok = -0.3\n",
+        )
+        .unwrap();
+
+        let error = import_bootstrap_toml(&pool, org_id, project_id, &path)
+            .await
+            .expect_err("a negative rate is refused");
+        let message = error.to_string();
+        assert!(message.contains("'refunds'"), "{message}");
+        assert!(message.contains("cached_input_per_mtok"), "{message}");
+        let prices = rolter_store::postgres::repo::ModelPriceRepo(&pool);
+        assert!(prices.list().await.unwrap().is_empty());
     }
 
     /// #927: a re-import of an edited file used to log `imported provider` and
