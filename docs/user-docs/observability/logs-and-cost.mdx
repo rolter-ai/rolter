@@ -147,6 +147,7 @@ model = "gpt-4o"
 input_per_mtok = 2.5
 output_per_mtok = 10.0
 cached_input_per_mtok = 1.25   # optional; defaults to input_per_mtok when absent
+cache_write_per_mtok = 3.125   # optional; defaults to input_per_mtok when absent
 ```
 
 <Steps>
@@ -154,7 +155,7 @@ cached_input_per_mtok = 1.25   # optional; defaults to input_per_mtok when absen
     Add a `[[model_prices]]` block for each model you want to track. You can define prices for managed models (OpenAI, Anthropic) and self-hosted models alike.
   </Step>
   <Step title="Rolter computes cost per request">
-    After each completed request, Rolter multiplies the upstream-reported token counts by your configured rates. Cached input tokens use `cached_input_per_mtok` when set, falling back to `input_per_mtok`. Providers name the cached share differently; every spelling in [Cached prompts and thinking tokens](#cached-prompts-and-thinking-tokens) is read, on buffered and streamed answers alike. The same holds when the request crosses dialects (a Messages client served by a Chat Completions provider, a chat or Responses client served by an Anthropic or Gemini one): Rolter carries the cached share across, so the discount applies whichever dialect the client spoke. Anthropic reports its cache reads and writes beside `input_tokens`, not inside it, so Rolter adds them into `prompt_tokens`; tokens written to the cache are priced as ordinary input, since a price row has no rate for them.
+    After each completed request, Rolter multiplies the upstream-reported token counts by your configured rates. Cached input tokens use `cached_input_per_mtok` when set, falling back to `input_per_mtok`. Providers name the cached share differently; every spelling in [Cached prompts and thinking tokens](#cached-prompts-and-thinking-tokens) is read, on buffered and streamed answers alike. The same holds when the request crosses dialects (a Messages client served by a Chat Completions provider, a chat or Responses client served by an Anthropic or Gemini one): Rolter carries the cached share across, so the discount applies whichever dialect the client spoke. Anthropic reports its cache reads and writes beside `input_tokens`, not inside it, so Rolter adds them into `prompt_tokens`. Tokens written to the cache use `cache_write_per_mtok` when set, falling back to `input_per_mtok`; see [Cache writes](#cache-writes).
   </Step>
   <Step title="Query spend in ClickHouse">
     Rows without a matching model price record `cost_usd = 0` **and `unpriced = 1`** — they still appear in logs, they just don't contribute to spend reports until you add a price.
@@ -178,6 +179,26 @@ Rolter reads the prompt-cache hit from the field the provider reports it in, and
 A provider that caches but is not in the table logs `cache_read_tokens = 0` and is priced as fresh input until its field is added, so report the provider if you run into one. The table lists the providers whose documentation names the field, not every provider that caches.
 
 Gemini bills its **thinking tokens as output**, and reports them beside the answer's count, not inside it. Rolter adds `thoughtsTokenCount` (`total_thought_tokens` on the Interactions API) to `completion_tokens`, so the request log, the budget and the `usage` block your client reads all count what the provider charged. The tokens a built-in tool such as URL context fed back to the model (`toolUsePromptTokenCount`, `total_tool_use_tokens`) are charged as input and are added to `prompt_tokens`. The `usage` Rolter shows a client always adds up: `total_tokens` is `prompt_tokens` plus `completion_tokens`. The thinking share is not broken out of `completion_tokens` in a translated body.
+
+### Cache writes
+
+Writing a prompt into a provider's cache can cost more than reading it as ordinary input: Anthropic charges a cache write at a multiple of the input rate, and a higher one for its 1 hour cache than for its 5 minute cache. Rolter records the count as `cache_write_tokens` and prices it at `cache_write_per_mtok`:
+
+```toml rolter.toml
+[[model_prices]]
+model = "claude"
+input_per_mtok = 3.0
+output_per_mtok = 15.0
+cached_input_per_mtok = 0.3
+cache_write_per_mtok = 3.75
+```
+
+The prompt total holds every token class once, so each token is charged at one rate: the cache reads at `cached_input_per_mtok`, the cache writes at `cache_write_per_mtok`, and the rest of the prompt at `input_per_mtok`. A prompt of 2000 tokens that read 1500 from the cache and wrote 100 to it costs the 400 remaining tokens at the input rate, the 1500 at the cached rate and the 100 at the write rate. If a provider reports more cache tokens than the prompt holds, the reads are charged first and the writes take what is left, so a token is never charged twice.
+
+- **Absent means the input rate.** A price without `cache_write_per_mtok` charges written tokens as ordinary input, exactly as every price did before the field existed, so upgrading changes no existing cost.
+- **One rate for both caches.** Anthropic reports the 5 minute and the 1 hour writes in one count, so the rate is a single figure. If you use both, enter the rate for the one most of your writes use, or a blend; the log row cannot say which cache a token went to.
+- **Only reported writes are priced.** OpenAI and Gemini report no write count (their caching is not billed per write), so their rows log `cache_write_tokens = 0` and the field has no effect on them. A write count reaches Rolter from Anthropic's `cache_creation_input_tokens` and from `prompt_tokens_details.cache_write_tokens`, which is OpenRouter's spelling and the one Rolter uses when it translates an Anthropic answer for a Chat Completions or Responses client.
+- **Setting it over the API.** The rate is stored with the rest of the price row as `cache_write_per_mtok`. A `PUT /api/v1/model-prices` that leaves the field out keeps the stored rate, so a client that has never heard of it cannot reset one, and `null` clears it back to the input rate. This differs from the other rates, which a `PUT` replaces. Re-importing a `rolter.toml` with `rolter-seed --import` follows the file instead: a price without the key has no write rate afterwards.
 
 ### Prices are yours, not ours
 

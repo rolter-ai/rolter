@@ -3383,6 +3383,7 @@ impl ModelPriceRepo<'_> {
                     input_per_mtok::text as input_per_mtok,
                     output_per_mtok::text as output_per_mtok,
                     cached_input_per_mtok::text as cached_input_per_mtok,
+                    cache_write_per_mtok::text as cache_write_per_mtok,
                     currency, created_at
              from model_prices order by model",
         )
@@ -3391,34 +3392,50 @@ impl ModelPriceRepo<'_> {
         .map_err(store_err)
     }
 
+    /// Create or replace a model's price.
+    ///
+    /// `cache_write_per_mtok` is tri-state, unlike its siblings (#2876): `None`
+    /// keeps the stored rate, `Some(None)` clears it back to the input rate and
+    /// `Some(Some(rate))` sets it. A caller that predates the column sends a
+    /// body without it, and replacing the row must not wipe a rate an operator
+    /// set since, which "omitted means null" would do on the next save.
     pub async fn upsert(
         &self,
         model: &str,
         input_per_mtok: &str,
         output_per_mtok: &str,
         cached_input_per_mtok: Option<&str>,
+        cache_write_per_mtok: Option<Option<&str>>,
         currency: &str,
     ) -> Result<ModelPrice> {
         let mut tx = self.0.begin().await.map_err(store_err)?;
         let row = sqlx::query_as(
-            "insert into model_prices (model, input_per_mtok, output_per_mtok, cached_input_per_mtok, currency)
-             values ($1, $2::numeric, $3::numeric, $4::numeric, $5)
+            "insert into model_prices
+                    (model, input_per_mtok, output_per_mtok, cached_input_per_mtok,
+                     cache_write_per_mtok, currency)
+             values ($1, $2::numeric, $3::numeric, $4::numeric, $5::numeric, $6)
              on conflict (model) do update
                 set input_per_mtok = excluded.input_per_mtok,
                     output_per_mtok = excluded.output_per_mtok,
                     cached_input_per_mtok = excluded.cached_input_per_mtok,
+                    cache_write_per_mtok = case when $7::boolean
+                        then excluded.cache_write_per_mtok
+                        else model_prices.cache_write_per_mtok end,
                     currency = excluded.currency
              returning id, model,
                        input_per_mtok::text as input_per_mtok,
                        output_per_mtok::text as output_per_mtok,
                        cached_input_per_mtok::text as cached_input_per_mtok,
+                       cache_write_per_mtok::text as cache_write_per_mtok,
                        currency, created_at",
         )
         .bind(model)
         .bind(input_per_mtok)
         .bind(output_per_mtok)
         .bind(cached_input_per_mtok)
+        .bind(cache_write_per_mtok.flatten())
         .bind(currency)
+        .bind(cache_write_per_mtok.is_some())
         .fetch_one(&mut *tx)
         .await
         .map_err(store_err)?;
@@ -5806,12 +5823,12 @@ mod tests {
 
         let prices = ModelPriceRepo(&pool);
         let price = prices
-            .upsert("gpt-4o", "2.500000", "10.000000", None, "USD")
+            .upsert("gpt-4o", "2.500000", "10.000000", None, None, "USD")
             .await
             .unwrap();
         assert_eq!(price.input_per_mtok, "2.500000");
         let updated = prices
-            .upsert("gpt-4o", "3.000000", "10.000000", None, "USD")
+            .upsert("gpt-4o", "3.000000", "10.000000", None, None, "USD")
             .await
             .unwrap();
         assert_eq!(updated.input_per_mtok, "3.000000");
@@ -5820,6 +5837,70 @@ mod tests {
         // deletes cascade top-down; exercise the not-found error path too
         orgs.delete(org.id).await.unwrap();
         assert!(matches!(orgs.get(org.id).await, Err(Error::NotFound(_))));
+    }
+
+    /// The cache-write rate (#2876) is the one price column an upsert does not
+    /// replace by default: a client that predates it sends a body without it,
+    /// and that must not wipe a rate set since.
+    #[tokio::test]
+    async fn a_price_keeps_its_cache_write_rate_unless_told_otherwise() {
+        if !super::super::test_database::is_configured() {
+            eprintln!("skipping: {} not set", super::super::test_database::URL_ENV);
+            return;
+        }
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
+        let prices = ModelPriceRepo(&pool);
+
+        // a new row with no rate has none, which prices writes as input
+        let bare = prices
+            .upsert("claude", "3", "15", Some("0.3"), None, "USD")
+            .await
+            .unwrap();
+        assert_eq!(bare.cache_write_per_mtok, None);
+
+        // setting it
+        let set = prices
+            .upsert("claude", "3", "15", Some("0.3"), Some(Some("3.75")), "USD")
+            .await
+            .unwrap();
+        assert_eq!(set.cache_write_per_mtok.as_deref(), Some("3.750000"));
+        assert_eq!(set.id, bare.id, "an upsert edits the row in place");
+
+        // replacing the rest of the row without naming it keeps the rate
+        let kept = prices
+            .upsert("claude", "4", "20", None, None, "USD")
+            .await
+            .unwrap();
+        assert_eq!(kept.input_per_mtok, "4.000000");
+        assert_eq!(kept.cached_input_per_mtok, None, "the others still replace");
+        assert_eq!(kept.cache_write_per_mtok.as_deref(), Some("3.750000"));
+
+        // and it is what a read and the snapshot see
+        let listed = prices.list().await.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].cache_write_per_mtok.as_deref(), Some("3.750000"));
+        use crate::ConfigStore as _;
+        let config = crate::postgres::PostgresConfigStore::new(pool.clone())
+            .load()
+            .await
+            .unwrap();
+        assert_eq!(
+            config.model_prices[0].cache_write_per_mtok,
+            Some("3.75".parse().unwrap())
+        );
+
+        // clearing is its own, explicit request
+        let cleared = prices
+            .upsert("claude", "4", "20", None, Some(None), "USD")
+            .await
+            .unwrap();
+        assert_eq!(cleared.cache_write_per_mtok, None);
+        let config = crate::postgres::PostgresConfigStore::new(pool)
+            .load()
+            .await
+            .unwrap();
+        assert_eq!(config.model_prices[0].cache_write_per_mtok, None);
     }
 
     #[tokio::test]

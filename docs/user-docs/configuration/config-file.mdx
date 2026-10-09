@@ -441,12 +441,17 @@ Define per-model token pricing so Rolter can compute a `cost_usd` value on every
   USD per million cache-hit input tokens. When omitted, falls back to `input_per_mtok`.
 </ParamField>
 
+<ParamField path="cache_write_per_mtok" type="float">
+  USD per million input tokens written to the provider's prompt cache, which Anthropic bills above the input rate. When omitted, falls back to `input_per_mtok`. See [Cache writes](/observability/logs-and-cost#cache-writes).
+</ParamField>
+
 ```toml
 [[model_prices]]
 model = "gpt-4o"
 input_per_mtok = 2.5
 output_per_mtok = 10.0
 cached_input_per_mtok = 1.25
+cache_write_per_mtok = 3.125
 ```
 
 ---

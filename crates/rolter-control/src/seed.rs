@@ -751,6 +751,10 @@ async fn import_model_prices(pool: &PgPool, config: &GatewayConfig) -> anyhow::R
                     .cached_input_per_mtok
                     .map(|v| v.to_string())
                     .as_deref(),
+                // the file is the desired state, so a price without the key
+                // is a price without a write rate: `Some(None)` clears one
+                // rather than leaving a stale rate behind
+                Some(price.cache_write_per_mtok.map(|v| v.to_string()).as_deref()),
                 &price.currency,
             )
             .await?;
@@ -1024,6 +1028,53 @@ weight = 1
                 .and_then(|r| r.api_key_env.as_deref()),
             Some("OPENAI_KEY_A")
         );
+    }
+
+    /// #2876: the file is the desired state, so the cache-write rate follows it
+    /// both ways. A price with the key sets the rate, and the same price
+    /// without it clears one rather than leaving a rate nobody wrote down.
+    #[tokio::test]
+    async fn the_cache_write_rate_follows_the_import_file() {
+        let Some(db) = scratch_db().await else {
+            return;
+        };
+        let pool = db.pool().clone();
+        let (org_id, project_id) = bootstrap_org(&pool).await;
+        let dir = tempdir("cache-write-rate");
+        let path = dir.join("rolter.toml");
+        let prices = rolter_store::postgres::repo::ModelPriceRepo(&pool);
+        let stored = || async {
+            prices
+                .list()
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|price| price.model == "claude")
+                .expect("the price must have been imported")
+                .cache_write_per_mtok
+        };
+
+        std::fs::write(
+            &path,
+            "[[model_prices]]\nmodel = \"claude\"\ninput_per_mtok = 3.0\n\
+             output_per_mtok = 15.0\ncache_write_per_mtok = 3.75\ncurrency = \"USD\"\n",
+        )
+        .unwrap();
+        import_bootstrap_toml(&pool, org_id, project_id, &path)
+            .await
+            .unwrap();
+        assert_eq!(stored().await.as_deref(), Some("3.750000"));
+
+        std::fs::write(
+            &path,
+            "[[model_prices]]\nmodel = \"claude\"\ninput_per_mtok = 3.0\n\
+             output_per_mtok = 15.0\ncurrency = \"USD\"\n",
+        )
+        .unwrap();
+        import_bootstrap_toml(&pool, org_id, project_id, &path)
+            .await
+            .unwrap();
+        assert_eq!(stored().await, None);
     }
 
     /// #927: a re-import of an edited file used to log `imported provider` and

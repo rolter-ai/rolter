@@ -320,6 +320,9 @@ disabled = false # revoke without deleting
 # input_per_mtok = 2.5
 # output_per_mtok = 10.0
 # cached_input_per_mtok = 1.25   # optional; defaults to input_per_mtok
+# cache_write_per_mtok = 3.75    # optional; tokens written to the provider's prompt cache
+#                                # (anthropic bills these above the input rate);
+#                                # defaults to input_per_mtok
 # currency = "USD"               # optional; defaults to the base currency below
 
 # --- currency and conversion rates ---

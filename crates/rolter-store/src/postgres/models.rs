@@ -329,6 +329,9 @@ pub struct ModelPrice {
     pub input_per_mtok: String,
     pub output_per_mtok: String,
     pub cached_input_per_mtok: Option<String>,
+    /// rate for input tokens written to the prompt cache (#2876); `None` means
+    /// the input rate
+    pub cache_write_per_mtok: Option<String>,
     pub currency: String,
     pub created_at: DateTime<Utc>,
 }

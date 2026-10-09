@@ -758,7 +758,14 @@ impl Runner {
     ) -> (RequestLog, Decimal) {
         let usage = turn.usage;
         let cost = price
-            .map(|price| price.cost(usage.prompt, usage.completion, usage.cache_read))
+            .map(|price| {
+                price.cost(
+                    usage.prompt,
+                    usage.completion,
+                    usage.cache_read,
+                    usage.cache_write,
+                )
+            })
             .unwrap_or(Decimal::ZERO);
         let mut row = self.base_row(snap, price, turn.started, seq);
         row.status = if turn.failed { 502 } else { 200 };

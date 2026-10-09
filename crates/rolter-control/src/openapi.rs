@@ -3114,6 +3114,10 @@ fn governance_schemas(p: &Prim) -> Value {
                 "input_per_mtok": {"type": "string", "description": "decimal(12,6) as text"},
                 "output_per_mtok": string,
                 "cached_input_per_mtok": nullable_string,
+                "cache_write_per_mtok": {
+                    "type": ["string", "null"],
+                    "description": "rate for input tokens written to the prompt cache; null prices them at input_per_mtok"
+                },
                 "currency": string,
                 "created_at": timestamp
             }
@@ -3126,6 +3130,10 @@ fn governance_schemas(p: &Prim) -> Value {
                 "input_per_mtok": string,
                 "output_per_mtok": string,
                 "cached_input_per_mtok": nullable_string,
+                "cache_write_per_mtok": {
+                    "type": ["string", "null"],
+                    "description": "rate for input tokens written to the prompt cache, a finite non-negative number. Omit to leave the stored rate unchanged, send null to clear it (writes are then priced at input_per_mtok). Unlike the other rates, which a PUT replaces, so a client that predates the field cannot reset it"
+                },
                 "currency": {"type": "string", "default": "USD"}
             },
             "additionalProperties": false

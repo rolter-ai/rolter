@@ -5341,6 +5341,13 @@ struct UpsertModelPrice {
     input_per_mtok: String,
     output_per_mtok: String,
     cached_input_per_mtok: Option<String>,
+    /// omit to leave the stored rate unchanged; `null` clears it back to the
+    /// input rate; a number sets it. Tri-state, unlike the rates beside it,
+    /// because a client that predates the field (the dashboard until its half
+    /// landed) replaces the whole row with a body that never names it, and that
+    /// must not reset a rate set since (#2876)
+    #[serde(default, deserialize_with = "explicit_null")]
+    cache_write_per_mtok: Option<Option<String>>,
     #[serde(default = "default_currency")]
     currency: String,
 }
@@ -5376,6 +5383,21 @@ fn require_numeric(value: &str, field: &str) -> ApiResult<()> {
     Ok(())
 }
 
+/// [`require_numeric`] for a rate that must also be a real, non-negative
+/// number. `parse::<f64>` accepts `NaN` and `inf`, which `numeric` would store
+/// and the snapshot loader could not read back, and a negative rate would turn
+/// a request into a credit against a budget.
+fn require_rate(value: &str, field: &str) -> ApiResult<()> {
+    match value.trim().parse::<f64>() {
+        Ok(rate) if rate.is_finite() && rate >= 0.0 => Ok(()),
+        Ok(_) => Err(invalid_field(
+            field,
+            format!("{field} must be a finite non-negative number"),
+        )),
+        Err(_) => Err(invalid_field(field, format!("{field} must be numeric"))),
+    }
+}
+
 // the pricing catalog is a global (unscoped) resource, so its mutations are
 // superadmin-only
 async fn upsert_model_price(
@@ -5390,6 +5412,9 @@ async fn upsert_model_price(
     if let Some(cached) = &body.cached_input_per_mtok {
         require_numeric(cached, "cached_input_per_mtok")?;
     }
+    if let Some(Some(write)) = &body.cache_write_per_mtok {
+        require_rate(write, "cache_write_per_mtok")?;
+    }
     require_known_currency(&state, &body.currency)?;
     Ok(Json(
         ModelPriceRepo(pool(&state))
@@ -5398,6 +5423,7 @@ async fn upsert_model_price(
                 &body.input_per_mtok,
                 &body.output_per_mtok,
                 body.cached_input_per_mtok.as_deref(),
+                body.cache_write_per_mtok.as_ref().map(Option::as_deref),
                 &body.currency,
             )
             .await?,

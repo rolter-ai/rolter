@@ -149,8 +149,9 @@ the closing chunk carries the input side from `message_start` together with the
 output side from `message_delta`.
 
 The request log and the budgets read the same body the client receives, so a
-priced model is billed the cached share at `cached_input_per_mtok` whichever
-dialect the client spoke; see [Observability](../architecture/observability.md).
+priced model is billed the cached share at `cached_input_per_mtok` and the
+written share at `cache_write_per_mtok` whichever dialect the client spoke; see
+[Observability](../architecture/observability.md).
 
 The Gemini dialects — `generateContent` and Interactions — are the exception:
 their wire formats are typed part unions with no opaque carrier, so an
