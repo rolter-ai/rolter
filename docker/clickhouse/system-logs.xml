@@ -1,5 +1,5 @@
 <!--
-  turns off the diagnostic tables ClickHouse writes about itself (#2795).
+  turns off the diagnostic tables ClickHouse writes about itself (#2795, #2815).
 
   the image's default server config enables most of them, and each one is a
   MergeTree table that takes an insert every few seconds. on a small host with a
@@ -8,8 +8,17 @@
   with every MergeMutate thread busy on text_log and asynchronous_metric_log.
   rolter reads none of them.
 
+  one file serves three servers: rolter's own clickhouse (docker-compose.yml, and
+  through it the team shape and the dogfood stack), signoz-clickhouse
+  (docker-compose.signoz.yml, 25.5.6) and the e2e stack's (integration/e2e).
+  signoz reads no `system.*_log` table either: its query service, schema migrator
+  and collector read system.tables, columns, disks, clusters, databases,
+  mutations and distributed_ddl_queue, and the only log table either binary names
+  is `query_log`, for an optional receiver this overlay's collector does not run.
+
   `query_log` is kept on purpose: the control plane's ux_events ingest and the
-  troubleshooting docs read it. it is the one diagnostic table worth its disk.
+  troubleshooting docs read it, and on signoz-clickhouse it is how an operator
+  sees which signoz query is slow. it is the one diagnostic table worth its disk.
   `crash_log` is kept too: it only gets a row when the server crashes.
 
   `remove="1"` deletes the element from the merged server config, which is how
@@ -30,6 +39,7 @@
   <backup_log remove="1" />
   <blob_storage_log remove="1" />
   <error_log remove="1" />
+  <latency_log remove="1" />
   <metric_log remove="1" />
   <opentelemetry_span_log remove="1" />
   <part_log remove="1" />
@@ -37,6 +47,7 @@
   <query_metric_log remove="1" />
   <query_thread_log remove="1" />
   <query_views_log remove="1" />
+  <s3queue_log remove="1" />
   <session_log remove="1" />
   <text_log remove="1" />
   <trace_log remove="1" />

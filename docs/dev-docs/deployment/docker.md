@@ -67,14 +67,19 @@ sat at 190% and 320% CPU with every `MergeMutate` thread busy on those tables
 mounted into the `clickhouse` service as
 `/etc/clickhouse-server/config.d/system-logs.xml` and removes them with
 `remove="1"`, so the team stack and the dogfood stack, which layer over this
-file, inherit it. `system.query_log` stays (the UX-event ingest test and
+file, inherit it. The same file is mounted into the SigNoz overlay's ClickHouse
+and the e2e stack's (#2815): SigNoz's query service and schema migrator read
+`system.tables`, `columns`, `disks`, `clusters`, `databases`, `mutations` and
+`distributed_ddl_queue`, never a `*_log` table, so nothing in it needs keeping
+there either. `system.query_log` stays (the UX-event ingest test and
 [UX telemetry](../development/ux-telemetry.md) read it), and so does
 `crash_log`, which only ever gets a row when the server crashes. Mount a single
 file, never the `config.d` directory: the image keeps its listen-address config
 there, and a directory mount would hide it. A `remove="1"` on a table the
 image's ClickHouse version does not have is a no-op (the file names
-`session_log`, which 24.10's default config leaves commented out), so the list
-can name tables a newer image adds.
+`session_log`, which 24.10's default config leaves commented out, and
+`latency_log` and `s3queue_log`, which only 25.x has), so the list can name
+tables a newer image adds.
 
 The file only stops the tables being created. A volume that ran with the default
 config keeps the ones it already has, and ClickHouse does not drop them. Drop
@@ -87,12 +92,13 @@ team stack add `--user "$ROLTER_CLICKHOUSE_USER" --password
 ```bash
 ch() { docker compose -f docker/docker-compose.yml exec -T clickhouse clickhouse-client "$@"; }
 ch -q "select 'drop table if exists system.' || name || ' sync;' from system.tables
-       where database = 'system' and match(name, '^(asynchronous_insert|asynchronous_metric|backup|blob_storage|error|metric|opentelemetry_span|part|processors_profile|query_metric|query_thread|query_views|session|text|trace)_log(_[0-9]+)?\$')" | ch -n
+       where database = 'system' and match(name, '^(asynchronous_insert|asynchronous_metric|backup|blob_storage|error|latency|metric|opentelemetry_span|part|processors_profile|query_metric|query_thread|query_views|s3queue|session|text|trace)_log(_[0-9]+)?\$')" | ch -n
 ```
 
-Nothing recreates them on the next start. Only the compose stack gets the file:
-`docker/docker-compose.signoz.yml`'s own ClickHouse (a different image, with its
-own config) and the e2e stack's are untouched.
+Nothing recreates them on the next start. The SigNoz overlay's volume is the
+same story: its ClickHouse is `signoz-clickhouse`, and the drop above needs
+`-f docker/docker-compose.signoz.yml` and that service name. The e2e stack's
+ClickHouse has no volume, so it never has them to drop.
 
 On a small host also cap ClickHouse's caches, which the default config sizes
 for a large server (`uncompressed_cache_size` 8 GiB, `mark_cache_size` 5 GiB).

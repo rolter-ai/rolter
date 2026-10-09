@@ -307,6 +307,17 @@ initialised — an existing volume keeps whatever it was built with.
 
 ### SigNoz
 
+SigNoz's ClickHouse (`signoz-clickhouse`) mounts the same
+`docker/clickhouse/system-logs.xml` as rolter's own, so it does not write the
+`system.text_log`, `metric_log`, `asynchronous_metric_log` and the other tables
+ClickHouse keeps about itself (#2815), which on a small host keep its merge
+threads busy while the stack is idle. SigNoz reads none of them: its query
+service and schema migrator read `system.tables`, `columns`, `disks`, `clusters`,
+`databases`, `mutations` and `distributed_ddl_queue`. `query_log` stays. A volume
+created before the mount keeps the tables it already has; drop them as
+[the deployment guide](../../docs/dev-docs/deployment/docker.md) shows, with
+`-f docker/docker-compose.signoz.yml` and the service `signoz-clickhouse`.
+
 `just dogfood` provisions SigNoz with that login and imports the dashboards in
 `signoz/dashboards/` through `provision-signoz.sh`. Re-running is a no-op: a
 board whose title SigNoz already has is skipped.

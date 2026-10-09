@@ -268,6 +268,10 @@ It is idempotent and prints the roster: one account per persona, each holding
 exactly the role and scope its script assumes, all sharing the dogfood password
 from `creds.env`.
 
+Seed the fleet first (`just dogfood-seed`): `setup.ts`, which every run starts
+with, sends its cross-project traffic through `vllm-a100-01`, and a stack with
+no providers stops there.
+
 The scripts also run unattended. `integration/dogfood/journeys/` holds one
 TypeScript file per persona that walks its steps against this stack. Dashboard
 steps run in headless Chromium, signed in through the real login form. The rest
@@ -278,6 +282,13 @@ cleans up what it made:
 just dogfood-journeys              # every script; `just dogfood-journeys lead app` for some
 just dogfood-screens               # every persona account against every dashboard screen
 ```
+
+The scripts that sign in as a persona read the scope switcher in the rail header
+(`scopeOf` in `harness.ts`): they open the **Scope: …** button and read the
+**Organization**, **Team** and **Project** pickers once they have stopped loading,
+and `admin.ts` A2.1 and A2.2 drive the **Team actions** and **Project actions**
+menus (#2805, #2823). `just dogfood-screens` is `survey.ts`, the one script
+`just dogfood-journeys` does not run.
 
 Results, one screenshot per step and a summary table land in
 `integration/dogfood/.journeys/`. The runner uses the dashboard's own
