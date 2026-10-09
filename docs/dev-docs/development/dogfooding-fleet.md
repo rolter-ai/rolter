@@ -144,6 +144,12 @@ chart on their own defaults.
   (its snapshot keeps the flag; checked in #2834), but the provider would then
   be config-owned and locked in the dashboard, so the harness waits for #1133.
 
+- **`just dogfood` waits for the control plane and the gateway to answer.**
+  The steps after start-up (minting the sheet's virtual key, the adaptive
+  switch and payload capture below) all call the control plane, and a fixed
+  sleep lost the race to a cold `cargo run` (#2870). The recipe polls each
+  process's `/healthz` for up to two minutes and says so if one never answers;
+  a key it could not mint is reported with `just dogfood-key` as the retry.
 - **Payload capture is switched on by `just dogfood`.** `gateway.toml` declares
   `[logging.payload_capture] enabled = true`, but the first snapshot replaces it
   with the `logging_settings` row, which ships with capture off and which only

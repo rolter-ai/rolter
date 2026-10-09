@@ -265,7 +265,19 @@ dogfood:
         ROLTER_UI_OTEL_SERVICE_NAME=rolter-ui \
         cargo run -q -p rolter-control --features postgres --bin rolter-control 2>&1 \
         | sed 's/^/[control] /' ) &
-    sleep 6
+    # a fixed sleep lost the race to a cold `cargo run`, or to a host waiting on
+    # the cargo build lock, and every step below then missed the control plane
+    # (#2870). wait for each process to answer instead, bounded, and say so when
+    # it never does: the stack keeps running and the steps report their own retry
+    wait_up() {
+      for _ in $(seq 1 120); do
+        curl -fsS -o /dev/null "$2" 2>/dev/null && return 0
+        sleep 1
+      done
+      echo "[dogfood] $1 did not answer $2 within 2 minutes; the steps that need it will say how to retry" >&2
+      return 1
+    }
+    wait_up "the control plane" http://127.0.0.1:4001/healthz || true
     # ROLTER_NODE_ID is not optional in practice: without it (and without a
     # HOSTNAME, which a shell-launched process does not have) the gateway posts
     # its cluster heartbeat and its adaptive-routing telemetry with no node
@@ -279,8 +291,10 @@ dogfood:
         ROLTER_NODE_ID=dogfood-gw-1 \
         cargo run -q -p rolter-gateway -- --config "$d/gateway.toml" 2>&1 \
         | sed 's/^/[gateway] /' ) &
-    sleep 6
-    just dogfood-key >/dev/null 2>&1 || true
+    wait_up "the gateway" http://127.0.0.1:4000/healthz || true
+    # the key goes to integration/dogfood/.virtual-key for the sheet; a miss used
+    # to vanish into /dev/null and leave the sheet without one (#2870)
+    just dogfood-key >/dev/null || echo "[dogfood] could not mint the dashboard virtual key; rerun with: just dogfood-key" >&2
     # the adaptive strategy only routes once the deployment-wide kill switch is
     # on, and it ships off. nothing else here turns it on (`rolter-seed
     # --import` does not write it, #1818), so without this `deepseek-r1` serves
