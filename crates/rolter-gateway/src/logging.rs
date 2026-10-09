@@ -650,8 +650,16 @@ fn merge_usage(usage: &mut Usage, value: &Value) {
                     .saturating_add(cache_beside("cache_creation_input_tokens").unwrap_or(0))
             })
         });
-        let completion =
-            u32_field(u, "completion_tokens").or_else(|| u32_field(u, "output_tokens"));
+        // reasoning tokens are inside the completion except for a provider
+        // that states them beside it (xai, whose `total_tokens` is the only
+        // figure to add them up), and they are billed as output either way
+        // (#2888)
+        let reasoning_beside = rolter_proxy::reasoning_tokens_beside_completion(u)
+            .map(|n| n as u32)
+            .unwrap_or(0);
+        let completion = u32_field(u, "completion_tokens")
+            .or_else(|| u32_field(u, "output_tokens"))
+            .map(|c| c.saturating_add(reasoning_beside));
         if let Some(p) = prompt {
             usage.prompt = usage.prompt.max(p);
         }
@@ -668,18 +676,19 @@ fn merge_usage(usage: &mut Usage, value: &Value) {
         // `cached_tokens` and gigachat's `precached_prompt_tokens` (#2877).
         // the translators read the same list, so a body keeps its figure
         // across a dialect hop
-        let detail = |pointer: &str| u.pointer(pointer).and_then(Value::as_u64).map(|n| n as u32);
         if let Some(read) = cache_beside("cache_read_input_tokens")
             .or_else(|| rolter_proxy::cached_prompt_tokens(u).map(|n| n as u32))
         {
             usage.cache_read = usage.cache_read.max(read);
         }
-        // the write count has no OpenAI field; anthropic's own, or the
-        // `cache_write_tokens` the translators (and OpenRouter) put beside
-        // `cached_tokens`
+        // the write count has no OpenAI field; anthropic's own, or one of the
+        // spellings that count it inside the prompt total, which the
+        // translators read from the same list: the `cache_write_tokens` they
+        // (and OpenRouter, Perplexity) put beside `cached_tokens`, qwen's
+        // `cache_creation_input_tokens` in the details block (#2879) and
+        // vllm's `created_cache_tokens`
         if let Some(write) = cache_beside("cache_creation_input_tokens")
-            .or_else(|| detail("/prompt_tokens_details/cache_write_tokens"))
-            .or_else(|| detail("/input_tokens_details/cache_write_tokens"))
+            .or_else(|| rolter_proxy::cache_written_prompt_tokens(u).map(|n| n as u32))
         {
             usage.cache_write = usage.cache_write.max(write);
         }
@@ -2034,7 +2043,10 @@ data: {\"type\":\"message_delta\",\"usage\":{\"input_tokens\":10,\"cache_creatio
     }
 
     /// a Chat Completions object that also carries anthropic's field names
-    /// (some gateways add them) already counts the cache in `prompt_tokens`
+    /// (some gateways add them) already counts the cache in `prompt_tokens`.
+    /// Databricks-hosted Claude is one: its reference returns
+    /// `cache_read_input_tokens` and `cache_creation_input_tokens` "as a
+    /// top-level usage field" beside `prompt_tokens` (#2882)
     #[test]
     fn a_prompt_total_that_includes_the_cache_is_not_added_to_again() {
         let body = br#"{"usage":{"prompt_tokens":90,"completion_tokens":5,
@@ -2063,6 +2075,124 @@ data: {\"type\":\"message_delta\",\"usage\":{\"input_tokens\":10,\"cache_creatio
             assert_eq!(usage.cache_read, 80, "{details}");
             assert_eq!(usage.cache_write, 30, "{details}");
         }
+    }
+
+    /// qwen's explicit cache (#2879) and vllm's prefix cache name the write in
+    /// the details block under their own names, and both count it inside the
+    /// prompt, so the prompt total is left as it was
+    #[test]
+    fn a_cache_write_count_is_read_under_qwens_and_vllms_names() {
+        for (name, field) in [
+            ("qwen", "cache_creation_input_tokens"),
+            ("vllm", "created_cache_tokens"),
+        ] {
+            let usage = format!(
+                r#"{{"prompt_tokens":120,"completion_tokens":5,"total_tokens":125,"prompt_tokens_details":{{"cached_tokens":80,"{field}":30}}}}"#
+            );
+            let body = format!(r#"{{"usage":{usage}}}"#);
+            let chunk = format!("data: {{\"choices\":[],\"usage\":{usage}}}\n\ndata: [DONE]\n\n");
+            for (shape, parsed) in [
+                ("buffered", parse_usage(false, body.as_bytes())),
+                ("streamed", parse_usage(true, chunk.as_bytes())),
+            ] {
+                assert_eq!(parsed.prompt, 120, "{name} {shape}");
+                assert_eq!(parsed.cache_read, 80, "{name} {shape}");
+                assert_eq!(parsed.cache_write, 30, "{name} {shape}");
+            }
+        }
+    }
+
+    /// the usage block each provider's own reference describes (#2882), as the
+    /// log reads it: the hit is inside the prompt total for every one of them
+    #[test]
+    fn the_documented_cache_hit_of_every_confirmed_provider_is_logged() {
+        // (provider, usage, prompt, cache read, cache write)
+        let documented = [
+            // docs.mistral.ai prompt caching guide
+            (
+                "mistral",
+                r#"{"prompt_tokens":1013,"total_tokens":1043,"completion_tokens":30,"prompt_tokens_details":{"cached_tokens":1008}}"#,
+                1013,
+                1008,
+                0,
+            ),
+            // docs.together.ai: some models return it flat
+            (
+                "together",
+                r#"{"prompt_tokens":3417,"completion_tokens":64,"total_tokens":3481,"cached_tokens":3327}"#,
+                3417,
+                3327,
+                0,
+            ),
+            // platform.minimax.io prompt caching guide
+            (
+                "minimax",
+                r#"{"prompt_tokens":1200,"completion_tokens":300,"total_tokens":1500,"prompt_tokens_details":{"cached_tokens":800}}"#,
+                1200,
+                800,
+                0,
+            ),
+            // the Responses API form of Bedrock's OpenAI models
+            (
+                "bedrock",
+                r#"{"input_tokens":2048,"output_tokens":256,"total_tokens":2304,"input_tokens_details":{"cached_tokens":1920,"cache_write_tokens":0}}"#,
+                2048,
+                1920,
+                0,
+            ),
+            // docs.perplexity.ai: `prompt_tokens` includes "cache reads and writes"
+            (
+                "perplexity",
+                r#"{"prompt_tokens":4096,"completion_tokens":20,"total_tokens":4116,"prompt_tokens_details":{"cached_tokens":3072,"cache_write_tokens":1024}}"#,
+                4096,
+                3072,
+                1024,
+            ),
+        ];
+        for (name, usage, prompt, read, write) in documented {
+            let body = format!(r#"{{"usage":{usage}}}"#);
+            let parsed = parse_usage(false, body.as_bytes());
+            assert_eq!(parsed.prompt, prompt, "{name}");
+            assert_eq!(parsed.cache_read, read, "{name}");
+            assert_eq!(parsed.cache_write, write, "{name}");
+        }
+    }
+
+    /// xai states its reasoning tokens beside `completion_tokens`, and only
+    /// its total adds them up (#2888): 32 + 9 + 94 = 135, as its reference
+    /// prints. They are billed as output, so the completion is 9 + 94
+    #[test]
+    fn reasoning_beside_the_completion_is_logged_as_completion() {
+        let usage = r#"{"prompt_tokens":32,"completion_tokens":9,"total_tokens":135,"prompt_tokens_details":{"cached_tokens":6},"completion_tokens_details":{"reasoning_tokens":94}}"#;
+        let body = format!(r#"{{"usage":{usage}}}"#);
+        let chunk = format!("data: {{\"choices\":[],\"usage\":{usage}}}\n\ndata: [DONE]\n\n");
+        for (shape, parsed) in [
+            ("buffered", parse_usage(false, body.as_bytes())),
+            ("streamed", parse_usage(true, chunk.as_bytes())),
+        ] {
+            assert_eq!(parsed.prompt, 32, "{shape}");
+            assert_eq!(parsed.completion, 103, "{shape}");
+            assert_eq!(parsed.total, 135, "{shape}");
+            assert_eq!(parsed.cache_read, 6, "{shape}");
+        }
+    }
+
+    /// openai's convention, which most providers follow: the total is prompt
+    /// plus completion, so the reasoning is inside the completion already and
+    /// must not be added again
+    #[test]
+    fn reasoning_inside_the_completion_is_logged_once() {
+        let body = br#"{"usage":{"prompt_tokens":32,"completion_tokens":103,"total_tokens":135,
+            "completion_tokens_details":{"reasoning_tokens":94}}}"#;
+        let usage = parse_usage(false, body);
+        assert_eq!(usage.completion, 103);
+        assert_eq!(usage.total, 135);
+        // the Responses API form
+        let body = br#"{"usage":{"input_tokens":32,"output_tokens":103,"total_tokens":135,
+            "output_tokens_details":{"reasoning_tokens":94}}}"#;
+        let usage = parse_usage(false, body);
+        assert_eq!(usage.completion, 103);
+        assert_eq!(usage.total, 135);
     }
 
     /// priced: 10 fresh input and 30 written ones at one, 80 cached at the

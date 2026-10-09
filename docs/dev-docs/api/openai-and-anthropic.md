@@ -142,11 +142,32 @@ inside its prompt count, like Chat Completions.
 
 Chat Completions and Responses have no field for tokens written to the cache, so
 a write count travels as `cache_write_tokens` beside `cached_tokens` in the same
-details block (OpenRouter's spelling). The cache fields appear only when the
+details block (OpenRouter's spelling). A chat upstream that names its writes
+differently is read under its own name and re-emitted as `cache_write_tokens`:
+Qwen's `prompt_tokens_details.cache_creation_input_tokens` and vLLM's
+`created_cache_tokens` (#2879). The cache fields appear only when the
 upstream reported them: a provider without prompt caching gets none added, and
 no zero is stated that the provider never said. On a streamed Anthropic answer
 the closing chunk carries the input side from `message_start` together with the
 output side from `message_delta`.
+
+The thinking share of the completion follows the same rule (#2881). The
+OpenAI dialects state how much of the completion was reasoning, inside the
+completion count, so a chat or Responses client served by a thinking model
+(Gemini, or a chat upstream that reports the split) is shown it, and the
+Messages dialect, which has no field for it, is not:
+
+| Client dialect                            | Completion total                  | Reasoning share                              |
+| ----------------------------------------- | --------------------------------- | -------------------------------------------- |
+| Chat Completions (`/v1/chat/completions`) | `completion_tokens`, reasoning in | `completion_tokens_details.reasoning_tokens` |
+| Responses (`/v1/responses`)               | `output_tokens`, reasoning in     | `output_tokens_details.reasoning_tokens`     |
+| Messages (`/v1/messages`)                 | `output_tokens`, reasoning in     | not stated                                   |
+
+A Gemini answer with 5 candidate tokens and 20 thinking tokens reaches a chat
+client as `completion_tokens: 25` with `reasoning_tokens: 20`: the 20 are counted
+into the 25 once, never again. A body whose provider reported no thinking gets no
+details block. xAI, which states its reasoning tokens beside `completion_tokens`
+and only in its `total_tokens`, is folded into the completion first (#2888).
 
 The request log and the budgets read the same body the client receives, so a
 priced model is billed the cached share at `cached_input_per_mtok` and the

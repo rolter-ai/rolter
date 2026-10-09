@@ -24,6 +24,15 @@
 //! (DeepSeek, Kimi, GigaChat) must be priced at the cached rate on the way
 //! through and across a dialect hop (#2877).
 //!
+//! Two more follow-ups share it. Qwen's explicit cache reports the tokens it
+//! wrote under `prompt_tokens_details.cache_creation_input_tokens`, inside the
+//! prompt, and the row and the translators must read the count (#2879). The
+//! thinking share of the completion is named in the OpenAI dialects' details
+//! blocks (`completion_tokens_details.reasoning_tokens`,
+//! `output_tokens_details.reasoning_tokens`) but is inside the completion
+//! already, so a body carries it across without the row or the client counting
+//! it twice (#2881).
+//!
 //! There is no Gemini-dialect client in the gateway: the only client dialects
 //! are Chat Completions, Messages and Responses, so a native Gemini body is
 //! always translated before the client sees it or the row is built, and the two
@@ -375,6 +384,20 @@ const KIMI_USAGE: &str =
 /// GigaChat: `precached_prompt_tokens`.
 const GIGACHAT_USAGE: &str = r#"{"prompt_tokens":2000,"completion_tokens":3,"total_tokens":2003,"precached_prompt_tokens":1500}"#;
 
+/// Qwen on an explicit cache (#2879): the 100 tokens written to the cache are
+/// named in the details block beside the hit, and are inside `prompt_tokens`.
+const QWEN_USAGE: &str = r#"{"prompt_tokens":2000,"completion_tokens":3,"total_tokens":2003,"prompt_tokens_details":{"cached_tokens":1500,"cache_creation_input_tokens":100}}"#;
+
+/// A Chat Completions provider that breaks out its reasoning (#2881): 2000
+/// prompt tokens, 23 completion tokens of which 20 were thinking. The 23 are
+/// the whole completion, as OpenAI states it.
+const CHAT_REASONING_USAGE: &str = r#"{"prompt_tokens":2000,"completion_tokens":23,"total_tokens":2023,"completion_tokens_details":{"reasoning_tokens":20}}"#;
+
+/// xAI (#2888): the same 2000 prompt tokens, 3 answer tokens and 20 thinking
+/// ones, but the thinking is stated beside `completion_tokens` and only the
+/// total (2000 + 3 + 20) adds it up.
+const XAI_USAGE: &str = r#"{"prompt_tokens":2000,"completion_tokens":3,"total_tokens":2023,"completion_tokens_details":{"reasoning_tokens":20}}"#;
+
 // ── driving the gateway ─────────────────────────────────────────────────────
 
 /// One request from a `client` to a provider of `kind` answering `answer`;
@@ -471,6 +494,34 @@ fn assert_thinking_chat_usage(usage: &Value) {
     assert_eq!(usage["prompt_tokens"], 2000, "usage shown to the client");
     assert_eq!(usage["completion_tokens"], 23, "usage shown to the client");
     assert_eq!(usage["total_tokens"], 2023, "usage shown to the client");
+    assert_reasoning_named_chat(usage);
+}
+
+/// The 20 thinking tokens are named in the chat details block and are part of
+/// the 23, not on top of them (#2881).
+fn assert_reasoning_named_chat(usage: &Value) {
+    assert_eq!(
+        usage["completion_tokens_details"]["reasoning_tokens"], 20,
+        "usage shown to the client"
+    );
+}
+
+/// The same under the Responses names.
+fn assert_reasoning_named_responses(usage: &Value) {
+    assert_eq!(usage["output_tokens"], 23, "usage shown to the client");
+    assert_eq!(
+        usage["output_tokens_details"]["reasoning_tokens"], 20,
+        "usage shown to the client"
+    );
+}
+
+/// Messages has no field for the thinking share.
+fn assert_no_reasoning_named(usage: &Value) {
+    let text = usage.to_string();
+    assert!(
+        !text.contains("reasoning"),
+        "usage shown to the client: {text}"
+    );
 }
 
 /// What a chat client reads: the cache inside `prompt_tokens`, named in
@@ -751,6 +802,7 @@ async fn gemini_thinking_answer_to_a_messages_client_is_priced_for_its_thoughts(
     let usage = shown_usage(&body);
     assert_eq!(usage["input_tokens"], 2000, "usage shown to the client");
     assert_eq!(usage["output_tokens"], 23, "usage shown to the client");
+    assert_no_reasoning_named(&usage);
     assert_priced_with_the_thoughts(&row);
 }
 
@@ -768,6 +820,7 @@ async fn gemini_thinking_stream_to_a_responses_client_is_priced_for_its_thoughts
     assert_eq!(usage["input_tokens"], 2000, "usage shown to the client");
     assert_eq!(usage["output_tokens"], 23, "usage shown to the client");
     assert_eq!(usage["total_tokens"], 2023, "usage shown to the client");
+    assert_reasoning_named_responses(&usage);
     assert_priced_with_the_thoughts(&row);
 }
 
@@ -801,7 +854,76 @@ async fn interactions_stream_to_a_responses_client_is_priced_for_its_thoughts_an
     .await;
     let usage = shown_usage(&body);
     assert_eq!(usage["input_tokens"], 2000, "usage shown to the client");
+    assert_reasoning_named_responses(&usage);
+    assert_priced_with_the_thoughts(&row);
+}
+
+// ── a Chat Completions provider that breaks out its reasoning (#2881) ───────
+// the 20 thinking tokens are inside the 23 the provider states. the row must
+// log 23, not 43, and a Responses client is shown the same 23 with the share
+// named; before there was no field for it, so it was dropped on the way
+
+#[tokio::test]
+async fn chat_reasoning_answer_to_a_chat_client_is_logged_once() {
+    let (body, row) = exchange(
+        "reasoning-chat-buffered",
+        ProviderKind::OpenaiCompatible,
+        Client::Chat,
+        false,
+        chat_completion_with(CHAT_REASONING_USAGE),
+    )
+    .await;
+    // nothing is translated: the provider's body is the client's
+    assert_thinking_chat_usage(&shown_usage(&body));
+    assert_priced_with_the_thoughts(&row);
+}
+
+#[tokio::test]
+async fn chat_reasoning_answer_to_a_responses_client_names_the_share() {
+    let (body, row) = exchange(
+        "reasoning-responses-buffered",
+        ProviderKind::OpenaiCompatible,
+        Client::Responses,
+        false,
+        chat_completion_with(CHAT_REASONING_USAGE),
+    )
+    .await;
+    let usage = shown_usage(&body);
+    assert_eq!(usage["input_tokens"], 2000, "usage shown to the client");
+    assert_eq!(usage["total_tokens"], 2023, "usage shown to the client");
+    assert_reasoning_named_responses(&usage);
+    assert_priced_with_the_thoughts(&row);
+}
+
+#[tokio::test]
+async fn chat_reasoning_stream_to_a_responses_client_names_the_share() {
+    let (body, row) = exchange(
+        "reasoning-responses-streamed",
+        ProviderKind::OpenaiCompatible,
+        Client::Responses,
+        true,
+        chat_stream_with(CHAT_REASONING_USAGE),
+    )
+    .await;
+    let usage = shown_usage(&body);
+    assert_eq!(usage["total_tokens"], 2023, "usage shown to the client");
+    assert_reasoning_named_responses(&usage);
+    assert_priced_with_the_thoughts(&row);
+}
+
+#[tokio::test]
+async fn chat_reasoning_answer_to_a_messages_client_has_nowhere_to_name_it() {
+    let (body, row) = exchange(
+        "reasoning-messages-buffered",
+        ProviderKind::OpenaiCompatible,
+        Client::Messages,
+        false,
+        chat_completion_with(CHAT_REASONING_USAGE),
+    )
+    .await;
+    let usage = shown_usage(&body);
     assert_eq!(usage["output_tokens"], 23, "usage shown to the client");
+    assert_no_reasoning_named(&usage);
     assert_priced_with_the_thoughts(&row);
 }
 
@@ -903,4 +1025,145 @@ async fn gigachat_answer_to_a_chat_client_is_priced_with_its_cache() {
     )
     .await;
     assert_priced_with_the_cache(&row);
+}
+
+// ── a cache write spelled by Qwen (#2879) ───────────────────────────────────
+// Qwen's explicit cache names the tokens it wrote under
+// `prompt_tokens_details.cache_creation_input_tokens`, inside `prompt_tokens`.
+// a request that created a cache entry used to be logged with no write
+
+#[tokio::test]
+async fn qwen_answer_to_a_chat_client_logs_its_cache_write() {
+    let (_, row) = exchange(
+        "qwen-chat-buffered",
+        ProviderKind::Qwen,
+        Client::Chat,
+        false,
+        chat_completion_with(QWEN_USAGE),
+    )
+    .await;
+    assert_priced_with_the_cache(&row);
+    assert_cache_write_counted(&row);
+}
+
+#[tokio::test]
+async fn qwen_stream_to_a_chat_client_logs_its_cache_write() {
+    let (_, row) = exchange(
+        "qwen-chat-streamed",
+        ProviderKind::Qwen,
+        Client::Chat,
+        true,
+        chat_stream_with(QWEN_USAGE),
+    )
+    .await;
+    assert_priced_with_the_cache(&row);
+    assert_cache_write_counted(&row);
+}
+
+#[tokio::test]
+async fn qwen_answer_to_a_messages_client_carries_its_cache_write() {
+    let (body, row) = exchange(
+        "qwen-messages-buffered",
+        ProviderKind::Qwen,
+        Client::Messages,
+        false,
+        chat_completion_with(QWEN_USAGE),
+    )
+    .await;
+    // anthropic's `input_tokens` leaves the reads and the writes out
+    let usage = shown_usage(&body);
+    assert_eq!(usage["input_tokens"], 400, "usage shown to the client");
+    assert_eq!(
+        usage["cache_read_input_tokens"], 1500,
+        "usage shown to the client"
+    );
+    assert_eq!(
+        usage["cache_creation_input_tokens"], 100,
+        "usage shown to the client"
+    );
+    assert_priced_with_the_cache(&row);
+    assert_cache_write_counted(&row);
+}
+
+#[tokio::test]
+async fn qwen_stream_to_a_responses_client_carries_its_cache_write() {
+    let (body, row) = exchange(
+        "qwen-responses-streamed",
+        ProviderKind::Qwen,
+        Client::Responses,
+        true,
+        chat_stream_with(QWEN_USAGE),
+    )
+    .await;
+    let usage = shown_usage(&body);
+    assert_responses_usage(&usage);
+    assert_eq!(
+        usage["input_tokens_details"]["cache_write_tokens"], 100,
+        "usage shown to the client"
+    );
+    assert_priced_with_the_cache(&row);
+    assert_cache_write_counted(&row);
+}
+
+// ── a provider that states reasoning beside the completion (#2888) ──────────
+// xAI bills the 20 thinking tokens as output but does not count them in
+// `completion_tokens`, so the row used to log 3 and be charged 2003 where the
+// provider charged 2023
+
+#[tokio::test]
+async fn xai_answer_to_a_chat_client_is_logged_with_its_reasoning() {
+    let (_, row) = exchange(
+        "xai-chat-buffered",
+        ProviderKind::Xai,
+        Client::Chat,
+        false,
+        chat_completion_with(XAI_USAGE),
+    )
+    .await;
+    assert_priced_with_the_thoughts(&row);
+}
+
+#[tokio::test]
+async fn xai_stream_to_a_chat_client_is_logged_with_its_reasoning() {
+    let (_, row) = exchange(
+        "xai-chat-streamed",
+        ProviderKind::Xai,
+        Client::Chat,
+        true,
+        chat_stream_with(XAI_USAGE),
+    )
+    .await;
+    assert_priced_with_the_thoughts(&row);
+}
+
+#[tokio::test]
+async fn xai_answer_to_a_responses_client_counts_its_reasoning_once() {
+    let (body, row) = exchange(
+        "xai-responses-buffered",
+        ProviderKind::Xai,
+        Client::Responses,
+        false,
+        chat_completion_with(XAI_USAGE),
+    )
+    .await;
+    let usage = shown_usage(&body);
+    assert_eq!(usage["total_tokens"], 2023, "usage shown to the client");
+    assert_reasoning_named_responses(&usage);
+    assert_priced_with_the_thoughts(&row);
+}
+
+#[tokio::test]
+async fn xai_stream_to_a_messages_client_counts_its_reasoning_once() {
+    let (body, row) = exchange(
+        "xai-messages-streamed",
+        ProviderKind::Xai,
+        Client::Messages,
+        true,
+        chat_stream_with(XAI_USAGE),
+    )
+    .await;
+    let usage = shown_usage(&body);
+    assert_eq!(usage["output_tokens"], 23, "usage shown to the client");
+    assert_no_reasoning_named(&usage);
+    assert_priced_with_the_thoughts(&row);
 }

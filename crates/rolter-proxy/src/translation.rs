@@ -1008,6 +1008,73 @@ pub fn cached_prompt_tokens(usage: &Value) -> Option<u64> {
         .find_map(|pointer| usage.pointer(pointer)?.as_u64())
 }
 
+/// The prompt tokens an OpenAI-shaped `usage` object says were written to the
+/// provider's cache, whichever way the provider spells it (#2879). Like a hit
+/// (see [`cached_prompt_tokens`]) a write is counted *inside* the prompt total:
+///
+/// - `prompt_tokens_details.cache_write_tokens`: OpenRouter and Perplexity, and
+///   the name the translators give it; `input_tokens_details.cache_write_tokens`
+///   is the Responses API form (Bedrock's OpenAI models)
+/// - `prompt_tokens_details.cache_creation_input_tokens`: Qwen (Alibaba Model
+///   Studio) on an explicit cache. Its context-cache guide counts the creation
+///   tokens, like `cached_tokens`, as part of `prompt_tokens`
+/// - `prompt_tokens_details.created_cache_tokens`: vLLM's count of the prompt
+///   tokens it wrote to its local prefix cache for the request
+///
+/// The first spelling present wins. Anthropic's own
+/// `cache_creation_input_tokens`, at the top of `usage`, is not here on purpose:
+/// it sits *beside* `input_tokens`, so the callers that read it also add it
+/// back into the prompt.
+pub fn cache_written_prompt_tokens(usage: &Value) -> Option<u64> {
+    const SPELLINGS: [&str; 4] = [
+        "/prompt_tokens_details/cache_write_tokens",
+        "/input_tokens_details/cache_write_tokens",
+        "/prompt_tokens_details/cache_creation_input_tokens",
+        "/prompt_tokens_details/created_cache_tokens",
+    ];
+    SPELLINGS
+        .iter()
+        .find_map(|pointer| usage.pointer(pointer)?.as_u64())
+}
+
+/// The reasoning share of an OpenAI-shaped `usage` object's completion, from
+/// the details block of either API: `completion_tokens_details` on Chat
+/// Completions, `output_tokens_details` on the Responses API (#2881).
+fn reasoning_completion_tokens(usage: &Value) -> Option<u64> {
+    const SPELLINGS: [&str; 2] = [
+        "/completion_tokens_details/reasoning_tokens",
+        "/output_tokens_details/reasoning_tokens",
+    ];
+    SPELLINGS
+        .iter()
+        .find_map(|pointer| usage.pointer(pointer)?.as_u64())
+}
+
+/// The reasoning tokens a provider counts *beside* its completion rather than
+/// inside it (#2888), for the caller to add to the completion it read.
+///
+/// OpenAI states `completion_tokens` as the whole completion, reasoning
+/// included, and `total_tokens` as prompt plus completion. xAI states its
+/// reasoning tokens apart from `completion_tokens` and only `total_tokens` adds
+/// the three up (its reference prints 32 + 9 + 94 = 135), while billing them as
+/// output. The provider's own total is the arbiter: reasoning is beside the
+/// completion exactly when the total is the sum of all three, so a provider
+/// that already counts it inside is never added to twice.
+pub fn reasoning_tokens_beside_completion(usage: &Value) -> Option<u64> {
+    let reasoning = reasoning_completion_tokens(usage).filter(|reasoning| *reasoning > 0)?;
+    let count = |key: &str, alternative: &str| {
+        usage
+            .get(key)
+            .or_else(|| usage.get(alternative))
+            .and_then(Value::as_u64)
+    };
+    let prompt = count("prompt_tokens", "input_tokens")?;
+    let completion = count("completion_tokens", "output_tokens")?;
+    let total = usage.get("total_tokens")?.as_u64()?;
+    let inside = prompt.saturating_add(completion);
+    (total == inside.saturating_add(reasoning)).then_some(reasoning)
+}
+
 /// Token counts of one usage object, held in the one shape every dialect
 /// converts through.
 ///
@@ -1029,6 +1096,11 @@ pub fn cached_prompt_tokens(usage: &Value) -> Option<u64> {
 /// are added to `completion`. Tool-use prompt tokens (`toolUsePromptTokenCount`,
 /// `total_tool_use_tokens`) are what a built-in tool such as URL context fed
 /// back to the model, charged as input tokens, so they are added to `prompt`.
+///
+/// The thinking share is also kept apart in `reasoning` (#2881), because the
+/// OpenAI dialects state it: it is *part of* `completion`, never added to it a
+/// second time, and the Chat Completions and Responses emitters name it in
+/// their details block. Messages has no field for it.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 struct TokenUsage {
     /// every prompt token, cache reads and writes included
@@ -1040,6 +1112,10 @@ struct TokenUsage {
     cache_read: Option<u64>,
     /// prompt tokens written to the provider's cache
     cache_write: Option<u64>,
+    /// the tokens of `completion` the model spent thinking. `None` when the
+    /// source did not break it out, so a translated body does not state a zero
+    /// the provider never reported
+    reasoning: Option<u64>,
     /// the provider's own `total_tokens` when a chat or responses body states
     /// one; the sum of prompt and completion otherwise. Gemini and Interactions
     /// never set it: their totals cover thinking and tool-use tokens, which are
@@ -1062,6 +1138,7 @@ impl TokenUsage {
             completion: count("output_tokens").unwrap_or(0),
             cache_read,
             cache_write,
+            reasoning: None,
             total: None,
         }
     }
@@ -1071,8 +1148,11 @@ impl TokenUsage {
     /// `prompt_tokens_details` / `input_tokens_details`, inside the prompt.
     /// Providers that cache without following that shape spell the share
     /// elsewhere (see [`cached_prompt_tokens`]), which is read too.
-    /// `cache_write_tokens` is not part of either API; gateways that report a
-    /// write count (OpenRouter) put it beside `cached_tokens`.
+    /// A write count is not part of either API; the providers that report one
+    /// spell it in a few ways (see [`cache_written_prompt_tokens`]). The
+    /// reasoning share is inside the completion count, so it is kept apart and
+    /// not added to it, except for a provider that counts it beside the
+    /// completion (see [`reasoning_tokens_beside_completion`]).
     fn from_openai(usage: &Value) -> Self {
         let count = |key: &str, alternative: &str| {
             usage
@@ -1080,16 +1160,14 @@ impl TokenUsage {
                 .or_else(|| usage.get(alternative))
                 .and_then(Value::as_u64)
         };
-        let detail = |field: &str| {
-            ["prompt_tokens_details", "input_tokens_details"]
-                .iter()
-                .find_map(|block| usage.get(*block)?.get(field)?.as_u64())
-        };
         Self {
             prompt: count("prompt_tokens", "input_tokens").unwrap_or(0),
-            completion: count("completion_tokens", "output_tokens").unwrap_or(0),
+            completion: count("completion_tokens", "output_tokens")
+                .unwrap_or(0)
+                .saturating_add(reasoning_tokens_beside_completion(usage).unwrap_or(0)),
             cache_read: cached_prompt_tokens(usage),
-            cache_write: detail("cache_write_tokens"),
+            cache_write: cache_written_prompt_tokens(usage),
+            reasoning: reasoning_completion_tokens(usage),
             total: usage.get("total_tokens").and_then(Value::as_u64),
         }
     }
@@ -1122,6 +1200,7 @@ impl TokenUsage {
                 .saturating_add(count("thoughtsTokenCount").unwrap_or(0)),
             cache_read: count("cachedContentTokenCount"),
             cache_write: None,
+            reasoning: count("thoughtsTokenCount"),
             total: None,
         }
     }
@@ -1139,6 +1218,7 @@ impl TokenUsage {
         self.completion = self.completion.max(later.completion);
         self.cache_read = larger(self.cache_read, later.cache_read);
         self.cache_write = larger(self.cache_write, later.cache_write);
+        self.reasoning = larger(self.reasoning, later.reasoning);
         self.total = larger(self.total, later.total);
     }
 
@@ -1161,6 +1241,13 @@ impl TokenUsage {
         Some(Value::Object(details))
     }
 
+    /// `{reasoning_tokens}`, the block both OpenAI shapes nest under their own
+    /// name. `None` when the source did not break the thinking out.
+    fn reasoning_details(&self) -> Option<Value> {
+        self.reasoning
+            .map(|reasoning| json!({ "reasoning_tokens": reasoning }))
+    }
+
     /// The usage object of a Chat Completions body or chunk.
     fn to_chat(self) -> Value {
         let mut usage = json!({
@@ -1170,6 +1257,9 @@ impl TokenUsage {
         });
         if let Some(details) = self.cache_details() {
             usage["prompt_tokens_details"] = details;
+        }
+        if let Some(details) = self.reasoning_details() {
+            usage["completion_tokens_details"] = details;
         }
         usage
     }
@@ -1184,11 +1274,15 @@ impl TokenUsage {
         if let Some(details) = self.cache_details() {
             usage["input_tokens_details"] = details;
         }
+        if let Some(details) = self.reasoning_details() {
+            usage["output_tokens_details"] = details;
+        }
         usage
     }
 
     /// The usage object of an Anthropic message: `input_tokens` is what is
     /// left of the prompt once the cache reads and writes are taken off.
+    /// Messages has no field for the reasoning share, so it is not stated.
     fn to_anthropic(self) -> Value {
         let cached = self
             .cache_read
@@ -1947,6 +2041,7 @@ fn interaction_usage(usage: Option<&Value>) -> TokenUsage {
         completion: completion.saturating_add(thoughts.unwrap_or(0)),
         cache_read: field(&["total_cached_tokens", "cached_tokens"]),
         cache_write: None,
+        reasoning: thoughts,
         total: None,
     }
 }
@@ -4092,5 +4187,530 @@ mod tests {
             assert_eq!(seen["input_tokens"], 120, "{name}");
             assert_eq!(seen["input_tokens_details"]["cached_tokens"], 80, "{name}");
         }
+    }
+
+    // ── cache writes spelled outside `cache_write_tokens` (#2879) ───────────
+
+    /// one case per spelling: the usage object a provider sends and who is
+    /// documented to send it. 120 prompt tokens, 80 read from the cache and 30
+    /// written to it, both inside the prompt
+    const WRITE_SPELLINGS: [(&str, &str); 3] = [
+        (
+            "openrouter",
+            r#"{"prompt_tokens":120,"completion_tokens":5,"total_tokens":125,"prompt_tokens_details":{"cached_tokens":80,"cache_write_tokens":30}}"#,
+        ),
+        (
+            "qwen",
+            r#"{"prompt_tokens":120,"completion_tokens":5,"total_tokens":125,"prompt_tokens_details":{"cached_tokens":80,"cache_creation_input_tokens":30}}"#,
+        ),
+        (
+            "vllm",
+            r#"{"prompt_tokens":120,"completion_tokens":5,"total_tokens":125,"prompt_tokens_details":{"cached_tokens":80,"created_cache_tokens":30}}"#,
+        ),
+    ];
+
+    #[test]
+    fn every_spelling_of_a_cache_write_is_read() {
+        for (name, usage) in WRITE_SPELLINGS {
+            let usage: Value = serde_json::from_str(usage).unwrap();
+            assert_eq!(cache_written_prompt_tokens(&usage), Some(30), "{name}");
+            let read = TokenUsage::from_openai(&usage);
+            assert_eq!(read.cache_write, Some(30), "{name}");
+            assert_eq!(read.cache_read, Some(80), "{name}");
+            assert_eq!(read.prompt, 120, "{name}: the write is inside the prompt");
+        }
+        // the Responses API form (Bedrock's OpenAI models state it there)
+        let responses = json!({
+            "input_tokens":120,"output_tokens":5,
+            "input_tokens_details":{"cached_tokens":80,"cache_write_tokens":30}
+        });
+        assert_eq!(cache_written_prompt_tokens(&responses), Some(30));
+        assert_eq!(TokenUsage::from_openai(&responses).cache_write, Some(30));
+    }
+
+    #[test]
+    fn a_usage_object_without_a_write_reports_none() {
+        let hit_only = json!({"prompt_tokens":120,"prompt_tokens_details":{"cached_tokens":80}});
+        assert_eq!(cache_written_prompt_tokens(&hit_only), None);
+        assert_eq!(TokenUsage::from_openai(&hit_only).cache_write, None);
+        // anthropic's own spelling sits beside `input_tokens`, so it is not an
+        // OpenAI-shaped write count and the callers that read it add it back
+        let anthropic = json!({"input_tokens":10,"cache_creation_input_tokens":30});
+        assert_eq!(cache_written_prompt_tokens(&anthropic), None);
+        // a null is not a count
+        let null = json!({"prompt_tokens_details":{"cache_creation_input_tokens":null}});
+        assert_eq!(cache_written_prompt_tokens(&null), None);
+    }
+
+    #[test]
+    fn a_write_reported_twice_is_one_write() {
+        let usage = json!({
+            "prompt_tokens":120,
+            "prompt_tokens_details":{"cache_write_tokens":30,"cache_creation_input_tokens":30}
+        });
+        assert_eq!(cache_written_prompt_tokens(&usage), Some(30));
+    }
+
+    #[test]
+    fn a_differently_spelled_write_reaches_every_client_dialect() {
+        for (name, usage) in WRITE_SPELLINGS {
+            // Messages: the reads and the writes both come off the prompt
+            let v = translate_json_body(
+                Protocol::AnthropicMessages,
+                Protocol::OpenAiChat,
+                chat_body_with_usage(usage),
+            );
+            assert_eq!(v["usage"]["input_tokens"], 10, "{name}");
+            assert_eq!(v["usage"]["cache_read_input_tokens"], 80, "{name}");
+            assert_eq!(v["usage"]["cache_creation_input_tokens"], 30, "{name}");
+
+            // Responses: both stay inside the input
+            let v = translate_json_body(
+                Protocol::OpenAiResponses,
+                Protocol::OpenAiChat,
+                chat_body_with_usage(usage),
+            );
+            assert_eq!(v["usage"]["input_tokens"], 120, "{name}");
+            assert_eq!(
+                v["usage"]["input_tokens_details"]["cached_tokens"], 80,
+                "{name}"
+            );
+            assert_eq!(
+                v["usage"]["input_tokens_details"]["cache_write_tokens"], 30,
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_differently_spelled_write_on_a_stream_reaches_every_client_dialect() {
+        for (name, usage) in WRITE_SPELLINGS {
+            let sse = format!(
+                "data: {{\"id\":\"c1\",\"model\":\"m\",\"choices\":[{{\"index\":0,\"delta\":{{\"content\":\"hi\"}}}}]}}\n\n\
+                 data: {{\"id\":\"c1\",\"model\":\"m\",\"choices\":[{{\"index\":0,\"delta\":{{}},\"finish_reason\":\"stop\"}}]}}\n\n\
+                 data: {{\"id\":\"c1\",\"model\":\"m\",\"choices\":[],\"usage\":{usage}}}\n\n\
+                 data: [DONE]\n\n"
+            );
+            let out = translate_sse_body(Protocol::AnthropicMessages, Protocol::OpenAiChat, &sse);
+            let seen = last_usage(&out, Some("message_delta"));
+            assert_eq!(seen["input_tokens"], 10, "{name}");
+            assert_eq!(seen["cache_read_input_tokens"], 80, "{name}");
+            assert_eq!(seen["cache_creation_input_tokens"], 30, "{name}");
+
+            let out = translate_sse_body(Protocol::OpenAiResponses, Protocol::OpenAiChat, &sse);
+            let seen = last_usage(&out, Some("response.completed"));
+            assert_eq!(seen["input_tokens"], 120, "{name}");
+            assert_eq!(seen["input_tokens_details"]["cached_tokens"], 80, "{name}");
+            assert_eq!(
+                seen["input_tokens_details"]["cache_write_tokens"], 30,
+                "{name}"
+            );
+        }
+    }
+
+    // ── the reasoning share of the completion (#2881) ───────────────────────
+    // the thinking tokens are already inside the completion count, which is how
+    // the providers bill them and how OpenAI states them. the OpenAI dialects
+    // also name the share; it is carried across, never added a second time
+
+    /// 45 completion tokens, 16 of them reasoning
+    fn chat_reasoning_body() -> Value {
+        json!({
+            "id":"chat_1","model":"o",
+            "choices":[{"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],
+            "usage":{"prompt_tokens":120,"completion_tokens":45,"total_tokens":165,
+                     "completion_tokens_details":{"reasoning_tokens":16}},
+        })
+    }
+
+    #[test]
+    fn the_reasoning_share_is_read_from_both_openai_details_blocks() {
+        let chat = json!({
+            "prompt_tokens":120,"completion_tokens":45,
+            "completion_tokens_details":{"reasoning_tokens":16}
+        });
+        let responses = json!({
+            "input_tokens":120,"output_tokens":45,
+            "output_tokens_details":{"reasoning_tokens":16}
+        });
+        for (name, usage) in [("chat", chat), ("responses", responses)] {
+            let read = TokenUsage::from_openai(&usage);
+            assert_eq!(read.reasoning, Some(16), "{name}");
+            assert_eq!(read.completion, 45, "{name}: not added to the completion");
+        }
+        let none = json!({"prompt_tokens":120,"completion_tokens":45});
+        assert_eq!(TokenUsage::from_openai(&none).reasoning, None);
+        // a model that does not reason says so with a zero, which is a count
+        let zero =
+            json!({"completion_tokens":45,"completion_tokens_details":{"reasoning_tokens":0}});
+        assert_eq!(TokenUsage::from_openai(&zero).reasoning, Some(0));
+    }
+
+    #[test]
+    fn a_chat_answers_reasoning_reaches_a_responses_client_inside_the_output() {
+        let v = translate_json_body(
+            Protocol::OpenAiResponses,
+            Protocol::OpenAiChat,
+            chat_reasoning_body(),
+        );
+        assert_eq!(v["usage"]["output_tokens"], 45);
+        assert_eq!(v["usage"]["total_tokens"], 165);
+        assert_eq!(v["usage"]["output_tokens_details"]["reasoning_tokens"], 16);
+    }
+
+    /// Messages has no field for the share, and its `output_tokens` is the
+    /// whole completion all the same
+    #[test]
+    fn a_chat_answers_reasoning_is_not_stated_to_a_messages_client() {
+        let v = translate_json_body(
+            Protocol::AnthropicMessages,
+            Protocol::OpenAiChat,
+            chat_reasoning_body(),
+        );
+        assert_eq!(v["usage"]["output_tokens"], 45);
+        let text = v["usage"].to_string();
+        assert!(!text.contains("reasoning"), "{text}");
+    }
+
+    #[test]
+    fn a_body_that_reported_no_reasoning_states_none() {
+        let mut body = chat_reasoning_body();
+        body["usage"]
+            .as_object_mut()
+            .unwrap()
+            .remove("completion_tokens_details");
+        let v = translate_json_body(Protocol::OpenAiResponses, Protocol::OpenAiChat, body);
+        assert!(v["usage"].get("output_tokens_details").is_none());
+        // gemini, which reports a thinking count only for a thinking model
+        let v = translate_json_body(
+            Protocol::OpenAiChat,
+            Protocol::GeminiGenerate,
+            json!({
+                "candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}],
+                "usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":2,"totalTokenCount":7}
+            }),
+        );
+        assert!(v["usage"].get("completion_tokens_details").is_none());
+        // and an anthropic answer has nothing to break out
+        let v = translate_json_body(
+            Protocol::OpenAiChat,
+            Protocol::AnthropicMessages,
+            anthropic_cached_body(),
+        );
+        assert!(v["usage"].get("completion_tokens_details").is_none());
+    }
+
+    #[test]
+    fn gemini_thinking_is_named_for_chat_and_responses_clients() {
+        // 5 answer tokens and 20 thinking ones: 25 completion tokens, 20 of them
+        // reasoning
+        let v = translate_json_body(
+            Protocol::OpenAiChat,
+            Protocol::GeminiGenerate,
+            gemini_thinking_body(),
+        );
+        assert_eq!(v["usage"]["completion_tokens"], 25);
+        assert_eq!(v["usage"]["total_tokens"], 125);
+        assert_eq!(
+            v["usage"]["completion_tokens_details"]["reasoning_tokens"],
+            20
+        );
+
+        let v = translate_json_body(
+            Protocol::OpenAiResponses,
+            Protocol::GeminiGenerate,
+            gemini_thinking_body(),
+        );
+        assert_eq!(v["usage"]["output_tokens"], 25);
+        assert_eq!(v["usage"]["output_tokens_details"]["reasoning_tokens"], 20);
+
+        let v = translate_json_body(
+            Protocol::AnthropicMessages,
+            Protocol::GeminiGenerate,
+            gemini_thinking_body(),
+        );
+        assert_eq!(v["usage"]["output_tokens"], 25);
+        let text = v["usage"].to_string();
+        assert!(!text.contains("reasoning"), "{text}");
+    }
+
+    #[test]
+    fn interactions_thinking_is_named_for_chat_and_responses_clients() {
+        let body = interaction_thinking_body(json!({
+            "total_input_tokens":100,"total_output_tokens":5,"total_thought_tokens":20
+        }));
+        let v = translate_json_body(
+            Protocol::OpenAiChat,
+            Protocol::GeminiInteractions,
+            body.clone(),
+        );
+        assert_eq!(v["usage"]["completion_tokens"], 25);
+        assert_eq!(
+            v["usage"]["completion_tokens_details"]["reasoning_tokens"],
+            20
+        );
+
+        let v = translate_json_body(
+            Protocol::OpenAiResponses,
+            Protocol::GeminiInteractions,
+            body,
+        );
+        assert_eq!(v["usage"]["output_tokens"], 25);
+        assert_eq!(v["usage"]["output_tokens_details"]["reasoning_tokens"], 20);
+    }
+
+    #[test]
+    fn streamed_reasoning_is_named_for_chat_and_responses_clients() {
+        let gemini = "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"hi\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":100,\"candidatesTokenCount\":5,\"thoughtsTokenCount\":20,\"totalTokenCount\":125}}\n\n";
+        let out = translate_sse_body(Protocol::OpenAiChat, Protocol::GeminiGenerate, gemini);
+        let usage = last_usage(&out, None);
+        assert_eq!(usage["completion_tokens"], 25);
+        assert_eq!(usage["completion_tokens_details"]["reasoning_tokens"], 20);
+
+        let out = translate_sse_body(Protocol::OpenAiResponses, Protocol::GeminiGenerate, gemini);
+        let usage = last_usage(&out, Some("response.completed"));
+        assert_eq!(usage["output_tokens"], 25);
+        assert_eq!(usage["output_tokens_details"]["reasoning_tokens"], 20);
+
+        let out = translate_sse_body(
+            Protocol::AnthropicMessages,
+            Protocol::GeminiGenerate,
+            gemini,
+        );
+        let text = last_usage(&out, Some("message_delta")).to_string();
+        assert!(!text.contains("reasoning"), "{text}");
+
+        let interactions = "data: {\"event_type\":\"interaction.completed\",\"interaction\":{\"status\":\"completed\",\"usage\":{\"total_input_tokens\":100,\"total_output_tokens\":5,\"total_thought_tokens\":20}}}\n\n";
+        let out = translate_sse_body(
+            Protocol::OpenAiResponses,
+            Protocol::GeminiInteractions,
+            interactions,
+        );
+        let usage = last_usage(&out, Some("response.completed"));
+        assert_eq!(usage["output_tokens"], 25);
+        assert_eq!(usage["output_tokens_details"]["reasoning_tokens"], 20);
+
+        // a chat stream that reports the share, to a Responses client
+        let chat = format!(
+            "data: {{\"id\":\"c1\",\"model\":\"m\",\"choices\":[{{\"index\":0,\"delta\":{{\"content\":\"hi\"}}}}]}}\n\n\
+             data: {{\"id\":\"c1\",\"model\":\"m\",\"choices\":[],\"usage\":{}}}\n\n\
+             data: [DONE]\n\n",
+            chat_reasoning_body()["usage"]
+        );
+        let out = translate_sse_body(Protocol::OpenAiResponses, Protocol::OpenAiChat, &chat);
+        let usage = last_usage(&out, Some("response.completed"));
+        assert_eq!(usage["output_tokens"], 45);
+        assert_eq!(usage["output_tokens_details"]["reasoning_tokens"], 16);
+    }
+
+    // ── the providers the #2877 survey could not confirm (#2882) ────────────
+    // each case is shaped like the `usage` object that provider's own reference
+    // prints or describes, with the page named. the counts are the page's where
+    // it prints them (mistral, minimax, bedrock, llama.cpp, together's output
+    // line) and made up where it only names the field (fireworks, doubao,
+    // perplexity). all of them state the hit under a spelling the reader already
+    // knows and count it inside the prompt total, so a request to them is priced
+    // at the cached rate once it is logged
+
+    /// (provider, usage, cache hit, prompt total)
+    const DOCUMENTED_HITS: [(&str, &str, u64, u64); 9] = [
+        // docs.mistral.ai/studio/conversations/advanced/prompt-caching: "In this
+        // response, `prompt_tokens` contains all prompt tokens"
+        (
+            "mistral",
+            r#"{"prompt_tokens":1013,"total_tokens":1043,"completion_tokens":30,"prompt_tokens_details":{"cached_tokens":1008}}"#,
+            1008,
+            1013,
+        ),
+        // docs.together.ai/docs/inference/chat/prompt-caching, a reasoning model
+        (
+            "together (nested)",
+            r#"{"prompt_tokens":3417,"completion_tokens":64,"total_tokens":3481,"prompt_tokens_details":{"cached_tokens":3327}}"#,
+            3327,
+            3417,
+        ),
+        // the same page: "some models return `cached_tokens` at the top level"
+        (
+            "together (flat)",
+            r#"{"prompt_tokens":3417,"completion_tokens":64,"total_tokens":3481,"cached_tokens":3327}"#,
+            3327,
+            3417,
+        ),
+        // docs.fireworks.ai/api-reference/post-chatcompletions, `UsageInfo`
+        (
+            "fireworks",
+            r#"{"prompt_tokens":2048,"completion_tokens":64,"total_tokens":2112,"prompt_tokens_details":{"cached_tokens":1920}}"#,
+            1920,
+            2048,
+        ),
+        // platform.minimax.io/docs/api-reference/text-prompt-caching
+        (
+            "minimax",
+            r#"{"prompt_tokens":1200,"completion_tokens":300,"total_tokens":1500,"prompt_tokens_details":{"cached_tokens":800}}"#,
+            800,
+            1200,
+        ),
+        // the Ark chat API reference: `usage.prompt_tokens_details.cached_tokens`
+        (
+            "doubao",
+            r#"{"prompt_tokens":2000,"completion_tokens":40,"total_tokens":2040,"prompt_tokens_details":{"cached_tokens":1536}}"#,
+            1536,
+            2000,
+        ),
+        // docs.perplexity.ai/openapi-gateway-chat.json: `prompt_tokens` is
+        // "including cache reads and writes"
+        (
+            "perplexity",
+            r#"{"prompt_tokens":4096,"completion_tokens":20,"total_tokens":4116,"prompt_tokens_details":{"cached_tokens":3072,"cache_write_tokens":1024}}"#,
+            3072,
+            4096,
+        ),
+        // the Responses API form Bedrock's OpenAI models print in its prompt
+        // caching guide
+        (
+            "bedrock",
+            r#"{"input_tokens":2048,"output_tokens":256,"total_tokens":2304,"input_tokens_details":{"cached_tokens":1920,"cache_write_tokens":0}}"#,
+            1920,
+            2048,
+        ),
+        // llama.cpp's server README (ollama's `/v1` has the same shape)
+        (
+            "llama.cpp",
+            r#"{"completion_tokens":48,"prompt_tokens":44,"total_tokens":92,"prompt_tokens_details":{"cached_tokens":0}}"#,
+            0,
+            44,
+        ),
+    ];
+
+    #[test]
+    fn the_documented_cache_hit_of_every_confirmed_provider_is_read() {
+        for (name, usage, hit, prompt) in DOCUMENTED_HITS {
+            let usage: Value = serde_json::from_str(usage).unwrap();
+            assert_eq!(cached_prompt_tokens(&usage), Some(hit), "{name}");
+            let read = TokenUsage::from_openai(&usage);
+            assert_eq!(read.cache_read, Some(hit), "{name}");
+            assert_eq!(read.prompt, prompt, "{name}: the hit is inside the prompt");
+        }
+    }
+
+    /// Cohere's native v2 chat spells the hit `usage.cached_tokens`, at the top
+    /// of `usage` beside `billed_units` and `tokens`. Its OpenAI-compatible
+    /// endpoint does not say what it returns, so only the native shape is read
+    /// here (the top-level spelling already existed for Kimi)
+    #[test]
+    fn coheres_native_cache_hit_is_the_top_level_spelling() {
+        let native = json!({
+            "billed_units":{"input_tokens":5,"output_tokens":418},
+            "tokens":{"input_tokens":71,"output_tokens":418},
+            "cached_tokens":64
+        });
+        assert_eq!(cached_prompt_tokens(&native), Some(64));
+    }
+
+    #[test]
+    fn a_documented_write_of_a_confirmed_provider_is_read() {
+        // perplexity names it beside the hit, bedrock in the Responses block
+        let written = |provider: &str| {
+            let (_, usage, _, _) = DOCUMENTED_HITS
+                .iter()
+                .find(|(name, ..)| *name == provider)
+                .unwrap();
+            cache_written_prompt_tokens(&serde_json::from_str(usage).unwrap())
+        };
+        assert_eq!(written("perplexity"), Some(1024));
+        assert_eq!(written("bedrock"), Some(0));
+        assert_eq!(written("mistral"), None);
+    }
+
+    // ── a provider that states reasoning beside the completion (#2888) ──────
+    // xai's reference prints 32 prompt, 9 completion and 94 reasoning tokens
+    // with a total of 135: the reasoning is billed as output but is not inside
+    // `completion_tokens`, so the completion has to be read as 9 + 94
+
+    const XAI_USAGE: &str = r#"{"prompt_tokens":32,"completion_tokens":9,"total_tokens":135,"prompt_tokens_details":{"text_tokens":32,"cached_tokens":6},"completion_tokens_details":{"reasoning_tokens":94}}"#;
+
+    #[test]
+    fn reasoning_beside_the_completion_joins_it() {
+        let usage: Value = serde_json::from_str(XAI_USAGE).unwrap();
+        assert_eq!(reasoning_tokens_beside_completion(&usage), Some(94));
+        let read = TokenUsage::from_openai(&usage);
+        assert_eq!(read.completion, 103);
+        assert_eq!(read.reasoning, Some(94));
+        assert_eq!(read.total(), 135);
+        assert_eq!(read.cache_read, Some(6));
+    }
+
+    /// OpenAI's own convention: the provider's total is prompt plus completion,
+    /// so the reasoning is already inside and is not added a second time
+    #[test]
+    fn reasoning_inside_the_completion_is_not_added() {
+        let inside = json!({
+            "prompt_tokens":32,"completion_tokens":103,"total_tokens":135,
+            "completion_tokens_details":{"reasoning_tokens":94}
+        });
+        assert_eq!(reasoning_tokens_beside_completion(&inside), None);
+        assert_eq!(TokenUsage::from_openai(&inside).completion, 103);
+        // the Responses API names the same counts differently
+        let responses = json!({
+            "input_tokens":32,"output_tokens":103,"total_tokens":135,
+            "output_tokens_details":{"reasoning_tokens":94}
+        });
+        assert_eq!(reasoning_tokens_beside_completion(&responses), None);
+        assert_eq!(TokenUsage::from_openai(&responses).completion, 103);
+    }
+
+    /// without a total to say which it is, the count is taken as stated
+    #[test]
+    fn reasoning_without_a_total_is_not_guessed_at() {
+        let no_total = json!({
+            "prompt_tokens":32,"completion_tokens":9,
+            "completion_tokens_details":{"reasoning_tokens":94}
+        });
+        assert_eq!(reasoning_tokens_beside_completion(&no_total), None);
+        assert_eq!(TokenUsage::from_openai(&no_total).completion, 9);
+        // a total that fits neither reading is left alone too
+        let odd = json!({
+            "prompt_tokens":32,"completion_tokens":9,"total_tokens":500,
+            "completion_tokens_details":{"reasoning_tokens":94}
+        });
+        assert_eq!(reasoning_tokens_beside_completion(&odd), None);
+        // and a model that did not reason has nothing to move
+        let zero = json!({
+            "prompt_tokens":32,"completion_tokens":9,"total_tokens":41,
+            "completion_tokens_details":{"reasoning_tokens":0}
+        });
+        assert_eq!(reasoning_tokens_beside_completion(&zero), None);
+    }
+
+    #[test]
+    fn reasoning_beside_the_completion_reaches_every_client_dialect() {
+        let body = chat_body_with_usage(XAI_USAGE);
+        let v = translate_json_body(
+            Protocol::OpenAiResponses,
+            Protocol::OpenAiChat,
+            body.clone(),
+        );
+        assert_eq!(v["usage"]["input_tokens"], 32);
+        assert_eq!(v["usage"]["output_tokens"], 103);
+        assert_eq!(v["usage"]["total_tokens"], 135);
+        assert_eq!(v["usage"]["output_tokens_details"]["reasoning_tokens"], 94);
+
+        let v = translate_json_body(Protocol::AnthropicMessages, Protocol::OpenAiChat, body);
+        assert_eq!(v["usage"]["output_tokens"], 103);
+
+        let sse = format!(
+            "data: {{\"id\":\"c1\",\"model\":\"m\",\"choices\":[{{\"index\":0,\"delta\":{{\"content\":\"hi\"}}}}]}}\n\n\
+             data: {{\"id\":\"c1\",\"model\":\"m\",\"choices\":[],\"usage\":{XAI_USAGE}}}\n\n\
+             data: [DONE]\n\n"
+        );
+        let out = translate_sse_body(Protocol::OpenAiResponses, Protocol::OpenAiChat, &sse);
+        let seen = last_usage(&out, Some("response.completed"));
+        assert_eq!(seen["output_tokens"], 103);
+        assert_eq!(seen["output_tokens_details"]["reasoning_tokens"], 94);
+        let out = translate_sse_body(Protocol::AnthropicMessages, Protocol::OpenAiChat, &sse);
+        assert_eq!(
+            last_usage(&out, Some("message_delta"))["output_tokens"],
+            103
+        );
     }
 }
