@@ -3088,6 +3088,262 @@ export const AKeyCanBePickedByName: Story = {
   },
 };
 
+// a call on a stored response (#2836, #2865): the model is the one the response
+// was created for, the call generates nothing, so there are no tokens and no
+// cost, and `lifecycle_operation` says which call it was
+const lifecycleRow = (operation: string, over: Partial<InvocationRow> = {}) =>
+  row({
+    request_id: `req-lifecycle-${operation}`,
+    model: "gpt-4o",
+    lifecycle_operation: operation,
+    prompt_tokens: 0,
+    completion_tokens: 0,
+    total_tokens: 0,
+    cost_usd: 0,
+    ttft_ms: 0,
+    latency_ms: 38,
+    ...over,
+  });
+const RETRIEVED = lifecycleRow("retrieve");
+// a request that ran a model: the column is there and empty
+const MODEL_RUN = row({
+  request_id: "req-model-run",
+  model: "claude-haiku",
+  provider: "anthropic",
+  lifecycle_operation: "",
+});
+// written before the column, or by a control plane that predates it: the field
+// is absent, not empty
+const BEFORE_THE_COLUMN = row({ request_id: "req-before-the-column", model: "legacy-model" });
+
+/** The model cell of table row `index`, whatever columns the width is drawing. */
+const modelCellOf = (canvasElement: HTMLElement, index: number) =>
+  canvasElement.querySelectorAll("tbody tr")[index].querySelectorAll("td")[1];
+
+/**
+ * #2865: a call on a stored response names its operation beside the model, and
+ * only that row does. A request that ran a model, and a row from before the
+ * column or from an older control plane, have nothing to add, so the model cell
+ * is the model and nothing else. The badge's title says what kind of call it
+ * is, and the drawer carries the same words as the first row of Routing.
+ */
+export const ALifecycleCallNamesItsOperationBesideTheModel: Story = {
+  render: () => (
+    <Harness fetchStub={withLogs([RETRIEVED, MODEL_RUN, BEFORE_THE_COLUMN])}>
+      <Logs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    // the fixture is only an old row while it carries no field at all
+    await expect("lifecycle_operation" in BEFORE_THE_COLUMN).toBe(false);
+    await within(canvasElement).findByText(fmt.timeMs(MODEL_RUN.ts));
+
+    const called = within(modelCellOf(canvasElement, 0));
+    await expect(called.getByText("gpt-4o")).toBeVisible();
+    const badge = called.getByText("Retrieve");
+    await expect(badge).toBeVisible();
+    await expect(badge).toHaveAttribute("title", "Call on a stored response: Retrieve");
+
+    for (const [index, model] of [
+      [1, "claude-haiku"],
+      [2, "legacy-model"],
+    ] as const) {
+      const cell = modelCellOf(canvasElement, index);
+      await expect(cell).toHaveTextContent(new RegExp(`^${model}$`));
+      await expect(cell.querySelector("[title]")).toBeNull();
+    }
+    await expect(canvasElement.querySelectorAll("tbody tr")).toHaveLength(3);
+
+    const lifecycle = within(await openDetails(canvasElement, "gpt-4o"));
+    const routing = await lifecycle.findByRole("region", { name: "Routing" });
+    await waitFor(() => expect(within(routing).getByText("Stored response call")).toBeVisible());
+    await expect(valueOf(routing, "Stored response call")).toBe("Retrieve");
+    // the first row of the group, ahead of where the call was routed to
+    await expect(routing.querySelector("dt")).toHaveTextContent("Stored response call");
+
+    for (const model of ["claude-haiku", "legacy-model"]) {
+      await userEvent.click(
+        within(canvasElement).getByRole("button", {
+          name: new RegExp(`Open request details for ${model}`),
+        }),
+      );
+      await waitFor(() =>
+        expect(within(canvasElement).getByRole("heading", { name: model, level: 2 })).toBeVisible(),
+      );
+      await expect(lifecycle.queryByText("Stored response call")).toBeNull();
+      await expect(lifecycle.getByRole("region", { name: "Routing" })).toBeVisible();
+    }
+  },
+};
+
+const OPERATIONS = [
+  "retrieve",
+  "delete",
+  "cancel",
+  "input_items",
+  "compact",
+  "input_tokens",
+] as const;
+const FUTURE_CALL = lifecycleRow("future_call", { model: "resp-future" });
+// built once: every row is stamped as it is made, so a second call would be
+// six other rows that the screen is not showing
+const EVERY_OPERATION = OPERATIONS.map((operation) =>
+  lifecycleRow(operation, { model: `resp-${operation.replace("_", "-")}` }),
+);
+
+/**
+ * #2865: each operation the gateway records has its own words, and one this
+ * build has no words for is printed as the control plane sent it rather than
+ * dropped, so a newer gateway's call is still readable.
+ */
+export const EveryLifecycleOperationHasItsOwnWords: Story = {
+  render: () => (
+    <Harness fetchStub={withLogs([...EVERY_OPERATION, FUTURE_CALL])}>
+      <Logs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await within(canvasElement).findByText(fmt.timeMs(EVERY_OPERATION[0].ts));
+    const words = en.pages.logs.detail.lifecycle.operations;
+    await expect(words).toEqual({
+      retrieve: "Retrieve",
+      delete: "Delete",
+      cancel: "Cancel",
+      input_items: "Input items",
+      compact: "Compact",
+      input_tokens: "Count input tokens",
+    });
+    for (const [index, operation] of OPERATIONS.entries()) {
+      await expect(modelCellOf(canvasElement, index)).toHaveTextContent(
+        new RegExp(`^resp-${operation.replace("_", "-")}${words[operation]}$`),
+      );
+    }
+    await expect(modelCellOf(canvasElement, OPERATIONS.length)).toHaveTextContent(
+      "resp-futurefuture_call",
+    );
+  },
+};
+
+/**
+ * #2865 in Russian: the same six words, translated, in the table and under the
+ * drawer's own label.
+ */
+export const TheLifecycleOperationIsTranslated: Story = {
+  globals: { locale: "ru" },
+  render: () => (
+    <Harness fetchStub={withLogs(EVERY_OPERATION)}>
+      <Logs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await within(canvasElement).findByText(formattersFor("ru").timeMs(EVERY_OPERATION[0].ts));
+    const words = ru.pages.logs.detail.lifecycle.operations;
+    for (const [index, operation] of OPERATIONS.entries()) {
+      await expect(modelCellOf(canvasElement, index)).toHaveTextContent(words[operation]);
+    }
+    const badge = within(modelCellOf(canvasElement, 0)).getByText(words.retrieve);
+    await expect(badge).toHaveAttribute(
+      "title",
+      ru.pages.logs.detail.lifecycle.title.replace("{{operation}}", words.retrieve),
+    );
+
+    await userEvent.click(
+      within(canvasElement).getByRole("button", {
+        name: ru.analytics.openDetails.replace("{{model}}", "resp-input-items"),
+      }),
+    );
+    const drawer = within(
+      await within(canvasElement).findByRole("complementary", { name: ru.analytics.details }),
+    );
+    const routing = await drawer.findByRole("region", { name: ru.pages.logs.detail.routing });
+    await waitFor(() =>
+      expect(within(routing).getByText(ru.pages.logs.detail.lifecycle.label)).toBeVisible(),
+    );
+    await expect(valueOf(routing, ru.pages.logs.detail.lifecycle.label)).toBe(words.input_items);
+  },
+};
+
+// an id that does not exist, has expired or belongs to another tenant is a 404
+// with no stored response to take a model from
+const MISSING_RESPONSE = lifecycleRow("retrieve", {
+  request_id: "req-missing-response",
+  model: "",
+  provider: "",
+  target: "",
+  status: 404,
+  upstream_status: 0,
+  attempts: 0,
+  error: "no response resp_1 for this key",
+});
+
+/**
+ * #2865: a call on a response that is not there has no model, so the row is
+ * named by the call instead of by nothing: the badge stands alone in the model
+ * cell, the chevron's name and the drawer's title say what was asked.
+ */
+export const ACallWithNoModelIsNamedByTheCall: Story = {
+  render: () => (
+    <Harness fetchStub={withLogs([MISSING_RESPONSE, MODEL_RUN])}>
+      <Logs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText(fmt.timeMs(MODEL_RUN.ts));
+    await expect(modelCellOf(canvasElement, 0)).toHaveTextContent(/^Retrieve$/);
+
+    await userEvent.click(
+      canvas.getByRole("button", { name: "Open request details for Retrieve" }),
+    );
+    const panel = await canvas.findByRole("complementary", { name: "Details" });
+    await waitFor(() =>
+      expect(within(panel).getByRole("heading", { name: "Retrieve", level: 2 })).toBeVisible(),
+    );
+    await expect(
+      valueOf(within(panel).getByRole("region", { name: "Routing" }), "Stored response call"),
+    ).toBe("Retrieve");
+  },
+};
+
+const LONG_MODEL_CALL = lifecycleRow("input_tokens", {
+  request_id: "req-long-model-call",
+  model: "claude-sonnet-4-5-20250929",
+});
+
+/**
+ * #2865 on a phone, in the longer Russian copy: the model is the part that is
+ * cut, never the operation, which keeps its room on the first line beside the
+ * status. Nothing leaves the frame or scrolls the page sideways.
+ */
+export const TheOperationSurvivesALongModelAtMobileInRussian: Story = {
+  ...atMobile,
+  globals: { ...atMobile.globals, locale: "ru" },
+  render: () => (
+    <Harness fetchStub={withLogs([LONG_MODEL_CALL, ...ROWS])}>
+      <Logs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await within(canvasElement).findByText(formattersFor("ru").timeMs(LONG_MODEL_CALL.ts));
+    await expectNoHorizontalOverflow();
+    const shape = tableShape(canvasElement);
+    await expect(shape.scrolls).toBe(false);
+    await expectRowInFrame(shape, 0);
+
+    const words = ru.pages.logs.detail.lifecycle.operations;
+    const cell = within(shape.cells(0)[1]);
+    const badge = cell.getByText(words.input_tokens);
+    await expectInViewport(badge);
+    await expect(badge.getBoundingClientRect().right).toBeLessThanOrEqual(
+      shape.cells(0)[1].getBoundingClientRect().right + 1,
+    );
+    // the model gave way to it
+    const model = cell.getByText(LONG_MODEL_CALL.model);
+    await expect(model.scrollWidth).toBeGreaterThan(model.clientWidth);
+    await expectStackedRow(canvasElement, 0, LONG_MODEL_CALL.model);
+  },
+};
+
 // the same screen at a phone's width in both languages: Russian runs a third
 // longer than English and overflowed twice as many screens (#2004)
 const logsFit = phoneFits({

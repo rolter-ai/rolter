@@ -360,6 +360,13 @@ const MEMBER = account("11111111-1111-1111-1111-111111111111", "ada@example.com"
 const OPERATOR = account("22222222-2222-2222-2222-222222222222", "root@example.com", true);
 /** an actor no list the caller can read carries */
 const STRANGER = "33333333-3333-3333-3333-333333333333";
+/**
+ * holds a role in another org only: neither the org's people nor the
+ * unassigned accounts reach her, and only the deployment's account list does
+ */
+const ELSEWHERE = account("44444444-4444-4444-4444-444444444444", "grace@other.example");
+/** every account in the deployment, e-mail ordered, as `GET /api/v1/users` answers */
+const EVERYONE = [MEMBER, ELSEWHERE, OPERATOR];
 
 const byActor = [
   entry({ id: "m-1", action: "provider.create", actor_user_id: MEMBER.id }),
@@ -367,15 +374,24 @@ const byActor = [
   entry({ id: "m-3", action: "virtual_key.create", actor_user_id: STRANGER }),
 ];
 
+/** the one row only the deployment-wide read carries: its actor is in another org */
+const byElsewhere = entry({ id: "m-4", action: "budget.update", actor_user_id: ELSEWHERE.id });
+
 /**
- * The control plane as it answers the audit log and the org's people: the
- * unassigned accounts ride along only when `include_unassigned=true` is asked
- * for, and the audit read honours the `actor` filter it was sent.
+ * The control plane as it answers the audit log and the people lists: the
+ * org's people carry the unassigned accounts only when `include_unassigned=true`
+ * is asked for, the deployment's account list (`/api/v1/users`) is everyone,
+ * and each audit read honours the `actor` filter it was sent. The
+ * deployment-wide read spans orgs, so it also returns the other org's row.
+ * `deploymentUsers` replaces the answer to that account list.
  */
-function auditWithOperator() {
+function auditWithOperator(deploymentUsers?: () => Promise<Response> | Response) {
   return recording(
     scoped(async (input) => {
       const url = new URL(String(input), "http://localhost");
+      if (url.pathname === "/api/v1/users") {
+        return deploymentUsers ? deploymentUsers() : json(EVERYONE);
+      }
       if (url.pathname.endsWith("/users")) {
         return json(
           url.searchParams.get("include_unassigned") === "true" ? [MEMBER, OPERATOR] : [MEMBER],
@@ -383,12 +399,17 @@ function auditWithOperator() {
       }
       if (url.pathname.endsWith("/audit-log")) {
         const actor = url.searchParams.get("actor");
-        return json(page(byActor.filter((row) => !actor || row.actor_user_id === actor)));
+        const rows = url.pathname === "/api/v1/audit-log" ? [...byActor, byElsewhere] : byActor;
+        return json(page(rows.filter((row) => !actor || row.actor_user_id === actor)));
       }
       return json([]);
     }),
   );
 }
+
+/** the calls that asked for every account in the deployment */
+const deploymentUserReads = (recorder: { calls: { url: string }[] }) =>
+  recorder.calls.filter((c) => c.url === "/api/v1/users");
 
 /**
  * Signed in the way a login leaves the browser, minus the token, so the
@@ -449,6 +470,9 @@ export const NamesASuperadminWithNoMembership: Story = {
     await expect(canvas.getByText("ada@example.com")).toHaveAttribute("title", MEMBER.id);
     await expect(canvas.getByText("33333333")).toHaveAttribute("title", STRANGER);
     await orgScope.expectSent("GET", "/orgs/org-1/users?include_unassigned=true");
+    // the deployment's account list is for the other scope, not asked here
+    await expectGateAnswered();
+    await expect(deploymentUserReads(orgScope)).toHaveLength(0);
 
     await pickOption(canvas.getByRole("combobox", { name: "Filter by actor" }), "root@example.com");
     await orgScope.expectSent("GET", `/orgs/org-1/audit-log?`);
@@ -466,9 +490,8 @@ export const NamesASuperadminWithNoMembership: Story = {
 const deploymentScope = auditWithOperator();
 
 /**
- * The whole-deployment read has no people list of its own; it reads the scope's
- * org, whose unassigned accounts are the same everywhere. The operator is named
- * and picked by e-mail there too.
+ * The whole-deployment scope reads every account in the deployment, so the
+ * operator is named and picked by e-mail there too.
  */
 export const NamesASuperadminWithNoMembershipInTheWholeDeployment: Story = {
   render: () => (
@@ -479,6 +502,7 @@ export const NamesASuperadminWithNoMembershipInTheWholeDeployment: Story = {
     const scope = await canvas.findByRole("radiogroup", { name: "Audit log scope" });
     await userEvent.click(within(scope).getByRole("radio", { name: "Whole deployment" }));
     await deploymentScope.expectSent("GET", "/api/v1/audit-log?");
+    await deploymentScope.expectSent("GET", "/api/v1/users");
     const operator = await canvas.findByText("root@example.com");
     await expect(operator).toHaveAttribute("title", OPERATOR.id);
     await expect(canvas.getByText("33333333")).toHaveAttribute("title", STRANGER);
@@ -504,9 +528,8 @@ export const NamesASuperadminWithNoMembershipInTheWholeDeployment: Story = {
 const customActor = auditWithOperator();
 
 /**
- * The list is one org's people, the read is every org's: an actor the list does
- * not carry is filtered by typing its id in whole, which the plain org scope
- * never needs.
+ * An actor whose account is gone is on no list, whatever the scope: it is
+ * filtered by typing its id in whole, which the plain org scope never needs.
  */
 export const DeploymentFiltersToAnActorOutsideTheList: Story = {
   render: () => <SignedInScreen fetchStub={customActor.stub} user={OPERATOR} role="superadmin" />,
@@ -529,6 +552,106 @@ export const DeploymentFiltersToAnActorOutsideTheList: Story = {
   },
 };
 
+const acrossOrgs = auditWithOperator();
+
+/**
+ * #2871: an actor who belongs to another org is on neither the org's people nor
+ * the unassigned accounts, so the whole-deployment read named them by the first
+ * eight digits of their id. A superadmin there reads every account in the
+ * deployment instead: the actor column names the other org's member by e-mail,
+ * the filter lists and picks them, and an actor nobody can resolve (a deleted
+ * account) keeps the short id with the whole id on hover.
+ */
+export const NamesAnActorFromAnotherOrgInTheWholeDeployment: Story = {
+  render: () => <SignedInScreen fetchStub={acrossOrgs.stub} user={OPERATOR} role="superadmin" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const scope = await canvas.findByRole("radiogroup", { name: "Audit log scope" });
+    await userEvent.click(within(scope).getByRole("radio", { name: "Whole deployment" }));
+    await acrossOrgs.expectSent("GET", "/api/v1/users");
+
+    const grace = await canvas.findByText("grace@other.example");
+    await expect(grace).toHaveAttribute("title", ELSEWHERE.id);
+    await expect(canvas.getByText("budget.update")).toBeVisible();
+    await expect(canvas.getByText("ada@example.com")).toHaveAttribute("title", MEMBER.id);
+    await expect(canvas.getByText("root@example.com")).toHaveAttribute("title", OPERATOR.id);
+    await expect(canvas.getByText("33333333")).toHaveAttribute("title", STRANGER);
+    await expect(canvas.queryByText("44444444")).toBeNull();
+
+    const filter = canvas.getByRole("combobox", { name: "Filter by actor" });
+    const listbox = await openOptions(filter);
+    for (const email of ["ada@example.com", "grace@other.example", "root@example.com"]) {
+      await expect(within(listbox).getByRole("option", { name: email })).toBeVisible();
+    }
+    await userEvent.keyboard("{Escape}");
+
+    await pickOption(filter, "grace@other.example");
+    await waitFor(() =>
+      expect(
+        acrossOrgs.calls.some(
+          (c) => c.url.startsWith("/api/v1/audit-log?") && c.url.includes(`actor=${ELSEWHERE.id}`),
+        ),
+      ).toBe(true),
+    );
+    await waitFor(() => expect(canvas.queryByText("provider.create")).toBeNull());
+    await expect(canvas.getByText("budget.update")).toBeVisible();
+    await expect(deploymentUserReads(acrossOrgs)).toHaveLength(1);
+  },
+};
+
+const listFails = auditWithOperator(() => json({ error: { message: "store down" } }, 500));
+
+/**
+ * The deployment's account list is a nicety on top of a log that still reads.
+ * When it fails the screen keeps naming the org's people and the unassigned
+ * accounts from the list it already had, the actor from another org falls back
+ * to the short id with the whole id on hover, and the log itself is not turned
+ * into an error.
+ */
+export const AFailedDeploymentListFallsBackToTheOrgsPeople: Story = {
+  render: () => <SignedInScreen fetchStub={listFails.stub} user={OPERATOR} role="superadmin" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const scope = await canvas.findByRole("radiogroup", { name: "Audit log scope" });
+    await userEvent.click(within(scope).getByRole("radio", { name: "Whole deployment" }));
+    await listFails.expectSent("GET", "/api/v1/users");
+
+    await expect(await canvas.findByText("budget.update")).toBeVisible();
+    await expect(canvas.getByText("root@example.com")).toHaveAttribute("title", OPERATOR.id);
+    await expect(canvas.getByText("ada@example.com")).toHaveAttribute("title", MEMBER.id);
+    await expect(canvas.getByText("44444444")).toHaveAttribute("title", ELSEWHERE.id);
+    await expect(canvas.queryByText("grace@other.example")).toBeNull();
+    await expect(canvas.queryByRole("alert")).toBeNull();
+    const listbox = await openOptions(canvas.getByRole("combobox", { name: "Filter by actor" }));
+    await expect(within(listbox).getByRole("option", { name: "root@example.com" })).toBeVisible();
+    await expect(within(listbox).queryByRole("option", { name: "grace@other.example" })).toBeNull();
+  },
+};
+
+const listLoading = auditWithOperator(() => new Promise<Response>(() => {}));
+
+/**
+ * While the deployment's account list is still on its way the names the screen
+ * already had stay on the rows, so entering the scope does not blank the actor
+ * column into short ids for the length of one request.
+ */
+export const TheOrgsPeopleStayNamedWhileTheDeploymentListLoads: Story = {
+  render: () => <SignedInScreen fetchStub={listLoading.stub} user={OPERATOR} role="superadmin" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("root@example.com")).toBeVisible();
+    const scope = await canvas.findByRole("radiogroup", { name: "Audit log scope" });
+    await userEvent.click(within(scope).getByRole("radio", { name: "Whole deployment" }));
+    await listLoading.expectSent("GET", "/api/v1/users");
+
+    await expect(await canvas.findByText("budget.update")).toBeVisible();
+    await expect(canvas.getByText("root@example.com")).toBeVisible();
+    await expect(canvas.getByText("ada@example.com")).toBeVisible();
+    await expect(canvas.getByText("44444444")).toHaveAttribute("title", ELSEWHERE.id);
+    await expect(canvas.getByRole("combobox", { name: "Filter by actor" })).toBeVisible();
+  },
+};
+
 const asAdmin = auditWithOperator();
 
 /**
@@ -546,6 +669,10 @@ export const AnAdminDoesNotAskForUnassignedAccounts: Story = {
     await expectGateAnswered();
     await expect(asAdmin.calls.filter((c) => c.url.includes("include_unassigned"))).toHaveLength(0);
     await asAdmin.expectSent("GET", "/orgs/org-1/users");
+    // nor does it ask for every account in the deployment: that read is the
+    // superadmin's, and the scope switch that leads to it is not offered
+    await expect(deploymentUserReads(asAdmin)).toHaveLength(0);
+    await expect(canvas.queryByRole("radiogroup", { name: "Audit log scope" })).toBeNull();
 
     const listbox = await openOptions(canvas.getByRole("combobox", { name: "Filter by actor" }));
     await expect(within(listbox).getByRole("option", { name: "ada@example.com" })).toBeVisible();

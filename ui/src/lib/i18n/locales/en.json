@@ -2693,7 +2693,19 @@
         "usage": "Usage and cost",
         "promptCache": "Prompt cache",
         "promptCacheTokens": "{{read}} read · {{write}} written",
-        "attribution": "Attribution"
+        "attribution": "Attribution",
+        "lifecycle": {
+          "label": "Stored response call",
+          "title": "Call on a stored response: {{operation}}",
+          "operations": {
+            "retrieve": "Retrieve",
+            "delete": "Delete",
+            "cancel": "Cancel",
+            "input_items": "Input items",
+            "compact": "Compact",
+            "input_tokens": "Count input tokens"
+          }
+        }
       },
       "payloadWithheld": "A body was captured for this request, but it is hidden for your role: on this project, request and response bodies are shown to its members and admins. A project admin can let viewers read them too, in the project's settings.",
       "feed": {

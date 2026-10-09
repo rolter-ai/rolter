@@ -18,6 +18,7 @@ import { Table, type TableColumn } from "@/components/ui/table";
 import {
   fetchAuditLogPage,
   fetchDeploymentAuditLogPage,
+  fetchDeploymentUsers,
   fetchUsers,
   type AuditLogEntry,
 } from "@/lib/api";
@@ -114,24 +115,38 @@ export default function AuditLog() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rangeIdx, cursor]);
 
-  // the org's accounts, so the actor column can say who rather than the first
-  // eight hex digits of a uuid, and the actor filter can be picked by e-mail.
-  // a superadmin also lists the accounts that hold no membership anywhere, such
-  // as the operator `rolter-seed --admin-email` creates: they are on no org's
-  // list yet are the actor of whatever they write (#2858). the control plane
-  // ignores the flag for anyone else. it is in the key, as on the Users screen,
-  // because ModelSheet caches the plain list under `["users", orgId]` and the
-  // two answers must not stand in for each other. the deployment-wide read has
-  // no list of its own: it reads the scope's org, which also carries the
-  // unassigned accounts, so those rows are named there as well
+  // who the actor ids are, so the actor column can say who rather than the
+  // first eight hex digits of a uuid, and the actor filter can be picked by
+  // e-mail. the org scope reads the org's accounts. a superadmin also lists the
+  // accounts that hold no membership anywhere, such as the operator
+  // `rolter-seed --admin-email` creates: they are on no org's list yet are the
+  // actor of whatever they write (#2858). the control plane ignores the flag
+  // for anyone else. it is in the key, as on the Users screen, because
+  // ModelSheet caches the plain list under `["users", orgId]` and the two
+  // answers must not stand in for each other
   const callerIsSuperadmin = !!useOptionalAuth()?.user?.is_superadmin;
-  const users = useQuery({
+  // the whole-deployment scope reads every account in the deployment as well,
+  // since an actor there can belong to any org and the org's list does not
+  // reach the ones that belong to another (#2871). like the scope switch it is
+  // offered on an explicit yes only, so an unanswered gate never fires a call
+  // the control plane may then refuse. the org's list stays the answer while
+  // the deployment's is on its way or failed, so the names the screen already
+  // had do not vanish into short ids
+  const canListDeployment = useCan()("deployment_user", "read") === true;
+  const wholeDeployment = deployment && canListDeployment;
+  const orgUsers = useQuery({
     queryKey: ["users", scope.orgId, { includeUnassigned: callerIsSuperadmin }],
     queryFn: () => fetchUsers(scope.orgId as string, { includeUnassigned: callerIsSuperadmin }),
     enabled: !!scope.orgId,
   });
+  const deploymentUsers = useQuery({
+    queryKey: ["deployment-users"],
+    queryFn: fetchDeploymentUsers,
+    enabled: wholeDeployment,
+  });
+  const people = wholeDeployment && deploymentUsers.data ? deploymentUsers.data : orgUsers.data;
   const emailOf = (id: string) =>
-    Array.isArray(users.data) ? users.data.find((u) => u.id === id)?.email : undefined;
+    Array.isArray(people) ? people.find((u) => u.id === id)?.email : undefined;
   const actorParam = UUID_RE.test(actor.trim()) ? actor.trim() : undefined;
 
   const page = useQuery({
@@ -312,18 +327,21 @@ export default function AuditLog() {
                 ariaLabel={t("pages.auditLog.scopeAria")}
               />
             )}
-            {(!deployment || callerIsSuperadmin) && users.data && users.data.length > 0 ? (
+            {(!deployment || callerIsSuperadmin || wholeDeployment) &&
+            people &&
+            people.length > 0 ? (
               <Combobox
                 className="w-[280px]"
                 aria-label={t("pages.auditLog.actorFilterAria")}
                 value={actor}
                 onChange={setActor}
-                // the deployment-wide read spans every org but the list is one
-                // org's, so an actor outside it is still filtered by pasting its id
+                // the deployment-wide read lists every account, but an actor whose
+                // account was deleted is on no list and is still filtered by
+                // pasting its id
                 allowCustom={deployment}
                 options={[
                   { value: "", label: t("pages.auditLog.anyActor") },
-                  ...users.data.map((u) => ({ value: u.id, label: u.email })),
+                  ...people.map((u) => ({ value: u.id, label: u.email })),
                 ]}
               />
             ) : (

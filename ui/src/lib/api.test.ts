@@ -10,6 +10,7 @@ import {
   isOpenModeNoSession,
   login,
   fetchMe,
+  fetchDeploymentUsers,
   fetchUsers,
   changeMyPassword,
   setSessionExpiredHandler,
@@ -267,6 +268,14 @@ describe("api client", () => {
         "/api/v1/orgs/org-1/users",
         "/api/v1/orgs/org-1/users?include_unassigned=true",
       ]);
+    });
+  });
+
+  describe("fetchDeploymentUsers (#2871)", () => {
+    it("reads the deployment's accounts from the org-less route", async () => {
+      fetchMock.mockImplementation(async () => new Response("[]", { status: 200 }));
+      await fetchDeploymentUsers();
+      expect(fetchMock.mock.calls.map((call: unknown[]) => call[0])).toEqual(["/api/v1/users"]);
     });
   });
 
