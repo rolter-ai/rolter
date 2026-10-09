@@ -142,10 +142,10 @@ async fn list(
 ) -> ApiResult<Json<Vec<Connector>>> {
     authorize_superadmin(&principal, superadmin_cap!("connector", Read))?;
     Ok(Json(
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "select {} from observability_connectors order by name",
             columns()
-        ))
+        )))
         .fetch_all(pool(&state))
         .await
         .map_err(|e| Error::Store(e.to_string()))?,
@@ -160,12 +160,12 @@ async fn create(
     authorize_superadmin(&principal, superadmin_cap!("connector", Create))?;
     validate(&input, &state.egress)?;
     let secret = input.managed_auth_secret.as_deref().map(seal).transpose()?;
-    let connector: Connector = sqlx::query_as(&format!(
+    let connector: Connector = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "insert into observability_connectors \
          (name, kind, endpoint, enabled, sampling_rate, auth_secret_ref, auth_ciphertext, auth_nonce) \
          values ($1, $2, $3, $4, $5, $6, $7, $8) returning {}",
         columns()
-    ))
+    )))
     .bind(input.name.trim())
     .bind(input.kind.trim())
     .bind(input.endpoint.trim())
@@ -223,7 +223,7 @@ async fn update(
     // coalesce leaves an existing secret in place when the caller does not
     // resend it on the same origin, so editing the sampling rate cannot
     // silently drop the credential the connector needs
-    let connector: Connector = sqlx::query_as(&format!(
+    let connector: Connector = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "update observability_connectors set name=$2, kind=$3, endpoint=$4, enabled=$5, \
          sampling_rate=$6, auth_secret_ref=$7, \
          auth_ciphertext = case when $10 then null else coalesce($8, auth_ciphertext) end, \
@@ -233,7 +233,7 @@ async fn update(
          health_error = case when $11 then null else health_error end, \
          updated_at=now() where id=$1 returning {}",
         columns()
-    ))
+    )))
     .bind(id)
     .bind(input.name.trim())
     .bind(input.kind.trim())

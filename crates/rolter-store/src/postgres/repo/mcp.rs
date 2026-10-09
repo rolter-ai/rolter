@@ -177,9 +177,9 @@ const CLEAR_DISCOVERY_ON_OAUTH_CLIENT_CHANGE: &str = "\
 
 impl McpServerRepo<'_> {
     pub async fn list(&self, org_id: Uuid) -> Result<Vec<McpServer>> {
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "select {MCP_SERVER_COLUMNS} from mcp_servers where org_id = $1 order by name"
-        ))
+        )))
         .bind(org_id)
         .fetch_all(self.0)
         .await
@@ -188,9 +188,9 @@ impl McpServerRepo<'_> {
 
     pub async fn get(&self, id: Uuid) -> Result<McpServer> {
         fetch_optional_or_not_found(
-            sqlx::query_as(&format!(
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
                 "select {MCP_SERVER_COLUMNS} from mcp_servers where id = $1"
-            ))
+            )))
             .bind(id),
             self.0,
             || format!("mcp server {id}"),
@@ -199,12 +199,12 @@ impl McpServerRepo<'_> {
     }
 
     pub async fn create(&self, server: NewMcpServer<'_>) -> Result<McpServer> {
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "insert into mcp_servers \
              (org_id, name, slug, url, transport, description, enabled, tools, source, required_scopes) \
              values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
              returning {MCP_SERVER_COLUMNS}"
-        ))
+        )))
         .bind(server.org_id)
         .bind(server.name)
         .bind(server.slug)
@@ -230,13 +230,13 @@ impl McpServerRepo<'_> {
     /// see `CLEAR_DISCOVERY_ON_URL_CHANGE` above for the whole argument.
     pub async fn update(&self, id: Uuid, server: McpServerUpdate<'_>) -> Result<McpServer> {
         fetch_optional_or_not_found(
-            sqlx::query_as(&format!(
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
                 "update mcp_servers set name = $2, url = $3, transport = $4, description = $5, \
                  enabled = $6, tools = $7, required_scopes = $8, connect_timeout_ms = $9, \
                  request_timeout_ms = $10, max_retries = $11, \
                  {CLEAR_DISCOVERY_ON_URL_CHANGE} \
                  where id = $1 returning {MCP_SERVER_COLUMNS}"
-            ))
+            )))
             .bind(id)
             .bind(server.name)
             .bind(server.url)
@@ -302,12 +302,12 @@ impl McpServerRepo<'_> {
             None
         };
         fetch_optional_or_not_found(
-            sqlx::query_as(&format!(
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
                 "update mcp_servers set auth_kind = $2, auth_header_name = $3, \
                  credential_ciphertext = case when $4 then $5 else credential_ciphertext end, \
                  credential_nonce = case when $4 then $6 else credential_nonce end \
                  where id = $1 returning {MCP_SERVER_COLUMNS}"
-            ))
+            )))
             .bind(id)
             .bind(auth.auth_kind)
             .bind(header_name)
@@ -386,14 +386,14 @@ impl McpServerRepo<'_> {
             Some((c, n)) => (true, c, n),
         };
         fetch_optional_or_not_found(
-            sqlx::query_as(&format!(
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
                 "update mcp_servers set authorize_url = $2, token_url = $3, client_id = $4, \
                         default_scopes = $5, oauth_issuer = $9, oauth_discovery = $10, \
                         client_secret_ciphertext = case when $6 then $7 else client_secret_ciphertext end, \
                         client_secret_nonce = case when $6 then $8 else client_secret_nonce end, \
                         {CLEAR_DISCOVERY_ON_OAUTH_CLIENT_CHANGE} \
                  where id = $1 returning {MCP_SERVER_COLUMNS}"
-            ))
+            )))
             .bind(id)
             .bind(client.authorize_url)
             .bind(client.token_url)
@@ -497,10 +497,10 @@ const MCP_TOOL_GROUP_COLUMNS: &str =
 
 impl McpToolGroupRepo<'_> {
     pub async fn list(&self, org_id: Uuid) -> Result<Vec<McpToolGroup>> {
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "select {MCP_TOOL_GROUP_COLUMNS} from mcp_tool_groups \
              where org_id = $1 order by name"
-        ))
+        )))
         .bind(org_id)
         .fetch_all(self.0)
         .await
@@ -509,9 +509,9 @@ impl McpToolGroupRepo<'_> {
 
     pub async fn get(&self, id: Uuid) -> Result<McpToolGroup> {
         fetch_optional_or_not_found(
-            sqlx::query_as(&format!(
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
                 "select {MCP_TOOL_GROUP_COLUMNS} from mcp_tool_groups where id = $1"
-            ))
+            )))
             .bind(id),
             self.0,
             || format!("mcp tool group {id}"),
@@ -528,10 +528,10 @@ impl McpToolGroupRepo<'_> {
         enabled: bool,
         tools: &serde_json::Value,
     ) -> Result<McpToolGroup> {
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "insert into mcp_tool_groups (org_id, name, slug, description, enabled, tools) \
              values ($1, $2, $3, $4, $5, $6) returning {MCP_TOOL_GROUP_COLUMNS}"
-        ))
+        )))
         .bind(org_id)
         .bind(name)
         .bind(slug)
@@ -552,10 +552,10 @@ impl McpToolGroupRepo<'_> {
         tools: &serde_json::Value,
     ) -> Result<McpToolGroup> {
         fetch_optional_or_not_found(
-            sqlx::query_as(&format!(
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
                 "update mcp_tool_groups set name = $2, description = $3, enabled = $4, \
                  tools = $5, updated_at = now() where id = $1 returning {MCP_TOOL_GROUP_COLUMNS}"
-            ))
+            )))
             .bind(id)
             .bind(name)
             .bind(description)
@@ -746,12 +746,12 @@ impl McpOAuthRepo<'_> {
         user_id: Uuid,
         scopes: &[String],
     ) -> Result<McpOAuthGrant> {
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "insert into mcp_oauth_grants (server_id, user_id, scopes) values ($1, $2, $3) \
              on conflict (server_id, user_id) where revoked_at is null \
              do update set scopes = excluded.scopes, granted_at = now() \
              returning {GRANT_COLUMNS}"
-        ))
+        )))
         .bind(server_id)
         .bind(user_id)
         .bind(scopes)
@@ -762,9 +762,9 @@ impl McpOAuthRepo<'_> {
 
     pub async fn get_grant(&self, id: Uuid) -> Result<McpOAuthGrant> {
         fetch_optional_or_not_found(
-            sqlx::query_as(&format!(
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
                 "select {GRANT_COLUMNS} from mcp_oauth_grants where id = $1"
-            ))
+            )))
             .bind(id),
             self.0,
             || format!("mcp oauth grant {id}"),
@@ -798,11 +798,11 @@ impl McpOAuthRepo<'_> {
     pub async fn revoke_grant(&self, id: Uuid, revoked_by: Option<Uuid>) -> Result<McpOAuthGrant> {
         let mut tx = self.0.begin().await.map_err(store_err)?;
         let grant: McpOAuthGrant = fetch_optional_or_not_found(
-            sqlx::query_as(&format!(
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
                 "update mcp_oauth_grants set revoked_at = coalesce(revoked_at, now()), \
                         revoked_by = coalesce(revoked_by, $2) \
                  where id = $1 returning {GRANT_COLUMNS}"
-            ))
+            )))
             .bind(id)
             .bind(revoked_by),
             &mut *tx,
@@ -854,11 +854,11 @@ impl McpOAuthRepo<'_> {
             Some((c, n)) => (Some(c), Some(n)),
             None => (None, None),
         };
-        let session = sqlx::query_as(&format!(
+        let session = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "insert into mcp_oauth_sessions (grant_id, access_ciphertext, access_nonce, \
                     refresh_ciphertext, refresh_nonce, scopes, expires_at, refresh_expires_at) \
              values ($1, $2, $3, $4, $5, $6, $7, $8) returning {SESSION_COLUMNS}"
-        ))
+        )))
         .bind(grant_id)
         .bind(access_ciphertext)
         .bind(access_nonce)
@@ -899,9 +899,9 @@ impl McpOAuthRepo<'_> {
 
     pub async fn get_session(&self, id: Uuid) -> Result<McpOAuthSession> {
         fetch_optional_or_not_found(
-            sqlx::query_as(&format!(
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
                 "select {SESSION_COLUMNS} from mcp_oauth_sessions where id = $1"
-            ))
+            )))
             .bind(id),
             self.0,
             || format!("mcp oauth session {id}"),
@@ -911,10 +911,10 @@ impl McpOAuthRepo<'_> {
 
     pub async fn revoke_session(&self, id: Uuid) -> Result<McpOAuthSession> {
         fetch_optional_or_not_found(
-            sqlx::query_as(&format!(
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
                 "update mcp_oauth_sessions set revoked_at = coalesce(revoked_at, now()) \
                  where id = $1 returning {SESSION_COLUMNS}"
-            ))
+            )))
             .bind(id),
             self.0,
             || format!("mcp oauth session {id}"),
@@ -1119,12 +1119,12 @@ impl McpOAuthRepo<'_> {
             None => (None, None),
         };
         fetch_optional_or_not_found(
-            sqlx::query_as(&format!(
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
                 "update mcp_oauth_sessions set access_ciphertext = $2, access_nonce = $3, \
                         refresh_ciphertext = $4, refresh_nonce = $5, scopes = $6, \
                         expires_at = $7, refresh_expires_at = $8 \
                  where id = $1 and revoked_at is null returning {SESSION_COLUMNS}"
-            ))
+            )))
             .bind(id)
             .bind(access_ciphertext)
             .bind(access_nonce)

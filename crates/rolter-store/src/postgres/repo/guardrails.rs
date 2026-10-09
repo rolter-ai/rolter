@@ -54,9 +54,9 @@ const GUARDRAIL_PROVIDER_COLUMNS: &str = "id, name, enabled, url, stage, timeout
 
 impl GuardrailRepo<'_> {
     pub async fn list_rules(&self) -> Result<Vec<GuardrailRule>> {
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "select {GUARDRAIL_RULE_COLUMNS} from guardrail_rules order by position, name"
-        ))
+        )))
         .fetch_all(self.0)
         .await
         .map_err(store_err)
@@ -64,9 +64,9 @@ impl GuardrailRepo<'_> {
 
     pub async fn get_rule(&self, id: Uuid) -> Result<GuardrailRule> {
         fetch_optional_or_not_found(
-            sqlx::query_as(&format!(
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
                 "select {GUARDRAIL_RULE_COLUMNS} from guardrail_rules where id = $1"
-            ))
+            )))
             .bind(id),
             self.0,
             || format!("guardrail rule {id}"),
@@ -75,11 +75,11 @@ impl GuardrailRepo<'_> {
     }
 
     pub async fn create_rule(&self, rule: GuardrailRuleInput<'_>) -> Result<GuardrailRule> {
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "insert into guardrail_rules (name, enabled, source_type, builtin, pattern, stage, \
              action, replacement, include_system, position) values \
              ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) returning {GUARDRAIL_RULE_COLUMNS}"
-        ))
+        )))
         .bind(rule.name)
         .bind(rule.enabled)
         .bind(rule.source_type)
@@ -101,11 +101,11 @@ impl GuardrailRepo<'_> {
         rule: GuardrailRuleInput<'_>,
     ) -> Result<GuardrailRule> {
         fetch_optional_or_not_found(
-            sqlx::query_as(&format!(
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
                 "update guardrail_rules set name=$2, enabled=$3, source_type=$4, builtin=$5, \
                  pattern=$6, stage=$7, action=$8, replacement=$9, include_system=$10, \
                  position=$11, updated_at=now() where id=$1 returning {GUARDRAIL_RULE_COLUMNS}"
-            ))
+            )))
             .bind(id)
             .bind(rule.name)
             .bind(rule.enabled)
@@ -133,9 +133,9 @@ impl GuardrailRepo<'_> {
     }
 
     pub async fn list_providers(&self) -> Result<Vec<GuardrailProvider>> {
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "select {GUARDRAIL_PROVIDER_COLUMNS} from guardrail_providers order by enabled desc, name"
-        ))
+        )))
         .fetch_all(self.0)
         .await
         .map_err(store_err)
@@ -143,9 +143,9 @@ impl GuardrailRepo<'_> {
 
     pub async fn get_provider(&self, id: Uuid) -> Result<GuardrailProvider> {
         fetch_optional_or_not_found(
-            sqlx::query_as(&format!(
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
                 "select {GUARDRAIL_PROVIDER_COLUMNS} from guardrail_providers where id=$1"
-            ))
+            )))
             .bind(id),
             self.0,
             || format!("guardrail provider {id}"),
@@ -166,11 +166,11 @@ impl GuardrailRepo<'_> {
             .await
             .map_err(store_err)?;
         }
-        let row = sqlx::query_as(&format!(
+        let row = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "insert into guardrail_providers (name, enabled, url, stage, timeout_ms, max_retries, \
              failure_mode, max_body_bytes, auth_kind, auth_env) values \
              ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) returning {GUARDRAIL_PROVIDER_COLUMNS}"
-        ))
+        )))
         .bind(provider.name)
         .bind(provider.enabled)
         .bind(provider.url)
@@ -200,11 +200,11 @@ impl GuardrailRepo<'_> {
         }
         // not fetch_optional_or_not_found: the row is read on the transaction,
         // which must still be committed on the hit
-        let row = sqlx::query_as(&format!(
+        let row = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "update guardrail_providers set name=$2, enabled=$3, url=$4, stage=$5, timeout_ms=$6, \
              max_retries=$7, failure_mode=$8, max_body_bytes=$9, auth_kind=$10, auth_env=$11, \
              updated_at=now() where id=$1 returning {GUARDRAIL_PROVIDER_COLUMNS}"
-        ))
+        )))
         .bind(id)
         .bind(provider.name)
         .bind(provider.enabled)

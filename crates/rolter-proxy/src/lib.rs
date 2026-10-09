@@ -1663,7 +1663,7 @@ mod tests {
             .collect();
         let key = PrivateKeyDer::from_pem_slice(fixture.server_key_pem.as_bytes()).unwrap();
         let tls = tokio_rustls::rustls::ServerConfig::builder_with_provider(Arc::new(
-            tokio_rustls::rustls::crypto::ring::default_provider(),
+            tokio_rustls::rustls::crypto::aws_lc_rs::default_provider(),
         ))
         .with_safe_default_protocol_versions()
         .unwrap()

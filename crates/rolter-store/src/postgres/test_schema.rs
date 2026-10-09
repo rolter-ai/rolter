@@ -325,11 +325,13 @@ impl TestSchema {
         // pids: a previous run holding our pid may have left this exact name
         let schema = unique_schema();
         admin
-            .execute(format!("drop schema if exists {schema} cascade").as_str())
+            .execute(sqlx::AssertSqlSafe(format!(
+                "drop schema if exists {schema} cascade"
+            )))
             .await
             .expect("reset schema");
         admin
-            .execute(format!("create schema {schema}").as_str())
+            .execute(sqlx::AssertSqlSafe(format!("create schema {schema}")))
             .await
             .expect("create schema");
         let _ = admin.close().await;
@@ -468,8 +470,10 @@ async fn drop_schema(url: &str, schema: &str) -> Result<(), sqlx::Error> {
     .bind(schema)
     .execute(&mut conn)
     .await?;
-    conn.execute(format!("drop schema if exists {schema} cascade").as_str())
-        .await?;
+    conn.execute(sqlx::AssertSqlSafe(format!(
+        "drop schema if exists {schema} cascade"
+    )))
+    .await?;
     conn.close().await
 }
 
@@ -485,13 +489,13 @@ async fn drop_schemas(url: &str, schemas: &[String]) -> Result<(), sqlx::Error> 
     conn.execute("set lock_timeout = '10s'").await?;
     for batch in schemas.chunks(SWEEP_BATCH) {
         let sql = format!("drop schema if exists {} cascade", batch.join(", "));
-        if let Err(err) = conn.execute(sql.as_str()).await {
+        if let Err(err) = conn.execute(sqlx::AssertSqlSafe(sql)).await {
             // another sweeper may have taken a schema between the listing and
             // the drop; retry one at a time so one loser cannot strand a batch
             eprintln!("batched schema drop failed ({err}); retrying individually");
             for schema in batch {
                 let sql = format!("drop schema if exists {schema} cascade");
-                if let Err(err) = conn.execute(sql.as_str()).await {
+                if let Err(err) = conn.execute(sqlx::AssertSqlSafe(sql)).await {
                     eprintln!("failed to drop test schema {schema}: {err}");
                 }
             }
@@ -772,10 +776,9 @@ mod tests {
         let password = uuid::Uuid::new_v4().simple().to_string();
         let mut admin = PgConnection::connect(&url).await.expect("connect");
         admin
-            .execute(
-                format!("create role {role} login password '{password}' connection limit 0")
-                    .as_str(),
-            )
+            .execute(sqlx::AssertSqlSafe(format!(
+                "create role {role} login password '{password}' connection limit 0"
+            )))
             .await
             .expect("create a role with no connection slots");
         let slotless = url_as(&url, &role, &password);
@@ -812,7 +815,9 @@ mod tests {
                 tokio::time::sleep(std::time::Duration::from_millis(300)).await;
                 let mut other = PgConnection::connect(&url).await.expect("connect");
                 other
-                    .execute(format!("alter role {role} connection limit -1").as_str())
+                    .execute(sqlx::AssertSqlSafe(format!(
+                        "alter role {role} connection limit -1"
+                    )))
                     .await
                     .expect("free a slot");
                 let _ = other.close().await;
@@ -823,7 +828,7 @@ mod tests {
         .await;
 
         let _ = admin
-            .execute(format!("drop role if exists {role}").as_str())
+            .execute(sqlx::AssertSqlSafe(format!("drop role if exists {role}")))
             .await;
         let _ = admin.close().await;
         if let Err(err) = checks {
@@ -954,10 +959,12 @@ mod tests {
         let live = format!("{SCHEMA_PREFIX}_{}_999999", std::process::id());
         let pool = connect(&url).await.expect("connect");
         for schema in [&dead, &live] {
-            sqlx::query(&format!("create schema if not exists {schema}"))
-                .execute(&pool)
-                .await
-                .expect("create schema");
+            sqlx::query(sqlx::AssertSqlSafe(format!(
+                "create schema if not exists {schema}"
+            )))
+            .execute(&pool)
+            .await
+            .expect("create schema");
         }
         pool.close().await;
 

@@ -32,6 +32,14 @@ exceptions = [{ name = "win_uds", allow = ["Unlicense"] }]
 
 [bans]
 multiple-versions = "warn"
+# rustls picks its crypto provider from the crate features, and panics on the
+# first `ClientConfig::builder()` (a `wss://` dial, an ldaps bind) when it finds
+# two. aws-lc-rs is the one provider here: reqwest 0.13 brings it, sqlx and
+# ldap3 are set to it. a dependency that turns on ring would put the second one
+# back without a compile error, so this fails the bump that does it
+deny = [
+  { crate = "ring", reason = "second rustls crypto provider; use aws-lc-rs" },
+]
 # deny external wildcard deps, but allow internal path-based workspace crates
 # (rolter-* depend on each other via `workspace = true`, which resolves to "*")
 wildcards = "deny"

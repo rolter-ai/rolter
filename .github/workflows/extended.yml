@@ -71,8 +71,8 @@ jobs:
   # `cargo +<msrv>`: rust-toolchain.toml pins `stable` and outranks the rustup
   # default the toolchain action sets, so a plain `cargo check` here would test
   # stable and never the msrv. the floor is set by our own code as well as the
-  # lockfile: 1.91 is the first release with a stable `str::floor_char_boundary`,
-  # above the 1.88 that redis, tonic, icu and time declare (#2026)
+  # lockfile: sqlx 0.9 declares 1.94, above the 1.91 that stabilises
+  # `str::floor_char_boundary` and the 1.89 that uuid declares (#2026)
   msrv:
     name: msrv build
     runs-on: ubuntu-24.04

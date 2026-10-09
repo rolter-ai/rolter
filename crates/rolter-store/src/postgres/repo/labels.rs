@@ -66,7 +66,7 @@ impl LabelRepo<'_> {
     /// Every label matching `filter`, ordered so a subject's labels arrive
     /// together and auto labels lead within one subject.
     pub async fn list(&self, filter: LabelFilter<'_>) -> Result<Vec<Label>> {
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "select {LABEL_COLUMNS} from labels
               where ($1::text is null or subject_type = $1)
                 and ($2::text is null or subject_id = $2)
@@ -74,7 +74,7 @@ impl LabelRepo<'_> {
                 and ($4::text is null or value = $4)
                 and ($5::text is null or source = $5)
               order by subject_type, subject_id, source, key"
-        ))
+        )))
         .bind(filter.subject_type)
         .bind(filter.subject_id)
         .bind(filter.key)
@@ -106,7 +106,7 @@ impl LabelRepo<'_> {
     /// listing that did not join back to the subject would hand one org's
     /// operators another's label set.
     pub async fn list_in_org(&self, org_id: Uuid, filter: LabelFilter<'_>) -> Result<Vec<Label>> {
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "select {LABEL_COLUMNS} from labels
               where subject_id in (
                         select id::text from providers where org_id = $1
@@ -124,7 +124,7 @@ impl LabelRepo<'_> {
                 and ($5::text is null or value = $5)
                 and ($6::text is null or source = $6)
               order by subject_type, subject_id, source, key"
-        ))
+        )))
         .bind(org_id)
         .bind(filter.subject_type)
         .bind(filter.subject_id)
@@ -169,7 +169,10 @@ impl LabelRepo<'_> {
 
     pub async fn get(&self, id: Uuid) -> Result<Label> {
         fetch_optional_or_not_found(
-            sqlx::query_as(&format!("select {LABEL_COLUMNS} from labels where id = $1")).bind(id),
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "select {LABEL_COLUMNS} from labels where id = $1"
+            )))
+            .bind(id),
             self.0,
             || format!("label {id}"),
         )
@@ -183,12 +186,12 @@ impl LabelRepo<'_> {
     /// settle the race between two callers adding the same key, rather than a
     /// read-then-insert that both would pass.
     pub async fn create_custom(&self, input: CustomLabelInput<'_>) -> Result<Option<Label>> {
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "insert into labels (subject_type, subject_id, key, value, source)
              values ($1, $2, $3, $4, 'custom')
              on conflict (subject_type, subject_id, source, key) do nothing
              returning {LABEL_COLUMNS}"
-        ))
+        )))
         .bind(input.subject_type)
         .bind(input.subject_id)
         .bind(input.key)
@@ -204,10 +207,10 @@ impl LabelRepo<'_> {
     /// there is no code path here that can edit an observation.
     pub async fn update_custom(&self, id: Uuid, value: Option<&str>) -> Result<Label> {
         fetch_optional_or_not_found(
-            sqlx::query_as(&format!(
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
                 "update labels set value = $2, updated_at = now()
                   where id = $1 and source = 'custom' returning {LABEL_COLUMNS}"
-            ))
+            )))
             .bind(id)
             .bind(value),
             self.0,
@@ -234,7 +237,7 @@ impl LabelRepo<'_> {
     where
         E: Executor<'e, Database = Postgres>,
     {
-        sqlx::query_as(&format!(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "insert into labels (subject_type, subject_id, key, value, source, observation, observed_at)
              values ($1, $2, $3, $4, 'auto', $5, $6)
              on conflict (subject_type, subject_id, source, key) do update
@@ -243,7 +246,7 @@ impl LabelRepo<'_> {
                     observed_at = excluded.observed_at,
                     updated_at = now()
              returning {LABEL_COLUMNS}"
-        ))
+        )))
         .bind(input.subject_type)
         .bind(input.subject_id)
         .bind(input.key)

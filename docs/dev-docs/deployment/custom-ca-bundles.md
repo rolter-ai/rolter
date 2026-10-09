@@ -2,6 +2,10 @@
 
 Rolter can add private CA certificates to the normal public-root trust store for outbound HTTPS connections to upstream providers. Certificate-chain and hostname verification remain enabled; this feature does not affect inbound TLS or configure mTLS client certificates.
 
+The public roots are the host's own trust store: the upstream client verifies certificates through `rustls-platform-verifier`, which on Linux reads the system CA bundle (`/etc/ssl/certs`, or the file `SSL_CERT_FILE` and the directory `SSL_CERT_DIR` name). The published image is distroless and ships `ca-certificates`, so it works unchanged; an image you build yourself on a base without one needs it installed. Before reqwest 0.13 the client carried a bundled copy of the Mozilla roots instead, so a deployment that relied on a minimal image with no system store must now install one or point `SSL_CERT_FILE` at a bundle. Postgres TLS (`sqlx`) and `wss://` realtime upstreams keep their bundled webpki roots.
+
+All of these clients use one rustls crypto provider, aws-lc-rs: the one `reqwest` 0.13 ships, with `sqlx` and `ldap3` set to it. rustls selects its provider from the crate features and panics on the first `ClientConfig::builder()` that finds two, so a `wss://` dial would die at runtime on a build that compiles and passes every plain-http test. `.config/deny.toml` bans the `ring` crate to keep it that way, and `a_wss_dial_finds_its_crypto_provider` in the gateway's `realtime.rs` dials a `wss://` address in a workspace-wide test build.
+
 ## Minimal air-gapped configuration
 
 Mount a PEM file containing one or more CA certificates, then use either the environment variable:

@@ -116,6 +116,10 @@ alter table model_prices validate constraint model_prices_input_per_mtok_rate;
 
 The four names are `model_prices_input_per_mtok_rate`, `model_prices_output_per_mtok_rate`, `model_prices_cached_input_per_mtok_rate` and `model_prices_cache_write_per_mtok_rate`. Validating is optional: an unvalidated check protects new writes just the same. It only changes what `convalidated` reports.
 
+## Upstream TLS trust store
+
+Rolter now verifies upstream HTTPS against the host's system trust store (`/etc/ssl/certs`, or the bundle `SSL_CERT_FILE` names) instead of a copy of the public roots built into the binary. The published images ship `ca-certificates`, so they need nothing from you. A binary you run on a host or in an image of your own with no CA store fails every upstream handshake until you install `ca-certificates` or point `SSL_CERT_FILE` at a PEM bundle. `ROLTER_CA_BUNDLE` and `[tls].ca_bundles` still add private CAs on top of that store.
+
 ## A checklist
 
 1. Back up the control-plane database, and confirm you have `ROLTER_KEK` outside it.

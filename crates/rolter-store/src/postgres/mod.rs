@@ -2522,22 +2522,26 @@ mod tests {
 
         for (table, id) in [("providers", provider), ("provider_groups", group)] {
             let before = current_version(&pool).await.unwrap();
-            sqlx::query(&format!("update {table} set project_id = $1 where id = $2"))
-                .bind(project_a)
-                .bind(id)
-                .execute(&pool)
-                .await
-                .unwrap();
+            sqlx::query(sqlx::AssertSqlSafe(format!(
+                "update {table} set project_id = $1 where id = $2"
+            )))
+            .bind(project_a)
+            .bind(id)
+            .execute(&pool)
+            .await
+            .unwrap();
             assert!(
                 current_version(&pool).await.unwrap() > before,
                 "scoping a row in {table} did not bump config_version"
             );
             // another org's project is refused by the database itself
-            let crossed = sqlx::query(&format!("update {table} set project_id = $1 where id = $2"))
-                .bind(project_b)
-                .bind(id)
-                .execute(&pool)
-                .await;
+            let crossed = sqlx::query(sqlx::AssertSqlSafe(format!(
+                "update {table} set project_id = $1 where id = $2"
+            )))
+            .bind(project_b)
+            .bind(id)
+            .execute(&pool)
+            .await;
             assert!(crossed.is_err(), "{table} accepted another org's project");
         }
 
@@ -3016,10 +3020,12 @@ mod tests {
 
     async fn drop_rate_checks(pool: &PgPool) {
         for name in RATE_CHECKS {
-            sqlx::query(&format!("alter table model_prices drop constraint {name}"))
-                .execute(pool)
-                .await
-                .unwrap();
+            sqlx::query(sqlx::AssertSqlSafe(format!(
+                "alter table model_prices drop constraint {name}"
+            )))
+            .execute(pool)
+            .await
+            .unwrap();
         }
     }
 
@@ -3158,12 +3164,18 @@ mod tests {
             let insert =
                 format!("insert into model_prices (model, {column}) values ('new', {value})");
             assert!(
-                sqlx::query(&insert).execute(&pool).await.is_err(),
+                sqlx::query(sqlx::AssertSqlSafe(insert))
+                    .execute(&pool)
+                    .await
+                    .is_err(),
                 "{column} = {value} should be refused"
             );
             let update = format!("update model_prices set {column} = {value} where model = 'good'");
             assert!(
-                sqlx::query(&update).execute(&pool).await.is_err(),
+                sqlx::query(sqlx::AssertSqlSafe(update))
+                    .execute(&pool)
+                    .await
+                    .is_err(),
                 "{column} = {value} should be refused on update"
             );
         }
@@ -3186,9 +3198,9 @@ mod tests {
             .await
             .unwrap();
         for name in RATE_CHECKS {
-            sqlx::query(&format!(
+            sqlx::query(sqlx::AssertSqlSafe(format!(
                 "alter table model_prices validate constraint {name}"
-            ))
+            )))
             .execute(&pool)
             .await
             .unwrap_or_else(|e| panic!("{name} should validate once the rows are fixed: {e}"));
@@ -3229,7 +3241,10 @@ mod tests {
                 "insert into model_prices (model, cache_write_1h_per_mtok) values ('new', {value})"
             );
             assert!(
-                sqlx::query(&insert).execute(&pool).await.is_err(),
+                sqlx::query(sqlx::AssertSqlSafe(insert))
+                    .execute(&pool)
+                    .await
+                    .is_err(),
                 "cache_write_1h_per_mtok = {value} should be refused"
             );
         }

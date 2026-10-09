@@ -64,10 +64,11 @@ RUN bun run build
 # distroless: no shell, no package manager, and crucially no `perl-base`, which
 # on debian carries unfixed CVEs (CVE-2026-12087 et al) that a base bump cannot
 # resolve. the binaries link only glibc (libc/libm/libgcc), and reqwest uses
-# rustls with bundled webpki roots, so no system openssl or ca-certificates is
-# needed. runs as the built-in nonroot user (uid 65532). pinned by index digest
-# (multi-arch: amd64 + arm64). the debian13 pin exists only for the CI image
-# smoke described above; bump the two together.
+# rustls, so no system openssl is needed. its public roots are the system
+# trust store (rustls-platform-verifier), which this base ships as
+# ca-certificates. runs as the built-in nonroot user (uid 65532). pinned by
+# index digest (multi-arch: amd64 + arm64). the debian13 pin exists only for
+# the CI image smoke described above; bump the two together.
 FROM gcr.io/distroless/cc-debian12:nonroot@sha256:9dac0a79194e45a7da0158a9c6da57b217585af0786db3845d1f0ec1a0dd182f AS distroless-debian12
 FROM gcr.io/distroless/cc-debian13:nonroot@sha256:e792ab3d241a468a4fd7519ddbbebe66b49b5f365771716ea688ad40b6c6f1c2 AS distroless-debian13
 # a stage named above, pinned there, so there is no tag for hadolint to see
