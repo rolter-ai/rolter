@@ -598,8 +598,9 @@ target user, holds a role in the org, its teams or its projects.
 `user.delete` is written once per org the account belonged to, because its
 memberships are deleted with it and nothing would tie an org-less row back to
 those orgs afterwards. Rows no org can claim — a superadmin's own sign-ins,
-attempts against an unregistered address — are not readable through the API
-yet; the deployment-wide read is #1858. See
+attempts against an unregistered address, deployment-wide changes — are read
+through the deployment-wide `GET /api/v1/audit-log`, which only a superadmin
+may call (#1858). See
 [security: who reads account events](security.md#who-reads-account-events-1854).
 
 ### Who an audit row names as the actor (#2844)
