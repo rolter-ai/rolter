@@ -23,6 +23,10 @@
 # 'object_serialization_version'", because it emits settings the older server
 # does not know. Regenerate the set from Foundry to upgrade.
 #
+# ClickHouse and ZooKeeper only take patch bumps here, since a newer minor does
+# not open the existing volumes. That is why `signoz`, the collector and the
+# migrator stay put until they can move as one validated set (#2909).
+#
 # The `signoz` UI image is deliberately ahead of that pair: its MCP server's
 # dashboard tools need v0.135.0 or newer, and the UI reads the schema the
 # migrator writes rather than writing it itself.
