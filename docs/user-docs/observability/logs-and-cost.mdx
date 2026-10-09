@@ -152,12 +152,30 @@ cached_input_per_mtok = 1.25   # optional; defaults to input_per_mtok when absen
     Add a `[[model_prices]]` block for each model you want to track. You can define prices for managed models (OpenAI, Anthropic) and self-hosted models alike.
   </Step>
   <Step title="Rolter computes cost per request">
-    After each completed request, Rolter multiplies the upstream-reported token counts by your configured rates. Cached input tokens use `cached_input_per_mtok` when set, falling back to `input_per_mtok`. The upstream reports them as `cache_read_input_tokens` (Anthropic Messages), `prompt_tokens_details.cached_tokens` (Chat Completions) or `input_tokens_details.cached_tokens` (Responses API); all three are read, on buffered and streamed answers alike. The same holds when the request crosses dialects (a Messages client served by a Chat Completions provider, a chat or Responses client served by an Anthropic or Gemini one): Rolter carries the cached share across, so the discount applies whichever dialect the client spoke. Anthropic reports its cache reads and writes beside `input_tokens`, not inside it, so Rolter adds them into `prompt_tokens`; tokens written to the cache are priced as ordinary input, since a price row has no rate for them.
+    After each completed request, Rolter multiplies the upstream-reported token counts by your configured rates. Cached input tokens use `cached_input_per_mtok` when set, falling back to `input_per_mtok`. Providers name the cached share differently; every spelling in [Cached prompts and thinking tokens](#cached-prompts-and-thinking-tokens) is read, on buffered and streamed answers alike. The same holds when the request crosses dialects (a Messages client served by a Chat Completions provider, a chat or Responses client served by an Anthropic or Gemini one): Rolter carries the cached share across, so the discount applies whichever dialect the client spoke. Anthropic reports its cache reads and writes beside `input_tokens`, not inside it, so Rolter adds them into `prompt_tokens`; tokens written to the cache are priced as ordinary input, since a price row has no rate for them.
   </Step>
   <Step title="Query spend in ClickHouse">
     Rows without a matching model price record `cost_usd = 0` **and `unpriced = 1`** — they still appear in logs, they just don't contribute to spend reports until you add a price.
   </Step>
 </Steps>
+
+### Cached prompts and thinking tokens
+
+Rolter reads the prompt-cache hit from the field the provider reports it in, and records it as `cache_read_tokens`. Every spelling below counts the hit **inside** the prompt total except Anthropic's, which Rolter adds back in, so `prompt_tokens` is always the whole prompt and the cached share is priced at `cached_input_per_mtok`:
+
+| Provider                                                    | Where the cache hit is reported                                                    |
+| ----------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| OpenAI, Azure OpenAI, OpenRouter, Groq, xAI, Qwen, Z.ai/GLM | `usage.prompt_tokens_details.cached_tokens` (Chat Completions)                     |
+| OpenAI (Responses API)                                      | `usage.input_tokens_details.cached_tokens`                                         |
+| Anthropic                                                   | `usage.cache_read_input_tokens`, beside `input_tokens` rather than inside it       |
+| DeepSeek                                                    | `usage.prompt_cache_hit_tokens` (`prompt_tokens` is the hits plus the misses)      |
+| Kimi (Moonshot)                                             | `usage.cached_tokens`, at the top of `usage`                                       |
+| GigaChat                                                    | `usage.precached_prompt_tokens`                                                    |
+| Gemini (native `generateContent`), Gemini Interactions      | `cachedContentTokenCount`, `total_cached_tokens`; carried across by the translator |
+
+A provider that caches but is not in the table logs `cache_read_tokens = 0` and is priced as fresh input until its field is added, so report the provider if you run into one. The table lists the providers whose documentation names the field, not every provider that caches.
+
+Gemini bills its **thinking tokens as output**, and reports them beside the answer's count, not inside it. Rolter adds `thoughtsTokenCount` (`total_thought_tokens` on the Interactions API) to `completion_tokens`, so the request log, the budget and the `usage` block your client reads all count what the provider charged. The tokens a built-in tool such as URL context fed back to the model (`toolUsePromptTokenCount`, `total_tool_use_tokens`) are charged as input and are added to `prompt_tokens`. The `usage` Rolter shows a client always adds up: `total_tokens` is `prompt_tokens` plus `completion_tokens`. The thinking share is not broken out of `completion_tokens` in a translated body.
 
 ### Prices are yours, not ours
 

@@ -977,6 +977,37 @@ fn anthropic_block_to_openai(block: Value) -> Value {
     }
 }
 
+/// The prompt-cache hit of an OpenAI-shaped `usage` object, whichever way the
+/// provider spells it (#2877). All of them count the cached tokens *inside*
+/// the prompt total, which is how `ModelPriceConfig::cost` reads them:
+///
+/// - `prompt_tokens_details.cached_tokens`: Chat Completions (OpenAI, Azure
+///   OpenAI, OpenRouter, Groq, xAI, DeepSeek, Kimi, Qwen, Z.ai and the many
+///   providers that copy the shape)
+/// - `input_tokens_details.cached_tokens`: the Responses API
+/// - `prompt_cache_hit_tokens`: DeepSeek, whose `prompt_tokens` is documented
+///   as hits plus `prompt_cache_miss_tokens`. It is the older spelling; the
+///   details block above now carries the same number
+/// - `cached_tokens` at the top of `usage`: Kimi (Moonshot), beside the details
+///   block, and gateways that flatten it
+/// - `precached_prompt_tokens`: GigaChat
+///
+/// The first spelling present wins. Anthropic's `cache_read_input_tokens` is
+/// not here on purpose: it sits *beside* `input_tokens`, not inside it, so the
+/// callers that read it also add it back into the prompt.
+pub fn cached_prompt_tokens(usage: &Value) -> Option<u64> {
+    const SPELLINGS: [&str; 5] = [
+        "/prompt_tokens_details/cached_tokens",
+        "/input_tokens_details/cached_tokens",
+        "/prompt_cache_hit_tokens",
+        "/cached_tokens",
+        "/precached_prompt_tokens",
+    ];
+    SPELLINGS
+        .iter()
+        .find_map(|pointer| usage.pointer(pointer)?.as_u64())
+}
+
 /// Token counts of one usage object, held in the one shape every dialect
 /// converts through.
 ///
@@ -990,6 +1021,14 @@ fn anthropic_block_to_openai(block: Value) -> Value {
 /// client sees: the gateway prices a request from the body the client
 /// receives, and `ModelPriceConfig::cost` expects the cached share to be part
 /// of the prompt it is handed (#2863).
+///
+/// Gemini reports two counts that belong to neither side of the headline pair,
+/// and both are billed, so both are folded in (#2875). Thinking tokens
+/// (`thoughtsTokenCount`, `total_thought_tokens`) are charged at the output
+/// rate, and sit beside `candidatesTokenCount` rather than inside it, so they
+/// are added to `completion`. Tool-use prompt tokens (`toolUsePromptTokenCount`,
+/// `total_tool_use_tokens`) are what a built-in tool such as URL context fed
+/// back to the model, charged as input tokens, so they are added to `prompt`.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 struct TokenUsage {
     /// every prompt token, cache reads and writes included
@@ -1001,8 +1040,10 @@ struct TokenUsage {
     cache_read: Option<u64>,
     /// prompt tokens written to the provider's cache
     cache_write: Option<u64>,
-    /// the provider's own `total_tokens` when it states one (gemini adds its
-    /// thinking tokens there); the sum of prompt and completion otherwise
+    /// the provider's own `total_tokens` when a chat or responses body states
+    /// one; the sum of prompt and completion otherwise. Gemini and Interactions
+    /// never set it: their totals cover thinking and tool-use tokens, which are
+    /// counted into `prompt` and `completion` here, so the sum is the total
     total: Option<u64>,
 }
 
@@ -1028,6 +1069,8 @@ impl TokenUsage {
     /// A Chat Completions usage object, or a Responses API one: the counts are
     /// spelled `prompt_tokens` / `input_tokens` and the cache share sits in
     /// `prompt_tokens_details` / `input_tokens_details`, inside the prompt.
+    /// Providers that cache without following that shape spell the share
+    /// elsewhere (see [`cached_prompt_tokens`]), which is read too.
     /// `cache_write_tokens` is not part of either API; gateways that report a
     /// write count (OpenRouter) put it beside `cached_tokens`.
     fn from_openai(usage: &Value) -> Self {
@@ -1045,7 +1088,7 @@ impl TokenUsage {
         Self {
             prompt: count("prompt_tokens", "input_tokens").unwrap_or(0),
             completion: count("completion_tokens", "output_tokens").unwrap_or(0),
-            cache_read: detail("cached_tokens"),
+            cache_read: cached_prompt_tokens(usage),
             cache_write: detail("cache_write_tokens"),
             total: usage.get("total_tokens").and_then(Value::as_u64),
         }
@@ -1062,16 +1105,24 @@ impl TokenUsage {
 
     /// A Gemini `usageMetadata` block. `promptTokenCount` already includes the
     /// cached content, which `cachedContentTokenCount` counts.
+    /// `candidatesTokenCount` leaves the thinking tokens out and
+    /// `thoughtsTokenCount` counts them; they are billed as output, so they
+    /// join the completion (#2875), and the tool-use prompt tokens join the
+    /// prompt. The provider's `totalTokenCount` is not carried: it is the sum
+    /// of these anyway, and a total derived from the figures shown cannot
+    /// disagree with them.
     fn from_gemini(metadata: Option<&Value>) -> Self {
         let count = |key: &str| metadata?.get(key)?.as_u64();
-        let prompt = count("promptTokenCount").unwrap_or(0);
-        let completion = count("candidatesTokenCount").unwrap_or(0);
         Self {
-            prompt,
-            completion,
+            prompt: count("promptTokenCount")
+                .unwrap_or(0)
+                .saturating_add(count("toolUsePromptTokenCount").unwrap_or(0)),
+            completion: count("candidatesTokenCount")
+                .unwrap_or(0)
+                .saturating_add(count("thoughtsTokenCount").unwrap_or(0)),
             cache_read: count("cachedContentTokenCount"),
             cache_write: None,
-            total: Some(count("totalTokenCount").unwrap_or(prompt + completion)),
+            total: None,
         }
     }
 
@@ -1870,7 +1921,12 @@ fn interaction_step_text(step: &Value) -> String {
 
 /// The interactions usage block as a [`TokenUsage`], tolerating both the
 /// `total_input_tokens` and short `input_tokens` spellings. The cached share
-/// is `total_cached_tokens`, which sits inside the input total.
+/// is `total_cached_tokens`, which sits inside the input total. Thinking tokens
+/// (`total_thought_tokens`) are billed as output and are not part of
+/// `total_output_tokens`, so they join the completion; tool-use tokens
+/// (`total_tool_use_tokens`) are billed as input, so they join the prompt
+/// (#2875). Google's own docs spell the same counts `thoughts_tokens` and
+/// `tool_use_input_tokens` in places, so those are read as well.
 fn interaction_usage(usage: Option<&Value>) -> TokenUsage {
     let field = |names: &[&str]| -> Option<u64> {
         let usage = usage?;
@@ -1879,13 +1935,19 @@ fn interaction_usage(usage: Option<&Value>) -> TokenUsage {
             .find_map(|name| usage.get(*name).and_then(Value::as_u64))
     };
     let prompt = field(&["total_input_tokens", "input_tokens"]).unwrap_or(0);
+    let tool_use = field(&[
+        "total_tool_use_tokens",
+        "tool_use_tokens",
+        "tool_use_input_tokens",
+    ]);
     let completion = field(&["total_output_tokens", "output_tokens"]).unwrap_or(0);
+    let thoughts = field(&["total_thought_tokens", "thought_tokens", "thoughts_tokens"]);
     TokenUsage {
-        prompt,
-        completion,
+        prompt: prompt.saturating_add(tool_use.unwrap_or(0)),
+        completion: completion.saturating_add(thoughts.unwrap_or(0)),
         cache_read: field(&["total_cached_tokens", "cached_tokens"]),
         cache_write: None,
-        total: field(&["total_tokens"]),
+        total: None,
     }
 }
 
@@ -2308,12 +2370,7 @@ impl SseConverter {
             } else {
                 gemini_finish(Some(reason))
             };
-            // the closing chunk has always summed prompt and completion, so the
-            // stream leaves out the provider's own total (thinking tokens)
-            let usage = TokenUsage {
-                total: None,
-                ..TokenUsage::from_gemini(v.get("usageMetadata"))
-            };
+            let usage = TokenUsage::from_gemini(v.get("usageMetadata"));
             out.push(openai_chunk(&self.state, json!({}), finish, Some(&usage)));
             if emit_done {
                 out.push(Bytes::from_static(b"data: [DONE]\n\n"));
@@ -2424,10 +2481,7 @@ impl SseConverter {
                 } else {
                     interaction_finish(interaction_field(&v, "status"))
                 };
-                let usage = TokenUsage {
-                    total: None,
-                    ..interaction_usage(interaction_field(&v, "usage"))
-                };
+                let usage = interaction_usage(interaction_field(&v, "usage"));
                 out.push(openai_chunk(&self.state, json!({}), finish, Some(&usage)));
                 if emit_done {
                     out.push(Bytes::from_static(b"data: [DONE]\n\n"));
@@ -3528,7 +3582,8 @@ mod tests {
         let gemini = json!({
             "candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}],
             "usageMetadata":{"promptTokenCount":100,"cachedContentTokenCount":80,
-                             "candidatesTokenCount":5,"totalTokenCount":112}
+                             "candidatesTokenCount":5,"thoughtsTokenCount":7,
+                             "totalTokenCount":112}
         });
         // gemini counts the cached content inside promptTokenCount, like chat
         let v = translate_json_body(
@@ -3537,6 +3592,7 @@ mod tests {
             gemini.clone(),
         );
         assert_eq!(v["usage"]["prompt_tokens"], 100);
+        assert_eq!(v["usage"]["completion_tokens"], 12);
         assert_eq!(v["usage"]["total_tokens"], 112);
         assert_eq!(v["usage"]["prompt_tokens_details"]["cached_tokens"], 80);
 
@@ -3714,5 +3770,327 @@ mod tests {
         let out = translate_sse_body(Protocol::OpenAiResponses, Protocol::GeminiInteractions, sse);
         let usage = last_usage(&out, Some("response.completed"));
         assert_eq!(usage["input_tokens_details"]["cached_tokens"], 80);
+    }
+
+    // ── thinking and tool-use tokens (#2875) ────────────────────────────────
+    // gemini bills thinking as output and tool-use prompts as input, and
+    // reports each beside the headline count rather than inside it, so a usage
+    // block read for `candidatesTokenCount` alone under-states the charge
+
+    /// 100 prompt, 5 answer and 20 thinking tokens; the provider's total
+    /// covers all three
+    fn gemini_thinking_body() -> Value {
+        json!({
+            "candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}],
+            "usageMetadata":{"promptTokenCount":100,"candidatesTokenCount":5,
+                             "thoughtsTokenCount":20,"totalTokenCount":125}
+        })
+    }
+
+    #[test]
+    fn gemini_thinking_tokens_join_the_completion_for_every_client_dialect() {
+        let v = translate_json_body(
+            Protocol::OpenAiChat,
+            Protocol::GeminiGenerate,
+            gemini_thinking_body(),
+        );
+        assert_eq!(v["usage"]["prompt_tokens"], 100);
+        assert_eq!(v["usage"]["completion_tokens"], 25);
+        assert_eq!(v["usage"]["total_tokens"], 125);
+
+        let v = translate_json_body(
+            Protocol::AnthropicMessages,
+            Protocol::GeminiGenerate,
+            gemini_thinking_body(),
+        );
+        assert_eq!(v["usage"]["input_tokens"], 100);
+        assert_eq!(v["usage"]["output_tokens"], 25);
+
+        let v = translate_json_body(
+            Protocol::OpenAiResponses,
+            Protocol::GeminiGenerate,
+            gemini_thinking_body(),
+        );
+        assert_eq!(v["usage"]["input_tokens"], 100);
+        assert_eq!(v["usage"]["output_tokens"], 25);
+        assert_eq!(v["usage"]["total_tokens"], 125);
+    }
+
+    /// whatever total the provider states, the one shown is the sum of the
+    /// two counts beside it
+    #[test]
+    fn a_translated_gemini_total_is_always_prompt_plus_completion() {
+        for stated in [json!(null), json!(7), json!(9000)] {
+            let mut body = gemini_thinking_body();
+            body["usageMetadata"]["totalTokenCount"] = stated.clone();
+            let v = translate_json_body(Protocol::OpenAiChat, Protocol::GeminiGenerate, body);
+            assert_eq!(v["usage"]["total_tokens"], 125, "provider total {stated}");
+        }
+        let v = translate_json_body(
+            Protocol::OpenAiChat,
+            Protocol::GeminiGenerate,
+            json!({
+                "candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}],
+                "usageMetadata":{"promptTokenCount":100,"candidatesTokenCount":5}
+            }),
+        );
+        assert_eq!(v["usage"]["total_tokens"], 105);
+    }
+
+    /// a model that does not think reports no `thoughtsTokenCount`, and its
+    /// usage is what it always was
+    #[test]
+    fn a_gemini_answer_without_thoughts_is_unchanged() {
+        let v = translate_json_body(
+            Protocol::OpenAiChat,
+            Protocol::GeminiGenerate,
+            json!({
+                "candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}],
+                "usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":2,"totalTokenCount":7}
+            }),
+        );
+        assert_eq!(v["usage"]["prompt_tokens"], 5);
+        assert_eq!(v["usage"]["completion_tokens"], 2);
+        assert_eq!(v["usage"]["total_tokens"], 7);
+    }
+
+    /// what a built-in tool (URL context, say) fed the model is charged as
+    /// input, so it is part of the prompt, and cached content stays inside it
+    #[test]
+    fn gemini_tool_use_prompt_tokens_join_the_prompt() {
+        let body = json!({
+            "candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}],
+            "usageMetadata":{"promptTokenCount":100,"cachedContentTokenCount":60,
+                             "toolUsePromptTokenCount":40,"candidatesTokenCount":5,
+                             "thoughtsTokenCount":20,"totalTokenCount":165}
+        });
+        let v = translate_json_body(Protocol::OpenAiChat, Protocol::GeminiGenerate, body.clone());
+        assert_eq!(v["usage"]["prompt_tokens"], 140);
+        assert_eq!(v["usage"]["completion_tokens"], 25);
+        assert_eq!(v["usage"]["total_tokens"], 165);
+        assert_eq!(v["usage"]["prompt_tokens_details"]["cached_tokens"], 60);
+
+        // Messages: the cache comes off the prompt, the rest is `input_tokens`
+        let v = translate_json_body(Protocol::AnthropicMessages, Protocol::GeminiGenerate, body);
+        assert_eq!(v["usage"]["input_tokens"], 80);
+        assert_eq!(v["usage"]["cache_read_input_tokens"], 60);
+    }
+
+    #[test]
+    fn a_gemini_stream_counts_thinking_tokens_for_every_client_dialect() {
+        let sse = "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"hi\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":100,\"candidatesTokenCount\":5,\"thoughtsTokenCount\":20,\"totalTokenCount\":125}}\n\n";
+        let out = translate_sse_body(Protocol::OpenAiChat, Protocol::GeminiGenerate, sse);
+        let usage = last_usage(&out, None);
+        assert_eq!(usage["prompt_tokens"], 100);
+        assert_eq!(usage["completion_tokens"], 25);
+        assert_eq!(usage["total_tokens"], 125);
+
+        let out = translate_sse_body(Protocol::AnthropicMessages, Protocol::GeminiGenerate, sse);
+        let usage = last_usage(&out, Some("message_delta"));
+        assert_eq!(usage["input_tokens"], 100);
+        assert_eq!(usage["output_tokens"], 25);
+
+        let out = translate_sse_body(Protocol::OpenAiResponses, Protocol::GeminiGenerate, sse);
+        let usage = last_usage(&out, Some("response.completed"));
+        assert_eq!(usage["output_tokens"], 25);
+        assert_eq!(usage["total_tokens"], 125);
+    }
+
+    fn interaction_thinking_body(usage: Value) -> Value {
+        json!({
+            "id":"i1","status":"completed","model":"gemini",
+            "steps":[{"type":"model_output","content":[{"type":"text","text":"hi"}]}],
+            "usage":usage
+        })
+    }
+
+    #[test]
+    fn interactions_thinking_and_tool_use_tokens_are_counted_for_every_client_dialect() {
+        let body = interaction_thinking_body(json!({
+            "total_input_tokens":100,"total_tool_use_tokens":40,
+            "total_output_tokens":5,"total_thought_tokens":20,"total_tokens":165
+        }));
+        let v = translate_json_body(
+            Protocol::OpenAiChat,
+            Protocol::GeminiInteractions,
+            body.clone(),
+        );
+        assert_eq!(v["usage"]["prompt_tokens"], 140);
+        assert_eq!(v["usage"]["completion_tokens"], 25);
+        assert_eq!(v["usage"]["total_tokens"], 165);
+
+        let v = translate_json_body(
+            Protocol::AnthropicMessages,
+            Protocol::GeminiInteractions,
+            body.clone(),
+        );
+        assert_eq!(v["usage"]["input_tokens"], 140);
+        assert_eq!(v["usage"]["output_tokens"], 25);
+
+        let v = translate_json_body(
+            Protocol::OpenAiResponses,
+            Protocol::GeminiInteractions,
+            body,
+        );
+        assert_eq!(v["usage"]["input_tokens"], 140);
+        assert_eq!(v["usage"]["output_tokens"], 25);
+        assert_eq!(v["usage"]["total_tokens"], 165);
+    }
+
+    /// the long names are the API reference's; the short ones appear in
+    /// Google's guides, and an answer in either is counted the same
+    #[test]
+    fn interactions_usage_is_read_under_either_spelling() {
+        let long = interaction_usage(Some(&json!({
+            "total_input_tokens":100,"total_tool_use_tokens":40,
+            "total_output_tokens":5,"total_thought_tokens":20
+        })));
+        let short = interaction_usage(Some(&json!({
+            "input_tokens":100,"tool_use_input_tokens":40,
+            "output_tokens":5,"thoughts_tokens":20
+        })));
+        assert_eq!(long, short);
+        assert_eq!((long.prompt, long.completion), (140, 25));
+        assert_eq!(long.total(), 165);
+    }
+
+    #[test]
+    fn an_interactions_stream_counts_thinking_tokens_for_every_client_dialect() {
+        let sse = "data: {\"event_type\":\"interaction.completed\",\"interaction\":{\"status\":\"completed\",\"usage\":{\"total_input_tokens\":100,\"total_tool_use_tokens\":40,\"total_output_tokens\":5,\"total_thought_tokens\":20,\"total_tokens\":165}}}\n\n";
+        let out = translate_sse_body(Protocol::OpenAiChat, Protocol::GeminiInteractions, sse);
+        let usage = last_usage(&out, None);
+        assert_eq!(usage["prompt_tokens"], 140);
+        assert_eq!(usage["completion_tokens"], 25);
+        assert_eq!(usage["total_tokens"], 165);
+
+        let out = translate_sse_body(
+            Protocol::AnthropicMessages,
+            Protocol::GeminiInteractions,
+            sse,
+        );
+        let usage = last_usage(&out, Some("message_delta"));
+        assert_eq!(usage["input_tokens"], 140);
+        assert_eq!(usage["output_tokens"], 25);
+
+        let out = translate_sse_body(Protocol::OpenAiResponses, Protocol::GeminiInteractions, sse);
+        let usage = last_usage(&out, Some("response.completed"));
+        assert_eq!(usage["output_tokens"], 25);
+        assert_eq!(usage["total_tokens"], 165);
+    }
+
+    // ── cache hits spelled outside the OpenAI details blocks (#2877) ────────
+
+    /// one case per spelling: the usage object a provider sends and the
+    /// provider it is documented for
+    const HIT_SPELLINGS: [(&str, &str); 4] = [
+        (
+            "chat completions",
+            r#"{"prompt_tokens":120,"completion_tokens":5,"total_tokens":125,"prompt_tokens_details":{"cached_tokens":80}}"#,
+        ),
+        (
+            "deepseek",
+            r#"{"prompt_tokens":120,"completion_tokens":5,"total_tokens":125,"prompt_cache_hit_tokens":80,"prompt_cache_miss_tokens":40}"#,
+        ),
+        (
+            "kimi",
+            r#"{"prompt_tokens":120,"completion_tokens":5,"total_tokens":125,"cached_tokens":80}"#,
+        ),
+        (
+            "gigachat",
+            r#"{"prompt_tokens":120,"completion_tokens":5,"total_tokens":125,"precached_prompt_tokens":80}"#,
+        ),
+    ];
+
+    #[test]
+    fn every_spelling_of_a_cache_hit_is_read() {
+        for (name, usage) in HIT_SPELLINGS {
+            let usage: Value = serde_json::from_str(usage).unwrap();
+            assert_eq!(cached_prompt_tokens(&usage), Some(80), "{name}");
+            let read = TokenUsage::from_openai(&usage);
+            assert_eq!(read.cache_read, Some(80), "{name}");
+            assert_eq!(read.prompt, 120, "{name}: the hit is inside the prompt");
+        }
+        // the Responses API names the counts differently as well
+        let responses = json!({"input_tokens":120,"input_tokens_details":{"cached_tokens":80}});
+        assert_eq!(cached_prompt_tokens(&responses), Some(80));
+        assert_eq!(TokenUsage::from_openai(&responses).cache_read, Some(80));
+    }
+
+    #[test]
+    fn a_usage_object_without_a_hit_reports_none() {
+        let usage = json!({"prompt_tokens":120,"completion_tokens":5,"cached_tokens":null});
+        assert_eq!(cached_prompt_tokens(&usage), None);
+        assert_eq!(TokenUsage::from_openai(&usage).cache_read, None);
+        // the miss count is the complement of the hit and says nothing alone
+        let miss = json!({"prompt_tokens":120,"prompt_cache_miss_tokens":120});
+        assert_eq!(cached_prompt_tokens(&miss), None);
+    }
+
+    #[test]
+    fn a_hit_reported_twice_is_one_hit() {
+        let usage = json!({
+            "prompt_tokens":120,"prompt_tokens_details":{"cached_tokens":80},
+            "prompt_cache_hit_tokens":80
+        });
+        assert_eq!(cached_prompt_tokens(&usage), Some(80));
+    }
+
+    fn chat_body_with_usage(usage: &str) -> Value {
+        json!({
+            "id":"chat_1","model":"deepseek-chat",
+            "choices":[{"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],
+            "usage": serde_json::from_str::<Value>(usage).unwrap(),
+        })
+    }
+
+    #[test]
+    fn a_differently_spelled_hit_reaches_a_messages_client_beside_the_input() {
+        for (name, usage) in HIT_SPELLINGS {
+            let v = translate_json_body(
+                Protocol::AnthropicMessages,
+                Protocol::OpenAiChat,
+                chat_body_with_usage(usage),
+            );
+            assert_eq!(v["usage"]["input_tokens"], 40, "{name}");
+            assert_eq!(v["usage"]["cache_read_input_tokens"], 80, "{name}");
+            assert_eq!(v["usage"]["output_tokens"], 5, "{name}");
+        }
+    }
+
+    #[test]
+    fn a_differently_spelled_hit_reaches_a_responses_client_inside_the_input() {
+        for (name, usage) in HIT_SPELLINGS {
+            let v = translate_json_body(
+                Protocol::OpenAiResponses,
+                Protocol::OpenAiChat,
+                chat_body_with_usage(usage),
+            );
+            assert_eq!(v["usage"]["input_tokens"], 120, "{name}");
+            assert_eq!(
+                v["usage"]["input_tokens_details"]["cached_tokens"], 80,
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_differently_spelled_hit_on_a_stream_reaches_every_client_dialect() {
+        for (name, usage) in HIT_SPELLINGS {
+            let sse = format!(
+                "data: {{\"id\":\"c1\",\"model\":\"m\",\"choices\":[{{\"index\":0,\"delta\":{{\"content\":\"hi\"}}}}]}}\n\n\
+                 data: {{\"id\":\"c1\",\"model\":\"m\",\"choices\":[{{\"index\":0,\"delta\":{{}},\"finish_reason\":\"stop\"}}]}}\n\n\
+                 data: {{\"id\":\"c1\",\"model\":\"m\",\"choices\":[],\"usage\":{usage}}}\n\n\
+                 data: [DONE]\n\n"
+            );
+            let out = translate_sse_body(Protocol::AnthropicMessages, Protocol::OpenAiChat, &sse);
+            let seen = last_usage(&out, Some("message_delta"));
+            assert_eq!(seen["input_tokens"], 40, "{name}");
+            assert_eq!(seen["cache_read_input_tokens"], 80, "{name}");
+
+            let out = translate_sse_body(Protocol::OpenAiResponses, Protocol::OpenAiChat, &sse);
+            let seen = last_usage(&out, Some("response.completed"));
+            assert_eq!(seen["input_tokens"], 120, "{name}");
+            assert_eq!(seen["input_tokens_details"]["cached_tokens"], 80, "{name}");
+        }
     }
 }

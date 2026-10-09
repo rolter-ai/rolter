@@ -17,7 +17,7 @@ pub mod egress_resolver;
 pub mod pool;
 mod translation;
 
-pub use translation::{Protocol, TranslatedStream, TranslationPlan};
+pub use translation::{cached_prompt_tokens, Protocol, TranslatedStream, TranslationPlan};
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering::Relaxed};
