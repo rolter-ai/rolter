@@ -549,6 +549,16 @@ const CAPABILITIES: &[Capability] = &[
         update: NA,
         delete: NA,
     },
+    // every account in the deployment, not one org's people: the deployment-wide
+    // audit log names an actor from any org (#2871)
+    Capability {
+        resource: "deployment_user",
+        scope: "deployment",
+        read: SUPER,
+        create: NA,
+        update: NA,
+        delete: NA,
+    },
     Capability {
         resource: "invitation",
         scope: "org",

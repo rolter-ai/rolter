@@ -917,6 +917,12 @@ fn operations() -> Vec<Op> {
             Op::delete("/api/v1/users/{id}", "deleteUser", "Delete an account")
                 .conflict(LAST_SUPERADMIN_409),
             Op::get(
+                "/api/v1/users",
+                "listDeploymentUsers",
+                "List every account in the deployment, ordered by e-mail (superadmin)",
+            )
+            .ok(Payload::List("User")),
+            Op::get(
                 "/api/v1/orgs/{org_id}/memberships",
                 "listMemberships",
                 "List role grants in this organization",
@@ -1837,7 +1843,10 @@ fn operations() -> Vec<Op> {
             Op::get(
                 "/api/v1/analytics/invocations",
                 "listInvocations",
-                "Page the request records the caller's roles reach, bodies withheld below the payload floor",
+                "Page the request records the caller's roles reach, bodies withheld below the payload floor. \
+                 A row's `lifecycle_operation` names the call on a stored response it records \
+                 (`retrieve`, `delete`, `cancel`, `input_items`, `compact`, `input_tokens`) and is an \
+                 empty string for a model request and for a row older than the column",
             )
             .clickhouse_read()
             .query(INVOCATIONS_QUERY),

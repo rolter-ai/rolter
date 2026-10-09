@@ -200,6 +200,7 @@ pub fn router() -> Router<ControlState> {
             "/api/v1/orgs/{org_id}/users",
             get(list_users).post(create_user),
         )
+        .route("/api/v1/users", get(list_deployment_users))
         .route("/api/v1/users/{id}", put(update_user).delete(delete_user))
         .route(
             "/api/v1/orgs/{org_id}/memberships",
@@ -5583,6 +5584,22 @@ async fn list_users(
             .filter(|user| visible.contains(&user.id))
             .collect(),
     ))
+}
+
+/// Every account in the deployment, email-ordered: the people of every org and
+/// the ones that hold no membership at all. The deployment-wide audit log names
+/// an actor from any org, and `GET /api/v1/orgs/{org_id}/users` answers for one
+/// org only (#2871).
+///
+/// Superadmin only. Listing an org's people is an org admin's job, but this
+/// lists the people of orgs the caller has no role in, so there is no scope to
+/// check a role against.
+async fn list_deployment_users(
+    principal: Principal,
+    State(state): State<ControlState>,
+) -> ApiResult<Json<Vec<User>>> {
+    authorize_superadmin(&principal, superadmin_cap!("deployment_user", Read))?;
+    Ok(Json(UserRepo(pool(&state)).list_all().await?))
 }
 
 #[derive(Deserialize)]
