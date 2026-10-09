@@ -39,3 +39,8 @@
 
 **Learning:** `bad_gateway` in `crates/rolter-gateway/src/admin_proxy.rs` previously echoed `err` strings (containing internal transport or connection failures) directly into the JSON error response message when forwarding requests to the control plane failed.
 **Prevention:** Always log detailed internal error messages via `tracing::warn!` or `tracing::error!` and return a sanitized, static error message (such as `"control plane unreachable"`) in 502 HTTP error response bodies.
+
+## 2026-10-20 - Redact Internal Error Details in MCP Proxy 502 Responses
+
+**Learning:** `proxy` in `crates/rolter-gateway/src/mcp_proxy.rs` previously echoed `upstream` error strings (containing raw transport error details, connection refused messages, and internal upstream URLs or IP addresses) directly into the HTTP 502 JSON error response body when forwarding MCP requests failed.
+**Prevention:** Always log detailed upstream transport errors internally using `tracing::warn!` and return a generic error message (such as `"MCP upstream request failed"`) in HTTP 502 Bad Gateway error response bodies to prevent infrastructure information disclosure.
