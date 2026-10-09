@@ -276,6 +276,9 @@ fn render_model_prices(out: &mut String, config: &GatewayConfig) {
         if let Some(write) = price.cache_write_per_mtok {
             key(out, "cache_write_per_mtok", &write);
         }
+        if let Some(write) = price.cache_write_1h_per_mtok {
+            key(out, "cache_write_1h_per_mtok", &write);
+        }
         key(out, "currency", &price.currency);
     }
 }
@@ -484,6 +487,7 @@ model = "gpt-4o"
 input_per_mtok = 2.5
 output_per_mtok = 10.0
 cache_write_per_mtok = 3.125
+cache_write_1h_per_mtok = 5.5
 currency = "USD"
 
 [prompt_templates]
@@ -551,6 +555,23 @@ models = ["gpt-4o"]
         config.model_prices[0].cache_write_per_mtok = None;
         let rendered = render(&config);
         assert!(!rendered.contains("cache_write_per_mtok"), "{rendered}");
+    }
+
+    /// #2891: the 1 hour rate leaves with its price too, and independently of
+    /// the 5 minute one.
+    #[test]
+    fn a_one_hour_cache_write_rate_is_exported_only_when_there_is_one() {
+        let mut config = GatewayConfig::from_toml_str(FIXTURE).expect("the fixture must parse");
+        let rendered = render(&config);
+        assert!(
+            rendered.contains("cache_write_1h_per_mtok = \"5.5\"\n"),
+            "{rendered}"
+        );
+
+        config.model_prices[0].cache_write_1h_per_mtok = None;
+        let rendered = render(&config);
+        assert!(!rendered.contains("cache_write_1h_per_mtok"), "{rendered}");
+        assert!(rendered.contains("cache_write_per_mtok"), "{rendered}");
     }
 
     /// The one property that must never regress: `ConfigStore::load` hands the
@@ -761,6 +782,7 @@ models = ["gpt-4o"]
             .expect("the fixture has a price");
         price.cached_input_per_mtok = Some(rust_decimal::Decimal::new(125, 2));
         price.cache_write_per_mtok = Some(rust_decimal::Decimal::new(375, 2));
+        price.cache_write_1h_per_mtok = Some(rust_decimal::Decimal::new(600, 2));
         // exported behind a comment telling the operator to drop it, but
         // exported all the same, so the key has to be one rolter reads
         config.logging.payload_capture.virtual_key_ids =
@@ -977,6 +999,7 @@ models = ["gpt-4o"]
                 "[[model_prices]]",
                 // numeric(12,6) comes back with its scale
                 "cache_write_per_mtok = \"3.125000\"",
+                "cache_write_1h_per_mtok = \"5.500000\"",
                 "[[prompt_templates.templates]]",
                 "[logging]\nui_events = false",
                 "[logging.payload_capture]",

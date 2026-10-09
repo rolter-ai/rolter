@@ -147,7 +147,7 @@ differently is read under its own name and re-emitted as `cache_write_tokens`:
 Qwen's `prompt_tokens_details.cache_creation_input_tokens` and vLLM's
 `created_cache_tokens` (#2879). The cache fields appear only when the
 upstream reported them: a provider without prompt caching gets none added, and
-no zero is stated that the provider never said. On a streamed Anthropic answer
+no zero is stated that the provider never said. Anthropic splits its writes by cache lifetime in `usage.cache_creation` (`ephemeral_5m_input_tokens`, `ephemeral_1h_input_tokens`), and the gateway prices them at different rates (#2891). A chat or Responses client served by an Anthropic upstream is shown the 1 hour share as `cache_write_1h_tokens` beside `cache_write_tokens` (a rolter spelling, within the write count, present only when the upstream split its writes), and a Messages client served by an upstream that stated one is shown the `cache_creation` object again, its two shares adding up to `cache_creation_input_tokens`. On a streamed Anthropic answer
 the closing chunk carries the input side from `message_start` together with the
 output side from `message_delta`.
 

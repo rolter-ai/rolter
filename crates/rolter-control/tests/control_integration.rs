@@ -17044,6 +17044,7 @@ async fn a_model_price_rate_must_be_a_finite_non_negative_number() {
         json!({
             "model": "claude", "input_per_mtok": "3", "output_per_mtok": "15",
             "cached_input_per_mtok": "0.3", "cache_write_per_mtok": "3.75",
+            "cache_write_1h_per_mtok": "6",
         }),
     )
     .await;
@@ -17054,6 +17055,7 @@ async fn a_model_price_rate_must_be_a_finite_non_negative_number() {
         "output_per_mtok",
         "cached_input_per_mtok",
         "cache_write_per_mtok",
+        "cache_write_1h_per_mtok",
     ] {
         for bad in [
             "-1",
@@ -17075,6 +17077,7 @@ async fn a_model_price_rate_must_be_a_finite_non_negative_number() {
             let mut body = json!({
                 "model": "claude", "input_per_mtok": "4", "output_per_mtok": "20",
                 "cached_input_per_mtok": "0.4", "cache_write_per_mtok": "5",
+                "cache_write_1h_per_mtok": "7",
             });
             body[field] = json!(bad);
             let (status, error) = put_model_price(&client, &base, body).await;
@@ -17089,6 +17092,7 @@ async fn a_model_price_rate_must_be_a_finite_non_negative_number() {
     assert_eq!(price["output_per_mtok"], 15.0, "{price}");
     assert_eq!(price["cached_input_per_mtok"], 0.3, "{price}");
     assert_eq!(price["cache_write_per_mtok"], 3.75, "{price}");
+    assert_eq!(price["cache_write_1h_per_mtok"], 6.0, "{price}");
 
     // zero is a rate: a self-hosted model costs nothing to call
     let (status, free) = put_model_price(
@@ -17110,10 +17114,12 @@ async fn a_model_price_rate_must_be_a_finite_non_negative_number() {
         json!({
             "model": "dear", "input_per_mtok": "999999.999999", "output_per_mtok": "999999.9999994",
             "cached_input_per_mtok": "999999.999999", "cache_write_per_mtok": "999999.999999",
+            "cache_write_1h_per_mtok": "999999.999999",
         }),
     )
     .await;
     assert!(status.is_success(), "{top}");
+    assert_eq!(top["cache_write_1h_per_mtok"], "999999.999999", "{top}");
     assert_eq!(top["output_per_mtok"], "999999.999999", "{top}");
 }
 
@@ -17226,6 +17232,106 @@ async fn a_stored_price_with_an_unchargeable_rate_is_omitted_from_the_snapshot()
     assert!(status.is_success(), "{fixed}");
     let price = snapshot_price(&client, &base, "nan-input").await;
     assert_eq!(price["input_per_mtok"], 3.0, "{price}");
+}
+
+/// #2891: the 1 hour cache-write rate follows the rule the 5 minute one does,
+/// and the two are independent. A body that does not name it leaves it alone, a
+/// bad value is refused with the field named, and `null` clears it.
+#[tokio::test]
+async fn a_model_price_carries_a_one_hour_cache_write_rate_an_older_client_cannot_reset() {
+    skip_without_db!();
+    let (app, _db) = fresh_app().await;
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let (status, bare) = put_model_price(
+        &client,
+        &base,
+        json!({"model": "claude", "input_per_mtok": "3", "output_per_mtok": "15"}),
+    )
+    .await;
+    assert!(status.is_success(), "{bare}");
+    assert!(bare["cache_write_1h_per_mtok"].is_null(), "{bare}");
+    let price = snapshot_price(&client, &base, "claude").await;
+    assert!(price["cache_write_1h_per_mtok"].is_null(), "{price}");
+
+    let (status, set) = put_model_price(
+        &client,
+        &base,
+        json!({
+            "model": "claude", "input_per_mtok": "3", "output_per_mtok": "15",
+            "cache_write_per_mtok": "3.75", "cache_write_1h_per_mtok": "6",
+        }),
+    )
+    .await;
+    assert!(status.is_success(), "{set}");
+    assert_eq!(set["cache_write_1h_per_mtok"], "6.000000", "{set}");
+    let price = snapshot_price(&client, &base, "claude").await;
+    assert_eq!(price["cache_write_1h_per_mtok"], 6.0, "{price}");
+    assert_eq!(price["cache_write_per_mtok"], 3.75, "{price}");
+
+    // a client that has never heard of either field replaces the rest of the
+    // row and resets neither rate
+    let (status, kept) = put_model_price(
+        &client,
+        &base,
+        json!({"model": "claude", "input_per_mtok": "4", "output_per_mtok": "20"}),
+    )
+    .await;
+    assert!(status.is_success(), "{kept}");
+    assert_eq!(kept["input_per_mtok"], "4.000000", "the rest is replaced");
+    assert_eq!(kept["cache_write_per_mtok"], "3.750000", "{kept}");
+    assert_eq!(kept["cache_write_1h_per_mtok"], "6.000000", "{kept}");
+
+    // one that knows the 5 minute rate only does not reset the 1 hour one
+    let (status, five_minute) = put_model_price(
+        &client,
+        &base,
+        json!({
+            "model": "claude", "input_per_mtok": "4", "output_per_mtok": "20",
+            "cache_write_per_mtok": "5",
+        }),
+    )
+    .await;
+    assert!(status.is_success(), "{five_minute}");
+    assert_eq!(five_minute["cache_write_per_mtok"], "5.000000");
+    assert_eq!(five_minute["cache_write_1h_per_mtok"], "6.000000");
+
+    // a rate that is not a price is refused and changes nothing; the whole
+    // list, the largest value `numeric(12, 6)` cannot hold included, is
+    // `a_model_price_rate_must_be_a_finite_non_negative_number`'s
+    for bad in ["-1", "NaN", "inf", "1000000", "abc", ""] {
+        let (status, body) = put_model_price(
+            &client,
+            &base,
+            json!({
+                "model": "claude", "input_per_mtok": "4", "output_per_mtok": "20",
+                "cache_write_1h_per_mtok": bad,
+            }),
+        )
+        .await;
+        assert_eq!(status, 400, "{bad:?} should be refused: {body}");
+        assert_eq!(body["error"]["field"], "cache_write_1h_per_mtok", "{body}");
+    }
+    let price = snapshot_price(&client, &base, "claude").await;
+    assert_eq!(price["cache_write_1h_per_mtok"], 6.0, "{price}");
+
+    // clearing is its own, explicit request, and only for the rate named
+    let (status, cleared) = put_model_price(
+        &client,
+        &base,
+        json!({
+            "model": "claude", "input_per_mtok": "4", "output_per_mtok": "20",
+            "cache_write_1h_per_mtok": null,
+        }),
+    )
+    .await;
+    assert!(status.is_success(), "{cleared}");
+    assert!(cleared["cache_write_1h_per_mtok"].is_null(), "{cleared}");
+    assert_eq!(cleared["cache_write_per_mtok"], "5.000000", "{cleared}");
+    let price = snapshot_price(&client, &base, "claude").await;
+    assert!(price["cache_write_1h_per_mtok"].is_null(), "{price}");
 }
 
 /// The auto label the pricing catalog produces, and the fact that no request

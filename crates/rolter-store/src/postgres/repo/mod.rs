@@ -3384,6 +3384,7 @@ impl ModelPriceRepo<'_> {
                     output_per_mtok::text as output_per_mtok,
                     cached_input_per_mtok::text as cached_input_per_mtok,
                     cache_write_per_mtok::text as cache_write_per_mtok,
+                    cache_write_1h_per_mtok::text as cache_write_1h_per_mtok,
                     currency, created_at
              from model_prices order by model",
         )
@@ -3394,11 +3395,13 @@ impl ModelPriceRepo<'_> {
 
     /// Create or replace a model's price.
     ///
-    /// `cache_write_per_mtok` is tri-state, unlike its siblings (#2876): `None`
-    /// keeps the stored rate, `Some(None)` clears it back to the input rate and
-    /// `Some(Some(rate))` sets it. A caller that predates the column sends a
-    /// body without it, and replacing the row must not wipe a rate an operator
-    /// set since, which "omitted means null" would do on the next save.
+    /// The two cache-write rates are tri-state, unlike their siblings (#2876,
+    /// #2891): `None` keeps the stored rate, `Some(None)` clears it back to its
+    /// fallback and `Some(Some(rate))` sets it. A caller that predates a column
+    /// sends a body without it, and replacing the row must not wipe a rate an
+    /// operator set since, which "omitted means null" would do on the next
+    /// save.
+    #[allow(clippy::too_many_arguments)]
     pub async fn upsert(
         &self,
         model: &str,
@@ -3406,27 +3409,32 @@ impl ModelPriceRepo<'_> {
         output_per_mtok: &str,
         cached_input_per_mtok: Option<&str>,
         cache_write_per_mtok: Option<Option<&str>>,
+        cache_write_1h_per_mtok: Option<Option<&str>>,
         currency: &str,
     ) -> Result<ModelPrice> {
         let mut tx = self.0.begin().await.map_err(store_err)?;
         let row = sqlx::query_as(
             "insert into model_prices
                     (model, input_per_mtok, output_per_mtok, cached_input_per_mtok,
-                     cache_write_per_mtok, currency)
-             values ($1, $2::numeric, $3::numeric, $4::numeric, $5::numeric, $6)
+                     cache_write_per_mtok, cache_write_1h_per_mtok, currency)
+             values ($1, $2::numeric, $3::numeric, $4::numeric, $5::numeric, $6::numeric, $7)
              on conflict (model) do update
                 set input_per_mtok = excluded.input_per_mtok,
                     output_per_mtok = excluded.output_per_mtok,
                     cached_input_per_mtok = excluded.cached_input_per_mtok,
-                    cache_write_per_mtok = case when $7::boolean
+                    cache_write_per_mtok = case when $8::boolean
                         then excluded.cache_write_per_mtok
                         else model_prices.cache_write_per_mtok end,
+                    cache_write_1h_per_mtok = case when $9::boolean
+                        then excluded.cache_write_1h_per_mtok
+                        else model_prices.cache_write_1h_per_mtok end,
                     currency = excluded.currency
              returning id, model,
                        input_per_mtok::text as input_per_mtok,
                        output_per_mtok::text as output_per_mtok,
                        cached_input_per_mtok::text as cached_input_per_mtok,
                        cache_write_per_mtok::text as cache_write_per_mtok,
+                       cache_write_1h_per_mtok::text as cache_write_1h_per_mtok,
                        currency, created_at",
         )
         .bind(model)
@@ -3434,8 +3442,10 @@ impl ModelPriceRepo<'_> {
         .bind(output_per_mtok)
         .bind(cached_input_per_mtok)
         .bind(cache_write_per_mtok.flatten())
+        .bind(cache_write_1h_per_mtok.flatten())
         .bind(currency)
         .bind(cache_write_per_mtok.is_some())
+        .bind(cache_write_1h_per_mtok.is_some())
         .fetch_one(&mut *tx)
         .await
         .map_err(store_err)?;
@@ -5823,12 +5833,12 @@ mod tests {
 
         let prices = ModelPriceRepo(&pool);
         let price = prices
-            .upsert("gpt-4o", "2.500000", "10.000000", None, None, "USD")
+            .upsert("gpt-4o", "2.500000", "10.000000", None, None, None, "USD")
             .await
             .unwrap();
         assert_eq!(price.input_per_mtok, "2.500000");
         let updated = prices
-            .upsert("gpt-4o", "3.000000", "10.000000", None, None, "USD")
+            .upsert("gpt-4o", "3.000000", "10.000000", None, None, None, "USD")
             .await
             .unwrap();
         assert_eq!(updated.input_per_mtok, "3.000000");
@@ -5854,14 +5864,22 @@ mod tests {
 
         // a new row with no rate has none, which prices writes as input
         let bare = prices
-            .upsert("claude", "3", "15", Some("0.3"), None, "USD")
+            .upsert("claude", "3", "15", Some("0.3"), None, None, "USD")
             .await
             .unwrap();
         assert_eq!(bare.cache_write_per_mtok, None);
 
         // setting it
         let set = prices
-            .upsert("claude", "3", "15", Some("0.3"), Some(Some("3.75")), "USD")
+            .upsert(
+                "claude",
+                "3",
+                "15",
+                Some("0.3"),
+                Some(Some("3.75")),
+                None,
+                "USD",
+            )
             .await
             .unwrap();
         assert_eq!(set.cache_write_per_mtok.as_deref(), Some("3.750000"));
@@ -5869,7 +5887,7 @@ mod tests {
 
         // replacing the rest of the row without naming it keeps the rate
         let kept = prices
-            .upsert("claude", "4", "20", None, None, "USD")
+            .upsert("claude", "4", "20", None, None, None, "USD")
             .await
             .unwrap();
         assert_eq!(kept.input_per_mtok, "4.000000");
@@ -5892,7 +5910,7 @@ mod tests {
 
         // clearing is its own, explicit request
         let cleared = prices
-            .upsert("claude", "4", "20", None, Some(None), "USD")
+            .upsert("claude", "4", "20", None, Some(None), None, "USD")
             .await
             .unwrap();
         assert_eq!(cleared.cache_write_per_mtok, None);
@@ -5901,6 +5919,114 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(config.model_prices[0].cache_write_per_mtok, None);
+    }
+
+    /// The 1 hour rate (#2891) follows the same rule as the 5 minute one, and
+    /// the two are independent: naming one leaves the other where it was.
+    #[tokio::test]
+    async fn a_price_keeps_its_one_hour_cache_write_rate_unless_told_otherwise() {
+        if !super::super::test_database::is_configured() {
+            eprintln!("skipping: {} not set", super::super::test_database::URL_ENV);
+            return;
+        }
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
+        let prices = ModelPriceRepo(&pool);
+
+        let bare = prices
+            .upsert("claude", "3", "15", None, None, None, "USD")
+            .await
+            .unwrap();
+        assert_eq!(bare.cache_write_1h_per_mtok, None);
+
+        let set = prices
+            .upsert(
+                "claude",
+                "3",
+                "15",
+                None,
+                Some(Some("3.75")),
+                Some(Some("6")),
+                "USD",
+            )
+            .await
+            .unwrap();
+        assert_eq!(set.cache_write_per_mtok.as_deref(), Some("3.750000"));
+        assert_eq!(set.cache_write_1h_per_mtok.as_deref(), Some("6.000000"));
+
+        // omitted keeps both
+        let kept = prices
+            .upsert("claude", "4", "20", None, None, None, "USD")
+            .await
+            .unwrap();
+        assert_eq!(kept.input_per_mtok, "4.000000");
+        assert_eq!(kept.cache_write_per_mtok.as_deref(), Some("3.750000"));
+        assert_eq!(kept.cache_write_1h_per_mtok.as_deref(), Some("6.000000"));
+
+        // naming the 5 minute rate leaves the 1 hour one alone, and back
+        let only_5m = prices
+            .upsert("claude", "4", "20", None, Some(Some("5")), None, "USD")
+            .await
+            .unwrap();
+        assert_eq!(only_5m.cache_write_per_mtok.as_deref(), Some("5.000000"));
+        assert_eq!(only_5m.cache_write_1h_per_mtok.as_deref(), Some("6.000000"));
+        let only_1h = prices
+            .upsert("claude", "4", "20", None, None, Some(Some("8")), "USD")
+            .await
+            .unwrap();
+        assert_eq!(only_1h.cache_write_per_mtok.as_deref(), Some("5.000000"));
+        assert_eq!(only_1h.cache_write_1h_per_mtok.as_deref(), Some("8.000000"));
+
+        // what a read and the snapshot see
+        assert_eq!(
+            prices.list().await.unwrap()[0]
+                .cache_write_1h_per_mtok
+                .as_deref(),
+            Some("8.000000")
+        );
+        use crate::ConfigStore as _;
+        let config = crate::postgres::PostgresConfigStore::new(pool.clone())
+            .load()
+            .await
+            .unwrap();
+        assert_eq!(
+            config.model_prices[0].cache_write_1h_per_mtok,
+            Some("8".parse().unwrap())
+        );
+
+        // clearing is its own, explicit request, and only for the rate named
+        let cleared = prices
+            .upsert("claude", "4", "20", None, None, Some(None), "USD")
+            .await
+            .unwrap();
+        assert_eq!(cleared.cache_write_1h_per_mtok, None);
+        assert_eq!(cleared.cache_write_per_mtok.as_deref(), Some("5.000000"));
+        let config = crate::postgres::PostgresConfigStore::new(pool)
+            .load()
+            .await
+            .unwrap();
+        assert_eq!(config.model_prices[0].cache_write_1h_per_mtok, None);
+    }
+
+    /// The column carries the same floor as the others (0084): a negative rate
+    /// would be a credit against a budget, and `NaN` sorts above every number,
+    /// so a row written around the API is refused by the database itself.
+    #[tokio::test]
+    async fn a_negative_one_hour_rate_is_refused_by_the_database() {
+        if !super::super::test_database::is_configured() {
+            eprintln!("skipping: {} not set", super::super::test_database::URL_ENV);
+            return;
+        }
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
+        let prices = ModelPriceRepo(&pool);
+        for bad in ["-1", "NaN"] {
+            let refused = prices
+                .upsert("claude", "3", "15", None, None, Some(Some(bad)), "USD")
+                .await;
+            assert!(refused.is_err(), "{bad}: {refused:?}");
+        }
+        assert!(prices.list().await.unwrap().is_empty());
     }
 
     #[tokio::test]

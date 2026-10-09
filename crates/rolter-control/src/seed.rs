@@ -771,6 +771,13 @@ async fn import_model_prices(pool: &PgPool, config: &GatewayConfig) -> anyhow::R
                 // is a price without a write rate: `Some(None)` clears one
                 // rather than leaving a stale rate behind
                 Some(price.cache_write_per_mtok.map(|v| v.to_string()).as_deref()),
+                // and the same for the 1 hour rate (#2891)
+                Some(
+                    price
+                        .cache_write_1h_per_mtok
+                        .map(|v| v.to_string())
+                        .as_deref(),
+                ),
                 &price.currency,
             )
             .await?;
@@ -1121,6 +1128,74 @@ weight = 1
         assert!(message.contains("cached_input_per_mtok"), "{message}");
         let prices = rolter_store::postgres::repo::ModelPriceRepo(&pool);
         assert!(prices.list().await.unwrap().is_empty());
+
+        // and the same for the 1 hour rate (#2891)
+        std::fs::write(
+            &path,
+            "[[model_prices]]\nmodel = \"long\"\ninput_per_mtok = 3.0\n\
+             output_per_mtok = 15.0\ncache_write_1h_per_mtok = -6.0\n",
+        )
+        .unwrap();
+        let error = import_bootstrap_toml(&pool, org_id, project_id, &path)
+            .await
+            .expect_err("a negative 1 hour rate is refused");
+        let message = error.to_string();
+        assert!(message.contains("'long'"), "{message}");
+        assert!(message.contains("cache_write_1h_per_mtok"), "{message}");
+        assert!(prices.list().await.unwrap().is_empty());
+    }
+
+    /// #2891: the 1 hour rate follows the file the same way, independently of
+    /// the 5 minute one.
+    #[tokio::test]
+    async fn the_one_hour_cache_write_rate_follows_the_import_file() {
+        let Some(db) = scratch_db().await else {
+            return;
+        };
+        let pool = db.pool().clone();
+        let (org_id, project_id) = bootstrap_org(&pool).await;
+        let dir = tempdir("cache-write-1h-rate");
+        let path = dir.join("rolter.toml");
+        let prices = rolter_store::postgres::repo::ModelPriceRepo(&pool);
+        let stored = || async {
+            let price = prices
+                .list()
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|price| price.model == "claude")
+                .expect("the price must have been imported");
+            (price.cache_write_per_mtok, price.cache_write_1h_per_mtok)
+        };
+
+        std::fs::write(
+            &path,
+            "[[model_prices]]\nmodel = \"claude\"\ninput_per_mtok = 3.0\n\
+             output_per_mtok = 15.0\ncache_write_per_mtok = 3.75\n\
+             cache_write_1h_per_mtok = 6.0\ncurrency = \"USD\"\n",
+        )
+        .unwrap();
+        import_bootstrap_toml(&pool, org_id, project_id, &path)
+            .await
+            .unwrap();
+        let (five_minute, one_hour) = stored().await;
+        assert_eq!(five_minute.as_deref(), Some("3.750000"));
+        assert_eq!(one_hour.as_deref(), Some("6.000000"));
+
+        // the file drops the 1 hour key only: that rate is cleared and the
+        // other stays
+        std::fs::write(
+            &path,
+            "[[model_prices]]\nmodel = \"claude\"\ninput_per_mtok = 3.0\n\
+             output_per_mtok = 15.0\ncache_write_per_mtok = 3.75\ncurrency = \"USD\"\n",
+        )
+        .unwrap();
+        import_bootstrap_toml(&pool, org_id, project_id, &path)
+            .await
+            .unwrap();
+        let (five_minute, one_hour) = stored().await;
+        assert_eq!(five_minute.as_deref(), Some("3.750000"));
+        assert_eq!(one_hour, None);
     }
 
     /// #927: a re-import of an edited file used to log `imported provider` and

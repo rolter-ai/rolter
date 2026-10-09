@@ -301,6 +301,7 @@ fn realtime_usage(response: &Value) -> Usage {
         total,
         cache_read: count(usage.pointer("/input_token_details/cached_tokens")),
         cache_write: 0,
+        cache_write_1h: 0,
         reported: true,
     }
 }
@@ -764,6 +765,7 @@ impl Runner {
                     usage.completion,
                     usage.cache_read,
                     usage.cache_write,
+                    usage.cache_write_1h,
                 )
             })
             .unwrap_or(Decimal::ZERO);
@@ -894,6 +896,7 @@ mod tests {
                 total: 330,
                 cache_read: 64,
                 cache_write: 0,
+                cache_write_1h: 0,
                 reported: true,
             }
         );

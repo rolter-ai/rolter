@@ -20,6 +20,16 @@
 //! which is 678. A row with no write rate charges the 100 as input, as every
 //! row did before the column existed, and costs 653.
 //!
+//! Anthropic bills a write to its 1 hour cache apart from one to its 5 minute
+//! cache and reports the two in `usage.cache_creation` (#2891). The tests at
+//! the end of this file split the 100 written tokens 60 / 40 and give the
+//! 1 hour cache a rate of two dollars, which makes the request 708:
+//!
+//! - 60 writes to the 5 minute cache at 1.25 = 75
+//! - 40 writes to the 1 hour cache at 2.00 = 80
+//!
+//! in place of the 125 above.
+//!
 //! These tests drive the gateway over HTTP against mock upstreams and an
 //! in-process stand-in for the ClickHouse HTTP interface, like
 //! `translated_cache_usage.rs`.
@@ -129,13 +139,14 @@ async fn upstream(content_type: &'static str, body: String) -> SocketAddr {
 /// A config with one `test-model` route over a single provider of `kind`, and
 /// request logs going to `clickhouse`. The price is a dollar per fresh input or
 /// output token and ten cents per cached input token, and `cache_write_per_mtok`
-/// when given: the field is left out of the row otherwise, the way a price
-/// written before the column existed is.
+/// and `cache_write_1h_per_mtok` when given: a field is left out of the row
+/// otherwise, the way a price written before the column existed is.
 fn config(
     kind: ProviderKind,
     upstream: SocketAddr,
     clickhouse: SocketAddr,
     cache_write_per_mtok: Option<u64>,
+    cache_write_1h_per_mtok: Option<u64>,
 ) -> GatewayConfig {
     let mut config = GatewayConfig::default();
     config.logging.clickhouse_url = Some(format!("http://{clickhouse}"));
@@ -189,6 +200,9 @@ fn config(
     });
     if let Some(rate) = cache_write_per_mtok {
         price["cache_write_per_mtok"] = json!(rate);
+    }
+    if let Some(rate) = cache_write_1h_per_mtok {
+        price["cache_write_1h_per_mtok"] = json!(rate);
     }
     config
         .model_prices
@@ -284,11 +298,39 @@ async fn exchange(
     answer: (&'static str, String),
     cache_write_per_mtok: Option<u64>,
 ) -> Value {
+    exchange_with_rates(
+        request_id,
+        kind,
+        client,
+        stream,
+        answer,
+        cache_write_per_mtok,
+        None,
+    )
+    .await
+}
+
+/// [`exchange`] against a price that may also set the 1 hour cache's rate.
+async fn exchange_with_rates(
+    request_id: &str,
+    kind: ProviderKind,
+    client: Client,
+    stream: bool,
+    answer: (&'static str, String),
+    cache_write_per_mtok: Option<u64>,
+    cache_write_1h_per_mtok: Option<u64>,
+) -> Value {
     let upstream = upstream(answer.0, answer.1).await;
     let rows = Rows::default();
     let clickhouse = rows.serve().await;
     let state = rolter_gateway::AppState::with_logging(
-        &config(kind, upstream, clickhouse, cache_write_per_mtok),
+        &config(
+            kind,
+            upstream,
+            clickhouse,
+            cache_write_per_mtok,
+            cache_write_1h_per_mtok,
+        ),
         None,
     );
     let gw = serve(rolter_gateway::build_router(
@@ -411,4 +453,178 @@ async fn a_price_without_a_write_rate_charges_the_write_as_input() {
     )
     .await;
     assert_row(&row, WITHOUT_WRITE_RATE);
+}
+
+// ── the 5 minute / 1 hour split (#2891) ──────────────────────────────────────
+
+/// Two dollars per token written to the 1 hour cache.
+const WRITE_1H_RATE: u64 = 2_000_000;
+
+/// The same request as [`ANTHROPIC_USAGE`] with its 100 written tokens split 60
+/// to the 5 minute cache and 40 to the 1 hour one, which Anthropic reports
+/// beside the combined count.
+const ANTHROPIC_SPLIT_USAGE: &str = r#"{"input_tokens":400,"cache_creation_input_tokens":100,"cache_read_input_tokens":1500,"cache_creation":{"ephemeral_5m_input_tokens":60,"ephemeral_1h_input_tokens":40},"output_tokens":3}"#;
+
+fn anthropic_split_message() -> (&'static str, String) {
+    (
+        "application/json",
+        format!(
+            r#"{{"id":"msg_1","type":"message","role":"assistant","model":"test-model","content":[{{"type":"text","text":"pong"}}],"stop_reason":"end_turn","usage":{ANTHROPIC_SPLIT_USAGE}}}"#
+        ),
+    )
+}
+
+/// The split arrives on `message_start` only; `message_delta` carries the
+/// output count and nothing to divide the writes by.
+fn anthropic_split_stream() -> (&'static str, String) {
+    let (content_type, body) = anthropic_stream();
+    let split = body.replace(
+        r#""cache_read_input_tokens":1500,"output_tokens":1"#,
+        r#""cache_read_input_tokens":1500,"cache_creation":{"ephemeral_5m_input_tokens":60,"ephemeral_1h_input_tokens":40},"output_tokens":1"#,
+    );
+    assert_ne!(split, body, "the fixture must carry the split");
+    (content_type, split)
+}
+
+/// The 708 of the module comment.
+const WITH_1H_RATE: f64 = 708.0;
+
+/// A row whose 100 written tokens were split 60 / 40: the total is still the
+/// total, and the share is recorded beside it.
+fn assert_split_row(row: &Value, cost: f64) {
+    assert_row(row, cost);
+    assert_eq!(row["cache_write_1h_tokens"], 40, "request-log row");
+}
+
+#[tokio::test]
+async fn an_anthropic_answer_prices_each_cache_write_at_its_own_rate() {
+    for (request_id, stream, answer) in [
+        ("cwp-1h-buffered", false, anthropic_split_message()),
+        ("cwp-1h-streamed", true, anthropic_split_stream()),
+    ] {
+        let row = exchange_with_rates(
+            request_id,
+            ProviderKind::Anthropic,
+            Client::Messages,
+            stream,
+            answer,
+            Some(WRITE_RATE),
+            Some(WRITE_1H_RATE),
+        )
+        .await;
+        assert_split_row(&row, WITH_1H_RATE);
+    }
+}
+
+/// A chat client on an Anthropic provider is served a translated body and the
+/// row is built from it, so the split has to survive the hop like the total.
+#[tokio::test]
+async fn a_translated_answer_prices_each_cache_write_at_its_own_rate() {
+    for (request_id, stream, answer) in [
+        ("cwp-1h-chat-buffered", false, anthropic_split_message()),
+        ("cwp-1h-chat-streamed", true, anthropic_split_stream()),
+    ] {
+        let row = exchange_with_rates(
+            request_id,
+            ProviderKind::Anthropic,
+            Client::Chat,
+            stream,
+            answer,
+            Some(WRITE_RATE),
+            Some(WRITE_1H_RATE),
+        )
+        .await;
+        assert_split_row(&row, WITH_1H_RATE);
+    }
+}
+
+/// A price with no 1 hour rate charges the 1 hour share at the write rate, and
+/// still records how much of the write it was.
+#[tokio::test]
+async fn a_missing_one_hour_rate_falls_back_to_the_write_rate() {
+    let row = exchange_with_rates(
+        "cwp-1h-no-rate",
+        ProviderKind::Anthropic,
+        Client::Messages,
+        false,
+        anthropic_split_message(),
+        Some(WRITE_RATE),
+        None,
+    )
+    .await;
+    assert_split_row(&row, WITH_WRITE_RATE);
+
+    // and with neither rate every written token is input
+    let row = exchange_with_rates(
+        "cwp-1h-no-rates",
+        ProviderKind::Anthropic,
+        Client::Messages,
+        false,
+        anthropic_split_message(),
+        None,
+        None,
+    )
+    .await;
+    assert_split_row(&row, WITHOUT_WRITE_RATE);
+}
+
+/// A 1 hour rate with nothing to apply it to: a provider that reports no split
+/// prices all its writes at the write rate, and its row carries no share.
+#[tokio::test]
+async fn an_unsplit_write_is_priced_at_the_write_rate_whatever_the_one_hour_rate() {
+    for (request_id, kind, client, answer) in [
+        (
+            "cwp-1h-unsplit-anthropic",
+            ProviderKind::Anthropic,
+            Client::Messages,
+            anthropic_message(),
+        ),
+        (
+            "cwp-1h-unsplit-openrouter",
+            ProviderKind::Openai,
+            Client::Chat,
+            chat_completion_with_writes(),
+        ),
+    ] {
+        let row = exchange_with_rates(
+            request_id,
+            kind,
+            client,
+            false,
+            answer,
+            Some(WRITE_RATE),
+            Some(WRITE_1H_RATE),
+        )
+        .await;
+        assert_row(&row, WITH_WRITE_RATE);
+        assert!(
+            row.get("cache_write_1h_tokens").is_none(),
+            "a row with no split omits the column: {row}"
+        );
+    }
+}
+
+/// A provider that reports more 1 hour tokens than it wrote has made a mistake,
+/// and the row must not carry a share larger than the total it is part of, or
+/// charge for tokens that are not there: the 100 written tokens are all 1 hour
+/// ones, at two dollars, which is 400 + 150 + 200 + 3.
+#[tokio::test]
+async fn a_one_hour_share_beyond_the_write_is_recorded_and_priced_within_it() {
+    let answer = (
+        "application/json",
+        r#"{"id":"msg_1","type":"message","role":"assistant","model":"test-model","content":[{"type":"text","text":"pong"}],"stop_reason":"end_turn","usage":{"input_tokens":400,"cache_creation_input_tokens":100,"cache_read_input_tokens":1500,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":500},"output_tokens":3}}"#
+            .to_string(),
+    );
+    let row = exchange_with_rates(
+        "cwp-1h-too-many",
+        ProviderKind::Anthropic,
+        Client::Messages,
+        false,
+        answer,
+        Some(WRITE_RATE),
+        Some(WRITE_1H_RATE),
+    )
+    .await;
+    assert_row(&row, 753.0);
+    assert_eq!(row["cache_write_1h_tokens"], 100, "request-log row");
 }

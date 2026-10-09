@@ -3118,6 +3118,10 @@ fn governance_schemas(p: &Prim) -> Value {
                     "type": ["string", "null"],
                     "description": "rate for input tokens written to the prompt cache; null prices them at input_per_mtok"
                 },
+                "cache_write_1h_per_mtok": {
+                    "type": ["string", "null"],
+                    "description": "rate for input tokens written to the provider's 1 hour prompt cache, for a provider that reports the split (Anthropic's usage.cache_creation); null prices them at cache_write_per_mtok, and from there at input_per_mtok"
+                },
                 "currency": string,
                 "created_at": timestamp
             }
@@ -3142,6 +3146,10 @@ fn governance_schemas(p: &Prim) -> Value {
                 "cache_write_per_mtok": {
                     "type": ["string", "null"],
                     "description": "rate for input tokens written to the prompt cache, a number from 0 up to 999999.999999. Omit to leave the stored rate unchanged, send null to clear it (writes are then priced at input_per_mtok). Unlike the other rates, which a PUT replaces, so a client that predates the field cannot reset it"
+                },
+                "cache_write_1h_per_mtok": {
+                    "type": ["string", "null"],
+                    "description": "rate for input tokens written to the provider's 1 hour prompt cache, a number from 0 up to 999999.999999. Omit to leave the stored rate unchanged, send null to clear it (those writes are then priced at cache_write_per_mtok). Same rule as cache_write_per_mtok, so a client that predates the field cannot reset it"
                 },
                 "currency": {"type": "string", "default": "USD"}
             },

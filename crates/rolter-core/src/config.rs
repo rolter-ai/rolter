@@ -1835,6 +1835,15 @@ pub struct ModelPriceConfig {
     /// the field still parse
     #[serde(default, with = "rust_decimal::serde::float_option")]
     pub cache_write_per_mtok: Option<Decimal>,
+    /// price for input tokens written to the provider's 1 hour prompt cache
+    /// (#2891), for a provider that bills it apart from the 5 minute one.
+    /// Anthropic does: a 1 hour write is twice the input rate where a 5 minute
+    /// one is 1.25 times. Falls back to `cache_write_per_mtok`, then to
+    /// `input_per_mtok`, so a row that sets only the one write rate prices both
+    /// caches at it, as every row did before this field. Only a provider that
+    /// reports the split (`usage.cache_creation`) has tokens to charge at it
+    #[serde(default, with = "rust_decimal::serde::float_option")]
+    pub cache_write_1h_per_mtok: Option<Decimal>,
     /// currency the rates above are denominated in. An open code — ISO-4217
     /// today, a crypto or custom settlement unit tomorrow — resolved against
     /// [`crate::CurrencyConfig`]'s rate table, never against a fixed enum
@@ -1855,6 +1864,7 @@ impl ModelPriceConfig {
             ("output_per_mtok", Some(self.output_per_mtok)),
             ("cached_input_per_mtok", self.cached_input_per_mtok),
             ("cache_write_per_mtok", self.cache_write_per_mtok),
+            ("cache_write_1h_per_mtok", self.cache_write_1h_per_mtok),
         ]
         .into_iter()
         .filter_map(|(field, rate)| {
@@ -1867,41 +1877,51 @@ impl ModelPriceConfig {
     /// Compute request cost, denominated in this price's own [`Self::currency`]
     /// — convert it to the base before it reaches a budget counter.
     ///
-    /// `prompt` is the whole prompt, and the other two input counts are shares
-    /// of it rather than additions to it (#2863 made every dialect report it
-    /// that way): `cached_input` is the portion served from the prompt cache
+    /// `prompt` is the whole prompt, and the other input counts are shares of
+    /// it rather than additions to it (#2863 made every dialect report it that
+    /// way): `cached_input` is the portion served from the prompt cache
     /// (priced at the cached rate when set) and `cache_write` the portion
-    /// written to it (priced at the write rate when set). Both fall back to the
-    /// input rate, and each token is priced once — cached tokens first, then
-    /// written ones out of what is left. Pass 0 for a count that is unknown.
+    /// written to it (priced at the write rate when set). `cache_write_1h` is
+    /// the part of `cache_write` that went to a 1 hour cache, for a provider
+    /// that reports the split (#2891); it is priced at
+    /// [`Self::cache_write_1h_per_mtok`] and the rest of the writes at the
+    /// plain write rate. All fall back to the input rate, and each token is
+    /// priced once — cached tokens first, then written ones out of what is
+    /// left, then the 1 hour share out of the writes. Pass 0 for a count that
+    /// is unknown.
     pub fn cost(
         &self,
         prompt: u32,
         completion: u32,
         cached_input: u32,
         cache_write: u32,
+        cache_write_1h: u32,
     ) -> Decimal {
         let cached = cached_input.min(prompt);
         let written = cache_write.min(prompt - cached);
+        let written_1h = cache_write_1h.min(written);
+        let written_5m = written - written_1h;
         let fresh = prompt - cached - written;
         let cached_rate = self.cached_input_per_mtok.unwrap_or(self.input_per_mtok);
         let write_rate = self.cache_write_per_mtok.unwrap_or(self.input_per_mtok);
+        let write_1h_rate = self.cache_write_1h_per_mtok.unwrap_or(write_rate);
         // exact: token counts are integers and the rates are decimal, so the
         // only inexact step left would be the division, and a power of ten
         // divides exactly in a base-ten representation
         (Decimal::from(fresh) * self.input_per_mtok
             + Decimal::from(cached) * cached_rate
-            + Decimal::from(written) * write_rate
+            + Decimal::from(written_5m) * write_rate
+            + Decimal::from(written_1h) * write_1h_rate
             + Decimal::from(completion) * self.output_per_mtok)
             / Decimal::from(1_000_000u32)
     }
 
     /// [`Self::cost`] under its former name, from when every price was assumed
     /// to be USD. It is not USD unless [`Self::currency`] says so, and it prices
-    /// no cache write: a caller that has the count calls [`Self::cost`].
+    /// no cache write: a caller that has the counts calls [`Self::cost`].
     #[deprecated(note = "renamed to `cost`: the result is in `self.currency`, not necessarily USD")]
     pub fn cost_usd(&self, prompt: u32, completion: u32, cached_input: u32) -> Decimal {
-        self.cost(prompt, completion, cached_input, 0)
+        self.cost(prompt, completion, cached_input, 0, 0)
     }
 }
 
@@ -5670,11 +5690,12 @@ mod tests {
             output_per_mtok: d("10.0"),
             cached_input_per_mtok: None,
             cache_write_per_mtok: None,
+            cache_write_1h_per_mtok: None,
             currency: "USD".to_string(),
         };
         // 1000 * 2.5/1e6 + 500 * 10/1e6 = 0.0025 + 0.005 = 0.0075, and now
         // exactly that rather than within an epsilon of it (#967)
-        assert_eq!(price.cost(1000, 500, 0, 0), d("0.0075"));
+        assert_eq!(price.cost(1000, 500, 0, 0, 0), d("0.0075"));
     }
 
     /// The failure #967 is actually about: at `f64`, a price whose decimal
@@ -5690,16 +5711,17 @@ mod tests {
             output_per_mtok: d("0.2"),
             cached_input_per_mtok: None,
             cache_write_per_mtok: None,
+            cache_write_1h_per_mtok: None,
             currency: "USD".to_string(),
         };
         // one million of each: 0.1 + 0.2, which in f64 is 0.30000000000000004
-        assert_eq!(price.cost(1_000_000, 1_000_000, 0, 0), d("0.300000"));
+        assert_eq!(price.cost(1_000_000, 1_000_000, 0, 0, 0), d("0.300000"));
         assert_ne!(0.1_f64 + 0.2_f64, 0.3_f64, "the f64 this replaces");
 
         // and a thousand small requests sum to exactly what one big one costs,
         // which is the property a budget counter is comparing against
-        let one_big = price.cost(1_000_000, 0, 0, 0);
-        let summed: rust_decimal::Decimal = (0..1_000).map(|_| price.cost(1_000, 0, 0, 0)).sum();
+        let one_big = price.cost(1_000_000, 0, 0, 0, 0);
+        let summed: rust_decimal::Decimal = (0..1_000).map(|_| price.cost(1_000, 0, 0, 0, 0)).sum();
         assert_eq!(summed, one_big);
     }
 
@@ -5716,6 +5738,7 @@ mod tests {
             output_per_mtok: d("0"),
             cached_input_per_mtok: None,
             cache_write_per_mtok: None,
+            cache_write_1h_per_mtok: None,
             currency: "ETH".to_string(),
         };
         assert_eq!(price.input_per_mtok, one_wei);
@@ -5728,7 +5751,7 @@ mod tests {
         assert_eq!((one_eth + one_wei) - one_eth, one_wei);
 
         // 1e6 tokens at one wei per Mtok is one wei, not zero
-        assert_eq!(price.cost(1_000_000, 0, 0, 0), one_wei);
+        assert_eq!(price.cost(1_000_000, 0, 0, 0, 0), one_wei);
     }
 
     /// The snapshot is exchanged between a control plane and a gateway that may
@@ -5745,6 +5768,7 @@ mod tests {
             output_per_mtok: d("10"),
             cached_input_per_mtok: Some(d("1.25")),
             cache_write_per_mtok: None,
+            cache_write_1h_per_mtok: None,
             currency: "USD".to_string(),
         };
         let json = serde_json::to_value(&price).expect("serializes");
@@ -5833,10 +5857,11 @@ mod tests {
             output_per_mtok: d("0.0"),
             cached_input_per_mtok: Some(d("0.5")),
             cache_write_per_mtok: None,
+            cache_write_1h_per_mtok: None,
             currency: "USD".to_string(),
         };
         // 600 fresh * 2 + 400 cached * 0.5 = 1200 + 200 = 1400 / 1e6
-        assert_eq!(price.cost(1000, 0, 400, 0), d("0.0014"));
+        assert_eq!(price.cost(1000, 0, 400, 0, 0), d("0.0014"));
     }
 
     fn write_priced() -> ModelPriceConfig {
@@ -5846,6 +5871,7 @@ mod tests {
             output_per_mtok: d("15.0"),
             cached_input_per_mtok: Some(d("0.3")),
             cache_write_per_mtok: Some(d("3.75")),
+            cache_write_1h_per_mtok: None,
             currency: "USD".to_string(),
         }
     }
@@ -5853,7 +5879,7 @@ mod tests {
     #[test]
     fn cost_applies_the_cache_write_rate() {
         // 600 fresh * 3 + 400 written * 3.75 = 1800 + 1500 = 3300 / 1e6
-        assert_eq!(write_priced().cost(1000, 0, 0, 400), d("0.0033"));
+        assert_eq!(write_priced().cost(1000, 0, 0, 400, 0), d("0.0033"));
     }
 
     /// A row without a write rate prices a write as the input it is, which is
@@ -5863,8 +5889,8 @@ mod tests {
     fn a_missing_write_rate_falls_back_to_the_input_rate() {
         let mut price = write_priced();
         price.cache_write_per_mtok = None;
-        assert_eq!(price.cost(1000, 0, 0, 400), price.cost(1000, 0, 0, 0));
-        assert_eq!(price.cost(1000, 0, 0, 400), d("0.003"));
+        assert_eq!(price.cost(1000, 0, 0, 400, 0), price.cost(1000, 0, 0, 0, 0));
+        assert_eq!(price.cost(1000, 0, 0, 400, 0), d("0.003"));
     }
 
     /// The whole prompt is `fresh + cached + written` (#2863), so each token is
@@ -5873,7 +5899,7 @@ mod tests {
     fn reads_writes_and_fresh_input_are_each_priced_once() {
         // 10 fresh * 3 + 80 cached * 0.3 + 30 written * 3.75 + 50 out * 15
         // = 30 + 24 + 112.5 + 750 = 916.5 / 1e6
-        assert_eq!(write_priced().cost(120, 50, 80, 30), d("0.0009165"));
+        assert_eq!(write_priced().cost(120, 50, 80, 30, 0), d("0.0009165"));
     }
 
     /// A provider that reports more cache tokens than the prompt holds must not
@@ -5882,13 +5908,13 @@ mod tests {
     #[test]
     fn cache_counts_beyond_the_prompt_are_not_charged_twice() {
         // 100-token prompt: 80 cached, then only the 20 left can be writes
-        let capped = write_priced().cost(100, 0, 80, 80);
+        let capped = write_priced().cost(100, 0, 80, 80, 0);
         // 80 * 0.3 + 20 * 3.75 = 24 + 75 = 99 / 1e6
         assert_eq!(capped, d("0.000099"));
         // and nothing at all beyond the prompt when the writes alone overshoot
         assert_eq!(
-            write_priced().cost(100, 0, 0, 1_000),
-            write_priced().cost(100, 0, 0, 100)
+            write_priced().cost(100, 0, 0, 1_000, 0),
+            write_priced().cost(100, 0, 0, 100, 0)
         );
     }
 
@@ -5896,7 +5922,7 @@ mod tests {
     #[allow(deprecated)]
     fn the_former_name_prices_no_cache_write() {
         let price = write_priced();
-        assert_eq!(price.cost_usd(1000, 0, 400), price.cost(1000, 0, 400, 0));
+        assert_eq!(price.cost_usd(1000, 0, 400), price.cost(1000, 0, 400, 0, 0));
     }
 
     /// The field crosses the snapshot as a JSON number like its neighbours, and
@@ -5918,6 +5944,86 @@ mod tests {
         }))
         .expect("an older snapshot parses");
         assert_eq!(older.cache_write_per_mtok, None);
+        assert_eq!(older.cache_write_1h_per_mtok, None);
+    }
+
+    fn one_hour_priced() -> ModelPriceConfig {
+        ModelPriceConfig {
+            cache_write_1h_per_mtok: Some(d("6.0")),
+            ..write_priced()
+        }
+    }
+
+    /// #2891: the two caches are priced at their own rates, out of the writes
+    /// and not on top of them.
+    #[test]
+    fn each_cache_write_share_is_priced_at_its_own_rate() {
+        // 600 fresh * 3 + 100 5 minute * 3.75 + 300 1 hour * 6
+        // = 1800 + 375 + 1800 = 3975 / 1e6
+        assert_eq!(one_hour_priced().cost(1000, 0, 0, 400, 300), d("0.003975"));
+        // the whole write in the 1 hour cache
+        assert_eq!(
+            one_hour_priced().cost(1000, 0, 0, 400, 400),
+            d("0.004200"),
+            "600 * 3 + 400 * 6"
+        );
+        // and no 1 hour share is the plain write rate, as before the field
+        assert_eq!(
+            one_hour_priced().cost(1000, 0, 0, 400, 0),
+            write_priced().cost(1000, 0, 0, 400, 0)
+        );
+    }
+
+    /// A row that sets only the one write rate prices both caches at it, and a
+    /// row that sets neither prices them as input: the 1 hour rate falls back
+    /// to the write rate and then to the input rate.
+    #[test]
+    fn the_one_hour_rate_falls_back_to_the_write_rate_then_the_input_rate() {
+        let price = write_priced();
+        assert_eq!(price.cache_write_1h_per_mtok, None);
+        assert_eq!(
+            price.cost(1000, 0, 0, 400, 300),
+            price.cost(1000, 0, 0, 400, 0)
+        );
+
+        let mut price = write_priced();
+        price.cache_write_per_mtok = None;
+        assert_eq!(price.cost(1000, 0, 0, 400, 300), d("0.003"));
+
+        // a 1 hour rate with no 5 minute one: the 5 minute share is input
+        price.cache_write_1h_per_mtok = Some(d("6.0"));
+        // 600 fresh * 3 + 100 5 minute * 3 + 300 1 hour * 6 = 1800 + 300 + 1800
+        assert_eq!(price.cost(1000, 0, 0, 400, 300), d("0.0039"));
+    }
+
+    /// The 1 hour count is a share of the writes, so a provider that reports
+    /// more of it than it wrote, or more writes than the prompt holds, is not
+    /// charged for tokens that are not there.
+    #[test]
+    fn a_one_hour_share_is_never_charged_beyond_the_writes() {
+        let price = one_hour_priced();
+        assert_eq!(
+            price.cost(1000, 0, 0, 400, 9_999),
+            price.cost(1000, 0, 0, 400, 400)
+        );
+        // 100-token prompt, 80 cached: only 20 tokens are left to be writes,
+        // so a 1 hour share of 50 is capped at those 20
+        assert_eq!(
+            price.cost(100, 0, 80, 80, 50),
+            price.cost(100, 0, 80, 20, 20)
+        );
+        // 80 * 0.3 + 20 * 6 = 24 + 120 = 144 / 1e6
+        assert_eq!(price.cost(100, 0, 80, 80, 50), d("0.000144"));
+    }
+
+    /// Like its neighbours the rate is a JSON number on the wire, and a
+    /// snapshot from a control plane that predates it still parses.
+    #[test]
+    fn the_one_hour_rate_is_a_json_number_and_optional_on_the_wire() {
+        let json = serde_json::to_value(one_hour_priced()).expect("serializes");
+        assert!(json["cache_write_1h_per_mtok"].is_number(), "{json}");
+        let parsed: ModelPriceConfig = serde_json::from_value(json).expect("round trips");
+        assert_eq!(parsed.cache_write_1h_per_mtok, Some(d("6.0")));
     }
 
     #[test]
@@ -5931,6 +6037,7 @@ mod tests {
             output_per_mtok: d("6.0"),
             cached_input_per_mtok: None,
             cache_write_per_mtok: None,
+            cache_write_1h_per_mtok: None,
             currency: "EUR".to_string(),
         });
         let problems = config.validate().unwrap_err();
@@ -5959,6 +6066,7 @@ mod tests {
             output_per_mtok: d("10.0"),
             cached_input_per_mtok: None,
             cache_write_per_mtok: None,
+            cache_write_1h_per_mtok: None,
             currency: "usd".to_string(),
         });
         let problems = config.validate().err().unwrap_or_default();
@@ -5975,6 +6083,7 @@ mod tests {
             output_per_mtok: d("10.0"),
             cached_input_per_mtok: cached.map(d),
             cache_write_per_mtok: None,
+            cache_write_1h_per_mtok: None,
             currency: "USD".to_string(),
         }
     }
@@ -5984,19 +6093,22 @@ mod tests {
         let mut price = price_with("gpt-4o", "2.5", Some("-0.1"));
         price.output_per_mtok = d("-1");
         price.cache_write_per_mtok = Some(d("-3.75"));
+        price.cache_write_1h_per_mtok = Some(d("-6"));
         let problems = price.rate_problems();
-        assert_eq!(problems.len(), 3, "{problems:?}");
+        assert_eq!(problems.len(), 4, "{problems:?}");
         assert!(
             problems[0].starts_with("output_per_mtok is -1"),
             "{problems:?}"
         );
         assert!(problems[1].starts_with("cached_input_per_mtok is -0.1"));
         assert!(problems[2].starts_with("cache_write_per_mtok is -3.75"));
+        assert!(problems[3].starts_with("cache_write_1h_per_mtok is -6"));
 
         // zero is a legitimate rate: a self-hosted model is free to call
         let mut free = price_with("local", "0", Some("0"));
         free.output_per_mtok = d("0");
         free.cache_write_per_mtok = Some(d("0"));
+        free.cache_write_1h_per_mtok = Some(d("0"));
         assert!(free.rate_problems().is_empty());
     }
 
@@ -6032,6 +6144,31 @@ mod tests {
         assert!(
             warnings[1].contains("'negative-cached'")
                 && warnings[1].contains("cached_input_per_mtok"),
+            "{warnings:?}"
+        );
+        assert!(config.validate_snapshot().is_ok());
+    }
+
+    // #2891: the 1 hour rate is one of the rates a snapshot row is held to, so
+    // a negative one drops that price alone and does not 500 the snapshot
+    #[test]
+    fn sanitize_omits_a_price_with_a_negative_one_hour_rate() {
+        let mut config = GatewayConfig::default();
+        config
+            .model_prices
+            .push(price_with("gpt-4o", "2.5", Some("1.25")));
+        let mut long = price_with("negative-long", "3", None);
+        long.cache_write_1h_per_mtok = Some(d("-6"));
+        config.model_prices.push(long);
+
+        let warnings = config.sanitize_for_snapshot();
+
+        assert_eq!(config.model_prices.len(), 1);
+        assert_eq!(config.model_prices[0].model, "gpt-4o");
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(
+            warnings[0].contains("'negative-long'")
+                && warnings[0].contains("cache_write_1h_per_mtok"),
             "{warnings:?}"
         );
         assert!(config.validate_snapshot().is_ok());
