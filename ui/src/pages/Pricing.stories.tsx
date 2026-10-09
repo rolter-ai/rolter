@@ -31,12 +31,18 @@ import {
 import type { CurrencySettings, ModelPriceRow } from "@/lib/api";
 import { UxScreenProvider } from "@/lib/ux-react";
 
-const price = (model: string, currency: string, id = model): ModelPriceRow => ({
+const price = (
+  model: string,
+  currency: string,
+  id = model,
+  cacheWrite: string | null = null,
+): ModelPriceRow => ({
   id,
   model,
   input_per_mtok: "2.50",
   output_per_mtok: "10.00",
   cached_input_per_mtok: "1.25",
+  cache_write_per_mtok: cacheWrite,
   currency,
   created_at: "2026-07-01T00:00:00Z",
 });
@@ -46,6 +52,8 @@ const PRICES: ModelPriceRow[] = [
   price("mistral-large", "EUR"),
   // priced in a code this deployment's rate table carries — #965's whole point
   price("yandex-gpt", "RUB"),
+  // the control plane returns a rate as decimal text, six places (#2876)
+  price("claude-sonnet", "USD", "claude-sonnet", "3.750000"),
 ];
 
 /** a deployment that settles in USD and has configured a RUB rate */
@@ -99,6 +107,26 @@ export const Loaded: Story = {
     // every price converts, so nothing is flagged
     await expect(await canvas.findByText("gpt-4o")).toBeInTheDocument();
     await expect(canvas.queryByText(/no conversion rate/i)).not.toBeInTheDocument();
+  },
+};
+
+/**
+ * A price that sets a cache-write rate says so on its card, and one that does
+ * not stays as it was: with no rate, written tokens are priced at the input
+ * rate, which is nothing worth a badge (#2876).
+ */
+export const ShowsTheCacheWriteRate: Story = {
+  render: () => (
+    <Harness fetchStub={withCurrency(CONFIGURED)}>
+      <Pricing />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("claude-sonnet")).toBeInTheDocument();
+    const badges = canvas.getAllByText(/^cache write /);
+    await expect(badges).toHaveLength(1);
+    await expect(badges[0]).toHaveTextContent("cache write 3.750000 USD/Mtok");
   },
 };
 
@@ -191,6 +219,10 @@ export const AddsAPrice: Story = {
     await expect(form.getByLabelText("Currency")).toHaveValue("USD");
     await expect(form.getByLabelText("Input price per Mtok")).toHaveValue(null);
     await expect(form.getByLabelText("Output price per Mtok")).toHaveValue(null);
+    // the optional rates start empty too, and say what empty means
+    const write = form.getByLabelText("Cache-write price per Mtok (optional)");
+    await expect(write).toHaveValue(null);
+    await expect(write).toHaveAttribute("placeholder", "defaults to input price");
   },
 };
 
@@ -221,6 +253,7 @@ export const EmptySubmitIsRefused: Story = {
     await expect(input).toHaveAccessibleDescription(/Enter a price/);
     await expect(form.getByLabelText("Output price per Mtok")).toBeInvalid();
     await expect(form.getByLabelText("Cached input price per Mtok (optional)")).toBeValid();
+    await expect(form.getByLabelText("Cache-write price per Mtok (optional)")).toBeValid();
     emptySubmit.expectNotSent("PUT", "/model-prices");
 
     // zero is allowed, but has to be typed
@@ -285,6 +318,181 @@ export const PicksAModelAndACurrency: Story = {
       output_per_mtok: "0",
       currency: "EUR",
     });
+  },
+};
+
+/**
+ * The Pricing screen's PUT, answered and recorded. The cache-write rate is the
+ * one the control plane does not replace on every save (absent keeps it, `null`
+ * clears it), so each story below reads what the form put on the wire.
+ */
+function pricesWithSave(): Recorder {
+  return recording(
+    scoped(async (input, init) =>
+      init?.method === "PUT"
+        ? json(price("claude-sonnet", "USD", "claude-sonnet", "3.750000"))
+        : withCurrency(CONFIGURED)(input, init),
+    ),
+  );
+}
+
+/** a rate typed into a price that has none is sent, as the text that was typed */
+let setsWriteRate: Recorder;
+export const SetsTheCacheWriteRate: Story = {
+  render: () => {
+    setsWriteRate = pricesWithSave();
+    return (
+      <Harness fetchStub={setsWriteRate.stub}>
+        <Toasted>
+          <Pricing />
+        </Toasted>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, "Edit the price for gpt-4o");
+    const form = within(sheet());
+    const write = await form.findByLabelText("Cache-write price per Mtok (optional)");
+    await expect(write).toHaveValue(null);
+    await userEvent.type(write, "3.75");
+    await userEvent.click(form.getByRole("button", { name: "Save" }));
+
+    await expect(
+      await setsWriteRate.expectSentBody<Record<string, unknown>>("PUT", "/model-prices"),
+    ).toEqual({
+      model: "gpt-4o",
+      input_per_mtok: "2.50",
+      output_per_mtok: "10.00",
+      cached_input_per_mtok: "1.25",
+      cache_write_per_mtok: "3.75",
+      currency: "USD",
+    });
+    await expectSheetClosed();
+  },
+};
+
+/**
+ * Editing something else leaves the stored rate alone: the form opens on the
+ * rate, and a save that never touched it does not name it, so the control plane
+ * keeps what it holds (#2876). Naming it would reset a rate changed through the
+ * API or a config import since the card was drawn.
+ */
+let keepsWriteRate: Recorder;
+export const LeavesTheCacheWriteRateAloneWhenUntouched: Story = {
+  render: () => {
+    keepsWriteRate = pricesWithSave();
+    return (
+      <Harness fetchStub={keepsWriteRate.stub}>
+        <Toasted>
+          <Pricing />
+        </Toasted>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, "Edit the price for claude-sonnet");
+    const form = within(sheet());
+    // a number input reads back numeric, so the six-place text shows as typed by a person
+    await expect(await form.findByLabelText("Cache-write price per Mtok (optional)")).toHaveValue(
+      3.75,
+    );
+    const output = form.getByLabelText("Output price per Mtok");
+    await userEvent.clear(output);
+    await userEvent.type(output, "12");
+    await userEvent.click(form.getByRole("button", { name: "Save" }));
+
+    const body = await keepsWriteRate.expectSentBody<Record<string, unknown>>(
+      "PUT",
+      "/model-prices",
+    );
+    await expect(body).toEqual({
+      model: "claude-sonnet",
+      input_per_mtok: "2.50",
+      output_per_mtok: "12",
+      cached_input_per_mtok: "1.25",
+      currency: "USD",
+    });
+    await expect(body).not.toHaveProperty("cache_write_per_mtok");
+  },
+};
+
+/**
+ * Emptying the input is how the operator goes back to pricing writes at the
+ * input rate, and it is sent as `null`: leaving the key out would keep the rate.
+ */
+let clearsWriteRate: Recorder;
+export const ClearsTheCacheWriteRate: Story = {
+  render: () => {
+    clearsWriteRate = pricesWithSave();
+    return (
+      <Harness fetchStub={clearsWriteRate.stub}>
+        <Toasted>
+          <Pricing />
+        </Toasted>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, "Edit the price for claude-sonnet");
+    const form = within(sheet());
+    const write = await form.findByLabelText("Cache-write price per Mtok (optional)");
+    await expect(write).toHaveValue(3.75);
+    await userEvent.clear(write);
+    await userEvent.click(form.getByRole("button", { name: "Save" }));
+
+    const body = await clearsWriteRate.expectSentBody<Record<string, unknown>>(
+      "PUT",
+      "/model-prices",
+    );
+    await expect(body).toHaveProperty("cache_write_per_mtok", null);
+    await expectSheetClosed();
+  },
+};
+
+/**
+ * A rate that is not a number of 0 or more is refused at its own field after a
+ * save is pressed, not before, and nothing is sent; fixing it lets the same
+ * press through. The other prices say the same thing in the same words.
+ */
+let refusesWriteRate: Recorder;
+export const RefusesAnInvalidCacheWriteRate: Story = {
+  render: () => {
+    refusesWriteRate = pricesWithSave();
+    return (
+      <Harness fetchStub={refusesWriteRate.stub}>
+        <Toasted>
+          <Pricing />
+        </Toasted>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, "Edit the price for gpt-4o");
+    const form = within(sheet());
+    const write = await form.findByLabelText("Cache-write price per Mtok (optional)");
+    await userEvent.type(write, "-3");
+    // typing alone says nothing: the message waits for a refused save
+    await expect(write).not.toHaveAttribute("aria-invalid");
+    await expect(form.queryByText("Enter a price of 0 or more.")).toBeNull();
+
+    await userEvent.click(form.getByRole("button", { name: "Save" }));
+    await expect(write).toHaveAttribute("aria-invalid", "true");
+    await expect(write).toHaveAccessibleDescription("Enter a price of 0 or more.");
+    refusesWriteRate.expectNotSent("PUT", "/model-prices");
+    // only its own field is flagged
+    await expect(form.getByLabelText("Input price per Mtok")).toBeValid();
+    await expect(form.getByLabelText("Cached input price per Mtok (optional)")).toBeValid();
+
+    await userEvent.clear(write);
+    await userEvent.type(write, "0");
+    await expect(write).toBeValid();
+    await userEvent.click(form.getByRole("button", { name: "Save" }));
+    const body = await refusesWriteRate.expectSentBody<Record<string, unknown>>(
+      "PUT",
+      "/model-prices",
+    );
+    // zero is a rate: writes that cost nothing, not writes at the input rate
+    await expect(body).toHaveProperty("cache_write_per_mtok", "0");
   },
 };
 

@@ -206,13 +206,14 @@ The prompt total holds every token class once, so each token is charged at one r
 - **Absent means the input rate.** A price without `cache_write_per_mtok` charges written tokens as ordinary input, exactly as every price did before the field existed, so upgrading changes no existing cost.
 - **One rate for both caches.** Anthropic reports the 5 minute and the 1 hour writes in one count, so the rate is a single figure. If you use both, enter the rate for the one most of your writes use, or a blend; the log row cannot say which cache a token went to.
 - **Only reported writes are priced.** OpenAI and Gemini report no write count (their caching is not billed per write), so their rows log `cache_write_tokens = 0` and the field has no effect on them. A write count reaches Rolter from Anthropic's `cache_creation_input_tokens` and from the OpenAI-shaped spellings listed under [Cached prompts and thinking tokens](#cached-prompts-and-thinking-tokens): `prompt_tokens_details.cache_write_tokens` is OpenRouter's and the one Rolter uses when it translates an Anthropic answer for a Chat Completions or Responses client, and Qwen and vLLM spell theirs differently.
+- **Setting it in the dashboard.** The **Pricing** screen has a _Cache-write price per Mtok (optional)_ field beside the cached-input one, and a price that sets a rate shows a `cache write` badge on its card. The **Cache-write** input in a model's **Pricing override** section edits the same rate; it is saved with the price, so it needs the input or output rate too. Leave the field empty to price writes at the input rate. Emptying a rate that was set clears it, and saving a price without touching the field keeps the rate the price holds, so a rate set over the API or by an import survives an edit of something else. Earlier releases showed the model sheet's input but stored its value on the route, where nothing read it: a rate entered there never changed a cost, and the field now reads and writes the price instead, so enter it again if you relied on it.
 - **Setting it over the API.** The rate is stored with the rest of the price row as `cache_write_per_mtok`. A `PUT /api/v1/model-prices` that leaves the field out keeps the stored rate, so a client that has never heard of it cannot reset one, and `null` clears it back to the input rate. This differs from the other rates, which a `PUT` replaces. Re-importing a `rolter.toml` with `rolter-seed --import` follows the file instead: a price without the key has no write rate afterwards.
 
 ### Prices are yours, not ours
 
 Rolter ships no pricing catalog and never fetches one. Every rate comes from
-your `[[model_prices]]` entries, or from the **Pricing override** section of a
-model's sheet in the dashboard, which writes the same rows. That is deliberate:
+your `[[model_prices]]` entries, or from the dashboard's **Pricing** screen or
+the **Pricing override** section of a model's sheet, which write the same rows. That is deliberate:
 published list prices go stale, and most deployments have a negotiated rate, a
 committed-use discount or a self-hosted model whose real cost is a GPU bill.
 Rolter multiplies the tokens it counted by the number you gave it.
