@@ -1618,6 +1618,8 @@ export const TheDrawerGroupsRoutingUsageAndAttribution: Story = {
     await expect(valueOf(usage, "Prompt cache")).toBe(
       `${fmt.number(2048)} read · ${fmt.number(512)} written`,
     );
+    // a row with no 1 hour share, as an older control plane sends it, has no split to state
+    await expect(within(usage).queryByText("Cache write by lifetime")).toBeNull();
     await expect(valueOf(usage, "Cost")).toBe(fmt.currency(0.0123, "USD"));
 
     const attribution = drawer.getByRole("region", { name: "Attribution" });
@@ -1627,6 +1629,89 @@ export const TheDrawerGroupsRoutingUsageAndAttribution: Story = {
     await expect(within(attribution).queryByText("vk-ci")).toBeNull();
     await expect(valueOf(attribution, "Business unit")).toBe("Platform Engineering");
     await expect(valueOf(attribution, "Customer")).toBe("Acme Corp");
+  },
+};
+
+/**
+ * #2903: a request that wrote to Anthropic's 1 hour cache says how its cache
+ * write divided, beside the read and written totals it divides. The 5 minute
+ * part is what is left of the write, so the two parts add up to the total.
+ */
+export const TheDrawerSplitsACacheWriteBetweenItsTwoCaches: Story = {
+  render: () => (
+    <Harness
+      fetchStub={withLogs([
+        row({ cache_read_tokens: 2048, cache_write_tokens: 1512, cache_write_1h_tokens: 1000 }),
+      ])}
+    >
+      <Logs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(
+      await canvas.findByRole("button", { name: /Open request details for gpt-4o/i }),
+    );
+    const panel = await canvas.findByRole("complementary", { name: "Details" });
+    const usage = within(panel).getByRole("region", { name: "Usage and cost" });
+
+    await expect(valueOf(usage, "Prompt cache")).toBe(
+      `${fmt.number(2048)} read · ${fmt.number(1512)} written`,
+    );
+    await expect(valueOf(usage, "Cache write by lifetime")).toBe(
+      `${fmt.number(512)} to the 5 minute cache · ${fmt.number(1000)} to the 1 hour cache`,
+    );
+  },
+};
+
+/**
+ * #2903: a 1 hour share of 0 is what a provider with no split, or a row older
+ * than the column, reads, so it states nothing. A share larger than the write
+ * (a row the two columns disagree on) never prints a negative 5 minute part.
+ */
+export const TheDrawerStatesNoSplitForAZeroShare: Story = {
+  render: () => (
+    <Harness
+      fetchStub={withLogs([
+        row({
+          request_id: "req-no-split",
+          cache_read_tokens: 100,
+          cache_write_tokens: 300,
+          cache_write_1h_tokens: 0,
+        }),
+        row({
+          request_id: "req-odd",
+          cache_write_tokens: 300,
+          cache_write_1h_tokens: 400,
+        }),
+      ])}
+    >
+      <Logs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const [none, odd] = await canvas.findAllByRole("button", {
+      name: /Open request details for gpt-4o/i,
+    });
+
+    await userEvent.click(none);
+    let panel = await canvas.findByRole("complementary", { name: "Details" });
+    let usage = within(panel).getByRole("region", { name: "Usage and cost" });
+    await expect(valueOf(usage, "Prompt cache")).toBe(
+      `${fmt.number(100)} read · ${fmt.number(300)} written`,
+    );
+    await expect(within(usage).queryByText("Cache write by lifetime")).toBeNull();
+
+    await userEvent.click(odd);
+    await waitFor(() => {
+      panel = canvas.getByRole("complementary", { name: "Details" });
+      usage = within(panel).getByRole("region", { name: "Usage and cost" });
+      expect(within(usage).getByText("Cache write by lifetime")).toBeVisible();
+    });
+    await expect(valueOf(usage, "Cache write by lifetime")).toBe(
+      `${fmt.number(0)} to the 5 minute cache · ${fmt.number(400)} to the 1 hour cache`,
+    );
   },
 };
 

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { cacheWritePatch } from "@/lib/cache-write-rate";
+import { cacheWrite1hPatch, cacheWritePatch } from "@/lib/cache-write-rate";
 
 describe("cacheWritePatch", () => {
   test("sends nothing for an input nobody touched, so the stored rate is kept", () => {
@@ -23,5 +23,32 @@ describe("cacheWritePatch", () => {
   test("keeps null on the wire, where an undefined key would be dropped", () => {
     expect(JSON.stringify(cacheWritePatch("", "3.75"))).toBe('{"cache_write_per_mtok":null}');
     expect(JSON.stringify(cacheWritePatch("", ""))).toBe("{}");
+  });
+});
+
+describe("cacheWrite1hPatch", () => {
+  test("sends nothing for an input nobody touched, so the stored rate is kept", () => {
+    expect(cacheWrite1hPatch("", "")).toEqual({});
+    expect(cacheWrite1hPatch("6.000000", "6.000000")).toEqual({});
+    expect(cacheWrite1hPatch(" 6 ", "6")).toEqual({});
+  });
+
+  test("sends the rate that was typed, under its own key", () => {
+    expect(cacheWrite1hPatch("6", "")).toEqual({ cache_write_1h_per_mtok: "6" });
+    expect(cacheWrite1hPatch(" 7.5 ", "6.000000")).toEqual({ cache_write_1h_per_mtok: "7.5" });
+    expect(cacheWrite1hPatch("0", "6.000000")).toEqual({ cache_write_1h_per_mtok: "0" });
+  });
+
+  test("sends null for a rate that was emptied, which clears it", () => {
+    expect(cacheWrite1hPatch("", "6.000000")).toEqual({ cache_write_1h_per_mtok: null });
+    expect(cacheWrite1hPatch("  ", "6.000000")).toEqual({ cache_write_1h_per_mtok: null });
+  });
+
+  test("keeps null on the wire, and leaves the 5 minute key out", () => {
+    expect(JSON.stringify(cacheWrite1hPatch("", "6"))).toBe('{"cache_write_1h_per_mtok":null}');
+    expect(JSON.stringify(cacheWrite1hPatch("", ""))).toBe("{}");
+    expect(JSON.stringify({ ...cacheWritePatch("3", ""), ...cacheWrite1hPatch("", "6") })).toBe(
+      '{"cache_write_per_mtok":"3","cache_write_1h_per_mtok":null}',
+    );
   });
 });

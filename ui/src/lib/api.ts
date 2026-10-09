@@ -431,6 +431,11 @@ export interface InvocationRow {
   attempts?: number | string;
   cache_read_tokens: number | string;
   cache_write_tokens: number | string;
+  /// the part of `cache_write_tokens` Anthropic reports as written to its
+  /// 1 hour cache; the rest went to the 5 minute one (#2903). absent from a
+  /// control plane that predates it or a ClickHouse without the column, and
+  /// 0 on a row older than the column or from a provider that reports no split
+  cache_write_1h_tokens?: number | string;
   prompt_tokens: number | string;
   completion_tokens: number | string;
   total_tokens: number | string;
@@ -2038,6 +2043,12 @@ export interface ModelPriceRow {
    * prices them at the input rate
    */
   cache_write_per_mtok: string | null;
+  /**
+   * The rate for the part of those writes that went to Anthropic's 1 hour
+   * cache (#2891); `null` prices it at `cache_write_per_mtok`, and from there
+   * at the input rate
+   */
+  cache_write_1h_per_mtok: string | null;
   currency: string;
   created_at: string;
 }
@@ -2053,6 +2064,11 @@ export interface UpsertModelPriceInput {
    * rate and a string sets it (#2876). Build it with `cacheWritePatch()`.
    */
   cache_write_per_mtok?: string | null;
+  /**
+   * Kept, cleared and set the same way as `cache_write_per_mtok`; `null` falls
+   * back to that rate (#2902). Build it with `cacheWrite1hPatch()`.
+   */
+  cache_write_1h_per_mtok?: string | null;
   currency?: string;
 }
 

@@ -717,6 +717,18 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
             write: fmt.number(num(selected.cache_write_tokens)),
           })}
         </DetailRow>
+        {/* only a write that reached Anthropic's 1 hour cache has a split to
+            show; the 5 minute part is what is left of the write (#2903) */}
+        {num(selected.cache_write_1h_tokens) > 0 && (
+          <DetailRow label={t("pages.logs.detail.cacheWriteSplit")} mono>
+            {t("pages.logs.detail.cacheWriteSplitTokens", {
+              short: fmt.number(
+                Math.max(0, num(selected.cache_write_tokens) - num(selected.cache_write_1h_tokens)),
+              ),
+              long: fmt.number(num(selected.cache_write_1h_tokens)),
+            })}
+          </DetailRow>
+        )}
         <DetailRow label={t("pages.logs.cost")} mono>
           {cost(selected) ?? (
             // room enough here to say it, so the explanation is text on the
