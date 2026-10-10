@@ -1068,7 +1068,8 @@ fn upstream_error_response(message: &str) -> Response {
             .with_code(code)
             .into_response();
     }
-    error_json(StatusCode::BAD_GATEWAY, message)
+    let redacted = rolter_core::redact::redact_urls_in_text(message);
+    error_json(StatusCode::BAD_GATEWAY, &redacted)
 }
 
 /// Request-translation failures the caller can fix, paired with the OpenAI-style
@@ -4829,6 +4830,22 @@ mod tests {
     };
 
     use super::*;
+
+    #[tokio::test]
+    async fn upstream_error_response_redacts_urls() {
+        let err_msg = "error sending request for url (https://secret:pass@internal.host:8080/v1/chat): connection refused";
+        let response = upstream_error_response(err_msg);
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let message = json["error"]["message"].as_str().unwrap();
+        assert!(!message.contains("secret"));
+        assert!(!message.contains("pass"));
+        assert_eq!(
+            message,
+            "error sending request for url (https://***@internal.host:8080/v1/chat): connection refused"
+        );
+    }
 
     #[test]
     fn queue_admission_errors_are_actionable() {
