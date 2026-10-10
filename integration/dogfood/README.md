@@ -322,19 +322,20 @@ created before the mount keeps the tables it already has; drop them as
 `signoz/dashboards/` through `provision-signoz.sh`. Re-running is a no-op: a
 board whose title SigNoz already has is skipped.
 
-The script and the boards target **SigNoz v0.136.0**, the release
-`docker/docker-compose.signoz.yml` pins. That release moved both APIs the script
-uses, which is why dashboards stopped importing when the pin moved to it
-(#1864):
+The script and the boards target **SigNoz v0.145.0**, the release
+`docker/docker-compose.signoz.yml` pins. v0.136 moved both APIs the script uses,
+which is why dashboards stopped importing when the pin moved to it (#1864), and
+v0.145.0 kept them (#2909):
 
 - it signs in with `POST /api/v2/sessions/email_password`, passing the org id
   that `GET /api/v2/sessions/context` returns for the email
-- it creates boards with `POST /api/v2/dashboards`, since every v1 dashboard
-  route now answers `501 dashboard_deprecated`
+- it creates boards with `POST /api/v2/dashboards`, since the v1 dashboard
+  routes are gone (v0.136 answered `501 dashboard_deprecated`, v0.145.0 answers
+  `GET /api/v1/dashboards` with the SPA)
 
 The older spellings (`/api/v1/login`, `/api/v2/auth/login`, `/api/v1/auth/login`
 and `/api/v1/dashboards`) stay as fallbacks for a SigNoz from before v0.136, but
-only v0.136.0 is tested. A SigNoz that answers none of them makes the script
+only v0.145.0 is tested. A SigNoz that answers none of them makes the script
 exit 2 with its version in the message. So does one that keeps the session
 context route but moves or reshapes the sign-in behind it (the SPA instead of
 json, a token under another key, a `404`/`405`/`501`): only SigNoz refusing the
@@ -345,8 +346,8 @@ Bumping the pin means running `just signoz-provision` against the new release
 before merging the bump.
 
 The boards stay in SigNoz's v1 import format (`title`, `widgets`, `layout`) and
-carry `"version": "v5"`. On v0.136 the create endpoint converts that shape to
-its v2 schema server-side, but only when `version` is present: without it the
+carry `"version": "v5"`. On v0.136 and v0.145.0 the create endpoint converts that
+shape to its v2 schema server-side, but only when `version` is present: without it the
 request fails with `json: unknown field "title"`, in the script and in the Import
 JSON dialog alike. The script adds `"version": "v5"` to a board that has none
 when every panel is ClickHouse SQL or PromQL, since the conversion copies those

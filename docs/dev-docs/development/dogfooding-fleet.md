@@ -182,15 +182,43 @@ chart on their own defaults.
   control plane's `CLICKHOUSE_URL`. The control plane's only lets it _read_ the
   table (#929).
 - **The SigNoz dashboards are tied to the SigNoz pin.** `provision-signoz.sh`
-  targets v0.136.0, the release `docker/docker-compose.signoz.yml` pins, which
+  targets v0.145.0, the release `docker/docker-compose.signoz.yml` pins. v0.136
   moved sign-in to `/api/v2/sessions/email_password` and dashboard creation to
-  `/api/v2/dashboards` (#1864). The boards are written in the v1 import format
-  with `"version": "v5"`, which v0.136 converts on import. A SigNoz the script
-  cannot talk to makes it exit 2 naming the version, a sign-in route that moved
-  included: only a refused credential is reported as a different account and
-  pointed at `just signoz-reset`. `just dogfood` repeats the failure after the
-  sheet, and `just dev-creds` exits with it. Run `just signoz-provision` against
-  a new release before moving the pin.
+  `/api/v2/dashboards` (#1864), and v0.145.0 kept both. The boards are written in
+  the v1 import format with `"version": "v5"`, which the create endpoint converts
+  on import. A SigNoz the script cannot talk to makes it exit 2 naming the
+  version, a sign-in route that moved included: only a refused credential is
+  reported as a different account and pointed at `just signoz-reset`.
+  `just dogfood` repeats the failure after the sheet, and `just dev-creds` exits
+  with it. Run `just signoz-provision` against a new release before moving the
+  pin.
+- **The SigNoz images move as one set.** `signoz` v0.145.0, the collector and
+  schema migrator v0.144.6, ClickHouse 25.12.5 and ZooKeeper 3.7.2 are the
+  pairing SigNoz's own `go.mod` and `.devenv/docker/clickhouse/compose.yaml`
+  name for that release (#2909). The compose file's header says where each
+  version comes from. A migrator newer than its ClickHouse fails on settings the
+  older server does not know, so none of them is bumped alone: read the new
+  versions off the new `signoz` tag, bring the overlay up on fresh volumes, then
+  run `just signoz-provision` and `scripts/test-dogfood-scripts.sh` against it.
+- **A SigNoz volume survives an image bump, and a fresh one is cheap.** The
+  overlay's ClickHouse moved from the 25.5 line to 25.12 with that set, the line
+  SigNoz pairs its collector with. A volume the old set created needed nothing in
+  the validation run: 25.12.5 opened the 25.5 data directory, the new migrator
+  brought the schema forward and `signoz` upgraded its own SQLite, with the stored
+  traces still readable and the provisioned dashboards still there. ClickHouse
+  does not support going back down a line, so that needs fresh volumes. To start
+  clean instead (it is local telemetry), stop the overlay and remove SigNoz's
+  three volumes, ClickHouse and ZooKeeper together since ClickHouse keeps its
+  replica metadata in ZooKeeper:
+
+  ```bash
+  docker compose -f docker/docker-compose.yml -f docker/docker-compose.signoz.yml down
+  docker volume rm docker_signoz-clickhouse docker_signoz-zookeeper docker_signoz-sqlite
+  ```
+
+  Compose names the project after the directory of the first `-f` file, hence the
+  `docker_` prefix; `docker volume ls --filter name=signoz` shows the real names.
+  `just signoz-reset` discards only the SQLite one (users, dashboards, alerts).
 
 ## Before a week of capture: prove the UX stream
 
