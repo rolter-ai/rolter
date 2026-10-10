@@ -37,3 +37,8 @@
 
 **Learning:** User-facing configuration fields on `ProviderConfig` in `crates/rolter-core/src/config.rs` (`slug`, `status_page_url`, `ca_bundles`) can quietly drift from `docs/user-docs/configuration/config-file.mdx` if drift guard tests only cover `ServerConfig` and `VirtualKeyConfig`.
 **Action:** Guard `ProviderConfig` documentation completeness using `all_provider_config_fields_are_documented_in_config_file_reference` in `crates/rolter/tests/env_var_names.rs`.
+
+## 2026-10-08 - AdaptiveRoutingConfig fields drifting from config-file reference docs
+
+**Learning:** Configuration fields on `AdaptiveRoutingConfig` in `crates/rolter-core/src/config.rs` (`enabled`, `latency_weight`, `cost_weight`, `load_weight`, `exploration_ratio`, `min_samples`) can quietly drift from `docs/user-docs/configuration/config-file.mdx`.
+**Action:** Guard `AdaptiveRoutingConfig` documentation completeness using `all_adaptive_routing_config_fields_are_documented_in_config_file_reference` in `crates/rolter/tests/env_var_names.rs`.

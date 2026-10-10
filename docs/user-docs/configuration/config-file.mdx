@@ -791,6 +791,46 @@ path = "/metrics"
 
 ---
 
+### \[adaptive_routing\]
+
+Adaptive routing uses a weighted blend of observed latency, catalog cost, and in-flight load to dynamically score and rank route targets. Off by default. When disabled or before sufficient samples are collected, adaptive routes fall back to deterministic pipeline behavior.
+
+<ParamField path="enabled" default="false" type="boolean">
+  Master kill switch for adaptive routing.
+</ParamField>
+
+<ParamField path="latency_weight" default="1.0" type="f32">
+  Weight of the observed latency signal.
+</ParamField>
+
+<ParamField path="cost_weight" default="0.5" type="f32">
+  Weight of the catalog cost signal.
+</ParamField>
+
+<ParamField path="load_weight" default="0.25" type="f32">
+  Weight of the in-flight load signal.
+</ParamField>
+
+<ParamField path="exploration_ratio" default="0.05" type="f32">
+  Share of traffic routed uniformly at random to explore targets and collect fresh latency samples (clamped to a maximum of `0.5`).
+</ParamField>
+
+<ParamField path="min_samples" default="50" type="u32">
+  Number of requests a route target must serve before adaptive scoring engages.
+</ParamField>
+
+```toml
+[adaptive_routing]
+enabled = true
+latency_weight = 1.0
+cost_weight = 0.5
+load_weight = 0.25
+exploration_ratio = 0.05
+min_samples = 50
+```
+
+---
+
 ### \[realtime\]
 
 Resource limits and metering cadence for [`/v1/realtime`](/api/realtime) WebSocket sessions. The three limits are per gateway process and guard the gateway's own resources; tenant policy comes from `[[budgets]]` and `[[rate_limits]]`, which a session meets at admission and while it runs. Set a limit to `0` to disable it.
