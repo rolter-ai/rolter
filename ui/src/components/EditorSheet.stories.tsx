@@ -633,3 +633,36 @@ export const UnmountingAnUnopenedEditorEmitsNothing: Story = {
     expectNoUxEvent("form_abandon", TARGET);
   },
 };
+
+/**
+ * #2776, half one: a story that ends with its editor still open. Nothing here
+ * closes the sheet, so whatever starts next is what tears it down, and the
+ * abandon `useFormTelemetry` owes for it is deferred one macrotask (a StrictMode
+ * remount must be able to cancel it). That is the same teardown a failed
+ * assertion leaves behind. The assertion is in the story below.
+ */
+export const LeavesAnEditorOpen: Story = {
+  render: () => <Unmountable />,
+  play: async () => {
+    await waitFor(() => expect(sheet()).toBeVisible());
+  },
+};
+
+/**
+ * #2776, half two: the story straight after it hears nothing of that abandon.
+ * It belongs to the story above, and `recordUxEvents` has to see it land before it
+ * clears the queue. Landing in this story's queue instead counted it in the wrong
+ * story: a real failure in the first showed up as a second one, here.
+ *
+ * The pair only means something run in order, in one page, which is how the story
+ * tests run a file. The Storybook UI renders a story on its own, where this one
+ * passes without testing anything.
+ */
+export const TheStoryAfterAnOpenEditorHearsNoAbandon: Story = {
+  render: () => <p>nothing is open</p>,
+  play: async () => {
+    // long enough for any timer the previous story's teardown left behind
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expectNoUxEvent("form_abandon");
+  },
+};

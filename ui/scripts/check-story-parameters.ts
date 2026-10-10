@@ -59,14 +59,31 @@ export function maskLiterals(source: string): string {
   const blank = (from: number, to: number) => {
     for (let i = from; i < to; i += 1) if (out[i] !== "\n") out[i] = " ";
   };
-  // depth of `${…}` inside the innermost template literal, one entry per
-  // nested template
+  // one entry per open template literal: 0 while in its text, otherwise the
+  // brace depth inside a `${…}` (1 for the `${` itself)
   const templates: number[] = [];
   let i = 0;
   while (i < source.length) {
     const c = source[i];
     const next = source[i + 1];
-    if (c === "/" && next === "/") {
+    const top = templates.length - 1;
+    if (top >= 0 && templates[top] === 0) {
+      // template text: a quote or `//` in it is prose, not code, and only a
+      // backtick, a `${` or an escape means anything
+      if (c === "\\") {
+        blank(i, i + 2);
+        i += 2;
+      } else if (c === "`") {
+        templates.pop();
+        i += 1;
+      } else if (c === "$" && next === "{") {
+        templates[top] = 1;
+        i += 2;
+      } else {
+        blank(i, i + 1);
+        i += 1;
+      }
+    } else if (c === "/" && next === "/") {
       const end = source.indexOf("\n", i);
       const stop = end === -1 ? source.length : end;
       blank(i, stop);
@@ -84,27 +101,13 @@ export function maskLiterals(source: string): string {
     } else if (c === "`") {
       templates.push(0);
       i += 1;
-    } else if (templates.length > 0) {
-      // inside a template: only `${` … `}` is real code, the rest is text
-      const depth = templates[templates.length - 1]!;
-      if (c === "\\") {
-        blank(i, i + 2);
-        i += 2;
-      } else if (depth === 0 && c === "`") {
-        templates.pop();
-        i += 1;
-      } else if (depth === 0 && c === "$" && next === "{") {
-        templates[templates.length - 1] = 1;
-        i += 2;
-      } else if (depth === 0) {
-        blank(i, i + 1);
-        i += 1;
-      } else {
-        if (c === "{") templates[templates.length - 1] = depth + 1;
-        if (c === "}") templates[templates.length - 1] = depth - 1;
-        i += 1;
-      }
     } else {
+      // code, at the top level or inside a `${…}`, where braces are counted so
+      // the `}` that closes it hands the template its text back
+      if (top >= 0) {
+        if (c === "{") templates[top] += 1;
+        if (c === "}") templates[top] -= 1;
+      }
       i += 1;
     }
   }

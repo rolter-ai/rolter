@@ -26,11 +26,11 @@ describe("fixture classification", () => {
     const fixtures = collectFixtures(
       `
 export const withPageA11y = {
-  a11y: { rules: { region: { enabled: true } } },
+  a11y: { options: { rules: { region: { enabled: true } } } },
 };
 
 export const atMobile = {
-  parameters: { viewportSize: MOBILE },
+  parameters: { viewport: { options: OPTIONS } },
   globals: { viewport: { value: "rolterMobile" } },
 };
 
@@ -110,6 +110,38 @@ describe("maskLiterals", () => {
     // the only surviving braces are the object literal inside `${ … }`
     expect(masked.split("{")).toHaveLength(3);
     expect(masked.split("}")).toHaveLength(3);
+  });
+});
+
+describe("maskLiterals after a template literal", () => {
+  // the masker once kept a template open past its closing backtick, so everything
+  // after the first template in a file read as text: a fixture module lost its
+  // exports and a story file lost every spread below its first template, and the
+  // check passed against what was left
+  it("hands the code back once the template ends", () => {
+    const masked = maskLiterals("const a = `x`; const b = { c: 1 };");
+    expect(masked).toContain("const b = { c: 1 };");
+  });
+
+  it("reads a quote or an apostrophe in template text as text", () => {
+    const masked = maskLiterals('const a = `it\'s "quoted" // not a comment`; const b = 1;');
+    expect(masked).toContain("const b = 1;");
+  });
+
+  it("reads a nested template, and the strings inside a `${…}`", () => {
+    const masked = maskLiterals('const a = `${f(", ")} ${`${g}`}`; const b = 1;');
+    expect(masked).toContain("const b = 1;");
+  });
+
+  it("still finds a fixture declared after a template", () => {
+    const source = "const m = `${a}`; export const atTiny = { parameters: { viewport: {} } };";
+    expect(collectFixtures(source, "src/lib/story-x.ts").map((f) => f.name)).toEqual(["atTiny"]);
+  });
+
+  it("still finds a misplaced spread below a template in a story file", () => {
+    const source = `const label = \`it's \${name}\`;
+const meta = { ...withPageA11y };`;
+    expect(checkStorySource(source, "src/x.stories.tsx", [FRAGMENT])).toHaveLength(1);
   });
 });
 

@@ -30,6 +30,7 @@ import ru from "@/lib/i18n/locales/ru.json";
 import {
   atLaptop,
   atMobile,
+  atNarrow,
   atTablet,
   expectInFrame,
   expectInViewport,
@@ -180,7 +181,7 @@ const ATTRIBUTED: InvocationRow[] = [
 
 /**
  * A polling cadence a play can watch several intervals of (#1984). The screen
- * polls every 5s, and the test-runner gives a whole story 15s, so a play that
+ * polls every 5s, and the story tests give a whole story 15s, so a play that
  * waited out two real intervals after a retried load would have no budget left.
  * The cadence is the only thing that changes: the policy under test is the same.
  */
@@ -2184,7 +2185,7 @@ export const TheUpstreamHintFitsAtMobileInRussian: Story = {
  * wraps under it instead of pushing the cost out of frame.
  */
 export const TheUpstreamHintWrapsUnderTheBadgeInANarrowTable: Story = {
-  parameters: { viewportSize: { width: 560, height: 800 } },
+  ...atNarrow,
   render: () => (
     <Harness fetchStub={withLogs([EXHAUSTED, ...ROWS])}>
       <Logs />

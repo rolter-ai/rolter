@@ -1,34 +1,26 @@
-import { mkdtempSync, existsSync, writeFileSync, rmSync } from "node:fs";
-import { createServer } from "node:net";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-
 import { describe, it, expect } from "bun:test";
 
 import {
-  claimFreePort,
-  claimPort,
   declaredStories,
-  findFreePort,
-  foreignServer,
-  indexedPaths,
-  isInsideDirectory,
-  listenersOn,
   missingFrom,
-  parseListeningPids,
-  parseWorkingDirectory,
-  portIsFree,
-  stopChild,
-  warmupStories,
-  type StorybookIndex,
+  narrowsTheRun,
+  splitArgs,
+  type VitestReport,
 } from "./run-story-tests";
 
-/** An index as Storybook serves it, of the fields the guard reads. */
-function index(entries: [string, string][]): StorybookIndex {
+const ROOT = "/work/rolter/ui";
+
+/** A Vitest JSON report, of the fields the guard reads: file → statuses of its tests. */
+function report(files: Record<string, string[]>): VitestReport {
   return {
-    entries: Object.fromEntries(entries.map(([id, importPath]) => [id, { id, importPath }])),
+    testResults: Object.entries(files).map(([path, statuses]) => ({
+      name: `${ROOT}/${path}`,
+      assertionResults: statuses.map((status) => ({ status })),
+    })),
   };
 }
+
+const file = (path: string, ...stories: string[]) => ({ path, stories });
 
 describe("declaredStories", () => {
   it("finds the exports annotated as a story", () => {
@@ -52,284 +44,78 @@ describe("declaredStories", () => {
   });
 });
 
-describe("indexedPaths", () => {
-  it("strips the ./ storybook writes on an import path", () => {
-    // the comparison is against paths relative to ui/, and a mismatch here
-    // would make every file look absent from its own index
-    const paths = indexedPaths(index([["screens-keys--empty", "./src/pages/Keys.stories.tsx"]]));
-    expect(paths.has("src/pages/Keys.stories.tsx")).toBe(true);
-  });
-});
-
-describe("warmupStories", () => {
-  it("opens the first story of each file, and only of the files asked for", () => {
-    const served = index([
-      ["screens-keys--empty", "./src/pages/Keys.stories.tsx"],
-      ["screens-keys--loaded", "./src/pages/Keys.stories.tsx"],
-      ["screens-users--loaded", "./src/pages/Users.stories.tsx"],
-      ["screens-rbac--loaded", "./src/pages/Rbac.stories.tsx"],
-    ]);
-    const files = [{ path: "src/pages/Keys.stories.tsx" }, { path: "src/pages/Users.stories.tsx" }];
-    expect(warmupStories(served, files)).toEqual(["screens-keys--empty", "screens-users--loaded"]);
-  });
-
-  it("never picks a docs entry, which renders no story", () => {
-    const served: StorybookIndex = {
-      entries: {
-        "screens-keys--docs": {
-          id: "screens-keys--docs",
-          importPath: "./src/pages/Keys.stories.tsx",
-          type: "docs",
-        },
-        "screens-keys--empty": {
-          id: "screens-keys--empty",
-          importPath: "./src/pages/Keys.stories.tsx",
-          type: "story",
-        },
-      },
-    };
-    expect(warmupStories(served, [{ path: "src/pages/Keys.stories.tsx" }])).toEqual([
-      "screens-keys--empty",
-    ]);
-  });
-
-  it("skips a file the index has no story for", () => {
-    expect(warmupStories(index([]), [{ path: "src/pages/Keys.stories.tsx" }])).toEqual([]);
-  });
-});
-
 describe("missingFrom", () => {
-  const served = index([
-    ["screens-keys--empty", "./src/pages/Keys.stories.tsx"],
-    ["screens-keys--refused-to-a-viewer", "./src/pages/Keys.stories.tsx"],
-  ]);
-
-  it("passes a file the index serves with all of its stories", () => {
-    expect(
-      missingFrom(served, [
-        { path: "src/pages/Keys.stories.tsx", stories: ["Empty", "RefusedToAViewer"] },
-      ]),
-    ).toEqual([]);
+  it("passes a file that ran every story it declares", () => {
+    const ran = report({ "src/pages/Keys.stories.tsx": ["passed", "passed"] });
+    expect(missingFrom(ran, [file("src/pages/Keys.stories.tsx", "A", "B")], ROOT)).toEqual([]);
   });
 
-  it("catches a server that has never heard of the file — the #1684 false green", () => {
-    // this is exactly the other-worktree case: a Storybook of the same project,
-    // serving a build made before this story file existed
-    const problems = missingFrom(served, [
-      { path: "src/pages/AdaptiveDashboard.stories.tsx", stories: ["SwitchedOff"] },
-    ]);
-    expect(problems).toHaveLength(1);
-    expect(problems[0]).toContain("not in the served index at all");
+  it("counts a failed story as run: the run reports it, the guard is about absence", () => {
+    const ran = report({ "src/pages/Keys.stories.tsx": ["passed", "failed"] });
+    expect(missingFrom(ran, [file("src/pages/Keys.stories.tsx", "A", "B")], ROOT)).toEqual([]);
   });
 
-  it("catches a stale build of a file it does know", () => {
-    // the subtler half: the file is indexed, but the story added since that
-    // build is not, so the run would report green without ever loading it
-    const problems = missingFrom(served, [
-      { path: "src/pages/Keys.stories.tsx", stories: ["Empty", "AddedSinceThatBuild"] },
-    ]);
-    expect(problems).toEqual([
-      "src/pages/Keys.stories.tsx: story 'AddedSinceThatBuild' is not in the served index",
-    ]);
-  });
-});
-
-describe("port probing", () => {
-  it("sees a listener that set SO_REUSEADDR, which a bind probe does not", async () => {
-    // the real squatter: python's http.server and Bun.serve both set it, so a
-    // second bind on the same port succeeds and a bind-only probe calls the
-    // port free — then hands it to storybook, which is the #1684 failure
-    const port = await findFreePort(6500);
-    const squatter = Bun.serve({ port, fetch: () => new Response("busy") });
-    try {
-      expect(await portIsFree(port)).toBe(false);
-    } finally {
-      squatter.stop(true);
-    }
-  });
-
-  it("reports a port nothing is listening on as free", async () => {
-    const port = await findFreePort(6300);
-    expect(await portIsFree(port)).toBe(true);
-  });
-
-  it("reports a port that is taken as taken, which is what storybook will not do", async () => {
-    const port = await findFreePort(6400);
-    const server = createServer();
-    await new Promise<void>((done) => server.listen(port, "127.0.0.1", done));
-    try {
-      expect(await portIsFree(port)).toBe(false);
-      // and the search steps past it rather than handing it out
-      expect(await findFreePort(port)).toBeGreaterThan(port);
-    } finally {
-      await new Promise<void>((done) => server.close(() => done()));
-    }
-  });
-});
-
-describe("who is serving the port", () => {
-  const ui = "/Users/dev/rolter/ui";
-
-  it("reads the pids lsof lists, once each", () => {
-    // one listener answering on both address families is printed twice, and
-    // asking lsof about the same pid twice only makes the error message repeat
-    expect(parseListeningPids("4821\n4821\n5190\n")).toEqual([4821, 5190]);
-  });
-
-  it("ignores what lsof prints when nothing is listening", () => {
-    expect(parseListeningPids("")).toEqual([]);
-  });
-
-  it("reads the cwd out of lsof's field output, spaces included", () => {
-    // the field format rather than the columns precisely because a worktree
-    // path can contain a space, which the column output makes unparsable
-    const output = ["p4821", "fcwd", "n/Users/dev/My Work/rolter/ui", ""].join("\n");
-    expect(parseWorkingDirectory(output)).toBe("/Users/dev/My Work/rolter/ui");
-  });
-
-  it("says nothing when lsof named no directory", () => {
-    expect(parseWorkingDirectory("p4821\nfcwd\n")).toBeNull();
-  });
-
-  it("does not read a sibling directory as being inside this one", () => {
-    // the comparison is on a separator: `…/ui-old` shares the prefix but is a
-    // different checkout, and letting it pass is the hole being closed
-    expect(isInsideDirectory("/Users/dev/rolter/ui-old", ui)).toBe(false);
-    expect(isInsideDirectory(ui, ui)).toBe(true);
-    expect(isInsideDirectory("/Users/dev/rolter/ui/.storybook", ui)).toBe(true);
-  });
-
-  it("accepts the storybook this worktree started", () => {
-    expect(foreignServer([{ pid: 4821, cwd: ui }], ui)).toBeNull();
-  });
-
-  it("catches another worktree of this same project — the #1693 false green", () => {
-    // what actually happened on port 6032: a sibling worktree's storybook held
-    // the port, and the index check passed because that build indexes the same
-    // story ids under the same import paths
-    const problem = foreignServer(
-      [{ pid: 4821, cwd: "/Users/dev/rolter/.worktrees/feat-1654-docs-link/ui" }],
-      ui,
+  it("catches a file vitest never picked up — the green that ran nothing", () => {
+    const ran = report({ "src/pages/Keys.stories.tsx": ["passed"] });
+    const problems = missingFrom(
+      ran,
+      [file("src/pages/Keys.stories.tsx", "A"), file("src/pages/Users.stories.tsx", "A")],
+      ROOT,
     );
-    expect(problem).toContain("not this worktree's");
-    expect(problem).toContain("feat-1654-docs-link");
+    expect(problems).toEqual(["src/pages/Users.stories.tsx did not run at all"]);
   });
 
-  it("catches a listener whose working directory lsof would not give up", () => {
-    // another user's squatter reads as unknown, and unknown is not this
-    // worktree — the guard refuses rather than assuming the friendly case
-    expect(foreignServer([{ pid: 4821, cwd: null }], ui)).toContain("unreadable");
+  it("catches a file that ran fewer tests than it has stories", () => {
+    // a `!test` tag, or an export the transform skipped
+    const ran = report({ "src/pages/Keys.stories.tsx": ["passed"] });
+    const problems = missingFrom(ran, [file("src/pages/Keys.stories.tsx", "A", "B", "C")], ROOT);
+    expect(problems).toEqual(["src/pages/Keys.stories.tsx declares 3 stories but ran 1"]);
   });
 
-  it("refuses a port with no listener at all", () => {
-    expect(foreignServer([], ui)).toContain("nothing is listening");
+  it("does not count a skipped story as a story that ran", () => {
+    const ran = report({ "src/pages/Keys.stories.tsx": ["passed", "skipped"] });
+    const problems = missingFrom(ran, [file("src/pages/Keys.stories.tsx", "A", "B")], ROOT);
+    expect(problems).toEqual(["src/pages/Keys.stories.tsx declares 2 stories but ran 1"]);
   });
 
-  it("finds the real process behind a real listening socket", async () => {
-    // the parsing above is only worth anything if lsof is actually being asked
-    // the right question: this process is listening, so it must come back with
-    // this process's pid and cwd
-    const port = await findFreePort(6600);
-    const squatter = Bun.serve({ port, fetch: () => new Response("busy") });
-    try {
-      const listeners = listenersOn(port);
-      expect(listeners).not.toBeNull();
-      expect(listeners!.map((listener) => listener.pid)).toContain(process.pid);
-      expect(foreignServer(listeners!, process.cwd())).toBeNull();
-    } finally {
-      squatter.stop(true);
-    }
+  it("is not fooled by a report with no files at all", () => {
+    expect(missingFrom({ testResults: [] }, [file("src/a.stories.tsx", "A")], ROOT)).toEqual([
+      "src/a.stories.tsx did not run at all",
+    ]);
+  });
+
+  it("does not mind a file that holds more tests than the regex found", () => {
+    // `export const X = {…} satisfies Story` is a story the regex does not see
+    const ran = report({ "src/a.stories.tsx": ["passed", "passed", "passed"] });
+    expect(missingFrom(ran, [file("src/a.stories.tsx", "A")], ROOT)).toEqual([]);
   });
 });
 
-describe("claimPort / claimFreePort (#2323)", () => {
-  const dir = () => mkdtempSync(join(tmpdir(), "story-port-test-"));
-  const always = async () => true;
-
-  it("hands two concurrent claims different ports", async () => {
-    const d = dir();
-    try {
-      const [a, b, c] = await Promise.all([
-        claimFreePort(6700, 10, d, always),
-        claimFreePort(6700, 10, d, always),
-        claimFreePort(6700, 10, d, always),
-      ]);
-      expect(new Set([a.port, b.port, c.port]).size).toBe(3);
-    } finally {
-      rmSync(d, { recursive: true, force: true });
-    }
+describe("narrowsTheRun", () => {
+  it("treats a name filter, a bail, a shard and a changed-only run as partial on purpose", () => {
+    expect(narrowsTheRun(["-t", "Loaded"])).toBe(true);
+    expect(narrowsTheRun(["--testNamePattern=Loaded"])).toBe(true);
+    expect(narrowsTheRun(["--bail=1"])).toBe(true);
+    expect(narrowsTheRun(["--shard=1/3"])).toBe(true);
+    expect(narrowsTheRun(["--changed"])).toBe(true);
   });
 
-  it("refuses a port a live run holds, and frees it on release", () => {
-    const d = dir();
-    try {
-      const first = claimPort(6710, d);
-      expect(first).not.toBeNull();
-      expect(claimPort(6710, d)).toBeNull();
-      first?.release();
-      expect(existsSync(join(d, "6710.lock"))).toBe(false);
-      expect(claimPort(6710, d)).not.toBeNull();
-    } finally {
-      rmSync(d, { recursive: true, force: true });
-    }
-  });
-
-  it("takes over a lock whose run is dead", () => {
-    const d = dir();
-    try {
-      writeFileSync(join(d, "6720.lock"), "2147483646");
-      expect(claimPort(6720, d)).not.toBeNull();
-    } finally {
-      rmSync(d, { recursive: true, force: true });
-    }
-  });
-
-  it("skips a port the machine says is taken and releases its lock", async () => {
-    const d = dir();
-    try {
-      const claim = await claimFreePort(6730, 5, d, async (port) => port !== 6730);
-      expect(claim.port).toBe(6731);
-      expect(existsSync(join(d, "6730.lock"))).toBe(false);
-    } finally {
-      rmSync(d, { recursive: true, force: true });
-    }
+  it("leaves a run that only tunes vitest to the count check", () => {
+    expect(narrowsTheRun([])).toBe(false);
+    expect(narrowsTheRun(["--maxWorkers=2", "--reporter=verbose"])).toBe(false);
   });
 });
 
-describe("stopChild", () => {
-  /** A child that exits on the named signal only, or never. */
-  function fakeChild(diesOn: NodeJS.Signals | null) {
-    const listeners: (() => void)[] = [];
-    const child = {
-      pid: 1,
-      exitCode: null as number | null,
-      signalCode: null as NodeJS.Signals | null,
-      once: (_: string, fn: () => void) => void listeners.push(fn),
-    };
-    const sent: string[] = [];
-    const signal = (sig: NodeJS.Signals) => {
-      sent.push(sig);
-      if (sig === diesOn) setTimeout(() => listeners.forEach((fn) => fn()), 5);
-    };
-    return { child: child as never, sent, signal };
-  }
-
-  it("resolves after SIGTERM when the child exits", async () => {
-    const { child, sent, signal } = fakeChild("SIGTERM");
-    await stopChild(child, signal, 200, 200);
-    expect(sent).toEqual(["SIGTERM"]);
+describe("splitArgs", () => {
+  it("takes what precedes `--` as story files and what follows as vitest arguments", () => {
+    expect(splitArgs(["a.stories.tsx", "b.stories.tsx", "--", "--maxWorkers=2"])).toEqual({
+      files: ["a.stories.tsx", "b.stories.tsx"],
+      vitestArgs: ["--maxWorkers=2"],
+    });
   });
 
-  it("escalates to SIGKILL when the child ignores SIGTERM", async () => {
-    const { child, sent, signal } = fakeChild("SIGKILL");
-    await stopChild(child, signal, 20, 200);
-    expect(sent).toEqual(["SIGTERM", "SIGKILL"]);
-  });
-
-  it("does nothing for a child that already exited", async () => {
-    const { child, sent, signal } = fakeChild(null);
-    (child as { exitCode: number | null }).exitCode = 0;
-    await stopChild(child, signal);
-    expect(sent).toEqual([]);
+  it("takes everything as story files without a `--`", () => {
+    expect(splitArgs(["a.stories.tsx"])).toEqual({ files: ["a.stories.tsx"], vitestArgs: [] });
+    expect(splitArgs([])).toEqual({ files: [], vitestArgs: [] });
   });
 });

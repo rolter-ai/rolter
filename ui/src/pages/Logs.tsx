@@ -349,7 +349,7 @@ const LATENCY_COL = "hidden @min-[600px]:table-cell";
 // LLM logs: collapsible filter rail, full-height
 // streaming request table with sticky headers, and a right detail drawer with
 // the raw request/response payloads. `pollMs` is only ever set by a story, so
-// a play can watch several polling intervals pass inside the test-runner's
+// a play can watch several polling intervals pass inside the story tests'
 // per-story budget
 export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
   const { t } = useTranslation();

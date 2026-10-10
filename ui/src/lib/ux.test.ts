@@ -14,6 +14,7 @@ import {
   trackRetrySubmit,
   trackScreenView,
   trackValidationError,
+  uxGeneration,
 } from "./ux";
 
 /** The batch a flush actually put on the wire. */
@@ -130,6 +131,13 @@ describe("ux event emitters", () => {
         globalThis.Date = RealDate;
         Date.now = realNow;
       }
+    });
+
+    it("moves its generation on a reset, so a timer set before it can tell (#2776)", () => {
+      const before = uxGeneration();
+      expect(uxGeneration()).toBe(before);
+      resetUxForTests();
+      expect(uxGeneration()).toBe(before + 1);
     });
 
     it("gives every event a distinct id", () => {

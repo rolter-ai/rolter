@@ -12,7 +12,13 @@ import type { Decorator, Preview } from "@storybook/react";
 import { configure } from "storybook/test";
 
 import { DEFAULT_LOCALE, LOCALES, LOCALE_NAMES, setLocale, type Locale } from "../src/lib/i18n";
+import { a11yGate, pageGateProblem } from "../src/lib/story-a11y";
 import { loadTokenFonts } from "../src/lib/story-fonts";
+import { DESKTOP_VIEWPORT } from "../src/lib/story-viewport";
+
+// `ROLTER_AXE_TALLY` is set by vitest.config.ts, which passes it into the browser
+// as an env var; under `storybook dev` and `storybook build` it is never there
+const axeTally = Boolean(import.meta.env.ROLTER_AXE_TALLY);
 
 // testing-library waits one second by default, which is a unit-test budget: it
 // assumes the thing being awaited is a render, and a render is immediate. a
@@ -22,8 +28,8 @@ import { loadTokenFonts } from "../src/lib/story-fonts";
 // `findByText` can see anything.
 //
 // on an idle machine that chain lands in a couple of hundred milliseconds, so
-// the default holds and every story passes in isolation. under `test-storybook`,
-// which runs the suite across as many workers as the box has cores, it does not:
+// the default holds and every story passes in isolation. under the story tests,
+// which run the suite across as many workers as the box has cores, it does not:
 // #1279 caught `Screens/Rbac` timing out on a branch that touched no RBAC code,
 // with the failure dump showing the screen still on its tab header — the
 // assertion was correct and the data was still in flight. re-running that one
@@ -68,6 +74,15 @@ const preview: Preview = {
   // story renders. `Behaviour/Fonts` asserts the faces are the ones on screen
   beforeAll: loadTokenFonts,
   decorators: [withLocale, withSurface],
+  // the guard behind `withPageA11y` (#1373): a page story has to get the three
+  // page-level rules enabled, with axe looking at the whole document, or its axe
+  // check asserts less than it claims. the rule is `pageGateProblem`
+  // (src/lib/story-a11y.ts, unit-tested); a tally measures rather than asserts
+  afterEach: ({ id, parameters }) => {
+    if (axeTally) return;
+    const problem = pageGateProblem(id, parameters.a11y);
+    if (problem) throw new Error(problem);
+  },
   globalTypes: {
     locale: {
       description: "Dashboard language",
@@ -80,6 +95,14 @@ const preview: Preview = {
     },
   },
   parameters: {
+    // every story is an accessibility test (#1181), run by addon-a11y's own
+    // `afterEach`; see `a11yGate` for the rules and why each is off
+    a11y: a11yGate(axeTally),
+    // the size a story is drawn at when it names none. the viewport addon only
+    // sizes the preview iframe inside the Storybook UI; under vitest the addon
+    // calls `page.viewport` with whatever `globals.viewport` names, and
+    // vitest.config.ts makes this the default global
+    viewport: { options: { rolterDesktop: DESKTOP_VIEWPORT } },
     controls: { expanded: true },
     layout: "fullscreen",
     backgrounds: {

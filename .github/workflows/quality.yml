@@ -1232,7 +1232,8 @@ jobs:
   ui:
     name: ui, storybook, docs
     runs-on: ubuntu-24.04
-    # about 5-6 min, most of it the chromium download and the storybook build.
+    # about 4 min, three of them the play tests (2,146 stories on vitest, #2907);
+    # the chromium download and the storybook build are under a minute together.
     # a hung play test fails the gate in 25 minutes instead of GitHub's
     # 360-minute default
     timeout-minutes: 25
@@ -1361,10 +1362,11 @@ jobs:
         id: load-error-targets
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: bun run check:load-error-targets
-      # an override wins over the dependency range, so a bump of
-      # @playwright/test that skips `overrides.playwright` installs nothing new
-      # (#2028)
-      - name: playwright pin matches @playwright/test
+      # the e2e journeys and the story tests both launch a browser, each the
+      # revision its playwright wants. a second playwright in bun.lock is a
+      # revision `playwright install` never downloaded, and the run that uses it
+      # fails at launch (#737, #2028, #2907)
+      - name: one playwright, the version @playwright/test names
         id: playwright-pin
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: bun run check:playwright-pin
@@ -1378,17 +1380,22 @@ jobs:
         run: bun run build
 
       # ── storybook build + play tests (headless chromium) ─────────────────
-      # builds the static Storybook and runs the interaction (play) tests via
-      # the test-runner against it. a merge gate since #753 — every screen
-      # ships stories for loaded/loading/empty/error plus play tests, so a
-      # regression here is a real one. the heavy step is the one-off chromium
-      # download; the tests themselves are seconds.
+      # builds the static Storybook, and runs every story as a vitest test
+      # (@storybook/addon-vitest, #2907) in headless chromium. a merge gate
+      # since #753 — every screen ships stories for loaded/loading/empty/error
+      # plus play tests, so a regression here is a real one. the play function
+      # is the test body and axe runs in the preview's afterEach.
       #
-      # the test-runner launches the headless shell, a separate download from
-      # the full chromium build. ui/package.json pins the test-runner's
-      # playwright through `overrides`, and `bun run check:playwright-pin` keeps
-      # that pin equal to @playwright/test, so one install serves both (#737,
-      # #2028)
+      # the tests do not run against the static build: vitest serves the stories
+      # itself from vite's dev transform, so there is nothing to serve and no
+      # port to pick. the build is its own check that Storybook still builds.
+      # `bun run test:stories` rather than a bare vitest, because it also fails
+      # a story file the run never picked up, which vitest reports as a pass
+      #
+      # a headless launch uses the headless shell, a separate download from the
+      # full chromium build. `bun run check:playwright-pin` keeps bun.lock to
+      # one playwright, the one @playwright/test names, so one install serves
+      # this step and the e2e journeys (#737, #2028)
       - name: install chromium (playwright)
         id: chromium
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
@@ -1399,15 +1406,8 @@ jobs:
         run: bun run build-storybook
       - name: run play tests
         id: play-tests
-        if: ${{ !cancelled() && steps.chromium.outcome == 'success' && steps.build-storybook.outcome == 'success' }}
-        # serve the static build, wait for it, then run the test-runner against it
-        run: |
-          python3 -m http.server 6006 --directory storybook-static &
-          for _ in $(seq 1 30); do
-            curl -sf http://127.0.0.1:6006/index.json >/dev/null && break
-            sleep 1
-          done
-          bun run test-storybook --url http://127.0.0.1:6006
+        if: ${{ !cancelled() && steps.install.outcome == 'success' && steps.chromium.outcome == 'success' }}
+        run: bun run test:stories
 
       # the verdict for the whole job. every step here must run on every event,
       # so a skip counts as a failure (#1562). outcomes arrive through env,
@@ -1482,7 +1482,7 @@ jobs:
           row "${ui}" "story focus assertions wait for the handover" "${OUTCOME_FOCUS}" "cd ui && bun run check:focus"
           row "${ui}" "story assertions do not depend on zero latency" "${OUTCOME_WAITS}" "cd ui && bun run check:waits"
           row "${ui}" "load error targets pair with an empty state" "${OUTCOME_LOAD_ERROR_TARGETS}" "cd ui && bun run check:load-error-targets"
-          row "${ui}" "playwright pin matches @playwright/test" "${OUTCOME_PLAYWRIGHT_PIN}" "cd ui && bun run check:playwright-pin"
+          row "${ui}" "one playwright, the version @playwright/test names" "${OUTCOME_PLAYWRIGHT_PIN}" "cd ui && bun run check:playwright-pin"
           row "${ui}" "unit tests (bun test)" "${OUTCOME_UNIT}" "cd ui && bun run test"
           row "${ui}" "build" "${OUTCOME_BUILD}" "cd ui && bun run build"
           row "${sb}" "install chromium (playwright)" "${OUTCOME_CHROMIUM}" \

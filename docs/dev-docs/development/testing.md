@@ -703,9 +703,9 @@ instead of from Dependabot. A package that only arrives transitively through
 `bun.lock` raises no alert at all: every transitive `ui` alert was marked
 `fixed` the moment `package-lock.json` was deleted, with no version having
 changed. The nightly `ui lockfile audit` job closes that gap by reading the
-lockfile itself (see [UI lockfile audit](#ui-lockfile-audit)); #1931, #2660 and
-#2848 cleared the vulnerable transitive packages it reported, and #2850 tracks
-the one that has no patched release yet.
+lockfile itself (see [UI lockfile audit](#ui-lockfile-audit)); #1931, #2660,
+#2848 and #2907 cleared the vulnerable transitive packages it reported, and
+`ui/audit-accepted.json` is empty.
 
 ### UI lockfile audit
 
@@ -755,7 +755,10 @@ Clear a finding in this order:
    #2906.
 3. When no patched release exists at all, `bun audit fix` says "no published
    version fixes". Accept the advisory through `ui/audit-accepted.json` with a
-   tracking issue rather than inventing a version (`sprintf-js`, #2850).
+   tracking issue rather than inventing a version (`sprintf-js` was the one row,
+   #2850, until `@storybook/test-runner` and the `nyc` tree behind it left in
+   #2907). Prefer removing the dependency path: an accepted row is a debt, and the
+   audit flags it as stale the day the advisory goes.
    `ui-security-updates.yml` does not list these findings under "left for a hand
    bump": that workflow plans from Dependabot alerts alone.
 
@@ -1006,17 +1009,45 @@ The four suppressions in the tree today are:
 
 ### Storybook play tests
 
-The `ui, storybook, docs` job builds the static Storybook, serves it, and runs the
-interaction (play) tests with `@storybook/test-runner` against a headless
-chromium. It is a **merge gate** (#753): a failing play test fails `quality`,
-which fails `ci-ok`. Locally:
+The `ui, storybook, docs` job runs every story as a [Vitest](https://vitest.dev)
+test, through `@storybook/addon-vitest`, in a headless chromium driven by
+`@vitest/browser-playwright` (#2907). The play function is the test body and the
+axe check is the preview's `afterEach` (see
+[Every story is also an axe test](#every-story-is-also-an-axe-test)). It is a
+**merge gate** (#753): a failing play test fails `quality`, which fails `ci-ok`.
+The job also builds the static Storybook (`bun run build-storybook`) as a check of
+its own; the tests do not run against that build. Locally:
 
 ```bash
 cd ui
 bunx playwright install --with-deps chromium chromium-headless-shell
 bun run test:stories                            # every story file
 bun run test:stories src/pages/Keys.stories.tsx # or just these
+bun run test:stories src/pages/Keys.stories.tsx -- -t "Loaded"  # arguments after -- go to vitest
 ```
+
+#### How a story becomes a test
+
+`ui/vitest.config.ts` has one project, `storybook`. The addon's Vite plugin reads
+`ui/.storybook/main.ts`: the files its `stories` globs match are the test files,
+each `Story` export in them is one test, and the project annotations are the ones
+`storybook dev` loads from `.storybook/preview.ts` and the registered addons — the
+decorators, the `beforeAll` that loads the fonts, `configure({ asyncUtilTimeout })`,
+the `afterEach` that runs axe. A story file is not listed twice, so a new one is
+picked up the day it is written.
+
+There is nothing to build or serve first: vitest starts its own Vite server from
+this checkout's `ui/` and drives chromium against it, and a story is rendered
+with `composeStory(…).run()` in that page.
+
+A story has the **15 seconds** (`testTimeout`) it had under the old runner's jest,
+and `silent: "passed-only"` keeps the `act` notices and query warnings of a
+passing story out of the log, since nearly every screen story prints some. A
+story's size comes from `globals.viewport`, see
+[A fixed overlay is measured by its box](#a-fixed-overlay-is-measured-by-its-box-2003).
+One test file runs in one browser context, one after the other, so stories of a
+file share a page: the previous story's DOM is torn down when the next one
+starts, not when it ends.
 
 #### Using a pre-installed chromium
 
@@ -1033,84 +1064,64 @@ bun run test:stories src/pages/Keys.stories.tsx
 
 Playwright has no variable of its own for this: `PLAYWRIGHT_BROWSERS_PATH` only
 moves the cache, and still looks for the exact revision the pinned version wants.
-The story runner reads the variable in `ui/test-runner-jest.config.js`, which wraps
-the test-runner's stock jest config. Unset, nothing changes. The path must name a
-chromium Playwright can drive; the headless shell and the full build both work.
+The story tests read the variable in `ui/vitest.config.ts`. Unset, nothing changes.
+The path must name a chromium Playwright can drive; the headless shell and the
+full build both work.
 
-#### Why `test:stories` rather than the two commands by hand
+#### Why `test:stories` rather than `test-storybook` by hand
 
-`storybook dev -p <port>` **does not fail when the port is taken.** It logs
-`Starting...`, exits, and leaves whatever was already listening in place —
-another worktree's Storybook, or a stale `python3 -m http.server --directory
-storybook-static` from an earlier session. `test-storybook --url
-http://localhost:<port>` then runs against _that_ server and reports a green
-suite for a build that never contained the stories under test. Nothing in the
-output says so. This has happened twice in one day (#1648, #1684), and both
-times the only thing that caught it was fetching `/index.json` by hand.
+`bun run test-storybook` is the bare `vitest run --project=storybook`, and it runs
+the same tests. `bun run test:stories` (`ui/scripts/run-story-tests.ts`) adds the
+one guard that is still needed.
 
-`bun run test:stories` (`ui/scripts/run-story-tests.ts`) closes that hole:
+Until #2907 the wrapper existed for a different reason. `test-storybook` had to be
+pointed at a running Storybook, and `storybook dev -p <port>` **does not fail
+when the port is taken**: it logs `Starting...`, exits, and leaves whatever was
+already listening in place — another worktree's Storybook, or a stale
+`python3 -m http.server --directory storybook-static`. The run then passed against
+a build that never contained the stories under test, and nothing in the output
+said so (#1648, #1684, #1693, #2323). The wrapper picked and locked a port,
+checked the served index against the story files, and read the listening process's
+working directory. None of that applies any more: vitest starts the server it
+tests against, from this checkout, on the first free port it finds, so there is no
+other server to mistake for ours and no port to pick.
 
-- it picks a free port itself, or **fails** when the one passed to `--port` is
-  taken. The probe _connects_ rather than binding — `python3 -m http.server` and
-  `Bun.serve` both set `SO_REUSEADDR`, so a second bind on a squatted port
-  succeeds and a bind-only probe calls it free
-- it starts `storybook dev --ci` and waits for `/index.json`
-- **it checks that index against the story files it was asked to run**: the file
-  must be indexed under its own import path, and every `export const … : Story`
-  in it must be present. A Storybook that is not this project fails here, and so
-  does a stale build of a file whose newest story is missing
-- **it identifies the process holding the port.** The index check above compares
-  _content_, so another worktree of this same repository sails through it — its
-  build indexes the same story ids under the same import paths. That is the case
-  that actually happens here, and it did, on port 6032 (#1693). So the guard
-  reads the listening pid with `lsof -ti :<port>` and asks for its working
-  directory (`lsof -a -p <pid> -d cwd -Fn`): `storybook dev` is spawned with its
-  cwd in this worktree's `ui/`, so a listener rooted anywhere else — a sibling
-  worktree, or a process whose cwd lsof will not disclose — fails the run. On a
-  machine with no `lsof` the check is skipped with a warning rather than failing;
-  the index check still applies
-- **it renders one story of each file once, untimed.** `storybook dev` compiles
-  on demand, so whichever story ran first paid for the whole preview and its
-  screen's module graph inside its own 15 second budget — about 30s for
-  `Screens/Users › Loaded`, which timed out with nothing wrong with it (#2637).
-  A timed-out test also leaves its `postVisit` axe run going in the same tab, so
-  the story after it failed too, with "Axe is already running". The warm-up
-  opens the first indexed story of each file in headless chromium and waits for
-  it to render; a warm-up that fails is only logged, since the timed run says
-  more precisely what is wrong. CI never hit this: it tests a static build
-- only then does it run the tests, one file per invocation — the positional
-  pattern is passed through `/bin/sh`, so a pattern containing `(`, `|` or `)`
-  dies with a shell syntax error
+What a run can still do is go green while proving nothing. A glob in `main.ts`
+that stops matching a directory, a `!test` tag, or an export the transform skips
+all report success with fewer tests than the file has stories. So the wrapper
+writes vitest's JSON report to a temporary file and, once the run is over, fails
+when a file it was asked for ran fewer tests than it has `export const … : Story`
+declarations, or did not run at all. An unfiltered run asks for every
+`*.stories.tsx` under `ui/src`, so a directory `main.ts` stopped listing fails
+there too. A run narrowed with `-t`, `--bail`, `--shard` or `--changed` is partial
+on purpose and skips the check.
 
-Running the two commands by hand still works and is sometimes what you want
-(driving the same server through several runs, say). If you do, check
-`/index.json` for your story ids first; that is the whole difference between a
-green run and a meaningless one.
+The old runner's one-story warm-up (#2637) is gone as well. It existed because
+`storybook dev` compiled on demand and the first story of a run paid for the
+whole preview inside its own 15 seconds. Vitest imports a story file, and so its
+whole module graph, before any test in it is timed.
 
-Under the hood it is still:
+`playwright` resolves to a single version for both the e2e journeys and the
+story tests, because `@playwright/test` pins the copy `@vitest/browser-playwright`
+imports. Until #2907 `ui/package.json` pinned `playwright` and `playwright-core`
+through `overrides`, because the old runner declared its own loose range, resolved
+a different version from `@playwright/test`, and launched a browser revision
+`playwright install` never downloaded — it then failed at launch and the play tests
+silently stopped running (#737). The overrides went with that runner, and
+`bun run check:playwright-pin` (`ui/scripts/check-playwright-pin.ts`) now fails
+when `bun.lock` resolves `playwright` or `playwright-core` to anything but the
+version `devDependencies["@playwright/test"]` names (#2028), so a second copy
+cannot arrive unseen. Install `chromium-headless-shell` alongside `chromium`,
+since a headless launch uses the shell rather than the full build.
 
-```bash
-bun run build-storybook
-python3 -m http.server 6006 --directory storybook-static &
-bun run test-storybook --url http://127.0.0.1:6006
-```
-
-`ui/package.json` pins `playwright` and `playwright-core` through `overrides`.
-The test-runner declares its own loose `playwright` range, so without the pin it
-resolves a different version from `@playwright/test` and launches a browser
-revision `playwright install` never downloaded — the test-runner then fails at
-launch and the play tests silently stop running (#737). The pin must equal
-`@playwright/test`: an override wins over the dependency range, so a bump of
-`@playwright/test` that skips it installs nothing new and playwright stays frozen
-(#2028). `bun run check:playwright-pin` (`ui/scripts/check-playwright-pin.ts`)
-fails when `overrides.playwright`, `overrides.playwright-core` and
-`devDependencies["@playwright/test"]` differ, so move all three together. Install `chromium-headless-shell` alongside `chromium`,
-since the test-runner launches the shell rather than the full build.
-
-The static build is the one that matters. `storybook dev` serves modules
-unbundled and answers from a warm cache, so it is consistently faster than the
-build this job runs — fast enough to hide a story that is racing something.
-**A focus assertion is the usual victim**, which is what #1675 was:
+The tests run on Vite's dev transform, the way `storybook dev` serves a story:
+unbundled modules, answered from a warm cache. Until #2907 the gate ran against the
+static build instead, which is bundled and slower, and that was the stricter run —
+it caught #1675 when `storybook dev` did not. The static build is still built, and
+has to build, but a story that races something only under the bundle's timing is
+no longer caught by it. The slower CI runner is the pressure that is left, and
+`check:focus` and `check:waits` are what catch the known shapes without running
+anything. **A focus assertion is the usual victim**, which is what #1675 was:
 
 ```ts
 await waitFor(() => expect(canvas.queryByRole("dialog")).toBeNull());
@@ -1221,13 +1232,13 @@ asks for it and the fallback is drawn until it arrives. The preview's
 before the first story renders, and a story that measures text sees Geist's
 metrics from its first paint.
 
-Storybook builds its story store only after that hook resolves, so the test
-runner's `preVisit` in `.storybook/test-runner.ts` awaits
-`__STORYBOOK_PREVIEW__.ready()` before it reads a story's context. Without the
-wait, a slow font load made `getStoryContext` read the store too early, and
-every story in that suite failed with `SB_PREVIEW_API_0011` (#2275). A new
-async step in the preview gets the same protection as long as it runs inside
-`beforeAll`.
+Under the story tests that hook runs from vitest's own `beforeAll`, once per test
+file and inside `hookTimeout` (30 seconds), before the file's first story renders.
+The old runner had to wait for it from outside: Storybook builds its story store
+only after the hook resolves, and a slow font load made the runner's
+`getStoryContext` read the store too early and fail a whole suite with
+`SB_PREVIEW_API_0011` (#2275). Nothing reads the store from outside any more, so
+a new async step in the preview only has to run inside `beforeAll`.
 
 Two checks keep it that way. `Behaviour/Fonts` (`ui/src/lib/fonts.stories.tsx`)
 asserts in `en` and `ru` that each character of a sans sentence and a mono
@@ -1263,9 +1274,8 @@ genuinely need longer than the shared budget, such as `expectLoadError` in
 policy and says so beside the number.
 
 To check whether a story is racing rather than broken, add a delay to `scoped()`
-in the harness, rebuild, and re-run the file — and restart the static server
-after every rebuild, since a server left running over a replaced
-`storybook-static` keeps serving the build it started with.
+in the harness and re-run the file. Vitest transforms the source on every run, so
+there is no build to redo and no server to restart.
 
 A raised budget only helps an assertion that _retries_. `getByRole` and a bare
 `expect` do not: they read the DOM once, so they wait zero milliseconds at any
@@ -1362,13 +1372,22 @@ flag prose as often as code. A reviewer still has to.
 
 #### Every story is also an axe test
 
-`postVisit` in `ui/.storybook/test-runner.ts` runs `axe-playwright` over the
-whole document once the play function has finished, and fails the story on
-**any violation at any impact** — minor and moderate included. The rule set is
-`wcag2a` + `wcag2aa` + `best-practice`, and every disabled rule is named in
-`DISABLED_RULES` with the reason beside it. The whole document rather than
-`#storybook-root`, because dialogs, sheets and toasts portal to `<body>` and
-those are the ones worth checking.
+`@storybook/addon-a11y` runs axe in the preview's `afterEach` once the play
+function has finished, and `parameters.a11y.test: "error"` fails the story on
+**any violation at any impact** — minor and moderate included. The configuration
+is `a11yGate()` in `ui/src/lib/story-a11y.ts`, which `.storybook/preview.ts`
+applies to every story: the rule set is `wcag2a` + `wcag2aa` + `best-practice`,
+and every excluded rule is named in `EXCLUDED_RULES` there with the reason beside
+it. The context is the whole document (`context: "html"`) rather than
+`#storybook-root`, because dialogs, sheets and toasts portal to `<body>` and those
+are the ones worth checking.
+
+The addon's own default context is `<body>`, and axe skips its page-level rules —
+`landmark-one-main` and `page-has-heading-one` among them — on any context that is
+not the whole page. A page story that turned them back on would have asserted
+nothing; setting the context is what keeps them live, and `pageGateProblem`
+fails a page story whose context was changed (see the guards below). The old
+runner got the same effect by running axe on `document`.
 
 ##### The moderate/minor band, measured
 
@@ -1389,7 +1408,7 @@ component, or one screen body, into a bare iframe with no app shell around it:
 the landmarks, the `<main>` and the `<h1>` those rules ask for live in `App.tsx`
 and `components/ScreenHeader.tsx`. Asserting them on a component story would
 only ever fail, and satisfying them would mean every story grew a fake shell
-that ships nowhere — so `DISABLED_RULES` turns them off for the default case.
+that ships nowhere — so `EXCLUDED_RULES` turns them off for the default case.
 
 They are off by default, not unchecked (#1353). Two story files mount a whole
 page and turn them back on by name:
@@ -1400,9 +1419,9 @@ page and turn them back on by name:
 | `ui/src/pages/Login.stories.tsx` | the signed-out login page, which has no shell around it         | desktop        |
 
 Both spread `withPageA11y` from `ui/src/lib/story-a11y.ts` into their meta
-`parameters`; `postVisit` merges `parameters.a11y.rules` over `DISABLED_RULES`,
-so an override is per-story and additive and cannot loosen the gate for
-anything else. Spread it into `parameters`, never as a bare story field — the
+`parameters`; its `options.rules` is merged over the gate's exclusions, so an
+override is per-story and additive and cannot loosen the gate for anything else.
+Spread it into `parameters`, never as a bare story field — the
 JSDoc docgen transform appends a `parameters: { docs: … }` of its own to every
 meta and would replace a whole-object spread silently, leaving the story green
 and unchecked.
@@ -1414,10 +1433,10 @@ level and ran green asserting nothing; it was caught by printing the merged
 rule map by hand. A gate that can be switched off without a word is the one
 failure worth spending code on, so the placement rule is now enforced twice:
 
-| Guard                         | Where                                                             | What it catches                                                                                                                                                                                                                                                                                                                                                                              |
-| ----------------------------- | ----------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `parameters.a11y.expectRules` | `.storybook/test-runner.ts` `postVisit`                           | the fixture did not arrive. `withPageA11y` carries the rule ids it claims to enable; the runner fails the story if any of them is not enabled in the map it actually merged. A story whose id matches `PAGE_A11Y_STORY_ID` (`shell-app--*`, `screens-login--*`) is held to the three rules whether or not it carries the claim, so losing the fixture entirely — claim and all — still fails |
-| `bun run check:stories`       | `ui/scripts/check-story-parameters.ts`, run by `bun test scripts` | the spread is in the wrong object, before Storybook is even built. It reads `src/lib/story-*.ts` and sorts each exported fixture by shape: one with its own `parameters` key (`atMobile`, `atTablet`) must be spread at story level, one without (`withPageA11y`) must be spread inside `parameters`                                                                                         |
+| Guard                         | Where                                                             | What it catches                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| ----------------------------- | ----------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `parameters.a11y.expectRules` | `.storybook/preview.ts` `afterEach`, `pageGateProblem()`          | the fixture did not arrive. `withPageA11y` carries the rule ids it claims to enable; the preview fails the story if any of them is not enabled in the `options.rules` it actually got, or if the context was narrowed from the whole document. A story whose id matches `PAGE_A11Y_STORY_ID` (`shell-app--*`, `screens-login--*`) is held to the three rules whether or not it carries the claim, so losing the fixture entirely — claim and all — still fails |
+| `bun run check:stories`       | `ui/scripts/check-story-parameters.ts`, run by `bun test scripts` | the spread is in the wrong object, before Storybook is even built. It reads `src/lib/story-*.ts` and sorts each exported fixture by shape: one with its own `parameters` key (`atMobile`, `atTablet`) must be spread at story level, one without (`withPageA11y`) must be spread inside `parameters`                                                                                                                                                           |
 
 The shapes are read from the fixture modules rather than listed in the checker,
 so a fixture added later is covered the day it is written. A third story file
@@ -1451,25 +1470,31 @@ column in Cluster and User provisioning (now an `sr-only` `common.rowActions`),
 an `<h4>` under an `<h2>` in Single sign-on, and the two unnamed `<aside>`
 landmarks on Prompt repository and Skills repository.
 
-Re-measure any time — set `ROLTER_AXE_TALLY` to a file path and the runner
-appends one JSON line per story listing every violation at every impact,
-including the excluded rules, without failing anything:
+Re-measure any time — set `ROLTER_AXE_TALLY` to a file path and the run appends
+one JSON line per story listing every violation at every impact, including the
+three page-level rules the gate excludes, without failing anything:
 
 ```
-ROLTER_AXE_TALLY=/tmp/axe.jsonl bun run test-storybook --url http://127.0.0.1:6011
+ROLTER_AXE_TALLY=/tmp/axe.jsonl bun run test:stories
 ```
 
-The failure prints the story id, then two tables: the rule and its impact, then
-the CSS selector and the HTML of each offending node. `color-contrast` also
-names the measured foreground, background and ratio, which is usually enough to
-pick the right token straight from
-[Dashboard theme](dashboard-theme.md) without opening a browser. Narrow a run
-to one screen by naming its file: `bun run test:stories src/pages/Keys.stories.tsx`.
+A tally run changes two things (`ui/vitest.config.ts`, `a11yGate(true)`): the
+gate reports with `test: "todo"` instead of failing, and only `document-title` and
+`html-has-lang` stay excluded. `ui/.storybook/axe-tally-reporter.ts` writes the
+lines, from the axe result addon-a11y already hands the node side.
+
+The failure prints the story id, then each violation as the HTML of the offending
+node, the rule and its help text, and the numbered "Fix any of the following"
+checks with the rule's documentation link. `color-contrast` also names the
+measured foreground, background and ratio, which is usually enough to pick the
+right token straight from [Dashboard theme](dashboard-theme.md) without opening a
+browser. Narrow a run to one screen by naming its file:
+`bun run test:stories src/pages/Keys.stories.tsx`.
 
 A story can opt out with `parameters: { a11y: { disable: true } }` and a comment
 saying why. None currently does — treat needing one as a signal that the screen,
-not the checker, is wrong. The inverse, `parameters: { a11y: { rules: { … } } }`,
-re-enables a rule `DISABLED_RULES` turns off; it is for stories that mount a
+not the checker, is wrong. The inverse, `parameters: { a11y: { options: { rules:
+{ … } } } }`, re-enables a rule the gate turns off; it is for stories that mount a
 whole page, and the two that do are listed above.
 
 #### The screen-story harness
@@ -1593,13 +1618,15 @@ It only runs on React's development build. The double-invoke is
 development-only, so the production build mounts every effect once, `StrictMode`
 or not. `storybook build` bundles the production build by default. That is why
 `ui/.storybook/main.ts` sets `features.developmentModeForBuild`, so the static
-build that `bun run build-storybook` writes and the `ui, storybook, docs` job
-tests carries the same React that `storybook dev` and `bun run dev` serve. With
-the flag off, every `StrictModeHost` story fails `expectDoubleInvoked()` in CI
-and still passes under `bun run test:stories`. Before #1887 added the probe,
-the `StrictMode*` stories in `EditorSheet.stories.tsx` passed in CI with no
-double-invoke ever running. The static build is a test fixture and is published
-nowhere, so nothing ships the development build.
+build that `bun run build-storybook` writes carries the same React that
+`storybook dev` and `bun run dev` serve. The story tests run on Vite's dev
+transform, which is the development build too, so every `StrictModeHost` story
+double-invokes under `bun run test:stories` with or without the flag; the flag
+keeps a served static build honest, and it is no longer what the tests hang on.
+Before #1887 added the probe, the `StrictMode*` stories in `EditorSheet.stories.tsx`
+passed in CI with no double-invoke ever running, when the job tested the static
+build with the flag off. The static build is published nowhere, so nothing ships
+the development build.
 
 Two more habits keep such a story from passing for the wrong reason:
 

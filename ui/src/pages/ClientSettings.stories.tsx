@@ -14,6 +14,7 @@ import {
 } from "./story-harness";
 import type { ClientSettingsDto } from "@/lib/api";
 import en from "@/lib/i18n/locales/en.json";
+import ru from "@/lib/i18n/locales/ru.json";
 import { phoneFits } from "@/lib/story-viewport";
 
 const RESERVED = ["authorization", "x-api-key", "host", "cookie"];
@@ -316,7 +317,11 @@ export const RefusedToAViewer: Story = {
 // longer than English and overflowed twice as many screens (#2004)
 const clientFits = phoneFits({
   render: () => <Harness fetchStub={async () => json(CONFIGURED)} />,
-  ready: (canvas) => canvas.findByLabelText(en.pages.clientSettings.publicBaseUrl),
+  // the label in the language the story is drawn in: a screen already in Russian
+  // never shows the English one, and only a screen that beats the catalog swap to
+  // its first paint does. which of the two a run gets is timing, not the story
+  ready: (canvas, locale) =>
+    canvas.findByLabelText((locale === "ru" ? ru : en).pages.clientSettings.publicBaseUrl),
 });
 // the base-url field held a 320px floor: 63px past the edge of a 320px phone
 export const MobileFits: Story = clientFits("mobile", "en");

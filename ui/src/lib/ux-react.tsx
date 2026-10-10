@@ -27,6 +27,7 @@ import {
   trackScreenView,
   trackTimeToInteractive,
   trackValidationError,
+  uxGeneration,
 } from "@/lib/ux";
 
 const ScreenContext = React.createContext<string>("");
@@ -268,8 +269,12 @@ export function useFormTelemetry(
         const wasDirty = dirty.current;
         const token = { cancelled: false };
         deferred.current = token;
+        // and the generation it was deferred in: a story torn down with this
+        // editor still open hands the timer to whatever runs next, and the abandon
+        // would then land in a queue that story reset to be empty (#2776)
+        const generation = uxGeneration();
         setTimeout(() => {
-          if (token.cancelled) return;
+          if (token.cancelled || generation !== uxGeneration()) return;
           deferred.current = null;
           openedAt.current = 0;
           trackFormAbandon(key, target, duration, wasDirty);

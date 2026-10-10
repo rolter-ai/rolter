@@ -173,11 +173,11 @@ much of a phone screen the navigation eats.
 
 Stories: `MobileDrawer` and `TabletIconRail` in `nav-sidebar.stories.tsx` pin
 the first two rows, including that nothing overflows the viewport at either
-width. They set their size through `src/lib/story-viewport.ts`, which
-`.storybook/test-runner.ts` turns into a real `page.setViewportSize` — the
-viewport addon only sizes the preview iframe inside the Storybook UI, so
-without that hook a "fits at 375px" story would be measured at 1280 and assert
-nothing.
+width. They set their size through `src/lib/story-viewport.ts`
+(`globals.viewport`), which `@storybook/addon-vitest` turns into a real
+`page.viewport` call before the story renders — the viewport addon only sizes the
+preview iframe inside the Storybook UI, so without that a "fits at 375px" story
+would be measured at the default 1280 and assert nothing.
 
 ## The assembled shell
 

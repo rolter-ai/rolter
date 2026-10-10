@@ -48,8 +48,8 @@ read the primitive's source in `ui/src/components/ui/` and its stories instead;
 starting Storybook from inside your session does not bring them back. Port
 6006 serves one checkout, usually not your worktree, so its preview and
 changed-story tools would report another tree. You are not given them: verify
-your stories with `bun run test:stories <files>`, which serves your own
-worktree on a free port.
+your stories with `bun run test:stories <files>`, which runs them against your
+own worktree.
 
 # Air-gapped, always
 
@@ -80,7 +80,7 @@ bun run dev      # dev server
 bun run test     # unit tests (bun test src)
 bun run build    # production build — must pass
 bun run storybook
-bun run test:stories <files>  # story play + axe tests, on a free port
+bun run test:stories <files>  # story play + axe tests, on vitest
 ```
 
 Before pushing, run all of these and paste the real output. Never claim a
