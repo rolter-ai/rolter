@@ -369,6 +369,39 @@ model = "gpt-4o"
 
 ---
 
+### \[model_defaults\]
+
+Global inference parameter defaults and fallback model applied when client requests omit them or enable defaults handling.
+
+<ParamField path="enabled" default="false" type="boolean">
+  Master switch for global model defaults. When `false`, request bodies are forwarded untouched.
+</ParamField>
+
+<ParamField path="default_model" type="string">
+  Fallback model used when the request body omits a `model` parameter.
+</ParamField>
+
+<ParamField path="temperature" type="float">
+  Default sampling temperature applied when omitted by the client.
+</ParamField>
+
+<ParamField path="top_p" type="float">
+  Default top_p nucleus sampling value applied when omitted by the client.
+</ParamField>
+
+<ParamField path="max_tokens" type="u32">
+  Default maximum tokens generation limit applied when omitted by the client.
+</ParamField>
+
+```toml
+[model_defaults]
+enabled = true
+default_model = "gpt-4o-mini"
+temperature = 0.7
+```
+
+---
+
 ### \[\[virtual_keys\]\]
 
 Virtual keys are the bearer tokens clients present to the gateway. Remove the entire `[[virtual_keys]]` section to run in open (unauthenticated) mode, which is suitable only for local development.
