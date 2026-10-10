@@ -161,6 +161,16 @@ sets `[security] virtual_key_required = true` is read as
     your own deployment's traffic, and filtering it takes the gateway down
     rather than protecting it.
 
+    A saved rule that the control plane cannot read, which only a row written
+    around the API with SQL can cause, is never read as "no rule". The control
+    plane stops publishing config instead, so every gateway keeps enforcing the
+    rule it has, a gateway that restarts in the meantime serves nothing until it
+    is repaired, and parts of the dashboard that show the effective config
+    return an error. `GET /api/v1/config/problems` names the setting and the
+    entry at fault, and saving the rule again on this screen, or with
+    `PUT /api/v1/security-settings`, repairs it. See
+    [Upgrading](/deployment/upgrading#security-and-egress-settings).
+
   </Accordion>
 
   <Accordion title="Auth bypass routes">

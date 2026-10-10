@@ -2583,9 +2583,11 @@ impl Default for ClientConfig {
 /// Everything here is a *refusal* rule: each field can only make the gateway
 /// reject a request it would otherwise have served, or — for
 /// [`Self::auth_bypass_routes`] — serve a path the operator explicitly named.
-/// That is deliberate. A policy row that fails to load leaves the default,
-/// which is "no extra rules", so a store outage never silently opens a
-/// deployment it was closing.
+/// That is deliberate, and it is why the default, "no extra rules", must never
+/// stand in for a value that could not be read: that would silently open a
+/// deployment it was closing. The store therefore refuses to build a config at
+/// all while `required_headers` is unreadable, so no snapshot goes out and a
+/// gateway keeps the policy it last received (#2943).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SecurityPolicyConfig {
     /// lowercase header name -> exact value every request must carry. A

@@ -2140,7 +2140,10 @@ async fn get_config_problems(
     State(state): State<ControlState>,
 ) -> Result<Json<Value>, StoreReadError> {
     // an unreadable store must not render as "no problems"
-    let mut config = load_for_read(&state).await?;
+    let mut config = match state.store.load().await {
+        Ok(config) => config,
+        Err(error) => return Ok(Json(unloadable_config_problems(&state, &error).await?)),
+    };
     let mut problems = sanitize_snapshot(&state, &mut config);
     // structural problems never reach a gateway at all — the snapshot refuses
     // outright — so an operator needs to see those here too, not just in a log
@@ -2155,6 +2158,40 @@ async fn get_config_problems(
         Err(error) => tracing::warn!(%error, "could not list rows the config loader misread"),
     }
     Ok(Json(json!({ "problems": problems })))
+}
+
+/// The answer of [`get_config_problems`] when the config cannot be loaded at all.
+///
+/// A store refuses to build a config while a setting that gates traffic is
+/// unreadable (`security_settings.required_headers`, #2943): reading it as "no
+/// rule" would open the deployment, so no snapshot goes out and every gateway
+/// keeps the one it has. That is also the moment an operator most needs this
+/// endpoint, so it answers from what the store can still say
+/// ([`ConfigStore::load_problems`](rolter_store::ConfigStore::load_problems))
+/// rather than with the same 500 as the snapshot.
+///
+/// When the store has nothing to say the load failed for a reason it cannot
+/// explain, a database that is down for one, and that stays the opaque 500 it
+/// has always been: `load_problems` would fail the same way, and an empty list
+/// must not read as "no problems".
+async fn unloadable_config_problems(
+    state: &ControlState,
+    error: &rolter_core::Error,
+) -> Result<Value, StoreReadError> {
+    tracing::error!(%error, "failed to load config for a dashboard read");
+    match state.store.load_problems().await {
+        Ok(mut explained) if !explained.is_empty() => {
+            // static on purpose: the cause is the line above it, and a driver
+            // error never reaches this body
+            explained.push(
+                "the config could not be loaded, so no snapshot is being published and gateways \
+                 keep serving the config they last received; the control plane log has the cause"
+                    .to_string(),
+            );
+            Ok(json!({ "problems": explained }))
+        }
+        _ => Err(StoreReadError),
+    }
 }
 
 /// [`GatewayConfig::sanitize_for_snapshot`](rolter_core::GatewayConfig::sanitize_for_snapshot)
@@ -3461,6 +3498,91 @@ mod tests {
         // with it: the endpoint still answers, with what it could compute
         let body = problems(GuessingConfigStore { problems: None }).await;
         assert_eq!(body["problems"], json!([]), "{body}");
+    }
+
+    /// A store that refuses to build a config, and can say why (#2943).
+    struct RefusingConfigStore {
+        explanation: Option<Vec<String>>,
+    }
+
+    #[async_trait::async_trait]
+    impl rolter_store::ConfigStore for RefusingConfigStore {
+        async fn load(&self) -> rolter_core::Result<GatewayConfig> {
+            Err(rolter_core::Error::Store(
+                "postgres pool exhausted secret_db_details".into(),
+            ))
+        }
+        async fn save(&self, _config: GatewayConfig) -> rolter_core::Result<()> {
+            Ok(())
+        }
+        async fn current_version(&self) -> rolter_core::Result<i64> {
+            Ok(7)
+        }
+        async fn load_problems(&self) -> rolter_core::Result<Vec<String>> {
+            self.explanation
+                .clone()
+                .ok_or_else(|| rolter_core::Error::Store("problems query failed".into()))
+        }
+    }
+
+    /// When a gate is unreadable the load fails and no snapshot is published,
+    /// which is exactly when the operator needs to be told why. The problems
+    /// endpoint still answers, from what the store can say, and nothing a
+    /// driver said reaches the body.
+    #[tokio::test]
+    async fn the_problems_endpoint_answers_while_the_config_cannot_be_loaded() {
+        async fn get(path: &str, store: RefusingConfigStore) -> (u16, Value) {
+            let mut state = state_with_token(None);
+            state.store = Arc::new(store);
+            let addr = serve(build_app_with_internal(state)).await;
+            let response = reqwest::get(format!("http://{addr}{path}")).await.unwrap();
+            (response.status().as_u16(), response.json().await.unwrap())
+        }
+
+        let line =
+            "security setting required_headers cannot be read (it is an array, not an object)";
+        let (status, body) = get(
+            "/api/v1/config/problems",
+            RefusingConfigStore {
+                explanation: Some(vec![line.to_string()]),
+            },
+        )
+        .await;
+        assert_eq!(status, 200, "{body}");
+        let lines = body["problems"].as_array().unwrap();
+        assert_eq!(lines.len(), 2, "{body}");
+        assert_eq!(lines[0], line);
+        assert!(
+            lines[1]
+                .as_str()
+                .unwrap()
+                .contains("no snapshot is being published"),
+            "{body}"
+        );
+        assert!(!body.to_string().contains("secret_db_details"), "{body}");
+
+        // the config view itself stays a 500: it has no config to show
+        let (status, body) = get(
+            "/api/v1/config",
+            RefusingConfigStore {
+                explanation: Some(vec![line.to_string()]),
+            },
+        )
+        .await;
+        assert_eq!(status, 500, "{body}");
+        assert!(!body.to_string().contains("secret_db_details"), "{body}");
+
+        // a store with nothing to say, or one that cannot say it, is the
+        // opaque 500 it was: an empty list must not read as "no problems"
+        for explanation in [None, Some(Vec::new())] {
+            let (status, body) = get(
+                "/api/v1/config/problems",
+                RefusingConfigStore { explanation },
+            )
+            .await;
+            assert_eq!(status, 500, "{body}");
+            assert!(!body.to_string().contains("secret_db_details"), "{body}");
+        }
     }
 
     struct FailingConfigStore;
