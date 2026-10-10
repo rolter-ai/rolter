@@ -230,8 +230,8 @@ The key is read from the environment and never written to a tracked file. With
 no key set the container still starts, but every call returns
 `Authorization or SIGNOZ-API-KEY header required`.
 
-The MCP dashboard tools need SigNoz v0.135.0 or newer, which is why the `signoz`
-image is pinned ahead of the collector/ClickHouse pair.
+The MCP dashboard tools need SigNoz v0.135.0 or newer, which the pinned `signoz`
+image is.
 
 The SigNoz overlay is a pinned equivalent of what SigNoz's Foundry CLI generates,
 since SigNoz deprecated its own compose manifests in v0.130.0. Two things to know

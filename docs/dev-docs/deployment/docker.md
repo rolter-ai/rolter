@@ -92,7 +92,7 @@ team stack add `--user "$ROLTER_CLICKHOUSE_USER" --password
 ```bash
 ch() { docker compose -f docker/docker-compose.yml exec -T clickhouse clickhouse-client "$@"; }
 ch -q "select 'drop table if exists system.' || name || ' sync;' from system.tables
-       where database = 'system' and match(name, '^(asynchronous_insert|asynchronous_metric|backup|blob_storage|error|latency|metric|opentelemetry_span|part|processors_profile|query_metric|query_thread|query_views|s3queue|session|text|trace)_log(_[0-9]+)?\$')" | ch -n
+       where database = 'system' and match(name, '^(aggregated_zookeeper|asynchronous_insert|asynchronous_metric|backup|background_schedule_pool|blob_storage|error|latency|metric|opentelemetry_span|part|processors_profile|query_metric|query_thread|query_views|s3queue|session|text|trace|zookeeper_connection)_log(_[0-9]+)?\$')" | ch -n
 ```
 
 Nothing recreates them on the next start. The SigNoz overlay's volume is the

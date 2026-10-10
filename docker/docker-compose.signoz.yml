@@ -17,25 +17,44 @@
 # Everything rolter emits is vendor-neutral OTLP, so nothing in the Rust changes
 # between the two overlays — only where the spans are posted.
 #
-# On versions: the collector/migrator and ClickHouse are pinned as a **tested
-# pair** from SigNoz v0.129.0's manifest. Do not bump the collector alone — a
-# newer migrator against this ClickHouse fails with "Unknown setting
-# 'object_serialization_version'", because it emits settings the older server
-# does not know. Regenerate the set from Foundry to upgrade.
+# On versions: these images are **one released set**, the one SigNoz itself
+# builds and tests at `signoz` v0.145.0 (#2909). Bump them together or not at all.
 #
-# ClickHouse and ZooKeeper only take patch bumps here, since a newer minor does
-# not open the existing volumes. That is why `signoz`, the collector and the
-# migrator stay put until they can move as one validated set (#2909).
+#   signoz/signoz                  v0.145.0   the UI and query service
+#   signoz/signoz-otel-collector   v0.144.6   the collector, and the schema migrator
+#   clickhouse/clickhouse-server   25.12.5    the telemetry store
+#   signoz/zookeeper               3.7.2      ClickHouse's replica metadata
 #
-# The `signoz` UI image is deliberately ahead of that pair: its MCP server's
-# dashboard tools need v0.135.0 or newer, and the UI reads the schema the
-# migrator writes rather than writing it itself.
+# The pairing is read off upstream, not guessed. SigNoz v0.145.0's go.mod requires
+# signoz-otel-collector v0.144.6, and its .devenv/docker/clickhouse/compose.yaml
+# runs that collector and migrator against clickhouse-server 25.12.5 and
+# signoz/zookeeper 3.7.1, the same ClickHouse the Foundry CLI (v0.3.0) generates.
+# ZooKeeper is the 3.7.2 patch release of that line.
+#
+# Do not bump the collector or the migrator alone. A migrator newer than its
+# ClickHouse fails with "Unknown setting 'object_serialization_version'" (it did
+# against 25.5), because it emits settings the older server does not know, and the
+# `signoz` image reads the schema the migrator writes. v0.144.13 is the newest
+# collector release at the time of writing and also ran against this set, but
+# SigNoz does not build v0.145.0 against it, so it is not the pin.
+#
+# ClickHouse moved from the 25.5 line to 25.12 with this set. A volume created by
+# the old set was opened in place and migrated; docs/dev-docs/development/
+# dogfooding-fleet.md says how to start clean instead.
+#
+# To move the set, read the new collector and ClickHouse versions off the new
+# `signoz` tag (go.mod, .devenv/docker/clickhouse/compose.yaml), bring the overlay
+# up on fresh volumes, then run `just signoz-provision` and
+# scripts/test-dogfood-scripts.sh against it.
 #
 # SigNoz's own docker-compose manifests were deprecated in v0.130.0
 # in favour of the Foundry CLI (`curl -fsSL https://signoz.io/foundry.sh | bash`),
 # which generates compose with `foundryctl forge`. This file is a pinned,
 # de-collided equivalent so the overlay stays a plain `docker compose` command.
-# If it drifts, regenerate from Foundry rather than patching it by hand.
+# `signoz/cluster.xml` and `signoz/otel-collector-config.yaml` are still the
+# v0.129.0 vendoring and ran unchanged against this set. Foundry v0.3.0 generates
+# a collector config with two more traces processors, `signozspanmapper` and
+# `signozllmpricing`, that this overlay does not run.
 #
 # Collisions with rolter's own services are handled deliberately:
 #   - every service is named `signoz-*`, so SigNoz's ClickHouse does not clash
@@ -56,7 +75,7 @@ services:
       - signoz-zookeeper:/bitnami/zookeeper
 
   signoz-clickhouse:
-    image: clickhouse/clickhouse-server:25.5.11
+    image: clickhouse/clickhouse-server:25.12.5
     restart: unless-stopped
     tty: true
     depends_on:
@@ -90,7 +109,7 @@ services:
 
   # creates and migrates SigNoz's ClickHouse schema, then exits
   signoz-schema-migrator:
-    image: signoz/signoz-otel-collector:v0.144.5
+    image: signoz/signoz-otel-collector:v0.144.6
     restart: on-failure
     depends_on:
       signoz-clickhouse:
@@ -109,11 +128,11 @@ services:
         /signoz-otel-collector migrate async up
 
   signoz:
-    # integration/dogfood/provision-signoz.sh speaks this release's sign-in and
-    # dashboard APIs, which moved in v0.136 (#1864). run `just signoz-provision`
-    # against a new release before bumping this, or the dogfood stack comes up
-    # with no dashboards
-    image: signoz/signoz:v0.136.0
+    # integration/dogfood/provision-signoz.sh speaks the sign-in and dashboard
+    # APIs that moved in v0.136 (#1864), and ran against this release (#2909).
+    # run `just signoz-provision` against a new release before bumping this, or
+    # the dogfood stack comes up with no dashboards
+    image: signoz/signoz:v0.145.0
     restart: unless-stopped
     depends_on:
       signoz-clickhouse:
@@ -130,7 +149,7 @@ services:
       - SIGNOZ_TOKENIZER_JWT_SECRET=rolter-local-dev
 
   signoz-otel-collector:
-    image: signoz/signoz-otel-collector:v0.144.5
+    image: signoz/signoz-otel-collector:v0.144.6
     restart: unless-stopped
     depends_on:
       signoz-clickhouse:
@@ -154,7 +173,8 @@ services:
     command: ["--config=/etc/otel-collector-config.yaml"]
 
   # SigNoz's MCP server, so an agent can query traces, run ClickHouse queries and
-  # manage dashboards against this local instance.
+  # manage dashboards against this local instance. its dashboard tools need
+  # SigNoz v0.135.0 or newer, which the `signoz` image above is.
   #
   # Create the key in the SigNoz UI under Settings -> API Keys, then supply it
   # one of two ways. Either export it for the shell that runs `up`:

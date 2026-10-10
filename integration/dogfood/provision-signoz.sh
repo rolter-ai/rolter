@@ -3,13 +3,15 @@
 # (#956), so a fresh stack is immediately useful instead of asking every
 # developer to sign up and then rebuild the same panels by hand.
 #
-# Targets SigNoz v0.136.0, the release docker/docker-compose.signoz.yml pins.
-# That release moved both APIs this script needs (#1864):
+# Targets SigNoz v0.145.0, the release docker/docker-compose.signoz.yml pins, and
+# was run against it for #2909. v0.136 moved both APIs this script needs (#1864)
+# and v0.145.0 kept them:
 #
 #   - sign-in is POST /api/v2/sessions/email_password, which takes the org id
 #     that GET /api/v2/sessions/context returns for the email
 #   - dashboards are created through POST /api/v2/dashboards; every v1
-#     dashboard route answers 501 `dashboard_deprecated`
+#     dashboard route answered 501 `dashboard_deprecated` on v0.136, and v0.145.0
+#     answers GET /api/v1/dashboards with the SPA
 #
 # The older spellings (/api/v1/login, /api/v2/auth/login, /api/v1/auth/login,
 # /api/v1/dashboards) stay as fallbacks for a SigNoz from before the move. A
@@ -113,7 +115,7 @@ unsupported() {
 
   $1
 
-  It targets SigNoz v0.136.0, the release docker/docker-compose.signoz.yml
+  It targets SigNoz v0.145.0, the release docker/docker-compose.signoz.yml
   pins, and keeps the spellings of the releases before it as fallbacks.
   Nothing was imported. Teach integration/dogfood/provision-signoz.sh the new
   route, or import the dashboards by hand: SigNoz → Dashboards → New

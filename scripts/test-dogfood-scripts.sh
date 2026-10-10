@@ -187,7 +187,7 @@ run_cases() {
 # ── provision-signoz.sh ───────────────────────────────────────────────────────
 # the exit-code table of the script's header. SIGNOZ_VERSION is what the stub's
 # /api/v1/version reports and what the exit 2 message must name.
-SIGNOZ_VERSION=v0.136.0
+SIGNOZ_VERSION=v0.145.0
 
 # the titles the checked-in boards go by, one per line
 board_titles() {
