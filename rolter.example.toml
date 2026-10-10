@@ -2,6 +2,17 @@
 #
 # copy to rolter.toml and adjust. secrets should come from environment variables
 # referenced by `api_key_env`, not be written inline.
+#
+# every table a file can set has a block below, most of them commented out with
+# their defaults. the control plane builds five tables from its database and a
+# file does not set them, so they have no block: db_virtual_keys, mcp_servers,
+# mcp_oauth_sessions, plugins and feature_flags. see the config reference at
+# docs/user-docs/configuration/config-file.mdx
+
+# the schema version this file was written for (current: 2). optional: a file
+# without the key is read as the oldest version. `rolter check --migrations`
+# reports a file that is behind, and `rolter config export` writes the stamp.
+# schema_version = 2
 
 [server]
 host = "0.0.0.0"
@@ -53,6 +64,20 @@ api_key_env = "OPENAI_API_KEY"
 # egress_proxy = "http://corp-proxy:3128"   # legacy one-element proxy pool
 # egress_proxies = ["${PROVIDER_PROXY_EU}", "socks5h://proxy-us:1080"]
 # ca_bundles = ["/etc/rolter/ca/openai.pem"] # optional provider override
+# api_key = "..."                            # inline key; prefer api_key_env
+# active health checks send a real max_tokens = 1 completion to this provider
+# instead of the free liveness probe, which costs a few tokens per sweep
+# also_track_via_llm_call = true
+# llm_probe_model = "gpt-4o-mini"            # required when the flag is on
+# a statuspage.io-style status.json; polled as a secondary health signal
+# status_page_url = "https://status.openai.com/api/v2/status.json"
+# several weighted keys instead of the single pair above; rolter picks one per
+# request by weight and parks a key that gets 429/401 on a cooldown. the control
+# plane stores one credential per provider, so rolter-seed --import keeps only
+# the first entry that names an `env`.
+# [[providers.api_keys]]
+# env = "OPENAI_API_KEY_PRIMARY"
+# weight = 3
 
 [[providers]]
 name = "anthropic"
@@ -204,6 +229,7 @@ strategy = "round_robin"
 # [routes.param_policy]
 # mode = "deny"
 # allow = ["max_tokens"]   # callers may still lower max_tokens
+# deny = []                # with mode = "allow": params callers may not override
 [[routes.targets]]
 provider = "openai"
 model = "gpt-4o"
@@ -277,6 +303,45 @@ weight = 1
 # provider = "anthropic"
 # model = "claude-sonnet-4-20250514"
 
+# --- per-route advanced settings ---
+# catalog metadata and model-scoped policy, written from the dashboard's model
+# sheet. the gateway applies `visibility`, `limits.output_tokens` and the
+# `guardrails` selection (see the guardrails block below) today. the other parts
+# are validated and stored with the route, but the data plane does not read them
+# yet (#2924); `insecure_tls` in particular never skips certificate verification,
+# so trust a private CA with [tls] ca_bundles instead.
+# [[routes]]
+# model = "gpt-4o-restricted"
+# [routes.advanced]
+# model_type = "chat"             # catalog family, e.g. chat or embedding
+# capabilities = ["vision"]
+# description = "gpt-4o for the platform team"
+# base_url = "https://llm.internal.example"   # never carries credentials
+# insecure_tls = false
+# headers = { "x-team" = "platform" }         # credentials belong on the provider
+# locked_headers = ["x-team"]                 # headers a caller may not replace
+# [routes.advanced.limits]
+# rpm = 600
+# tpm = 150000
+# concurrency = 32
+# timeout_secs = 60
+# retries = 2
+# context_window = 128000
+# output_tokens = 4096
+# [routes.advanced.pricing]         # prices whose unit is not a token
+# image_per_unit = 0.04
+# audio_input_per_minute = 0.006
+# audio_output_per_minute = 0.012
+# [routes.advanced.visibility]
+# minimum_role = "member"
+# allowed_team_ids = []
+# allowed_key_ids = []
+# allowed_user_ids = []
+# project_only = true             # serve the route only to keys of its own project
+# [[routes.targets]]
+# provider = "openai"
+# model = "gpt-4o"
+
 # --- provider groups: unify a fleet under one address (ADR-0017 addendum) ---
 # run several same-kind providers (e.g. self-hosted vLLM boxes with distinct
 # base_urls/creds) and address them all as `group-slug/model`. a request pins
@@ -298,6 +363,10 @@ weight = 1
 # `project_scoped = true` (on the group, before its members) keeps the group to
 # one project. a scoped group may hold that project's providers and org-wide
 # ones; an org-wide group may hold only org-wide providers.
+# the tiers work as they do for providers: [[provider_groups.readonly]] is
+# immutable and config-owned, [[provider_groups.default]] is seeded into the DB
+# once by a control plane started with this file, then edited there. the bare
+# [[provider_groups]] array above is the deprecated alias for the readonly tier.
 
 # --- virtual keys clients present to the gateway ---
 # remove this section to run open (no auth) in local development
@@ -328,7 +397,9 @@ disabled = false # revoke without deleting
 #                                # provider's 1 hour cache, which anthropic bills above
 #                                # the 5 minute one and reports apart; defaults to
 #                                # cache_write_per_mtok
-# currency = "USD"               # optional; defaults to the base currency below
+# currency = "USD"               # optional; defaults to USD, not to the base below, so
+#                                # a deployment whose base is another currency needs a USD
+#                                # rate under [currency] or a currency on every price
 
 # --- currency and conversion rates ---
 # spend and budgets accumulate in `base`. a model priced in any other currency is
@@ -421,6 +492,58 @@ disabled = false # revoke without deleting
 # [timeouts]
 # connect_secs = 10
 # request_secs = 60
+
+# --- cross-dialect compatibility ---
+# values with no equivalent on the other side of an openai <-> anthropic
+# translation. with a database, the control plane owns this table: the snapshot
+# carries what is saved under Settings -> Compatibility, and rolter-seed
+# --import does not read it from this file. it takes effect for a gateway that
+# reads this file directly. defaults shown below.
+# [compatibility]
+# anthropic_version = "2023-06-01"   # the anthropic-version header; a dated release string
+# default_max_tokens = 1024          # max_tokens filled in when an openai request sets
+#                                    # neither max_tokens nor max_completion_tokens
+
+# --- client headers and base url ---
+# which inbound headers reach the provider, which headers rolter adds, and the
+# base url the dashboard advertises. with a database, the control plane owns
+# this table (Settings -> Client Settings) and rolter-seed --import does not
+# read it from this file; it takes effect for a gateway that reads this file
+# directly. write header names in lowercase, and do not list the reserved names
+# (authorization, x-api-key, api-key, host, content-length, content-type,
+# transfer-encoding, connection, cookie). defaults shown below.
+# [client]
+# public_base_url = "https://gateway.example.com"   # advisory: the dashboard builds its snippets from it
+# forwarded_headers = ["x-tenant-id"]               # inbound headers passed to the provider; default []
+# injected_headers = { "x-partner-id" = "acme" }    # static headers added to every upstream request; default {}
+# request_id_header = "x-request-id"                # stored, but the gateway always uses x-request-id (#2925)
+
+# --- inference defaults ---
+# parameters filled in when a client leaves them out. a value the client sent is
+# never overwritten. with a database, the control plane owns this table
+# (Settings -> Model Settings) and rolter-seed --import does not read it from
+# this file; it takes effect for a gateway that reads this file directly.
+# [model_defaults]
+# enabled = false                # master switch; off forwards bodies untouched
+# default_model = "gpt-4o-mini"  # used when a request omits `model`
+# temperature = 0.7
+# top_p = 0.9
+# max_tokens = 2048
+
+# --- adaptive routing ---
+# the policy for routes on the `adaptive` strategy: a blend of observed latency,
+# catalog cost and in-flight load. off by default; with it off, or before a route
+# has served min_samples requests, an adaptive route behaves like `pipeline`.
+# with a database, the control plane owns this table (Adaptive Routing ->
+# Settings) and rolter-seed --import does not read it from this file. defaults
+# shown below.
+# [adaptive_routing]
+# enabled = false
+# latency_weight = 1.0       # only the ratio between the three weights matters
+# cost_weight = 0.5
+# load_weight = 0.25
+# exploration_ratio = 0.05   # share of picks made at random; capped at 0.5
+# min_samples = 50           # requests a route must serve before the blend engages
 
 # --- per-provider queues and backpressure ---
 # each provider gets an independent bounded request queue and worker set, so a
@@ -523,6 +646,17 @@ disabled = false # revoke without deleting
 # tools, response_format and sampling params. multimodal and tool-call
 # conversations skip the semantic lookup (exact caching still applies)
 
+# --- openai responses lifecycle routing ---
+# when a native openai provider creates a response, the gateway remembers which
+# provider, target and credential served it, so GET/DELETE /v1/responses/{id},
+# cancellation and input-item retrieval go back to the same place. the registry
+# is process-local: records do not survive a restart, and with several gateway
+# replicas a response's lifecycle requests must stay on the replica that created
+# it. 0 for either setting disables registration. defaults shown below.
+# [responses]
+# registry_ttl_secs = 86400        # how long a record lives after creation (24h)
+# registry_max_entries = 100000    # most live records one gateway process keeps
+
 # Post-response usage accounting: adding a request's cost to its budget counters
 # and its tokens to its rate-limit windows. Both write to Redis, so both run off
 # the response path — through a bounded queue, not an unbounded detached task per
@@ -550,6 +684,14 @@ disabled = false # revoke without deleting
 # request logs are written asynchronously in batches, off the request hot path;
 # logging is disabled entirely when clickhouse_url is unset
 # clickhouse_url = "http://localhost:8123"
+# batch_max = 1000        # flush once a batch reaches this many rows
+# flush_ms = 1000         # also flush a partial batch at least this often
+# queue_capacity = 10000  # rows are dropped (and counted) when this queue is full
+# fraction of requests written to the request log, from 0 to 1. 1 keeps every
+# record, 0 writes no request-log rows. budgets, rate limits and metrics still
+# count every request. with a database this is Logs Settings -> sampling, and
+# rolter-seed --import does not read it from this file.
+# sample_rate = 1.0
 # Dashboard UX events (#805): screen views, time-to-interactive, form abandons,
 # error states, written to the ui_events table. On by default, unlike
 # payload_capture, because the schema is structural only — every column is a key,
@@ -576,9 +718,6 @@ disabled = false # revoke without deleting
 # [[models.default]]
 # model = "starter-chat"
 # targets = [{ provider = "openai", model = "gpt-4o-mini" }]
-# batch_max = 1000        # flush once a batch reaches this many rows
-# flush_ms = 1000         # also flush a partial batch at least this often
-# queue_capacity = 10000  # rows are dropped (and counted) when this queue is full
 
 # Where the gateway may send upstream traffic. A provider's api_base is
 # operator-supplied, so without a destination policy a crafted or compromised
@@ -614,7 +753,8 @@ disabled = false # revoke without deleting
 #                                 # post_call rule exists
 # [[guardrails.rules]]
 # name = "email"
-# builtin = "email"               # or: pattern = "<custom regex>"
+# builtin = "email"               # email | phone | api_token | payment_card
+# pattern = "<custom regex>"      # instead of builtin: set exactly one of the two
 # stage = "pre_call"              # pre_call scans the request, post_call masks
 #                                 # the (non-streamed) response before delivery
 # action = "redact"               # annotate | block | redact
@@ -622,7 +762,7 @@ disabled = false # revoke without deleting
 # include_system = false          # also scan system/developer messages
 # [[guardrails.rules]]
 # name = "card"
-# builtin = "payment_card"        # email | phone | api_token | payment_card
+# builtin = "payment_card"
 # action = "block"                # reject with an OpenAI-compatible error
 # [[guardrails.rules]]
 # name = "leaked-key"             # output stage: mask anything key-shaped the
@@ -708,7 +848,8 @@ disabled = false # revoke without deleting
 # routes = ["gpt-4o"]             # omit for all routes
 # [[prompt_templates.templates.variables]]
 # name = "persona"
-# default = "a helpful support assistant"   # or: required = true
+# default = "a helpful support assistant"   # optional value when the caller omits it
+# required = false                          # true makes the caller supply it (not with default)
 # [[prompt_templates.templates.decorators]]
 # role = "system"                 # system | assistant | user
 # position = "prepend"            # prepend | append

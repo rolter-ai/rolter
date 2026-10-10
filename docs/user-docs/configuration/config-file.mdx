@@ -1,7 +1,7 @@
 ---
 title: "Rolter Config File Reference: rolter.toml Explained"
 sidebarTitle: "Config File"
-description: "Complete reference for rolter.toml covering server, providers, routes, virtual keys, model prices, budgets, rate limits, and reliability settings."
+description: "Complete reference for rolter.toml: every table, its keys and defaults, and which tables a database-backed control plane owns instead of the file."
 ---
 
 Rolter reads its configuration from a TOML file named `rolter.toml` by default. The repository ships a fully annotated example file you can copy as a starting point. Once you have the file, open it in your editor and work through each section before you start the gateway.
@@ -59,6 +59,45 @@ rolter check --config rolter.toml --strict
 
 ---
 
+### Which settings a control plane owns
+
+`rolter.toml` is a gateway's whole configuration only when the gateway reads it itself (`rolter gateway --config rolter.toml`, with no `--snapshot-url`). A gateway that polls a control plane applies that control plane's snapshot instead, and a control plane with a database builds the snapshot from the database. For the tables below the database is then the source of truth: what an admin saves on the dashboard reaches every gateway, and the table in `rolter.toml` is not what the snapshot carries.
+
+| Table in `rolter.toml`                                     | Edited in the dashboard under | Page                                                  |
+| ---------------------------------------------------------- | ----------------------------- | ----------------------------------------------------- |
+| `[compatibility]`                                          | Settings → Compatibility      | [Compatibility](/configuration/compatibility)         |
+| `[client]`                                                 | Settings → Client Settings    | [Client settings](/configuration/client-settings)     |
+| `[model_defaults]`                                         | Settings → Model Settings     | [Model settings](/configuration/model-settings)       |
+| `[adaptive_routing]`                                       | Adaptive Routing → Settings   | [Adaptive routing](/concepts/adaptive-routing)        |
+| `[logging]`: `sample_rate`, `payload_capture`, `ui_events` | Observability → Logs Settings | [Log settings](/observability/log-settings)           |
+| `[retry]`, `[timeouts]`, `[queue]`                         | Settings → Performance Tuning | [Performance tuning](/reliability/performance-tuning) |
+| `[feature_flags]`                                          | Settings → Feature Flags      | [Feature flags](/configuration/feature-flags)         |
+| `[security]`                                               | the Security screen           |                                                       |
+
+`rolter-seed --import` does not carry these tables into the database. The only parts of them it reads from the file are `[logging.payload_capture]` and `ui_events`, and only when the file writes them. So in a database-backed deployment a value written in `rolter.toml` changes nothing for these tables, and each of them takes effect from the file only for a gateway that reads it directly. The sections for these tables repeat the caveat.
+
+<Note>
+  A control plane started with `--config` as well as a database keeps the file as the base layer of its snapshot. Today that layer wins for `[client]`, `[model_defaults]` and `[security]`, so what is saved on their screens is ignored there ([#2922](https://github.com/rolter-ai/rolter/issues/2922)). The other tables in the list above still come from the database in that setup.
+</Note>
+
+Two tables work the other way round. `[currency]` and `[egress]` have no stored copy, so a control plane reads them from the file it was started with (`rolter control --config rolter.toml`), and it checks the URLs and prices written through its API against them.
+
+---
+
+### schema_version
+
+A top-level key, written before the first table, that stamps which spelling of the config the file uses. You do not have to write it.
+
+<ParamField path="schema_version" type="integer">
+  The schema version the file was written for. The current version is `2`. A file without the key is read as the oldest version, which is right for every config written before the stamp existed. A file stamped with a version newer than the running build understands still loads unchanged, and the keys that build does not know are ignored. `rolter config export` writes the stamp, and `rolter check --migrations` reports a file that is behind. See [Upgrading](/deployment/upgrading#what-schema_version-is).
+</ParamField>
+
+```toml
+schema_version = 2
+```
+
+---
+
 ### \[server\]
 
 The `[server]` section controls how the gateway process binds and exposes its built-in endpoints.
@@ -97,9 +136,24 @@ max_body_bytes = 33554432
 
 ---
 
+### \[tls\]
+
+Outbound TLS trust for upstream providers. Rolter verifies HTTPS with the host's system trust store; this table adds private certificate authorities on top of it, which an air-gapped or self-hosted deployment with its own CA needs.
+
+<ParamField path="ca_bundles" default="[]" type="list">
+  Paths of PEM files whose certificates are added to the system trust roots for every provider's upstream TLS. Certificate-chain and hostname verification stay on. The `ROLTER_CA_BUNDLE` environment variable replaces this list with the one path it names, which suits a container that mounts a single bundle. A provider's own `ca_bundles` replaces the result for that provider, and `ca_bundles = []` on a provider trusts the system roots only. Every file is checked while the config loads, so a path that is missing, unreadable, empty or not valid PEM stops startup with an error that names it.
+</ParamField>
+
+```toml
+[tls]
+ca_bundles = ["/etc/rolter/ca/private-root.pem"]
+```
+
+---
+
 ### \[\[providers\]\]
 
-Each `[[providers]]` block registers an upstream provider the gateway can forward to. You can define as many as you need; each one is identified by its unique `name`.
+Each `[[providers]]` block registers an upstream provider the gateway can forward to. You can define as many as you need; each one is identified by its unique `name`. The flat `[[providers]]` array is the deprecated spelling of the readonly tier; see "Config tiers: readonly and default" below for `[[providers.readonly]]` and `[[providers.default]]`.
 
 <ParamField path="name" type="string" required>
   A unique identifier for this provider. Routes reference providers by this name.
@@ -242,6 +296,80 @@ api_base = "http://localhost:8001"
 
 ---
 
+### \[\[provider_groups\]\]
+
+A provider group lets a client send `group-slug/model` and have Rolter spread the request across several providers with a load-balancing strategy, without a `[[routes]]` entry per model. The slug shares the provider slug namespace, so one slug names at most one provider or group, and a provider wins a tie. A group with no members never resolves.
+
+<ParamField path="name" type="string" required>
+  The group's display name.
+</ParamField>
+
+<ParamField path="slug" type="string">
+  A stable, URL-safe identity for `group-slug/model` addressing. When omitted, Rolter derives one from `name`.
+</ParamField>
+
+<ParamField path="strategy" default="round_robin" type="string">
+  How requests are spread across the members. Accepts the same values as a route's `strategy`.
+</ParamField>
+
+<ParamField path="members" type="array of tables">
+  The providers the group spreads requests across, written as `[[provider_groups.members]]` entries. See below.
+</ParamField>
+
+<ParamField path="project_scoped" type="boolean" default="false">
+  Keep this group to one project, exactly as for a provider. A project-scoped group may hold that project's providers and org-wide ones; an org-wide group may hold only org-wide providers, and `rolter-seed --import` stops with an error naming the group when it does not. As on a provider, the flag means "the project this file is imported into", and a gateway that reads the file directly ignores it.
+</ParamField>
+
+#### \[\[provider_groups.members\]\]
+
+<ParamField path="provider" type="string" required>
+  The `name` of a provider defined in `[[providers]]`.
+</ParamField>
+
+<ParamField path="model" type="string">
+  The upstream model id to send. When omitted, the model the client wrote after `group-slug/` is forwarded as-is.
+</ParamField>
+
+<ParamField path="weight" default="1" type="integer">
+  The relative traffic weight for the `weighted` and `pipeline` strategies. Ignored by other strategies.
+</ParamField>
+
+```toml
+[[provider_groups]]
+name = "vLLM cluster"
+slug = "vllm-cluster"
+strategy = "round_robin"
+
+[[provider_groups.members]]
+provider = "vllm-1"
+
+[[provider_groups.members]]
+provider = "vllm-2"
+model = "meta-llama/Llama-3.1-8B-Instruct"
+weight = 2
+```
+
+A client then asks for the model `vllm-cluster/meta-llama/Llama-3.1-8B-Instruct`.
+
+---
+
+### Config tiers: readonly and default
+
+`[[providers]]`, `[[provider_groups]]` and the model presets under `[models]` each come in two tiers, so one file can both pin a row and merely seed one (ADR-0022). The tiers are written `[[providers.readonly]]` and `[[providers.default]]`, `[[provider_groups.readonly]]` and `[[provider_groups.default]]`, and `[[models.readonly]]` and `[[models.default]]`.
+
+| Tier       | Owned by                  | Behaviour                                                                                                                                                                                                                                                                                                                                         |
+| ---------- | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `readonly` | the file                  | Served as written and immutable at runtime: the CRUD API and the dashboard refuse to edit or delete it. A readonly model joins `[[routes]]`, so its name must not repeat a route's.                                                                                                                                                               |
+| `default`  | the database, once seeded | A control plane with a database inserts each entry into the default project of the `default` organization when it starts, unless the row exists or its name or slug is already in use, and never overwrites it afterwards. From then on it is edited like any row created on the dashboard, and one an admin deletes returns at the next restart. |
+
+The bare `[[providers]]` and `[[provider_groups]]` arrays are the deprecated spelling of the readonly tier: every entry in them is readonly, and they cannot express a default. `rolter config export` writes the tiered spelling.
+
+A `default` provider or group whose slug matches a readonly one, and a `default` model whose name matches a route, is a config error at load, since the readonly row is immutable and would shadow the seeded one.
+
+Only a control plane that has a database and was started with this file (`rolter control --config`) acts on the default tier. It seeds into the `default` organization that `rolter-seed` creates, and without that organization it logs a warning and seeds nothing. A gateway that reads the file itself ignores the default tier.
+
+---
+
 ### \[\[routes\]\]
 
 Each `[[routes]]` block maps a public model name that clients request to one or more upstream targets and a load-balancing strategy.
@@ -253,15 +381,24 @@ Each `[[routes]]` block maps a public model name that clients request to one or 
 <ParamField path="strategy" default="round_robin" type="string">
   The load-balancing strategy used to pick a target. One of:
 
-| Value             | Behaviour                                                                                     |
-| ----------------- | --------------------------------------------------------------------------------------------- |
-| `round_robin`     | Cycles through targets in order                                                               |
-| `random`          | Picks a target uniformly at random                                                            |
-| `power_of_two`    | Samples two targets and picks the one with fewer in-flight requests                           |
-| `consistent_hash` | Routes the same request consistently to the same target                                       |
-| `cache_aware`     | Steers toward the target most likely to have the request prefix cached                        |
-| `weighted`        | Smooth weighted round-robin proportional to each target's `weight`                            |
-| `pipeline`        | Composable scorer pipeline: combines static weight, in-flight load, and prefix-cache affinity |
+| Value                 | Behaviour                                                                           |
+| --------------------- | ----------------------------------------------------------------------------------- |
+| `round_robin`         | Cycles through targets in order                                                     |
+| `random`              | Picks a target uniformly at random                                                  |
+| `power_of_two`        | Samples two targets and picks the one with fewer in-flight requests                 |
+| `consistent_hash`     | Routes the same request consistently to the same target                             |
+| `cache_aware`         | Steers toward the target most likely to have the request prefix cached              |
+| `weighted`            | Smooth weighted round-robin proportional to each target's `weight`                  |
+| `pipeline`            | Composable scorer pipeline: static weight, in-flight load and prefix-cache affinity |
+| `cheapest`            | Lowest catalog price for the target's upstream model; load breaks ties              |
+| `fastest`             | Lowest observed request latency; load breaks ties and carries cold routes           |
+| `precise_cache_aware` | Exact resident-prefix score from vLLM KV-cache events; load fallback                |
+| `lmcache_aware`       | Cache availability and free-capacity score from LMCache controller occupancy        |
+| `adaptive`            | Weighted blend of latency, cost and load, governed by `[adaptive_routing]`          |
+| `lora_aware`          | Prefers a target that already holds the requested LoRA adapter                      |
+| `predicted_latency`   | Ranks by what this request is modelled to cost, from queue depth and prompt size    |
+
+See [Load balancing](/concepts/load-balancing) for when to pick each.
 
 </ParamField>
 
@@ -367,6 +504,159 @@ provider = "openai"
 model = "gpt-4o"
 ```
 
+#### \[routes.advanced\]
+
+Catalog metadata and model-scoped policy for one route. The dashboard's model sheet writes it; [Per-model advanced settings](/concepts/providers-and-routes#per-model-advanced-settings) explains what each part means and the ranges the control plane accepts.
+
+<ParamField path="model_type" type="string">
+  The catalog family of the model, such as `chat` or `embedding`.
+</ParamField>
+
+<ParamField path="capabilities" default="[]" type="list">
+  Capability labels recorded for the model, such as `vision`.
+</ParamField>
+
+<ParamField path="description" type="string">
+  A description of the model for other operators.
+</ParamField>
+
+<ParamField path="base_url" type="string">
+  A model-specific upstream base URL. It never carries credentials.
+</ParamField>
+
+<ParamField path="pricing" type="table">
+  Prices whose unit is not a token, written as `[routes.advanced.pricing]`: `image_per_unit`, `audio_input_per_minute` and `audio_output_per_minute`. Token rates belong in `[[model_prices]]`. A `cache_write_per_mtok` key here is deprecated, accepted and ignored.
+</ParamField>
+
+<ParamField path="limits" type="table">
+  Per-model ceilings, written as `[routes.advanced.limits]`. Every key is an integer and an omitted key inherits the gateway or provider setting: `rpm`, `tpm`, `concurrency`, `timeout_secs`, `retries`, `context_window` and `output_tokens`.
+</ParamField>
+
+<ParamField path="insecure_tls" default="false" type="boolean">
+  Accepted and stored, but the gateway does not read it: upstream certificates are always verified. To trust a private certificate authority, use `[tls]` or the provider's `ca_bundles`.
+</ParamField>
+
+<ParamField path="headers" type="table">
+  Headers meant to be added to calls for this model, none by default. Credentials belong on the provider, not here.
+</ParamField>
+
+<ParamField path="locked_headers" default="[]" type="list">
+  Request headers a caller may not replace for this route.
+</ParamField>
+
+<ParamField path="visibility" type="table">
+  Who may see and call the model, written as `[routes.advanced.visibility]`: `minimum_role` (string), `allowed_team_ids`, `allowed_key_ids` and `allowed_user_ids` (lists of ids), and `project_only` (boolean, default `false`; `true` serves the route only to keys minted in its own project). Keys from a config file carry no organization and are not narrowed.
+</ParamField>
+
+<ParamField path="guardrails" type="table">
+  Per-route selection of guardrail rules, written as `[routes.advanced.guardrails]`. See below.
+</ParamField>
+
+<Note>
+  The gateway applies `visibility`, `limits.output_tokens` and `guardrails` from this block today. The other parts are validated and stored with the route but the data plane does not read them yet ([#2924](https://github.com/rolter-ai/rolter/issues/2924)).
+</Note>
+
+##### \[routes.advanced.guardrails\]
+
+Switches rules of the global [`[guardrails]`](/security/guardrails) set on or off for one route. Rules are named, so adding a rule globally still reaches every route that has not opted out of it by name. A name that matches no configured rule fails config validation instead of being ignored, because a typo in `disable` would otherwise read as "this rule is off here" while the rule kept running.
+
+<ParamField path="disable" default="[]" type="list">
+  Rules that do not apply on this route.
+</ParamField>
+
+<ParamField path="enable" default="[]" type="list">
+  Rules that apply on this route. Wins over `disable` when a rule is in both.
+</ParamField>
+
+```toml
+[[routes]]
+model = "internal-support-bot"
+
+[routes.advanced.guardrails]
+disable = ["email"]   # this route legitimately handles addresses
+enable  = ["card"]
+```
+
+#### \[routes.cache\]
+
+Opts a route into the exact-match response cache. A route caches only when this table is present with `enabled = true` and the global `[cache]` switch is on; a virtual key's `cache` setting can override the route. See [Response cache](/concepts/response-cache).
+
+<ParamField path="enabled" default="true" type="boolean">
+  Whether this route caches. Writing the table opts the route in; set `false` to opt it out again.
+</ParamField>
+
+<ParamField path="ttl_secs" type="integer">
+  Entry lifetime in seconds for this route. When omitted, `default_ttl_secs` from `[cache]` applies.
+</ParamField>
+
+<ParamField path="per_key" default="false" type="boolean">
+  Isolate cached entries by virtual key so responses are not shared across keys. When `false`, every caller of the route shares the cache.
+</ParamField>
+
+<ParamField path="semantic" type="table">
+  Adds a semantic lookup after the exact-match one, written as `[routes.cache.semantic]`. See below.
+</ParamField>
+
+##### \[routes.cache.semantic\]
+
+A semantic hit replays a reply only to a request that matches it exactly on everything but the user and assistant wording. Multimodal and tool-call conversations skip the semantic lookup.
+
+<ParamField path="provider" type="string" required>
+  The `name` of the configured provider used for `/v1/embeddings`. It reuses that provider's authentication, proxy and CA policy.
+</ParamField>
+
+<ParamField path="model" type="string" required>
+  The embeddings model sent upstream.
+</ParamField>
+
+<ParamField path="threshold" default="0.92" type="float">
+  The minimum cosine similarity for a hit.
+</ParamField>
+
+<ParamField path="max_candidates" default="256" type="integer">
+  How many of the most recent semantic entries are compared per request, which bounds the cost of a lookup.
+</ParamField>
+
+```toml
+[[routes]]
+model = "gpt-4o"
+
+[routes.cache]
+enabled = true
+ttl_secs = 600
+per_key = false
+
+[routes.cache.semantic]
+provider = "openai"
+model = "text-embedding-3-small"
+threshold = 0.92
+max_candidates = 256
+```
+
+---
+
+### \[models\]
+
+Model presets that behave like routes but come in the two tiers described under "Config tiers" above. Each entry takes the same keys as a `[[routes]]` entry, including its `[[models.readonly.targets]]` tables.
+
+<ParamField path="readonly" default="[]" type="array of tables">
+  Routes served directly from the file and rejected by the CRUD API, written as `[[models.readonly]]`. A readonly model is added to `[[routes]]`, and its `model` must not repeat the name of a route.
+</ParamField>
+
+<ParamField path="default" default="[]" type="array of tables">
+  Routes seeded once into the default project of a database-backed control plane, written as `[[models.default]]`, and then owned and edited in the dashboard. A `model` that conflicts with a readonly model or a route is a config error.
+</ParamField>
+
+```toml
+[[models.readonly]]
+model = "company-safe"
+targets = [{ provider = "openai", model = "gpt-4o-mini" }]
+
+[[models.default]]
+model = "starter-chat"
+targets = [{ provider = "openai", model = "gpt-4o-mini" }]
+```
+
 ---
 
 ### \[\[virtual_keys\]\]
@@ -414,6 +704,24 @@ disabled = false
 
 ---
 
+### \[\[db_virtual_keys\]\]
+
+Not a `rolter.toml` table. Virtual keys created on the dashboard or through the API live in the database, and the control plane puts them in the snapshot as `db_virtual_keys`. Each entry carries the key's peppered digest, never the plaintext, with its id, the scope its usage is attributed to (organization, team, project, creator, business unit and customer) and the same `models`, `providers`, `disabled`, `expires_at` and `cache` settings as a `[[virtual_keys]]` entry. A gateway matches a presented key against those digests alongside the keys of `[[virtual_keys]]`, which stay the file's own list. See [Virtual keys](/concepts/virtual-keys).
+
+---
+
+### \[\[mcp_servers\]\]
+
+Not a `rolter.toml` table. MCP servers belong to an organization and are registered on the dashboard or through the management API; the control plane unseals their credentials and ships them in the snapshot. Each entry carries `id`, `org_id`, `slug`, `url`, `transport`, `required_scopes`, `auth_kind`, `auth_header_name`, `credential`, `connect_timeout_ms`, `request_timeout_ms` and `max_retries`. With a database, the snapshot carries the control plane's own rows and replaces whatever a bootstrap file holds for this table. See [MCP credentials and transport settings](/configuration/mcp-servers) for what each field means.
+
+---
+
+### \[\[mcp_oauth_sessions\]\]
+
+Not a `rolter.toml` table. Each entry is a live OAuth session, one user's access token for one MCP server, that the control plane adds to the snapshot after the user completes the consent flow and drops when the session expires. The tokens cross only the protected `/internal/snapshot` channel and are never shown on the dashboard or through the public API. Entries carry `id`, `server_id`, `user_id`, `scopes`, `expires_at` and `access_token`. There is nothing to write by hand; see [MCP OAuth](/security/mcp-oauth) for the consent flow.
+
+---
+
 ### \[\[model_prices\]\]
 
 Define per-model token pricing so Rolter can compute a `cost_usd` value on every request log. Models without a price entry log a cost of `0`. Rates are in USD per million tokens, matching the convention used by major providers. Every rate must be zero or more: a negative rate is a config error, because it would turn a request into a credit against its budget.
@@ -449,6 +757,10 @@ Define per-model token pricing so Rolter can compute a `cost_usd` value on every
   USD per million input tokens written to the provider's 1 hour prompt cache, for a provider that reports the split and bills it apart from the 5 minute cache (Anthropic). When omitted, falls back to `cache_write_per_mtok`, and from there to `input_per_mtok`. See [Cache writes](/observability/logs-and-cost#cache-writes).
 </ParamField>
 
+<ParamField path="currency" default="USD" type="string">
+  The currency the rates above are written in. It defaults to `USD`, not to the `base` of `[currency]`, so on a deployment whose base is another currency set it on every price or add a `USD` rate. A currency with no rate in `[currency]` is a config error.
+</ParamField>
+
 ```toml
 [[model_prices]]
 model = "gpt-4o"
@@ -461,6 +773,32 @@ cache_write_1h_per_mtok = 5.0
 
 ---
 
+### \[currency\]
+
+The settlement currency and a static rate table. Budgets and accumulated spend are denominated in `base`; a model priced in any other currency is converted through `rates` before it reaches a budget counter, so pricing in euros while budgeting in dollars is exact. Rates are written by hand, which keeps this working air-gapped.
+
+The dashboard's currency chooser offers `base` followed by every code in `rates`, so adding a row here is the whole of making a currency selectable.
+
+<ParamField path="base" default="USD" type="string">
+  The currency budgets and spend are denominated in. Codes are open strings (ISO 4217 today), compared without regard to case or surrounding whitespace.
+</ParamField>
+
+<ParamField path="rates" type="table">
+  How many units of `base` one unit of the keyed currency is worth: with a base of `USD`, `EUR = 1.09` means one euro costs 1.09 dollars. The base itself is always 1.0 and needs no row. Every rate must be positive, and the table is empty by default. A `[[model_prices]]` entry in a currency with no rate is a config error, because charging face value bills the wrong number and charging zero bills nothing.
+</ParamField>
+
+```toml
+[currency]
+base = "USD"
+rates = { EUR = 1.09, GBP = 1.27, RUB = 0.011 }
+```
+
+<Note>
+  The database has no currency table, so a control plane reads this one from the file it was started with (`rolter control --config rolter.toml`) and checks the currency of every price written through its API against it.
+</Note>
+
+---
+
 ### \[\[budgets\]\]
 
 Spend caps block requests with HTTP `402` once a scope's cumulative cost reaches its limit for the current period. Budgets are enforced using Redis-tracked costs; without a Redis connection, budgets fail open. The most restrictive matching budget across the scope chain wins.
@@ -470,7 +808,7 @@ Spend caps block requests with HTTP `402` once a scope's cumulative cost reaches
 </Note>
 
 <ParamField path="scope" type="string" required>
-  The scope level this budget applies to. One of `org`, `team`, `project`, or `key`.
+  The scope level this budget applies to. One of `org`, `team`, `project`, `key`, `business_unit` or `customer`.
 </ParamField>
 
 <ParamField path="id" type="string" required>
@@ -482,7 +820,11 @@ Spend caps block requests with HTTP `402` once a scope's cumulative cost reaches
 </ParamField>
 
 <ParamField path="period" default="monthly" type="string">
-  The rolling window the budget resets on. One of `monthly`, `daily`, or `total`. `total` is a lifetime cap that never resets.
+  The window the budget resets on. One of `monthly`, `daily`, or `total`. `total` is a lifetime cap that never resets.
+</ParamField>
+
+<ParamField path="unpriced_policy" type="string">
+  This budget's own answer to traffic the gateway cannot price: `ignore`, `warn` or `block`. Omit it to inherit the deployment-wide `unpriced_policy`. The most restrictive answer across the scope chain and the deployment setting wins, so a budget can tighten what the deployment asked for but never loosen it. See [Per-budget override](/security/budgets-and-rate-limits#per-budget-override).
 </ParamField>
 
 ```toml
@@ -520,7 +862,7 @@ unpriced_policy = "block"
 Throughput caps reject excess requests with HTTP `429` and a `Retry-After` header. Limits use a Redis sliding-window counter; without Redis they fail open. At least one of `rpm` or `tpm` must be set — a limit with neither never blocks anything.
 
 <ParamField path="scope" type="string" required>
-  The scope level this limit applies to. One of `org`, `team`, `project`, or `key`.
+  The scope level this limit applies to. One of `org`, `team`, `project`, `key`, `business_unit` or `customer`.
 </ParamField>
 
 <ParamField path="id" type="string" required>
@@ -548,6 +890,8 @@ tpm = 150000
 ### \[retry\]
 
 On a transient upstream failure (HTTP 408, 429, 5xx, or a connection error), Rolter re-picks a different target and retries. Retries only happen before any response bytes have been streamed to the client, so no partial response is ever duplicated.
+
+In a database-backed deployment the store owns this table: the snapshot carries what is saved under **Settings → Performance Tuning**, see [Performance tuning](/reliability/performance-tuning). It takes effect from the file for a gateway that reads `rolter.toml` itself.
 
 <ParamField path="max_retries" default="2" type="u32">
   Extra attempts after the first. Set to `0` to disable retries entirely.
@@ -620,9 +964,33 @@ max_entry_bytes = 1048576
 
 ---
 
+### \[responses\]
+
+Routing records for the OpenAI Responses lifecycle endpoints. When a native OpenAI provider creates a response, the gateway remembers which provider, target and credential served it, so `GET` and `DELETE /v1/responses/{id}`, cancellation and input-item retrieval go back to the same place. Records are isolated by virtual key and removed after a successful delete.
+
+The registry lives in the gateway process. Records do not survive a restart, and a deployment with several gateway replicas has to keep a response's lifecycle requests on the replica that created it. An unknown, expired, deleted or cross-key record returns `404 response_not_found`.
+
+<ParamField path="registry_ttl_secs" default="86400" type="integer">
+  How long a record lives after the response is created, in seconds (24 hours). `0` disables registration.
+</ParamField>
+
+<ParamField path="registry_max_entries" default="100000" type="integer">
+  The most live records one gateway process keeps. `0` disables registration too. Expired and overflowing records are cleaned up lazily, on lookup and insert.
+</ParamField>
+
+```toml
+[responses]
+registry_ttl_secs = 86400
+registry_max_entries = 100000
+```
+
+---
+
 ### \[timeouts\]
 
 Timeouts bound how long the gateway waits for an upstream before treating the request as a transient failure and feeding it into the retry and cooldown machinery. `request_secs` applies to time-to-response-headers only, so legitimately long SSE streams are never cut short.
+
+In a database-backed deployment the store owns this table: the snapshot carries what is saved under **Settings → Performance Tuning**, see [Performance tuning](/reliability/performance-tuning). It takes effect from the file for a gateway that reads `rolter.toml` itself.
 
 <ParamField path="connect_secs" default="10" type="u64">
   The connection-establishment timeout in seconds. Set to `0` to disable.
@@ -640,6 +1008,150 @@ request_secs = 60
 
 ---
 
+### \[compatibility\]
+
+Cross-dialect compatibility settings, applied when Rolter translates a request between the OpenAI and Anthropic wire formats. Both values have no equivalent on the other side of the translation, so they have to come from somewhere.
+
+<ParamField path="anthropic_version" default="2023-06-01" type="string">
+  The `anthropic-version` header sent to Anthropic upstreams on a translated request. It is forwarded verbatim, so it must be a dated release string; the dashboard and the API refuse anything else.
+</ParamField>
+
+<ParamField path="default_max_tokens" default="1024" type="integer">
+  The `max_tokens` Rolter fills in when it translates an OpenAI request that set neither `max_tokens` nor `max_completion_tokens`, since the Anthropic Messages API requires one. A request that sets its own cap always wins. The dashboard accepts 1 to 1000000.
+</ParamField>
+
+```toml
+[compatibility]
+anthropic_version = "2023-06-01"
+default_max_tokens = 1024
+```
+
+<Note>
+  **Database-backed deployments.** Behind a control plane with a database, the compatibility policy is owned by the store: the snapshot carries what is saved under **Settings → Compatibility**, and `rolter-seed --import` does not read this table from the file. Edit it there, see [Compatibility](/configuration/compatibility). This table takes effect for a gateway that reads `rolter.toml` itself.
+</Note>
+
+---
+
+### \[client\]
+
+Header handling on the upstream leg of a request, and the base URL the dashboard advertises to clients.
+
+<ParamField path="public_base_url" type="string">
+  The address clients point their SDK at, such as `https://gateway.example.com`, without `/v1`. The dashboard builds its connection snippets from it. Advisory only: the gateway never reads it, and setting it does not change what the gateway listens on. When unset, the dashboard shows no connection snippet.
+</ParamField>
+
+<ParamField path="forwarded_headers" default="[]" type="list">
+  Inbound client headers passed through to the upstream provider, written in lowercase. Anything not listed is dropped. Trace-context headers (`traceparent`, `tracestate`, `b3`) and every `anthropic-*` header to an Anthropic-dialect upstream propagate whether or not they are listed. Never list `authorization`, `x-api-key`, `api-key`, `host`, `content-length`, `content-type`, `transfer-encoding`, `connection` or `cookie`: the dashboard and the API refuse them, because forwarding one would hand a caller the gateway's own credentials or corrupt the upstream request, and the gateway does not check a file for them.
+</ParamField>
+
+<ParamField path="injected_headers" type="table">
+  Static header names and values added to every upstream request, none by default and written with lowercase names: a partner id, a routing tag, a billing dimension your provider expects. A trace header of the same name still wins. The reserved names listed under `forwarded_headers` apply here too.
+</ParamField>
+
+<ParamField path="request_id_header" default="x-request-id" type="string">
+  The header meant to carry the end-to-end request id. Accepted and stored, but the gateway does not read it yet: it always reads, mints and echoes `x-request-id` ([#2925](https://github.com/rolter-ai/rolter/issues/2925)).
+</ParamField>
+
+```toml
+[client]
+public_base_url = "https://gateway.example.com"
+forwarded_headers = ["x-tenant-id"]
+injected_headers = { "x-partner-id" = "acme" }
+request_id_header = "x-request-id"
+```
+
+<Note>
+  **Database-backed deployments.** A control plane with a database owns this table: the snapshot carries what is saved under **Settings → Client Settings**, and `rolter-seed --import` does not read it from the file. See [Client settings](/configuration/client-settings). The table takes effect for a gateway that reads `rolter.toml` itself. A control plane started with `--config` as well as a database currently serves the file's table and ignores the saved one ([#2922](https://github.com/rolter-ai/rolter/issues/2922)).
+</Note>
+
+---
+
+### \[model_defaults\]
+
+Inference parameters Rolter fills in when a client leaves them out. Every field only ever fills a gap: a value the client sent, an explicit `null` included, is never overwritten, so turning this on cannot change the meaning of a request that was already explicit.
+
+<ParamField path="enabled" default="false" type="boolean">
+  Master switch. While `false`, request bodies reach the provider untouched, whatever the other fields hold.
+</ParamField>
+
+<ParamField path="default_model" type="string">
+  The `model` used when a request omits one or sends an empty one. It can name a routed model or a `group-slug/model` address. Leave it unset to keep rejecting such requests.
+</ParamField>
+
+<ParamField path="temperature" type="float">
+  The sampling temperature applied when the client sent none. The dashboard accepts 0 to 2.
+</ParamField>
+
+<ParamField path="top_p" type="float">
+  The nucleus-sampling value applied when the client sent none. The dashboard accepts 0 to 1.
+</ParamField>
+
+<ParamField path="max_tokens" type="integer">
+  The completion-length cap applied when the client sent none, written under the key the upstream dialect reads (`max_tokens`, or `max_output_tokens` for the Responses API). A request that already set `max_completion_tokens` on OpenAI chat has stated its cap, so none is added. The dashboard accepts 1 to 1000000.
+</ParamField>
+
+These apply to `/v1/chat/completions`, `/v1/messages` and `/v1/responses`. Embeddings, audio and image endpoints take no sampling parameters and are left alone, and Gemini, which nests them under `generationConfig`, does not take defaults from here.
+
+```toml
+[model_defaults]
+enabled = true
+default_model = "gpt-4o-mini"
+temperature = 0.7
+max_tokens = 2048
+```
+
+<Note>
+  **Database-backed deployments.** A control plane with a database owns this table: the snapshot carries what is saved under **Settings → Model Settings**, and `rolter-seed --import` does not read it from the file. See [Model settings](/configuration/model-settings), whose API names the fields `default_temperature`, `default_top_p` and `default_max_tokens`. The table takes effect for a gateway that reads `rolter.toml` itself. A control plane started with `--config` as well as a database currently serves the file's table and ignores the saved one ([#2922](https://github.com/rolter-ai/rolter/issues/2922)).
+</Note>
+
+---
+
+### \[adaptive_routing\]
+
+The deployment-wide policy for routes on the `adaptive` strategy, which scores each target from live latency, catalog cost and in-flight load instead of using static weights. The whole feature is off by default: with `enabled` off, or before a route has gathered enough evidence to rank its targets, an `adaptive` route behaves exactly like the `pipeline` strategy, so moving a route onto it shifts no traffic until you say so.
+
+<ParamField path="enabled" default="false" type="boolean">
+  The master kill switch. While `false`, every `adaptive` route is served by the `pipeline` fallback stack.
+</ParamField>
+
+<ParamField path="latency_weight" default="1.0" type="float">
+  How strongly observed latency pulls traffic toward a target.
+</ParamField>
+
+<ParamField path="cost_weight" default="0.5" type="float">
+  How strongly a low catalog price pulls traffic toward a target.
+</ParamField>
+
+<ParamField path="load_weight" default="0.25" type="float">
+  How strongly in-flight load pushes traffic away from a target.
+</ParamField>
+
+<ParamField path="exploration_ratio" default="0.05" type="float">
+  The share of picks made uniformly at random, so a target the blend would otherwise starve keeps producing fresh latency samples. Values above `0.5` are clamped to `0.5`.
+</ParamField>
+
+<ParamField path="min_samples" default="50" type="integer">
+  The number of requests a **route** must have served before the blend engages, counted across all its targets. While `latency_weight` is above `0` the blend also needs latency samples for at least two targets. Until then the route is served by the fallback stack.
+</ParamField>
+
+Only the ratio between the three weights matters, and a negative weight is treated as `0`. If all three are `0` the blend has nothing to rank by, and Rolter treats the policy as not configured. See [Adaptive routing](/concepts/adaptive-routing) for how to tune the blend and read the telemetry.
+
+```toml
+[adaptive_routing]
+enabled = true
+latency_weight = 1.0
+cost_weight = 0.5
+load_weight = 0.25
+exploration_ratio = 0.05
+min_samples = 50
+```
+
+<Note>
+  **Database-backed deployments.** A control plane with a database owns this table: the snapshot carries what is saved under **Adaptive Routing → Settings**, and `rolter-seed --import` does not read it from the file. The table takes effect for a gateway that reads `rolter.toml` itself.
+</Note>
+
+---
+
 ### \[queue\]
 
 Rolter keeps a bounded dispatch queue and a worker set for each provider. A
@@ -648,6 +1160,8 @@ own queue; requests selected for other providers continue independently. Once
 headers arrive, response bodies (including SSE) stream directly to the caller.
 The settings are applied to subsequent requests immediately after a config
 snapshot reload.
+
+In a database-backed deployment the store owns this table: the snapshot carries what is saved under **Settings → Performance Tuning**, see [Performance tuning](/reliability/performance-tuning). It takes effect from the file for a gateway that reads `rolter.toml` itself.
 
 <ParamField path="enabled" default="true" type="boolean">
   Set to `false` to bypass queues and forward directly.
@@ -891,16 +1405,434 @@ Request and cost logs are written asynchronously in batches, off the hot request
   The maximum number of log records buffered in-flight. Records are dropped when this queue is full.
 </ParamField>
 
+<ParamField path="sample_rate" default="1.0" type="float">
+  The fraction of requests written to the request log, from `0` to `1`, applied before a row is written. `1` keeps every record and `0` writes no request-log rows. The decision is made per request from a hash of the request id, and each kept row records its weight so the analytics endpoints scale counts back up. Budgets, rate limits and the Prometheus metrics still count every request. See [Log settings](/observability/log-settings#sampling).
+</ParamField>
+
+<ParamField path="payload_capture" type="table">
+  Opt-in capture of raw prompt and completion bodies next to the log metadata, written as `[logging.payload_capture]`. Off by default, because payloads hold whatever the caller sent. See below.
+</ParamField>
+
+<ParamField path="ui_events" default="true" type="boolean">
+  Whether the control plane records the dashboard's own usage events: screen views, load times, abandoned forms and error states. They carry structure only (a screen, an action, a duration and ids), never a form value or a prompt, which is why this is on by default where `payload_capture` is not. `false` drops them at the ingest endpoint. The stream is inert anyway without `clickhouse_url`.
+</ParamField>
+
 ```toml
 [logging]
 clickhouse_url = "http://localhost:8123"
 batch_max = 1000
 flush_ms = 1000
 queue_capacity = 10000
+sample_rate = 1.0
+ui_events = true
+```
+
+#### \[logging.payload_capture\]
+
+Captured bodies go to ClickHouse's short-retention `request_payloads` table. Redaction happens before the write, so a redacted value never reaches storage, and turning a field on later does not clean what is already stored.
+
+<ParamField path="enabled" default="false" type="boolean">
+  The master switch. Capture is off unless this is explicitly `true`.
+</ParamField>
+
+<ParamField path="max_bytes" default="32768" type="integer">
+  The most UTF-8 bytes kept of each request or response body; anything longer is truncated.
+</ParamField>
+
+<ParamField path="redact_fields" default='["api_key", "authorization", "password", "secret", "token"]' type="list">
+  JSON object keys whose values are replaced before storage. Matching ignores case and reaches nested objects, tool arguments included.
+</ParamField>
+
+<ParamField path="models" default="[]" type="list">
+  Public model names to capture. Empty captures every route; a non-empty list limits capture to the routes named.
+</ParamField>
+
+<ParamField path="virtual_key_ids" default="[]" type="list">
+  Database virtual-key ids to capture. Empty captures every key that `models` allows; a non-empty list makes capture key-specific.
+</ParamField>
+
+```toml
+[logging.payload_capture]
+enabled = true
+max_bytes = 32768
+redact_fields = ["api_key", "authorization", "password", "secret", "token"]
+models = ["support-agent"]
+virtual_key_ids = []
+```
+
+<Note>
+  **Database-backed deployments.** Behind a control plane with a database, `sample_rate`, `payload_capture` and `ui_events` are owned by the store: the snapshot carries what is saved under **Observability → Logs Settings**, see [Log settings](/observability/log-settings). `rolter-seed --import` copies `[logging.payload_capture]` and `ui_events` into the database when the file writes them, and does not read `sample_rate`. All three take effect from the file only for a gateway that reads `rolter.toml` itself. `clickhouse_url` follows a different rule: a gateway that names none inherits the control plane's own ClickHouse URL from the snapshot, and one that names its own keeps it.
+</Note>
+
+---
+
+### \[feature_flags\]
+
+Deployment-wide switches for the subsystems that are safe to turn on and off at runtime. They belong to the control plane: an admin edits them under **Settings → Feature Flags**, the control plane stores them and applies them to the snapshot every gateway polls, and a gateway picks the change up without a restart. A gateway that reads `rolter.toml` itself does not apply this table, so writing it there does nothing. See [Feature flags](/configuration/feature-flags) for what each flag gates and when one is reported unavailable.
+
+All six default to `true`.
+
+<ParamField path="response_cache" default="true" type="boolean">
+  Serving repeated completions from the shared response cache. In the snapshot it sets `[cache] enabled`.
+</ParamField>
+
+<ParamField path="cache_aware_routing" default="true" type="boolean">
+  Scoring targets by KV-cache affinity. While `false`, a route on `cache_aware`, `precise_cache_aware` or `lmcache_aware` is served by `power_of_two` instead.
+</ParamField>
+
+<ParamField path="circuit_breaker" default="true" type="boolean">
+  Tripping a failing target out of the pool and probing it before restoring traffic. In the snapshot it sets `[breaker] enabled`.
+</ParamField>
+
+<ParamField path="active_health_checks" default="true" type="boolean">
+  Polling targets in the background so an unhealthy one is parked before a live request finds it. In the snapshot it sets `[health] enabled`.
+</ParamField>
+
+<ParamField path="complexity_routing" default="true" type="boolean">
+  Estimating prompt complexity and routing cheap requests to smaller models. While `false`, a route's complexity policy is dropped.
+</ParamField>
+
+<ParamField path="guardrails" default="true" type="boolean">
+  Running the configured guardrail rules. In the snapshot it sets `[guardrails] enabled`, so `false` pauses every built-in, custom and config-file rule.
+</ParamField>
+
+---
+
+### \[guardrails\]
+
+Built-in regex guardrails and PII redaction, evaluated inside the gateway with no external service and no network hop. Disabled by default, and a disabled or empty block adds no cost to a request. It complements the custom [guardrail webhook](/security/guardrails#external-providers) and the external [PII sanitizer](/security/pii-sanitizer), and never replaces them. [Guardrails](/security/guardrails) describes the dashboard screens and how rules defined here interact with the ones added there.
+
+<ParamField path="enabled" default="false" type="boolean">
+  The master switch. While `false` no rule runs. On a control-plane-managed gateway the `guardrails` feature flag is the kill switch on top of it.
+</ParamField>
+
+<ParamField path="max_scan_bytes" default="262144" type="integer">
+  The most request text scanned per request, in bytes (256 KiB). Content past the cap is forwarded unscanned, which keeps the work bounded.
+</ParamField>
+
+<ParamField path="streaming_post_call" default="reject" type="string">
+  What a request with `"stream": true` does on a route that has `post_call` rules. Output masking needs the whole completion, because a match can straddle any number of token boundaries, so it cannot run on a stream. `reject` refuses the request with `400 guardrail_streaming_unsupported`, which fails closed. `passthrough` serves the stream with the output rules not applied; `pre_call` rules still run. The setting only matters when a `post_call` rule exists. The dashboard shows the effective value beside each response rule but cannot change it.
+</ParamField>
+
+<ParamField path="rules" type="array of tables">
+  The rules, written as `[[guardrails.rules]]` entries and run in the order given. See below.
+</ParamField>
+
+#### \[\[guardrails.rules\]\]
+
+Provide exactly one of `builtin` or `pattern`. Patterns use a linear-time, RE2-style engine with no catastrophic backtracking, and are compiled under a bounded program size while the config is validated, so an invalid or unbounded pattern fails at startup and never on the request path. The gateway never logs the text a rule matched; metrics only count blocks and redactions.
+
+<ParamField path="name" type="string" required>
+  A stable, unique name for the rule. It appears in telemetry, never alongside the matched text, and is how a route's `enable` and `disable` lists refer to it.
+</ParamField>
+
+<ParamField path="builtin" type="string">
+  A starter detector: `email`, `phone`, `api_token` or `payment_card`. Mutually exclusive with `pattern`. The card detector matches 13 to 19 digit candidates and does not check the Luhn digit.
+</ParamField>
+
+<ParamField path="pattern" type="string">
+  A custom regular expression. Mutually exclusive with `builtin`.
+</ParamField>
+
+<ParamField path="stage" default="pre_call" type="string">
+  When the rule runs. `pre_call` scans the request before it goes upstream. `post_call` masks a non-streamed response body before the client sees it, and a streamed one follows `streaming_post_call`.
+</ParamField>
+
+<ParamField path="action" default="annotate" type="string">
+  What a match does. `annotate` counts it and forwards the content unchanged. `block` rejects the request with an OpenAI-compatible `403 guardrail_blocked` error naming the rule. `redact` replaces each match with `replacement`.
+</ParamField>
+
+<ParamField path="replacement" type="string">
+  The token that replaces a match under `redact`, up to 64 bytes. When omitted, empty or only whitespace, the detector's default token is used (`[REDACTED:EMAIL]`, `[REDACTED:PHONE]`, `[REDACTED:API_TOKEN]` or `[REDACTED:CARD]`), or `[REDACTED]` for a custom pattern, so a match is never deleted outright.
+</ParamField>
+
+<ParamField path="include_system" default="false" type="boolean">
+  Also scan operator-authored `system` and `developer` messages. They are trusted and skipped unless you opt in.
+</ParamField>
+
+Request rules scan OpenAI `/v1/chat/completions` and `/v1/responses` (`messages` and `input`), `/v1/completions` (`prompt`) and Anthropic `/v1/messages` (`system` and `messages`), including string, string-array and typed `text` parts. Output rules mask `choices[].message.content` and `choices[].text`, the top-level `content` parts of an Anthropic reply, and `output[].content[].text` and `output_text` of a Responses reply, plus the arguments of tool calls. A `block` on a response rule runs after the provider has generated and billed the answer, so the request is still billed.
+
+```toml
+[guardrails]
+enabled = true
+max_scan_bytes = 262144
+streaming_post_call = "reject"
+
+[[guardrails.rules]]
+name = "email"
+builtin = "email"
+action = "redact"
+
+[[guardrails.rules]]
+name = "card"
+builtin = "payment_card"
+action = "block"
+
+[[guardrails.rules]]
+name = "leaked-key"
+builtin = "api_token"
+stage = "post_call"
+action = "redact"
+
+[[guardrails.rules]]
+name = "internal-ticket"
+pattern = "TICKET-[0-9]{6}"
+action = "annotate"
+```
+
+To switch a rule off for one route, name it in that route's `[routes.advanced.guardrails]` `disable` list, described under `[[routes]]` above. The old `default_on` key was removed: it documented a per-request opt-in that was never implemented, and a config that still sets it loads with the key ignored.
+
+---
+
+### \[egress\]
+
+Where the gateway may send upstream traffic. A provider's `api_base` and `egress_proxy` are written by an operator, so without a destination policy a crafted or compromised provider row turns the gateway into a way to reach whatever its network position can reach, and the prize on a cloud host is instance metadata at `169.254.169.254`. [Egress policy](/configuration/egress) lists every URL the policy covers.
+
+Self-hosted and air-gapped upstreams live on loopback and private networks, so only the link-local range is denied by default.
+
+<ParamField path="block_link_local" default="true" type="boolean">
+  Deny link-local destinations (`169.254.0.0/16` and `fe80::/10`), which is where cloud instance-metadata services live. Leave it on unless you have a concrete reason.
+</ParamField>
+
+<ParamField path="block_loopback" default="false" type="boolean">
+  Deny loopback destinations (`127.0.0.0/8` and `::1`) and the unspecified addresses `0.0.0.0` and `::`, which reach the local host when connected to. Off by default so sidecar and single-host deployments can serve models on localhost.
+</ParamField>
+
+<ParamField path="block_private" default="false" type="boolean">
+  Deny private and unique-local destinations (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16` and `fc00::/7`). Off by default because on-premises clusters are the common case.
+</ParamField>
+
+<ParamField path="allow_hosts" default="[]" type="list">
+  Hosts exempt from every check above: an IP literal or a hostname, matched against the host the URL reaches whatever its spelling, so `169.254.169.254` also covers `http://0xa9fea9fe/`. The escape hatch for a deployment that must reach one otherwise-denied address.
+</ParamField>
+
+IP literals are classified when the config is validated, so a bad `api_base` is rejected at startup or when the control plane writes it. A hostname cannot be classified without DNS, so it is checked at connect time against the address the lookup actually returned, which also makes the policy safe against DNS rebinding. A denied address fails the request and is not retried elsewhere.
+
+```toml
+[egress]
+block_link_local = true
+block_loopback = false
+block_private = true
+allow_hosts = ["vllm.internal.example.com"]  # the one private upstream we mean to reach
+```
+
+<Note>
+  The database has no egress policy, so a control plane reads this table from the file it was started with (`rolter control --config rolter.toml`) and applies it to every URL written through its API.
+</Note>
+
+---
+
+### \[guardrail_webhook\]
+
+A vendor-neutral hook to a self-hosted semantic guardrail service, such as Guardrails AI or LLM Guard. Before it proxies a request, the gateway POSTs a JSON envelope to your endpoint, and the service answers with a decision. Disabled by default, and it complements the built-in [`[guardrails]`](/security/guardrails) rather than replacing them. [Guardrails](/security/guardrails#external-providers) describes registering a provider on the dashboard instead, and how a webhook written here takes precedence over it.
+
+<ParamField path="enabled" default="false" type="boolean">
+  The master switch. A disabled block is never a problem, whatever else is unset.
+</ParamField>
+
+<ParamField path="url" type="string">
+  The `http://` or `https://` endpoint the envelope is POSTed to. Required when `enabled` is `true`. The URL is checked against the [egress policy](/configuration/egress) when the config loads and again before every call, and Rolter does not follow a redirect from it.
+</ParamField>
+
+<ParamField path="stage" default="pre_call" type="string">
+  When the service is consulted. `pre_call` inspects the request. `post_call` is accepted and validated, but the gateway does not run the output stage yet.
+</ParamField>
+
+<ParamField path="timeout_ms" default="2000" type="integer">
+  The per-call timeout in milliseconds. It must be greater than zero.
+</ParamField>
+
+<ParamField path="max_retries" default="0" type="integer">
+  Extra attempts after a transient failure: a connect error, a timeout or an error status.
+</ParamField>
+
+<ParamField path="failure_mode" default="fail_open" type="string">
+  What happens when the service is unreachable, times out or errors. `fail_open` forwards the content unchanged, favouring availability. `fail_closed` rejects the request with an OpenAI-compatible error, favouring enforcement.
+</ParamField>
+
+<ParamField path="max_body_bytes" default="65536" type="integer">
+  The most content forwarded to the service, in bytes. Oversized content is sent as a truncated preview with `truncated: true`. It must be greater than zero.
+</ParamField>
+
+<ParamField path="auth" type="table">
+  An optional credential, resolved from the environment at call time and never written inline. `{ bearer = { token_env = "GUARD_TOKEN" } }` sends `Authorization: Bearer <value of GUARD_TOKEN>`, and `{ shared_secret = { secret_env = "GUARD_SECRET" } }` sends the value in an `X-Rolter-Guardrail-Secret` header.
+</ParamField>
+
+**The contract.** The envelope is `{ direction, stage, model, route, trace_id, tenant: { org, team, project, key }, truncated, content }`, and only those fields are sent; the gateway never logs the prompt. The service answers `{ "action": "allow" | "block" | "transform" | "annotate", "content"?, "reason"?, "annotations"? }`. An unrecognised or malformed decision is treated as `allow`, and transport failures follow `failure_mode`. The trace id travels in the `X-Rolter-Trace-Id` header.
+
+```toml
+[guardrail_webhook]
+enabled = true
+url = "https://guard.internal/check"
+failure_mode = "fail_closed"
+auth = { bearer = { token_env = "GUARD_TOKEN" } }
 ```
 
 ---
 
+### \[pii_sanitizer\]
+
+An external PII sanitizer: a self-hosted de-identification service, Microsoft Presidio or anything that speaks the same small JSON contract, that replaces each detected entity with a placeholder before the content reaches a provider and can reverse the substitution on the way back. Unlike the guardrail webhook, which returns a decision, it returns transformed content. The placeholder-to-plaintext mapping stays on the sanitizer, so Rolter never holds the values. Disabled by default. [PII sanitizer](/security/pii-sanitizer) explains the contract, restoration, streaming and the response cache in full.
+
+<ParamField path="enabled" default="false" type="boolean">
+  The master switch.
+</ParamField>
+
+<ParamField path="url" type="string">
+  The `http://` or `https://` endpoint that sanitizes content and returns placeholders. Required when `enabled` is `true`.
+</ParamField>
+
+<ParamField path="restore_url" type="string">
+  The endpoint that turns placeholders back into plaintext. Required unless `restoration` is `never`.
+</ParamField>
+
+<ParamField path="direction" default="request" type="string">
+  Which legs the sanitizer sees: `request` keeps personal data away from a third-party model, `response` scans what the model generated, and `both` does each with a separate call.
+</ParamField>
+
+<ParamField path="restoration" default="never" type="string">
+  When placeholders may be turned back into plaintext. `never` leaves them in the reply. `trusted_downstream` restores every response, for callers that supplied the data in the first place. `caller_authorized` restores only when the request carries `x-rolter-pii-restore: true`.
+</ParamField>
+
+<ParamField path="streaming" default="reject" type="string">
+  What a streamed request does while the response leg is active. `reject` refuses it with `400 pii_streaming_unsupported`; `passthrough` serves the stream with the response leg skipped. A request-only setup streams normally.
+</ParamField>
+
+<ParamField path="timeout_ms" default="5000" type="integer">
+  The per-call timeout in milliseconds. It must be greater than zero.
+</ParamField>
+
+<ParamField path="max_retries" default="0" type="integer">
+  Extra attempts after a transient failure.
+</ParamField>
+
+<ParamField path="failure_mode" default="fail_open" type="string">
+  `fail_open` forwards the unsanitized body when the sanitizer is unreachable, which sends untouched personal data upstream during an outage. `fail_closed` refuses the request with `502 pii_sanitizer_unavailable`. Choose `fail_closed` when the sanitizer is a compliance control.
+</ParamField>
+
+<ParamField path="max_body_bytes" default="262144" type="integer">
+  The most content sent to the sanitizer, in bytes. Oversized content is sent as a truncated preview with `truncated: true`. It must be greater than zero.
+</ParamField>
+
+<ParamField path="entities" default="[]" type="list">
+  The entity types to detect, such as `EMAIL_ADDRESS` or `PERSON`. Empty means whatever the service is configured for.
+</ParamField>
+
+<ParamField path="auth" type="table">
+  An optional credential, in the same two forms as `[guardrail_webhook]`, resolved from the environment at call time.
+</ParamField>
+
+Both URLs are checked against the [egress policy](/configuration/egress) when the config loads and again before every call.
+
+```toml
+[pii_sanitizer]
+enabled = true
+url = "https://presidio.internal/sanitize"
+restore_url = "https://presidio.internal/restore"
+direction = "request"
+restoration = "never"
+failure_mode = "fail_closed"
+entities = ["EMAIL_ADDRESS", "PERSON", "CREDIT_CARD"]
+auth = { bearer = { token_env = "PII_SANITIZER_TOKEN" } }
+```
+
+---
+
+### \[prompt_templates\]
+
+Centrally managed, versioned prompt templates. A template adds system, assistant or user messages around a caller's own, so applications reuse approved instructions without being granted arbitrary prompt-authoring rights. Disabled by default, and a disabled or empty block adds no cost to a request. [Prompt templates](/concepts/prompt-templates) covers the dashboard repository, scopes and the request-time errors.
+
+<ParamField path="enabled" default="false" type="boolean">
+  The master switch.
+</ParamField>
+
+<ParamField path="templates" type="array of tables">
+  The templates, written as `[[prompt_templates.templates]]` entries. Each is one immutable version, and you list exactly the versions to activate. See below.
+</ParamField>
+
+#### \[\[prompt_templates.templates\]\]
+
+<ParamField path="id" type="string" required>
+  A stable identifier. It appears in safe metadata, never in content logs. The `(id, version)` pair must be unique.
+</ParamField>
+
+<ParamField path="version" type="integer" required>
+  The immutable version, at least `1`.
+</ParamField>
+
+<ParamField path="routes" default="[]" type="list">
+  The public model names the template applies to. Empty means every route.
+</ParamField>
+
+<ParamField path="variables" type="array of tables">
+  The named variables a decorator may reference as `{{ name }}`, written as `[[prompt_templates.templates.variables]]`.
+</ParamField>
+
+<ParamField path="decorators" type="array of tables" required>
+  The messages injected around the caller's own, written as `[[prompt_templates.templates.decorators]]`. A template needs at least one.
+</ParamField>
+
+##### \[\[prompt_templates.templates.variables\]\]
+
+<ParamField path="name" type="string" required>
+  The variable name, matching `[A-Za-z_][A-Za-z0-9_]*`.
+</ParamField>
+
+<ParamField path="required" default="false" type="boolean">
+  The caller must supply the variable on every request the template applies to, whether or not a decorator references it. Mutually exclusive with `default`.
+</ParamField>
+
+<ParamField path="default" type="string">
+  The value used when the caller omits the variable. An optional variable with no default renders as an empty string.
+</ParamField>
+
+##### \[\[prompt_templates.templates.decorators\]\]
+
+<ParamField path="role" default="system" type="string">
+  The role of the injected message: `system`, `assistant` or `user`. For Anthropic, a `system` decorator folds into the top-level `system` field.
+</ParamField>
+
+<ParamField path="position" default="prepend" type="string">
+  `prepend` places the message before the caller's messages and `append` places it after, both in the order declared.
+</ParamField>
+
+<ParamField path="content" type="string" required>
+  The message text, which may contain `{{ variable }}` placeholders. Every placeholder is checked at config load to name a declared variable.
+</ParamField>
+
+Callers pass values in a `rolter_template_vars` object on the request body, which is always stripped before the request goes upstream. A caller's value overrides the declared default. An unknown variable, a missing required variable, a value over 4 KiB or a rendered message over 16 KiB is refused with `invalid_prompt_template`. Substitution is structural: each rendered message is emitted as a JSON string through the serializer, never concatenated into raw JSON, so a value cannot break out of its string or inject extra messages.
+
+Templates are applied to `/v1/chat/completions`, `/v1/responses` and Anthropic `/v1/messages`. Surfaces without a message array, such as `/v1/completions`, are not decorated.
+
+```toml
+[prompt_templates]
+enabled = true
+
+[[prompt_templates.templates]]
+id = "support-preamble"
+version = 3
+routes = ["gpt-4o"]
+
+[[prompt_templates.templates.variables]]
+name = "persona"
+default = "a helpful support assistant"
+
+[[prompt_templates.templates.decorators]]
+role = "system"
+position = "prepend"
+content = "You are {{ persona }}. Follow the company policy and be concise."
+```
+
+In a database-backed deployment, templates are authored on the Prompt Repository screen, and `rolter-seed --import` seeds the templates in this table into the database, creating missing versions and refusing to overwrite an existing version with different content.
+
+---
+
+### \[plugins\]
+
+Not a `rolter.toml` table. It holds the enabled webhook plugin instances that the control plane builds from the plugin registry (**Plugins** on the dashboard) and ships in the snapshot, for the gateway's `pre_route`, `pre_upstream` and `post_response` stages. The list is empty by default and costs nothing on the request path. Each instance carries its `slug`, `org_id`, an optional `project_id`, `stage`, `position`, `failure_mode`, `endpoint` and an optional `auth`. See [Plugins](/configuration/plugins), which is experimental, for scope, ordering and failure policy.
+
+---
+
 <Note>
-  The repository ships a fully annotated `rolter.example.toml` that includes every section with inline comments explaining each field. Copy it to `rolter.toml` to get started, then remove or uncomment the sections you need.
+  The repository ships a fully annotated `rolter.example.toml` that shows every table a `rolter.toml` can set, with inline comments explaining each field; most blocks are commented out with their defaults. Copy it to `rolter.toml` to get started, then remove or uncomment the sections you need. It leaves out the tables the control plane owns and a file does not set: `feature_flags`, `db_virtual_keys`, `mcp_servers`, `mcp_oauth_sessions` and `plugins`.
 </Note>
