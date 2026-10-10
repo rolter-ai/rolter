@@ -47,3 +47,8 @@
 
 **Learning:** Replacing hand-rolled tab buttons with the `<Segmented />` primitive standardizes accessibility across screens (`role="radiogroup"` and `role="radio"`).
 **Action:** When replacing custom tab/button groups with `<Segmented />`, update story assertions to query `getByRole("radio", { name: ... })` instead of `getByRole("button", ...)` and include an explicit `ariaLabel` for proper screen reader context.
+
+## 2026-10-10 - Models Origin Segmented Filter Primitive
+
+**Learning:** Hand-rolled filter buttons on pages like `Models.tsx` lacked standard radio group keyboard navigation (`roving tabindex`) and screen reader announcements (`role="radiogroup"` / `role="radio"`).
+**Action:** Replace custom filter buttons with the `<Segmented />` primitive from `ui/src/components/ui/segmented.tsx`, ensuring proper `ariaLabel` localization and updating story assertions to use `getByRole("radiogroup")` and `getByRole("radio")`.

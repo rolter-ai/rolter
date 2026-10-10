@@ -691,7 +691,8 @@
         "deleteTitle": "Delete model {{model}}?",
         "deleteBody": "Every route and target for it is removed. This cannot be undone.",
         "deleteConfirm": "Delete model"
-      }
+      },
+      "originFilterAria": "Filter by origin"
     },
     "providers": {
       "search": "Search providers",
