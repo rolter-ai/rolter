@@ -2288,6 +2288,8 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
         .await
     } else {
         let retry = &snap.retry;
+        // the route's own budget replaces the deployment's (#2924)
+        let max_retries = entry.route.advanced.limits.max_retries(retry.max_retries);
         let cooldown = &snap.cooldown;
         let cd_enabled = cooldown.enabled();
         // live per-target in-flight counts steer load-aware strategies away from busy
@@ -2316,7 +2318,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
         // `record_failed_attempt`, so the error row must not count it twice
         let mut last_attempt_recorded = false;
 
-        for attempt in 0..=retry.max_retries {
+        for attempt in 0..=max_retries {
             let idx = match pick_untried(
                 entry,
                 &ctx,
@@ -2445,6 +2447,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                     api_key,
                     upstream_model,
                     attempt_headers,
+                    &entry.overrides,
                 )
                 .instrument(upstream_stage.clone())
                 .await
@@ -2476,7 +2479,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                         }
                         // let the same target be re-picked with a fresh key
                         tried.pop();
-                        if attempt < retry.max_retries {
+                        if attempt < max_retries {
                             // the caller will never see this failure, so record it against the
                             // target that produced it before superseding the attempt (#1646).
                             // through the guard, so a caller leaving during the backoff below
@@ -2514,7 +2517,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                         if state.breaker.on_failure(&model, idx) {
                             state.metrics.breaker_opened_total.fetch_add(1, Relaxed);
                         }
-                        if attempt < retry.max_retries {
+                        if attempt < max_retries {
                             // the caller will never see this failure, so record it against the
                             // target that produced it before superseding the attempt (#1646).
                             // through the guard, so a caller leaving during the backoff below
@@ -2578,7 +2581,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                     if state.breaker.on_failure(&model, idx) {
                         state.metrics.breaker_opened_total.fetch_add(1, Relaxed);
                     }
-                    if attempt < retry.max_retries {
+                    if attempt < max_retries {
                         // the caller will never see this failure, so record it against the
                         // target that produced it before superseding the attempt (#1646).
                         // through the guard, so a caller leaving during the backoff below
@@ -3099,6 +3102,8 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
     );
 
     let retry = &snap.retry;
+    // the route's own budget replaces the deployment's (#2924)
+    let max_retries = entry.route.advanced.limits.max_retries(retry.max_retries);
     let cooldown = &snap.cooldown;
     let cd_enabled = cooldown.enabled();
     let mut loads = state.loads.snapshot(&model, entry.route.targets.len());
@@ -3120,7 +3125,7 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
     let mut outcome: Option<(reqwest::Response, u16, bool)> = None;
     let mut inflight_guard: Option<crate::load::LoadGuard> = None;
 
-    for attempt in 0..=retry.max_retries {
+    for attempt in 0..=max_retries {
         let idx = match pick_untried(
             entry,
             &ctx,
@@ -3178,6 +3183,7 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
                 &content_type,
                 api_key,
                 &trace_headers,
+                &entry.overrides,
             )
             .await
         {
@@ -3194,7 +3200,7 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
                             .fetch_add(1, Relaxed);
                     }
                     tried.pop();
-                    if attempt < retry.max_retries {
+                    if attempt < max_retries {
                         // the caller will never see this failure, so record it against the
                         // target that produced it before superseding the attempt (#1646).
                         // through the guard, so a caller leaving during the backoff below
@@ -3230,7 +3236,7 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
                     if state.breaker.on_failure(&model, idx) {
                         state.metrics.breaker_opened_total.fetch_add(1, Relaxed);
                     }
-                    if attempt < retry.max_retries {
+                    if attempt < max_retries {
                         // the caller will never see this failure, so record it against the
                         // target that produced it before superseding the attempt (#1646).
                         // through the guard, so a caller leaving during the backoff below
@@ -3284,7 +3290,7 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
                 if state.breaker.on_failure(&model, idx) {
                     state.metrics.breaker_opened_total.fetch_add(1, Relaxed);
                 }
-                if attempt < retry.max_retries {
+                if attempt < max_retries {
                     // the caller will never see this failure, so record it against the
                     // target that produced it before superseding the attempt (#1646).
                     // through the guard, so a caller leaving during the backoff below
@@ -3585,6 +3591,8 @@ async fn forward_variants(
 ) -> ForwardOutcome {
     let route = &entry.route;
     let retry = &snap.retry;
+    // the route's own budget replaces the deployment's (#2924)
+    let max_retries = entry.route.advanced.limits.max_retries(retry.max_retries);
     let cooldown = &snap.cooldown;
     let cd_enabled = cooldown.enabled();
 
@@ -3605,7 +3613,7 @@ async fn forward_variants(
     };
     let mut tried: Vec<usize> = Vec::with_capacity(candidates.len());
 
-    for attempt in 0..=retry.max_retries {
+    for attempt in 0..=max_retries {
         // a candidate is skippable when its target is parked, its provider is
         // unhealthy, or its breaker is open — keyed per variant
         let skip = |&(vi, ti): &(usize, usize)| {
@@ -3684,6 +3692,7 @@ async fn forward_variants(
                 api_key,
                 upstream_model,
                 trace_headers,
+                &entry.overrides,
             )
             .await
         {
@@ -3702,7 +3711,7 @@ async fn forward_variants(
                             .fetch_add(1, Relaxed);
                     }
                     tried.pop();
-                    if attempt < retry.max_retries {
+                    if attempt < max_retries {
                         // the caller will never see this failure, so record it against the
                         // target that produced it before superseding the attempt (#1646).
                         // through the guard, so a caller leaving during the backoff below
@@ -3738,7 +3747,7 @@ async fn forward_variants(
                     if state.breaker.on_failure(&key, ti) {
                         state.metrics.breaker_opened_total.fetch_add(1, Relaxed);
                     }
-                    if attempt < retry.max_retries {
+                    if attempt < max_retries {
                         // the caller will never see this failure, so record it against the
                         // target that produced it before superseding the attempt (#1646).
                         // through the guard, so a caller leaving during the backoff below
@@ -3795,7 +3804,7 @@ async fn forward_variants(
                 if state.breaker.on_failure(&key, ti) {
                     state.metrics.breaker_opened_total.fetch_add(1, Relaxed);
                 }
-                if attempt < retry.max_retries {
+                if attempt < max_retries {
                     // the caller will never see this failure, so record it against the
                     // target that produced it before superseding the attempt (#1646).
                     // through the guard, so a caller leaving during the backoff below
@@ -5627,6 +5636,7 @@ mod tests {
         // the balancer's pick leads; declared order forms the fallback tail
         let entry = crate::state::RouteEntry {
             project_scope: None,
+            overrides: Default::default(),
             guardrails: Default::default(),
             balancer: rolter_balancer::build(route.strategy, &[]).into(),
             variant_balancers: vec![Box::new(Fixed(1))],
@@ -5639,6 +5649,7 @@ mod tests {
         // an out-of-range pick degrades to plain declared order
         let entry = crate::state::RouteEntry {
             project_scope: None,
+            overrides: Default::default(),
             guardrails: Default::default(),
             balancer: rolter_balancer::build(route.strategy, &[]).into(),
             variant_balancers: vec![Box::new(Fixed(9))],
@@ -5651,6 +5662,7 @@ mod tests {
         // no balancer built for the variant: declared order
         let entry = crate::state::RouteEntry {
             project_scope: None,
+            overrides: Default::default(),
             guardrails: Default::default(),
             balancer: rolter_balancer::build(route.strategy, &[]).into(),
             variant_balancers: Vec::new(),
@@ -5699,6 +5711,7 @@ mod tests {
         rolter_balancer::LoadBalancer::observe(&cache_aware, 1, &ctx);
         let entry = crate::state::RouteEntry {
             project_scope: None,
+            overrides: Default::default(),
             guardrails: Default::default(),
             balancer: rolter_balancer::build(route.strategy, &[]).into(),
             variant_balancers: vec![Box::new(cache_aware)],
@@ -5792,6 +5805,7 @@ mod tests {
         };
         let entry = crate::state::RouteEntry {
             project_scope: None,
+            overrides: Default::default(),
             guardrails: Default::default(),
             balancer: rolter_balancer::build(route.strategy, &[1, 1]).into(),
             variant_balancers: Vec::new(),
@@ -5843,6 +5857,7 @@ mod tests {
         };
         crate::state::RouteEntry {
             project_scope: None,
+            overrides: Default::default(),
             guardrails: Default::default(),
             balancer: rolter_balancer::build(route.strategy, &[1, 1, 1]).into(),
             variant_balancers: Vec::new(),
@@ -5963,6 +5978,7 @@ mod tests {
         };
         let entry = crate::state::RouteEntry {
             project_scope: None,
+            overrides: Default::default(),
             guardrails: Default::default(),
             balancer: rolter_balancer::build(route.strategy, &[1, 1, 1, 1]).into(),
             variant_balancers: Vec::new(),
@@ -6006,6 +6022,7 @@ mod tests {
         };
         let entry = crate::state::RouteEntry {
             project_scope: None,
+            overrides: Default::default(),
             guardrails: Default::default(),
             balancer: rolter_balancer::build(route.strategy, &[1, 1]).into(),
             variant_balancers: Vec::new(),
@@ -6052,6 +6069,7 @@ mod tests {
         };
         let entry = crate::state::RouteEntry {
             project_scope: None,
+            overrides: Default::default(),
             guardrails: Default::default(),
             balancer: rolter_balancer::build(route.strategy, &[1, 1]).into(),
             variant_balancers: Vec::new(),
@@ -6096,6 +6114,7 @@ mod tests {
         };
         let entry = crate::state::RouteEntry {
             project_scope: None,
+            overrides: Default::default(),
             guardrails: Default::default(),
             balancer: rolter_balancer::build(route.strategy, &[1, 1, 1]).into(),
             variant_balancers: Vec::new(),
@@ -6154,6 +6173,7 @@ mod tests {
         };
         let entry = crate::state::RouteEntry {
             project_scope: None,
+            overrides: Default::default(),
             guardrails: Default::default(),
             balancer: rolter_balancer::build(route.strategy, &[1, 1]).into(),
             variant_balancers: Vec::new(),
@@ -6255,6 +6275,7 @@ mod tests {
         };
         let entry = crate::state::RouteEntry {
             project_scope: None,
+            overrides: Default::default(),
             guardrails: Default::default(),
             balancer: rolter_balancer::build(route.strategy, &[1]).into(),
             variant_balancers: Vec::new(),
@@ -6309,6 +6330,7 @@ mod tests {
         };
         let entry = crate::state::RouteEntry {
             project_scope: None,
+            overrides: Default::default(),
             guardrails: Default::default(),
             balancer: rolter_balancer::build(route.strategy, &[1, 1]).into(),
             variant_balancers: Vec::new(),

@@ -1144,7 +1144,7 @@ fn operations() -> Vec<Op> {
             Op::put(
                 "/api/v1/routes/{id}/advanced",
                 "setRouteAdvanced",
-                "Replace a route's catalog metadata and execution policy",
+                "Replace a route's catalog metadata and execution policy (headers, timeout, retries, output-token cap, visibility, guardrails)",
             )
             .ok(Payload::Ref("Route")),
             Op::get(

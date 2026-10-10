@@ -32,18 +32,20 @@ pub mod telemetry;
 pub mod upstream;
 
 pub use access_policy::ModelPolicy;
+pub use config::{is_reserved_route_header, strip_retired_advanced_keys};
 pub use config::{
     AdaptiveRoutingConfig, AdvancedModelConfig, ApiKeyConfig, BackpressurePolicy,
     BalancingStrategy, BreakerConfig, BudgetConfig, BudgetPeriod, BudgetScope, CacheConfig,
     ClientConfig, CompatibilityConfig, CooldownConfig, EgressPolicy, FeatureFlagsConfig,
     GatewayConfig, GroupMember, HealthConfig, KvEventsConfig, LmCacheConfig, LoggingConfig,
     McpAuthKind, McpOAuthSessionConfig, McpServerConfig, MetricsScrapeConfig, ModelDefaultsConfig,
-    ModelLimits, ModelPriceConfig, ModelRoute, ModelUsagePricing, ModelVisibility, OverrideMode,
-    ParamPolicy, PayloadCaptureConfig, ProviderConfig, ProviderGroupConfig, ProviderKind,
-    QueueConfig, RateLimitConfig, RealtimeConfig, ResponsesConfig, RetryConfig, RoleProfile,
-    RouteCache, SecurityPolicyConfig, SemanticCacheConfig, ServerConfig, Target, Tenancy,
-    TimeoutConfig, TlsConfig, UnpricedPolicy, UsageRecordingConfig, Variant, VirtualKeyConfig,
-    VirtualKeyRecord, MAX_EXPLORATION_RATIO, MCP_TRANSPORTS, PUBLIC_EXAMPLE_KEY, RESERVED_PATHS,
+    ModelLimits, ModelPriceConfig, ModelRoute, ModelVisibility, OverrideMode, ParamPolicy,
+    PayloadCaptureConfig, ProviderConfig, ProviderGroupConfig, ProviderKind, QueueConfig,
+    RateLimitConfig, RealtimeConfig, ResponsesConfig, RetryConfig, RoleProfile, RouteCache,
+    SecurityPolicyConfig, SemanticCacheConfig, ServerConfig, Target, Tenancy, TimeoutConfig,
+    TlsConfig, UnpricedPolicy, UsageRecordingConfig, Variant, VirtualKeyConfig, VirtualKeyRecord,
+    MAX_EXPLORATION_RATIO, MAX_ROUTE_RETRIES, MCP_TRANSPORTS, PUBLIC_EXAMPLE_KEY, RESERVED_PATHS,
+    RESERVED_ROUTE_HEADERS,
 };
 pub use config_lint::{unknown_keys, UnknownKey};
 pub use config_migrate::{

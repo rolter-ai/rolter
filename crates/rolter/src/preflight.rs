@@ -498,6 +498,29 @@ fn custom_api_base_findings(config: &rolter_core::GatewayConfig) -> Vec<Finding>
         .collect()
 }
 
+/// A route header the gateway will not send (#2924): a name that is not a valid
+/// header name, a value the wire cannot carry, or a credential or framing header
+/// such as `authorization`. The gateway leaves it out and logs the same sentence
+/// at startup, so the route serves without it; fatal here because the file is
+/// not doing what its author wrote, and a deploy check is the place to say so.
+fn route_header_findings(config: &rolter_core::GatewayConfig) -> Vec<Finding> {
+    config
+        .routes
+        .iter()
+        .flat_map(|route| {
+            route.advanced.header_problems().into_iter().map(|problem| {
+                Finding::error(
+                    format!(
+                        "route '{}' sets a header the gateway will not send",
+                        route.model
+                    ),
+                    problem,
+                )
+            })
+        })
+        .collect()
+}
+
 /// The public example key in a config file is a credential the whole internet
 /// knows, with access to every model. Fatal rather than a warning: a production
 /// config that carries it serves it to every gateway polling the control plane
@@ -668,6 +691,7 @@ pub async fn run(args: CheckArgs) -> anyhow::Result<()> {
         match rolter_core::GatewayConfig::load(std::path::Path::new(path)) {
             Ok(config) => {
                 findings.extend(custom_api_base_findings(&config));
+                findings.extend(route_header_findings(&config));
                 findings.extend(example_key_findings(&config));
                 findings.extend(project_scoped_findings(&config));
             }
@@ -968,6 +992,42 @@ mod tests {
         )
         .unwrap();
         assert!(custom_api_base_findings(&config).is_empty());
+    }
+
+    #[test]
+    fn a_route_header_that_replaces_the_credential_fails_the_check() {
+        let config = rolter_core::GatewayConfig::from_toml_str(
+            r#"
+            [[providers]]
+            name = "up"
+            kind = "openai_compatible"
+            api_base = "http://127.0.0.1:1"
+
+            [[routes]]
+            model = "m"
+            [routes.advanced]
+            headers = { "Authorization" = "Bearer sk-route", "x-team" = "platform" }
+            [[routes.targets]]
+            provider = "up"
+            "#,
+        )
+        .unwrap();
+
+        let findings = route_header_findings(&config);
+        assert_eq!(
+            titles(&findings),
+            vec!["route 'm' sets a header the gateway will not send"]
+        );
+        let (text, failed) = report(&findings, false);
+        assert!(failed, "{text}");
+        assert!(
+            text.contains("header 'Authorization' cannot be set"),
+            "{text}"
+        );
+        assert!(
+            !text.contains("x-team"),
+            "a sendable header is not a finding: {text}"
+        );
     }
 
     #[test]

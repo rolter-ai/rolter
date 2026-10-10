@@ -1219,37 +1219,49 @@ pub struct Target {
 /// Extra settings attached to one public model route. These are deliberately
 /// separate from [`ProviderConfig`]: a provider owns credentials and shared
 /// transport defaults, while a model may need a narrower policy.
+///
+/// Every field here is read by something. `model_type`, `capabilities` and
+/// `description` are catalog metadata the dashboard reads back; the gateway
+/// applies `headers`, `locked_headers`, `limits.timeout_secs`, `limits.retries`,
+/// `limits.output_tokens`, `visibility` and `guardrails`.
+// `additional_fields` (#1665) and then `base_url`, `insecure_tls`, `pricing`
+// and the `rpm`, `tpm`, `concurrency` and `context_window` limits (#2924) used
+// to sit here: stored, validated, put in every snapshot and read by nothing,
+// while the docs and the dashboard described them as working. `base_url` and
+// `insecure_tls` were the worst of it. a per-route endpoint would have carried
+// the provider's credential to whatever host the route named, and the provider
+// owns the key. an insecure-tls switch is not something a route should own
+// either; a private ca is `ca_bundles`. a stored blob that still carries any of
+// these keys keeps deserializing whole, because none of these types deny
+// unknown fields, and nothing rolter serializes emits them again. `rolter
+// check` reports them in a file as unknown keys
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 pub struct AdvancedModelConfig {
-    /// provider/model family selected in the catalog (for example `chat` or `embedding`)
+    /// provider/model family selected in the catalog (for example `chat` or
+    /// `embedding`). The dashboard reads it to offer the parameters and prices
+    /// that fit the family; the gateway does not enforce it
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_type: Option<String>,
+    /// what the model supports (`streaming`, `tools`, ...). A label for the
+    /// dashboard, not a gate: the gateway forwards a request whether or not the
+    /// flag is set
     #[serde(default)]
     pub capabilities: Vec<String>,
+    /// free-text note kept with the route. Shown in the dashboard and returned
+    /// by the routes API; never sent to API clients
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    /// model-specific upstream base URL; never carries credentials
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub base_url: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pricing: Option<ModelUsagePricing>,
     #[serde(default)]
     pub limits: ModelLimits,
-    #[serde(default)]
-    pub insecure_tls: bool,
-    // `additional_fields` used to sit here: a map that was persisted, put in
-    // every snapshot, and read by nothing (#1665). it could not mean what its
-    // name suggested either — `maybe_rewrite_model` forwards the request body
-    // byte for byte apart from the top-level `model`, so a field rolter does not
-    // model already reaches the upstream and there was nothing left for it to
-    // gate. a stored blob that still carries the key keeps deserializing whole,
-    // because none of these types deny unknown fields, and nothing rolter
-    // serializes emits it again
-    /// headers injected into calls for this model; secrets must remain in
-    /// provider credentials, not this configuration.
+    /// headers sent to the upstream on every call this route makes, for every
+    /// target. Credentials belong to the provider: an authentication header
+    /// here is refused (see [`AdvancedModelConfig::header_problems`])
     #[serde(default)]
     pub headers: HashMap<String, String>,
-    /// request headers callers may not replace for this route
+    /// names from [`Self::headers`] a caller's own header may not replace. A
+    /// header the deployment forwards from the caller (`[client]
+    /// forwarded_headers`) wins over an unlocked route header of the same name
+    /// and loses to a locked one
     #[serde(default)]
     pub locked_headers: Vec<String>,
     #[serde(default)]
@@ -1260,47 +1272,198 @@ pub struct AdvancedModelConfig {
     pub guardrails: crate::guardrails::RouteGuardrails,
 }
 
-/// Prices whose unit is not a token. Token rates remain in [`ModelPriceConfig`]
-/// so cost accounting never mistakes image or audio pricing for token pricing.
-#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
-pub struct ModelUsagePricing {
-    /// Stored and validated, but read by nothing: no cost path consults a
-    /// route's `advanced` block. The rate that prices cache writes is
-    /// [`ModelPriceConfig::cache_write_per_mtok`] (#2876).
-    ///
-    /// **Deprecated (#2890): accepted and ignored.** The field stays so a stored
-    /// blob that carries it keeps parsing and round-tripping, and so an older
-    /// dashboard that still sends it is not refused, but nothing validates or
-    /// applies the value. Existing values are not migrated into the price row:
-    /// they never affected a cost, and starting to bill by them on upgrade would
-    /// change spend nobody saw change before.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cache_write_per_mtok: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub image_per_unit: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub audio_input_per_minute: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub audio_output_per_minute: Option<f64>,
+/// Header names a route may not set: the credential of every provider kind
+/// (see [`ProviderKind::auth_header`]) and the headers that frame the request
+/// or its connection.
+///
+/// A route is edited by a project admin and a provider, with the key it holds,
+/// by an org admin, so a route that could replace `authorization` could
+/// present a credential of its own in place of the provider's. The framing
+/// headers are the gateway's to set: a route that set `content-length` could
+/// not describe the body it forwards.
+pub const RESERVED_ROUTE_HEADERS: &[&str] = &[
+    "api-key",
+    "authorization",
+    "connection",
+    "content-length",
+    "content-type",
+    "expect",
+    "host",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "proxy-connection",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+    "x-api-key",
+    "x-goog-api-key",
+];
+
+/// Keys that sat directly in a route's `advanced` block and were read by
+/// nothing (#2924); see the note on [`AdvancedModelConfig`].
+pub const RETIRED_ADVANCED_KEYS: &[&str] = &["base_url", "insecure_tls", "pricing"];
+
+/// Keys that sat in a route's `advanced.limits` and were read by nothing
+/// (#2924).
+pub const RETIRED_LIMIT_KEYS: &[&str] = &["rpm", "tpm", "concurrency", "context_window"];
+
+/// Remove the retired keys from a route's `advanced` JSON, returning the dotted
+/// name of each one that was there.
+///
+/// The control plane stores the blob it is sent rather than a re-serialization
+/// of [`AdvancedModelConfig`], so without this a client still sending
+/// `insecure_tls: true` would read it back from the routes API as if it were
+/// stored policy. It accepts and drops them instead: a refusal would break an
+/// older dashboard's save over a value that never did anything.
+pub fn strip_retired_advanced_keys(advanced: &mut serde_json::Value) -> Vec<String> {
+    let mut dropped = Vec::new();
+    let Some(object) = advanced.as_object_mut() else {
+        return dropped;
+    };
+    for key in RETIRED_ADVANCED_KEYS {
+        if object.remove(*key).is_some() {
+            dropped.push((*key).to_string());
+        }
+    }
+    if let Some(limits) = object.get_mut("limits").and_then(|l| l.as_object_mut()) {
+        for key in RETIRED_LIMIT_KEYS {
+            if limits.remove(*key).is_some() {
+                dropped.push(format!("limits.{key}"));
+            }
+        }
+    }
+    dropped
 }
 
-/// Per-model request ceilings. `None` inherits the gateway/provider setting.
+/// Most extra attempts a route may ask for, the same ceiling the control plane
+/// puts on `[retry].max_retries` (0 to 10). A stored value above it is applied
+/// as this, so a row written before the field was read cannot turn one failing
+/// request into a long loop.
+pub const MAX_ROUTE_RETRIES: u32 = 10;
+
+impl AdvancedModelConfig {
+    /// Every reason a header on this route cannot be sent, one sentence each.
+    ///
+    /// A header whose name is not a valid token, whose value is not visible
+    /// ASCII, or whose name is in [`RESERVED_ROUTE_HEADERS`]. The same rule the
+    /// control plane applies on write and the proxy applies when it builds the
+    /// route's headers, so the three cannot disagree about what is sendable.
+    /// Names in `locked_headers` are checked as names only: locking one that has
+    /// no value here is how a route keeps a forwarded caller header out.
+    pub fn header_problems(&self) -> Vec<String> {
+        let mut problems = Vec::new();
+        let mut names: Vec<&String> = self.headers.keys().collect();
+        names.sort();
+        for name in names {
+            let value = &self.headers[name];
+            if !is_header_name(name) {
+                problems.push(format!("header name '{name}' is not valid"));
+            } else if is_reserved_route_header(name) {
+                problems.push(format!(
+                    "header '{name}' cannot be set on a route: it carries the provider's \
+                     credential or frames the request"
+                ));
+            } else if !is_header_value(value) {
+                problems.push(format!(
+                    "header '{name}' has a value that is not visible ASCII on one line"
+                ));
+            }
+        }
+        for name in &self.locked_headers {
+            if !is_header_name(name) {
+                problems.push(format!("locked header name '{name}' is not valid"));
+            }
+        }
+        problems
+    }
+
+    /// Drop every header [`Self::header_problems`] names, returning those
+    /// sentences. What is left is exactly what the proxy would have sent, so
+    /// the route keeps serving without them.
+    pub fn drop_unsendable_headers(&mut self) -> Vec<String> {
+        let problems = self.header_problems();
+        if !problems.is_empty() {
+            self.headers
+                .retain(|name, value| is_sendable_route_header(name, value));
+            self.locked_headers.retain(|name| is_header_name(name));
+        }
+        problems
+    }
+}
+
+/// Whether `name` may be sent on a route: a valid token that is not reserved.
+fn is_sendable_route_header(name: &str, value: &str) -> bool {
+    is_header_name(name) && !is_reserved_route_header(name) && is_header_value(value)
+}
+
+/// Whether `name` is in [`RESERVED_ROUTE_HEADERS`], compared without case.
+pub fn is_reserved_route_header(name: &str) -> bool {
+    RESERVED_ROUTE_HEADERS
+        .iter()
+        .any(|reserved| reserved.eq_ignore_ascii_case(name))
+}
+
+/// RFC 9110 `token`: the characters a header name may be made of.
+fn is_header_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.bytes().all(|b| {
+            b.is_ascii_alphanumeric()
+                || matches!(
+                    b,
+                    b'!' | b'#'
+                        | b'$'
+                        | b'%'
+                        | b'&'
+                        | b'\''
+                        | b'*'
+                        | b'+'
+                        | b'-'
+                        | b'.'
+                        | b'^'
+                        | b'_'
+                        | b'`'
+                        | b'|'
+                        | b'~'
+                )
+        })
+}
+
+/// A header value the wire can carry: visible ASCII, spaces and tabs.
+fn is_header_value(value: &str) -> bool {
+    value
+        .bytes()
+        .all(|b| b == b'\t' || (0x20..0x7f).contains(&b))
+}
+
+/// Per-model request settings. `None` inherits the gateway setting.
+///
+/// `rpm`, `tpm`, `concurrency` and `context_window` used to sit beside these
+/// and were read by nothing (#2924); see the note on [`AdvancedModelConfig`].
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 pub struct ModelLimits {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub rpm: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tpm: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub concurrency: Option<u32>,
+    /// bound on the wait for the upstream's response headers, in whole seconds;
+    /// replaces `[timeouts].request_secs` for this route. The body of a
+    /// streamed response is not cut short by it
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_secs: Option<u32>,
+    /// extra attempts after the first, each on another target; replaces
+    /// `[retry].max_retries` for this route. `0` turns retries off. Applied up
+    /// to [`MAX_ROUTE_RETRIES`]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retries: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub context_window: Option<u32>,
+    /// refuse a request that asks for more output tokens than this
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_tokens: Option<u32>,
+}
+
+impl ModelLimits {
+    /// The retry budget a request to this route gets, given the gateway-wide
+    /// `default`.
+    pub fn max_retries(&self, default: u32) -> u32 {
+        self.retries.map_or(default, |n| n.min(MAX_ROUTE_RETRIES))
+    }
 }
 
 /// The org, and for a route the project, a row belongs to in the store.
@@ -3428,6 +3591,21 @@ impl GatewayConfig {
                 ));
             }
         }
+
+        // a header the wire cannot carry would fail every call the route makes,
+        // and one that names a credential would replace the provider's. the
+        // control plane refuses both on write, so this covers a row written
+        // before it did or by sql. the route keeps serving without the header
+        // rather than withholding the snapshot for every tenant (#2924)
+        for route in &mut self.routes {
+            for problem in route.advanced.drop_unsendable_headers() {
+                warnings.push(format!(
+                    "route '{}': {problem}; it is omitted from the snapshot and the route \
+                     serves without it",
+                    route.model
+                ));
+            }
+        }
         warnings
     }
 
@@ -4115,6 +4293,15 @@ impl GatewayConfig {
             }
         }
 
+        // a file config is strict about route headers: one the wire cannot
+        // carry, or that would replace the provider's credential, is a mistake
+        // to fix, where the snapshot path drops it and says so (#2924)
+        for route in &self.routes {
+            for problem in route.advanced.header_problems() {
+                problems.push(format!("route '{}': {problem}", route.model));
+            }
+        }
+
         // validate the custom guardrail webhook (url/timeout/auth) at load time
         problems.append(&mut self.guardrail_webhook.validate());
         problems.append(&mut self.pii_sanitizer.validate());
@@ -4658,9 +4845,7 @@ mod tests {
             "advanced": {
                 "model_type": "image",
                 "capabilities": ["vision"],
-                "base_url": "https://models.example/v1",
-                "pricing": {"image_per_unit": 0.04},
-                "limits": {"output_tokens": 2048},
+                "limits": {"output_tokens": 2048, "timeout_secs": 30, "retries": 1},
                 "headers": {"x-model-region": "eu"},
                 "locked_headers": ["x-model-region"],
                 "visibility": {"allowed_key_ids": ["key-1"]}
@@ -4669,14 +4854,261 @@ mod tests {
         .unwrap();
         assert_eq!(route.advanced.model_type.as_deref(), Some("image"));
         assert_eq!(route.advanced.limits.output_tokens, Some(2048));
-        assert_eq!(
-            route.advanced.pricing.as_ref().unwrap().image_per_unit,
-            Some(0.04)
-        );
+        assert_eq!(route.advanced.limits.timeout_secs, Some(30));
+        assert_eq!(route.advanced.limits.retries, Some(1));
         assert_eq!(
             serde_json::to_value(route).unwrap()["advanced"]["headers"]["x-model-region"],
             "eu"
         );
+    }
+
+    /// A stored `advanced` blob written before #2924 still loads.
+    ///
+    /// `base_url`, `insecure_tls`, `pricing` and four of the limits were
+    /// persisted into route rows and read by nothing, and are gone from the
+    /// struct. A row that carries them has to keep deserializing whole, with
+    /// the keys ignored instead of stopping the parse (so the fields around
+    /// them survive) and with nothing writing them back out. Without this a
+    /// route saved by the dashboard last month would load as the default and
+    /// lose its visibility restriction.
+    #[test]
+    fn an_advanced_block_carrying_the_retired_keys_still_loads() {
+        let route: ModelRoute = serde_json::from_value(serde_json::json!({
+            "model": "vision",
+            "targets": [],
+            "advanced": {
+                "base_url": "https://models.example/v1",
+                "insecure_tls": true,
+                "pricing": {"image_per_unit": 0.04, "audio_input_per_minute": 0.1},
+                "limits": {
+                    "rpm": 60, "tpm": 90000, "concurrency": 4, "context_window": 128000,
+                    "timeout_secs": 45, "retries": 3, "output_tokens": 2048
+                },
+                "headers": {"x-model-region": "eu"},
+                "visibility": {"allowed_key_ids": ["key-1"]}
+            }
+        }))
+        .expect("an old stored blob must still deserialize");
+        assert_eq!(route.advanced.limits.timeout_secs, Some(45));
+        assert_eq!(route.advanced.limits.retries, Some(3));
+        assert_eq!(route.advanced.limits.output_tokens, Some(2048));
+        assert_eq!(route.advanced.visibility.allowed_key_ids, ["key-1"]);
+
+        let written = serde_json::to_value(&route).unwrap();
+        for key in ["base_url", "insecure_tls", "pricing"] {
+            assert!(
+                written["advanced"].get(key).is_none(),
+                "the retired key {key} must not be re-emitted: {written}"
+            );
+        }
+        for key in ["rpm", "tpm", "concurrency", "context_window"] {
+            assert!(
+                written["advanced"]["limits"].get(key).is_none(),
+                "the retired limit {key} must not be re-emitted: {written}"
+            );
+        }
+    }
+
+    /// A file that still sets a retired key is told so: the loader's unknown
+    /// key report is how `rolter check` and the gateway's startup log say that
+    /// `insecure_tls = true` is not doing what the file's author believes.
+    #[test]
+    fn a_file_setting_a_retired_advanced_key_is_reported_as_unknown() {
+        let toml = r#"
+            [[providers]]
+            name = "p"
+            kind = "openai_compatible"
+            api_base = "http://127.0.0.1:1"
+
+            [[routes]]
+            model = "m"
+            [[routes.targets]]
+            provider = "p"
+            [routes.advanced]
+            base_url = "https://elsewhere.example"
+            insecure_tls = true
+            [routes.advanced.limits]
+            rpm = 60
+            timeout_secs = 30
+        "#;
+        let paths: Vec<String> = crate::unknown_keys(toml)
+            .unwrap()
+            .into_iter()
+            .map(|key| key.path)
+            .collect();
+        for expected in [
+            "routes[0].advanced.base_url",
+            "routes[0].advanced.insecure_tls",
+            "routes[0].advanced.limits.rpm",
+        ] {
+            assert!(
+                paths.iter().any(|p| p == expected),
+                "{expected} in {paths:?}"
+            );
+        }
+        assert!(
+            !paths.iter().any(|p| p.ends_with("timeout_secs")),
+            "a limit the gateway applies is not unknown: {paths:?}"
+        );
+    }
+
+    #[test]
+    fn stripping_the_retired_keys_leaves_everything_else() {
+        let mut blob = serde_json::json!({
+            "base_url": "https://models.example/v1",
+            "insecure_tls": true,
+            "pricing": {"image_per_unit": 0.04},
+            "model_type": "chat",
+            "limits": {"rpm": 60, "tpm": 1, "concurrency": 2, "context_window": 8,
+                       "timeout_secs": 30, "retries": 1, "output_tokens": 9},
+            "headers": {"x-model-region": "eu"}
+        });
+        let dropped = strip_retired_advanced_keys(&mut blob);
+        assert_eq!(
+            dropped,
+            [
+                "base_url",
+                "insecure_tls",
+                "pricing",
+                "limits.rpm",
+                "limits.tpm",
+                "limits.concurrency",
+                "limits.context_window"
+            ]
+        );
+        assert_eq!(
+            blob,
+            serde_json::json!({
+                "model_type": "chat",
+                "limits": {"timeout_secs": 30, "retries": 1, "output_tokens": 9},
+                "headers": {"x-model-region": "eu"}
+            })
+        );
+        assert!(
+            strip_retired_advanced_keys(&mut blob).is_empty(),
+            "idempotent"
+        );
+        // a blob that is not an object is not this function's to judge
+        let mut not_an_object = serde_json::json!([1]);
+        assert!(strip_retired_advanced_keys(&mut not_an_object).is_empty());
+    }
+
+    #[test]
+    fn a_route_retry_budget_replaces_the_default_up_to_the_ceiling() {
+        let limits = |retries| ModelLimits {
+            retries,
+            ..Default::default()
+        };
+        assert_eq!(limits(None).max_retries(2), 2, "unset inherits");
+        assert_eq!(limits(Some(0)).max_retries(2), 0, "zero turns retries off");
+        assert_eq!(limits(Some(4)).max_retries(2), 4);
+        assert_eq!(
+            limits(Some(10_000_000)).max_retries(2),
+            MAX_ROUTE_RETRIES,
+            "a stored value above the ceiling is applied as the ceiling"
+        );
+    }
+
+    fn route_with_headers(headers: &[(&str, &str)], locked: &[&str]) -> ModelRoute {
+        let mut route = route_with(&[], ParamPolicy::default());
+        route.advanced.headers = headers
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        route.advanced.locked_headers = locked.iter().map(|n| n.to_string()).collect();
+        route
+    }
+
+    #[test]
+    fn route_headers_that_cannot_be_sent_are_named() {
+        let route = route_with_headers(
+            &[
+                ("x-model-region", "eu"),
+                ("Authorization", "Bearer sk-other"),
+                ("X-Api-Key", "k"),
+                ("bad name", "v"),
+                ("x-newline", "a\nb"),
+            ],
+            &["x-model-region", "no good"],
+        );
+        let problems = route.advanced.header_problems().join("\n");
+        assert!(
+            problems.contains("'Authorization' cannot be set"),
+            "{problems}"
+        );
+        assert!(problems.contains("'X-Api-Key' cannot be set"), "{problems}");
+        assert!(
+            problems.contains("header name 'bad name' is not valid"),
+            "{problems}"
+        );
+        assert!(problems.contains("'x-newline' has a value"), "{problems}");
+        assert!(
+            problems.contains("locked header name 'no good'"),
+            "{problems}"
+        );
+        assert!(!problems.contains("x-model-region"), "{problems}");
+    }
+
+    #[test]
+    fn a_file_with_a_credential_header_on_a_route_fails_validation() {
+        let mut cfg = GatewayConfig::default();
+        cfg.providers.push(ProviderConfig {
+            name: "p".to_string(),
+            api_base: "http://127.0.0.1:1".to_string(),
+            ..Default::default()
+        });
+        let mut route = route_with_headers(&[("authorization", "Bearer x")], &[]);
+        route.model = "m".to_string();
+        route.targets = vec![Target {
+            provider: "p".to_string(),
+            model: None,
+            weight: 1,
+        }];
+        cfg.routes.push(route);
+        let problems = cfg.validate().unwrap_err().join("\n");
+        assert!(
+            problems.contains("route 'm': header 'authorization' cannot be set"),
+            "{problems}"
+        );
+    }
+
+    /// One route's unsendable header must not 500 `/internal/snapshot` for
+    /// every tenant: the header is dropped, the route keeps serving and the
+    /// rest of its headers survive.
+    #[test]
+    fn the_snapshot_drops_a_route_header_it_cannot_send_and_keeps_the_route() {
+        let mut cfg = GatewayConfig::default();
+        cfg.providers.push(ProviderConfig {
+            name: "p".to_string(),
+            api_base: "http://127.0.0.1:1".to_string(),
+            ..Default::default()
+        });
+        let mut route = route_with_headers(
+            &[("authorization", "Bearer x"), ("x-model-region", "eu")],
+            &["x-model-region", "no good"],
+        );
+        route.model = "m".to_string();
+        route.targets = vec![Target {
+            provider: "p".to_string(),
+            model: None,
+            weight: 1,
+        }];
+        cfg.routes.push(route);
+
+        let warnings = cfg.sanitize_for_snapshot();
+        assert_eq!(cfg.routes.len(), 1, "the route is kept");
+        let advanced = &cfg.routes[0].advanced;
+        assert_eq!(advanced.headers.len(), 1);
+        assert_eq!(advanced.headers["x-model-region"], "eu");
+        assert_eq!(advanced.locked_headers, ["x-model-region"]);
+        let warnings = warnings.join("\n");
+        assert!(warnings.contains("route 'm'"), "{warnings}");
+        assert!(
+            warnings.contains("header 'authorization' cannot be set"),
+            "{warnings}"
+        );
+        cfg.validate_snapshot()
+            .expect("what is left must validate, or the snapshot would 500");
     }
 
     /// A stored `advanced` blob written before #1665 still loads.

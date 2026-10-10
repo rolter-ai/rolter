@@ -42,6 +42,12 @@ pub struct RouteEntry {
     /// provider's, so a route in an org-wide catalogue still cannot hand a
     /// project's private credential to another project's key
     pub project_scope: Option<String>,
+    /// what the route's `advanced` block changes about an upstream call: its
+    /// own bound on the wait for response headers and its static headers,
+    /// parsed once here so the request path never touches a header name
+    /// (#2924). Empty for a synthetic `provider/model` entry, which has no
+    /// route to read them from
+    pub overrides: rolter_proxy::RouteOverrides,
 }
 
 impl RouteEntry {
@@ -500,6 +506,7 @@ impl Snapshot {
                 route.model.clone(),
                 RouteEntry {
                     project_scope,
+                    overrides: rolter_proxy::RouteOverrides::from_advanced(&route.advanced),
                     guardrails: compiled_guardrails.resolve_selection(&route.advanced.guardrails),
                     route: route.clone(),
                     balancer,
@@ -743,6 +750,7 @@ impl Snapshot {
         };
         RouteEntry {
             project_scope,
+            overrides: Default::default(),
             route,
             balancer,
             variant_balancers: Vec::new(),

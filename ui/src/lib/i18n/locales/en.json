@@ -336,12 +336,12 @@
       "params": "Default parameters",
       "paramsInfo": "Server-side default values for inference parameters, and whether clients may override each one.",
       "caps": "Capabilities",
-      "capsInfo": "What this route's endpoint supports. Flags gate request features and hint the playground — they don't add capabilities the provider lacks. The set shown depends on the model type.",
+      "capsInfo": "What this route's endpoint supports. Labels for this dashboard: they decide which parameters the sheet offers, and the gateway does not refuse a request because a flag is off. The set shown depends on the model type.",
       "pricing": "Pricing override",
       "pricingInfo": "Override the datasheet price for accurate cost tracking. All fields optional — blank counts as 0.",
       "advanced": "Limits & network",
       "headers": "Custom request headers",
-      "headersInfo": "Extra HTTP headers sent upstream with every request. Same lock rules as parameters — control whether clients can override them.",
+      "headersInfo": "Extra HTTP headers sent upstream with every request this route makes. A locked header replaces a caller's header of the same name; an unlocked one is only a default. Credentials belong on the provider, so authorization headers are refused.",
       "rbac": "Access & permissions"
     },
     "fields": {
@@ -350,12 +350,9 @@
       "nameHint": "The name clients call. Each target can send a different model id upstream.",
       "nameHintEdit": "Renaming isn't supported yet — delete and re-add to change the name.",
       "modality": "Model type",
-      "modalityInfo": "The modality this endpoint handles. Determines which request schema and playground surface apply.",
-      "baseUrl": "Base URL override",
-      "baseUrlInfo": "Point this route at a custom endpoint (self-hosted, proxy, or region). Leave blank to use the provider's default base URL.",
-      "baseUrlHint": "Optional. Overrides the provider endpoint for this route only.",
+      "modalityInfo": "The kind of model this route serves. It decides which parameters, capabilities and prices this sheet offers. The gateway does not enforce it.",
       "description": "Description",
-      "descriptionInfo": "Free text shown in the catalog and pickers. Note capabilities, intended use, or gotchas for your team.",
+      "descriptionInfo": "A note kept with the route: capabilities, intended use, gotchas for your team. Shown here and returned by the routes API; never sent to API clients.",
       "descriptionPlaceholder": "What is this route for? Any routing notes for the team…",
       "enabled": "Enabled",
       "enabledHint": "Off = kept in the catalog but excluded from routing and pickers."
@@ -414,6 +411,7 @@
     },
     "pricing": {
       "hint": "Optional cost overrides for accurate tracking — fields shown match the model type. Leave blank for free / provider-tracked.",
+      "tokensOnly": "Rolter prices by tokens. A model type billed per image or per minute has no rate to set here, and its requests are recorded as unpriced: cost unknown, not zero.",
       "input": "Input {{currency}}/Mtok",
       "output": "Output {{currency}}/Mtok",
       "cacheWrite": "5 minute cache-write {{currency}}/Mtok",
@@ -423,24 +421,15 @@
       "cacheWrite1hPlaceholder": "5 minute rate",
       "cacheWrite1hHint": "Anthropic's 1 hour cache only. Leave empty to price those writes at the 5 minute rate, or the input rate when that is empty too.",
       "cacheRead": "Cache-read {{currency}}/Mtok",
-      "perImage": "Flat price per image ({{currency}})",
-      "perMinute": "Flat price per minute ({{currency}})",
       "currency": "Currency"
     },
     "net": {
-      "unlimited": "unlimited",
-      "rpm": "Requests / min",
-      "rpmInfo": "Max requests per minute to this route. Blank = no per-route cap (virtual-key limits still apply).",
-      "tpm": "Tokens / min",
-      "tpmInfo": "Max tokens per minute across requests to this route. Blank = no per-route cap.",
-      "concurrency": "Max concurrency",
       "timeout": "Timeout (ms)",
+      "timeoutHint": "How long to wait for the upstream's response headers, in whole seconds. Replaces the gateway's request timeout for this route and never cuts a streaming response short. Blank = the gateway's.",
       "retries": "Max retries",
-      "context": "Context window",
+      "retriesHint": "Extra attempts on other targets after a failure; 0 = none. Blank = the gateway's retry setting.",
       "maxOutput": "Max output tokens",
-      "insecureTls": "Allow insecure TLS",
-      "insecureTlsHint": "Disables cert verification for this route's endpoint.",
-      "insecureTlsInfo": "Skip TLS certificate verification. Only for self-signed or private-CA endpoints you trust — never for public providers."
+      "maxOutputHint": "Requests asking for more output tokens are refused. Blank = no cap."
     },
     "headers": {
       "name": "Header name",
@@ -468,7 +457,7 @@
       "targets": "Add at least one target. A route with none answers every request with an error.",
       "provider": "Pick a provider for every target. A target with none has nowhere to send requests.",
       "weight": "Weights are whole numbers, 1 or more.",
-      "baseUrl": "Base URL must start with http:// or https://. Leave blank to use the provider's default endpoint.",
+      "retries": "Retries are a whole number from 0 to {{max}}. Leave blank to use the gateway's setting.",
       "param": "One or more custom parameters have a value but no name — name them or clear the value.",
       "header": "One or more custom headers have a value but no name — name them or clear the value.",
       "cacheWrite": "Enter a cache-write rate of 0 or more, or leave it empty to price writes at the input rate.",
@@ -3883,7 +3872,7 @@
     },
     "budgets": {
       "title": "Budgets & Limits",
-      "subtitle": "Per-model spend caps, rate limits, and token budgets."
+      "subtitle": "Spend caps, rate limits, and token budgets by organization, team, project, or key."
     },
     "routing-rules": {
       "title": "Routing Rules",

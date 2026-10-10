@@ -7,7 +7,7 @@
 //! the [`rolter_store::ConfigStore`] trait exposes.
 
 use axum::extract::{Path, Query, State};
-use axum::http::{header::HeaderName, StatusCode};
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, patch, post, put};
 use axum::{Json, Router};
@@ -19,7 +19,7 @@ use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
 use rolter_core::slug::{is_valid_slug, slugify};
-use rolter_core::{AdvancedModelConfig, BudgetPeriod, Error};
+use rolter_core::{AdvancedModelConfig, BudgetPeriod, Error, MAX_ROUTE_RETRIES};
 use rolter_store::postgres::crypto::{Kek, KEK_ENV};
 use rolter_store::postgres::models::{
     AuditLogEntry, Budget, BusinessUnit, BusinessUnitListing, Customer, CustomerListing,
@@ -4296,54 +4296,8 @@ struct SetRouteAdvanced {
 }
 
 fn validate_advanced(advanced: &AdvancedModelConfig) -> ApiResult<()> {
-    if let Some(base_url) = &advanced.base_url {
-        let url = reqwest::Url::parse(base_url).map_err(|_| {
-            ApiError::Core(Error::Config(
-                "base_url must be an absolute http(s) URL".to_string(),
-            ))
-        })?;
-        if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
-            return Err(ApiError::Core(Error::Config(
-                "base_url must be an absolute http(s) URL".to_string(),
-            )));
-        }
-    }
-    // `pricing.cache_write_per_mtok` is deliberately absent: it is deprecated
-    // and nothing reads it (#2890), so refusing a bad value would only turn an
-    // older dashboard's save into a 400 over a number with no effect
     for (field, value) in [
-        (
-            "image_per_unit",
-            advanced.pricing.as_ref().and_then(|p| p.image_per_unit),
-        ),
-        (
-            "audio_input_per_minute",
-            advanced
-                .pricing
-                .as_ref()
-                .and_then(|p| p.audio_input_per_minute),
-        ),
-        (
-            "audio_output_per_minute",
-            advanced
-                .pricing
-                .as_ref()
-                .and_then(|p| p.audio_output_per_minute),
-        ),
-    ] {
-        if value.is_some_and(|price| !price.is_finite() || price < 0.0) {
-            return Err(ApiError::Core(Error::Config(format!(
-                "{field} must be a finite non-negative number"
-            ))));
-        }
-    }
-    for (field, value) in [
-        ("rpm", advanced.limits.rpm),
-        ("tpm", advanced.limits.tpm),
-        ("concurrency", advanced.limits.concurrency),
         ("timeout_secs", advanced.limits.timeout_secs),
-        ("retries", advanced.limits.retries),
-        ("context_window", advanced.limits.context_window),
         ("output_tokens", advanced.limits.output_tokens),
     ] {
         if value.is_some_and(|limit| limit == 0 || limit > 10_000_000) {
@@ -4352,13 +4306,23 @@ fn validate_advanced(advanced: &AdvancedModelConfig) -> ApiResult<()> {
             ))));
         }
     }
-    for name in advanced
-        .headers
-        .keys()
-        .chain(advanced.locked_headers.iter())
+    // zero is a value here, unlike the other limits: it turns retries off for
+    // the route. the ceiling is the one the gateway applies, which is also what
+    // the deployment-wide `retry_max_retries` is held to
+    if advanced
+        .limits
+        .retries
+        .is_some_and(|retries| retries > MAX_ROUTE_RETRIES)
     {
-        HeaderName::from_bytes(name.as_bytes())
-            .map_err(|_| ApiError::Core(Error::Config(format!("invalid header name '{name}'"))))?;
+        return Err(ApiError::Core(Error::Config(format!(
+            "retries must be between 0 and {MAX_ROUTE_RETRIES}"
+        ))));
+    }
+    // the same rule the snapshot and the proxy apply, so a header accepted here
+    // is one the gateway sends: a name that is not a token, a value the wire
+    // cannot carry, or a credential header a route may not replace
+    if let Some(problem) = advanced.header_problems().into_iter().next() {
+        return Err(ApiError::Core(Error::Config(problem)));
     }
     for id in advanced
         .visibility
@@ -4383,7 +4347,11 @@ async fn set_route_advanced(
     SafeJson(body): SafeJson<SetRouteAdvanced>,
 ) -> ApiResult<Json<Route>> {
     let org_id = authorize_route(&state, &principal, id, cap!("route", Update)).await?;
-    let advanced_value = normalize_json_object(body.advanced, "advanced")?;
+    let mut advanced_value = normalize_json_object(body.advanced, "advanced")?;
+    // keys the gateway never read (#2924) are accepted and dropped, so an older
+    // dashboard's save still succeeds and the routes API never reads one back
+    // as if it were stored policy
+    let dropped = rolter_core::strip_retired_advanced_keys(&mut advanced_value);
     let advanced: AdvancedModelConfig =
         serde_json::from_value(advanced_value.clone()).map_err(|err| {
             ApiError::Core(Error::Config(format!(
@@ -4402,7 +4370,7 @@ async fn set_route_advanced(
         "route.set_advanced",
         "route",
         id,
-        serde_json::json!({"advanced": advanced_value}),
+        serde_json::json!({"advanced": advanced_value, "dropped_retired_keys": dropped}),
     )
     .await;
     Ok(Json(row))
@@ -6399,13 +6367,7 @@ mod user_tests {
 
     #[test]
     fn advanced_model_validation_rejects_unsafe_values() {
-        let mut advanced = AdvancedModelConfig {
-            base_url: Some("ftp://models.example".to_string()),
-            ..Default::default()
-        };
-        assert!(is_config_err(validate_advanced(&advanced)));
-
-        advanced.base_url = Some("https://models.example/v1".to_string());
+        let mut advanced = AdvancedModelConfig::default();
         advanced
             .headers
             .insert("bad header".to_string(), "x".to_string());
@@ -6414,27 +6376,56 @@ mod user_tests {
         advanced.headers.clear();
         advanced.limits.output_tokens = Some(0);
         assert!(is_config_err(validate_advanced(&advanced)));
+
+        advanced.limits.output_tokens = None;
+        advanced.limits.timeout_secs = Some(0);
+        assert!(is_config_err(validate_advanced(&advanced)));
     }
 
-    // #2890: the route-level cache-write rate is deprecated and read by
-    // nothing, so a value in it is no reason to refuse a save
+    /// A route cannot present a credential of its own in place of the
+    /// provider's, nor a header the wire cannot carry (#2924).
     #[test]
-    fn advanced_model_validation_ignores_the_deprecated_cache_write_rate() {
-        let mut advanced = AdvancedModelConfig::default();
-        for rate in [3.75, -1.0, f64::NAN, f64::INFINITY] {
-            advanced
-                .pricing
-                .get_or_insert_with(Default::default)
-                .cache_write_per_mtok = Some(rate);
-            assert!(validate_advanced(&advanced).is_ok(), "{rate}");
+    fn advanced_model_validation_refuses_credential_and_unsendable_headers() {
+        for (name, value) in [
+            ("Authorization", "Bearer sk-route"),
+            ("x-api-key", "sk-route"),
+            ("api-key", "sk-route"),
+            ("x-goog-api-key", "sk-route"),
+            ("host", "elsewhere.example"),
+            ("content-length", "0"),
+            ("x-model-region", "a\nb"),
+        ] {
+            let mut advanced = AdvancedModelConfig::default();
+            advanced.headers.insert(name.to_string(), value.to_string());
+            assert!(
+                is_config_err(validate_advanced(&advanced)),
+                "{name} should be refused"
+            );
         }
-
-        // the neighbours are still held to it
+        let mut advanced = AdvancedModelConfig::default();
         advanced
-            .pricing
-            .get_or_insert_with(Default::default)
-            .image_per_unit = Some(-1.0);
+            .headers
+            .insert("x-model-region".to_string(), "eu".to_string());
+        advanced.locked_headers.push("x-model-region".to_string());
+        assert!(validate_advanced(&advanced).is_ok());
+        advanced.locked_headers.push("not a name".to_string());
         assert!(is_config_err(validate_advanced(&advanced)));
+    }
+
+    /// Zero is a value for `retries` (it turns retries off for the route) and
+    /// not for the other limits, and nothing may exceed the ceiling the gateway
+    /// applies.
+    #[test]
+    fn advanced_model_validation_bounds_the_retry_budget() {
+        let with = |retries| {
+            let mut advanced = AdvancedModelConfig::default();
+            advanced.limits.retries = retries;
+            validate_advanced(&advanced)
+        };
+        assert!(with(None).is_ok());
+        assert!(with(Some(0)).is_ok());
+        assert!(with(Some(MAX_ROUTE_RETRIES)).is_ok());
+        assert!(is_config_err(with(Some(MAX_ROUTE_RETRIES + 1))));
     }
 
     #[test]

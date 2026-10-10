@@ -116,6 +116,46 @@ alter table model_prices validate constraint model_prices_input_per_mtok_rate;
 
 The four names are `model_prices_input_per_mtok_rate`, `model_prices_output_per_mtok_rate`, `model_prices_cached_input_per_mtok_rate` and `model_prices_cache_write_per_mtok_rate`. Validating is optional: an unvalidated check protects new writes just the same. It only changes what `convalidated` reports.
 
+## Route advanced settings
+
+A route's `advanced` block used to store, validate and display several settings that the gateway never read, and the dashboard and these docs described them as working (#2924). This release applies the ones it can and removes the rest. Both halves change something for a route that already carries them, so look before you roll out.
+
+**Settings that start to apply.** A route that carries `limits.timeout_secs`, `limits.retries` or `headers` now uses them. Until now they changed nothing. A saved timeout that is shorter than a model's time to first byte now ends those requests early, a retry budget replaces `[retry].max_retries` for that route (a value above 10 is applied as 10), and every header is sent to the upstream. To list the routes that set any of them:
+
+```sql
+select model,
+       advanced -> 'limits' ->> 'timeout_secs' as timeout_secs,
+       advanced -> 'limits' ->> 'retries' as retries,
+       advanced -> 'headers' as headers
+from routes
+where advanced -> 'limits' ? 'timeout_secs'
+   or advanced -> 'limits' ? 'retries'
+   or coalesce(advanced -> 'headers', '{}'::jsonb) <> '{}'::jsonb;
+```
+
+A header that names a credential (`authorization`, `x-api-key`, `api-key`, `x-goog-api-key`) or the request's framing (`host`, `content-length`) is not sent. The snapshot leaves it out and `GET /api/v1/config/problems` names it; the route keeps serving. The credential belongs on the provider.
+
+**Settings that are gone.** `base_url`, `insecure_tls`, `pricing` and the `rpm`, `tpm`, `concurrency` and `context_window` limits never had an effect, and requests were served exactly as if they were not set. A route's `base_url` never redirected a request, and `insecure_tls = true` never turned off certificate verification. If you believed either, nothing changes on the wire, but the setting is gone: point a route at a second endpoint with a second provider, and trust a private CA with `[tls].ca_bundles` or the provider's `ca_bundles`. To list the routes that still carry one:
+
+```sql
+select model, advanced ->> 'base_url' as base_url, advanced ->> 'insecure_tls' as insecure_tls
+from routes
+where advanced ?| array['base_url', 'insecure_tls', 'pricing']
+   or advanced -> 'limits' ?| array['rpm', 'tpm', 'concurrency', 'context_window'];
+```
+
+Nothing is migrated, and a stored value that is no longer read keeps loading without complaint. The routes API drops these keys from a write instead of refusing it, so an older client or script still saves. Saving a model's sheet in the dashboard sheds them from that route. To clear them all at once:
+
+```sql
+update routes
+set advanced = (advanced - 'base_url' - 'insecure_tls' - 'pricing')
+               #- '{limits,rpm}' #- '{limits,tpm}' #- '{limits,concurrency}' #- '{limits,context_window}'
+where advanced ?| array['base_url', 'insecure_tls', 'pricing']
+   or advanced -> 'limits' ?| array['rpm', 'tpm', 'concurrency', 'context_window'];
+```
+
+A `rolter.toml` that sets any of them under `[routes.advanced]` still loads. `rolter check` and the gateway's startup log report each one as an unknown key.
+
 ## Upstream TLS trust store
 
 Rolter now verifies upstream HTTPS against the host's system trust store (`/etc/ssl/certs`, or the bundle `SSL_CERT_FILE` names) instead of a copy of the public roots built into the binary. The published images ship `ca-certificates`, so they need nothing from you. A binary you run on a host or in an image of your own with no CA store fails every upstream handshake until you install `ca-certificates` or point `SSL_CERT_FILE` at a PEM bundle. `ROLTER_CA_BUNDLE` and `[tls].ca_bundles` still add private CAs on top of that store.

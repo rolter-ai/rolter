@@ -279,9 +279,7 @@ async fn crud_create_round_trip_reflects_in_snapshot() {
                 "model_type": "chat",
                 "capabilities": ["tools", "vision"],
                 "description": "managed model",
-                "base_url": "https://models.example/v1",
-                "pricing": {"image_per_unit": 0.04},
-                "limits": {"output_tokens": 2048, "timeout_secs": 30},
+                "limits": {"output_tokens": 2048, "timeout_secs": 30, "retries": 0},
                 "headers": {"x-model-region": "eu"},
                 "locked_headers": ["x-model-region"]
             }
@@ -327,17 +325,174 @@ async fn crud_create_round_trip_reflects_in_snapshot() {
         .find(|r| r["model"] == "gpt-4o")
         .expect("route in snapshot");
     assert_eq!(route["advanced"]["limits"]["output_tokens"], 2048);
+    assert_eq!(route["advanced"]["limits"]["timeout_secs"], 30);
+    assert_eq!(
+        route["advanced"]["limits"]["retries"], 0,
+        "zero turns retries off, so it must survive as a value"
+    );
     assert_eq!(route["advanced"]["headers"]["x-model-region"], "eu");
 }
 
-/// #2890: a route's `advanced.pricing.cache_write_per_mtok` is deprecated, and
-/// nothing reads it. An older dashboard that still sends it is not refused
-/// (not even for a value that would once have been a 400), and a stored blob
-/// that carries it keeps parsing, reaching the snapshot and reading back.
+/// #2924: `base_url`, `insecure_tls`, `pricing` and four of the limits were
+/// stored and read by nothing, and are gone. A client that still sends them
+/// (an older dashboard, a script) is not refused: the keys are dropped before
+/// the blob is stored, so the routes API never reads one back as if it were
+/// policy, and what is left of the block is kept whole. A row written before
+/// they were retired still loads into the snapshot, with the keys ignored.
 #[tokio::test]
-async fn a_deprecated_route_cache_write_rate_is_accepted_and_ignored() {
+async fn retired_route_advanced_keys_are_accepted_and_dropped() {
     skip_without_db!();
-    let (app, _db) = fresh_app().await;
+    let (app, db) = fresh_app().await;
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    async fn post(client: &reqwest::Client, url: String, body: Value) -> Value {
+        let resp = client.post(&url).json(&body).send().await.unwrap();
+        let status = resp.status();
+        let json: Value = resp.json().await.unwrap();
+        assert!(status.is_success(), "POST {url} failed ({status}): {json}");
+        json
+    }
+
+    let org = post(
+        &client,
+        format!("{base}/api/v1/orgs"),
+        json!({"name": "Acme", "slug": "acme"}),
+    )
+    .await;
+    let org_id = org["id"].as_str().expect("org id");
+    let team = post(
+        &client,
+        format!("{base}/api/v1/orgs/{org_id}/teams"),
+        json!({"name": "Platform"}),
+    )
+    .await;
+    let team_id = team["id"].as_str().expect("team id");
+    let project = post(
+        &client,
+        format!("{base}/api/v1/teams/{team_id}/projects"),
+        json!({"name": "Gateway"}),
+    )
+    .await;
+    let project_id = project["id"].as_str().expect("project id");
+    let provider = post(
+        &client,
+        format!("{base}/api/v1/orgs/{org_id}/providers"),
+        json!({"name": "openai", "kind": "openai", "api_base": "https://api.openai.com"}),
+    )
+    .await;
+    let provider_id = provider["id"].as_str().expect("provider id");
+    let route = post(
+        &client,
+        format!("{base}/api/v1/projects/{project_id}/routes"),
+        json!({"model": "claude", "strategy": "round_robin"}),
+    )
+    .await;
+    let route_id = route["id"].as_str().expect("route id");
+    post(
+        &client,
+        format!("{base}/api/v1/routes/{route_id}/targets"),
+        json!({"provider_id": provider_id, "weight": 1}),
+    )
+    .await;
+    let put = |advanced: Value| {
+        client
+            .put(format!("{base}/api/v1/routes/{route_id}/advanced"))
+            .json(&json!({ "advanced": advanced }))
+            .send()
+    };
+
+    // nothing in a retired key is validated: it is applied to nothing, so
+    // refusing a negative price would only break an older dashboard's save
+    let saved = put(json!({
+        "base_url": "ftp://not-even-a-url",
+        "insecure_tls": true,
+        "pricing": {"cache_write_per_mtok": -1.0, "image_per_unit": -1.0},
+        "limits": {"rpm": 0, "tpm": 1, "concurrency": 2, "context_window": 3,
+                   "timeout_secs": 30, "retries": 0},
+        "headers": {"x-model-region": "eu"}
+    }))
+    .await
+    .unwrap();
+    let status = saved.status();
+    let saved: Value = saved.json().await.unwrap();
+    assert!(status.is_success(), "{saved}");
+    let advanced = &saved["advanced"];
+    for key in ["base_url", "insecure_tls", "pricing"] {
+        assert!(advanced.get(key).is_none(), "{key} was stored: {saved}");
+    }
+    for key in ["rpm", "tpm", "concurrency", "context_window"] {
+        assert!(
+            advanced["limits"].get(key).is_none(),
+            "limits.{key} was stored: {saved}"
+        );
+    }
+    assert_eq!(advanced["limits"]["timeout_secs"], 30, "{saved}");
+    assert_eq!(advanced["limits"]["retries"], 0, "{saved}");
+    assert_eq!(advanced["headers"]["x-model-region"], "eu", "{saved}");
+
+    // what the gateway applies is still validated
+    for (what, advanced) in [
+        (
+            "a retry budget past the ceiling",
+            json!({"limits": {"retries": 11}}),
+        ),
+        ("a zero timeout", json!({"limits": {"timeout_secs": 0}})),
+        (
+            "a credential header",
+            json!({"headers": {"Authorization": "Bearer other"}}),
+        ),
+        (
+            "a header value on two lines",
+            json!({"headers": {"x-model-region": "a\nb"}}),
+        ),
+    ] {
+        let refused = put(advanced).await.unwrap();
+        assert_eq!(refused.status(), 400, "{what} should be refused");
+    }
+
+    // a row written before the keys were retired still loads, whole
+    sqlx::query("update routes set advanced = $1 where id = $2")
+        .bind(json!({
+            "base_url": "https://models.example/v1",
+            "insecure_tls": true,
+            "pricing": {"cache_write_per_mtok": 3.75, "image_per_unit": 0.04},
+            "limits": {"rpm": 60, "output_tokens": 2048, "timeout_secs": 45},
+            "visibility": {"minimum_role": "member"}
+        }))
+        .bind(uuid::Uuid::parse_str(route_id).unwrap())
+        .execute(db.pool())
+        .await
+        .unwrap();
+    let snap: Value = client
+        .get(format!("{base}/internal/snapshot"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let route = snap["config"]["routes"]
+        .as_array()
+        .expect("routes")
+        .iter()
+        .find(|r| r["model"] == "claude")
+        .unwrap_or_else(|| panic!("route missing from the snapshot: {snap}"));
+    assert_eq!(route["advanced"]["limits"]["output_tokens"], 2048);
+    assert_eq!(route["advanced"]["limits"]["timeout_secs"], 45);
+    assert_eq!(route["advanced"]["visibility"]["minimum_role"], "member");
+    assert!(route["advanced"].get("base_url").is_none(), "{route}");
+    assert!(route["advanced"].get("insecure_tls").is_none(), "{route}");
+}
+
+/// A header a route cannot send (a credential written by SQL around the API's
+/// check) must not 500 `/internal/snapshot` for every tenant: the snapshot
+/// drops that header, keeps the route, and reports it (#2924).
+#[tokio::test]
+async fn a_route_header_that_cannot_be_sent_is_dropped_from_the_snapshot() {
+    skip_without_db!();
+    let (app, db) = fresh_app().await;
     let addr = serve(app).await;
     let client = reqwest::Client::new();
     let base = format!("http://{addr}");
@@ -392,52 +547,52 @@ async fn a_deprecated_route_cache_write_rate_is_accepted_and_ignored() {
     )
     .await;
 
-    // the value is not validated: it is applied to nothing, so refusing a
-    // negative one would only break an older dashboard's save
-    for rate in [json!(3.75), json!(-1.0)] {
-        let saved = client
-            .put(format!("{base}/api/v1/routes/{route_id}/advanced"))
-            .json(&json!({"advanced": {"pricing": {
-                "cache_write_per_mtok": rate, "image_per_unit": 0.04,
-            }}}))
-            .send()
-            .await
-            .unwrap();
-        let status = saved.status();
-        let saved: Value = saved.json().await.unwrap();
-        assert!(status.is_success(), "{rate} should be accepted: {saved}");
-        assert_eq!(
-            saved["advanced"]["pricing"]["cache_write_per_mtok"], rate,
-            "{saved}"
-        );
-    }
+    sqlx::query("update routes set advanced = $1 where id = $2")
+        .bind(json!({
+            "headers": {"x-model-region": "eu", "Authorization": "Bearer sk-route"},
+            "locked_headers": ["x-model-region", "Authorization", "not a name"]
+        }))
+        .bind(uuid::Uuid::parse_str(route_id).unwrap())
+        .execute(db.pool())
+        .await
+        .unwrap();
 
-    // the other pricing fields are still validated
-    let refused = client
-        .put(format!("{base}/api/v1/routes/{route_id}/advanced"))
-        .json(&json!({"advanced": {"pricing": {"image_per_unit": -1.0}}}))
+    let response = client
+        .get(format!("{base}/internal/snapshot"))
         .send()
         .await
         .unwrap();
-    assert_eq!(refused.status(), 400);
+    assert!(response.status().is_success(), "{}", response.status());
+    let snap: Value = response.json().await.unwrap();
+    let route = snap["config"]["routes"]
+        .as_array()
+        .expect("routes")
+        .iter()
+        .find(|r| r["model"] == "claude")
+        .unwrap_or_else(|| panic!("the route must be kept: {snap}"));
+    assert_eq!(route["advanced"]["headers"]["x-model-region"], "eu");
+    assert!(route["advanced"]["headers"].get("Authorization").is_none());
+    assert_eq!(
+        route["advanced"]["locked_headers"],
+        json!(["x-model-region", "Authorization"]),
+        "only a name the wire cannot carry is dropped from the locks"
+    );
 
-    // and the stored blob loads into the snapshot whole
-    let snap: Value = client
-        .get(format!("{base}/internal/snapshot"))
+    // and the operator is told, not left to wonder why the header is not sent
+    let problems: Value = client
+        .get(format!("{base}/api/v1/config/problems"))
         .send()
         .await
         .unwrap()
         .json()
         .await
         .unwrap();
-    let route = snap["config"]["routes"]
-        .as_array()
-        .expect("routes")
-        .iter()
-        .find(|r| r["model"] == "claude")
-        .unwrap_or_else(|| panic!("route missing from the snapshot: {snap}"));
-    assert_eq!(route["advanced"]["pricing"]["cache_write_per_mtok"], -1.0);
-    assert_eq!(route["advanced"]["pricing"]["image_per_unit"], 0.04);
+    let problems = problems["problems"].to_string();
+    assert!(
+        problems.contains("route 'claude'")
+            && problems.contains("header 'Authorization' cannot be set"),
+        "{problems}"
+    );
 }
 
 /// Pausing a dashboard guardrail rule that a route still names in an override

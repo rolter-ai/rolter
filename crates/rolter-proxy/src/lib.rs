@@ -15,8 +15,10 @@
 
 pub mod egress_resolver;
 pub mod pool;
+pub mod route;
 mod translation;
 
+pub use route::{RouteHeaders, RouteOverrides};
 pub use translation::{
     anthropic_cache_written_tokens, cache_written_one_hour_tokens, cache_written_prompt_tokens,
     cached_prompt_tokens, reasoning_tokens_beside_completion, Protocol, ThinkingCount,
@@ -211,12 +213,13 @@ impl Forwarder {
     async fn send_with_proxy_retry(
         &self,
         provider: &ProviderConfig,
+        route_timeout: Option<Duration>,
         build: impl Fn(Client) -> RequestBuilder,
     ) -> Result<Response> {
         let mut candidates = self.proxy_candidates(provider)?;
         if candidates.is_empty() {
             let client = self.client_for_proxy(provider, None)?;
-            return self.await_send(build(client).send()).await;
+            return self.await_send(route_timeout, build(client).send()).await;
         }
         let start = self.next_proxy.fetch_add(1, Relaxed) % candidates.len();
         candidates.rotate_left(start);
@@ -234,7 +237,7 @@ impl Forwarder {
                 continue;
             }
             let client = self.client_for_proxy(provider, Some(&url))?;
-            let result = match timeout_duration(self.request_timeout_secs.load(Relaxed)) {
+            let result = match self.request_budget(route_timeout) {
                 Some(limit) => match tokio::time::timeout(limit, build(client).send()).await {
                     Ok(result) => result,
                     Err(_) => {
@@ -338,6 +341,32 @@ impl Forwarder {
         upstream_model: Option<&str>,
         passthrough_headers: &[(&str, &str)],
     ) -> Result<Response> {
+        self.forward_json_with(
+            provider,
+            path,
+            body,
+            api_key,
+            upstream_model,
+            passthrough_headers,
+            &RouteOverrides::default(),
+        )
+        .await
+    }
+
+    /// [`Self::forward_json`] under the settings of the route the request
+    /// resolved to: its own bound on the wait for response headers, and its
+    /// static headers (#2924).
+    #[allow(clippy::too_many_arguments)]
+    pub async fn forward_json_with(
+        &self,
+        provider: &ProviderConfig,
+        path: &str,
+        body: Bytes,
+        api_key: Option<&str>,
+        upstream_model: Option<&str>,
+        passthrough_headers: &[(&str, &str)],
+        route: &RouteOverrides,
+    ) -> Result<Response> {
         if provider.kind == ProviderKind::Openrouter && api_key.is_none() {
             return Err(Error::Config(format!(
                 "openrouter provider '{}' requires a resolved api key",
@@ -386,7 +415,7 @@ impl Forwarder {
         } else {
             maybe_rewrite_model(body, upstream_model)
         };
-        self.send_with_proxy_retry(provider, |client| {
+        self.send_with_proxy_retry(provider, route.request_timeout, |client| {
             let mut req = apply_provider_auth_with(
                 client
                     .request(Method::POST, &url)
@@ -408,6 +437,8 @@ impl Forwarder {
                 req = req.header(name.as_str(), value.as_str());
             }
             req = apply_passthrough(req, provider, passthrough_headers);
+            // last, so a route header replaces the same name set above
+            req = route.headers.apply(req, passthrough_headers);
             req.body(body.clone())
         })
         .await
@@ -429,6 +460,31 @@ impl Forwarder {
         api_key: Option<&str>,
         passthrough_headers: &[(&str, &str)],
     ) -> Result<Response> {
+        self.forward_raw_with(
+            provider,
+            path,
+            body,
+            content_type,
+            api_key,
+            passthrough_headers,
+            &RouteOverrides::default(),
+        )
+        .await
+    }
+
+    /// [`Self::forward_raw`] under the settings of the route the request
+    /// resolved to (#2924).
+    #[allow(clippy::too_many_arguments)]
+    pub async fn forward_raw_with(
+        &self,
+        provider: &ProviderConfig,
+        path: &str,
+        body: Bytes,
+        content_type: &str,
+        api_key: Option<&str>,
+        passthrough_headers: &[(&str, &str)],
+        route: &RouteOverrides,
+    ) -> Result<Response> {
         if provider.kind == ProviderKind::OllamaCloud && api_key.is_none() {
             return Err(Error::Config(format!(
                 "ollama_cloud provider '{}' requires a resolved api key",
@@ -439,7 +495,7 @@ impl Forwarder {
         let compatibility = self.compatibility.load();
         let client_policy = self.client_policy.load();
         let injected = &client_policy.injected_headers;
-        self.send_with_proxy_retry(provider, |client| {
+        self.send_with_proxy_retry(provider, route.request_timeout, |client| {
             let mut req = apply_provider_auth_with(
                 client
                     .request(Method::POST, &url)
@@ -453,6 +509,7 @@ impl Forwarder {
                 req = req.header(name.as_str(), value.as_str());
             }
             req = apply_passthrough(req, provider, passthrough_headers);
+            req = route.headers.apply(req, passthrough_headers);
             req.body(body.clone())
         })
         .await
@@ -473,7 +530,7 @@ impl Forwarder {
         let compatibility = self.compatibility.load();
         let client_policy = self.client_policy.load();
         let injected = &client_policy.injected_headers;
-        self.send_with_proxy_retry(provider, |client| {
+        self.send_with_proxy_retry(provider, None, |client| {
             let mut req = apply_provider_auth_with(
                 client.request(method.clone(), &url),
                 provider,
@@ -617,13 +674,21 @@ impl Forwarder {
         })
     }
 
+    /// The time-to-headers budget for one call: the route's own bound when it
+    /// set one, else the deployment's `[timeouts].request_secs` (0 disables
+    /// that one, but a route that names a bound always has it applied).
+    fn request_budget(&self, route_timeout: Option<Duration>) -> Option<Duration> {
+        route_timeout.or_else(|| timeout_duration(self.request_timeout_secs.load(Relaxed)))
+    }
+
     /// Await an upstream send under the configured time-to-headers budget. The
     /// body stream is left untouched so long/streamed responses aren't cut off.
     async fn await_send(
         &self,
+        route_timeout: Option<Duration>,
         send: impl std::future::Future<Output = std::result::Result<Response, reqwest::Error>>,
     ) -> Result<Response> {
-        match timeout_duration(self.request_timeout_secs.load(Relaxed)) {
+        match self.request_budget(route_timeout) {
             Some(limit) => match tokio::time::timeout(limit, send).await {
                 Ok(res) => res.map_err(|e| Error::Upstream(e.to_string())),
                 Err(_) => Err(Error::Upstream(format!(
@@ -1206,6 +1271,178 @@ mod tests {
             err.to_string().contains("timed out"),
             "expected a timeout error, got: {err}"
         );
+    }
+
+    /// An upstream that accepts connections and never answers.
+    async fn silent_upstream() -> std::net::SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                if let Ok((stream, _)) = listener.accept().await {
+                    std::mem::forget(stream);
+                }
+            }
+        });
+        addr
+    }
+
+    fn route_with_timeout(secs: u32) -> RouteOverrides {
+        let mut advanced = rolter_core::AdvancedModelConfig::default();
+        advanced.limits.timeout_secs = Some(secs);
+        RouteOverrides::from_advanced(&advanced)
+    }
+
+    /// The route's bound is what applies, not the deployment's: with 30s as the
+    /// deployment bound, a 1s route bound has to be the one that fires. The
+    /// outer 10s guard is what fails the test if the route's bound is ignored,
+    /// since the call would then wait out the 30s.
+    #[tokio::test]
+    async fn a_route_timeout_replaces_a_longer_deployment_one() {
+        let addr = silent_upstream().await;
+        let fwd = Forwarder::with_timeouts(&TimeoutConfig {
+            connect_secs: 0,
+            request_secs: 30,
+        });
+        let p = provider(ProviderKind::OpenaiCompatible, format!("http://{addr}"));
+        let route = route_with_timeout(1);
+        let call = fwd.forward_json_with(
+            &p,
+            "/v1/chat/completions",
+            Bytes::from_static(b"{}"),
+            None,
+            None,
+            &[],
+            &route,
+        );
+        let err = tokio::time::timeout(Duration::from_secs(10), call)
+            .await
+            .expect("the route's 1s bound must fire before the deployment's 30s")
+            .unwrap_err();
+        assert!(err.to_string().contains("timed out after 1s"), "{err}");
+    }
+
+    /// A deployment that turned the bound off (`request_secs = 0`) still gets
+    /// the route's, since the route asked for one by name.
+    #[tokio::test]
+    async fn a_route_timeout_applies_where_the_deployment_has_none() {
+        let addr = silent_upstream().await;
+        let fwd = Forwarder::with_timeouts(&TimeoutConfig {
+            connect_secs: 0,
+            request_secs: 0,
+        });
+        let p = provider(ProviderKind::OpenaiCompatible, format!("http://{addr}"));
+        let route = route_with_timeout(1);
+        let call = fwd.forward_raw_with(
+            &p,
+            "/v1/audio/transcriptions",
+            Bytes::from_static(b"{}"),
+            "multipart/form-data; boundary=x",
+            None,
+            &[],
+            &route,
+        );
+        let err = tokio::time::timeout(Duration::from_secs(10), call)
+            .await
+            .expect("the route's bound must fire when the deployment has none")
+            .unwrap_err();
+        assert!(err.to_string().contains("timed out after 1s"), "{err}");
+    }
+
+    fn route_with_headers(headers: &[(&str, &str)], locked: &[&str]) -> RouteOverrides {
+        let advanced = rolter_core::AdvancedModelConfig {
+            headers: headers
+                .iter()
+                .map(|(name, value)| (name.to_string(), value.to_string()))
+                .collect(),
+            locked_headers: locked.iter().map(|name| name.to_string()).collect(),
+            ..Default::default()
+        };
+        RouteOverrides::from_advanced(&advanced)
+    }
+
+    async fn head_sent_with(route: &RouteOverrides, caller: &[(&str, &str)]) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let capture = tokio::spawn(capture_one_request(listener));
+        let fwd = Forwarder::new();
+        let p = provider(ProviderKind::Anthropic, format!("http://{addr}"));
+        fwd.forward_json_with(
+            &p,
+            "/v1/messages",
+            Bytes::from_static(b"{}"),
+            Some("sk-provider"),
+            None,
+            caller,
+            route,
+        )
+        .await
+        .unwrap();
+        capture.await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_route_header_reaches_the_upstream() {
+        let route = route_with_headers(&[("X-Model-Region", "eu")], &[]);
+        let head = head_sent_with(&route, &[]).await;
+        assert!(head.contains("x-model-region: eu"), "{head}");
+    }
+
+    /// The route is edited by a project admin and the provider's key belongs to
+    /// an org admin: nothing on a route may replace the key, even when the
+    /// stored row was written around the control plane's check.
+    #[tokio::test]
+    async fn a_route_cannot_replace_the_providers_credential() {
+        let route = route_with_headers(
+            &[
+                ("x-api-key", "sk-route"),
+                ("authorization", "Bearer sk-route"),
+            ],
+            &[],
+        );
+        let head = head_sent_with(&route, &[]).await;
+        assert!(head.contains("x-api-key: sk-provider"), "{head}");
+        assert!(!head.contains("sk-route"), "{head}");
+        assert!(!head.contains("authorization:"), "{head}");
+    }
+
+    /// A header the deployment forwards from the caller is the caller's to
+    /// choose unless the route locked it.
+    #[tokio::test]
+    async fn a_locked_route_header_beats_the_caller_and_an_unlocked_one_loses() {
+        let caller = [("x-tenant", "from-caller"), ("x-region", "from-caller")];
+        let route = route_with_headers(
+            &[("x-tenant", "from-route"), ("x-region", "from-route")],
+            &["x-tenant"],
+        );
+        let head = head_sent_with(&route, &caller).await;
+        assert!(head.contains("x-tenant: from-route"), "{head}");
+        assert!(!head.contains("x-tenant: from-caller"), "{head}");
+        assert!(head.contains("x-region: from-caller"), "{head}");
+        assert!(!head.contains("x-region: from-route"), "{head}");
+    }
+
+    #[tokio::test]
+    async fn a_multipart_forward_carries_the_route_headers_too() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let capture = tokio::spawn(capture_one_request(listener));
+        let fwd = Forwarder::new();
+        let p = provider(ProviderKind::OpenaiCompatible, format!("http://{addr}"));
+        fwd.forward_raw_with(
+            &p,
+            "/v1/audio/transcriptions",
+            Bytes::from_static(b"--x--"),
+            "multipart/form-data; boundary=x",
+            Some("sk-test"),
+            &[],
+            &route_with_headers(&[("x-model-region", "eu")], &[]),
+        )
+        .await
+        .unwrap();
+        let head = capture.await.unwrap();
+        assert!(head.contains("x-model-region: eu"), "{head}");
+        assert!(head.contains("content-type: multipart/form-data; boundary=x"));
     }
 
     #[test]

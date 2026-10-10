@@ -121,7 +121,6 @@ interface ModelDraft {
   strategy: string;
   targets: DraftTarget[];
   modality: Modality;
-  baseUrl: string;
   description: string;
   enabled: boolean;
   paramMode: LockMode;
@@ -133,17 +132,11 @@ interface ModelDraft {
     cacheWrite: string;
     cacheWrite1h: string;
     cacheRead: string;
-    perRequest: string;
     currency: string;
   };
   net: {
-    insecureTls: boolean;
-    rpm: string;
-    tpm: string;
-    concurrency: string;
     timeoutMs: string;
     retries: string;
-    context: string;
     maxOutput: string;
   };
   headerMode: LockMode;
@@ -247,7 +240,6 @@ function blankDraft(
     // is no line to fill in, and the note about adding one says why
     targets: providers.length > 0 ? [newTarget(providerId)] : [],
     modality: "chat",
-    baseUrl: "",
     description: "",
     enabled: true,
     paramMode: "manual",
@@ -259,17 +251,11 @@ function blankDraft(
       cacheWrite: "",
       cacheWrite1h: "",
       cacheRead: "",
-      perRequest: "",
       currency: "USD",
     },
     net: {
-      insecureTls: false,
-      rpm: "",
-      tpm: "",
-      concurrency: "",
       timeoutMs: "",
       retries: "",
-      context: "",
       maxOutput: "",
     },
     headerMode: "manual",
@@ -277,6 +263,18 @@ function blankDraft(
     rbac: { minRole: "member", visibility: "public", teams: [], vkeys: [], users: [] },
   };
 }
+
+/**
+ * Keys a route's `advanced` blob used to carry and the gateway never read
+ * (#2924): a per-route endpoint and an insecure-TLS switch, and flat image and
+ * audio prices. A save sheds them from the stored blob; the limits that went the
+ * same way (`rpm`, `tpm`, `concurrency`, `context_window`) drop out because the
+ * limits object is rebuilt from the three that are applied.
+ */
+const RETIRED_ADVANCED_KEYS = ["base_url", "insecure_tls", "pricing"] as const;
+
+/** the most retries a route may ask for, which the control plane and gateway enforce */
+const MAX_ROUTE_RETRIES = 10;
 
 /**
  * Seed the draft from a route's stored `advanced` blob (#1178).
@@ -308,26 +306,17 @@ function seedAdvanced(draft: ModelDraft, advanced: Record<string, unknown>) {
     }
   }
   draft.params = paramDefs(draft.modality, draft.caps.reasoning);
-  draft.baseUrl = str(advanced.base_url);
   draft.description = str(advanced.description);
 
-  // the cache-write rate is the price row's, seeded from it in the effect that
-  // loads the row. `pricing.cache_write_per_mtok` here is an older field that
-  // no cost path reads (#2890), so it is no longer shown as if it applied
-  const pricing = obj(advanced.pricing);
-  draft.price.perRequest = num(pricing.image_per_unit);
-
+  // the keys in `RETIRED_ADVANCED_KEYS` and the limits the gateway never read
+  // (#2924) are not seeded: a field that is not on screen cannot be edited, and
+  // the save sheds them from the stored blob
   const limits = obj(advanced.limits);
-  draft.net.rpm = num(limits.rpm);
-  draft.net.tpm = num(limits.tpm);
-  draft.net.concurrency = num(limits.concurrency);
   // the backend stores whole seconds; the field is milliseconds
   draft.net.timeoutMs =
     typeof limits.timeout_secs === "number" ? String(limits.timeout_secs * 1000) : "";
   draft.net.retries = num(limits.retries);
-  draft.net.context = num(limits.context_window);
   draft.net.maxOutput = num(limits.output_tokens);
-  draft.net.insecureTls = advanced.insecure_tls === true;
 
   const locked = new Set(strings(advanced.locked_headers));
   draft.headers = Object.entries(obj(advanced.headers)).map(([key, value]) => ({
@@ -375,14 +364,16 @@ function advancedToApi(
   const obj = (v: unknown): Record<string, unknown> =>
     v && typeof v === "object" && !Array.isArray(v) ? { ...(v as Record<string, unknown>) } : {};
   // a limit of 0 is refused by `validate_advanced`; blank and 0 both read as
-  // "inherit the gateway/provider setting", so neither is sent
+  // "inherit the gateway setting", so neither is sent
   const limit = (v: string) => {
     const n = Math.trunc(Number(v));
     return v.trim() !== "" && Number.isFinite(n) && n > 0 ? n : undefined;
   };
-  const price = (v: string) => {
-    const n = Number(v);
-    return v.trim() !== "" && Number.isFinite(n) ? n : undefined;
+  // the retry budget is the one limit where 0 is a value: it turns retries off
+  // for the route, so only a blank field inherits the gateway's
+  const retries = (v: string) => {
+    const n = Math.trunc(Number(v));
+    return v.trim() !== "" && Number.isFinite(n) && n >= 0 ? n : undefined;
   };
   // an absent field is absent, not null: every one is `Option`/`default` on the
   // backend and a null would fail to deserialize
@@ -392,28 +383,21 @@ function advancedToApi(
   };
 
   const out = { ...stored };
+  // keys the gateway never read, shed so the stored blob stops carrying a
+  // setting that looks like policy (#2924). The control plane drops them on
+  // write too; this keeps an older control plane from storing them again
+  for (const key of RETIRED_ADVANCED_KEYS) delete out[key];
   out.model_type = draft.modality;
   out.capabilities = Object.entries(draft.caps)
     .filter(([, on]) => on)
     .map(([key]) => key);
-  put(out, "base_url", draft.baseUrl.trim() || undefined);
   put(out, "description", draft.description.trim() || undefined);
 
-  // the audio rates have no field on this sheet, so they are carried through
-  // rather than dropped by a save that never showed them
-  const pricing = obj(stored.pricing);
-  // the cache-write rate is saved on the price row now; the route's own copy was
-  // never read by a cost path, so a save sheds it rather than carry it (#2890)
-  delete pricing.cache_write_per_mtok;
-  put(pricing, "image_per_unit", price(draft.price.perRequest));
-  put(out, "pricing", Object.keys(pricing).length > 0 ? pricing : undefined);
-
+  // rebuilt from the three limits the gateway applies, so the ones it never
+  // read (`rpm`, `tpm`, `concurrency`, `context_window`) drop out of a stored
+  // blob on the next save
   const limits: Record<string, unknown> = {};
-  put(limits, "rpm", limit(draft.net.rpm));
-  put(limits, "tpm", limit(draft.net.tpm));
-  put(limits, "concurrency", limit(draft.net.concurrency));
-  put(limits, "retries", limit(draft.net.retries));
-  put(limits, "context_window", limit(draft.net.context));
+  put(limits, "retries", retries(draft.net.retries));
   put(limits, "output_tokens", limit(draft.net.maxOutput));
   // the field is milliseconds and the backend stores whole seconds; a
   // sub-second timeout rounds up to 1 rather than to the 0 it would refuse
@@ -422,8 +406,6 @@ function advancedToApi(
     limits.timeout_secs = Math.max(1, Math.round(timeoutMs / 1000));
   }
   out.limits = limits;
-
-  out.insecure_tls = draft.net.insecureTls;
 
   const headers: Record<string, string> = {};
   const lockedHeaders: string[] = [];
@@ -894,7 +876,7 @@ type FieldKey =
   | "targets"
   | "provider"
   | "weight"
-  | "baseUrl"
+  | "retries"
   | "param"
   | "header"
   | "cacheWrite"
@@ -1138,9 +1120,16 @@ export function ModelSheet({
   const weightRowInvalid = (tg: DraftTarget) => !weightValid(tg.weight);
   const errWeight =
     !readonly && draft.targets.some(weightRowInvalid) ? t("modelSheet.errors.weight") : "";
-  const errBaseUrl =
-    draft.baseUrl.trim() !== "" && !/^https?:\/\//i.test(draft.baseUrl.trim())
-      ? t("modelSheet.errors.baseUrl")
+  // blank inherits the gateway's budget; 0 turns retries off for the route
+  const retriesTyped = draft.net.retries.trim();
+  const errRetries =
+    retriesTyped !== "" &&
+    !(
+      Number.isInteger(Number(retriesTyped)) &&
+      Number(retriesTyped) >= 0 &&
+      Number(retriesTyped) <= MAX_ROUTE_RETRIES
+    )
+      ? t("modelSheet.errors.retries", { max: MAX_ROUTE_RETRIES })
       : "";
   const paramRowInvalid = (p: (typeof draft.params)[number]) =>
     p.custom && p.value.trim() !== "" && p.key.trim() === "";
@@ -1168,7 +1157,7 @@ export function ModelSheet({
     targets: errTargets,
     provider: errProvider,
     weight: errWeight,
-    baseUrl: errBaseUrl,
+    retries: errRetries,
     param: errParam,
     header: errHeader,
     cacheWrite: errCacheWrite,
@@ -1190,8 +1179,10 @@ export function ModelSheet({
     targetsErr: `${fid}-targets-err`,
     providerErr: `${fid}-provider-err`,
     weightErr: `${fid}-weight-err`,
-    baseUrlHint: `${fid}-base-url-hint`,
-    baseUrlErr: `${fid}-base-url-err`,
+    timeoutHint: `${fid}-timeout-hint`,
+    retriesHint: `${fid}-retries-hint`,
+    retriesErr: `${fid}-retries-err`,
+    maxOutputHint: `${fid}-max-output-hint`,
     paramErr: `${fid}-param-err`,
     headerErr: `${fid}-header-err`,
     cacheWriteHint: `${fid}-cache-write-hint`,
@@ -1410,6 +1401,9 @@ export function ModelSheet({
   const cta = mode === "add" ? t("modelSheet.ctaAdd") : t("modelSheet.ctaSave");
 
   const showCaps = draft.modality === "chat" || draft.modality === "audio";
+  // cost is computed from token counts, so a model type billed per image or per
+  // minute has no rate to set here (#2924)
+  const tokenPriced = draft.modality === "chat" || draft.modality === "embedding";
   const cur = draft.price.currency;
   // a stored price may name a code the rate table no longer carries; keep it
   // selectable so saving an unrelated field cannot silently re-denominate it
@@ -1436,25 +1430,38 @@ export function ModelSheet({
     { value: "manual", label: t("modelSheet.lock.manual") },
   ];
 
+  // a limit the gateway applies, with what blank means said under it. `check`
+  // names the field whose error this input shows, when it has one
   const numInput = (
     key: keyof ModelDraft["net"],
     label: string,
     placeholder: string,
-    info?: string,
-  ) => (
-    <div className="space-y-1">
-      <FieldLabel label={label} info={info} htmlFor={`ms-net-${key}`} />
-      <Input
-        id={`ms-net-${key}`}
-        type="number"
-        className="font-mono"
-        value={draft.net[key] as string}
-        placeholder={placeholder}
-        disabled={readonly}
-        onChange={(e) => setDeep("net", { [key]: e.target.value } as Partial<ModelDraft["net"]>)}
-      />
-    </div>
-  );
+    hint: { id: string; text: string },
+    check?: { field: FieldKey; errId: string },
+  ) => {
+    const error = check ? shownError(check.field) : "";
+    return (
+      <div className="space-y-1">
+        <FieldLabel label={label} htmlFor={`ms-net-${key}`} />
+        <Input
+          id={`ms-net-${key}`}
+          type="number"
+          className="font-mono"
+          value={draft.net[key]}
+          placeholder={placeholder}
+          disabled={readonly}
+          aria-invalid={error ? true : undefined}
+          aria-describedby={describedBy(hint.id, error && check?.errId)}
+          onChange={(e) => setDeep("net", { [key]: e.target.value } as Partial<ModelDraft["net"]>)}
+          onBlur={check ? () => visibility.touch(check.field) : undefined}
+        />
+        <p id={hint.id} className="text-xs text-muted-foreground">
+          {hint.text}
+        </p>
+        {check && <FieldError id={check.errId} error={error} />}
+      </div>
+    );
+  };
 
   const priceInput = (
     key: "input" | "output" | "cacheWrite" | "cacheWrite1h" | "cacheRead",
@@ -1596,31 +1603,6 @@ export function ModelSheet({
                 options={MODALITIES.map((m) => ({ value: m, label: m }))}
               />
             </div>
-          </div>
-          <div className="space-y-1.5">
-            <FieldLabel
-              label={t("modelSheet.fields.baseUrl")}
-              info={t("modelSheet.fields.baseUrlInfo")}
-              htmlFor="ms-field-6"
-            />
-            <Input
-              id="ms-field-6"
-              className="font-mono"
-              value={draft.baseUrl}
-              placeholder="https://api.provider.com/v1"
-              disabled={readonly}
-              aria-invalid={shownError("baseUrl") ? true : undefined}
-              aria-describedby={describedBy(
-                ids.baseUrlHint,
-                shownError("baseUrl") && ids.baseUrlErr,
-              )}
-              onChange={(e) => set({ baseUrl: e.target.value })}
-              onBlur={() => visibility.touch("baseUrl")}
-            />
-            <p id={ids.baseUrlHint} className="text-xs text-muted-foreground">
-              {t("modelSheet.fields.baseUrlHint")}
-            </p>
-            <FieldError id={ids.baseUrlErr} error={shownError("baseUrl")} />
           </div>
           <div className="space-y-1.5">
             <FieldLabel
@@ -1909,9 +1891,11 @@ export function ModelSheet({
           className="space-y-3"
         >
           <p className="text-xs text-muted-foreground">{t("modelSheet.pricing.hint")}</p>
+          {!tokenPriced && (
+            <p className="text-xs text-muted-foreground">{t("modelSheet.pricing.tokensOnly")}</p>
+          )}
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            {(draft.modality === "chat" || draft.modality === "embedding") &&
-              priceInput("input", t("modelSheet.pricing.input", { currency: cur }))}
+            {tokenPriced && priceInput("input", t("modelSheet.pricing.input", { currency: cur }))}
             {draft.modality === "chat" && (
               <>
                 {priceInput("output", t("modelSheet.pricing.output", { currency: cur }))}
@@ -1924,40 +1908,20 @@ export function ModelSheet({
               </>
             )}
           </div>
-          {(draft.modality === "image" || draft.modality === "audio") && (
-            <div className="space-y-1">
-              <FieldLabel
-                label={
-                  draft.modality === "image"
-                    ? t("modelSheet.pricing.perImage", { currency: cur })
-                    : t("modelSheet.pricing.perMinute", { currency: cur })
-                }
-                htmlFor="ms-field-8"
-              />
-              <Input
-                id="ms-field-8"
-                type="number"
-                step="any"
-                className="font-mono"
-                value={draft.price.perRequest}
-                placeholder="0.00"
-                disabled={readonly}
-                onChange={(e) => setDeep("price", { perRequest: e.target.value })}
-              />
-            </div>
-          )}
           <div className="flex items-end gap-3">
-            <div className="w-36 space-y-1">
-              <FieldLabel label={t("modelSheet.pricing.currency")} htmlFor="ms-field-9" />
-              <Combobox
-                id="ms-field-9"
-                className="font-mono"
-                value={cur}
-                disabled={readonly}
-                onChange={(currency) => setDeep("price", { currency })}
-                options={currencyOptions.map((c) => ({ value: c, label: c }))}
-              />
-            </div>
+            {tokenPriced && (
+              <div className="w-36 space-y-1">
+                <FieldLabel label={t("modelSheet.pricing.currency")} htmlFor="ms-field-9" />
+                <Combobox
+                  id="ms-field-9"
+                  className="font-mono"
+                  value={cur}
+                  disabled={readonly}
+                  onChange={(currency) => setDeep("price", { currency })}
+                  options={currencyOptions.map((c) => ({ value: c, label: c }))}
+                />
+              </div>
+            )}
             <a
               href={PRICING_DOCS_URL}
               target="_blank"
@@ -1985,36 +1949,22 @@ export function ModelSheet({
           className="space-y-3"
         >
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            {numInput("timeoutMs", t("modelSheet.net.timeout"), "60000", {
+              id: ids.timeoutHint,
+              text: t("modelSheet.net.timeoutHint"),
+            })}
             {numInput(
-              "rpm",
-              t("modelSheet.net.rpm"),
-              t("modelSheet.net.unlimited"),
-              t("modelSheet.net.rpmInfo"),
+              "retries",
+              t("modelSheet.net.retries"),
+              "2",
+              { id: ids.retriesHint, text: t("modelSheet.net.retriesHint") },
+              { field: "retries", errId: ids.retriesErr },
             )}
-            {numInput(
-              "tpm",
-              t("modelSheet.net.tpm"),
-              t("modelSheet.net.unlimited"),
-              t("modelSheet.net.tpmInfo"),
-            )}
-            {numInput(
-              "concurrency",
-              t("modelSheet.net.concurrency"),
-              t("modelSheet.net.unlimited"),
-            )}
-            {numInput("timeoutMs", t("modelSheet.net.timeout"), "30000")}
-            {numInput("retries", t("modelSheet.net.retries"), "2")}
-            {numInput("context", t("modelSheet.net.context"), "128000")}
-            {numInput("maxOutput", t("modelSheet.net.maxOutput"), "16384")}
+            {numInput("maxOutput", t("modelSheet.net.maxOutput"), "16384", {
+              id: ids.maxOutputHint,
+              text: t("modelSheet.net.maxOutputHint"),
+            })}
           </div>
-          <SwitchRow
-            title={t("modelSheet.net.insecureTls")}
-            hint={t("modelSheet.net.insecureTlsHint")}
-            info={t("modelSheet.net.insecureTlsInfo")}
-            checked={draft.net.insecureTls}
-            disabled={readonly}
-            onChange={(v) => setDeep("net", { insecureTls: v })}
-          />
         </FormSection>
 
         {/* ===== Custom request headers ===== */}
