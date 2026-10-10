@@ -4012,4 +4012,299 @@ mod tests {
             "a cross-org member survived the load"
         );
     }
+
+    // #2922: `MergedConfigStore` treats a dashboard-owned singleton equal to the
+    // default as "nobody has saved this", so a migrated store has to project
+    // exactly the default or the file's value would never be used (or, the
+    // other way round, would always lose). Pin that against a real schema
+    #[tokio::test]
+    async fn merged_store_a_migrated_store_projects_the_defaults_of_the_settings_it_owns() {
+        if !test_database::is_configured() {
+            eprintln!("skipping: {} not set", test_database::URL_ENV);
+            return;
+        }
+        let db = fresh_db().await;
+        let config = PostgresConfigStore::new(db.pool().clone())
+            .load()
+            .await
+            .unwrap();
+        assert_eq!(config.client, rolter_core::ClientConfig::default());
+        assert_eq!(
+            config.security,
+            rolter_core::SecurityPolicyConfig::default()
+        );
+        assert_eq!(
+            config.model_defaults,
+            rolter_core::ModelDefaultsConfig::default()
+        );
+        // #2931: the runtime policies follow the same rule
+        assert_eq!(config.retry, rolter_core::RetryConfig::default());
+        assert_eq!(config.timeouts, rolter_core::TimeoutConfig::default());
+        assert_eq!(config.queue, rolter_core::QueueConfig::default());
+        assert_eq!(
+            config.compatibility,
+            rolter_core::CompatibilityConfig::default()
+        );
+        assert_eq!(
+            config.adaptive_routing,
+            rolter_core::AdaptiveRoutingConfig::default()
+        );
+        assert_eq!(config.logging, rolter_core::LoggingConfig::default());
+    }
+
+    fn merged_file_config() -> GatewayConfig {
+        let mut file = GatewayConfig::default();
+        file.client.request_id_header = "x-file".to_string();
+        file.model_defaults.enabled = true;
+        file.model_defaults.temperature = Some(0.9);
+        file.security
+            .required_headers
+            .insert("x-mesh".to_string(), "file".to_string());
+        file.retry.max_retries = 9;
+        file.timeouts.request_secs = 600;
+        file.queue.capacity = 4096;
+        file.compatibility.default_max_tokens = 11;
+        file.adaptive_routing.min_samples = 7;
+        file.logging.clickhouse_url = Some("http://ch:8123".to_string());
+        file.logging.batch_max = 7;
+        file
+    }
+
+    #[tokio::test]
+    async fn merged_store_over_an_untouched_postgres_store_keeps_the_files_settings() {
+        if !test_database::is_configured() {
+            eprintln!("skipping: {} not set", test_database::URL_ENV);
+            return;
+        }
+        let db = fresh_db().await;
+        let file = merged_file_config();
+        let merged = crate::MergedConfigStore::new(
+            file.clone(),
+            std::sync::Arc::new(PostgresConfigStore::new(db.pool().clone())),
+        )
+        .load()
+        .await
+        .unwrap();
+
+        assert_eq!(merged.client, file.client);
+        assert_eq!(merged.security, file.security);
+        assert_eq!(merged.model_defaults, file.model_defaults);
+        assert_eq!(merged.retry, file.retry);
+        assert_eq!(merged.timeouts, file.timeouts);
+        assert_eq!(merged.queue, file.queue);
+        assert_eq!(merged.compatibility, file.compatibility);
+        assert_eq!(merged.adaptive_routing, file.adaptive_routing);
+        assert_eq!(merged.logging, file.logging);
+    }
+
+    #[tokio::test]
+    async fn merged_store_over_postgres_serves_what_the_dashboard_saved() {
+        if !test_database::is_configured() {
+            eprintln!("skipping: {} not set", test_database::URL_ENV);
+            return;
+        }
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
+
+        // the same writes the Client Settings, Model Settings and Security
+        // screens make
+        sqlx::query(
+            "update client_settings set request_id_header = 'x-db', \
+             injected_headers = '{\"x-team\":\"platform\"}'::jsonb where id = true",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "update model_defaults set enabled = false, default_temperature = 0.2 where id = true",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "update security_settings set required_headers = '{\"x-waf\":\"db\"}'::jsonb, \
+             auth_bypass_routes = '{/v1/models}' where id = true",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let merged = crate::MergedConfigStore::new(
+            merged_file_config(),
+            std::sync::Arc::new(PostgresConfigStore::new(pool)),
+        )
+        .load()
+        .await
+        .unwrap();
+
+        assert_eq!(merged.client.request_id_header, "x-db");
+        assert_eq!(merged.client.injected_headers["x-team"], "platform");
+        assert!(!merged.model_defaults.enabled);
+        assert_eq!(merged.model_defaults.temperature, Some(0.2));
+        assert_eq!(merged.security.required_headers.len(), 1);
+        assert_eq!(merged.security.required_headers["x-waf"], "db");
+        assert_eq!(merged.security.auth_bypass_routes, ["/v1/models"]);
+    }
+
+    #[tokio::test]
+    async fn merged_store_over_postgres_serves_the_saved_runtime_policies_beside_the_files_log_sink(
+    ) {
+        if !test_database::is_configured() {
+            eprintln!("skipping: {} not set", test_database::URL_ENV);
+            return;
+        }
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
+
+        for statement in [
+            "update runtime_policy set retry_max_retries = 1, timeout_request_s = 30, \
+             queue_capacity = 8 where id = true",
+            "update compatibility_policy set default_max_tokens = 22 where id = true",
+            "update adaptive_routing_policy set min_samples = 9 where id = true",
+            "update logging_settings set sample_rate = 0.1 where id = true",
+        ] {
+            sqlx::query(statement).execute(&pool).await.unwrap();
+        }
+
+        let merged = crate::MergedConfigStore::new(
+            merged_file_config(),
+            std::sync::Arc::new(PostgresConfigStore::new(pool)),
+        )
+        .load()
+        .await
+        .unwrap();
+
+        assert_eq!(merged.retry.max_retries, 1);
+        assert_eq!(merged.timeouts.request_secs, 30);
+        assert_eq!(merged.queue.capacity, 8);
+        assert_eq!(merged.compatibility.default_max_tokens, 22);
+        assert_eq!(merged.adaptive_routing.min_samples, 9);
+        assert_eq!(merged.logging.sample_rate, 0.1);
+        // no column holds these, so the saved row cannot have replaced them
+        assert_eq!(
+            merged.logging.clickhouse_url.as_deref(),
+            Some("http://ch:8123")
+        );
+        assert_eq!(merged.logging.batch_max, 7);
+    }
+
+    #[tokio::test]
+    async fn merged_store_over_postgres_serves_registered_plugins_and_published_templates() {
+        if !test_database::is_configured() {
+            eprintln!("skipping: {} not set", test_database::URL_ENV);
+            return;
+        }
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
+        let org_id: Uuid = sqlx::query_scalar(
+            "insert into orgs (name, slug) values ('acme', 'acme') returning id",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "insert into plugin_instances \
+             (org_id, name, slug, kind, stage, enabled, position, failure_mode, endpoint) \
+             values ($1, 'audit', 'audit', 'webhook', 'pre_upstream', true, 10, 'fail_open', \
+                     'https://plugins.internal/audit')",
+        )
+        .bind(org_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // `support` as `rolter-seed --import` leaves it: published in the store
+        // under the slug the file calls it by
+        let template_id: Uuid = sqlx::query_scalar(
+            "insert into prompt_templates (org_id, name, slug, description) \
+             values ($1, 'support', 'support', '') returning id",
+        )
+        .bind(org_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "insert into prompt_template_versions (template_id, version, variables, decorators) \
+             values ($1, 2, '[]'::jsonb, \
+                     '[{\"role\":\"system\",\"position\":\"prepend\",\"content\":\"v2\"}]'::jsonb)",
+        )
+        .bind(template_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "insert into prompt_template_scopes (template_id, version, scope_type, scope_id, org_id) \
+             values ($1, 2, 'org', $2, $2)",
+        )
+        .bind(template_id)
+        .bind(org_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("update prompt_templates set published_version = 2 where id = $1")
+            .bind(template_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let template = |id: &str, version: u32| rolter_core::PromptTemplate {
+            id: id.to_string(),
+            version,
+            routes: Vec::new(),
+            scopes: Vec::new(),
+            variables: Vec::new(),
+            decorators: vec![rolter_core::Decorator {
+                role: Default::default(),
+                position: Default::default(),
+                content: format!("file {id}"),
+            }],
+        };
+        let mut file = GatewayConfig {
+            prompt_templates: rolter_core::PromptTemplatesConfig {
+                enabled: true,
+                templates: vec![template("support", 1), template("file-only", 1)],
+            },
+            ..Default::default()
+        };
+        file.plugins
+            .instances
+            .push(rolter_core::PluginInstanceConfig {
+                slug: "from-file".to_string(),
+                org_id: org_id.to_string(),
+                project_id: None,
+                stage: rolter_core::PluginStage::PreRoute,
+                position: 0,
+                failure_mode: FailureMode::FailOpen,
+                endpoint: "https://file.example".to_string(),
+                auth: None,
+            });
+
+        let merged = crate::MergedConfigStore::new(
+            file,
+            std::sync::Arc::new(PostgresConfigStore::new(pool)),
+        )
+        .load()
+        .await
+        .unwrap();
+
+        let templates: Vec<String> = merged
+            .prompt_templates
+            .templates
+            .iter()
+            .map(|t| format!("{}@{}", t.id, t.version))
+            .collect();
+        assert_eq!(
+            templates,
+            [format!("{org_id}:support@2"), "file-only@1".to_string()],
+            "the stored template replaces the file's copy of the same slug; the file-only one stays"
+        );
+        let plugins: Vec<&str> = merged
+            .plugins
+            .instances
+            .iter()
+            .map(|p| p.slug.as_str())
+            .collect();
+        assert_eq!(plugins, ["audit", "from-file"]);
+    }
 }

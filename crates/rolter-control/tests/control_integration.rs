@@ -15670,6 +15670,121 @@ async fn open_mode_still_serves_the_public_example_key() {
 }
 
 // ---------------------------------------------------------------------------
+// a control plane started with a bootstrap file and a database (#2922)
+// ---------------------------------------------------------------------------
+
+/// `rolter control --config rolter.toml --database-url ...` (which is what
+/// `easy-up` runs) used to snapshot the file's Client Settings, Model Settings
+/// and Security rows and never the dashboard's, so a save was stored and then
+/// ignored by every gateway.
+#[tokio::test]
+async fn a_control_plane_with_a_bootstrap_file_snapshots_what_the_dashboard_saved() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let mut file_config = rolter_core::GatewayConfig::default();
+    file_config.client.request_id_header = "x-from-file".to_string();
+    file_config.model_defaults.enabled = true;
+    file_config.model_defaults.temperature = Some(0.9);
+    file_config
+        .security
+        .required_headers
+        .insert("x-mesh-id".to_string(), "from-file".to_string());
+    // #2931: a runtime policy, and the log sink the store has no column for
+    file_config.retry.max_retries = 7;
+    file_config.logging.clickhouse_url = Some("http://ch.example:8123".to_string());
+    let app = rolter_control::test_app_with_file_config(
+        db.pool().clone(),
+        Some(admin_token().to_string()),
+        file_config,
+    )
+    .await
+    .expect("build app");
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let snapshot = || async {
+        let body: Value = client
+            .get(format!("{base}/internal/snapshot"))
+            .bearer_auth(admin_token())
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        body["config"].clone()
+    };
+
+    // nothing saved yet: the file still speaks, so adopting a database does not
+    // quietly drop the policy it declared
+    let before = snapshot().await;
+    assert_eq!(before["client"]["request_id_header"], "x-from-file");
+    assert_eq!(before["model_defaults"]["temperature"], 0.9);
+    assert_eq!(
+        before["security"]["required_headers"]["x-mesh-id"],
+        "from-file"
+    );
+    assert_eq!(before["retry"]["max_retries"], 7);
+
+    for (path, body) in [
+        (
+            "client-settings",
+            json!({
+                "forwarded_headers": [], "injected_headers": {"X-Team": "platform"},
+                "request_id_header": "x-from-dashboard"
+            }),
+        ),
+        (
+            "model-defaults",
+            json!({"enabled": true, "default_temperature": 0.2}),
+        ),
+        (
+            "security-settings",
+            json!({
+                "allowed_origins": [], "allowed_headers": [],
+                "required_headers": {"X-Waf": "from-dashboard"},
+                "auth_bypass_routes": ["/v1/models"]
+            }),
+        ),
+        (
+            "runtime-policy",
+            json!({
+                "retry_max_retries": 1, "retry_base_ms": 100, "retry_max_ms": 2000,
+                "timeout_connect_s": 10, "timeout_request_s": 60, "queue_enabled": true,
+                "queue_capacity": 256, "queue_workers": 8, "queue_backpressure": "error",
+                "queue_block_ms": 1000
+            }),
+        ),
+    ] {
+        let saved = client
+            .put(format!("{base}/api/v1/{path}"))
+            .bearer_auth(admin_token())
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        assert!(saved.status().is_success(), "{path}: {}", saved.status());
+    }
+
+    let after = snapshot().await;
+    assert_eq!(after["client"]["request_id_header"], "x-from-dashboard");
+    assert_eq!(after["client"]["injected_headers"]["x-team"], "platform");
+    assert_eq!(after["model_defaults"]["temperature"], 0.2);
+    assert_eq!(
+        after["security"]["required_headers"]["x-waf"],
+        "from-dashboard"
+    );
+    assert!(
+        after["security"]["required_headers"]["x-mesh-id"].is_null(),
+        "the file's header came back beside the dashboard's: {after}"
+    );
+    assert_eq!(after["security"]["auth_bypass_routes"][0], "/v1/models");
+    assert_eq!(after["retry"]["max_retries"], 1);
+    // the sink lives only in the file and has to survive the store's half
+    assert_eq!(after["logging"]["clickhouse_url"], "http://ch.example:8123");
+}
+
+// ---------------------------------------------------------------------------
 // TOTP second factor (#1078)
 // ---------------------------------------------------------------------------
 

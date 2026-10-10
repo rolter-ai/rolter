@@ -2097,7 +2097,7 @@ pub struct RateLimitConfig {
 /// between `base_backoff_ms` and `max_backoff_ms`; a 429 `Retry-After` header
 /// overrides the computed delay. Retries only happen before any body bytes have
 /// been streamed to the client, so no partial response is ever duplicated.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct RetryConfig {
     /// extra attempts after the first (0 disables retries)
     #[serde(default = "default_max_retries")]
@@ -2325,7 +2325,7 @@ fn default_true() -> bool {
 /// a hung upstream is abandoned without killing legitimately long SSE streams. A
 /// timeout surfaces as a transient upstream error, so it feeds the retry and
 /// cooldown machinery. Set a field to 0 to disable that timeout.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct TimeoutConfig {
     /// connection-establishment timeout in seconds (0 disables)
     #[serde(default = "default_connect_secs")]
@@ -2834,7 +2834,7 @@ impl BreakerConfig {
 }
 
 /// Where request and cost logs are written.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct LoggingConfig {
     /// base url of the clickhouse http interface, e.g. `http://clickhouse:8123`;
     /// logging is disabled when unset
@@ -2925,7 +2925,7 @@ impl Default for LoggingConfig {
 }
 
 /// Guardrails for opt-in raw invocation payload capture.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct PayloadCaptureConfig {
     /// master switch; capture is disabled unless this is explicitly true
     #[serde(default)]
