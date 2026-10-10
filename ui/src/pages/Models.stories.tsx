@@ -99,6 +99,33 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 
+export const FilterByOrigin: Story = {
+  render: () => (
+    <Harness fetchStub={loaded}>
+      <Models />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText("gpt-4o")).toBeVisible());
+    await expect(canvas.getByText("claude-sonnet")).toBeVisible();
+
+    const originGroup = canvas.getByRole("radiogroup", { name: "Filter by origin" });
+    await expect(within(originGroup).getByRole("radio", { name: /^All/ })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+
+    await userEvent.click(within(originGroup).getByRole("radio", { name: /^DB-managed/ }));
+    await waitFor(() => expect(canvas.queryByText("claude-sonnet")).toBeNull());
+    await expect(canvas.getByText("gpt-4o")).toBeVisible();
+
+    await userEvent.click(within(originGroup).getByRole("radio", { name: /^Config/ }));
+    await waitFor(() => expect(canvas.queryByText("gpt-4o")).toBeNull());
+    await expect(canvas.getByText("claude-sonnet")).toBeVisible();
+  },
+};
+
 export const Loaded: Story = {
   render: () => (
     <Harness fetchStub={loaded}>

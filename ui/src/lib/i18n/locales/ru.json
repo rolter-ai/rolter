@@ -680,6 +680,7 @@
       "editAria": "Изменить {{model}}",
       "deleteAria": "Удалить модель {{model}}",
       "searchPlaceholder": "Поиск моделей",
+      "originFilterAria": "Фильтр по происхождению",
       "modelTally_one": "{{count}} модель",
       "modelTally_few": "{{count}} модели",
       "modelTally_many": "{{count}} моделей",
