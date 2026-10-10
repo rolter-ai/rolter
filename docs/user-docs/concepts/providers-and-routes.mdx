@@ -45,6 +45,10 @@ Set it with `project_id` on `POST /api/v1/orgs/{org_id}/providers` and `/provide
   Rows that break these rules, written around the API with SQL, are left out of the gateway's snapshot one target at a time rather than failing it, and listed by `GET /api/v1/config/problems`.
 </Note>
 
+<Note>
+  A route whose stored `params`, `param_policy` or `advanced` settings cannot be read, which only a row written around the API with SQL can cause, is left out of the snapshot whole and its model is not served, rather than served without the visibility restrictions or parameter defaults it was saved with. `GET /api/v1/config/problems` names the route and the column; repair the value or delete the route.
+</Note>
+
 ### Provider kinds
 
 | Kind                | Use case                                                       |

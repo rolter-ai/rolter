@@ -2949,6 +2949,106 @@ async fn a_budget_period_is_one_the_gateway_recognises() {
     assert_eq!(periods, ["total", "monthly", "monthly"], "{snap}");
 }
 
+/// #2938: a route whose stored `advanced` settings do not parse was served on
+/// the type's default, which is public and unrestricted. It is now left out of
+/// the snapshot, the routes beside it keep serving, and
+/// `GET /api/v1/config/problems` names it. The API parses every write, so the
+/// row is written with SQL, as a seed or an older type version could leave it.
+#[tokio::test]
+async fn a_route_with_unreadable_advanced_settings_is_not_served_open() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let addr = serve(
+        rolter_control::test_app(pool.clone())
+            .await
+            .expect("build app"),
+    )
+    .await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let org_id: uuid::Uuid =
+        sqlx::query_scalar("insert into orgs (name, slug) values ('acme', 'acme') returning id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let team_id: uuid::Uuid =
+        sqlx::query_scalar("insert into teams (org_id, name) values ($1, 'core') returning id")
+            .bind(org_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let project_id: uuid::Uuid =
+        sqlx::query_scalar("insert into projects (team_id, name) values ($1, 'api') returning id")
+            .bind(team_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let provider_id: uuid::Uuid = sqlx::query_scalar(
+        "insert into providers (org_id, name, slug, kind, api_base, api_key_env)
+         values ($1, 'edge', 'edge', 'openai', 'https://example.com', 'EDGE_KEY') returning id",
+    )
+    .bind(org_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    for (model, advanced) in [
+        ("sound", r#"{"visibility": {"project_only": true}}"#),
+        (
+            "restricted",
+            r#"{"visibility": {"allowed_team_ids": "t1"}}"#,
+        ),
+    ] {
+        let route_id: uuid::Uuid = sqlx::query_scalar(
+            "insert into routes (project_id, model, strategy, advanced)
+             values ($1, $2, 'round_robin', $3::jsonb) returning id",
+        )
+        .bind(project_id)
+        .bind(model)
+        .bind(advanced)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        sqlx::query("insert into route_targets (route_id, provider_id, weight) values ($1, $2, 1)")
+            .bind(route_id)
+            .bind(provider_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    let snapshot: Value = client
+        .get(format!("{base}/internal/snapshot"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let models: Vec<&str> = snapshot["config"]["routes"]
+        .as_array()
+        .expect("routes")
+        .iter()
+        .filter_map(|route| route["model"].as_str())
+        .collect();
+    assert_eq!(models, ["sound"], "{snapshot}");
+
+    let problems: Value = client
+        .get(format!("{base}/api/v1/config/problems"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let lines = problems["problems"].as_array().expect("problems");
+    assert_eq!(lines.len(), 1, "{problems}");
+    let line = lines[0].as_str().unwrap();
+    assert!(line.contains("'restricted'"), "{line}");
+    assert!(line.contains("advanced"), "{line}");
+}
+
 /// Editing a budget or rate limit takes `update` on it, which the matrix
 /// grants to an admin of the scope and not to a viewer (#1285). Both reach the
 /// row's own scope chain, so the check is against where the cap already lives.

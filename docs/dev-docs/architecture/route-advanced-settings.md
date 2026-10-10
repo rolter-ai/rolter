@@ -78,6 +78,21 @@ plus the framing and hop-by-hop headers. A route is edited by a project admin an
 a provider's key by an org admin, so a route that could replace `authorization`
 would let the first present a credential of their own in place of the second's.
 
+## A stored blob that does not parse
+
+The control plane parses every write through `AdvancedModelConfig`, so a blob that
+does not deserialize reached `routes.advanced` another way (SQL, a seed) or no
+longer fits a type that changed. The loader does not read it as
+`AdvancedModelConfig::default()`: that is public visibility, no allow-lists, no
+guardrail override and no limits, so a route restricted to two teams would be
+served to every key of its org, and nothing would say so (#2938). The route is left
+out of the snapshot instead and `GET /api/v1/config/problems` names it and the
+column (`route_settings_from_row`); the other routes keep serving. `params` and
+`param_policy` are read by the same function and fail the same way, since their
+defaults are just as permissive (see
+[config propagation](config-and-hot-reload.md)). Removing a field is safe for this
+reason: unknown keys are ignored, so only a value of the wrong type fails.
+
 ## What was removed, and why
 
 | Field                                                                                                 | Why it is not a route setting                                                                                                                                                                                                                                                           |

@@ -8,11 +8,11 @@ pub mod repo;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use rolter_core::{
-    BackpressurePolicy, BalancingStrategy, BudgetConfig, BudgetPeriod, BudgetScope, BuiltinRule,
-    Decorator, Error, FailureMode, FeatureFlagsConfig, GatewayConfig, GroupMember, GuardAction,
-    GuardStage, GuardrailRule, GuardrailWebhookConfig, GuardrailsConfig, McpAuthKind,
-    McpOAuthSessionConfig, McpServerConfig, ModelPolicy, ModelPriceConfig, ModelRoute,
-    PluginInstanceConfig, PluginStage, PluginsConfig, PromptTemplate,
+    AdvancedModelConfig, BackpressurePolicy, BalancingStrategy, BudgetConfig, BudgetPeriod,
+    BudgetScope, BuiltinRule, Decorator, Error, FailureMode, FeatureFlagsConfig, GatewayConfig,
+    GroupMember, GuardAction, GuardStage, GuardrailRule, GuardrailWebhookConfig, GuardrailsConfig,
+    McpAuthKind, McpOAuthSessionConfig, McpServerConfig, ModelPolicy, ModelPriceConfig, ModelRoute,
+    ParamPolicy, PluginInstanceConfig, PluginStage, PluginsConfig, PromptTemplate,
     PromptTemplateActivationScope, PromptTemplatesConfig, ProviderConfig, ProviderGroupConfig,
     ProviderKind, RateLimitConfig, Result, Target, TemplateVariable, Tenancy, UnpricedPolicy,
     VirtualKeyRecord, WebhookAuth, WebhookStage,
@@ -703,8 +703,11 @@ impl PostgresConfigStore {
         .map_err(store_err)
     }
 
-    async fn load_routes(&self) -> Result<Vec<ModelRoute>> {
-        let route_rows: Vec<RouteRow> = sqlx::query_as(
+    /// The enabled routes with the org they belong to, as `load_routes` and
+    /// `load_problems` both read them, so the two cannot disagree about which
+    /// routes exist.
+    async fn enabled_route_rows(&self) -> Result<Vec<RouteRow>> {
+        sqlx::query_as(
             "select r.id, r.project_id, t.org_id, r.model, r.strategy, r.params, r.param_policy,
                     r.advanced
              from routes r
@@ -714,7 +717,11 @@ impl PostgresConfigStore {
         )
         .fetch_all(&self.pool)
         .await
-        .map_err(store_err)?;
+        .map_err(store_err)
+    }
+
+    async fn load_routes(&self) -> Result<Vec<ModelRoute>> {
+        let route_rows = self.enabled_route_rows().await?;
 
         let target_rows: Vec<TargetRow> = sqlx::query_as(
             "select rt.route_id, p.org_id as provider_org_id, p.name as provider_name,
@@ -726,54 +733,58 @@ impl PostgresConfigStore {
         .await
         .map_err(store_err)?;
 
-        route_rows
-            .into_iter()
-            .map(|r| {
-                let strategy = parse_strategy(&r.strategy)?;
-                let targets = target_rows
-                    .iter()
-                    .filter(|t| t.route_id == r.id)
-                    // a target on another org's provider would spend that
-                    // org's credential; the write path refuses one now, and a
-                    // row written before it did is dropped here (#1844)
-                    .filter(|t| {
-                        let same_org = t.provider_org_id == r.org_id;
-                        if !same_org {
-                            tracing::warn!(route = %r.model, provider = %t.provider_name,
-                                "dropping a route target on another org's provider");
-                        }
-                        same_org
-                    })
-                    .map(|t| Target {
-                        provider: t.provider_name.clone(),
-                        model: t.upstream_model.clone(),
-                        weight: t.weight.max(0) as u32,
-                    })
-                    .collect();
-                // jsonb → typed; a malformed value falls back to the permissive
-                // default rather than failing the whole config load
-                let params = serde_json::from_value(r.params).unwrap_or_default();
-                let param_policy = serde_json::from_value(r.param_policy).unwrap_or_default();
-                let advanced = serde_json::from_value(r.advanced).unwrap_or_default();
-                Ok(ModelRoute {
-                    model: r.model,
-                    strategy,
-                    targets,
-                    params,
-                    param_policy,
-                    advanced,
-                    // db-backed variants land with their own store follow-up
-                    variants: Default::default(),
-                    // response-cache opt-in is config-only for now; a db-backed
-                    // cache policy lands with its own store follow-up
-                    cache: None,
-                    tenancy: Some(Tenancy {
-                        org_id: r.org_id.to_string(),
-                        project_id: Some(r.project_id.to_string()),
-                    }),
+        let mut routes = Vec::with_capacity(route_rows.len());
+        for r in route_rows {
+            let strategy = parse_strategy(&r.strategy)?;
+            // a route whose settings do not parse is left out, not served on
+            // the permissive defaults: those are public visibility, no
+            // allow-lists and no guardrail override (#2938)
+            let settings = match route_settings_from_row(&r) {
+                Ok(settings) => settings,
+                Err(problem) => {
+                    tracing::warn!(route = %r.model, "{problem}");
+                    continue;
+                }
+            };
+            let targets = target_rows
+                .iter()
+                .filter(|t| t.route_id == r.id)
+                // a target on another org's provider would spend that
+                // org's credential; the write path refuses one now, and a
+                // row written before it did is dropped here (#1844)
+                .filter(|t| {
+                    let same_org = t.provider_org_id == r.org_id;
+                    if !same_org {
+                        tracing::warn!(route = %r.model, provider = %t.provider_name,
+                            "dropping a route target on another org's provider");
+                    }
+                    same_org
                 })
-            })
-            .collect()
+                .map(|t| Target {
+                    provider: t.provider_name.clone(),
+                    model: t.upstream_model.clone(),
+                    weight: t.weight.max(0) as u32,
+                })
+                .collect();
+            routes.push(ModelRoute {
+                model: r.model,
+                strategy,
+                targets,
+                params: settings.params,
+                param_policy: settings.param_policy,
+                advanced: settings.advanced,
+                // db-backed variants land with their own store follow-up
+                variants: Default::default(),
+                // response-cache opt-in is config-only for now; a db-backed
+                // cache policy lands with its own store follow-up
+                cache: None,
+                tenancy: Some(Tenancy {
+                    org_id: r.org_id.to_string(),
+                    project_id: Some(r.project_id.to_string()),
+                }),
+            });
+        }
+        Ok(routes)
     }
 
     /// Load provider groups and their members into `ProviderGroupConfig`
@@ -1349,6 +1360,61 @@ impl PostgresConfigStore {
     }
 }
 
+/// The jsonb columns of one `routes` row, read into the config types.
+struct RouteSettings {
+    params: HashMap<String, serde_json::Value>,
+    param_policy: ParamPolicy,
+    advanced: AdvancedModelConfig,
+}
+
+/// Read a `routes` row's jsonb columns into the config types, or say which one
+/// cannot be read.
+///
+/// The control plane parses every write through these same types, so a row that
+/// fails here was written around it (SQL, a seed) or no longer fits a type that
+/// changed since. Reading it as the type's default, as this used to, is not a
+/// neutral fallback, since every default here is the permissive one (#2938):
+///
+/// - `advanced` carries who may see the route (`visibility`: `project_only`, the
+///   team, key and user allow-lists), the guardrail overrides and the route's
+///   limits, and `AdvancedModelConfig::default()` is public, unrestricted and
+///   unlimited
+/// - `param_policy` defaults to `allow`, so callers could override every admin
+///   default in `params`
+/// - `params` carries those admin defaults (a `max_tokens` that bounds spend, a
+///   pinned `temperature`), and an empty map injects none of them
+///
+/// Each therefore fails closed the same way: the route is left out of the
+/// snapshot, so its model answers as unknown until the row is repaired, rather
+/// than being served wide open. That is the same shape as a route with no usable
+/// target (#926) and as a price that is not a number (#2889), and the problem
+/// line names the column so the operator knows which to fix.
+fn route_settings_from_row(row: &RouteRow) -> std::result::Result<RouteSettings, String> {
+    use serde::Deserialize;
+
+    // deserializing from the borrowed value keeps the load path from cloning
+    // each blob
+    fn column<'de, T: Deserialize<'de>>(
+        row: &'de RouteRow,
+        name: &str,
+        value: &'de serde_json::Value,
+    ) -> std::result::Result<T, String> {
+        T::deserialize(value).map_err(|error| {
+            format!(
+                "route '{}' ({}) has a {name} value that does not parse ({error}), so the route \
+                 is left out of the snapshot and its model is not served; repair the {name} \
+                 value or delete the route",
+                row.model, row.id
+            )
+        })
+    }
+    Ok(RouteSettings {
+        params: column(row, "params", &row.params)?,
+        param_policy: column(row, "param_policy", &row.param_policy)?,
+        advanced: column(row, "advanced", &row.advanced)?,
+    })
+}
+
 /// Read one `model_prices` row into the config type, or say why it cannot be.
 ///
 /// The columns are `numeric(12,6)` cast to text and parsed straight into
@@ -1619,6 +1685,14 @@ impl ConfigStore for PostgresConfigStore {
         let mut problems = unrecognised_budget_periods(&budgets);
         let prices = repo::ModelPriceRepo(&self.pool).list().await?;
         problems.extend(prices.iter().filter_map(|row| price_from_row(row).err()));
+        // a route left out because its settings would not parse, which the
+        // snapshot cannot say since it never sees the row (#2938)
+        problems.extend(
+            self.enabled_route_rows()
+                .await?
+                .iter()
+                .filter_map(|row| route_settings_from_row(row).err()),
+        );
         Ok(problems)
     }
 }
@@ -4306,5 +4380,128 @@ mod tests {
             .map(|p| p.slug.as_str())
             .collect();
         assert_eq!(plugins, ["audit", "from-file"]);
+    }
+
+    /// #2938: a route whose jsonb settings do not parse used to load on the
+    /// type's default, which is public, unrestricted and free to override. The
+    /// control plane parses every write, so the rows here are written with
+    /// plain SQL, the way a seed, an import or an older version of the type
+    /// could leave them.
+    #[tokio::test]
+    async fn a_route_whose_settings_do_not_parse_is_left_out_not_served_open() {
+        if !test_database::is_configured() {
+            eprintln!("skipping: {} not set", test_database::URL_ENV);
+            return;
+        }
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
+        let org_id: Uuid = sqlx::query_scalar(
+            "insert into orgs (name, slug) values ('acme', 'acme') returning id",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let team_id: Uuid =
+            sqlx::query_scalar("insert into teams (org_id, name) values ($1, 'core') returning id")
+                .bind(org_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let project_id: Uuid = sqlx::query_scalar(
+            "insert into projects (team_id, name) values ($1, 'api') returning id",
+        )
+        .bind(team_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        // (model, enabled, params, param_policy, advanced)
+        let rows = [
+            // never given any settings: the column defaults are what an empty
+            // object means, and that stays a valid route
+            ("untouched", true, "{}", "{}", "{}"),
+            // a restriction that parses is kept
+            (
+                "restricted",
+                true,
+                r#"{"max_tokens": 256}"#,
+                r#"{"mode": "deny", "allow": ["temperature"]}"#,
+                r#"{"visibility": {"project_only": true, "allowed_team_ids": ["t1"]}}"#,
+            ),
+            // the restriction is there, but not in a shape the type reads
+            (
+                "bad-advanced",
+                true,
+                "{}",
+                "{}",
+                r#"{"visibility": {"project_only": "yes", "allowed_team_ids": "t1"}}"#,
+            ),
+            // `params` is a map of defaults, not a list
+            ("bad-params", true, r#"["max_tokens"]"#, "{}", "{}"),
+            // `mode` is allow or deny, and the default for a missing one is allow
+            (
+                "bad-policy",
+                true,
+                r#"{"max_tokens": 256}"#,
+                r#"{"mode": "sometimes"}"#,
+                "{}",
+            ),
+            // a disabled route is not loaded, so there is nothing to report
+            (
+                "bad-but-disabled",
+                false,
+                "{}",
+                "{}",
+                r#"{"visibility": 7}"#,
+            ),
+        ];
+        for (model, enabled, params, param_policy, advanced) in rows {
+            sqlx::query(
+                "insert into routes (project_id, model, strategy, enabled, params, param_policy,
+                                     advanced)
+                 values ($1, $2, 'round_robin', $3, $4::jsonb, $5::jsonb, $6::jsonb)",
+            )
+            .bind(project_id)
+            .bind(model)
+            .bind(enabled)
+            .bind(params)
+            .bind(param_policy)
+            .bind(advanced)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let store = PostgresConfigStore::new(pool);
+        let routes = store.load().await.unwrap().routes;
+        let models: Vec<&str> = routes.iter().map(|r| r.model.as_str()).collect();
+        assert_eq!(
+            models,
+            ["restricted", "untouched"],
+            "a route that cannot be read must not be served on the permissive defaults"
+        );
+        let restricted = &routes[0];
+        assert!(restricted.advanced.visibility.project_only);
+        assert_eq!(restricted.advanced.visibility.allowed_team_ids, ["t1"]);
+        assert_eq!(restricted.params["max_tokens"], 256);
+        assert_eq!(
+            restricted.param_policy.mode,
+            rolter_core::OverrideMode::Deny
+        );
+
+        let problems = store.load_problems().await.unwrap();
+        assert_eq!(problems.len(), 3, "{problems:?}");
+        for (model, column) in [
+            ("bad-advanced", "advanced"),
+            ("bad-params", "params"),
+            ("bad-policy", "param_policy"),
+        ] {
+            let line = problems
+                .iter()
+                .find(|p| p.contains(&format!("'{model}'")))
+                .unwrap_or_else(|| panic!("{model} is not reported: {problems:?}"));
+            assert!(line.contains(&format!("a {column} value")), "{line}");
+            assert!(line.contains("left out of the snapshot"), "{line}");
+        }
     }
 }
