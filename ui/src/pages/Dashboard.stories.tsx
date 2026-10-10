@@ -450,7 +450,7 @@ export const AsAdmin: Story = {
 /**
  * A polling cadence a play can watch several intervals of (#1975). The recent
  * requests card asks every 15s and the figures every minute, and the
- * test-runner gives a whole story 15s, so the screen takes `pollMs` from a
+ * story tests give a whole story 15s, so the screen takes `pollMs` from a
  * story and both run at this pace. The cadence is the only thing that changes.
  */
 const FAST_POLL_MS = 300;

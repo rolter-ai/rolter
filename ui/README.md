@@ -11,7 +11,7 @@ bun run build        # production build into dist/ (served by rolter-control)
 bun run lint         # typecheck src, scripts, .storybook and e2e
 bun run storybook    # component workbench on http://localhost:6006
 bun run build-storybook # static Storybook build into storybook-static/
-bun run test-storybook  # run the interaction (play) tests headless
+bun run test:stories    # run every story as a test (play + axe) headless, on vitest
 bun run e2e          # Playwright browser e2e against a running rolter stack
 ```
 
@@ -107,8 +107,9 @@ export const Off: Story = { render: () => <Controlled /> };
 ### Add a play (interaction) test
 
 Attach a `play` function using `storybook/test` (built into Storybook 10) to
-assert behavior, not just render. Play tests run in the Canvas and are executed
-headless by `bun run test-storybook`:
+assert behavior, not just render. Every story is a Vitest test
+(`@storybook/addon-vitest`): its play function runs in headless chromium, then
+axe checks the page, and `bun run test:stories <file>` runs it:
 
 ```tsx
 import { expect, userEvent, within } from "storybook/test";
@@ -129,10 +130,9 @@ Notes:
   `within(document.body)`, not the story canvas.
 - `userEvent.click` refuses to click a `disabled` control; assert `toBeDisabled()`
   and pass `{ pointerEventsCheck: 0 }` if you must force the click.
-- `test-storybook` needs a running Storybook — the runner points at a served
-  static build (see the storybook steps of the `ui, storybook, docs` job in
-  `.github/workflows/quality.yml`), and locally `bun run test-storybook` drives
-  whatever is on `:6006`.
+- `bun run test:stories` needs no running Storybook: vitest serves the stories
+  itself, from this checkout (see `vitest.config.ts` and the storybook steps of
+  the `ui, storybook, docs` job in `.github/workflows/quality.yml`).
 
 Stories currently cover the core UI-kit primitives (button, input, textarea,
 select, switch, badge, tag, card, stat-card, empty-state, skeleton, tabs), the

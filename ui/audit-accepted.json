@@ -1,7 +1,1 @@
-[
-  {
-    "id": "GHSA-hp3w-g68c-fv3c",
-    "reason": "sprintf-js has no patched release (1.1.3 is the newest and is still affected). It is reached only through @storybook/test-runner > nyc > @istanbuljs/load-nyc-config > js-yaml 3.x > argparse 1.x, which formats its own usage text, and never ships in the dashboard bundle. Moving js-yaml to 4.x would leave the range nyc's config loader asks for.",
-    "issue": "#2850"
-  }
-]
+[]

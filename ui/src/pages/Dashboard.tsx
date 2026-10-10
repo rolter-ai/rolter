@@ -191,7 +191,7 @@ function BarsSkeleton() {
 // or failing endpoint leaves the rest of the screen up (#1976). a deployment
 // with analytics off gets one calm panel instead of the cards.
 // `pollMs` is only ever set by a story, which swaps both intervals for one a
-// play can watch several of inside the test-runner's per-story budget
+// play can watch several of inside the story tests' per-story budget
 export default function Dashboard({ pollMs }: { pollMs?: number }) {
   const { t } = useTranslation();
   // formatting follows the dashboard language, not the browser locale

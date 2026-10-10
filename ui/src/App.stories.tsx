@@ -615,8 +615,8 @@ export const ScopePopoverInsideTheDrawerOwnsEscape: Story = {
 // level and a name, the trigger a whole path. at the narrowest full rail, 1024px,
 // and folded, the card, the trigger and both panels have to stay inside the page
 const RU_1024 = {
-  parameters: { viewportSize: { width: 1024, height: 768 } },
-  globals: { locale: "ru" },
+  ...atSplit,
+  globals: { ...atSplit.globals, locale: "ru" },
 } as const;
 
 export const AccountMenuAndScopeFitInRussian: Story = {

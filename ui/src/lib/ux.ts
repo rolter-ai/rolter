@@ -282,8 +282,23 @@ function bindListeners(): void {
   }
 }
 
+// bumped by every reset, so a timer can tell it outlived the one it was set in
+let generation = 0;
+
+/**
+ * Which reset the queue is in. A deferred emit reads it when it is scheduled and
+ * again when it fires, and stays silent if a reset came between: the story that
+ * set the timer is over, and the event is not the next story's to be handed
+ * (#2776). Outside a test nothing resets, so the number never moves and nothing
+ * is ever dropped.
+ */
+export function uxGeneration(): number {
+  return generation;
+}
+
 /** Test seam: drop the queue, context, session and circuit-breaker state. */
 export function resetUxForTests(): void {
+  generation += 1;
   queue = [];
   if (timer !== undefined) clearTimeout(timer);
   timer = undefined;

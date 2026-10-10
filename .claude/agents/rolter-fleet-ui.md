@@ -73,10 +73,11 @@ the fixed report at the bottom of this file, and nothing else.
   opens or closes go in `waitFor`, and so does a `toBeVisible()` read right
   after a drawer, sheet or dialog opens (the first animation frame is at
   opacity 0). Gated controls use `expectRefused` / `expectAllowed`.
-- Run stories only with `cd ui && bun run test:stories <story files>`: it picks
-  a free port and checks the server is yours. Never `storybook dev` plus
-  `test-storybook` by hand, never port 6006, and stop any server you started
-  before you report.
+- Run stories only with `cd ui && bun run test:stories <story files>`: it runs
+  them on vitest against your own worktree, with no Storybook server in the
+  middle, and fails a story file that ran fewer tests than it declares. Never
+  start `storybook dev` for the tests, never use port 6006, and stop any server
+  you started before you report.
 - Behaviour change means a `docs/dev-docs/` update (and `docs/user-docs/` if
   user-facing) in the same PR, with the nav line (`docs/dev-docs/SUMMARY.md`,
   `docs/user-docs/docs.json`) for any new page. Run `just fmt-docs` when you add

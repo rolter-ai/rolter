@@ -209,10 +209,11 @@ replacements cover every case the dashboard had:
 
 ## Every story is an accessibility test
 
-`ui/.storybook/test-runner.ts` runs axe over the whole document after each
+The preview's `afterEach` (`@storybook/addon-a11y`, configured by `a11yGate()` in
+`ui/src/lib/story-a11y.ts`) runs axe over the whole document after each
 story's play function, and fails the story on **any violation at any impact**
-(`wcag2a`, `wcag2aa`, `best-practice`; the disabled rules are named with their
-reasons in `DISABLED_RULES` — Storybook's own iframe, plus the three page-level
+(`wcag2a`, `wcag2aa`, `best-practice`; the excluded rules are named with their
+reasons in `EXCLUDED_RULES` — Storybook's own iframe, plus the three page-level
 landmark rules a single-component story cannot satisfy, which the two stories
 that mount a whole page switch back on, see
 [Testing](testing.md#every-story-is-also-an-axe-test)). Adding a
@@ -222,18 +223,29 @@ in every state it renders — empty, loading and error included.
 A failure looks like this:
 
 ```
-● Screens/Keys › Loaded › smoke-test
-  1 accessibility violation was detected
+ FAIL  |storybook (chromium)| src/pages/Keys.stories.tsx > Loaded
+Error:
+expect(received).toHaveNoViolations(expected)
+
+Expected the HTML found at $('div > button') to have no violations:
+
+<button></button>
+
+Received:
+
+"Buttons must have discernible text (button-name)"
+
+Fix any of the following:
+  Element does not have inner text that is visible to screen readers
+  aria-label attribute does not exist or is empty
 ```
 
-with the detail printed above it as two tables: the first names the rule
-(`color-contrast`, `button-name`, `label`, …) and the second gives the CSS
-selector and the offending HTML. Reproduce a single story with
+It names the offending HTML, the rule it broke (`color-contrast`, `button-name`,
+`label`, …) and the checks that failed, with the rule's documentation link at the
+end. Reproduce a single story with
 
 ```bash
-cd ui && bun run build-storybook
-python3 -m http.server 6199 --directory storybook-static &
-bun run test-storybook --url http://127.0.0.1:6199 -- -t "Keys"
+cd ui && bun run test:stories src/pages/Keys.stories.tsx -- -t "Loaded"
 ```
 
 Read the rule, not the pixel count: `color-contrast` names the exact foreground,

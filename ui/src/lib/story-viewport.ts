@@ -3,22 +3,35 @@ import { expect, within } from "storybook/test";
 
 // Viewport fixtures for the responsive stories (#959, #1203).
 //
-// Two things have to agree for a "does it fit at 375px" story to mean
-// anything. In the Storybook UI the viewport toolbar sizes the preview iframe;
-// under the test runner nothing sizes it, so `.storybook/test-runner.ts` reads
-// `parameters.viewportSize` and calls `page.setViewportSize` before the story
-// renders. Both are set from the same constant here, so a story cannot claim a
-// width in one place and be measured at another.
+// A story names the size it is drawn at with `globals.viewport` and the options
+// that give the key its size, and each fixture below sets both from one
+// constant, so a story cannot claim a width in one place and be measured at
+// another. In the Storybook UI the viewport toolbar sizes the preview iframe
+// from them; under the story tests (vitest) `@storybook/addon-vitest` reads the
+// same two and calls `page.viewport`, which resizes the test's iframe, so
+// `window.innerWidth` and every media query are the story's. A story that names
+// nothing is drawn at `DESKTOP`, through `initialGlobals` in `vitest.config.ts`.
 //
 // Not a `.stories.tsx` file: it is a fixture, like `pages/story-harness.tsx`.
 
+/**
+ * The size of a story that names none, and the key it is registered under in
+ * `.storybook/preview.ts`. The dashboard's breakpoints are drawn for it: the LLM
+ * Logs drawer needs `xl`, which starts at 1280.
+ */
+export const DESKTOP = { width: 1280, height: 800 } as const;
 /** iPhone 12 mini / SE — the width #959 was reported at */
 export const MOBILE = { width: 375, height: 812 } as const;
 /** The narrowest phone the dashboard is held to (#2004) */
 export const SMALL = { width: 320, height: 640 } as const;
+/**
+ * A window barely wider than a phone, the width #2837 lost a table's status
+ * badge in: the Logs table has room to draw its columns here and no more
+ */
+export const NARROW = { width: 560, height: 800 } as const;
 /** iPad portrait — the `md`…`lg` band where the rail is an icon strip */
 export const TABLET = { width: 768, height: 1024 } as const;
-/** A 1440 px laptop window, wider than the runner's 1280×800 default */
+/** A 1440 px laptop window, wider than the 1280×800 `DESKTOP` default */
 export const WIDE = { width: 1440, height: 900 } as const;
 /**
  * A small laptop, in the band between `lg` and `xl`: wide enough for the
@@ -38,49 +51,63 @@ export const SPLIT = { width: 1024, height: 768 } as const;
  */
 export const SHORT = { width: 640, height: 360 } as const;
 
+/** A `parameters.viewport.options` entry for a size, so the name and the pixels cannot drift. */
+function option(name: string, size: { width: number; height: number }) {
+  return { name, styles: { width: `${size.width}px`, height: `${size.height}px` } };
+}
+
+/** The option `.storybook/preview.ts` registers for `DESKTOP`, under `rolterDesktop`. */
+export const DESKTOP_VIEWPORT = option("Desktop 1280", DESKTOP);
+
 const OPTIONS = {
-  rolterMobile: { name: "Mobile 375", styles: { width: "375px", height: "812px" } },
-  rolterSmall: { name: "Small 320", styles: { width: "320px", height: "640px" } },
-  rolterTablet: { name: "Tablet 768", styles: { width: "768px", height: "1024px" } },
-  rolterWide: { name: "Wide 1440", styles: { width: "1440px", height: "900px" } },
-  rolterLaptop: { name: "Laptop 1100", styles: { width: "1100px", height: "800px" } },
-  rolterSplit: { name: "Split 1024", styles: { width: "1024px", height: "768px" } },
-  rolterShort: { name: "Short 640×360", styles: { width: "640px", height: "360px" } },
+  rolterMobile: option("Mobile 375", MOBILE),
+  rolterSmall: option("Small 320", SMALL),
+  rolterNarrow: option("Narrow 560", NARROW),
+  rolterTablet: option("Tablet 768", TABLET),
+  rolterWide: option("Wide 1440", WIDE),
+  rolterLaptop: option("Laptop 1100", LAPTOP),
+  rolterSplit: option("Split 1024", SPLIT),
+  rolterShort: option("Short 640×360", SHORT),
 };
 
-/** Story fields that pin a story to one of the two widths above. */
+/** Story fields that pin a story to one of the sizes above. */
 export const atMobile = {
-  parameters: { viewportSize: MOBILE, viewport: { options: OPTIONS } },
+  parameters: { viewport: { options: OPTIONS } },
   globals: { viewport: { value: "rolterMobile", isRotated: false } },
 };
 
 export const atSmall = {
-  parameters: { viewportSize: SMALL, viewport: { options: OPTIONS } },
+  parameters: { viewport: { options: OPTIONS } },
   globals: { viewport: { value: "rolterSmall", isRotated: false } },
 };
 
+export const atNarrow = {
+  parameters: { viewport: { options: OPTIONS } },
+  globals: { viewport: { value: "rolterNarrow", isRotated: false } },
+};
+
 export const atTablet = {
-  parameters: { viewportSize: TABLET, viewport: { options: OPTIONS } },
+  parameters: { viewport: { options: OPTIONS } },
   globals: { viewport: { value: "rolterTablet", isRotated: false } },
 };
 
 export const atWide = {
-  parameters: { viewportSize: WIDE, viewport: { options: OPTIONS } },
+  parameters: { viewport: { options: OPTIONS } },
   globals: { viewport: { value: "rolterWide", isRotated: false } },
 };
 
 export const atLaptop = {
-  parameters: { viewportSize: LAPTOP, viewport: { options: OPTIONS } },
+  parameters: { viewport: { options: OPTIONS } },
   globals: { viewport: { value: "rolterLaptop", isRotated: false } },
 };
 
 export const atSplit = {
-  parameters: { viewportSize: SPLIT, viewport: { options: OPTIONS } },
+  parameters: { viewport: { options: OPTIONS } },
   globals: { viewport: { value: "rolterSplit", isRotated: false } },
 };
 
 export const atShort = {
-  parameters: { viewportSize: SHORT, viewport: { options: OPTIONS } },
+  parameters: { viewport: { options: OPTIONS } },
   globals: { viewport: { value: "rolterShort", isRotated: false } },
 };
 
