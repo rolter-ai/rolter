@@ -584,7 +584,15 @@ pub struct Usage {
     pub reported: bool,
 }
 
-/// Extract token usage from a fully-buffered upstream response body.
+/// [`parse_usage_with`] for a provider whose usage is read as stated, which is
+/// all of them but one, and so what the tests of the others read.
+#[cfg(test)]
+pub fn parse_usage(is_sse: bool, buf: &[u8]) -> Usage {
+    parse_usage_with(is_sse, buf, rolter_proxy::ThinkingCount::Stated)
+}
+
+/// Extract token usage from a fully-buffered upstream response body, for a
+/// provider that counts its thinking tokens the way `thinking` says (#2880).
 ///
 /// Handles both OpenAI (`prompt_tokens`/`completion_tokens`/`total_tokens`) and
 /// Anthropic (`input_tokens`/`output_tokens`, top-level or under `message`) key
@@ -596,7 +604,11 @@ pub struct Usage {
 /// chunk, Anthropic `message_start`/`message_delta`, Responses terminal event).
 /// `total` falls back to `prompt + completion` when the upstream does not
 /// report it.
-pub fn parse_usage(is_sse: bool, buf: &[u8]) -> Usage {
+///
+/// A provider that states its thinking tokens in `total_tokens` alone (Gemini's
+/// OpenAI-compatible endpoint) bills them as output, so they are counted into
+/// the completion; for any other provider `thinking` changes nothing.
+pub fn parse_usage_with(is_sse: bool, buf: &[u8], thinking: rolter_proxy::ThinkingCount) -> Usage {
     let mut usage = Usage::default();
     if is_sse {
         for line in buf.split(|&b| b == b'\n') {
@@ -609,11 +621,11 @@ pub fn parse_usage(is_sse: bool, buf: &[u8]) -> Usage {
                 continue;
             }
             if let Ok(value) = serde_json::from_slice::<Value>(rest) {
-                merge_usage(&mut usage, &value);
+                merge_usage(&mut usage, &value, thinking);
             }
         }
     } else if let Ok(value) = serde_json::from_slice::<Value>(buf) {
-        merge_usage(&mut usage, &value);
+        merge_usage(&mut usage, &value, thinking);
     }
     if usage.total == 0 {
         usage.total = usage.prompt.saturating_add(usage.completion);
@@ -641,7 +653,7 @@ fn trim_ascii(mut b: &[u8]) -> &[u8] {
 
 /// Merge any usage numbers found in `value` into `usage`, keeping the max of
 /// each field (streamed usage is cumulative or final-only).
-fn merge_usage(usage: &mut Usage, value: &Value) {
+fn merge_usage(usage: &mut Usage, value: &Value, thinking: rolter_proxy::ThinkingCount) {
     // usage can sit at the top level (openai, anthropic non-stream / message_delta,
     // a buffered responses api body), under `message` (anthropic message_start
     // event) or under `response` (every streamed responses api event: `created`
@@ -676,10 +688,9 @@ fn merge_usage(usage: &mut Usage, value: &Value) {
         // reasoning tokens are inside the completion except for a provider
         // that states them beside it (xai, whose `total_tokens` is the only
         // figure to add them up), and they are billed as output either way
-        // (#2888)
-        let reasoning_beside = rolter_proxy::reasoning_tokens_beside_completion(u)
-            .map(|n| n as u32)
-            .unwrap_or(0);
+        // (#2888). gemini's openai-compatible endpoint states them nowhere but
+        // in the total (#2880), which `thinking` knows to look at
+        let reasoning_beside = thinking.beside_completion(u).map(|n| n as u32).unwrap_or(0);
         let completion = u32_field(u, "completion_tokens")
             .or_else(|| u32_field(u, "output_tokens"))
             .map(|c| c.saturating_add(reasoning_beside));
@@ -779,6 +790,8 @@ pub struct UsageLoggingStream {
     /// say — a guardrail, plugin or sanitizer may rewrite or drop the usage
     /// object, and spend must follow the provider rather than the policy (#1478)
     billed: Option<Usage>,
+    /// how the provider counts its thinking tokens (#2880)
+    thinking: rolter_proxy::ThinkingCount,
 }
 
 impl UsageLoggingStream {
@@ -812,7 +825,17 @@ impl UsageLoggingStream {
             genai_span: None,
             completed: false,
             billed: None,
+            thinking: rolter_proxy::ThinkingCount::Stated,
         }
+    }
+
+    /// Read the usage of the buffered body the way the provider counts its
+    /// thinking tokens (#2880). Gemini's OpenAI-compatible endpoint states them
+    /// in `total_tokens` alone, so a passthrough answer's `completion_tokens`
+    /// would otherwise leave out tokens the provider billed as output.
+    pub fn with_thinking_count(mut self, thinking: rolter_proxy::ThinkingCount) -> Self {
+        self.thinking = thinking;
+        self
     }
 
     /// Bill `usage` — read from the upstream body before any post-call policy
@@ -897,7 +920,7 @@ impl UsageLoggingStream {
         let usage = self
             .billed
             .take()
-            .unwrap_or_else(|| parse_usage(self.is_sse, &self.buf));
+            .unwrap_or_else(|| parse_usage_with(self.is_sse, &self.buf, self.thinking));
         log.usage_unknown = u8::from(upstream_answered && !usage.reported);
         // an upstream error the caller received as it was. the status alone says
         // that it failed, not why; the body already sits in this buffer, so the
@@ -2185,6 +2208,24 @@ data: {\"type\":\"message_delta\",\"usage\":{\"input_tokens\":10,\"cache_creatio
                 3072,
                 1024,
             ),
+            // gemini's openai-compatible endpoint, a response posted to the
+            // google ai developers forum on 2025-05-13. 116,482 + 44 is not the
+            // 117,488 total: the 962 between them are thinking (#2880)
+            (
+                "gemini (compatible)",
+                r#"{"completion_tokens":44,"prompt_tokens":116482,"prompt_tokens_details":{"cached_tokens":114667},"total_tokens":117488}"#,
+                116482,
+                114667,
+                0,
+            ),
+            // ai.developer.meta.com prompt caching guide
+            (
+                "meta llama api",
+                r#"{"prompt_tokens":1847,"completion_tokens":98,"total_tokens":1945,"prompt_tokens_details":{"cached_tokens":1792}}"#,
+                1847,
+                1792,
+                0,
+            ),
         ];
         for (name, usage, prompt, read, write) in documented {
             let body = format!(r#"{{"usage":{usage}}}"#);
@@ -2230,6 +2271,125 @@ data: {\"type\":\"message_delta\",\"usage\":{\"input_tokens\":10,\"cache_creatio
         let usage = parse_usage(false, body);
         assert_eq!(usage.completion, 103);
         assert_eq!(usage.total, 135);
+    }
+
+    /// gemini's openai-compatible endpoint states its thinking tokens in
+    /// `total_tokens` alone (#2880). The bodies are responses people posted
+    /// from it; the provider bills the thinking as output, so a row read with
+    /// `Gemini`'s kind has to count it in the completion
+    #[test]
+    fn thinking_that_only_the_total_states_is_logged_as_completion_for_gemini() {
+        use rolter_proxy::ThinkingCount;
+        let gemini = ThinkingCount::of(rolter_core::ProviderKind::Gemini);
+        // (usage, prompt, completion as stated, total)
+        for (usage, prompt, stated, total) in [
+            // forum, 2026-01-15, gemini-2.5-flash
+            (
+                r#"{"completion_tokens":18,"prompt_tokens":15,"total_tokens":175}"#,
+                15,
+                18,
+                175,
+            ),
+            // forum, 2025-08-21, gemini-2.5-pro
+            (
+                r#"{"completion_tokens":102,"prompt_tokens":758,"total_tokens":1725}"#,
+                758,
+                102,
+                1725,
+            ),
+        ] {
+            let body = format!(r#"{{"usage":{usage}}}"#);
+            let read = parse_usage_with(false, body.as_bytes(), gemini);
+            assert_eq!(read.prompt, prompt, "{usage}");
+            assert_eq!(read.completion, total - prompt, "{usage}");
+            assert_eq!(read.total, total, "{usage}");
+            // the same body from a provider read as stated keeps the completion
+            // the provider gave, which is the short one
+            let stated_read = parse_usage(false, body.as_bytes());
+            assert_eq!(stated_read.completion, stated, "{usage}");
+        }
+    }
+
+    /// the endpoint sends usage on every chunk of a stream, the thinking already
+    /// spent in each total (forum, 2026-02-27, gemini-3-flash-preview)
+    #[test]
+    fn a_gemini_stream_with_usage_on_every_chunk_is_logged_with_its_thinking() {
+        use rolter_proxy::ThinkingCount;
+        let sse = concat!(
+            r#"data: {"choices":[{"index":0,"delta":{"content":"1"}}],"usage":{"completion_tokens":1,"prompt_tokens":9,"total_tokens":103}}"#,
+            "\n\n",
+            r#"data: {"choices":[{"index":0,"delta":{"content":", "}}],"usage":{"completion_tokens":3,"prompt_tokens":9,"total_tokens":105}}"#,
+            "\n\n",
+            r#"data: {"choices":[{"index":0,"delta":{},"finish_reason":"length"}],"usage":{"completion_tokens":3,"prompt_tokens":9,"total_tokens":105}}"#,
+            "\n\n",
+            "data: [DONE]\n\n",
+        );
+        let read = parse_usage_with(
+            true,
+            sse.as_bytes(),
+            ThinkingCount::of(rolter_core::ProviderKind::Gemini),
+        );
+        assert_eq!(read.prompt, 9);
+        // 3 answer tokens and the 93 the total has beyond them and the prompt
+        assert_eq!(read.completion, 96);
+        assert_eq!(read.total, 105);
+        assert_eq!(parse_usage(true, sse.as_bytes()).completion, 3);
+    }
+
+    /// whole bodies are left alone: a model that did not think, a total below
+    /// its parts, and a body the endpoint is later fixed to state in full
+    #[test]
+    fn a_gemini_body_with_nothing_beyond_its_parts_is_logged_as_stated() {
+        use rolter_proxy::ThinkingCount;
+        let gemini = ThinkingCount::of(rolter_core::ProviderKind::Gemini);
+        for usage in [
+            r#"{"prompt_tokens":9,"completion_tokens":4,"total_tokens":13}"#,
+            r#"{"prompt_tokens":15,"completion_tokens":160,"total_tokens":175,"completion_tokens_details":{"reasoning_tokens":142}}"#,
+            r#"{"prompt_tokens":2000,"completion_tokens":3,"total_tokens":503}"#,
+            // an embeddings answer
+            r#"{"prompt_tokens":9,"total_tokens":9}"#,
+        ] {
+            let body = format!(r#"{{"usage":{usage}}}"#);
+            assert_eq!(
+                parse_usage_with(false, body.as_bytes(), gemini),
+                parse_usage(false, body.as_bytes()),
+                "{usage}"
+            );
+        }
+    }
+
+    /// vertex ai's endpoint names the thinking beside a completion that leaves
+    /// it out, and the total adds the three up, which every provider is read
+    /// for (#2888): two responses people posted from it
+    #[test]
+    fn vertex_ais_named_thinking_is_logged_as_completion() {
+        for (usage, prompt, completion, total) in [
+            // forum, 2026-01-15
+            (
+                r#"{"completion_tokens":21,"completion_tokens_details":{"reasoning_tokens":78},"extra_properties":{"google":{"traffic_type":"ON_DEMAND"}},"prompt_tokens":14,"total_tokens":113}"#,
+                14,
+                99,
+                113,
+            ),
+            // taipanbox/tokenfuse#367, 2026-10-07, gemini-2.5-flash
+            (
+                r#"{"completion_tokens":59,"completion_tokens_details":{"reasoning_tokens":560},"prompt_tokens":14,"total_tokens":633}"#,
+                14,
+                619,
+                633,
+            ),
+        ] {
+            let body = format!(r#"{{"usage":{usage}}}"#);
+            for thinking in [
+                rolter_proxy::ThinkingCount::of(rolter_core::ProviderKind::Vertex),
+                rolter_proxy::ThinkingCount::Stated,
+            ] {
+                let read = parse_usage_with(false, body.as_bytes(), thinking);
+                assert_eq!(read.prompt, prompt, "{usage}");
+                assert_eq!(read.completion, completion, "{usage}");
+                assert_eq!(read.total, total, "{usage}");
+            }
+        }
     }
 
     /// priced: 10 fresh input and 30 written ones at one, 80 cached at the

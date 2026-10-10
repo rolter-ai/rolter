@@ -33,6 +33,11 @@
 //! already, so a body carries it across without the row or the client counting
 //! it twice (#2881).
 //!
+//! Gemini's OpenAI-compatible endpoint (`ProviderKind::Gemini`) reports its
+//! thinking tokens in `total_tokens` alone, and Vertex AI's names them beside a
+//! `completion_tokens` that leaves them out. Both are billed as output, so the
+//! row, and a translated answer, must carry them in the completion (#2880).
+//!
 //! There is no Gemini-dialect client in the gateway: the only client dialects
 //! are Chat Completions, Messages and Responses, so a native Gemini body is
 //! always translated before the client sees it or the row is built, and the two
@@ -397,6 +402,35 @@ const CHAT_REASONING_USAGE: &str = r#"{"prompt_tokens":2000,"completion_tokens":
 /// ones, but the thinking is stated beside `completion_tokens` and only the
 /// total (2000 + 3 + 20) adds it up.
 const XAI_USAGE: &str = r#"{"prompt_tokens":2000,"completion_tokens":3,"total_tokens":2023,"completion_tokens_details":{"reasoning_tokens":20}}"#;
+
+/// Gemini's OpenAI-compatible endpoint (#2880): the same 2000 prompt tokens, 3
+/// answer tokens and 20 thinking ones, but the thinking is in the total and
+/// nowhere else, as every response captured from the endpoint shows.
+const GEMINI_COMPAT_USAGE: &str =
+    r#"{"prompt_tokens":2000,"completion_tokens":3,"total_tokens":2023}"#;
+
+/// Vertex AI's OpenAI-compatible endpoint: the thinking is named, beside a
+/// completion that leaves it out, and the total adds the three up.
+const VERTEX_COMPAT_USAGE: &str = r#"{"completion_tokens":3,"completion_tokens_details":{"reasoning_tokens":20},"extra_properties":{"google":{"traffic_type":"ON_DEMAND"}},"prompt_tokens":2000,"total_tokens":2023}"#;
+
+/// The usage Gemini's endpoint sends on every chunk of a stream, the thinking
+/// already in each total (the completion grows from 1 to 3 beside a total that
+/// is 20 more than the prompt and the completion).
+fn gemini_compat_stream() -> (&'static str, String) {
+    let chunks = [
+        r#"{"id":"chat_1","model":"test-model","choices":[{"index":0,"delta":{"content":"po"}}],"usage":{"prompt_tokens":2000,"completion_tokens":1,"total_tokens":2021}}"#,
+        r#"{"id":"chat_1","model":"test-model","choices":[{"index":0,"delta":{"content":"ng"}}],"usage":{"prompt_tokens":2000,"completion_tokens":3,"total_tokens":2023}}"#,
+        r#"{"id":"chat_1","model":"test-model","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":2000,"completion_tokens":3,"total_tokens":2023}}"#,
+    ];
+    (
+        "text/event-stream",
+        chunks
+            .iter()
+            .map(|chunk| format!("data: {chunk}\n\n"))
+            .chain(["data: [DONE]\n\n".to_string()])
+            .collect(),
+    )
+}
 
 // ── driving the gateway ─────────────────────────────────────────────────────
 
@@ -1165,5 +1199,115 @@ async fn xai_stream_to_a_messages_client_counts_its_reasoning_once() {
     let usage = shown_usage(&body);
     assert_eq!(usage["output_tokens"], 23, "usage shown to the client");
     assert_no_reasoning_named(&usage);
+    assert_priced_with_the_thoughts(&row);
+}
+
+// ── thinking that only the total states (#2880) ─────────────────────────────
+// gemini's openai-compatible endpoint bills the 20 thinking tokens as output
+// but states them nowhere except `total_tokens`, so the row used to log 3 and be
+// charged 2003 where the provider charged 2023. the chat client is served the
+// provider's bytes as they are, so only the row can be put right there
+
+#[tokio::test]
+async fn gemini_compat_answer_to_a_chat_client_is_logged_with_its_thinking() {
+    let (body, row) = exchange(
+        "gemini-compat-chat-buffered",
+        ProviderKind::Gemini,
+        Client::Chat,
+        false,
+        chat_completion_with(GEMINI_COMPAT_USAGE),
+    )
+    .await;
+    // a passthrough body is the provider's own
+    assert_eq!(shown_usage(&body)["completion_tokens"], 3);
+    assert_priced_with_the_thoughts(&row);
+}
+
+#[tokio::test]
+async fn gemini_compat_stream_to_a_chat_client_is_logged_with_its_thinking() {
+    let (_, row) = exchange(
+        "gemini-compat-chat-streamed",
+        ProviderKind::Gemini,
+        Client::Chat,
+        true,
+        gemini_compat_stream(),
+    )
+    .await;
+    assert_priced_with_the_thoughts(&row);
+}
+
+#[tokio::test]
+async fn gemini_compat_answer_to_a_responses_client_counts_its_thinking_once() {
+    let (body, row) = exchange(
+        "gemini-compat-responses-buffered",
+        ProviderKind::Gemini,
+        Client::Responses,
+        false,
+        chat_completion_with(GEMINI_COMPAT_USAGE),
+    )
+    .await;
+    let usage = shown_usage(&body);
+    assert_eq!(usage["total_tokens"], 2023, "usage shown to the client");
+    assert_reasoning_named_responses(&usage);
+    assert_priced_with_the_thoughts(&row);
+}
+
+#[tokio::test]
+async fn gemini_compat_stream_to_a_messages_client_counts_its_thinking_once() {
+    let (body, row) = exchange(
+        "gemini-compat-messages-streamed",
+        ProviderKind::Gemini,
+        Client::Messages,
+        true,
+        gemini_compat_stream(),
+    )
+    .await;
+    let usage = shown_usage(&body);
+    assert_eq!(usage["output_tokens"], 23, "usage shown to the client");
+    assert_no_reasoning_named(&usage);
+    assert_priced_with_the_thoughts(&row);
+}
+
+/// the same body from any other kind is read as stated: a total that is more
+/// than its parts is not a claim about thinking there
+#[tokio::test]
+async fn a_total_beyond_its_parts_is_left_alone_for_other_providers() {
+    let (_, row) = exchange(
+        "mistral-chat-buffered",
+        ProviderKind::Mistral,
+        Client::Chat,
+        false,
+        chat_completion_with(GEMINI_COMPAT_USAGE),
+    )
+    .await;
+    assert_eq!(row["completion_tokens"], 3, "request-log row");
+    assert_eq!(row["cost_usd"], 2003.0, "request-log row");
+}
+
+#[tokio::test]
+async fn vertex_answer_to_a_chat_client_is_logged_with_its_thinking() {
+    let (_, row) = exchange(
+        "vertex-chat-buffered",
+        ProviderKind::Vertex,
+        Client::Chat,
+        false,
+        chat_completion_with(VERTEX_COMPAT_USAGE),
+    )
+    .await;
+    assert_priced_with_the_thoughts(&row);
+}
+
+#[tokio::test]
+async fn vertex_stream_to_a_messages_client_counts_its_thinking_once() {
+    let (body, row) = exchange(
+        "vertex-messages-streamed",
+        ProviderKind::Vertex,
+        Client::Messages,
+        true,
+        chat_stream_with(VERTEX_COMPAT_USAGE),
+    )
+    .await;
+    let usage = shown_usage(&body);
+    assert_eq!(usage["output_tokens"], 23, "usage shown to the client");
     assert_priced_with_the_thoughts(&row);
 }
