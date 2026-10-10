@@ -2717,7 +2717,11 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
                             // what the provider charged, read before any
                             // policy below can rewrite or withhold the body
                             // (#1478)
-                            let billed = crate::logging::parse_usage(is_sse, &bytes);
+                            let billed = crate::logging::parse_usage_with(
+                                is_sse,
+                                &bytes,
+                                translation.thinking_count(),
+                            );
                             // skip storing bodies over the configured ceiling
                             // (0 = no limit); they're still served normally
                             let limit = snap.cache.max_entry_bytes;
@@ -4041,7 +4045,8 @@ async fn stream_response(
                 // what the provider charged, read before the guardrails,
                 // plugins and sanitizer below can rewrite or withhold the body
                 // (#1478)
-                let billed = crate::logging::parse_usage(false, &bytes);
+                let billed =
+                    crate::logging::parse_usage_with(false, &bytes, translation.thinking_count());
                 let policy = DeliveryPolicy {
                     output,
                     plugins: post_response_plugins.as_ref(),
@@ -4108,7 +4113,8 @@ async fn stream_response(
         inflight_guard,
     )
     .with_completion_observer(completion_observer)
-    .with_genai_span(genai_span);
+    .with_genai_span(genai_span)
+    .with_thinking_count(translation.thinking_count());
     let mut builder = Response::builder()
         .status(status)
         .header(header::CONTENT_TYPE, content_type);

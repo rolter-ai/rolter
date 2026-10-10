@@ -219,6 +219,9 @@ pub struct TranslationPlan {
     client: Protocol,
     upstream: Protocol,
     role_profile: RoleProfile,
+    /// how the upstream counts the thinking tokens of a Chat Completions
+    /// answer (#2880)
+    thinking: ThinkingCount,
 }
 
 impl TranslationPlan {
@@ -227,6 +230,7 @@ impl TranslationPlan {
             client: Protocol::Passthrough,
             upstream: Protocol::Passthrough,
             role_profile: RoleProfile::Openai,
+            thinking: ThinkingCount::Stated,
         }
     }
 
@@ -258,7 +262,16 @@ impl TranslationPlan {
             client,
             upstream,
             role_profile,
+            thinking: ThinkingCount::of(provider),
         }
+    }
+
+    /// How the upstream this plan was resolved for counts the thinking tokens
+    /// of a Chat Completions answer. The plan carries it because the request
+    /// log reads a passthrough answer's usage from the provider's own bytes,
+    /// where nothing but the provider's kind says what the counts mean (#2880).
+    pub fn thinking_count(self) -> ThinkingCount {
+        self.thinking
     }
 
     pub fn is_translation(self) -> bool {
@@ -362,7 +375,7 @@ impl TranslationPlan {
             out.extend(converter.finish());
             return Bytes::from(out.concat());
         }
-        translate_json(body, self.client, self.upstream)
+        translate_json(body, self.client, self.upstream, self.thinking)
     }
 }
 
@@ -655,13 +668,16 @@ fn responses_from_anthropic(v: Value) -> Value {
     responses_from_openai(anthropic_response(v))
 }
 
-fn translate_json(body: Bytes, from: Protocol, to: Protocol) -> Bytes {
-    let Ok(value) = serde_json::from_slice::<Value>(&body) else {
+fn translate_json(body: Bytes, from: Protocol, to: Protocol, thinking: ThinkingCount) -> Bytes {
+    let Ok(mut value) = serde_json::from_slice::<Value>(&body) else {
         return body;
     };
     let Some(pair) = registered_pair(from, to) else {
         return body;
     };
+    if to == Protocol::OpenAiChat {
+        thinking.fold_into_completion(&mut value);
+    }
     let translated = (pair.response)(value);
     serde_json::to_vec(&translated)
         .map(Bytes::from)
@@ -1121,6 +1137,113 @@ pub fn reasoning_tokens_beside_completion(usage: &Value) -> Option<u64> {
     let total = usage.get("total_tokens")?.as_u64()?;
     let inside = prompt.saturating_add(completion);
     (total == inside.saturating_add(reasoning)).then_some(reasoning)
+}
+
+/// Where a Chat Completions provider counts the tokens its model spent thinking
+/// (#2880), so the reader knows what to make of a `total_tokens` that is more
+/// than the prompt and the completion added up.
+///
+/// Gemini's OpenAI-compatible endpoint (`ProviderKind::Gemini`, the api base
+/// `https://generativelanguage.googleapis.com/v1beta/openai`) maps the native
+/// `usageMetadata` one to one: `promptTokenCount` to `prompt_tokens`,
+/// `candidatesTokenCount` to `completion_tokens`, `totalTokenCount` to
+/// `total_tokens`. Thinking tokens are billed as output, sit beside
+/// `candidatesTokenCount` natively, and have no field of their own there, so
+/// they are in the total and nowhere else. Every response captured from the
+/// endpoint for a thinking model shows it (the evidence is in
+/// `docs/dev-docs/architecture/observability.md`).
+///
+/// Vertex AI's endpoint is not this: it names the thinking tokens in
+/// `completion_tokens_details.reasoning_tokens` beside an equally short
+/// `completion_tokens`, which [`reasoning_tokens_beside_completion`] already
+/// reads from the total, so it needs no help here.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ThinkingCount {
+    /// the usage is read as stated: reasoning is inside `completion_tokens`, or
+    /// named beside it with a total that adds it up
+    #[default]
+    Stated,
+    /// the thinking tokens are in `total_tokens` alone: whatever the total has
+    /// beyond the prompt and the completion is them
+    TotalOnly,
+}
+
+impl ThinkingCount {
+    /// How a provider of `kind` counts the thinking of its Chat Completions
+    /// answers.
+    pub const fn of(kind: ProviderKind) -> Self {
+        match kind {
+            ProviderKind::Gemini => Self::TotalOnly,
+            _ => Self::Stated,
+        }
+    }
+
+    /// The tokens a Chat Completions `usage` object counts beside its
+    /// completion, for the caller to add to the completion it read: the
+    /// reasoning an explicit field names and a total that adds up (xAI, Vertex
+    /// AI, see [`reasoning_tokens_beside_completion`]), or, for a provider that
+    /// counts thinking in the total alone, the part of the total the prompt and
+    /// the completion do not account for.
+    ///
+    /// A usage object whose total is no more than its prompt and completion
+    /// added up has nothing beside the completion, so a provider whose endpoint
+    /// is later fixed to count thinking inside `completion_tokens` is never
+    /// added to twice, and nor is an answer that states no total or no count.
+    pub fn beside_completion(self, usage: &Value) -> Option<u64> {
+        reasoning_tokens_beside_completion(usage).or_else(|| match self {
+            Self::Stated => None,
+            Self::TotalOnly => total_beyond_prompt_and_completion(usage),
+        })
+    }
+
+    /// Rewrite a Chat Completions body or chunk so that what
+    /// [`Self::beside_completion`] finds is inside its `completion_tokens` and
+    /// named in `completion_tokens_details.reasoning_tokens`, which is the shape
+    /// the translators read. The provider's `total_tokens` is left alone: it is
+    /// the prompt and the new completion added up.
+    fn fold_into_completion(self, body: &mut Value) {
+        if self == Self::Stated {
+            return;
+        }
+        let Some(usage) = body.get_mut("usage").filter(|u| u.is_object()) else {
+            return;
+        };
+        // only a body that spells the count the way the pairs read it first
+        let Some(completion) = usage.get("completion_tokens").and_then(Value::as_u64) else {
+            return;
+        };
+        let Some(thinking) = total_beyond_prompt_and_completion(usage) else {
+            return;
+        };
+        usage["completion_tokens"] = json!(completion.saturating_add(thinking));
+        if !usage
+            .get("completion_tokens_details")
+            .is_some_and(Value::is_object)
+        {
+            usage["completion_tokens_details"] = json!({});
+        }
+        let details = &mut usage["completion_tokens_details"];
+        if details.get("reasoning_tokens").is_none() {
+            details["reasoning_tokens"] = json!(thinking);
+        }
+    }
+}
+
+/// What a Chat Completions `usage` object's `total_tokens` has beyond its prompt
+/// and completion counts added up, `None` when it has nothing, or states no
+/// total or one of the counts.
+fn total_beyond_prompt_and_completion(usage: &Value) -> Option<u64> {
+    let count = |key: &str, alternative: &str| {
+        usage
+            .get(key)
+            .or_else(|| usage.get(alternative))
+            .and_then(Value::as_u64)
+    };
+    let prompt = count("prompt_tokens", "input_tokens")?;
+    let completion = count("completion_tokens", "output_tokens")?;
+    let total = usage.get("total_tokens")?.as_u64()?;
+    let beyond = total.saturating_sub(prompt.saturating_add(completion));
+    (beyond > 0).then_some(beyond)
 }
 
 /// Token counts of one usage object, held in the one shape every dialect
@@ -2298,6 +2421,16 @@ impl SseConverter {
         chunks
     }
 
+    /// Count the thinking tokens a Chat Completions upstream states only in its
+    /// `total_tokens` into the completion of a chunk it sent (#2880), so the
+    /// usage read from it below is whole. A frame the converter made itself, from
+    /// a Gemini or Anthropic upstream, is already whole.
+    fn fold_thinking(&self, chunk: &mut Value) {
+        if self.plan.upstream == Protocol::OpenAiChat {
+            self.plan.thinking.fold_into_completion(chunk);
+        }
+    }
+
     fn openai_to_anthropic(&mut self, data: &str) -> Vec<Bytes> {
         if data == "[DONE]" {
             if self.state.stopped {
@@ -2306,9 +2439,10 @@ impl SseConverter {
             self.state.stopped = true;
             return vec![sse(Some("message_stop"), &json!({"type":"message_stop"}))];
         }
-        let Ok(v) = serde_json::from_str::<Value>(data) else {
+        let Ok(mut v) = serde_json::from_str::<Value>(data) else {
             return Vec::new();
         };
+        self.fold_thinking(&mut v);
         if !self.state.started {
             self.state.started = true;
             self.state.id = v
@@ -2389,9 +2523,10 @@ impl SseConverter {
         if data == "[DONE]" {
             return self.complete_responses_stream();
         }
-        let Ok(v) = serde_json::from_str::<Value>(data) else {
+        let Ok(mut v) = serde_json::from_str::<Value>(data) else {
             return Vec::new();
         };
+        self.fold_thinking(&mut v);
         if !self.state.response_started {
             self.state.response_started = true;
             self.state.id = v
@@ -2832,6 +2967,7 @@ mod tests {
             client,
             upstream,
             role_profile: RoleProfile::Openai,
+            thinking: ThinkingCount::Stated,
         }
     }
 
@@ -2984,6 +3120,7 @@ mod tests {
             client: Protocol::OpenAiChat,
             upstream: Protocol::OpenAiChat,
             role_profile: RoleProfile::SystemOnly,
+            thinking: ThinkingCount::Stated,
         }
         .translate_request(body)
         .unwrap();
@@ -3000,6 +3137,7 @@ mod tests {
             client: Protocol::OpenAiChat,
             upstream: Protocol::AnthropicMessages,
             role_profile: RoleProfile::Anthropic,
+            thinking: ThinkingCount::Stated,
         }
         .translate_request(body)
         .unwrap();
@@ -3015,6 +3153,7 @@ mod tests {
             client: Protocol::OpenAiChat,
             upstream: Protocol::OpenAiChat,
             role_profile: RoleProfile::SystemOnly,
+            thinking: ThinkingCount::Stated,
         }
         .translate_request(body)
         .unwrap_err();
@@ -4837,7 +4976,7 @@ mod tests {
     // at the cached rate once it is logged
 
     /// (provider, usage, cache hit, prompt total)
-    const DOCUMENTED_HITS: [(&str, &str, u64, u64); 9] = [
+    const DOCUMENTED_HITS: [(&str, &str, u64, u64); 14] = [
         // docs.mistral.ai/studio/conversations/advanced/prompt-caching: "In this
         // response, `prompt_tokens` contains all prompt tokens"
         (
@@ -4896,6 +5035,50 @@ mod tests {
             r#"{"input_tokens":2048,"output_tokens":256,"total_tokens":2304,"input_tokens_details":{"cached_tokens":1920,"cache_write_tokens":0}}"#,
             1920,
             2048,
+        ),
+        // a response posted to the google ai developers forum on 2025-05-13
+        // (gemini-2.5-flash-preview-04-17, `generativelanguage.googleapis.com/
+        // v1beta/openai`): Google documents no `usage` block for the endpoint.
+        // 116,482 − 114,667 is the fresh part, so the hit is inside the prompt
+        (
+            "gemini (compatible)",
+            r#"{"completion_tokens":44,"prompt_tokens":116482,"prompt_tokens_details":{"cached_tokens":114667},"total_tokens":117488}"#,
+            114667,
+            116482,
+        ),
+        // ai.developer.meta.com/docs/features/prompt-caching: "`cached_tokens` is
+        // a subset of your input tokens", counted once in `prompt_tokens`
+        (
+            "meta llama api",
+            r#"{"prompt_tokens":1847,"completion_tokens":98,"total_tokens":1945,"prompt_tokens_details":{"cached_tokens":1792}}"#,
+            1792,
+            1847,
+        ),
+        // docs.sarvam.ai chat completions v2: "prompt tokens served from cache
+        // and billed at the cached-input rate"; `null` on a miss, so the
+        // printed example, a miss on an uncached prompt, is the shape to read
+        (
+            "sarvam",
+            r#"{"completion_tokens":24,"prompt_tokens":18,"total_tokens":42,"completion_tokens_details":{"reasoning_tokens":10},"prompt_tokens_details":{"cached_tokens":0}}"#,
+            0,
+            18,
+        ),
+        // docs.tokenfactory.nebius.com `Usage` schema: `prompt_tokens_details.
+        // cached_tokens`, with `total_tokens` "(prompt + completion)"; the
+        // reference prints no example that has the block
+        (
+            "nebius",
+            r#"{"completion_tokens":26,"prompt_tokens":13,"total_tokens":39,"prompt_tokens_details":{"cached_tokens":0}}"#,
+            0,
+            13,
+        ),
+        // tencentcloud.com Hy API guide, the first printed response (hy4-preview,
+        // `tokenhub-intl.tencentcloudmaas.com/v1`): 28 + 221 = 249
+        (
+            "hunyuan",
+            r#"{"prompt_tokens":28,"completion_tokens":221,"total_tokens":249,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":175}}"#,
+            0,
+            28,
         ),
         // llama.cpp's server README (ollama's `/v1` has the same shape)
         (
@@ -5036,5 +5219,262 @@ mod tests {
             last_usage(&out, Some("message_delta"))["output_tokens"],
             103
         );
+    }
+    // ── gemini's openai-compatible endpoint (#2880) ─────────────────────────
+    // `generativelanguage.googleapis.com/v1beta/openai` maps the native counts
+    // one to one and has nowhere to put the thinking tokens, so they are in
+    // `total_tokens` and nowhere else. vertex ai's endpoint names them. neither
+    // is documented by google; these are responses people captured and posted,
+    // the sources being listed in `docs/dev-docs/architecture/observability.md`
+
+    /// (what it is, usage, the part of the total beyond prompt and completion)
+    const GEMINI_COMPAT_ANSWERS: [(&str, &str, u64); 4] = [
+        // google ai developers forum, 2025-08-21: gemini-2.5-pro, the poster
+        // asks why 102 + 758 is not 1725
+        (
+            "2.5 pro",
+            r#"{"completion_tokens":102,"prompt_tokens":758,"total_tokens":1725}"#,
+            865,
+        ),
+        // the same forum, 2026-01-15: gemini-2.5-flash
+        (
+            "2.5 flash",
+            r#"{"completion_tokens":18,"prompt_tokens":15,"total_tokens":175}"#,
+            142,
+        ),
+        // c360studio/semstreams#1346, 2026-09-19: gemini-3.1-pro-preview
+        // answering with a tool call
+        (
+            "3.1 pro",
+            r#"{"prompt_tokens":27,"completion_tokens":8,"total_tokens":135}"#,
+            100,
+        ),
+        // the forum, 2025-05-13: gemini-2.5-flash-preview-04-17 on a prompt that
+        // was almost all cache hit, which the endpoint reports in the details
+        // block and counts inside `prompt_tokens`
+        (
+            "2.5 flash preview, cached",
+            r#"{"completion_tokens":44,"prompt_tokens":116482,"prompt_tokens_details":{"cached_tokens":114667},"total_tokens":117488}"#,
+            962,
+        ),
+    ];
+
+    /// Vertex AI's endpoint (`.../endpoints/openapi/chat/completions`), the same
+    /// model: it names the thinking and keeps it beside `completion_tokens`
+    const VERTEX_COMPAT_ANSWERS: [(&str, &str, u64); 2] = [
+        // the same forum, 2026-01-15, "a response from the same model in Vertex AI"
+        (
+            "forum",
+            r#"{"completion_tokens":21,"completion_tokens_details":{"reasoning_tokens":78},"extra_properties":{"google":{"traffic_type":"ON_DEMAND"}},"prompt_tokens":14,"total_tokens":113}"#,
+            78,
+        ),
+        // taipanbox/tokenfuse#367, 2026-10-07: google/gemini-2.5-flash
+        (
+            "tokenfuse",
+            r#"{"completion_tokens":59,"completion_tokens_details":{"reasoning_tokens":560},"prompt_tokens":14,"total_tokens":633}"#,
+            560,
+        ),
+    ];
+
+    fn gemini_compat_plan(client_path: &str) -> TranslationPlan {
+        TranslationPlan::resolve(client_path, ProviderKind::Gemini, RoleProfile::Openai)
+    }
+
+    #[test]
+    fn only_the_gemini_compat_endpoint_counts_thinking_in_the_total_alone() {
+        for kind in ProviderKind::ALL {
+            let expected = if kind == ProviderKind::Gemini {
+                ThinkingCount::TotalOnly
+            } else {
+                ThinkingCount::Stated
+            };
+            assert_eq!(ThinkingCount::of(kind), expected, "{kind:?}");
+        }
+        assert_eq!(ThinkingCount::default(), ThinkingCount::Stated);
+        assert_eq!(
+            TranslationPlan::passthrough().thinking_count(),
+            ThinkingCount::Stated
+        );
+    }
+
+    #[test]
+    fn the_thinking_of_a_gemini_compat_answer_is_what_its_total_has_beyond_the_rest() {
+        let gemini = ThinkingCount::of(ProviderKind::Gemini);
+        for (name, usage, thinking) in GEMINI_COMPAT_ANSWERS {
+            let usage: Value = serde_json::from_str(usage).unwrap();
+            assert_eq!(gemini.beside_completion(&usage), Some(thinking), "{name}");
+            // read as stated, which is what every other provider is, the
+            // answer is short by exactly those tokens
+            assert_eq!(
+                ThinkingCount::Stated.beside_completion(&usage),
+                None,
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_gemini_compat_answer_is_not_added_to_when_it_is_whole() {
+        let gemini = ThinkingCount::of(ProviderKind::Gemini);
+        // a model that did not think, or an endpoint fixed to count the
+        // thinking in `completion_tokens`: the total is prompt plus completion
+        for usage in [
+            json!({"prompt_tokens":9,"completion_tokens":4,"total_tokens":13}),
+            json!({"prompt_tokens":15,"completion_tokens":160,"total_tokens":175,
+                   "completion_tokens_details":{"reasoning_tokens":142}}),
+            // a total below the parts (a cache read taken off, say) has nothing
+            // beyond them
+            json!({"prompt_tokens":2000,"completion_tokens":3,"total_tokens":503}),
+            // no total, no completion (an embeddings answer) or no prompt: there
+            // is nothing to compare
+            json!({"prompt_tokens":9,"completion_tokens":4}),
+            json!({"prompt_tokens":9,"total_tokens":9}),
+            json!({"completion_tokens":4,"total_tokens":99}),
+        ] {
+            assert_eq!(gemini.beside_completion(&usage), None, "{usage}");
+        }
+    }
+
+    /// An endpoint that later names the thinking beside a short completion, as
+    /// Vertex AI's does, is counted once, by whichever reading finds it
+    #[test]
+    fn a_gemini_compat_answer_that_names_its_thinking_is_counted_once() {
+        let named = json!({
+            "prompt_tokens":14,"completion_tokens":59,"total_tokens":633,
+            "completion_tokens_details":{"reasoning_tokens":560}
+        });
+        let gemini = ThinkingCount::of(ProviderKind::Gemini);
+        assert_eq!(gemini.beside_completion(&named), Some(560));
+        assert_eq!(
+            ThinkingCount::Stated.beside_completion(&named),
+            Some(560),
+            "the explicit field is read for every provider"
+        );
+    }
+
+    #[test]
+    fn vertex_names_its_thinking_beside_the_completion_and_the_total_adds_it_up() {
+        let vertex = ThinkingCount::of(ProviderKind::Vertex);
+        for (name, usage, thinking) in VERTEX_COMPAT_ANSWERS {
+            let usage: Value = serde_json::from_str(usage).unwrap();
+            assert_eq!(vertex.beside_completion(&usage), Some(thinking), "{name}");
+            let read = TokenUsage::from_openai(&usage);
+            let completion = usage["completion_tokens"].as_u64().unwrap();
+            assert_eq!(read.completion, completion + thinking, "{name}");
+            assert_eq!(read.reasoning, Some(thinking), "{name}");
+            assert_eq!(
+                read.prompt + read.completion,
+                usage["total_tokens"].as_u64().unwrap(),
+                "{name}: the shown counts add up to the provider's total"
+            );
+        }
+    }
+
+    #[test]
+    fn a_gemini_compat_answer_reaches_a_messages_client_with_its_thinking_in_the_output() {
+        for (name, usage, thinking) in GEMINI_COMPAT_ANSWERS {
+            let value: Value = serde_json::from_str(usage).unwrap();
+            let completion = value["completion_tokens"].as_u64().unwrap();
+            let body = chat_body_with_usage(usage);
+            let out = gemini_compat_plan("/v1/messages")
+                .translate_response(Bytes::from(serde_json::to_vec(&body).unwrap()), false);
+            let v: Value = serde_json::from_slice(&out).unwrap();
+            assert_eq!(v["usage"]["output_tokens"], completion + thinking, "{name}");
+            // the same answer from a provider read as stated is left short
+            let stated =
+                translate_json_body(Protocol::AnthropicMessages, Protocol::OpenAiChat, body);
+            assert_eq!(stated["usage"]["output_tokens"], completion, "{name}");
+        }
+    }
+
+    #[test]
+    fn a_gemini_compat_answer_reaches_a_responses_client_with_its_thinking_named() {
+        let usage = r#"{"completion_tokens":18,"prompt_tokens":15,"total_tokens":175}"#;
+        let out = gemini_compat_plan("/v1/responses").translate_response(
+            Bytes::from(serde_json::to_vec(&chat_body_with_usage(usage)).unwrap()),
+            false,
+        );
+        let v: Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["usage"]["input_tokens"], 15);
+        assert_eq!(v["usage"]["output_tokens"], 160);
+        assert_eq!(v["usage"]["total_tokens"], 175);
+        assert_eq!(v["usage"]["output_tokens_details"]["reasoning_tokens"], 142);
+    }
+
+    #[test]
+    fn a_gemini_compat_cache_hit_stays_inside_the_prompt_beside_its_thinking() {
+        let (_, usage, thinking) = GEMINI_COMPAT_ANSWERS[3];
+        let out = gemini_compat_plan("/v1/messages").translate_response(
+            Bytes::from(serde_json::to_vec(&chat_body_with_usage(usage)).unwrap()),
+            false,
+        );
+        let v: Value = serde_json::from_slice(&out).unwrap();
+        // 116,482 prompt tokens of which 114,667 were read from the cache
+        assert_eq!(v["usage"]["input_tokens"], 1815);
+        assert_eq!(v["usage"]["cache_read_input_tokens"], 114667);
+        assert_eq!(v["usage"]["output_tokens"], 44 + thinking);
+    }
+
+    /// The endpoint sends `usage` on every chunk of a stream, each one carrying
+    /// the thinking already spent (forum, 2026-02-27, gemini-3-flash-preview:
+    /// 103, 105 and 105 against a prompt of 9 and a completion of 1, 3 and 3)
+    #[test]
+    fn a_gemini_compat_stream_with_usage_on_every_chunk_ends_with_the_thinking_counted() {
+        let sse = r#"data: {"id":"g1","model":"gemini-3-flash-preview","choices":[{"index":0,"delta":{"content":"1"}}],"usage":{"completion_tokens":1,"prompt_tokens":9,"total_tokens":103}}
+
+data: {"id":"g1","model":"gemini-3-flash-preview","choices":[{"index":0,"delta":{"content":", "}}],"usage":{"completion_tokens":3,"prompt_tokens":9,"total_tokens":105}}
+
+data: {"id":"g1","model":"gemini-3-flash-preview","choices":[{"index":0,"delta":{},"finish_reason":"length"}],"usage":{"completion_tokens":3,"prompt_tokens":9,"total_tokens":105}}
+
+data: [DONE]
+
+"#;
+        let run = |path: &str, event: &str| {
+            let out = gemini_compat_plan(path)
+                .translate_response(Bytes::copy_from_slice(sse.as_bytes()), true);
+            last_usage(&out, Some(event))
+        };
+        // 105 total, 9 prompt: the thinking is the 93 the total has beyond them
+        let messages = run("/v1/messages", "message_delta");
+        assert_eq!(messages["output_tokens"], 96);
+        let responses = run("/v1/responses", "response.completed");
+        assert_eq!(responses["input_tokens"], 9);
+        assert_eq!(responses["output_tokens"], 96);
+        assert_eq!(responses["total_tokens"], 105);
+        assert_eq!(responses["output_tokens_details"]["reasoning_tokens"], 93);
+    }
+
+    #[test]
+    fn a_vertex_answer_reaches_a_messages_client_with_its_thinking_counted_once() {
+        let (_, usage, thinking) = VERTEX_COMPAT_ANSWERS[1];
+        let out =
+            TranslationPlan::resolve("/v1/messages", ProviderKind::Vertex, RoleProfile::Openai)
+                .translate_response(
+                    Bytes::from(serde_json::to_vec(&chat_body_with_usage(usage)).unwrap()),
+                    false,
+                );
+        let v: Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["usage"]["input_tokens"], 14);
+        assert_eq!(v["usage"]["output_tokens"], 59 + thinking);
+    }
+
+    #[test]
+    fn a_provider_read_as_stated_is_never_given_a_gap_to_fill() {
+        // openai-shaped bodies whose total is more than their parts, from a
+        // provider that is not gemini's compatible endpoint, are left as stated
+        let usage = r#"{"completion_tokens":18,"prompt_tokens":15,"total_tokens":175}"#;
+        for kind in [
+            ProviderKind::Openai,
+            ProviderKind::Vertex,
+            ProviderKind::Mistral,
+        ] {
+            let out = TranslationPlan::resolve("/v1/messages", kind, RoleProfile::Openai)
+                .translate_response(
+                    Bytes::from(serde_json::to_vec(&chat_body_with_usage(usage)).unwrap()),
+                    false,
+                );
+            let v: Value = serde_json::from_slice(&out).unwrap();
+            assert_eq!(v["usage"]["output_tokens"], 18, "{kind:?}");
+        }
     }
 }
