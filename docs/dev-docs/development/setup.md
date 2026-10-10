@@ -140,6 +140,13 @@ cargo install cargo-hack
 RUSTFLAGS="-D warnings" cargo hack check --each-feature --workspace --all-targets
 ```
 
+`--each-feature` enumerates a crate's declared features, and an optional
+dependency that no feature names with `dep:` is also an implicit feature of its
+own, which the step skips unless it is passed `--optional-deps`. So a feature that
+turns on optional dependencies names each one as `dep:<crate>` (`rolter-store`'s
+`postgres` is the model): the dependency is then reachable only through the
+feature, and every combination that exists is one the step builds (#1442).
+
 The hooks add staged-file hygiene and secret scanning, Conventional Commit
 validation, Rust/workflow/TOML/spelling checks, workspace tests, dependency
 policy checks, and UI lint/build checks. Install the system tools used by the
