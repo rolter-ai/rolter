@@ -29,16 +29,19 @@ default = []
 # per-test schema isolation for downstream crates' postgres tests; a dev-only
 # feature that adds nothing to a production build
 test-support = ["dep:tokio"]
+# the optional dependencies are named with `dep:` so they do not also become
+# implicit features of their own: `postgres` is the only way to turn them on,
+# and `cargo hack --each-feature` covers every combination that exists (#1442)
 postgres = [
-  "sqlx",
+  "dep:sqlx",
   "sqlx/json",
-  "uuid",
-  "chrono",
-  "serde",
-  "serde_json",
-  "aes-gcm",
-  "sha2",
-  "tracing",
+  "dep:uuid",
+  "dep:chrono",
+  "dep:serde",
+  "dep:serde_json",
+  "dep:aes-gcm",
+  "dep:sha2",
+  "dep:tracing",
 ]
 
 [dev-dependencies]
