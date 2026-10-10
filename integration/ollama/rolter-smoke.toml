@@ -13,3 +13,12 @@ strategy = "round_robin"
 [[routes.targets]]
 provider = "ollama"
 model = "qwen2.5:0.5b"
+
+# current ollama releases answer /v1/embeddings with 501 for a generative
+# model, so embeddings go to a dedicated embedding model (#2910)
+[[routes]]
+model = "ollama-embed-smoke"
+strategy = "round_robin"
+[[routes.targets]]
+provider = "ollama"
+model = "all-minilm:22m"

@@ -55,9 +55,14 @@ x-sglang-cpu: &sglang-cpu
   profiles: [sglang]
   # This is SGLang's documented CPU build rather than its CUDA runtime image.
   build:
-    context: https://github.com/sgl-project/sglang.git#v0.5.12:docker
+    context: https://github.com/sgl-project/sglang.git#v0.5.21:docker
     dockerfile: xeon.Dockerfile
-  image: rolter-sglang-cpu:v0.5.12
+    args:
+      # the context tag only supplies the dockerfile: xeon.Dockerfile clones the
+      # repository itself and checks out VER_SGLANG, which defaults to main, so
+      # without this the engine was whatever main was on build day (#2910)
+      VER_SGLANG: v0.5.21
+  image: rolter-sglang-cpu:v0.5.21
   shm_size: 2gb
   environment:
     SGLANG_USE_CPU_ENGINE: "1"
