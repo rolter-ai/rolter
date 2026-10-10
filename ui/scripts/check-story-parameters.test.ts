@@ -124,7 +124,7 @@ describe("maskLiterals after a template literal", () => {
   });
 
   it("reads a quote or an apostrophe in template text as text", () => {
-    const masked = maskLiterals("const a = `it's \"quoted\" // not a comment`; const b = 1;");
+    const masked = maskLiterals('const a = `it\'s "quoted" // not a comment`; const b = 1;');
     expect(masked).toContain("const b = 1;");
   });
 
@@ -134,7 +134,7 @@ describe("maskLiterals after a template literal", () => {
   });
 
   it("still finds a fixture declared after a template", () => {
-    const source = 'const m = `${a}`; export const atTiny = { parameters: { viewport: {} } };';
+    const source = "const m = `${a}`; export const atTiny = { parameters: { viewport: {} } };";
     expect(collectFixtures(source, "src/lib/story-x.ts").map((f) => f.name)).toEqual(["atTiny"]);
   });
 

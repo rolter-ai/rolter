@@ -1232,7 +1232,8 @@ jobs:
   ui:
     name: ui, storybook, docs
     runs-on: ubuntu-24.04
-    # about 5-6 min, most of it the chromium download and the storybook build.
+    # about 4 min, three of them the play tests (2,146 stories on vitest, #2907);
+    # the chromium download and the storybook build are under a minute together.
     # a hung play test fails the gate in 25 minutes instead of GitHub's
     # 360-minute default
     timeout-minutes: 25
