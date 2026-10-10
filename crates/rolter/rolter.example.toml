@@ -305,33 +305,27 @@ weight = 1
 
 # --- per-route advanced settings ---
 # catalog metadata and model-scoped policy, written from the dashboard's model
-# sheet. the gateway applies `visibility`, `limits.output_tokens` and the
-# `guardrails` selection (see the guardrails block below) today. the other parts
-# are validated and stored with the route, but the data plane does not read them
-# yet (#2924); `insecure_tls` in particular never skips certificate verification,
-# so trust a private CA with [tls] ca_bundles instead.
+# sheet. the gateway applies `limits.timeout_secs`, `limits.retries`,
+# `limits.output_tokens`, `headers` / `locked_headers`, `visibility` and the
+# `guardrails` selection (see the guardrails block below). `model_type`,
+# `capabilities` and `description` are labels the dashboard reads; the gateway
+# does not enforce them. `base_url`, `insecure_tls`, `[routes.advanced.pricing]`
+# and the `rpm`, `tpm`, `concurrency` and `context_window` limits never took
+# effect and were removed (#2924): a file that still sets one loads, the key
+# ignored and reported as unknown. a second endpoint is a second provider, and a
+# private CA is [tls] ca_bundles.
 # [[routes]]
 # model = "gpt-4o-restricted"
 # [routes.advanced]
-# model_type = "chat"             # catalog family, e.g. chat or embedding
-# capabilities = ["vision"]
+# model_type = "chat"             # dashboard label, e.g. chat or embedding
+# capabilities = ["vision"]       # dashboard label, not enforced
 # description = "gpt-4o for the platform team"
-# base_url = "https://llm.internal.example"   # never carries credentials
-# insecure_tls = false
-# headers = { "x-team" = "platform" }         # credentials belong on the provider
-# locked_headers = ["x-team"]                 # headers a caller may not replace
+# headers = { "x-team" = "platform" }         # sent upstream; credentials belong on the provider
+# locked_headers = ["x-team"]                 # a caller's x-team (if forwarded) may not replace it
 # [routes.advanced.limits]
-# rpm = 600
-# tpm = 150000
-# concurrency = 32
-# timeout_secs = 60
-# retries = 2
-# context_window = 128000
-# output_tokens = 4096
-# [routes.advanced.pricing]         # prices whose unit is not a token
-# image_per_unit = 0.04
-# audio_input_per_minute = 0.006
-# audio_output_per_minute = 0.012
+# timeout_secs = 60               # wait for response headers; replaces [timeouts] request_secs
+# retries = 2                     # 0-10 extra attempts; replaces [retry] max_retries, 0 = none
+# output_tokens = 4096            # refuse max_tokens above this
 # [routes.advanced.visibility]
 # minimum_role = "member"
 # allowed_team_ids = []

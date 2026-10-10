@@ -159,42 +159,48 @@ model = "gpt-4o"
 
 ## Per-model advanced settings
 
-Beyond params, a route carries an **advanced** block: catalog metadata
-(description, capabilities), a per-model `base_url` override, request limits,
-extra upstream headers, and catalog visibility. In the dashboard these are the
-"Limits & network", "Custom request headers" and "Access & permissions"
-sections of a model's sheet, and saving the sheet writes them back to the route.
+Beyond params, a route carries an **advanced** block: catalog metadata, request settings the gateway applies to every call the route makes, and catalog visibility. In the dashboard these are the "Limits & network", "Custom request headers" and "Access & permissions" sections of a model's sheet, and saving the sheet writes them back to the route. In a `rolter.toml` they sit under `[routes.advanced]`.
 
-| Field                                                                  | Notes                                                                                                                                   |
-| ---------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `base_url`                                                             | Absolute `http(s)` URL; overrides the provider endpoint for this model only                                                             |
-| `limits.rpm` / `limits.tpm` / `limits.concurrency`                     | Per-model ceilings; each is `1`–`10000000`. Leave blank to inherit the gateway and provider settings                                    |
-| `limits.timeout_secs` / `limits.retries`                               | Whole seconds and whole attempts. The dashboard's timeout field is in milliseconds and rounds to the nearest second, never below one    |
-| `limits.context_window` / `limits.output_tokens`                       | Advertised model geometry, same `1`–`10000000` range                                                                                    |
-| `headers` / `locked_headers`                                           | Extra request headers, and which of them a caller may not replace. Credentials belong in the provider, not here                         |
-| `visibility.minimum_role`                                              | Lowest role allowed to call the model                                                                                                   |
-| `visibility.project_only`                                              | `true` serves the model only to keys minted in the route's own project. Omitted (the default), every key in the organization may use it |
-| `visibility.allowed_team_ids` / `allowed_key_ids` / `allowed_user_ids` | Restrict the model to specific teams, virtual keys or users. Each entry is an **id**, not a name                                        |
+**What the gateway applies.** Each of these changes what the gateway does for the route, and nothing else in the block does:
 
-The block also has a `pricing` object for prices whose unit is not a token
-(`image_per_unit`, `audio_input_per_minute`, `audio_output_per_minute`). Token
-rates, including what a cache write costs, belong on the model's price instead,
-which is what the **Pricing override** section of the sheet writes. The route's
-`pricing.cache_write_per_mtok` is **deprecated and ignored**. It never changed a
-cost: the rate that prices cache writes is `cache_write_per_mtok` on the price
-row (see [Cache writes](/observability/logs-and-cost#cache-writes)). A route
-that still carries the key keeps loading and saving without complaint, and
-Rolter does not validate the value or copy it into the price. The next time you
-save the model's sheet in the dashboard it drops the key from the route. It is
-not migrated on purpose, since doing so would start charging by a number that
-never took effect. To find the routes that still carry one, and decide whether
-to move the value to the price row first:
+| Field                                                                  | Notes                                                                                                                                                                                                                                                                                          |
+| ---------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `limits.timeout_secs`                                                  | Whole seconds to wait for the upstream's response headers, `1`–`10000000`. Replaces `[timeouts].request_secs` for this route, even where that is `0`. A streamed response is never cut short by it. The dashboard's field is in milliseconds and rounds to the nearest second, never below one |
+| `limits.retries`                                                       | `0`–`10`: extra attempts after the first, each on another target (or another of the provider's keys after a `429` or `401`). Replaces `[retry].max_retries` for this route, and `0` turns retries off. Leave blank to inherit                                                                  |
+| `limits.output_tokens`                                                 | `1`–`10000000`. A request whose `max_tokens`, `max_completion_tokens` or `max_output_tokens` is above it is refused with `400` and code `max_tokens_exceeded`                                                                                                                                  |
+| `headers` / `locked_headers`                                           | Static headers sent to the upstream on every call the route makes, to every one of its targets. See [Route headers](#route-headers)                                                                                                                                                            |
+| `visibility.minimum_role`                                              | Lowest role allowed to call the model                                                                                                                                                                                                                                                          |
+| `visibility.project_only`                                              | `true` serves the model only to keys minted in the route's own project. Omitted (the default), every key in the organization may use it                                                                                                                                                        |
+| `visibility.allowed_team_ids` / `allowed_key_ids` / `allowed_user_ids` | Restrict the model to specific teams, virtual keys or users. Each entry is an **id**, not a name                                                                                                                                                                                               |
 
-```sql
-select model, advanced -> 'pricing' ->> 'cache_write_per_mtok' as cache_write_per_mtok
-from routes
-where advanced -> 'pricing' ? 'cache_write_per_mtok';
-```
+`timeout_secs`, `retries` and `headers` apply to a request that names the route, on `/v1/chat/completions`, `/v1/responses`, the other JSON endpoints and the multipart audio uploads alike. They do not apply to a request addressed as `provider-slug/model` or `group-slug/model`, which has no route, nor to Realtime sessions or health probes.
+
+**Catalog metadata.** `model_type`, `capabilities` and `description` are labels the dashboard reads back: the model type and capability flags decide which parameters and prices the model sheet offers, and the description is a note for your team that the routes API returns. The gateway does not enforce them, so a request is forwarded whether or not a capability flag is set, and none of the three is sent to API clients or shown in `GET /v1/models`.
+
+### Route headers
+
+`headers` is a map of header name to value, sent with every upstream call the route makes. A header the deployment forwards from the caller (`forwarded_headers` under Client settings; a caller cannot send any other header upstream) is the caller's to choose unless you list its name in `locked_headers`:
+
+- **Unlocked** (the default): the route's value is a default, and a caller's header of the same name replaces it.
+- **Locked**: the route's value replaces a caller's header of the same name.
+
+A route header also replaces a deployment-wide injected header of the same name.
+
+Credentials belong to the provider. A route may not set `authorization`, `proxy-authorization`, `x-api-key`, `api-key` or `x-goog-api-key`, nor the headers that frame the request (`host`, `content-length`, `content-type`, `transfer-encoding`, `connection` and the other hop-by-hop headers). The routes API refuses one with `400`, a `rolter.toml` that sets one fails `rolter check`, and a stored row that carries one anyway (written around the API) has the header left out of the snapshot while the route keeps serving; `GET /api/v1/config/problems` names it. The same applies to a name that is not a valid header name or a value that is not visible ASCII on one line.
+
+### Settings that never took effect
+
+Earlier releases stored, validated and displayed several more settings that the gateway did not read, and the dashboard and these docs described them as working. They are gone from the model sheet and the API, and Rolter now ignores them:
+
+| Setting                                                                                               | What to do instead                                                                                                                                                                                                                                                                                                                   |
+| ----------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `base_url` (a per-model endpoint)                                                                     | Requests always went to the provider's `api_base`. A second endpoint is a second provider: add one with that `api_base` and point the route's target at it. The credential belongs to the provider, so a route cannot send it somewhere the provider's owner did not choose                                                          |
+| `insecure_tls`                                                                                        | The gateway never skipped certificate verification for a route, and does not offer to. To trust a private or self-signed CA, add its PEM file to `[tls].ca_bundles`, or to a provider's own `ca_bundles` (see [`ROLTER_CA_BUNDLE`](/configuration/environment-variables))                                                            |
+| `limits.rpm`, `limits.tpm`, `limits.concurrency`                                                      | There is no per-model limiter. Rate limits are set per organization, team, project or key on the **Budgets & Limits** screen, and each provider's queue bounds how many calls it takes at once                                                                                                                                       |
+| `limits.context_window`                                                                               | Nothing read it. The model's context window is the upstream's to enforce                                                                                                                                                                                                                                                             |
+| `pricing.image_per_unit`, `audio_input_per_minute`, `audio_output_per_minute`, `cache_write_per_mtok` | Cost is computed from token counts only, so a model billed per image or per minute is recorded as unpriced. Token rates, including what a cache write costs, belong on the model's price instead, which is what the **Pricing override** section of the sheet writes (see [Cache writes](/observability/logs-and-cost#cache-writes)) |
+
+A route that still carries one of these keeps loading, and requests are served exactly as they always were. Nothing is migrated. The routes API accepts them from an older client and drops them instead of storing them, saving a model's sheet in the dashboard sheds them from the route, and a `rolter.toml` that sets one is reported as an unknown key at startup and by `rolter check`. To find the routes that still carry one before you rely on any of this, see [Upgrading](/deployment/upgrading#route-advanced-settings).
 
 A route is only ever served to keys of the organization it belongs to. For a
 key from another organization the route does not exist: the key gets `404` with

@@ -75,9 +75,7 @@ const ADVANCED_ROUTE: RouteRow = {
     model_type: "chat",
     capabilities: ["streaming", "tools", "json"],
     description: "prod chat traffic",
-    base_url: "https://api.openai.com/v1",
-    limits: { rpm: 600, timeout_secs: 30 },
-    insecure_tls: false,
+    limits: { timeout_secs: 30, retries: 1 },
     headers: { "X-Tenant": "acme" },
     locked_headers: ["X-Tenant"],
     visibility: {
@@ -684,26 +682,35 @@ export const NameConflict: Story = {
 };
 
 /**
- * A base URL that is not a URL is refused before it reaches a provider — said
- * when the field is left, not on the way to `https://` (#2810).
+ * A retry budget past the ceiling is refused before it reaches the control
+ * plane — said when the field is left, not on the way to a valid number
+ * (#2810). Zero is a value, not a blank: it turns retries off for the route.
  */
-export const InvalidBaseUrl: Story = {
+export const RetriesPastTheCeilingAreRefused: Story = {
   render: () => <Stage mode="add" />,
   play: async () => {
     const dialog = within(sheet());
     await seededBlank(dialog);
-    const baseUrl = dialog.getByLabelText("Base URL override");
-    await userEvent.type(baseUrl, "vllm.internal:8000");
-    await expect(baseUrl).not.toHaveAttribute("aria-invalid");
+    await userEvent.click(dialog.getByRole("button", { name: "Limits & network" }));
+    const retries = dialog.getByLabelText("Max retries");
+    await userEvent.type(retries, "11");
+    await expect(retries).not.toHaveAttribute("aria-invalid");
     await userEvent.tab();
-    await waitFor(() => expect(baseUrl).toHaveAttribute("aria-invalid", "true"));
-    await expect(baseUrl).toHaveAccessibleDescription(/must start with http/);
-    await expect(dialog.getAllByText(/must start with http/)).toHaveLength(1);
-    // the save is still there to press, and refuses with the problem standing
+    await waitFor(() => expect(retries).toHaveAttribute("aria-invalid", "true"));
+    await expect(retries).toHaveAccessibleDescription(/whole number from 0 to 10/);
+    await expect(dialog.getAllByText(/whole number from 0 to 10/)).toHaveLength(1);
+    // zero is a budget of its own, so it clears the error
+    await userEvent.clear(retries);
+    await userEvent.type(retries, "0");
+    await userEvent.tab();
+    await waitFor(() => expect(retries).not.toHaveAttribute("aria-invalid"));
+    // and the save refuses again once the field is back out of range
+    await userEvent.clear(retries);
+    await userEvent.type(retries, "11");
     await userEvent.type(dialog.getByLabelText("Route name"), "qwen-72b");
     await pickOption(dialog.getByLabelText("Target 1 provider"), "vllm-cluster");
     await userEvent.click(dialog.getByRole("button", { name: "Add route" }));
-    await waitFor(() => expect(baseUrl).toHaveFocus());
+    await waitFor(() => expect(retries).toHaveFocus());
     calls.expectNotSent("POST", `/projects/${PROJECT.id}/routes`);
   },
 };
@@ -1128,10 +1135,11 @@ export const SavesTheAdvancedEditor: Story = {
     const dialog = within(sheet());
     await seeded(dialog);
     await userEvent.click(dialog.getByRole("button", { name: "Limits & network" }));
-    const rpm = dialog.getByLabelText("Requests / min");
-    await expect(rpm).toHaveValue(600);
-    await userEvent.clear(rpm);
-    await userEvent.type(rpm, "900");
+    const retries = dialog.getByLabelText("Max retries");
+    await expect(retries).toHaveValue(1);
+    // zero turns retries off for the route, so it is sent and not left blank
+    await userEvent.clear(retries);
+    await userEvent.type(retries, "0");
 
     await userEvent.click(dialog.getByRole("button", { name: "Custom request headers" }));
     const headerValue = dialog.getByLabelText("Header value");
@@ -1142,19 +1150,17 @@ export const SavesTheAdvancedEditor: Story = {
     await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
     const body = (await calls.expectSentBody("PUT", "/routes/route-1/advanced")) as {
       advanced: {
-        base_url: string;
-        limits: { rpm: number; timeout_secs: number };
+        limits: { retries: number; timeout_secs: number };
         headers: Record<string, string>;
         locked_headers: string[];
         guardrails: unknown;
       };
     };
-    await expect(body.advanced.limits.rpm).toBe(900);
+    await expect(body.advanced.limits.retries).toBe(0);
     // milliseconds on screen, whole seconds on the wire
     await expect(body.advanced.limits.timeout_secs).toBe(30);
     await expect(body.advanced.headers).toEqual({ "X-Tenant": "beta" });
     await expect(body.advanced.locked_headers).toEqual(["X-Tenant"]);
-    await expect(body.advanced.base_url).toBe("https://api.openai.com/v1");
     await expect(body.advanced.guardrails).toEqual({ rules: ["pii-out"] });
     // and the key the backend dropped is not written back: `set_route_advanced`
     // persists the raw body, so the sheet copying it through was the one path
@@ -1183,8 +1189,101 @@ export const OffersNoAdditionalFieldsSwitch: Story = {
     await userEvent.click(dialog.getByRole("button", { name: "Limits & network" }));
     // the section did open, so this is an absent control and not an unopened
     // section standing in for one
-    await expect(dialog.getByLabelText("Requests / min")).toBeVisible();
+    await expect(dialog.getByLabelText("Max retries")).toBeVisible();
     await expect(dialog.queryByText("Allow additional fields")).not.toBeInTheDocument();
+  },
+};
+
+/**
+ * A route that carries keys the gateway never read (#2924): a per-route
+ * endpoint, an insecure-TLS switch, flat image and audio prices, and four
+ * limits. The sheet offers none of them, and a save sheds them from the stored
+ * blob instead of copying them through, so the routes API stops reading back a
+ * setting that looks like policy and does nothing. What the gateway does apply
+ * (timeout, retries, headers, the guardrail selection) is kept.
+ */
+const LEGACY_ROUTE: RouteRow = {
+  ...ADVANCED_ROUTE,
+  advanced: {
+    ...ADVANCED_ROUTE.advanced,
+    base_url: "https://models.internal/v1",
+    insecure_tls: true,
+    pricing: { image_per_unit: 0.04, audio_input_per_minute: 0.006 },
+    limits: {
+      rpm: 600,
+      tpm: 90000,
+      concurrency: 4,
+      context_window: 128000,
+      timeout_secs: 30,
+      retries: 1,
+      output_tokens: 4096,
+    },
+  },
+};
+
+export const ShedsTheSettingsTheGatewayNeverRead: Story = {
+  render: () => <Stage mode="edit" route={LEGACY_ROUTE} />,
+  play: async () => {
+    const dialog = within(sheet());
+    await seeded(dialog);
+    await userEvent.click(dialog.getByRole("button", { name: "Limits & network" }));
+    // the three limits that apply are there, and none of what does not
+    await expect(dialog.getByLabelText("Timeout (ms)")).toHaveValue(30000);
+    await expect(dialog.getByLabelText("Max retries")).toHaveValue(1);
+    await expect(dialog.getByLabelText("Max output tokens")).toHaveValue(4096);
+    for (const gone of [
+      "Base URL override",
+      "Requests / min",
+      "Tokens / min",
+      "Max concurrency",
+      "Context window",
+    ]) {
+      await expect(dialog.queryByLabelText(gone)).not.toBeInTheDocument();
+    }
+    await expect(dialog.queryByText("Allow insecure TLS")).not.toBeInTheDocument();
+
+    // a change on the advanced half, so the blob is written and can be read
+    await userEvent.click(dialog.getByRole("button", { name: "Custom request headers" }));
+    const headerValue = dialog.getByLabelText("Header value");
+    await userEvent.clear(headerValue);
+    await userEvent.type(headerValue, "beta");
+    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
+    const body = (await calls.expectSentBody("PUT", "/routes/route-1/advanced")) as {
+      advanced: Record<string, unknown>;
+    };
+    for (const key of ["base_url", "insecure_tls", "pricing"]) {
+      await expect(body.advanced).not.toHaveProperty(key);
+    }
+    await expect(body.advanced.limits).toEqual({
+      timeout_secs: 30,
+      retries: 1,
+      output_tokens: 4096,
+    });
+    await expect(body.advanced.headers).toEqual({ "X-Tenant": "beta" });
+    await expect(body.advanced.guardrails).toEqual({ rules: ["pii-out"] });
+  },
+};
+
+/**
+ * A model type billed per image or per minute has no rate to set: cost is
+ * computed from tokens, and the flat price this section used to offer never
+ * reached a cost path (#2924). The section says so, rather than showing a
+ * currency picker with nothing to apply it to.
+ */
+export const PricesTokensOnly: Story = {
+  render: () => <Stage mode="add" />,
+  play: async () => {
+    const dialog = within(sheet());
+    await seededBlank(dialog);
+    await pickOption(dialog.getByLabelText("Model type"), "image");
+    await userEvent.click(dialog.getByRole("button", { name: "Pricing override" }));
+    await expect(await dialog.findByText(/Rolter prices by tokens/)).toBeVisible();
+    await expect(dialog.queryByLabelText(/Flat price per/)).not.toBeInTheDocument();
+    await expect(dialog.queryByLabelText("Currency")).not.toBeInTheDocument();
+    // and a chat model still gets its rates
+    await pickOption(dialog.getByLabelText("Model type"), "chat");
+    await expect(await dialog.findByLabelText(/Input USD\/Mtok/)).toBeVisible();
+    await expect(dialog.queryByText(/Rolter prices by tokens/)).not.toBeInTheDocument();
   },
 };
 
@@ -1305,8 +1404,8 @@ export const OpensAPinnedRouteToTheOrganization: Story = {
 
 /**
  * The control plane refuses a limit of its own accord — `validate_advanced`
- * caps every one at ten million. The sheet says which half of the save failed
- * instead of printing the message on its own.
+ * caps the token limit at ten million. The sheet says which half of the save
+ * failed instead of printing the message on its own.
  */
 export const AdvancedRejected: Story = {
   render: () => (
@@ -1316,7 +1415,7 @@ export const AdvancedRejected: Story = {
       stub={async (input, init) => {
         const url = String(input);
         if (url.includes("/advanced")) {
-          return json({ error: { message: "rpm must be between 1 and 10000000" } }, 400);
+          return json({ error: { message: "output_tokens must be between 1 and 10000000" } }, 400);
         }
         return backing(input, init);
       }}
@@ -1326,14 +1425,14 @@ export const AdvancedRejected: Story = {
     const dialog = within(sheet());
     await seeded(dialog);
     await userEvent.click(dialog.getByRole("button", { name: "Limits & network" }));
-    const rpm = dialog.getByLabelText("Requests / min");
-    await userEvent.clear(rpm);
-    await userEvent.type(rpm, "99999999");
+    const maxOutput = dialog.getByLabelText("Max output tokens");
+    await userEvent.clear(maxOutput);
+    await userEvent.type(maxOutput, "99999999");
     await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
     await waitFor(() =>
       expect(dialog.getByRole("alert")).toHaveTextContent(/advanced configuration/),
     );
-    await expect(dialog.getByRole("alert")).toHaveTextContent(/rpm must be between/);
+    await expect(dialog.getByRole("alert")).toHaveTextContent(/output_tokens must be between/);
   },
 };
 
@@ -1447,9 +1546,9 @@ export const SavesTheCacheWriteRateOnThePriceRow: Story = {
     await userEvent.type(write, "3.75");
     // a change on the advanced half too, so the blob is written and can be read
     await userEvent.click(dialog.getByRole("button", { name: "Limits & network" }));
-    const rpm = dialog.getByLabelText("Requests / min");
-    await userEvent.clear(rpm);
-    await userEvent.type(rpm, "900");
+    const maxOutput = dialog.getByLabelText("Max output tokens");
+    await userEvent.clear(maxOutput);
+    await userEvent.type(maxOutput, "900");
 
     await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
     const price = (await calls.expectSentBody("PUT", "/api/v1/model-prices")) as Record<
@@ -1460,7 +1559,7 @@ export const SavesTheCacheWriteRateOnThePriceRow: Story = {
     const advanced = (await calls.expectSentBody("PUT", "/routes/route-1/advanced")) as {
       advanced: Record<string, unknown>;
     };
-    await expect(advanced.advanced.limits).toMatchObject({ rpm: 900 });
+    await expect(advanced.advanced.limits).toMatchObject({ output_tokens: 900 });
     await expect(advanced.advanced).not.toHaveProperty("pricing");
   },
 };

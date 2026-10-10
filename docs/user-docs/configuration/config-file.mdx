@@ -509,39 +509,27 @@ model = "gpt-4o"
 Catalog metadata and model-scoped policy for one route. The dashboard's model sheet writes it; [Per-model advanced settings](/concepts/providers-and-routes#per-model-advanced-settings) explains what each part means and the ranges the control plane accepts.
 
 <ParamField path="model_type" type="string">
-  The catalog family of the model, such as `chat` or `embedding`.
+  The catalog family of the model, such as `chat` or `embedding`. A label the dashboard reads to choose which parameters and prices its model sheet offers. The gateway does not enforce it.
 </ParamField>
 
 <ParamField path="capabilities" default="[]" type="list">
-  Capability labels recorded for the model, such as `vision`.
+  Capability labels recorded for the model, such as `vision`. A label for the dashboard: the gateway forwards a request whether or not a flag is set.
 </ParamField>
 
 <ParamField path="description" type="string">
-  A description of the model for other operators.
-</ParamField>
-
-<ParamField path="base_url" type="string">
-  A model-specific upstream base URL. It never carries credentials.
-</ParamField>
-
-<ParamField path="pricing" type="table">
-  Prices whose unit is not a token, written as `[routes.advanced.pricing]`: `image_per_unit`, `audio_input_per_minute` and `audio_output_per_minute`. Token rates belong in `[[model_prices]]`. A `cache_write_per_mtok` key here is deprecated, accepted and ignored.
+  A note about the model for other operators. The dashboard and the routes API return it; it is never sent to API clients.
 </ParamField>
 
 <ParamField path="limits" type="table">
-  Per-model ceilings, written as `[routes.advanced.limits]`. Every key is an integer and an omitted key inherits the gateway or provider setting: `rpm`, `tpm`, `concurrency`, `timeout_secs`, `retries`, `context_window` and `output_tokens`.
-</ParamField>
-
-<ParamField path="insecure_tls" default="false" type="boolean">
-  Accepted and stored, but the gateway does not read it: upstream certificates are always verified. To trust a private certificate authority, use `[tls]` or the provider's `ca_bundles`.
+  Per-route request settings, written as `[routes.advanced.limits]`. `timeout_secs` (integer, `1` and up) bounds the wait for the upstream's response headers and replaces `[timeouts]` `request_secs` for this route; a streamed body is not cut short. `retries` (integer, `0` to `10`) is the number of extra attempts and replaces `[retry]` `max_retries` for this route, and `0` turns retries off. `output_tokens` (integer) refuses a request whose `max_tokens`, `max_completion_tokens` or `max_output_tokens` is above it. An omitted key inherits the gateway setting.
 </ParamField>
 
 <ParamField path="headers" type="table">
-  Headers meant to be added to calls for this model, none by default. Credentials belong on the provider, not here.
+  Headers sent to the upstream on every call this route makes, none by default. A name must be a valid header name and a value visible ASCII on one line. `authorization`, `x-api-key`, `api-key`, `x-goog-api-key` and the headers that frame a request (`host`, `content-length`, `content-type`) are refused, because credentials belong on the provider. The routes API answers `400` for one, `rolter check` fails a file that sets one, and the gateway leaves it out and logs a config problem at startup.
 </ParamField>
 
 <ParamField path="locked_headers" default="[]" type="list">
-  Request headers a caller may not replace for this route.
+  Names from `headers` whose value replaces a caller's header of the same name. A caller's header reaches the upstream only if `[client]` `forwarded_headers` lists it. An unlocked route header is a default that a forwarded caller header replaces.
 </ParamField>
 
 <ParamField path="visibility" type="table">
@@ -553,7 +541,7 @@ Catalog metadata and model-scoped policy for one route. The dashboard's model sh
 </ParamField>
 
 <Note>
-  The gateway applies `visibility`, `limits.output_tokens` and `guardrails` from this block today. The other parts are validated and stored with the route but the data plane does not read them yet ([#2924](https://github.com/rolter-ai/rolter/issues/2924)).
+  Earlier releases also accepted `base_url`, `insecure_tls`, `[routes.advanced.pricing]` and the `rpm`, `tpm`, `concurrency` and `context_window` limits, and stored them, but the gateway never read them ([#2924](https://github.com/rolter-ai/rolter/issues/2924)). They are gone, and a file that still sets one loads with the key ignored and reported as unknown. A second endpoint for a model is a second provider with its own `api_base`; to trust a private certificate authority use `[tls]` `ca_bundles` or the provider's `ca_bundles`; rate limits are set per organization, team, project or key under `[[rate_limits]]`; token rates belong in `[[model_prices]]`.
 </Note>
 
 ##### \[routes.advanced.guardrails\]

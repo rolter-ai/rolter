@@ -11,7 +11,7 @@ use std::time::Duration;
 use bytes::Bytes;
 use dashmap::DashMap;
 use rolter_core::{BackpressurePolicy, Error, ProviderConfig, QueueConfig, Result};
-use rolter_proxy::Forwarder;
+use rolter_proxy::{Forwarder, RouteOverrides};
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tracing::Instrument;
 
@@ -38,6 +38,7 @@ enum Job {
         api_key: Option<String>,
         upstream_model: Option<String>,
         trace_headers: Vec<(String, String)>,
+        route: RouteOverrides,
         reply: oneshot::Sender<Result<reqwest::Response>>,
         wait: tracing::Span,
         parent: tracing::Span,
@@ -51,6 +52,7 @@ enum Job {
         content_type: String,
         api_key: Option<String>,
         trace_headers: Vec<(String, String)>,
+        route: RouteOverrides,
         reply: oneshot::Sender<Result<reqwest::Response>>,
         wait: tracing::Span,
         parent: tracing::Span,
@@ -108,12 +110,21 @@ impl ProviderQueues {
         api_key: Option<&str>,
         upstream_model: Option<&str>,
         trace_headers: &[(&str, &str)],
+        route: &RouteOverrides,
     ) -> Result<reqwest::Response> {
         if !config.enabled {
             let _inflight = InflightGuard::new(self.metrics.provider_load(&provider.name));
             return self
                 .forwarder
-                .forward_json(provider, path, body, api_key, upstream_model, trace_headers)
+                .forward_json_with(
+                    provider,
+                    path,
+                    body,
+                    api_key,
+                    upstream_model,
+                    trace_headers,
+                    route,
+                )
                 .await;
         }
         let (reply, result) = oneshot::channel();
@@ -124,6 +135,7 @@ impl ProviderQueues {
             api_key: api_key.map(str::to_string),
             upstream_model: upstream_model.map(str::to_string),
             trace_headers: owned_headers(trace_headers),
+            route: route.clone(),
             reply,
             wait: queue_wait_span(&provider.name),
             // the worker runs on its own task, where nothing is in scope: carry
@@ -145,12 +157,21 @@ impl ProviderQueues {
         content_type: &str,
         api_key: Option<&str>,
         trace_headers: &[(&str, &str)],
+        route: &RouteOverrides,
     ) -> Result<reqwest::Response> {
         if !config.enabled {
             let _inflight = InflightGuard::new(self.metrics.provider_load(&provider.name));
             return self
                 .forwarder
-                .forward_raw(provider, path, body, content_type, api_key, trace_headers)
+                .forward_raw_with(
+                    provider,
+                    path,
+                    body,
+                    content_type,
+                    api_key,
+                    trace_headers,
+                    route,
+                )
                 .await;
         }
         let (reply, result) = oneshot::channel();
@@ -161,6 +182,7 @@ impl ProviderQueues {
             content_type: content_type.to_string(),
             api_key: api_key.map(str::to_string),
             trace_headers: owned_headers(trace_headers),
+            route: route.clone(),
             reply,
             wait: queue_wait_span(&provider.name),
             // the worker runs on its own task, where nothing is in scope: carry
@@ -276,6 +298,7 @@ async fn run_job(forwarder: &Forwarder, job: Job) {
             api_key,
             upstream_model,
             trace_headers,
+            route,
             reply,
             wait,
             parent,
@@ -290,13 +313,14 @@ async fn run_job(forwarder: &Forwarder, job: Job) {
             // future is spawned onto the worker task
             let _ = reply.send(
                 forwarder
-                    .forward_json(
+                    .forward_json_with(
                         &provider,
                         &path,
                         body,
                         api_key.as_deref(),
                         upstream_model.as_deref(),
                         &headers,
+                        &route,
                     )
                     .instrument(parent)
                     .await,
@@ -309,6 +333,7 @@ async fn run_job(forwarder: &Forwarder, job: Job) {
             content_type,
             api_key,
             trace_headers,
+            route,
             reply,
             wait,
             parent,
@@ -323,13 +348,14 @@ async fn run_job(forwarder: &Forwarder, job: Job) {
             // future is spawned onto the worker task
             let _ = reply.send(
                 forwarder
-                    .forward_raw(
+                    .forward_raw_with(
                         &provider,
                         &path,
                         body,
                         &content_type,
                         api_key.as_deref(),
                         &headers,
+                        &route,
                     )
                     .instrument(parent)
                     .await,
@@ -517,6 +543,7 @@ mod tests {
                 None,
                 None,
                 &[],
+                &RouteOverrides::default(),
             )
             .await
             .ok()

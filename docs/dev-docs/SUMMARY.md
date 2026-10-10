@@ -10,6 +10,7 @@
 - [Config & hot reload](architecture/config-and-hot-reload.md)
 - [Config schema migrations](architecture/config-schema-migrations.md)
 - [Data model](architecture/data-model.md)
+- [Route advanced settings](architecture/route-advanced-settings.md)
 - [Labels](architecture/labels.md)
 - [RBAC & auth](architecture/rbac-and-auth.md)
 - [Invitations](architecture/invitations.md)
