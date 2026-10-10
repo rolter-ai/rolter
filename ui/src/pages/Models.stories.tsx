@@ -121,6 +121,16 @@ export const Loaded: Story = {
     const rows = canvas.getAllByRole("row").slice(1);
     await expect(rows[0]).toHaveTextContent("claude-sonnet");
     await expect(rows[1]).toHaveTextContent("gpt-4o");
+
+    // origin filter using Segmented primitive
+    const radioGroup = canvas.getByRole("radiogroup", { name: "Filter models by origin" });
+    await expect(radioGroup).toBeInTheDocument();
+    const configRadio = within(radioGroup).getByRole("radio", { name: /Config/ });
+    await userEvent.click(configRadio);
+    await waitFor(() => expect(canvas.queryByText("gpt-4o")).toBeNull());
+    await expect(canvas.getByText("claude-sonnet")).toBeVisible();
+    await userEvent.click(within(radioGroup).getByRole("radio", { name: /All/ }));
+    await waitFor(() => expect(canvas.getByText("gpt-4o")).toBeVisible());
   },
 };
 
