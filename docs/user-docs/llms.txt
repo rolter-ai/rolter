@@ -61,7 +61,7 @@ prompts below, then the quickstart, then the page for whatever it is wiring.
 
 ### Configuration
 
-- [Config File](/configuration/config-file): Complete reference for rolter.toml covering server, providers, routes, virtual keys, model prices, budgets, rate limits, and reliability settings.
+- [Config File](/configuration/config-file): Complete reference for rolter.toml: every table, its keys and defaults, and which tables a database-backed control plane owns instead of the file.
 - [Config Export](/configuration/config-export): Write a running deployment's providers, groups, routes, prices and prompt templates back out as a rolter.toml that rolter-seed --import accepts, for GitOps, environment promotion and config diffs.
 - [Env Vars](/configuration/environment-variables): All environment variables that configure the Rolter gateway, control plane, and provider credentials. Env vars override config file values.
 - [Providers](/configuration/providers): How Rolter reaches an upstream, where the credential lives, and how to check the pair actually works before a request depends on it.

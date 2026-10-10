@@ -38,7 +38,7 @@ An **all-zero blend is rejected**. It would not stop adaptive routing — it wou
 
 `exploration_ratio` is the share of traffic sent off the current best target so its rivals' scores stay fresh. Without it, a target that had one bad minute is never measured again. It is capped at **0.5** — the gateway clamps above that, so the API refuses the value instead of quietly reinterpreting it.
 
-`min_samples` is the warm-up: how many observations a target needs before its score is trusted. Below it, the target is not preferentially selected on a score built from too little data.
+`min_samples` is the warm-up: how many requests a **route** must have served, across all its targets, before the blend engages. While `latency_weight` is above zero, the blend also needs latency samples for at least two targets. Until then the route is served by the `pipeline` fallback stack, which keeps learning meanwhile.
 
 ---
 

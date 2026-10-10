@@ -7,7 +7,7 @@ Rolter can inspect request or response content with built-in detectors, custom r
 
 ## Inspection rules
 
-Rules run by ascending position, after any rules defined in the config file. Each rule uses exactly one source:
+Rules run by ascending position, after any rules defined in the `[[guardrails.rules]]` tables of the [config file](/configuration/config-file). Each rule uses exactly one source:
 
 - **Built-in detector** — email address, phone number, API token, or payment card.
 - **Custom regex** — compiled by Rolter's bounded, linear-time regex engine before the rule is published.
@@ -16,7 +16,7 @@ Choose `annotate` to count a match without changing traffic, `block` to reject m
 
 A response rule that blocks runs after the provider has generated and billed the answer. The caller gets a `403 guardrail_blocked`, but the request is still billed and counts toward budgets. Its log row is marked `withheld` and names the rule, and the blocked text is never stored. See [Withheld responses](/observability/logs-and-cost#withheld-responses).
 
-A response rule (stage **Before response**) needs the whole answer, so it cannot act on a streamed one. The deployment-wide `streaming_post_call` setting in the `[guardrails]` block of `rolter.toml` decides what happens instead:
+A response rule (stage **Before response**) needs the whole answer, so it cannot act on a streamed one. The deployment-wide `streaming_post_call` setting in the `[guardrails]` block of `rolter.toml` ([reference](/configuration/config-file)) decides what happens instead:
 
 - `reject` (the default) — while the rule is enforced, a request with `"stream": true` on a route the rule covers is refused with `400 guardrail_streaming_unsupported`. Chat clients and coding agents usually stream, so one response rule can refuse most interactive traffic.
 - `passthrough` — the stream is served and the rule does not see it. Only non-streamed responses are checked.
