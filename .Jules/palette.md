@@ -47,3 +47,8 @@
 
 **Learning:** Replacing hand-rolled tab buttons with the `<Segmented />` primitive standardizes accessibility across screens (`role="radiogroup"` and `role="radio"`).
 **Action:** When replacing custom tab/button groups with `<Segmented />`, update story assertions to query `getByRole("radio", { name: ... })` instead of `getByRole("button", ...)` and include an explicit `ariaLabel` for proper screen reader context.
+
+## 2026-10-05 - Models Origin Filter Segmented Primitive
+
+**Learning:** Replaced custom filter button elements in Models with the shared `<Segmented />` primitive to standardize keyboard navigation and ARIA attributes (`role="radiogroup"` / `role="radio"`).
+**Action:** Always prefer the shared `<Segmented />` primitive over custom-styled filter button arrays to guarantee built-in keyboard arrow navigation and consistent accessible roles.

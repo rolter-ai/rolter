@@ -114,6 +114,18 @@ export const Loaded: Story = {
     // leave as dashes (#1979)
     await waitFor(() => expect(canvas.getByText("anthropic")).toBeVisible());
     await expect(canvas.getByRole("button", { name: "1 target for claude-sonnet" })).toBeVisible();
+
+    // test filtering by origin using Segmented control (radiogroup / radio)
+    const radioGroup = canvas.getByRole("radiogroup", { name: "Filter models by origin" });
+    const dbRadio = within(radioGroup).getByRole("radio", { name: "DB-managed 1" });
+    await userEvent.click(dbRadio);
+    await waitFor(() => expect(canvas.queryByText("claude-sonnet")).toBeNull());
+    await expect(canvas.getByText("gpt-4o")).toBeVisible();
+
+    const allRadio = within(radioGroup).getByRole("radio", { name: "All 2" });
+    await userEvent.click(allRadio);
+    await waitFor(() => expect(canvas.getByText("claude-sonnet")).toBeVisible());
+
     // the strategy column sorts, like the columns beside it
     const strategy = canvas.getByRole("columnheader", { name: "Strategy" });
     await userEvent.click(within(strategy).getByRole("button"));

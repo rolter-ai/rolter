@@ -653,6 +653,7 @@
       "viewAria": "View {{model}}",
       "editAria": "Edit {{model}}",
       "deleteAria": "Delete model {{model}}",
+      "originFilterAria": "Filter models by origin",
       "searchPlaceholder": "Search models",
       "modelTally_one": "{{count}} model",
       "modelTally_other": "{{count}} models",
