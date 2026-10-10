@@ -13393,7 +13393,14 @@ async fn mcp_oauth_consent_refresh_and_exchange() {
         .send()
         .await
         .unwrap();
-    assert_eq!(transient.status(), 400);
+    // the authorization server having a bad minute is not the caller's mistake
+    // (#2919): a 502 with a fixed sentence, not a 400
+    assert_eq!(transient.status(), 502);
+    let transient: Value = transient.json().await.unwrap();
+    assert_eq!(
+        transient["error"]["code"],
+        "authorization_server_unavailable"
+    );
     let still_live: Option<chrono::DateTime<chrono::Utc>> =
         sqlx::query_scalar("select revoked_at from mcp_oauth_sessions where id = $1")
             .bind(uuid::Uuid::parse_str(&session_id).unwrap())
@@ -13404,6 +13411,92 @@ async fn mcp_oauth_consent_refresh_and_exchange() {
         still_live.is_none(),
         "a 503 is not a verdict on the grant; the session must survive it"
     );
+
+    // an authorization server that cannot be reached at all (#2919): the error
+    // `reqwest` raises quotes the token endpoint, which an operator may have
+    // registered with a credential in its query, and the caller of a refresh
+    // is not that operator
+    let endpoint_secret = random_password();
+    let unreachable_port = {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.local_addr().unwrap().port()
+    };
+    let register_token_url = |token_url: String| {
+        let client = client.clone();
+        let url = format!("{base}/api/v1/mcp-servers/{server_id}/oauth-client");
+        let authorize_url = format!("{authz}/authorize");
+        async move {
+            let updated = client
+                .put(url)
+                .bearer_auth(admin_token())
+                .json(&json!({
+                    "authorize_url": authorize_url,
+                    "token_url": token_url,
+                    "client_id": "rolter",
+                    "discovery": "manual"
+                }))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(updated.status(), 200, "{}", updated.text().await.unwrap());
+        }
+    };
+    register_token_url(format!(
+        "http://127.0.0.1:{unreachable_port}/token?client_secret={endpoint_secret}\
+         &tenant={endpoint_secret}"
+    ))
+    .await;
+    let unreachable = client
+        .post(format!("{base}/api/v1/mcp/sessions/{session_id}/refresh"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unreachable.status(), 502);
+    let unreachable = unreachable.text().await.unwrap();
+    assert!(
+        !unreachable.contains(&endpoint_secret) && !unreachable.contains("127.0.0.1"),
+        "the token endpoint reached the caller: {unreachable}"
+    );
+    assert!(unreachable.contains("authorization_server_unavailable"));
+    register_token_url(format!("{authz}/token")).await;
+
+    // and a fault in rolter's own store is rolter's, not a 400 quoting the
+    // driver: here the sealed refresh token's nonce no longer opens it
+    let session_uuid = uuid::Uuid::parse_str(&session_id).unwrap();
+    let sealed_nonce: Vec<u8> =
+        sqlx::query_scalar("select refresh_nonce from mcp_oauth_sessions where id = $1")
+            .bind(session_uuid)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    sqlx::query("update mcp_oauth_sessions set refresh_nonce = $2 where id = $1")
+        .bind(session_uuid)
+        .bind(vec![1u8, 2, 3])
+        .execute(&pool)
+        .await
+        .unwrap();
+    let faulted = client
+        .post(format!("{base}/api/v1/mcp/sessions/{session_id}/refresh"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(faulted.status(), 500);
+    let faulted: Value = faulted.json().await.unwrap();
+    assert_eq!(faulted["error"]["message"], "internal server error");
+    for fragment in ["nonce", "decrypt", "provider key", "ROLTER_KEK"] {
+        assert!(
+            !faulted.to_string().contains(fragment),
+            "{fragment} reached the caller: {faulted}"
+        );
+    }
+    sqlx::query("update mcp_oauth_sessions set refresh_nonce = $2 where id = $1")
+        .bind(session_uuid)
+        .bind(sealed_nonce)
+        .execute(&pool)
+        .await
+        .unwrap();
 
     // a refusal is final: the session is revoked rather than retried forever
     stub.answer(400, json!({"error": "invalid_grant"}));

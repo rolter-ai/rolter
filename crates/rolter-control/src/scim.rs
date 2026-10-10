@@ -886,6 +886,9 @@ impl From<ApiError> for ScimError {
             ApiError::Curated(message) => {
                 Self::new(StatusCode::INTERNAL_SERVER_ERROR, None, message)
             }
+            ApiError::BadGateway { message, .. } => {
+                Self::new(StatusCode::BAD_GATEWAY, None, message)
+            }
             ApiError::Conflict(message) => {
                 Self::new(StatusCode::CONFLICT, Some("uniqueness"), message)
             }

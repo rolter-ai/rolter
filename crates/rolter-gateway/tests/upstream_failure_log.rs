@@ -596,6 +596,34 @@ async fn a_connection_that_fails_is_logged_without_an_upstream_status() {
     assert!(!row["error"].as_str().unwrap().is_empty(), "{row}");
 }
 
+/// #2919: the transport error quotes the address the provider is configured
+/// with, and an operator's address may carry credentials. Neither the caller's
+/// 502 nor the request-log row the dashboard shows may repeat them.
+#[tokio::test]
+async fn a_connection_that_fails_does_not_repeat_the_provider_credentials() {
+    let dead = dead_address().await;
+    let secret = format!("pw-{}", uuid::Uuid::new_v4().simple());
+    let mut gone = provider("gone", ProviderKind::OpenaiCompatible, dead);
+    gone.api_base = format!("http://svc:{secret}@{dead}/v1?api_key={secret}");
+    let rows = Rows::default();
+    let config = config_over(rows.serve().await, vec![gone]);
+    let gw = gateway(&config).await;
+
+    let response = chat(gw, "refused-with-credentials", "test-model").await;
+    assert_eq!(response.status(), 502);
+    let error = error_body(response).await;
+    let message = error["message"].as_str().unwrap();
+    assert!(!message.contains(&secret), "the caller was told: {message}");
+    assert!(
+        message.contains("error sending request"),
+        "the failure itself is still named: {message}"
+    );
+
+    let row = rows.row_for("refused-with-credentials").await;
+    let logged = row["error"].as_str().unwrap();
+    assert!(!logged.contains(&secret), "the log row says: {logged}");
+}
+
 /// Uploads go through their own loop and fail the same way.
 #[tokio::test]
 async fn a_rate_limited_upload_logs_the_upstream_reason() {

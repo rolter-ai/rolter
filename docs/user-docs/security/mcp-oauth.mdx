@@ -298,6 +298,14 @@ in the dashboard usually means exactly this: the session is already gone, and
 the fix is to Connect again rather than to retry. Network blips and
 `5xx` responses are left for the next sweep.
 
+Which status a failed renew answers tells you whose problem it is.
+`POST /api/v1/mcp/sessions/{id}/refresh` (and the exchange below) answer `400`
+when the authorization server refused, `502` with code
+`authorization_server_unavailable` when it could not be reached or did not
+answer, and `500` when Rolter's own storage failed. The `502` and the `500`
+carry one fixed sentence: the token endpoint's address and the underlying error
+are in the control plane's log, and the session is left alone to be retried.
+
 A service that needs to call a downstream system on the user's behalf can
 exchange a live session for a narrower one with
 `POST /api/v1/mcp/sessions/{id}/exchange`. The new session descends from the
