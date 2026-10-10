@@ -158,6 +158,29 @@ export const ServerRejectionLandsOnTheField: Story = {
   },
 };
 
+// in-flight save shows a disabled button with pending label
+export const Saving: Story = {
+  render: () => {
+    const stub: FetchStub = async (_input, init) => {
+      if (init?.method === "PUT") {
+        return new Promise(() => {});
+      }
+      return json(BASE);
+    };
+    return <Harness fetchStub={stub} />;
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const tokens = await canvas.findByLabelText("Default max tokens");
+    await userEvent.clear(tokens);
+    await userEvent.type(tokens, "8192");
+    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
+    await waitFor(() => {
+      expect(canvas.getByRole("button", { name: /saving/i })).toBeDisabled();
+    });
+  },
+};
+
 // interaction: a valid edit round-trips and confirms
 export const SavesChanges: Story = {
   render: () => {

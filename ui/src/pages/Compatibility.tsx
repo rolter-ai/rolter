@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Loader2 } from "lucide-react";
 import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
 
@@ -252,6 +253,9 @@ function CompatibilityScreen() {
           className={invalid.length > 0 ? "opacity-50" : undefined}
           onClick={submit}
         >
+          {save.isPending && (
+            <Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" aria-hidden />
+          )}
           {save.isPending ? t("common.saving") : t("common.saveChanges")}
         </Button>
       </div>
