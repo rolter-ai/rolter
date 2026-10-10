@@ -2699,10 +2699,13 @@ mod tests {
                 .await
                 .expect("a body");
             let body: Value = serde_json::from_slice(&body).expect("json");
-            assert!(body["error"]["message"]
-                .as_str()
-                .is_some_and(|m| m.contains("CLICKHOUSE_URL")));
-            assert_eq!(rule_row(&db, id).await.state, "error");
+            assert_eq!(body["error"]["message"], "analytics query failed");
+            let errored = rule_row(&db, id).await;
+            assert_eq!(errored.state, "error");
+            assert_eq!(
+                errored.last_error.as_deref(),
+                Some("alert evaluation requires CLICKHOUSE_URL")
+            );
         }
     }
 }
