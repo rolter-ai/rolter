@@ -214,24 +214,28 @@ export default function UserProvisioning() {
       // it just has nothing worth drawing (#1244)
       header: <span className="sr-only">{t("common.rowActions")}</span>,
       align: "right",
-      render: (_v, row) => (
-        <GatedButton
-          gate="scim_token:delete"
-          control="scim-token-revoke"
-          variant="outline"
-          size="sm"
-          aria-label={t("pages.userProvisioning.revokeAria", { name: row.name })}
-          disabled={!!row.revoked_at || revoke.isPending}
-          onClick={() => {
-            revoke.reset();
-            setRevokeTarget(row);
-          }}
-        >
-          {row.revoked_at
-            ? t("pages.userProvisioning.revoked")
-            : t("pages.userProvisioning.revoke")}
-        </GatedButton>
-      ),
+      render: (_v, row) => {
+        const isPending = revoke.isPending && revoke.variables === row.id;
+        return (
+          <GatedButton
+            gate="scim_token:delete"
+            control="scim-token-revoke"
+            variant="outline"
+            size="sm"
+            aria-label={t("pages.userProvisioning.revokeAria", { name: row.name })}
+            disabled={!!row.revoked_at || isPending}
+            onClick={() => {
+              revoke.reset();
+              setRevokeTarget(row);
+            }}
+          >
+            {isPending && <Loader2 className="mr-1.5 h-3.5 w-3.5 motion-safe:animate-spin" />}
+            {row.revoked_at
+              ? t("pages.userProvisioning.revoked")
+              : t("pages.userProvisioning.revoke")}
+          </GatedButton>
+        );
+      },
     },
   ];
 
