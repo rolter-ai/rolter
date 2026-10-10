@@ -347,6 +347,45 @@ instead (`crates/rolter-control/src/crud.rs`), and is rendered verbatim:
 a `500` body is a `Curated` one, and must never interpolate anything a driver or
 upstream returned.
 
+## What an upstream failure says (#2919)
+
+A transport error quotes the address it could not reach (`error sending request
+for url (...)`), and an operator's address can carry a credential: userinfo, a
+token in the query string or a token in the path. Redacting the _logged_ copy of
+those errors (#2832) left four answers that still handed the text to a caller or
+to the dashboard's Logs screen. The rule is that **no response body and no
+request-log row repeats an upstream address as the operator configured it**, and
+each path chooses between two ways of keeping it:
+
+- **Mask it** with `rolter_core::redact::redact_urls_in_text` when the text helps
+  the caller. This is a floor, not a guarantee: it masks userinfo and
+  credential-named query values (`api_key`, `token`, `sig`, ...) and nothing else,
+  so a host, a path segment or a parameter called `tenant` survives.
+- **Say a fixed sentence** and keep the cause in the log when the caller has no use
+  for it, or when the address is more likely to hold a secret than not. This is
+  the stronger choice and the default for anything new.
+
+| Path                                                                                | Caller and log row read                                                                                                                                                                    | Cause is in                                                                                   |
+| ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------- |
+| gateway `502` (`upstream_error_response` in `handlers.rs`)                          | the transport error with URLs masked; the row already stored the same masked text                                                                                                          | the masked text is the whole record: an API user can tell a refused connection from a timeout |
+| `body_read_failed` (`handlers.rs`), a body that stopped arriving after a `200`      | `upstream response body could not be read: ...` with URLs masked, in the `502` body **and** in the row's `error`, which the dashboard shows to people who never saw the provider's address | same masked text                                                                              |
+| MCP proxy `502` (`mcp_proxy.rs`), code `mcp_upstream_error`                         | the fixed sentence `MCP upstream request failed`                                                                                                                                           | gateway log (`mcp upstream request failed`), masked, with the server slug and the request id  |
+| MCP OAuth refresh, exchange and callback: the authorization server did not answer   | `502`, code `authorization_server_unavailable`, one fixed sentence                                                                                                                         | control-plane log (`mcp oauth token request failed`), masked, built where the error is raised |
+| MCP OAuth refresh: rolter's own store or sealing failed (it used to answer a `400`) | the generic `500` of [What a 500 says](#what-a-500-says-2268)                                                                                                                              | control-plane log, raw (`ApiError::Core(Error::Store(..))` logs it on render)                 |
+
+The MCP proxy takes the stronger option because the usual place for a server's
+token is its URL, and the admin proxy had already done the same (#2501). The
+gateway `502` keeps the masked text because there the caller is an API user
+debugging a provider they chose, and the text names the failure mode.
+
+A new error path that has an upstream address, or a store error, within reach
+follows the same two steps: decide mask or fixed sentence, then write a test that
+builds the secret at run time, puts it in the address, and asserts it is absent from
+the body (and from the request-log row where the path writes one). A test that
+only asserts the userinfo is gone proves less than it seems: `reqwest` moves
+userinfo into an `Authorization` header before it sends, so a transport error
+rarely quotes it, and the query is what leaks.
+
 ## Open mode (no admin token)
 
 With no `ROLTER_ADMIN_TOKEN` set, `Principal` short-circuits to `Superadmin` for

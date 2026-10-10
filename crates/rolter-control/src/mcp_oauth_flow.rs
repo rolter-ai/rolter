@@ -1055,6 +1055,15 @@ fn parse_scope(scope: &str) -> Vec<String> {
         .collect::<Vec<_>>()
 }
 
+/// What a caller is told when the authorization server could not be reached or
+/// did not answer sensibly. The cause (an address, a driver's words) is in the
+/// control-plane log; this sentence is all that crosses to the caller (#2919).
+const AUTHORIZATION_SERVER_UNAVAILABLE_MESSAGE: &str =
+    "the authorization server could not be reached or did not answer; try again later";
+
+/// The stable `error.code` of that 502.
+const AUTHORIZATION_SERVER_UNAVAILABLE: &str = "authorization_server_unavailable";
+
 /// Why a token request failed. The distinction is the whole point: a refusal
 /// is a permanent answer about this grant and must revoke, while a transient
 /// failure must not — see the module docs.
@@ -1062,20 +1071,51 @@ fn parse_scope(scope: &str) -> Vec<String> {
 pub(crate) enum TokenError {
     /// the authorization server said no (4xx / `invalid_grant`)
     Refused(String),
-    /// network, timeout, 5xx, or an unparsable body
+    /// network, timeout, 5xx, or an unparsable body. The text is for the log
+    /// and is built with its urls masked; a caller never sees it
     Transient(String),
+    /// the deployment cannot do the work, such as a missing KEK. The message
+    /// was written for the caller, and the sweeper treats it as it does a
+    /// transient failure: nothing is revoked, and the next pass tries again
+    NotConfigured(String),
+    /// rolter's own store or sealing failed. Not the authorization server's
+    /// doing, so it never revokes and never answers 4xx: it renders through
+    /// [`ApiError::Core`], whose 5xx says only [`crate::crud::INTERNAL_ERROR`]
+    /// and keeps the driver's words in the log (#2268, #2919)
+    Store(Error),
 }
 
 impl TokenError {
+    /// A failure to talk to the authorization server. `reqwest` appends the
+    /// address it was talking to, which for a token endpoint is an operator's
+    /// url and may carry a credential in its query, so the text is masked here
+    /// rather than at each place it is later logged.
+    fn transient(what: &str, cause: impl std::fmt::Display) -> Self {
+        Self::Transient(rolter_core::redact::redact_urls_in_text(&format!(
+            "{what}: {cause}"
+        )))
+    }
+
     fn into_api(self) -> ApiError {
         match self {
-            Self::Refused(message) | Self::Transient(message) => invalid(message),
+            Self::Refused(message) | Self::NotConfigured(message) => invalid(message),
+            Self::Transient(detail) => {
+                tracing::warn!(error = %detail, "mcp oauth token request failed");
+                ApiError::BadGateway {
+                    code: AUTHORIZATION_SERVER_UNAVAILABLE,
+                    message: AUTHORIZATION_SERVER_UNAVAILABLE_MESSAGE.to_string(),
+                }
+            }
+            Self::Store(error) => ApiError::Core(error),
         }
     }
 
-    fn message(&self) -> &str {
+    /// What the sweeper logs. Operator-facing, so the store's own words are
+    /// fine here.
+    fn message(&self) -> String {
         match self {
-            Self::Refused(m) | Self::Transient(m) => m,
+            Self::Refused(m) | Self::Transient(m) | Self::NotConfigured(m) => m.clone(),
+            Self::Store(error) => error.to_string(),
         }
     }
 }
@@ -1143,13 +1183,13 @@ async fn post_token(
     let client = crate::egress_client::builder(&state.egress)
         .timeout(TOKEN_TIMEOUT)
         .build()
-        .map_err(|e| TokenError::Transient(format!("token client unavailable: {e}")))?;
+        .map_err(|e| TokenError::transient("token client unavailable", e))?;
     let response = client
         .post(token_url)
         .form(&form)
         .send()
         .await
-        .map_err(|e| TokenError::Transient(format!("token endpoint unreachable: {e}")))?;
+        .map_err(|e| TokenError::transient("token endpoint unreachable", e))?;
     let status = response.status().as_u16();
     if !(200..300).contains(&status) {
         let body = response.text().await.unwrap_or_default();
@@ -1158,7 +1198,7 @@ async fn post_token(
     let tokens: TokenResponse = response
         .json()
         .await
-        .map_err(|e| TokenError::Transient(format!("token response is not valid json: {e}")))?;
+        .map_err(|e| TokenError::transient("token response is not valid json", e))?;
     if tokens.access_token.is_empty() {
         return Err(TokenError::Refused(
             "token endpoint returned no access_token".to_string(),
@@ -1193,13 +1233,13 @@ pub(crate) async fn refresh_session(
     session_id: Uuid,
 ) -> Result<McpOAuthSession, TokenError> {
     let kek = kek().map_err(|_| {
-        TokenError::Transient(format!("{KEK_ENV} is not configured on the control plane"))
+        TokenError::NotConfigured(format!("{KEK_ENV} is not configured on the control plane"))
     })?;
     let repo = McpOAuthRepo(pool(state));
     let material = repo
         .open_refresh(&kek, session_id, Utc::now())
         .await
-        .map_err(|e| TokenError::Transient(e.to_string()))?
+        .map_err(TokenError::Store)?
         .ok_or_else(|| {
             // no refresh token, or the consent is gone: nothing to renew, and
             // nothing to retry either
@@ -1211,7 +1251,7 @@ pub(crate) async fn refresh_session(
     let server = McpServerRepo(pool(state))
         .get(material.server_id)
         .await
-        .map_err(|e| TokenError::Transient(e.to_string()))?;
+        .map_err(TokenError::Store)?;
     let resource = ResourceUri::parse(&server.url).map_err(|e| {
         // the row would have been refused at registration, so this is a URL
         // that changed under a live session: a permanent answer, not a blip
@@ -1230,7 +1270,7 @@ pub(crate) async fn refresh_session(
     let secret = McpServerRepo(pool(state))
         .client_secret(&kek, server.id)
         .await
-        .map_err(|e| TokenError::Transient(e.to_string()))?;
+        .map_err(TokenError::Store)?;
 
     let form = vec![
         ("grant_type", "refresh_token".to_string()),
@@ -1282,7 +1322,7 @@ pub(crate) async fn refresh_session(
         },
     )
     .await
-    .map_err(|e| TokenError::Transient(e.to_string()))
+    .map_err(TokenError::Store)
 }
 
 /// Spawn the background renewer. Sessions near expiry are refreshed without the
@@ -1326,7 +1366,7 @@ pub(crate) async fn sweep_refreshes(state: &ControlState) {
             ),
             Err(error) => tracing::warn!(
                 session_id = %id,
-                reason = error.message(),
+                reason = %error.message(),
                 "mcp oauth refresh failed; will retry on the next sweep"
             ),
         }
@@ -1615,6 +1655,129 @@ mod tests {
         .await;
         assert!(matches!(result, Err(TokenError::Transient(_))));
         assert_eq!(listener.accepted(), 0);
+    }
+
+    async fn rendered(error: ApiError) -> (axum::http::StatusCode, serde_json::Value) {
+        let response = error.into_response();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("a readable body");
+        (status, serde_json::from_slice(&bytes).expect("a json body"))
+    }
+
+    /// #2919: `reqwest` quotes the url it could not reach, and a token
+    /// endpoint is an operator's url that may carry a credential. The caller of
+    /// a refresh, exchange or callback is not that operator.
+    #[tokio::test]
+    async fn an_unreachable_token_endpoint_is_a_502_that_never_names_its_url() {
+        let listener = crate::egress_client::testing::Counter::start().await;
+        let mut state = crate::tests::state_with_token(None);
+        state.egress = crate::egress_client::testing::deny_loopback();
+        let resource = ResourceUri::parse("https://mcp.example.com").expect("a resource");
+        let credential = format!("tok-{}", Uuid::new_v4().simple());
+        let plain = format!("tok-{}", Uuid::new_v4().simple());
+        let token_url = format!(
+            "{}?client_secret={credential}&tenant={plain}",
+            listener.url("/token")
+        );
+
+        let error = post_token(
+            &state,
+            &token_url,
+            vec![("grant_type", "refresh_token".to_string())],
+            None,
+            &resource,
+        )
+        .await
+        .expect_err("the policy denies the address");
+
+        // what the operator reads keeps the cause, with credentials masked
+        let TokenError::Transient(detail) = &error else {
+            panic!("expected a transient failure, got {error:?}");
+        };
+        assert!(
+            detail.starts_with("token endpoint unreachable: "),
+            "{detail}"
+        );
+        assert!(
+            !detail.contains(&credential),
+            "the log line kept it: {detail}"
+        );
+
+        // what the caller reads is one sentence
+        let (status, body) = rendered(error.into_api()).await;
+        assert_eq!(status, axum::http::StatusCode::BAD_GATEWAY);
+        assert_eq!(body["error"]["code"], AUTHORIZATION_SERVER_UNAVAILABLE);
+        assert_eq!(
+            body["error"]["message"],
+            AUTHORIZATION_SERVER_UNAVAILABLE_MESSAGE
+        );
+        let text = body.to_string();
+        let port = listener.port.to_string();
+        for fragment in [credential.as_str(), plain.as_str(), "localhost", &port] {
+            assert!(
+                !text.contains(fragment),
+                "{fragment} reached the body: {text}"
+            );
+        }
+    }
+
+    /// #2919: refusing a resource that carries userinfo must not hand the
+    /// userinfo to whoever triggered the check.
+    #[test]
+    fn a_resource_with_userinfo_is_refused_without_repeating_it() {
+        let password = format!("pw-{}", Uuid::new_v4().simple());
+        let error = ResourceUri::parse(&format!("https://svc:{password}@mcp.example.com/mcp"))
+            .expect_err("userinfo is refused")
+            .to_string();
+        assert!(error.contains("carries userinfo"), "{error}");
+        assert!(error.contains("mcp.example.com"), "{error}");
+        assert!(!error.contains(&password), "{error}");
+    }
+
+    /// #2919: a store fault in the refresh path used to be laundered into a 400
+    /// carrying the driver's text. It is rolter's fault, so it is a 500 that
+    /// says nothing about the store.
+    #[tokio::test]
+    async fn a_store_fault_in_a_refresh_is_the_generic_500() {
+        let password = format!("pw-{}", Uuid::new_v4().simple());
+        let driver_text = format!(
+            "error returned from database: relation \"tenant_a.mcp_oauth_sessions\" does not \
+             exist (postgres://rolter:{password}@db.internal:5432/rolter)"
+        );
+        let error = TokenError::Store(Error::Store(driver_text.clone()));
+        // the operator's log keeps the words
+        assert_eq!(error.message(), format!("store error: {driver_text}"));
+
+        let (status, body) = rendered(error.into_api()).await;
+        assert_eq!(status, axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(body["error"]["message"], crate::crud::INTERNAL_ERROR);
+        let text = body.to_string();
+        for fragment in [password.as_str(), "db.internal", "tenant_a"] {
+            assert!(!text.contains(fragment), "{fragment} reached the body");
+        }
+    }
+
+    /// The other two answers a `TokenError` can give keep their status: a
+    /// refusal is the authorization server's verdict on the grant, and a
+    /// missing KEK names the setting an operator has to fix.
+    #[tokio::test]
+    async fn a_refusal_and_a_missing_kek_stay_400s_with_their_own_words() {
+        for error in [
+            TokenError::Refused("token endpoint returned 400 (grant refused)".to_string()),
+            TokenError::NotConfigured(format!("{KEK_ENV} is not configured on the control plane")),
+        ] {
+            let message = error.message();
+            let (status, body) = rendered(error.into_api()).await;
+            assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+            assert!(
+                body["error"]["message"]
+                    .as_str()
+                    .is_some_and(|rendered| rendered.contains(&message)),
+                "{body}"
+            );
+        }
     }
 
     /// #1564: the KEK is only needed by the one shape that encrypts. Demanding

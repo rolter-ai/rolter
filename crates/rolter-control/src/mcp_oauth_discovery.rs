@@ -117,8 +117,12 @@ impl ResourceUri {
         if authority.contains('@') {
             // userinfo in a resource identifier would put a credential into an
             // authorization url, and identifies a caller rather than a resource
+            // the error reaches whoever called, and the userinfo is the very
+            // thing it is refusing; a row stored before the check existed would
+            // otherwise hand it to a session owner who never saw the url (#2919)
+            let shown = rolter_core::redact::redact_urls_in_text(raw);
             return Err(DiscoveryError::Resource(format!(
-                "'{raw}' carries userinfo, which a resource identifier may not"
+                "'{shown}' carries userinfo, which a resource identifier may not"
             )));
         }
         let (path, query) = match tail.split_once('?') {

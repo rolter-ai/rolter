@@ -107,6 +107,13 @@ query, status and response stream. Streamable HTTP and legacy SSE registrations
 use this path; stdio and WebSocket registrations currently return
 `mcp_transport_unsupported` rather than bypassing authorization.
 
+A server that cannot be reached, or does not answer within its budget, is a
+`502` with code `mcp_upstream_error` and the fixed message `MCP upstream request
+failed` (#2919). The registered URL often holds the server's token, so the
+cause, with its URLs masked, is written to the gateway log with the server slug
+and the request id instead of being echoed. The tool-call log row records the
+category only (`timeout` or `transport_error`).
+
 ## Routing
 
 The `model` field in the body selects a **route**. The route's strategy picks a target; rolter rewrites `model` to the target's upstream model id and forwards with the provider's credentials. Session affinity uses `x-session-id` when present.
@@ -210,6 +217,8 @@ When a request ends because the upstreams failed, the answer says which kind of 
 | every target tried failed with another retryable status (`408`, `5xx`), none left | `503`       | `overloaded_error` | `upstream_unavailable`                         |
 | the last attempt never got a response (refused, reset, timed out)                 | `502`       | `overloaded_error` | none                                           |
 | the provider's queue is full, timed out or dropped the request                    | `429`/`503` | by status          | `queue_full`, `queue_timeout`, `queue_dropped` |
+
+The message of the `502` is the transport error with every URL in it masked (`rolter_core::redact::redact_urls_in_text`), so a credential-named query value or userinfo in a provider's `api_base` never reaches the caller (#2919); the same masked text is the request-log row's `error`, and a body that stops arriving after a `200` (`upstream response body could not be read`) gets the same treatment in both places. See [What an upstream failure says](../architecture/security.md#what-an-upstream-failure-says-2919) for what masking does not catch.
 
 A `429` carries the upstream's `Retry-After` when it sent one. The message names the status and the model (`every upstream target for model 'x' is rate limited (last upstream status 429)`) and never the upstream's own words, which are in the request-log row (`error`, with `upstream_status` and `attempts` beside it; see [Observability](../architecture/observability.md#request--cost-logs)). When the retry budget runs out while an untried target remains, the upstream's own response is handed to the caller as it was. The loop does not back off before an attempt that cannot happen (#2835): when the failed attempt used the last untried target it ends the request there, so a single-target route whose upstream answers `429` with `Retry-After: 30` returns that `429` at once instead of after 30 seconds. The wait is kept wherever a next attempt exists, a sibling target and the multi-key path included. An earlier gateway answered all of these with `503 no target selected`, which points at routing config when the cause was an upstream that said no.
 

@@ -17,6 +17,11 @@ use rolter_proxy::{McpTransportOverrides, McpUpstreamAuth};
 use crate::mcp_log::{CallContext, PendingCall};
 use crate::state::AppState;
 
+/// What a caller is told when the MCP server could not be reached or did not
+/// answer: the same sentence for every transport failure, with the cause in the
+/// gateway log.
+const MCP_UPSTREAM_FAILED: &str = "MCP upstream request failed";
+
 #[derive(Deserialize)]
 pub(crate) struct McpRootPath {
     server: String,
@@ -233,6 +238,8 @@ async fn proxy(
             "mcp_server_invalid",
         );
     };
+    // the forwarder takes the headers, and the failure arm still wants the id
+    let request_id = headers.get(crate::trace::REQUEST_ID_HEADER).cloned();
     match state
         .forwarder
         .forward_mcp(
@@ -247,12 +254,29 @@ async fn proxy(
     {
         Ok(response) => upstream_response(response, call),
         Err(upstream) => {
+            let detail = upstream.to_string();
+            // the caller gets a fixed sentence: the forwarder's text quotes the
+            // server url, which is where an operator puts the token for a server
+            // that wants it in the query string, and masking userinfo and
+            // credential-named parameters cannot catch a token in the path or a
+            // parameter with an ordinary name (#2919). the detail is for the
+            // operator, so it goes to the log, masked, beside the request id
+            // that ties it to the answer
+            tracing::warn!(
+                server = %server.slug,
+                request_id = request_id
+                    .as_ref()
+                    .and_then(|value| value.to_str().ok())
+                    .unwrap_or_default(),
+                error = %rolter_core::redact::redact_urls_in_text(&detail),
+                "mcp upstream request failed"
+            );
             if let Some(call) = call {
-                call.fail_upstream(&upstream.to_string());
+                call.fail_upstream(&detail);
             }
             error(
                 StatusCode::BAD_GATEWAY,
-                format!("MCP upstream request failed: {upstream}"),
+                MCP_UPSTREAM_FAILED,
                 "mcp_upstream_error",
             )
         }
@@ -523,6 +547,51 @@ mod tests {
                 "body": "{\"jsonrpc\":\"2.0\"}",
             })
         );
+    }
+
+    /// #2919: the forwarder's error quotes the server url, and an operator puts
+    /// the token for a server in that url. The caller gets one fixed sentence,
+    /// whichever part of the address carried the secret.
+    #[tokio::test]
+    async fn an_unreachable_server_never_has_its_url_echoed_to_the_caller() {
+        let secret = format!("tok-{}", uuid::Uuid::new_v4().simple());
+        let mut config = config("user-1", &["tools:execute"]);
+        // a port nothing listens on, so the connection is refused and the error
+        // names the whole address
+        let closed = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.local_addr().unwrap()
+        };
+        config.mcp_servers[0].auth_kind = McpAuthKind::None;
+        config.mcp_servers[0].url = format!(
+            "http://svc:{secret}@{closed}/{secret}/mcp?access_token={secret}&team={secret}"
+        );
+        let response = proxy(
+            AppState::new(&config),
+            "github".to_string(),
+            None,
+            None,
+            Method::POST,
+            bearer(),
+            Bytes::new(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let text = String::from_utf8_lossy(&body);
+        assert!(
+            !text.contains(&secret),
+            "the server url reached the caller: {text}"
+        );
+        assert!(
+            !text.contains(&closed.to_string()),
+            "the host reached the caller: {text}"
+        );
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["error"]["code"], "mcp_upstream_error");
+        assert_eq!(body["error"]["message"], MCP_UPSTREAM_FAILED);
     }
 
     #[test]

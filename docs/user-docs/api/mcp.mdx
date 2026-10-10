@@ -43,6 +43,15 @@ servers. Request body, query parameters, MCP protocol/session headers, response
 status, response headers, and streaming body are preserved. Hop-by-hop and
 client authorization headers are removed.
 
+### When the server cannot be reached
+
+A server that refuses the connection, resets it or does not answer within its
+request timeout gives `502` with code `mcp_upstream_error` and the message
+`MCP upstream request failed`. The message never names the server's address,
+which often carries its token; the cause is in the gateway log, with the server
+slug and the request's `x-request-id`, and the MCP tool-call log records it as a
+`timeout` or `transport_error`.
+
 ### Accepted values
 
 A registered server's `transport`, and an organization's

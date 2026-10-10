@@ -1048,7 +1048,10 @@ pub(crate) fn plugin_tenant(scope: &ScopeIds) -> rolter_core::WebhookTenant {
 
 /// Preserve a queue-admission failure as a client-actionable overload response
 /// instead of flattening it into a generic upstream 502 after failover is
-/// exhausted. Other forwarding failures keep their existing gateway-error form.
+/// exhausted. Other forwarding failures keep their existing gateway-error form,
+/// with every URL in the transport error masked: `reqwest` quotes the address it
+/// could not reach, userinfo and credential query values included, and the
+/// caller is not the operator who configured that address (#2919).
 fn upstream_error_response(message: &str) -> Response {
     if let Some((code, message)) = translation_request_error(message) {
         return crate::error::ApiError::new(StatusCode::BAD_REQUEST, message)
@@ -1068,7 +1071,10 @@ fn upstream_error_response(message: &str) -> Response {
             .with_code(code)
             .into_response();
     }
-    error_json(StatusCode::BAD_GATEWAY, message)
+    error_json(
+        StatusCode::BAD_GATEWAY,
+        &rolter_core::redact::redact_urls_in_text(message),
+    )
 }
 
 /// Request-translation failures the caller can fix, paired with the OpenAI-style
@@ -3985,7 +3991,12 @@ fn body_read_failed(
     started: Instant,
     err: &reqwest::Error,
 ) -> Response {
-    let message = format!("upstream response body could not be read: {err}");
+    // `reqwest` quotes the url it was reading from. the one masked text goes to
+    // the caller and to the request-log row, which the dashboard's Logs screen
+    // shows to people who never saw the provider's address (#2919)
+    let message = rolter_core::redact::redact_urls_in_text(&format!(
+        "upstream response body could not be read: {err}"
+    ));
     log.status = StatusCode::BAD_GATEWAY.as_u16();
     log.latency_ms = started.elapsed().as_millis() as u32;
     log.error = message.clone();
@@ -4846,6 +4857,29 @@ mod tests {
         assert_eq!(dropped.status(), StatusCode::SERVICE_UNAVAILABLE);
         let upstream = upstream_error_response("connection refused");
         assert_eq!(upstream.status(), StatusCode::BAD_GATEWAY);
+    }
+
+    /// #2919: the transport error quotes the address it could not reach. The
+    /// 502 keeps the rest of the sentence, which is what tells a caller a
+    /// connection failed rather than timed out, and masks what is credential.
+    #[tokio::test]
+    async fn the_gateway_error_masks_credentials_in_the_quoted_url() {
+        let secret = format!("pw-{}", uuid::Uuid::new_v4().simple());
+        let message = format!(
+            "error sending request for url (https://svc:{secret}@llm.internal:8443/v1/chat?api_key={secret}&n=2)"
+        );
+        let response = upstream_error_response(&message);
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let rendered = body["error"]["message"].as_str().unwrap();
+        assert!(!rendered.contains(&secret), "{rendered}");
+        assert!(
+            rendered.starts_with("error sending request for url ("),
+            "{rendered}"
+        );
+        assert!(rendered.contains("llm.internal:8443"), "{rendered}");
+        assert!(rendered.contains("n=2"), "{rendered}");
     }
 
     #[test]

@@ -235,6 +235,12 @@ pub(crate) enum ApiError {
     /// a 409 a client can branch on: `code` is part of the API and never
     /// renamed, `message` is for the person reading it
     CodedConflict { code: &'static str, message: String },
+    /// A service the control plane called for the caller (an authorization
+    /// server, say) could not be reached or did not answer (502). Like
+    /// [`ApiError::Curated`] the message is written for the caller and rendered
+    /// as it stands, so it must never carry the upstream's own words or address;
+    /// those go to the log. `code` is part of the API and never renamed.
+    BadGateway { code: &'static str, message: String },
     /// a 400 for one field of the request, rendered with the stable code
     /// [`INVALID_FIELD`] and the field's path, so a client can translate the
     /// refusal and point at the input it came from (#2567)
@@ -271,7 +277,9 @@ impl IntoResponse for ApiError {
             _ => None,
         };
         let code = match &self {
-            Self::CodedConflict { code, .. } | Self::CodedForbidden { code, .. } => Some(*code),
+            Self::CodedConflict { code, .. }
+            | Self::CodedForbidden { code, .. }
+            | Self::BadGateway { code, .. } => Some(*code),
             Self::InvalidField { .. } => Some(INVALID_FIELD),
             Self::Core(Error::AlreadyExists(_)) => Some(NAME_TAKEN),
             // the same code the sign-in answers a lock with, so a client reads
@@ -304,6 +312,7 @@ impl IntoResponse for ApiError {
                 }
             },
             Self::Curated(message) => (StatusCode::INTERNAL_SERVER_ERROR, message),
+            Self::BadGateway { message, .. } => (StatusCode::BAD_GATEWAY, message),
             Self::InvalidField { message, .. } => (StatusCode::BAD_REQUEST, message),
             Self::Conflict(message) | Self::CodedConflict { message, .. } => {
                 (StatusCode::CONFLICT, message)

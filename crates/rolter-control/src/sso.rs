@@ -209,6 +209,7 @@ fn api_error_message(err: ApiError) -> String {
         ApiError::Curated(msg)
         | ApiError::Conflict(msg)
         | ApiError::CodedConflict { message: msg, .. }
+        | ApiError::BadGateway { message: msg, .. }
         | ApiError::InvalidField { message: msg, .. }
         | ApiError::CodedForbidden { message: msg, .. } => msg,
         ApiError::Unauthenticated => "unauthenticated".to_string(),

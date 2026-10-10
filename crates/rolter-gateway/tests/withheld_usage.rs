@@ -564,6 +564,31 @@ async fn a_body_that_fails_to_arrive_is_logged_as_a_502_with_unknown_usage() {
     assert_body_read_failure_is_logged(gw, &rows).await;
 }
 
+/// #2919: the read error quotes the address the body was coming from, and it
+/// reaches two audiences, the caller's 502 and the request-log row that the
+/// dashboard's Logs screen shows. Both get the masked text.
+#[tokio::test]
+async fn a_body_read_failure_does_not_repeat_the_provider_credentials() {
+    let rows = Rows::default();
+    let clickhouse = rows.serve().await;
+    let upstream = truncating_upstream().await;
+    let secret = format!("pw-{}", uuid::Uuid::new_v4().simple());
+    let mut config = config(upstream, clickhouse, "org-truncated-credentials");
+    config.providers[0].api_base = format!("http://svc:{secret}@{upstream}/v1?api_key={secret}");
+    let gw = gateway(&with_output_rule(config, GuardAction::Redact), None).await;
+
+    let response = ask(gw, "ping").await;
+    assert_eq!(response.status(), 502);
+    let body = response.text().await.unwrap();
+    assert!(body.contains("body could not be read"), "{body}");
+    assert!(!body.contains(&secret), "the caller was told: {body}");
+
+    let row = &rows.wait_for(1).await[0];
+    let logged = row["error"].as_str().unwrap();
+    assert!(logged.contains("body could not be read"), "{row}");
+    assert!(!logged.contains(&secret), "the log row says: {logged}");
+}
+
 /// A retried request is billed for the attempt that answered, once — the
 /// failed attempt produced nothing to bill and writes no row of its own.
 #[tokio::test]
