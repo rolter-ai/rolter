@@ -203,6 +203,48 @@ fn all_binary_cli_env_vars_are_documented_in_reference() {
     );
 }
 
+/// Find every field name declared in `EgressPolicy` struct in `crates/rolter-core/src/config.rs`.
+fn egress_policy_fields() -> BTreeSet<String> {
+    let config_rs_path = workspace_root().join("crates/rolter-core/src/config.rs");
+    let text = std::fs::read_to_string(&config_rs_path).expect("config.rs is readable");
+
+    let start = text
+        .find("pub struct EgressPolicy {")
+        .expect("config.rs declares `pub struct EgressPolicy {`");
+    let rest = &text[start..];
+    let end = rest
+        .find("\n}")
+        .expect("EgressPolicy closes with an unindented `}`");
+    rest[..end]
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("pub "))
+        .filter_map(|field| field.split_once(':'))
+        .map(|(name, _)| name.trim().to_string())
+        .collect()
+}
+
+#[test]
+fn all_egress_policy_fields_are_documented_in_config_file_reference() {
+    let fields = egress_policy_fields();
+    assert!(!fields.is_empty(), "no EgressPolicy fields were found");
+
+    let ref_path = workspace_root().join("docs/user-docs/configuration/config-file.mdx");
+    let text = std::fs::read_to_string(&ref_path).expect("config-file.mdx is readable");
+
+    let mut missing = Vec::new();
+    for field in fields {
+        if !text.contains(&format!("<ParamField path=\"{field}\"")) {
+            missing.push(field);
+        }
+    }
+
+    assert!(
+        missing.is_empty(),
+        "these EgressPolicy fields are defined in crates/rolter-core/src/config.rs but missing from docs/user-docs/configuration/config-file.mdx:\n  {}",
+        missing.join("\n  ")
+    );
+}
+
 /// Find every field name declared in `ProviderConfig` struct in `crates/rolter-core/src/config.rs`.
 fn provider_config_fields() -> BTreeSet<String> {
     let config_rs_path = workspace_root().join("crates/rolter-core/src/config.rs");
