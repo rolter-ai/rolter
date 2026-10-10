@@ -1068,7 +1068,10 @@ fn upstream_error_response(message: &str) -> Response {
             .with_code(code)
             .into_response();
     }
-    error_json(StatusCode::BAD_GATEWAY, message)
+    error_json(
+        StatusCode::BAD_GATEWAY,
+        &rolter_core::redact::redact_urls_in_text(message),
+    )
 }
 
 /// Request-translation failures the caller can fix, paired with the OpenAI-style
@@ -4911,6 +4914,21 @@ mod tests {
             StatusCode::BAD_GATEWAY
         );
         assert!(translation_request_error("upstream error: role_capability: x").is_none());
+    }
+
+    #[tokio::test]
+    async fn upstream_error_response_redacts_embedded_urls_in_502_bodies() {
+        let secret_key = format!("sk-secret-{}", uuid::Uuid::new_v4());
+        let raw_msg = format!(
+            "error sending request for url (https://user:{secret_key}@provider.internal/v1/chat/completions?api_key={secret_key}): connect error"
+        );
+        let response = upstream_error_response(&raw_msg);
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let body_bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        let rendered = body["error"]["message"].as_str().unwrap();
+        assert!(!rendered.contains(&secret_key));
+        assert!(rendered.contains("https://***@provider.internal/v1/chat/completions?api_key=***"));
     }
 
     fn config_with_keys() -> GatewayConfig {
