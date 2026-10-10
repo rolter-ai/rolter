@@ -760,9 +760,8 @@ async fn evaluate_one(
             .await
             .map_err(store_error)?;
             tx.commit().await.map_err(store_error)?;
-            // `read_signal` words the reason for the rule card, and never with
-            // the ClickHouse endpoint in it, so the caller may read it too
-            return Err(ApiError::Curated(reason));
+            tracing::warn!(rule_id = %id, error = %reason, "alert evaluation signal query failed");
+            return Err(ApiError::Curated("analytics query failed".to_string()));
         }
     };
     let history: Vec<Reported> = sqlx::query_as(
@@ -2571,7 +2570,9 @@ mod tests {
             // the last value it read
             stub.clickhouse_status.store(500, Ordering::SeqCst);
             let error = evaluate_one(&state, id, Lock::Wait, None).await;
-            assert!(error.is_err());
+            assert!(
+                matches!(error, Err(ApiError::Curated(ref msg)) if msg == "analytics query failed")
+            );
             let errored = rule_row(&db, id).await;
             assert_eq!(errored.state, "error");
             assert_eq!(errored.last_value, Some(0.9));
@@ -2698,10 +2699,13 @@ mod tests {
                 .await
                 .expect("a body");
             let body: Value = serde_json::from_slice(&body).expect("json");
-            assert!(body["error"]["message"]
-                .as_str()
-                .is_some_and(|m| m.contains("CLICKHOUSE_URL")));
-            assert_eq!(rule_row(&db, id).await.state, "error");
+            assert_eq!(body["error"]["message"], "analytics query failed");
+            let errored = rule_row(&db, id).await;
+            assert_eq!(errored.state, "error");
+            assert_eq!(
+                errored.last_error.as_deref(),
+                Some("alert evaluation requires CLICKHOUSE_URL")
+            );
         }
     }
 }
