@@ -2572,6 +2572,36 @@ async fn realtime_websocket_rejects_missing_auth_disallowed_and_unknown_models()
 }
 
 #[tokio::test]
+async fn realtime_websocket_sanitizes_502_error_responses() {
+    let unavailable = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let unavailable_addr = unavailable.local_addr().unwrap();
+    drop(unavailable);
+
+    let config = config_for("realtime-alias", vec![("unavailable", unavailable_addr)]);
+    let gw = serve_gateway(&config).await;
+
+    let err =
+        tokio_tungstenite::connect_async(realtime_client_request(gw, "realtime-alias", None, None))
+            .await
+            .unwrap_err();
+
+    match err {
+        tokio_tungstenite::tungstenite::Error::Http(response) => {
+            assert_eq!(response.status().as_u16(), 502);
+            let body: Value =
+                serde_json::from_slice(response.body().as_deref().unwrap_or_default())
+                    .unwrap_or(Value::Null);
+            assert_eq!(
+                body["error"]["message"],
+                "upstream realtime connection failed"
+            );
+            assert!(!body.to_string().contains("Connection refused"));
+        }
+        other => panic!("expected HTTP 502 response, got {other}"),
+    }
+}
+
+#[tokio::test]
 async fn realtime_websocket_fails_over_during_connection_establishment() {
     let unavailable = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let unavailable_addr = unavailable.local_addr().unwrap();
