@@ -901,6 +901,36 @@ queue_capacity = 10000
 
 ---
 
+### \[egress\]
+
+Controls outbound network destinations that the gateway is permitted to reach for upstream provider traffic, protecting against Server-Side Request Forgery (SSRF) attacks.
+
+<ParamField path="block_link_local" default="true" type="boolean">
+  Deny link-local destinations (`169.254.0.0/16`, `fe80::/10`), which includes cloud instance metadata services. On by default.
+</ParamField>
+
+<ParamField path="block_loopback" default="false" type="boolean">
+  Deny loopback destinations (`127.0.0.0/8`, `::1`). Off by default so sidecar and single-host deployments can serve models on localhost.
+</ParamField>
+
+<ParamField path="block_private" default="false" type="boolean">
+  Deny private and unique-local destinations (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `fc00::/7`). Off by default for on-premise clusters.
+</ParamField>
+
+<ParamField path="allow_hosts" default="[]" type="list">
+  Hosts exempt from egress checks, matched on the URL host verbatim (IP literal or hostname). Used as an escape hatch to reach otherwise-denied addresses.
+</ParamField>
+
+```toml
+[egress]
+block_link_local = true
+block_loopback = false
+block_private = false
+allow_hosts = []
+```
+
+---
+
 <Note>
   The repository ships a fully annotated `rolter.example.toml` that includes every section with inline comments explaining each field. Copy it to `rolter.toml` to get started, then remove or uncomment the sections you need.
 </Note>
