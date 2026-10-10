@@ -74,10 +74,10 @@ rolter check --config rolter.toml --strict
 | `[feature_flags]`                                          | Settings → Feature Flags      | [Feature flags](/configuration/feature-flags)         |
 | `[security]`                                               | the Security screen           |                                                       |
 
-`rolter-seed --import` does not carry these tables into the database. The only parts of them it reads from the file are `[logging.payload_capture]` and `ui_events`, and only when the file writes them. So in a database-backed deployment a value written in `rolter.toml` changes nothing for these tables, and each of them takes effect from the file only for a gateway that reads it directly. The sections for these tables repeat the caveat.
+`rolter-seed --import` does not carry these tables into the database. The only parts of them it reads from the file are `[logging.payload_capture]` and `ui_events`, and only when the file writes them. So in a database-backed deployment a value written in `rolter.toml` changes nothing for these tables, and each of them takes effect from the file only for a gateway that reads it directly. The exception is a control plane that loads the file itself, described under the list. The sections for these tables repeat the caveat.
 
 <Note>
-  A control plane started with `--config` as well as a database keeps the file as the base layer of its snapshot. Today that layer wins for `[client]`, `[model_defaults]` and `[security]`, so what is saved on their screens is ignored there ([#2922](https://github.com/rolter-ai/rolter/issues/2922)). The other tables in the list above still come from the database in that setup.
+  A control plane started with `--config` as well as a database (`rolter easy-up` runs it this way) starts its snapshot from the file and lets the database take over table by table. For every table in the list above except `[feature_flags]`, gateways get the file's table until something other than the defaults is saved on its screen, and the saved table from then on. Saving the defaults back over a file value that differs hands the file's value back, so clear a value like that by editing the file. `[feature_flags]` always comes from the database in that setup. In `[logging]`, `clickhouse_url`, `batch_max`, `flush_ms` and `queue_capacity` stay the file's either way, since the database holds no copy of them.
 </Note>
 
 Two tables work the other way round. `[currency]` and `[egress]` have no stored copy, so a control plane reads them from the file it was started with (`rolter control --config rolter.toml`), and it checks the URLs and prices written through its API against them.
@@ -1061,7 +1061,7 @@ request_id_header = "x-request-id"
 ```
 
 <Note>
-  **Database-backed deployments.** A control plane with a database owns this table: the snapshot carries what is saved under **Settings → Client Settings**, and `rolter-seed --import` does not read it from the file. See [Client settings](/configuration/client-settings). The table takes effect for a gateway that reads `rolter.toml` itself. A control plane started with `--config` as well as a database currently serves the file's table and ignores the saved one ([#2922](https://github.com/rolter-ai/rolter/issues/2922)).
+  **Database-backed deployments.** A control plane with a database owns this table: the snapshot carries what is saved under **Settings → Client Settings**, and `rolter-seed --import` does not read it from the file. See [Client settings](/configuration/client-settings). The table takes effect for a gateway that reads `rolter.toml` itself. A control plane started with `--config` as well as a database serves the file's table until something other than the defaults is saved on the screen, and the saved one after that.
 </Note>
 
 ---
@@ -1101,7 +1101,7 @@ max_tokens = 2048
 ```
 
 <Note>
-  **Database-backed deployments.** A control plane with a database owns this table: the snapshot carries what is saved under **Settings → Model Settings**, and `rolter-seed --import` does not read it from the file. See [Model settings](/configuration/model-settings), whose API names the fields `default_temperature`, `default_top_p` and `default_max_tokens`. The table takes effect for a gateway that reads `rolter.toml` itself. A control plane started with `--config` as well as a database currently serves the file's table and ignores the saved one ([#2922](https://github.com/rolter-ai/rolter/issues/2922)).
+  **Database-backed deployments.** A control plane with a database owns this table: the snapshot carries what is saved under **Settings → Model Settings**, and `rolter-seed --import` does not read it from the file. See [Model settings](/configuration/model-settings), whose API names the fields `default_temperature`, `default_top_p` and `default_max_tokens`. The table takes effect for a gateway that reads `rolter.toml` itself. A control plane started with `--config` as well as a database serves the file's table until something other than the defaults is saved on the screen, and the saved one after that.
 </Note>
 
 ---

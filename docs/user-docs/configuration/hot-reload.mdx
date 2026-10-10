@@ -45,6 +45,22 @@ The following configuration changes take effect without a restart:
 
 ---
 
+## A control plane that also loads a config file
+
+`rolter control --config rolter.toml --database-url ...` (and `rolter easy-up`, which runs the same thing) feeds every gateway from both the file and the database. Which one wins depends on the setting:
+
+| Setting                                                                                                                                   | What reaches the gateways                                                                                                                                                           |
+| ----------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Providers, routes, provider groups, keys, model prices, budgets, rate limits, guardrail rules                                             | Everything saved in the dashboard, plus the file's entries, which win a name clash and which the dashboard cannot edit for providers, routes and provider groups                    |
+| **Client Settings**, **Model Settings**, **Security**, **Compatibility**, **Adaptive Routing**, **Performance Tuning**, **Logs Settings** | What you saved in the dashboard. Until you save something other than the defaults, the file's matching section applies (`[client]`, `[security]`, `[retry]`, `[logging]` and so on) |
+| Prompt templates, plugins                                                                                                                 | Everything saved in the dashboard, plus the file's entries; where both name the same template or plugin, the dashboard's wins                                                       |
+| **Feature Flags**                                                                                                                         | The dashboard's flags, even when the file sets them                                                                                                                                 |
+| `[server]`, `[tls]`, `[egress]`, `[cache]`, `[health]`, `[breaker]` and the other sections with no dashboard screen                       | The file                                                                                                                                                                            |
+
+A control plane started without `--config` has no file to consult: the database supplies all of it.
+
+---
+
 ## How it works
 
 From your perspective, the update process is straightforward:
