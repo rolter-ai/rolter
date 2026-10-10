@@ -19,7 +19,8 @@ def request(path: str, payload: dict | None = None) -> tuple[int, bytes, str]:
 
 
 status, body, _ = request("/v1/models")
-assert status == 200 and any(m["id"] == "ollama-smoke" for m in json.loads(body)["data"])
+assert status == 200
+assert {"ollama-smoke", "ollama-embed-smoke"} <= {m["id"] for m in json.loads(body)["data"]}
 
 status, body, _ = request(
     "/v1/chat/completions",
@@ -41,7 +42,10 @@ assert status == 200 and content_type == "text/event-stream" and b"data:" in bod
 status, body, _ = request("/v1/completions", {"model": "ollama-smoke", "prompt": "hello"})
 assert status == 200 and json.loads(body)["choices"]
 
-status, body, _ = request("/v1/embeddings", {"model": "ollama-smoke", "input": "hello"})
-assert status == 200 and json.loads(body)["data"]
+# a generative model answers 501 here on current ollama releases, so this goes
+# to the dedicated embedding route
+status, body, _ = request("/v1/embeddings", {"model": "ollama-embed-smoke", "input": "hello"})
+vector = json.loads(body)["data"][0]["embedding"]
+assert status == 200 and vector and all(isinstance(x, float) for x in vector)
 
 print("ollama smoke passed: models, chat, completions, embeddings, sse")
