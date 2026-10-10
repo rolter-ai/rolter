@@ -38,13 +38,16 @@ pub trait ConfigStore: Send + Sync {
     }
 
     /// Rows [`load`](Self::load) could only map onto the config by guessing,
-    /// one sentence each, for `GET /api/v1/config/problems`.
+    /// or had to leave out, one sentence each, for `GET /api/v1/config/problems`.
     ///
     /// `load` has to return a config whatever a stored row says, so a value it
-    /// does not recognise falls back to a default rather than failing the
-    /// snapshot for every tenant. That keeps the fleet served but makes the
-    /// guess silent; this is where it is said out loud (#1902). Empty for a
-    /// store with no free-text rows to misread.
+    /// does not recognise falls back to a default, or the row is left out,
+    /// rather than failing the snapshot for every tenant. That keeps the fleet
+    /// served but makes the guess silent; this is where it is said out loud
+    /// (#1902). A row is left out rather than defaulted when the default would
+    /// be the permissive reading of it, such as a route whose `advanced`
+    /// settings do not parse (#2938). Empty for a store with no free-text rows
+    /// to misread.
     async fn load_problems(&self) -> Result<Vec<String>> {
         Ok(Vec::new())
     }
