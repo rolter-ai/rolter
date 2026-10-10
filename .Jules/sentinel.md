@@ -35,7 +35,13 @@
 
 **Learning:** `api_error_message(err)` in `crates/rolter-control/src/sso.rs` previously converted `ApiError::Core(e)` by calling `e.to_string()`. When `e` was an `Error::Store` (carrying SQL or database connection strings), this leaked internal database details via `IdentityError::Provider(...)`.
 **Prevention:** Sanitize internal errors in error message converters by checking for `Error::NotFound` / `Error::Config` vs internal errors, logging the internal detail with `tracing::error!`, and returning a generic error message like `"internal server error"`.
+
 ## 2026-10-03 - Redact Control Plane Internal Errors in Admin Proxy 502 Responses
 
 **Learning:** `bad_gateway` in `crates/rolter-gateway/src/admin_proxy.rs` previously echoed `err` strings (containing internal transport or connection failures) directly into the JSON error response message when forwarding requests to the control plane failed.
 **Prevention:** Always log detailed internal error messages via `tracing::warn!` or `tracing::error!` and return a sanitized, static error message (such as `"control plane unreachable"`) in 502 HTTP error response bodies.
+
+## 2026-10-17 - Redact Internal Store Errors in MCP OAuth Refresh Responses
+
+**Learning:** `refresh_session` in `crates/rolter-control/src/mcp_oauth_flow.rs` previously converted store query errors (`e`) into `TokenError::Transient(e.to_string())`, which `into_api()` mapped to `ApiError::Core(Error::Config(msg))`. This resulted in HTTP 400 responses echoing raw database connection strings and SQL errors to clients.
+**Prevention:** Log store error details internally with `tracing::error!` and return a sanitized, generic error string (`TokenError::Transient("internal server error".to_string())`) in response bodies to prevent internal information disclosure.
