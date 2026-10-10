@@ -247,12 +247,13 @@ async fn proxy(
     {
         Ok(response) => upstream_response(response, call),
         Err(upstream) => {
+            tracing::warn!(error = %upstream, "MCP upstream request failed");
             if let Some(call) = call {
                 call.fail_upstream(&upstream.to_string());
             }
             error(
                 StatusCode::BAD_GATEWAY,
-                format!("MCP upstream request failed: {upstream}"),
+                "MCP upstream request failed",
                 "mcp_upstream_error",
             )
         }
@@ -531,5 +532,31 @@ mod tests {
             downstream_url("https://mcp.example/rpc/", Some("messages/1"), Some("v=2")),
             Some("https://mcp.example/rpc/messages/1?v=2".to_string())
         );
+    }
+
+    #[tokio::test]
+    async fn proxy_redacts_upstream_error_details() {
+        let mut config = config("user-1", &["tools:execute"]);
+        config.mcp_servers[0].url = "http://127.0.0.1:1/rpc".to_string();
+        let response = proxy(
+            AppState::new(&config),
+            "github".to_string(),
+            None,
+            None,
+            Method::POST,
+            bearer(),
+            Bytes::new(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let body = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap();
+        let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(parsed["error"]["message"], "MCP upstream request failed");
+        assert_eq!(parsed["error"]["code"], "mcp_upstream_error");
+        let raw_text = String::from_utf8_lossy(&body);
+        assert!(!raw_text.contains("127.0.0.1"), "{raw_text}");
+        assert!(!raw_text.contains("Connection refused"), "{raw_text}");
     }
 }
