@@ -33,8 +33,8 @@ pub mod upstream;
 
 pub use access_policy::ModelPolicy;
 pub use config::{
-    is_reserved_route_header, request_id_header_problem, strip_retired_advanced_keys,
-    DEFAULT_REQUEST_ID_HEADER,
+    is_reserved_route_header, request_id_header_problem, request_id_refused_headers,
+    strip_retired_advanced_keys, DEFAULT_REQUEST_ID_HEADER,
 };
 pub use config::{
     AdaptiveRoutingConfig, AdvancedModelConfig, ApiKeyConfig, BackpressurePolicy,

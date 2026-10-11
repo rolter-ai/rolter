@@ -87,4 +87,4 @@ curl -X PUT -H "Authorization: Bearer $ROLTER_ADMIN_TOKEN" \
   https://control.example.com/api/v1/client-settings
 ```
 
-The read response also carries `always_propagated` and `reserved`, so a client does not have to hard-code either list.
+The read response also carries `always_propagated`, `reserved` and `request_id_refused` (every name refused as the request id header), so a client does not have to hard-code any of the lists. The dashboard checks the Request ID header field against `request_id_refused` before you save.

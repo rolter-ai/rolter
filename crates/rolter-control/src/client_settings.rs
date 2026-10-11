@@ -56,6 +56,9 @@ struct ClientSettingsView {
     always_propagated: &'static [&'static str],
     /// header names that can never be forwarded or injected
     reserved: &'static [&'static str],
+    /// header names refused as the request id header: the reserved names plus
+    /// the other credential, session and framing headers (#2970)
+    request_id_refused: Vec<&'static str>,
 }
 
 impl From<ClientSettings> for ClientSettingsView {
@@ -64,6 +67,7 @@ impl From<ClientSettings> for ClientSettingsView {
             settings,
             always_propagated: ALWAYS_PROPAGATED,
             reserved: RESERVED_HEADERS,
+            request_id_refused: rolter_core::request_id_refused_headers(),
         }
     }
 }
@@ -243,6 +247,26 @@ mod tests {
         let mut injected = body();
         injected.injected_headers = BTreeMap::from([("x-api-key".to_string(), "k".to_string())]);
         assert!(validate_settings(&injected).is_err());
+    }
+
+    #[test]
+    fn the_refused_list_matches_what_validation_refuses() {
+        let view = ClientSettingsView::from(ClientSettings {
+            public_base_url: None,
+            forwarded_headers: vec![],
+            injected_headers: serde_json::json!({}),
+            request_id_header: "x-request-id".to_string(),
+            updated_at: chrono::Utc::now(),
+        });
+        let json = serde_json::to_value(&view).unwrap();
+        let listed = json["request_id_refused"].as_array().unwrap();
+        assert!(listed.iter().any(|n| n == "x-goog-api-key"));
+        assert!(listed.iter().any(|n| n == "set-cookie"));
+        for name in listed {
+            let mut refused = body();
+            refused.request_id_header = name.as_str().unwrap().to_string();
+            assert!(validate_settings(&refused).is_err(), "{name}");
+        }
     }
 
     #[test]

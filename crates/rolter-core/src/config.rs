@@ -916,6 +916,45 @@ pub struct KvEventsConfig {
     pub stale_secs: u64,
 }
 
+impl KvEventsConfig {
+    /// Problems with the settings themselves, apart from whether the egress
+    /// policy allows the endpoint. Shared by the file config and the control
+    /// API so a stored provider is held to the same rules as a file one.
+    pub fn shape_problems(&self, provider: &str) -> Vec<String> {
+        let mut problems = Vec::new();
+        if !self.endpoint.starts_with("tcp://") || self.endpoint.len() <= "tcp://".len() {
+            problems.push(format!(
+                "provider '{provider}' kv_events.endpoint must be a non-empty tcp:// URL"
+            ));
+        }
+        if self.max_blocks == 0 || self.stale_secs == 0 {
+            problems.push(format!(
+                "provider '{provider}' kv_events max_blocks and stale_secs must be greater than zero"
+            ));
+        }
+        problems
+    }
+}
+
+impl LmCacheConfig {
+    /// Problems with the settings themselves, apart from the egress policy;
+    /// see [`KvEventsConfig::shape_problems`].
+    pub fn shape_problems(&self, provider: &str) -> Vec<String> {
+        let mut problems = Vec::new();
+        if !is_http_url(&self.endpoint) {
+            problems.push(format!(
+                "provider '{provider}' lmcache.endpoint must be an http(s) URL"
+            ));
+        }
+        if self.refresh_secs == 0 || self.stale_secs == 0 {
+            problems.push(format!(
+                "provider '{provider}' lmcache refresh_secs and stale_secs must be greater than zero"
+            ));
+        }
+        problems
+    }
+}
+
 fn default_kv_events_topic() -> String {
     "kv-events".to_string()
 }
@@ -2544,6 +2583,22 @@ fn default_request_id_header() -> String {
 /// top of [`RESERVED_ROUTE_HEADERS`].
 const SESSION_HEADERS: [&str; 2] = ["cookie", "set-cookie"];
 
+/// Every name [`request_id_header_problem`] refuses for a reason other than
+/// being malformed, sorted and without duplicates.
+///
+/// The control plane returns it with the client settings so the dashboard can
+/// check the field inline instead of waiting for the save to be refused.
+pub fn request_id_refused_headers() -> Vec<&'static str> {
+    let mut names: Vec<&'static str> = RESERVED_ROUTE_HEADERS
+        .iter()
+        .chain(SESSION_HEADERS.iter())
+        .copied()
+        .collect();
+    names.sort_unstable();
+    names.dedup();
+    names
+}
+
 /// Why `name` cannot be the request id header, or `None` when it can.
 ///
 /// The gateway reads the caller's id from this header, writes the id it
@@ -4103,18 +4158,7 @@ impl GatewayConfig {
             ) {
                 problems.push(problem);
             }
-            if !kv.endpoint.starts_with("tcp://") || kv.endpoint.len() <= "tcp://".len() {
-                problems.push(format!(
-                    "provider '{}' kv_events.endpoint must be a non-empty tcp:// URL",
-                    provider.name
-                ));
-            }
-            if kv.max_blocks == 0 || kv.stale_secs == 0 {
-                problems.push(format!(
-                    "provider '{}' kv_events max_blocks and stale_secs must be greater than zero",
-                    provider.name
-                ));
-            }
+            problems.extend(kv.shape_problems(&provider.name));
         }
         if let Some(lmcache) = &provider.lmcache {
             if let Err(problem) = self.egress.check_url(
@@ -4123,18 +4167,7 @@ impl GatewayConfig {
             ) {
                 problems.push(problem);
             }
-            if !is_http_url(&lmcache.endpoint) {
-                problems.push(format!(
-                    "provider '{}' lmcache.endpoint must be an http(s) URL",
-                    provider.name
-                ));
-            }
-            if lmcache.refresh_secs == 0 || lmcache.stale_secs == 0 {
-                problems.push(format!(
-                    "provider '{}' lmcache refresh_secs and stale_secs must be greater than zero",
-                    provider.name
-                ));
-            }
+            problems.extend(lmcache.shape_problems(&provider.name));
         }
         problems
     }
@@ -5337,6 +5370,16 @@ mod tests {
         );
         cfg.validate_snapshot()
             .expect("what is left must validate, or the snapshot would 500");
+    }
+
+    #[test]
+    fn every_listed_refused_request_id_header_is_refused() {
+        let names = request_id_refused_headers();
+        assert!(names.contains(&"x-goog-api-key") && names.contains(&"set-cookie"));
+        assert!(names.windows(2).all(|w| w[0] < w[1]), "sorted and unique");
+        for name in names {
+            assert!(request_id_header_problem(name).is_some(), "{name}");
+        }
     }
 
     #[test]

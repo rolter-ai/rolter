@@ -23,18 +23,33 @@ export interface DoubleInvokeCounts {
   cleanups: number;
 }
 
-// module state rather than a context: one subject is mounted strictly per
-// story, and a story reads the counts from its play function, outside the tree
-let counts: DoubleInvokeCounts = { mounts: 0, cleanups: 0 };
+// per-host state, not module state: each `StrictModeHost` owns one record and
+// hands it to its probe through context, so two hosts in one story never read
+// each other's mounts. A story reads them from its play function, outside the
+// tree, so a mounted host also lists its record in `hosts` until it unmounts.
+const hosts = new Set<DoubleInvokeCounts>();
 
-/** Forget earlier mounts, so a story never reads the one that ran before it. */
-export function resetStrictProbe(): void {
-  counts = { mounts: 0, cleanups: 0 };
+const ProbeContext = React.createContext<DoubleInvokeCounts | null>(null);
+
+/** A fresh record, for one host (or a test standing in for one). */
+export function newStrictCounts(): DoubleInvokeCounts {
+  return { mounts: 0, cleanups: 0 };
 }
 
-/** A copy of the counts, so a caller cannot move them. */
-export function strictProbeCounts(): DoubleInvokeCounts {
-  return { ...counts };
+/** Counts of every `StrictModeHost` currently mounted, copied so a caller cannot move them. */
+export function strictProbeCounts(): DoubleInvokeCounts[] {
+  return [...hosts].map((c) => ({ ...c }));
+}
+
+/** Gives the probes below it `counts` to write to. `StrictModeHost` renders one. */
+export function StrictProbeScope({
+  counts,
+  children,
+}: {
+  counts: DoubleInvokeCounts;
+  children: React.ReactNode;
+}) {
+  return <ProbeContext.Provider value={counts}>{children}</ProbeContext.Provider>;
 }
 
 /**
@@ -60,12 +75,14 @@ export function doubleInvokeFailure({ mounts, cleanups }: DoubleInvokeCounts): s
 
 /** Counts its own effect's mounts and cleanups. Renders nothing. */
 export function StrictProbe(): null {
+  const counts = React.useContext(ProbeContext);
   React.useEffect(() => {
+    if (!counts) return;
     counts.mounts += 1;
     return () => {
       counts.cleanups += 1;
     };
-  }, []);
+  }, [counts]);
   return null;
 }
 
@@ -95,20 +112,28 @@ export const STRICT_MOUNT_LABEL = "mount the subject";
 
 function Mounter({ label, children }: { label: string; children: React.ReactNode }) {
   const [mounted, setMounted] = React.useState(false);
+  const [counts] = React.useState(newStrictCounts);
+  React.useEffect(() => {
+    hosts.add(counts);
+    return () => {
+      hosts.delete(counts);
+    };
+  }, [counts]);
   return (
     <>
       {!mounted && (
         <button
           type="button"
           onClick={() => {
-            resetStrictProbe();
             setMounted(true);
           }}
         >
           {label}
         </button>
       )}
-      <StrictLater mounted={mounted}>{children}</StrictLater>
+      <StrictProbeScope counts={counts}>
+        <StrictLater mounted={mounted}>{children}</StrictLater>
+      </StrictProbeScope>
     </>
   );
 }

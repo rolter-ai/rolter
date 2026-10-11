@@ -42,3 +42,24 @@ unsealed; **Test connection** on the [provider page](/configuration/providers)
 does. An update that omits `api_key` leaves the stored key alone and the
 response still reports it, and sending `api_key: ""` deletes the key and flips
 the field to `false`.
+
+## Cache telemetry sources
+
+A provider can name the source the cache-aware strategies read, in two optional
+fields on the provider row, on `POST /api/v1/orgs/{org_id}/providers` and on
+the provider update. They hold the same settings as `[providers.kv_events]` and
+`[providers.lmcache]` in `rolter.toml`; see
+[cache-aware routing](/concepts/cache-aware-routing).
+
+| Field       | Type           | Read by               | Keys                                                           |
+| ----------- | -------------- | --------------------- | -------------------------------------------------------------- |
+| `kv_events` | object or null | `precise_cache_aware` | `endpoint` (`tcp://` URL), `topic`, `max_blocks`, `stale_secs` |
+| `lmcache`   | object or null | `lmcache_aware`       | `endpoint` (http(s) URL), `refresh_secs`, `stale_secs`         |
+
+Only `endpoint` is required; the other keys take the defaults the config file
+documents. Both endpoints go through the [egress policy](/configuration/egress)
+and a zero interval is refused with `400`. Neither holds a credential.
+
+On update, omitting a field leaves it unchanged, `null` clears it, and an
+object replaces the whole setting. A provider that came from `rolter.toml` is
+managed by the file, so its settings change there.

@@ -189,6 +189,15 @@
     --danger-border: rgba(229, 57, 53, 0.4);
     --danger-surface: rgba(229, 57, 53, 0.1);
     --green-tint: rgba(22, 163, 74, 0.12);
+    /* text selection (#2419). opaque, so the pair reads the same on every
+       surface instead of taking the colour of whatever it is laid over:
+       --selection-text on --selection-bg is 6.41:1 on --surface-base,
+       --surface-elevated and --surface-subtle alike. the fill is the brand
+       red, the one colour the dashboard uses to say "selected"; it is
+       2.82:1 / 2.45:1 / 2.23:1 against those surfaces, so the selected run
+       is told apart by its fill and carries its glyphs at the text ratio */
+    --selection-bg: var(--red-folk);
+    --selection-text: var(--text-primary);
     --text-primary: var(--zinc-50);
     --text-secondary: var(--zinc-300);
     --text-muted: var(--zinc-400);
@@ -255,6 +264,13 @@
     font-family: var(--font-sans);
     font-size: 0.8125rem; /* 13px compact default */
     -webkit-font-smoothing: antialiased;
+  }
+  /* selection takes the design pair instead of the UA highlight (#2419). set on
+     the root so every element's highlight inherits it, including the coloured
+     tokens inside .rl-code */
+  ::selection {
+    background: var(--selection-bg);
+    color: var(--selection-text);
   }
   code,
   kbd,

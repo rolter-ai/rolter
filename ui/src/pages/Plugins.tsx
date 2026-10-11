@@ -22,7 +22,7 @@ import { Combobox } from "@/components/ui/combobox";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { Switch } from "@/components/ui/switch";
+import { SwitchRow } from "@/components/ui/switch-row";
 import { Textarea } from "@/components/ui/textarea";
 import {
   createPlugin,
@@ -160,15 +160,7 @@ export default function Plugins() {
     <div className="mx-auto flex max-w-[1180px] flex-col gap-5 p-[22px]">
       <header className="flex flex-col gap-3 border-b border-[color:var(--border-subtle)] pb-5 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <div className="flex flex-wrap items-center gap-2">
-            <p className="font-mono text-[0.6875rem] uppercase tracking-[0.16em] text-[color:var(--status-info-text)]">
-              {t("pages.plugins.eyebrow")}
-            </p>
-          </div>
-          <h1 className="mt-1 text-xl font-semibold tracking-tight">
-            {t("pages.plugins.heading")}
-          </h1>
-          <p className="mt-1 max-w-2xl text-sm text-muted-foreground">{t("pages.plugins.intro")}</p>
+          <p className="max-w-2xl text-sm text-muted-foreground">{t("pages.plugins.intro")}</p>
         </div>
         <GatedButton gate="plugin:create" control="plugin-install" onClick={() => setEditing(null)}>
           <Plus className="h-4 w-4" aria-hidden /> {t("pages.plugins.install")}
@@ -672,17 +664,12 @@ function PluginDialog({
             onChange={(event) => set({ config: event.target.value })}
           />
         </Field>
-        <div className="flex items-start justify-between gap-4 rounded-lg border border-[color:var(--border-subtle)] p-3">
-          <div>
-            <p className="text-sm font-medium">{t("pages.plugins.enabledTitle")}</p>
-            <p className="mt-0.5 text-xs text-muted-foreground">{t("pages.plugins.enabledHint")}</p>
-          </div>
-          <Switch
-            checked={form.enabled}
-            aria-label={t("pages.plugins.enabledTitle")}
-            onCheckedChange={(enabled) => set({ enabled })}
-          />
-        </div>
+        <SwitchRow
+          title={t("pages.plugins.enabledTitle")}
+          hint={t("pages.plugins.enabledHint")}
+          checked={form.enabled}
+          onChange={(enabled) => set({ enabled })}
+        />
         {/* a refusal that names no field still needs saying in the dialog */}
         {mutation.isError && !serverFieldError(mutation.error, PLUGIN_WIRE_FIELDS) && (
           <p role="alert" className="text-xs text-[color:var(--status-danger-text)]">

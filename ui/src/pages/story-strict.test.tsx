@@ -1,13 +1,13 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import * as React from "react";
 import { createRoot, type Root } from "react-dom/client";
 
 import {
   doubleInvokeFailure,
-  resetStrictProbe,
+  newStrictCounts,
   StrictLater,
   StrictProbe,
-  strictProbeCounts,
+  StrictProbeScope,
 } from "./story-strict";
 
 // #1887: `expectDoubleInvoked` is only worth having if it fails when StrictMode
@@ -42,8 +42,6 @@ afterAll(() => {
   delete globals.IS_REACT_ACT_ENVIRONMENT;
 });
 
-beforeEach(() => resetStrictProbe());
-
 /**
  * Storybook's own wrapper: `renderToCanvas` mounts every story as
  * `<ErrorBoundary key={storyId}><Story /></ErrorBoundary>`, so the fiber React
@@ -67,29 +65,56 @@ async function story(root: Root, body: React.ReactNode): Promise<void> {
 describe("the StrictMode probe", () => {
   it("reads one mount and no cleanup in the same-commit shape, and that is refused", async () => {
     const root = await liveRoot();
+    const counts = newStrictCounts();
     await story(
       root,
       <React.StrictMode>
-        <StrictProbe />
+        <StrictProbeScope counts={counts}>
+          <StrictProbe />
+        </StrictProbeScope>
       </React.StrictMode>,
     );
-    expect(strictProbeCounts()).toEqual({ mounts: 1, cleanups: 0 });
-    expect(doubleInvokeFailure(strictProbeCounts())).toContain("did not double-invoke");
+    expect(counts).toEqual({ mounts: 1, cleanups: 0 });
+    expect(doubleInvokeFailure(counts)).toContain("did not double-invoke");
     await React.act(async () => root.unmount());
   });
 
   it("reads two mounts and one cleanup when the subject lands in a later commit", async () => {
     const root = await liveRoot();
+    const counts = newStrictCounts();
     const host = (mounted: boolean) => (
       <React.StrictMode>
-        <StrictLater mounted={mounted}>{null}</StrictLater>
+        <StrictProbeScope counts={counts}>
+          <StrictLater mounted={mounted}>{null}</StrictLater>
+        </StrictProbeScope>
       </React.StrictMode>
     );
     await story(root, host(false));
-    expect(strictProbeCounts()).toEqual({ mounts: 0, cleanups: 0 });
+    expect(counts).toEqual({ mounts: 0, cleanups: 0 });
     await story(root, host(true));
-    expect(strictProbeCounts()).toEqual({ mounts: 2, cleanups: 1 });
-    expect(doubleInvokeFailure(strictProbeCounts())).toBeNull();
+    expect(counts).toEqual({ mounts: 2, cleanups: 1 });
+    expect(doubleInvokeFailure(counts)).toBeNull();
+    await React.act(async () => root.unmount());
+  });
+
+  it("keeps two hosts in one tree apart: each reads 2 mounts and 1 cleanup", async () => {
+    const root = await liveRoot();
+    const a = newStrictCounts();
+    const b = newStrictCounts();
+    const hosts = (mounted: boolean) => (
+      <React.StrictMode>
+        <StrictProbeScope counts={a}>
+          <StrictLater mounted={mounted}>{null}</StrictLater>
+        </StrictProbeScope>
+        <StrictProbeScope counts={b}>
+          <StrictLater mounted={mounted}>{null}</StrictLater>
+        </StrictProbeScope>
+      </React.StrictMode>
+    );
+    await story(root, hosts(false));
+    await story(root, hosts(true));
+    expect(a).toEqual({ mounts: 2, cleanups: 1 });
+    expect(b).toEqual({ mounts: 2, cleanups: 1 });
     await React.act(async () => root.unmount());
   });
 
