@@ -554,13 +554,29 @@ export function fetchConfigProblems(): Promise<string[]> {
 // marks nothing
 const OMITTED_PROVIDER = /^provider '(.+)' omitted from the snapshot: (.*)$/s;
 const OMITTED_ROUTE = /^route '(.+)' omitted from the snapshot: (.*)$/s;
+// a file key is dropped whole in two cases. the first names the key by `name`
+// (`<unnamed>` without one); the allow-list line for a key that keeps its other
+// providers has a different reason and marks nothing. the second names the
+// public example key by its value, which `GET /api/v1/config` redacts, so the
+// control plane tells that row apart by what it redacts the value to (#2954)
+const OMITTED_KEY = /^virtual key '(.+)' omitted from the snapshot: (it allows only omitted .*)$/s;
+const OMITTED_EXAMPLE_KEY =
+  /^virtual key '[^']+' omitted from the snapshot: (it is the public example key.*)$/s;
+/** What the config endpoint redacts the public example key's value to. */
+export const REDACTED_PUBLIC_EXAMPLE_KEY = "[redacted: public example key]";
+/** What a file key without a `name` is called in a problem line. */
+export const UNNAMED_KEY = "<unnamed>";
 
-/** Providers and routes left out of the gateway's snapshot whole, each with its reason. */
+/** Providers, routes and file keys left out of the gateway's snapshot whole, each with its reason. */
 export interface SnapshotOmissions {
   /** provider name → why it is not served */
   providers: Map<string, string>;
   /** route model → why it is not served */
   routes: Map<string, string>;
+  /** file key name (`<unnamed>` without one) → why it is not served */
+  keys: Map<string, string>;
+  /** why the public example key is not served, when it is in the file */
+  exampleKey?: string;
 }
 
 /**
@@ -568,20 +584,26 @@ export interface SnapshotOmissions {
  * the gateway's snapshot, and so not served (#2085).
  *
  * The endpoint reports sentences rather than records (#1876 would add the
- * records), so this reads the two shapes written for a pruned provider and a
- * pruned route and ignores every other line: a target, a header or a price
+ * records), so this reads the two shapes written for a pruned provider, route
+ * and file key and ignores every other line: a target, a header or a price
  * dropped from an entry that is still served is not the entry going missing.
  */
 export function snapshotOmissions(problems: readonly string[] | undefined): SnapshotOmissions {
   const providers = new Map<string, string>();
   const routes = new Map<string, string>();
+  const keys = new Map<string, string>();
+  let exampleKey: string | undefined;
   for (const problem of problems ?? []) {
     const provider = OMITTED_PROVIDER.exec(problem);
     if (provider) providers.set(provider[1], provider[2]);
     const route = OMITTED_ROUTE.exec(problem);
     if (route) routes.set(route[1], route[2]);
+    const key = OMITTED_KEY.exec(problem);
+    if (key) keys.set(key[1], key[2]);
+    const example = OMITTED_EXAMPLE_KEY.exec(problem);
+    if (example) exampleKey = example[1];
   }
-  return { providers, routes };
+  return { providers, routes, keys, exampleKey };
 }
 
 /**

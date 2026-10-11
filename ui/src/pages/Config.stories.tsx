@@ -295,6 +295,11 @@ const OMITTED_CONFIG = {
     ...CONFIG.providers,
     { name: "openrouter-edge", kind: "openrouter", api_base: "https://edge.example.com/v1" },
   ],
+  virtual_keys: [
+    ...CONFIG.virtual_keys,
+    { key: "[redacted]", name: "edge-bot", models: [] },
+    { key: "[redacted: public example key]", name: null, models: [] },
+  ],
   routes: [
     ...CONFIG.routes,
     {
@@ -307,7 +312,13 @@ const OMITTED_CONFIG = {
 const PROVIDER_REASON =
   "openrouter provider 'openrouter-edge' api_base must be https://openrouter.ai/api/v1 unless the provider sets allow_custom_api_base = true";
 const ROUTE_REASON = "it has no target that references a known provider with a positive weight";
+const KEY_REASON =
+  "it allows only omitted providers ('openrouter-edge'), and an empty allow-list would let it reach every provider";
+const EXAMPLE_KEY_REASON =
+  "it is the public example key from the bundled rolter.example.toml and allows every model, so a deployment with auth enforced must not hand it to gateways";
 const OMITTED = [
+  `virtual key 'edge-bot' omitted from the snapshot: ${KEY_REASON}`,
+  `virtual key 'sk-rolter-dev' omitted from the snapshot: ${EXAMPLE_KEY_REASON}`,
   `provider 'openrouter-edge' omitted from the snapshot: ${PROVIDER_REASON}`,
   "route 'claude-sonnet-4' target 'openrouter-edge' omitted from the snapshot: the provider is itself omitted from the snapshot",
   `route 'claude-sonnet-4' omitted from the snapshot: ${ROUTE_REASON}`,
@@ -336,7 +347,7 @@ export const OmittedEntriesAreMarked: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(
-      await canvas.findByText("4 config entries are not being served as written"),
+      await canvas.findByText("6 config entries are not being served as written"),
     ).toBeVisible();
 
     const providers = canvas.getByRole("table", { name: "Providers" });
@@ -357,6 +368,17 @@ export const OmittedEntriesAreMarked: Story = {
     await expect(within(rowNamed(routes, "gpt-4o", 1)).getByText("not served")).toBeVisible();
     await expectListTable(canvasElement, "Providers");
     await expectListTable(canvasElement, "Routes");
+
+    // a named file key is matched by name, the public example key by its
+    // redacted value; the served key keeps no mark
+    const keys = canvas.getByRole("table", { name: "Virtual keys (from the config file)" });
+    const bot = rowNamed(keys, "edge-bot");
+    await expect(within(bot).getByText("not served")).toBeVisible();
+    await expect(within(bot).getByText(KEY_REASON)).toBeVisible();
+    const example = rowNamed(keys, "—");
+    await expect(within(example).getByText("not served")).toBeVisible();
+    await expect(within(example).getByText(EXAMPLE_KEY_REASON)).toBeVisible();
+    await expect(within(rowNamed(keys, "ci-bot")).queryByText("not served")).toBeNull();
   },
 };
 
