@@ -98,6 +98,10 @@ function FeatureFlagsScreen() {
       // the cached write alone left every other reader of this key on the
       // value it already had; the refetch is what makes the save stick (#1197)
       void queryClient.invalidateQueries({ queryKey: ["feature-flags"] });
+      // apply_feature_flags rewrites the effective config (gated sections,
+      // cache-aware strategies), so every reader of it would otherwise keep
+      // the pre-toggle document until its staleTime ran out (#2284)
+      void queryClient.invalidateQueries({ queryKey: ["config"] });
       setForm(toValues(dto));
       setConfirming(false);
       toast.push({
