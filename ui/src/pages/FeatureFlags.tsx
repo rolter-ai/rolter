@@ -20,6 +20,7 @@ import {
   type UnavailableFlagDto,
 } from "@/lib/api";
 import { useFormat } from "@/lib/i18n/format";
+import { useLeaveGuard } from "@/lib/use-leave-guard";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useScreenReady } from "@/lib/ux-react";
 
@@ -90,6 +91,12 @@ function FeatureFlagsScreen() {
   }, [flags.data, form]);
 
   const [confirming, setConfirming] = React.useState(false);
+  // a draft differing from what the server holds is lost on navigation (#2584)
+  const dirty =
+    form !== null &&
+    flags.data !== undefined &&
+    FEATURE_FLAG_KEYS.some((key) => form[key] !== flags.data[key]);
+  const leavePrompt = useLeaveGuard(dirty);
 
   const save = useMutation({
     mutationFn: (values: FeatureFlagValues) => updateFeatureFlags(values),
@@ -186,6 +193,7 @@ function FeatureFlagsScreen() {
         </Button>
       </div>
 
+      {leavePrompt}
       <ConfirmDialog
         name="feature-flags-save"
         open={confirming && changed.length > 0}

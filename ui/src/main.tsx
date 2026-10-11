@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import React from "react";
 import ReactDOM from "react-dom/client";
-import { BrowserRouter } from "react-router";
+import { createBrowserRouter, RouterProvider } from "react-router";
 // the vendored geist faces, shared with the storybook preview (#2051)
 import "@/lib/fonts";
 
@@ -38,15 +38,17 @@ const queryClient = new QueryClient({
   },
 });
 
+// a data router, because useBlocker (the unsaved-changes guard) needs one; the
+// catch-all hands every path to App, which owns the route table
+const router = createBrowserRouter([{ path: "*", element: <App /> }]);
+
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <QueryClientProvider client={queryClient}>
       <ToastProvider>
         <AuthProvider>
           <PreferencesProvider>
-            <BrowserRouter>
-              <App />
-            </BrowserRouter>
+            <RouterProvider router={router} />
           </PreferencesProvider>
         </AuthProvider>
       </ToastProvider>

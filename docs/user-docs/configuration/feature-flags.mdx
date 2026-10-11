@@ -49,6 +49,8 @@ Availability is computed from deployment facts, not from the stored row, so a fl
 
 Only turning an unavailable flag **on** is refused. One that was already on when its subsystem went away — the providers that published KV-cache events were removed, say — does not block saving the other flags, and its switch stays live so you can turn it off. Once off, it cannot be turned back on until the subsystem is available again.
 
+Switches you have flipped are a draft until you save them. Leaving the screen with a draft — through another nav item, the back button, or by closing or reloading the tab — asks you to confirm before the draft is discarded.
+
 ---
 
 ## API

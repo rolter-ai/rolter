@@ -1,5 +1,7 @@
 import type { Meta, StoryObj } from "@storybook/react";
 import { useQuery } from "@tanstack/react-query";
+import type * as React from "react";
+import { Link, useLocation } from "react-router";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import FeatureFlags from "./FeatureFlags";
@@ -35,10 +37,19 @@ const BASE: FeatureFlagsDto = {
  * never blocks, and a story can only reach the 403 by stubbing one — which
  * tests the screen's own error path rather than the gate (#1606).
  */
-function Harness({ fetchStub, role }: { fetchStub: FetchStub; role?: StoryRole }) {
+function Harness({
+  fetchStub,
+  role,
+  children,
+}: {
+  fetchStub: FetchStub;
+  role?: StoryRole;
+  children?: React.ReactNode;
+}) {
   return (
     <ScreenHarness fetchStub={fetchStub} role={role}>
       <Toasted>
+        {children}
         <FeatureFlags />
       </Toasted>
     </ScreenHarness>
@@ -351,5 +362,63 @@ export const SaveRefetchesTheEffectiveConfig: Story = {
     await confirmChanges(canvasElement);
     await expectToast(canvasElement, /feature flags updated/i);
     await waitFor(() => expect(configReads()).toBe(2));
+  },
+};
+
+// stands in for the nav: a link away from the screen and a readout of where
+// the router ended up
+function Elsewhere() {
+  const { pathname } = useLocation();
+  return (
+    <>
+      <Link to="/elsewhere">Go elsewhere</Link>
+      <output data-testid="pathname">{pathname}</output>
+    </>
+  );
+}
+
+function LeaveHarness() {
+  return (
+    <Harness fetchStub={async () => json(BASE)}>
+      <Elsewhere />
+    </Harness>
+  );
+}
+
+/**
+ * Leaving with a switch flipped asks first (#2584).
+ *
+ * Cancelling keeps the screen and the draft; confirming lets the navigation
+ * through.
+ */
+export const LeavingDirtyAsksFirst: Story = {
+  render: () => <LeaveHarness />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const complexity = await canvas.findByRole("switch", { name: "Complexity Routing" });
+    await userEvent.click(complexity);
+    await userEvent.click(canvas.getByRole("link", { name: "Go elsewhere" }));
+    const d = within(await dialog());
+    await expect(d.getByText("Discard unsaved changes?")).toBeVisible();
+    await expect(canvas.getByTestId("pathname")).toHaveTextContent("/");
+    await userEvent.click(d.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(within(document.body).queryByRole("dialog")).toBeNull());
+    await expect(complexity).toHaveAttribute("aria-checked", "true");
+    await expect(canvas.getByTestId("pathname")).toHaveTextContent("/");
+    await userEvent.click(canvas.getByRole("link", { name: "Go elsewhere" }));
+    await userEvent.click(within(await dialog()).getByRole("button", { name: "Discard" }));
+    await waitFor(() => expect(canvas.getByTestId("pathname")).toHaveTextContent("/elsewhere"));
+  },
+};
+
+// nothing was touched, so there is nothing to lose and no prompt
+export const LeavingCleanDoesNotAsk: Story = {
+  render: () => <LeaveHarness />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByRole("switch", { name: "Complexity Routing" });
+    await userEvent.click(canvas.getByRole("link", { name: "Go elsewhere" }));
+    await waitFor(() => expect(canvas.getByTestId("pathname")).toHaveTextContent("/elsewhere"));
+    await expect(within(document.body).queryByRole("dialog")).toBeNull();
   },
 };
