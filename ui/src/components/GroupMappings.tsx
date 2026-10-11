@@ -19,6 +19,7 @@ import {
 import { RowIconButton } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
 import { Combobox } from "@/components/ui/combobox";
+import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -225,7 +226,7 @@ export function GroupMappings({
         />
       )}
       {mappings.isSuccess && rows.length === 0 && (
-        <p className="text-sm text-muted-foreground">{empty}</p>
+        <EmptyState inline uxTarget="group-mappings" description={empty} className="text-sm" />
       )}
 
       {rows.length > 0 && (

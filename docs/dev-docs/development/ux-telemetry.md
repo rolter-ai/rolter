@@ -59,13 +59,44 @@ storybook, docs` job as `check:waits`. It fails when a `LoadError` whose
 `target` is a string literal matches none of the `uxTarget` literals in the same
 file; a ternary of literals contributes every branch, on either side. Three
 cases are not read: a `target={target}` a wrapper forwards (its caller's literal
-is checked where it is written), a file with no `EmptyState` literal at all
+is checked where it is written), a file with no `uxTarget` literal at all
 (a settings form, a card or a drawer has no second row to drift from), and a
 region that carries `// load-error-allow: <reason>` in the comment block above
 its `<LoadError` (`{/* … */}` where the element is a JSX child). Use the waiver
 for a region that has no empty state of its own — a usage figure beside a list
 that pairs under its own name, a field inside a dialog, fixed content — and
-write why; every run prints each waiver. Fourteen sit in the tree today.
+write why; every run prints each waiver. Twelve sit in the tree today.
+
+The reverse shape fails too: a `uxTarget` literal in a file with no `<LoadError`
+means the list can come back empty but not broken (#2720). A wrapper around
+`EmptyState` takes the region as a required `uxTarget` and the screen passes a
+literal, so the check can read it; `GuardrailEmpty` once hard-coded
+`guardrail-list` for two screens, which merged both into one region and paired
+neither with its `LoadError`.
+
+A short list inside a sheet, a card or an expanded row says it is empty with
+`<EmptyState inline uxTarget="…" description="…" />`: one muted line, and the
+same `empty_state` event a bare `<p>` never sent. Provider usage, a route's
+targets and the group mappings use it.
+
+### Screens with only one of the two states (#2720)
+
+Every screen with a `LoadError` and no `EmptyState` was read. Those below are
+not lists, so one state is the whole contract:
+
+| Screen                                                                                                                              | Why there is no empty state                                                         |
+| ----------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| Security, Performance, Compatibility, Client settings, Logs settings, Model settings, Adaptive settings, Feature flags, Preferences | one settings record behind a form; it loads or it fails, it is never empty          |
+| Playground                                                                                                                          | the `playground-key` read mints a key for the console; the route list is a dropdown |
+| Dashboard                                                                                                                           | figures and charts; a card with no rows says so in prose and is not a list region   |
+| Profile card, scope pickers, public URL value, sign-in enrolment, `ForbiddenScreen`, route sheet targets                            | a field or a card inside a larger screen                                            |
+| Guardrail providers, Guardrail rules, Group mappings, Provider usage, Route targets                                                 | lists; each now records `empty_state` under its `LoadError`'s name                  |
+
+The five waivers the audit reviewed: `own-usage`, `attribution-spend` and
+`complexity-policies` are kept (a usage figure, spend figures and one alert for
+several policy reads, none of them a list); `provider-usage` and `route-targets`
+rendered a list's "none" line, so they lost the waiver and pair under their own
+names.
 
 The hook is still exported for the one case the component cannot see: a read
 whose failure renders no `LoadError` at all. MCP Logs reports its summary
