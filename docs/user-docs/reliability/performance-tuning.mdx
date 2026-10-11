@@ -22,7 +22,7 @@ The cap cannot be lower than the base — an incoherent pair is rejected rather 
 
 ## Timeouts
 
-`timeout_connect_s` (0–300) bounds establishing the upstream connection; `timeout_request_s` (0–3600) bounds the whole exchange, streaming responses included. Zero disables the corresponding timeout.
+`timeout_connect_s` (0–300) bounds establishing the upstream connection; `timeout_request_s` (0–3600) bounds the wait for the upstream's response headers. Once the headers arrive the body is not timed, so a streaming response that has started runs to completion however long it takes. Zero disables the corresponding timeout.
 
 ---
 
