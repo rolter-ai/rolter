@@ -3365,6 +3365,9 @@ export interface ClientSettingsDto {
   always_propagated: string[];
   /// header names that can never be forwarded or injected
   reserved: string[];
+  /// header names refused as the request id header (#2970); optional so a
+  /// control plane older than the screen still loads
+  request_id_refused?: string[];
 }
 
 export type UpdateClientSettingsInput = Pick<

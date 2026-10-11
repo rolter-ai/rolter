@@ -2544,6 +2544,22 @@ fn default_request_id_header() -> String {
 /// top of [`RESERVED_ROUTE_HEADERS`].
 const SESSION_HEADERS: [&str; 2] = ["cookie", "set-cookie"];
 
+/// Every name [`request_id_header_problem`] refuses for a reason other than
+/// being malformed, sorted and without duplicates.
+///
+/// The control plane returns it with the client settings so the dashboard can
+/// check the field inline instead of waiting for the save to be refused.
+pub fn request_id_refused_headers() -> Vec<&'static str> {
+    let mut names: Vec<&'static str> = RESERVED_ROUTE_HEADERS
+        .iter()
+        .chain(SESSION_HEADERS.iter())
+        .copied()
+        .collect();
+    names.sort_unstable();
+    names.dedup();
+    names
+}
+
 /// Why `name` cannot be the request id header, or `None` when it can.
 ///
 /// The gateway reads the caller's id from this header, writes the id it
@@ -5337,6 +5353,16 @@ mod tests {
         );
         cfg.validate_snapshot()
             .expect("what is left must validate, or the snapshot would 500");
+    }
+
+    #[test]
+    fn every_listed_refused_request_id_header_is_refused() {
+        let names = request_id_refused_headers();
+        assert!(names.contains(&"x-goog-api-key") && names.contains(&"set-cookie"));
+        assert!(names.windows(2).all(|w| w[0] < w[1]), "sorted and unique");
+        for name in names {
+            assert!(request_id_header_problem(name).is_some(), "{name}");
+        }
     }
 
     #[test]
