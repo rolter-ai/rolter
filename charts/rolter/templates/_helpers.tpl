@@ -56,6 +56,10 @@ initContainers:
     # `sk-rolter-dev` key (#2408)
     - "--config"
     - "/etc/rolter/rolter.toml"
+    # a gateway pod has no database, admin token or dashboard; the control
+    # plane's rules would fail it for what it is not meant to have (#1939)
+    - "--role"
+    - {{ .role | quote }}
     {{- if .root.Values.preflight.strict }}
     - "--strict"
     {{- end }}
