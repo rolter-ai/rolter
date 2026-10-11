@@ -198,7 +198,9 @@ fn all_binary_cli_env_vars_are_documented_in_reference() {
 
     assert!(
         missing.is_empty(),
-        "these environment variables are read by the binaries but missing from docs/user-docs/configuration/environment-variables.mdx:\n  {}",
+        "these environment variables are read by the binaries but missing from docs/user-docs/configuration/environment-variables.mdx:\n  {}\n\
+         an operator-facing variable belongs in that reference; a test- or dev-only one must be named ROLTER_TEST_* instead, \
+         which this check skips (docs/dev-docs/development/testing.md)",
         missing.join("\n  ")
     );
 }
