@@ -121,6 +121,14 @@ export const Loaded: Story = {
     const rows = canvas.getAllByRole("row").slice(1);
     await expect(rows[0]).toHaveTextContent("claude-sonnet");
     await expect(rows[1]).toHaveTextContent("gpt-4o");
+
+    // origin filter using Segmented radiogroup
+    const originFilter = canvas.getByRole("radiogroup", { name: "Filter by origin" });
+    await expect(originFilter).toBeInTheDocument();
+    const configRadio = within(originFilter).getByRole("radio", { name: "Config 1" });
+    await userEvent.click(configRadio);
+    await expect(canvas.queryByText("gpt-4o")).toBeNull();
+    await expect(canvas.getByText("claude-sonnet")).toBeVisible();
   },
 };
 
