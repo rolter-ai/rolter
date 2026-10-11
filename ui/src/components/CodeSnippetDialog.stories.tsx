@@ -35,7 +35,9 @@ const meta = {
   title: "Overlays/CodeSnippetDialog",
   component: CopyAsCodeButton,
   parameters: { layout: "centered" },
-  args: { request: { model: "llama-3.1-8b", prompt: "hello there" } },
+  args: {
+    request: { model: "llama-3.1-8b", messages: [{ role: "user", content: "hello there" }] },
+  },
   // a superadmin with a saved public base URL, the one caller a snippet can be
   // addressed for (#2486). the stories without an address override the render
   render: (args) => (

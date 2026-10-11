@@ -938,6 +938,7 @@
       "removeAttachmentFor": "Убрать вложение для {{model}}",
       "attachImageFor": "Прикрепить изображение для {{model}}",
       "threadAria": "Переписка с моделью {{model}}",
+      "clearThread": "Очистить переписку с моделью {{model}}",
       "sendTo": "Отправить модели {{model}}",
       "copyAsCodeFor": "Скопировать как код для {{model}}",
       "sendMessageTo": "Отправьте сообщение модели {{model}}.",
