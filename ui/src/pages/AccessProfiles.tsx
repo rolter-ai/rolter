@@ -95,7 +95,7 @@ function ProfileCard({
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <span className="font-medium">{profile.name}</span>
-            <Pill color="var(--text-secondary)" tint="var(--surface-subtle)">
+            <Pill verbatim color="var(--text-secondary)" tint="var(--surface-subtle)">
               {profile.slug}
             </Pill>
           </div>

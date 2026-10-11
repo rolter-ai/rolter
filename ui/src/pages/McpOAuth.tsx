@@ -135,7 +135,7 @@ function Scopes({ scopes }: { scopes: string[] }) {
   return (
     <div className="flex flex-wrap gap-1">
       {scopes.map((s) => (
-        <Pill key={s} color="var(--text-secondary)" tint="var(--surface-subtle)">
+        <Pill verbatim key={s} color="var(--text-secondary)" tint="var(--surface-subtle)">
           {s}
         </Pill>
       ))}

@@ -49,8 +49,11 @@ export function StatusDot({ color, className }: { color: string; className?: str
   );
 }
 
-// mono uppercase pill (modality tags, origin tags, strategy tags)
+// mono uppercase pill (modality tags, origin tags, strategy tags). a pill that
+// holds a value someone copies (a slug, a scope, a team name) passes `verbatim`
+// so it keeps the case it is stored in (Copyable-Is-Mono)
 export function Pill({
+  verbatim,
   color,
   tint,
   border,
@@ -58,6 +61,8 @@ export function Pill({
   title,
   children,
 }: {
+  /** show the content as stored: an identifier that is copied back into config or an API call */
+  verbatim?: boolean;
   color: string;
   tint?: string;
   border?: string;
@@ -70,7 +75,8 @@ export function Pill({
     <span
       title={title}
       className={cn(
-        "inline-flex items-center gap-1 rounded-[6px] px-2 py-0.5 font-mono text-[11px] uppercase tracking-[0.03em]",
+        "inline-flex items-center gap-1 rounded-[6px] px-2 py-0.5 font-mono text-[11px] tracking-[0.03em]",
+        verbatim ? "normal-case" : "uppercase",
         className,
       )}
       style={{

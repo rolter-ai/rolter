@@ -249,7 +249,7 @@ export function OrgScopePill({
   }
 
   return (
-    <Pill color="var(--text-secondary)" tint={tint} className={className}>
+    <Pill verbatim color="var(--text-secondary)" tint={tint} className={className}>
       {label(resolved.kind === "named" ? resolved.name : t("scope.picker.org"))}
     </Pill>
   );
