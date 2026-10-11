@@ -36,7 +36,7 @@ use serde_json::json;
 use crate::time_bounds::{Query, TimeBounds};
 
 use crate::analytics::{
-    bucket_fn, client_or_503, run, window_params, with_access, WindowQuery, WHERE_WINDOW,
+    bucket_expr, client_or_503, run, window_params, with_access, WindowQuery, WHERE_WINDOW,
 };
 use crate::analytics_access::{AnalyticsAccess, PROVIDER_VISIBLE};
 
@@ -175,7 +175,7 @@ async fn timeline(
         Err(resp) => return resp,
     };
     let bucket = q.bucket.as_deref().unwrap_or("hour");
-    let Some(bucket_expr) = bucket_fn(bucket) else {
+    let Some(bucket_expr) = bucket_expr(bucket) else {
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({"error": {"message": "bucket must be one of hour|day|week|month"}})),
@@ -191,11 +191,11 @@ async fn timeline(
 }
 
 /// The bucketed failure timeline. `bucket_expr` has already been checked
-/// against [`bucket_fn`]'s fixed whitelist by the caller, so no untrusted value
+/// against [`bucket_expr`]'s fixed whitelist by the caller, so no untrusted value
 /// reaches the SQL text.
 fn timeline_sql(bucket_expr: &str) -> String {
     format!(
-        "select {bucket_expr}(ts) as bucket, provider, target_id, \
+        "select {bucket_expr} as bucket, provider, target_id, \
                 {GRAIN}, \
                 count() as events, \
                 countIf(outcome = 'ok') as ok, \
@@ -214,7 +214,11 @@ mod tests {
     fn every_rollup_is_filtered_to_the_providers_the_caller_may_read() {
         // the org filter is the only thing between a rollup and every tenant
         // (#1820), and it matches the row's org, never the bare provider name
-        for sql in [uptime_sql(0.99), mttr_sql(), timeline_sql("toStartOfHour")] {
+        for sql in [
+            uptime_sql(0.99),
+            mttr_sql(),
+            timeline_sql("toStartOfHour(ts, 'UTC')"),
+        ] {
             assert!(
                 sql.contains(&format!("{WHERE_WINDOW} and {PROVIDER_VISIBLE}")),
                 "{sql}"
@@ -234,9 +238,9 @@ mod tests {
     fn timeline_bucket_defaults_and_whitelists() {
         // the shared whitelist rejects anything not in the fixed set, so no
         // untrusted bucket value ever reaches the SQL text
-        assert!(bucket_fn("hour").is_some());
-        assert!(bucket_fn("year").is_none());
-        assert!(bucket_fn("hour; drop table provider_health_events").is_none());
+        assert!(bucket_expr("hour").is_some());
+        assert!(bucket_expr("year").is_none());
+        assert!(bucket_expr("hour; drop table provider_health_events").is_none());
     }
 
     #[test]
@@ -244,7 +248,11 @@ mod tests {
         // without this the probe row (target_id = provider) and the passive
         // rows for the same provider come back as unrelated peers, which is
         // what made one provider render as several duplicate cards
-        for sql in [uptime_sql(0.99), mttr_sql(), timeline_sql("toStartOfHour")] {
+        for sql in [
+            uptime_sql(0.99),
+            mttr_sql(),
+            timeline_sql("toStartOfHour(ts, 'UTC')"),
+        ] {
             assert!(
                 sql.contains("if(target_id = provider, 'provider', 'target') as grain"),
                 "missing grain in: {sql}"

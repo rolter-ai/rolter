@@ -844,7 +844,23 @@ With `iso`, every timestamp leaves as the UTC instant with a `Z`, whatever zone 
 | `simple` | `2026-08-06 13:00:00.123`  | `2026-08-06 13:00:00`  |
 | `iso`    | `2026-08-06T10:00:00.123Z` | `2026-08-06T10:00:00Z` |
 
-Milliseconds are kept (a `DateTime64(0)` or `DateTime` drops them, as before), and `session_timezone` does not change the output. Nothing on the server parses these strings: rows are passed through as JSON values, and the keyset cursor (`ts|id`) is fed back to `parseDateTime64BestEffortOrZero`, which reads the `Z` as UTC. Bucket _boundaries_ are still computed in the server's zone (`toStartOfDay` on a Moscow server starts at `21:00Z`); a server on UTC, which is what the compose file and chart run, has none of this. The dashboard's Health screen reads a zone-less bucket as UTC for the "SLA at risk" comparison and accepts either form. `reads_ask_clickhouse_for_iso_timestamps_with_their_zone` in `analytics.rs` pins the setting.
+Milliseconds are kept (a `DateTime64(0)` or `DateTime` drops them, as before), and `session_timezone` does not change the output. Nothing on the server parses these strings: rows are passed through as JSON values, and the keyset cursor (`ts|id`) is fed back to `parseDateTime64BestEffortOrZero`, which reads the `Z` as UTC. Bucket _boundaries_ are a separate matter, handled below. The dashboard's Health screen reads a zone-less bucket as UTC for the "SLA at risk" comparison and accepts either form. `reads_ask_clickhouse_for_iso_timestamps_with_their_zone` in `analytics.rs` pins the setting.
+
+#### Bucket boundaries and zone-less bounds in UTC (#2984)
+
+`iso` fixes how an instant is printed, not where a bucket starts: `toStartOfDay(ts)` computes the boundary in the ClickHouse server's own zone, so a day started at `21:00Z` on a `Europe/Moscow` server and a month rolled over three hours early. The compose file and chart run ClickHouse on UTC, so this only shows on a ClickHouse the operator brought. `bucket_expr` in `analytics.rs` (shared by the dashboard timeseries and the health timeline) therefore passes the zone explicitly: `toStartOfHour(ts, 'UTC')`, `toStartOfDay(ts, 'UTC')`, `toStartOfWeek(ts, 0, 'UTC')` (mode 0, Sunday, as before) and `toStartOfMonth(ts, 'UTC')`.
+
+The same default hit `WHERE_WINDOW`: `parseDateTime64BestEffortOrZero('2026-08-06')` read a zone-less `since`/`until` as midnight in the server's zone (`2026-08-05T21:00Z` on Moscow). Both bounds now parse with `, 3, 'UTC'`, so a bare date or zone-less date-time means UTC; a bound with `Z` or an offset keeps its own instant, and the dashboard always sends `toISOString()`. The keyset cursor parse is left alone: its timestamp is the `iso` string the API handed out, and a cursor minted before #2255 carries the server-zone wall clock, which the server's own zone still reads correctly.
+
+The alternative, `session_timezone=UTC` on every read, was rejected: it needs ClickHouse 23.6 or newer (an older server rejects the setting, failing every read rather than bucketing wrongly), and it would also change how the cursor and every other zone-less literal parses. Measured against `clickhouse/clickhouse-server:24-alpine` with `TZ=Europe/Moscow`, for a row written at `2026-08-31T21:30:00.123Z`:
+
+| expression              | before                 | after (`'UTC'`)        |
+| ----------------------- | ---------------------- | ---------------------- |
+| `toStartOfDay(ts)`      | `2026-08-31T21:00:00Z` | `2026-08-31T00:00:00Z` |
+| `toStartOfMonth(ts)`    | `2026-09-01`           | `2026-08-01`           |
+| parse of `'2026-08-06'` | `2026-08-05T21:00:00Z` | `2026-08-06T00:00:00Z` |
+
+On a UTC server both columns are identical. `bucket_boundaries_and_window_bounds_are_computed_in_utc` pins the zone in the generated SQL.
 
 ### Time bounds on the read API
 

@@ -188,7 +188,7 @@ pub(crate) fn validate_filters(surface: &str, filters: &Value) -> ApiResult<Map<
             "bucket" => one_of(
                 name,
                 value,
-                |b| crate::analytics::bucket_fn(b).is_some(),
+                |b| crate::analytics::bucket_expr(b).is_some(),
                 "hour, day, week, month",
             )?,
             "model" => {
