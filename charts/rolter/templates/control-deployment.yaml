@@ -25,7 +25,7 @@ spec:
     spec:
       serviceAccountName: {{ include "rolter.serviceAccountName" . }}
       securityContext: {{ toYaml .Values.podSecurityContext | nindent 8 }}
-      {{- include "rolter.preflight" (dict "root" . "env" $controlEnv) | nindent 6 }}
+      {{- include "rolter.preflight" (dict "root" . "env" $controlEnv "role" "control") | nindent 6 }}
       containers:
         - name: control
           image: {{ include "rolter.image" . | quote }}
