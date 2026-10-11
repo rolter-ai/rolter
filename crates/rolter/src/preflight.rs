@@ -18,7 +18,7 @@
 
 use std::fmt::Write as _;
 
-use clap::Args;
+use clap::{Args, ValueEnum};
 
 /// Environment variable holding the key-encryption key.
 ///
@@ -53,6 +53,16 @@ const EXAMPLE_VALUES: &[(&str, &str)] = &[
 /// than trusting the derivation to disguise a weak secret.
 const MIN_KEK_LEN: usize = 16;
 
+/// The process a `rolter check` run validates the environment of.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+pub enum Role {
+    /// the data plane: only the rules that apply to a gateway
+    Gateway,
+    /// the control plane and dashboard: every rule
+    #[default]
+    Control,
+}
+
 #[derive(Args, Debug, Default)]
 pub struct CheckArgs {
     /// path to the gateway config file to validate
@@ -62,6 +72,11 @@ pub struct CheckArgs {
     /// treat warnings as failures too
     #[arg(long)]
     pub strict: bool,
+
+    /// which process this environment is for. a gateway pod has no database,
+    /// admin token or dashboard, so the control-plane rules do not apply to it
+    #[arg(long, value_enum, env = "ROLTER_CHECK_ROLE", default_value = "control")]
+    pub role: Role,
 
     /// also probe that the configured datastores accept a TCP connection.
     /// off by default so `rolter check` stays offline and side-effect free
@@ -182,7 +197,10 @@ fn check_datastores(env: &dyn Env, out: &mut Vec<Finding>) {
             )),
         Some(_) => {}
     }
+    check_redis(env, out);
+}
 
+fn check_redis(env: &dyn Env, out: &mut Vec<Finding>) {
     if env.get("ROLTER_REDIS_URL").is_none() {
         out.push(Finding::warn(
             "ROLTER_REDIS_URL is unset",
@@ -244,7 +262,14 @@ fn check_example_values(env: &dyn Env, out: &mut Vec<Finding>) {
 
 /// Binding the management plane to every interface is the one network default
 /// that is right for local and wrong for production.
+///
+/// Only an open bind is dangerous: with `ROLTER_ADMIN_TOKEN` set every
+/// management route is authenticated, and a pod has to listen on every
+/// interface for its Service to reach it, so the chart's `0.0.0.0` is intended.
 fn check_exposure(env: &dyn Env, out: &mut Vec<Finding>) {
+    if env.get("ROLTER_ADMIN_TOKEN").is_some() {
+        return;
+    }
     if env
         .get("ROLTER_CONTROL_HOST")
         .is_none_or(|h| h == "0.0.0.0")
@@ -448,17 +473,24 @@ fn host_port(url: &str) -> Option<String> {
     Some(format!("{authority}:{port}"))
 }
 
-pub(crate) fn run_checks(env: &dyn Env) -> Vec<Finding> {
+pub(crate) fn run_checks(env: &dyn Env, role: Role) -> Vec<Finding> {
     let mut out = Vec::new();
-    check_kek(env, &mut out);
-    check_admin_token(env, &mut out);
-    check_datastores(env, &mut out);
     check_example_values(env, &mut out);
-    check_exposure(env, &mut out);
     check_key_pepper(env, &mut out);
-    check_session_pepper(env, &mut out);
-    check_cors(env, &mut out);
     check_analytics_destination(env, &mut out);
+    match role {
+        Role::Control => {
+            check_kek(env, &mut out);
+            check_admin_token(env, &mut out);
+            check_datastores(env, &mut out);
+            check_exposure(env, &mut out);
+            check_session_pepper(env, &mut out);
+            check_cors(env, &mut out);
+        }
+        // the gateway reads its config from the control plane and keeps counters
+        // in redis, so the redis warning is the one datastore rule that is its own
+        Role::Gateway => check_redis(env, &mut out),
+    }
     out
 }
 
@@ -671,12 +703,14 @@ fn migration_findings(raw: &str, out: &mut String) -> Vec<Finding> {
 }
 
 pub async fn run(args: CheckArgs) -> anyhow::Result<()> {
-    let mut findings = run_checks(&ProcessEnv);
+    let mut findings = run_checks(&ProcessEnv, args.role);
 
     if args.connect {
         check_reachability(&ProcessEnv, &mut findings).await;
         #[cfg(feature = "postgres")]
-        check_kek_opens_the_store(&ProcessEnv, &mut findings).await;
+        if args.role == Role::Control {
+            check_kek_opens_the_store(&ProcessEnv, &mut findings).await;
+        }
     }
 
     // the config file is optional: a fully DB-backed deployment has none
@@ -848,7 +882,7 @@ mod tests {
 
     #[test]
     fn a_correctly_configured_deployment_is_clean() {
-        let findings = run_checks(&FakeEnv::healthy());
+        let findings = run_checks(&FakeEnv::healthy(), Role::Control);
         assert!(
             findings.is_empty(),
             "unexpected findings: {:?}",
@@ -1034,7 +1068,7 @@ mod tests {
     fn a_missing_kek_is_fatal() {
         let mut env = FakeEnv::healthy();
         env.0.remove(KEK_ENV);
-        let findings = run_checks(&env);
+        let findings = run_checks(&env, Role::Control);
         let kek = findings
             .iter()
             .find(|f| f.title.contains(KEK_ENV))
@@ -1051,7 +1085,7 @@ mod tests {
         let mut env = FakeEnv::healthy();
         env.0.remove(KEK_ENV);
         let env = env.with(WRONG_KEK_ENV, "a-perfectly-good-secret-value");
-        let findings = run_checks(&env);
+        let findings = run_checks(&env, Role::Control);
         let kek = findings
             .iter()
             .find(|f| f.title.contains(KEK_ENV))
@@ -1068,7 +1102,7 @@ mod tests {
         // under MIN_KEK_LEN on purpose, so it is a slice of a generated value
         let short = uuid::Uuid::new_v4().simple().to_string()[..7].to_string();
         let env = FakeEnv::healthy().with(KEK_ENV, &short);
-        let findings = run_checks(&env);
+        let findings = run_checks(&env, Role::Control);
         assert!(findings
             .iter()
             .any(|f| f.fatal && f.title.contains("too short")));
@@ -1080,7 +1114,7 @@ mod tests {
             "ROLTER_DATABASE_URL",
             "postgres://rolter:rolter@localhost:5432/rolter",
         );
-        let findings = run_checks(&env);
+        let findings = run_checks(&env, Role::Control);
         assert!(findings
             .iter()
             .any(|f| f.fatal && f.title.contains("example value")));
@@ -1089,7 +1123,7 @@ mod tests {
     #[test]
     fn the_e2e_throwaway_kek_is_caught() {
         let env = FakeEnv::healthy().with(KEK_ENV, "cm9sdGVyLWUyZS10ZXN0LWtlay1ub3Qtc2VjcmV0ISE=");
-        let findings = run_checks(&env);
+        let findings = run_checks(&env, Role::Control);
         assert!(findings
             .iter()
             .any(|f| f.fatal && f.title.contains("example value")));
@@ -1099,7 +1133,7 @@ mod tests {
     fn a_missing_admin_token_is_fatal() {
         let mut env = FakeEnv::healthy();
         env.0.remove("ROLTER_ADMIN_TOKEN");
-        let findings = run_checks(&env);
+        let findings = run_checks(&env, Role::Control);
         assert!(findings
             .iter()
             .any(|f| f.fatal && f.title.contains("ROLTER_ADMIN_TOKEN")));
@@ -1110,7 +1144,7 @@ mod tests {
         let mut env = FakeEnv::healthy();
         env.0.remove("ROLTER_DATABASE_URL");
         env.0.remove("ROLTER_REDIS_URL");
-        let findings = run_checks(&env);
+        let findings = run_checks(&env, Role::Control);
 
         let db = findings
             .iter()
@@ -1191,7 +1225,7 @@ mod tests {
     #[test]
     fn a_non_postgres_database_url_is_rejected() {
         let env = FakeEnv::healthy().with("ROLTER_DATABASE_URL", "mysql://user:pw@db/rolter");
-        let findings = run_checks(&env);
+        let findings = run_checks(&env, Role::Control);
         assert!(findings
             .iter()
             .any(|f| f.fatal && f.title.contains("not a postgres URL")));
@@ -1202,7 +1236,7 @@ mod tests {
         let password = format!("pw-{}", uuid::Uuid::new_v4());
         let url = format!("mysql://user:{password}@db/rolter");
         let env = FakeEnv::healthy().with("ROLTER_DATABASE_URL", &url);
-        let findings = run_checks(&env);
+        let findings = run_checks(&env, Role::Control);
         let (text, _) = report(&findings, false);
         assert!(
             !text.contains(&password),
@@ -1212,9 +1246,10 @@ mod tests {
     }
 
     #[test]
-    fn binding_the_control_plane_to_all_interfaces_warns() {
-        let env = FakeEnv::healthy().with("ROLTER_CONTROL_HOST", "0.0.0.0");
-        let findings = run_checks(&env);
+    fn binding_the_control_plane_to_all_interfaces_warns_in_open_mode() {
+        let mut env = FakeEnv::healthy().with("ROLTER_CONTROL_HOST", "0.0.0.0");
+        env.0.remove("ROLTER_ADMIN_TOKEN");
+        let findings = run_checks(&env, Role::Control);
         let exposure = findings
             .iter()
             .find(|f| f.title.contains("0.0.0.0"))
@@ -1226,14 +1261,48 @@ mod tests {
     fn an_unset_control_host_warns_because_the_default_is_all_interfaces() {
         let mut env = FakeEnv::healthy();
         env.0.remove("ROLTER_CONTROL_HOST");
-        let findings = run_checks(&env);
+        env.0.remove("ROLTER_ADMIN_TOKEN");
+        let findings = run_checks(&env, Role::Control);
         assert!(findings.iter().any(|f| f.title.contains("0.0.0.0")));
+    }
+
+    #[test]
+    fn an_all_interfaces_bind_behind_an_admin_token_is_intended() {
+        // the chart binds 0.0.0.0 so the Service can reach the pod, and sets the token
+        let env = FakeEnv::healthy().with("ROLTER_CONTROL_HOST", "0.0.0.0");
+        let findings = run_checks(&env, Role::Control);
+        assert!(findings.is_empty(), "{:?}", titles(&findings));
+    }
+
+    #[test]
+    fn a_gateway_is_not_held_to_the_control_planes_rules() {
+        // what the chart's gateway pod has: no database, admin token, kek or host
+        let env = FakeEnv::default()
+            .with("ROLTER_REDIS_URL", "redis://redis:6379")
+            .with("ROLTER_KEY_PEPPER", "a-deployment-wide-pepper")
+            .with("CLICKHOUSE_URL", "http://clickhouse:8123");
+        let findings = run_checks(&env, Role::Gateway);
+        assert!(findings.is_empty(), "{:?}", titles(&findings));
+        assert!(
+            !run_checks(&env, Role::Control).is_empty(),
+            "the same environment is not a control plane"
+        );
+    }
+
+    #[test]
+    fn a_gateway_still_gets_the_checks_that_are_its_own() {
+        let env = FakeEnv::default();
+        let found = run_checks(&env, Role::Gateway);
+        let found = titles(&found);
+        assert!(found.iter().any(|t| t.contains("ROLTER_REDIS_URL")));
+        assert!(found.iter().any(|t| t.contains("ROLTER_KEY_PEPPER")));
     }
 
     #[test]
     fn strict_promotes_warnings_to_failure() {
         let env = FakeEnv::healthy().with("ROLTER_CONTROL_HOST", "0.0.0.0");
-        let findings = run_checks(&env);
+        let env = env.with("ROLTER_KEY_PEPPER", " ");
+        let findings = run_checks(&env, Role::Control);
         assert!(findings.iter().all(|f| !f.fatal), "expected warnings only");
         assert!(!report(&findings, false).1, "warnings alone must not fail");
         assert!(report(&findings, true).1, "--strict must fail on warnings");
@@ -1243,7 +1312,7 @@ mod tests {
     fn blank_values_count_as_unset() {
         // `ROLTER_KEK=` in a compose file is absence, not configuration
         let env = FakeEnv::healthy().with(KEK_ENV, "   ");
-        let findings = run_checks(&env);
+        let findings = run_checks(&env, Role::Control);
         assert!(findings
             .iter()
             .any(|f| f.fatal && f.title.contains("is missing")));
@@ -1262,7 +1331,7 @@ mod tests {
     fn a_missing_key_pepper_warns() {
         let mut env = FakeEnv::healthy();
         env.0.remove("ROLTER_KEY_PEPPER");
-        let findings = run_checks(&env);
+        let findings = run_checks(&env, Role::Control);
         assert_eq!(titles(&findings), ["ROLTER_KEY_PEPPER is unset"]);
         assert!(!findings[0].fatal, "an unpeppered deployment still works");
     }
@@ -1271,7 +1340,7 @@ mod tests {
     fn a_missing_session_pepper_warns() {
         let mut env = FakeEnv::healthy();
         env.0.remove("ROLTER_SESSION_PEPPER");
-        let findings = run_checks(&env);
+        let findings = run_checks(&env, Role::Control);
         assert_eq!(titles(&findings), ["ROLTER_SESSION_PEPPER is unset"]);
         // same severity as the key pepper: the deployment works, it has only
         // lost the defence in depth, and --strict is what makes it block
@@ -1292,18 +1361,25 @@ mod tests {
     #[test]
     fn a_blank_session_pepper_counts_as_unset() {
         // `ROLTER_SESSION_PEPPER=` is what an un-filled .env.example carries
-        let findings = run_checks(&FakeEnv::healthy().with("ROLTER_SESSION_PEPPER", " "));
+        let findings = run_checks(
+            &FakeEnv::healthy().with("ROLTER_SESSION_PEPPER", " "),
+            Role::Control,
+        );
         assert_eq!(titles(&findings), ["ROLTER_SESSION_PEPPER is unset"]);
     }
 
     #[test]
     fn a_wildcard_cors_origin_is_fatal() {
-        let findings = run_checks(&FakeEnv::healthy().with("ROLTER_CORS_ALLOW_ORIGINS", "*"));
+        let findings = run_checks(
+            &FakeEnv::healthy().with("ROLTER_CORS_ALLOW_ORIGINS", "*"),
+            Role::Control,
+        );
         assert_eq!(titles(&findings), ["CORS allows every origin"]);
         assert!(findings[0].fatal);
         // a wildcard hidden in a list is the same hole
         let findings = run_checks(
             &FakeEnv::healthy().with("ROLTER_CORS_ALLOW_ORIGINS", "https://ops.example.com, *"),
+            Role::Control,
         );
         assert_eq!(titles(&findings), ["CORS allows every origin"]);
     }
@@ -1312,6 +1388,7 @@ mod tests {
     fn named_cors_origins_are_accepted() {
         let findings = run_checks(
             &FakeEnv::healthy().with("ROLTER_CORS_ALLOW_ORIGINS", "https://ops.example.com"),
+            Role::Control,
         );
         assert!(findings.is_empty(), "{:?}", titles(&findings));
     }

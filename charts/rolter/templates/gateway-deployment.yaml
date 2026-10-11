@@ -31,7 +31,7 @@ spec:
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets: {{ toYaml . | nindent 8 }}
       {{- end }}
-      {{- include "rolter.preflight" (dict "root" . "env" $gatewayEnv) | nindent 6 }}
+      {{- include "rolter.preflight" (dict "root" . "env" $gatewayEnv "role" "gateway") | nindent 6 }}
       containers:
         - name: gateway
           image: {{ include "rolter.image" . | quote }}

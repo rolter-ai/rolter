@@ -47,9 +47,7 @@ def no_duplicate_keys(loader, node, deep=False):
     return mapping
 
 
-StrictLoader.add_constructor(
-    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, no_duplicate_keys
-)
+StrictLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, no_duplicate_keys)
 
 
 def main() -> int:

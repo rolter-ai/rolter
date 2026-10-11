@@ -56,7 +56,7 @@ On each route you can pin **parameter defaults** (a default `temperature`, a cap
 For many replicas of self-hosted engines (vLLM, SGLang, TGI):
 
 - **Provider groups** name a set of providers once, and `group/model` addresses the whole set — **Models → Provider Groups**.
-- **Pick a strategy per route**, matched to the workload. It is chosen when the route is created, in the route sheet or in `rolter.toml`; the dashboard cannot change it afterwards yet ([#2208](https://github.com/rolter-ai/rolter/issues/2208)).
+- **Pick a strategy per route**, matched to the workload. It is chosen when the route is created, in the route sheet or in `rolter.toml`. To change it later, along with the route's targets and weights, use [`PUT /api/v1/routes/{id}`](/api/routes) or re-import `rolter.toml`; the route sheet cannot change it yet ([#2134](https://github.com/rolter-ai/rolter/issues/2134)).
 
 | workload                                   | strategy                                                      |
 | ------------------------------------------ | ------------------------------------------------------------- |

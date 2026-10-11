@@ -652,6 +652,18 @@ jobs:
         run: cargo nextest run --workspace --all-features
       - name: doc tests
         run: cargo test --doc --workspace --all-features
+      # the chart's own preflight must pass on the env it renders (#1939). it
+      # needs the built launcher, which nextest has just compiled
+      - name: set up uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: set up helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v4.3.0
+      - name: helm chart (preflight passes on the rendered env)
+        run: |
+          cargo build -p rolter
+          ROLTER_BIN="$PWD/target/debug/rolter" bash scripts/check-helm-chart.sh preflight
 
   # ── static checks: everything that reads the tree and builds nothing ────────
   # twelve checks that used to be twelve jobs. each did 0-15 s of work and then
@@ -984,11 +996,15 @@ jobs:
       # ── python: the gate scripts under scripts/ ───────────────────────────
       # the release handoff and rendered-manifest checkers are part of the merge
       # gate, so drift in them is drift in the gate. rules live in ruff.toml;
-      # the pin is bumped by hand like the zizmor one (#2185)
+      # the pin is bumped by hand like the zizmor one (#2185). formatting is
+      # gated too, like prettier is for the docs (#2769)
       - name: ruff (scripts)
         id: ruff
         if: ${{ !cancelled() && steps.uv.outcome == 'success' }}
-        run: uvx --from "$(bash scripts/tool-pin.sh ruff)" ruff check scripts
+        run: |
+          ruff=$(bash scripts/tool-pin.sh ruff)
+          uvx --from "$ruff" ruff check scripts
+          uvx --from "$ruff" ruff format --check scripts
 
       # ── board automation: the add-to-board retry policy ───────────────────
       # project-automation.yml decides which GitHub API failures to wait out and

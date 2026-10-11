@@ -593,7 +593,8 @@ mod tests {
             .map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))
             .collect();
 
-        let findings = crate::preflight::run_checks(&GeneratedEnv(parsed));
+        let findings =
+            crate::preflight::run_checks(&GeneratedEnv(parsed), crate::preflight::Role::Control);
         let titles: Vec<&str> = findings.iter().map(|f| f.title.as_str()).collect();
         assert!(
             findings.is_empty(),
@@ -622,7 +623,13 @@ mod tests {
 
         // the two paths are meant to differ; this pins that the difference is
         // real rather than accidental, and that `check` is what reports it
-        let findings = crate::preflight::run_checks(&GeneratedEnv(parsed));
+        // the all-interfaces bind alone is no longer a finding once the admin
+        // token is set (#1939), so drop the token: the profile's bind is what is
+        // open, and that is the part `check` has to keep reporting
+        let mut parsed = parsed;
+        parsed.remove("ROLTER_ADMIN_TOKEN");
+        let findings =
+            crate::preflight::run_checks(&GeneratedEnv(parsed), crate::preflight::Role::Control);
         assert!(
             findings.iter().any(|f| f.title.contains("0.0.0.0")),
             "the local profile should trip the exposure check"

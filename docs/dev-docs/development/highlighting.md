@@ -73,8 +73,16 @@ the draft, or a placeholder prompt. `SnippetRequest` in `ui/src/lib/snippets.ts`
 carries the turns as `messages`, and each language lays a conversation out one
 turn to a line; curl keeps a single prompt on the one line it has always had.
 An assistant turn brings apostrophes into curl's single-quoted body, so the body
-goes through `shellQuote`, which writes each `'` as `'\''`. Image parts are
-flattened to their text: a `data:` URL is too long to paste into a terminal.
+goes through `shellQuote`, which writes each `'` as `'\''`. A turn that
+carried an image (`SnippetMessage.image`, set only while Multimodal was on)
+keeps the OpenAI content-part shape, `[{ "type": "text" }, { "type":
+"image_url" }]`, in all three languages (#2955). The `data:` URL is never
+inlined, because it is often hundreds of kilobytes of base64: the snippet reads
+the picture from a file instead, `base64 < image.png` into `$IMAGE_B64` (spliced
+into curl's quoted body), `open("image.png", "rb")` in Python and
+`readFileSync("image.png")` in JavaScript. The media type comes from the
+attached file; several images are numbered `image-1.png`, `image-2.jpg`. The
+operator saves the picture under that name and the snippet runs.
 
 ## Why Prism (refractor), not Shiki
 

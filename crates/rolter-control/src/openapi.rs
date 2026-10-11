@@ -582,8 +582,9 @@ const INVOCATIONS_QUERY: &[QueryParam] = &[
     QueryParam::new(
         "request_id",
         "string",
-        "exact request id — the `x-request-id` the gateway returned; with no \
-         `since`, searches every retained row rather than the last 7 days",
+        "exact request id — the one the gateway returned in `x-request-id`, or in \
+         the header `request_id_header` names; with no `since`, searches every \
+         retained row rather than the last 7 days",
     ),
     QueryParam::new(
         "trace_id",
@@ -1129,10 +1130,10 @@ fn operations() -> Vec<Op> {
             .ok(Payload::Ref("Route")),
             Op::put(
                 "/api/v1/routes/{id}",
-                "setRouteEnabled",
-                "Enable or disable a route",
+                "updateRoute",
+                "Change a route's enabled flag, strategy or targets; an omitted field keeps its value",
             )
-            .body(Payload::Ref("SetRouteEnabled"))
+            .body(Payload::Ref("UpdateRoute"))
             .ok(Payload::Ref("Route")),
             Op::delete("/api/v1/routes/{id}", "deleteRoute", "Delete a route"),
             Op::put(
@@ -2924,10 +2925,22 @@ fn routing_schemas(p: &Prim) -> Value {
             "properties": {"model": string, "strategy": {"type": "string", "default": "round_robin"}},
             "additionalProperties": false
         },
-        "SetRouteEnabled": {
+        "UpdateRoute": {
             "type": "object",
-            "required": ["enabled"],
-            "properties": {"enabled": {"type": "boolean"}},
+            "description": "every field is optional; one that is omitted or null keeps the stored value, and an empty body changes nothing",
+            "properties": {
+                "enabled": {"type": ["boolean", "null"]},
+                "strategy": {
+                    "type": ["string", "null"],
+                    "description": "one of the strategies route creation accepts"
+                },
+                "targets": {
+                    "type": ["array", "null"],
+                    "minItems": 1,
+                    "description": "the route's complete target list. Entries are matched to the stored targets by provider_id and upstream_model: a match keeps its id and takes the new weight, a stored target the list leaves out is removed, and an entry with no match is added, all in one transaction. Each entry is checked as POST /api/v1/routes/{route_id}/targets checks one",
+                    "items": {"$ref": "#/components/schemas/CreateRouteTarget"}
+                }
+            },
             "additionalProperties": false
         },
 
@@ -2946,7 +2959,7 @@ fn routing_schemas(p: &Prim) -> Value {
             "required": ["provider_id"],
             "properties": {
                 "provider_id": uuid,
-                "upstream_model": nullable_string,
+                "upstream_model": {"type": ["string", "null"], "description": "the model name sent upstream; omitted, null or blank forwards the route's public name"},
                 "weight": {"type": "integer", "default": 1, "minimum": 1}
             },
             "additionalProperties": false

@@ -1,11 +1,12 @@
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Route, Tag } from "lucide-react";
+import { Pencil, Route, Tag } from "lucide-react";
 import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { GatedButton } from "@/components/GatedButton";
 import { ModelSheet } from "@/components/ModelSheet";
+import { RouteSheet } from "@/components/RouteSheet";
 import { DeleteIconButton } from "@/components/ui/delete-icon-button";
 import { Button } from "@/components/ui/button";
 import { LoadError } from "@/components/LoadError";
@@ -120,6 +121,8 @@ export default function RoutingRules() {
   // a route is the public name clients call; deleting one breaks them silently,
   // so it is confirmed by name before anything leaves (#1179)
   const [deleteTarget, setDeleteTarget] = React.useState<RouteRow | null>(null);
+  // the route whose strategy, enabled flag and targets are being edited (#2134)
+  const [editing, setEditing] = React.useState<RouteRow | null>(null);
   const [labelFilter, setLabelFilter] = React.useState("");
   const [labelling, setLabelling] = React.useState<RouteRow | null>(null);
   // routes are project-scoped rows, but a label lives on the org that owns them
@@ -231,10 +234,22 @@ export default function RoutingRules() {
                 )}
                 {/* the label names the route, so a grid of cards does not
                     expose N buttons a screen reader cannot tell apart (#1214) */}
-                <Button
+                <GatedButton
+                  gate="route:update"
+                  control="route-edit"
                   size="sm"
                   variant="outline"
                   className="ml-auto h-[30px]"
+                  aria-label={t("pages.routing.editRoute", { model: r.model })}
+                  onClick={() => setEditing(r)}
+                >
+                  <Pencil className="h-3.5 w-3.5" />
+                  {t("pages.routing.edit")}
+                </GatedButton>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-[30px]"
                   aria-label={t("labels.labelsOf", { name: r.model })}
                   onClick={() => setLabelling(r)}
                 >
@@ -295,6 +310,14 @@ export default function RoutingRules() {
             },
           });
         }}
+      />
+
+      <RouteSheet
+        open={!!editing}
+        onOpenChange={(open) => !open && setEditing(null)}
+        route={editing}
+        providers={providers.data ?? []}
+        onDone={invalidate}
       />
 
       <ModelSheet

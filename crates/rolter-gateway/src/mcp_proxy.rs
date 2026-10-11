@@ -16,6 +16,7 @@ use rolter_proxy::{McpTransportOverrides, McpUpstreamAuth};
 
 use crate::mcp_log::{CallContext, PendingCall};
 use crate::state::AppState;
+use crate::trace::RequestId;
 
 /// What a caller is told when the MCP server could not be reached or did not
 /// answer: the same sentence for every transport failure, with the cause in the
@@ -39,9 +40,20 @@ pub(crate) async fn proxy_root(
     OriginalUri(uri): OriginalUri,
     method: Method,
     headers: HeaderMap,
+    request_id: RequestId,
     body: Bytes,
 ) -> Response {
-    proxy(state, path.server, None, uri.query(), method, headers, body).await
+    proxy(
+        state,
+        path.server,
+        None,
+        uri.query(),
+        method,
+        headers,
+        request_id,
+        body,
+    )
+    .await
 }
 
 pub(crate) async fn proxy_tail(
@@ -50,6 +62,7 @@ pub(crate) async fn proxy_tail(
     OriginalUri(uri): OriginalUri,
     method: Method,
     headers: HeaderMap,
+    request_id: RequestId,
     body: Bytes,
 ) -> Response {
     proxy(
@@ -59,6 +72,7 @@ pub(crate) async fn proxy_tail(
         uri.query(),
         method,
         headers,
+        request_id,
         body,
     )
     .await
@@ -72,6 +86,7 @@ async fn proxy(
     query: Option<&str>,
     method: Method,
     headers: HeaderMap,
+    request_id: RequestId,
     body: Bytes,
 ) -> Response {
     let snapshot = state.snapshot.load();
@@ -117,10 +132,6 @@ async fn proxy(
     // every other request, and without parsing anything when no ClickHouse is
     // configured, so the common path pays one flag check
     let call = if method == Method::POST {
-        let request_id = headers
-            .get(crate::trace::REQUEST_ID_HEADER)
-            .and_then(|value| value.to_str().ok())
-            .unwrap_or_default();
         PendingCall::parse(
             &state.mcp_events,
             &body,
@@ -134,7 +145,7 @@ async fn proxy(
                 // the session is looked up by this id below, so on a per-user
                 // OAuth server it is the session owner
                 user_id: &key.user_id,
-                request_id,
+                request_id: request_id.as_str(),
                 capture: &snapshot.logging.payload_capture,
             },
         )
@@ -238,8 +249,6 @@ async fn proxy(
             "mcp_server_invalid",
         );
     };
-    // the forwarder takes the headers, and the failure arm still wants the id
-    let request_id = headers.get(crate::trace::REQUEST_ID_HEADER).cloned();
     match state
         .forwarder
         .forward_mcp(
@@ -264,10 +273,7 @@ async fn proxy(
             // that ties it to the answer
             tracing::warn!(
                 server = %server.slug,
-                request_id = request_id
-                    .as_ref()
-                    .and_then(|value| value.to_str().ok())
-                    .unwrap_or_default(),
+                request_id = request_id.as_str(),
                 error = %rolter_core::redact::redact_urls_in_text(&detail),
                 "mcp upstream request failed"
             );
@@ -461,6 +467,7 @@ mod tests {
             None,
             Method::POST,
             bearer(),
+            RequestId::default(),
             Bytes::new(),
         )
         .await;
@@ -476,6 +483,7 @@ mod tests {
             None,
             Method::POST,
             bearer(),
+            RequestId::default(),
             Bytes::new(),
         )
         .await;
@@ -493,6 +501,7 @@ mod tests {
             None,
             Method::POST,
             bearer(),
+            RequestId::default(),
             Bytes::new(),
         )
         .await;
@@ -532,6 +541,7 @@ mod tests {
             Some("v=2"),
             Method::POST,
             bearer(),
+            RequestId::default(),
             Bytes::from_static(br#"{"jsonrpc":"2.0"}"#),
         )
         .await;
@@ -573,6 +583,7 @@ mod tests {
             None,
             Method::POST,
             bearer(),
+            RequestId::default(),
             Bytes::new(),
         )
         .await;

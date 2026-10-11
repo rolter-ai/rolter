@@ -23372,3 +23372,447 @@ async fn a_provider_stores_and_serves_cache_telemetry_settings() {
     assert!(degraded["kv_events"].is_null(), "{degraded}");
     assert_eq!(degraded["lmcache"]["endpoint"], "http://lmcache:9000");
 }
+
+/// #2235: `PUT /api/v1/routes/{id}` changes a route's strategy and its targets
+/// and weights, not only `enabled`. Every field is optional and an omitted one
+/// keeps its value, so a client that sends only `enabled` resets nothing. A
+/// target list is the route's whole list, matched to the stored targets by
+/// provider and upstream model, so an edited weight keeps the target's id. Each
+/// entry is held to the checks adding one target applies, and a refused update
+/// leaves the route and `config_version` as they were.
+#[tokio::test]
+async fn a_routes_strategy_targets_and_weights_change_in_one_update() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let addr = serve(
+        rolter_control::test_app(pool.clone())
+            .await
+            .expect("build app"),
+    )
+    .await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let send = |method: reqwest::Method, url: String, body: Value| {
+        let client = client.clone();
+        async move {
+            let resp = client
+                .request(method, &url)
+                .json(&body)
+                .send()
+                .await
+                .unwrap();
+            let status = resp.status().as_u16();
+            (status, resp.json::<Value>().await.unwrap_or(Value::Null))
+        }
+    };
+    let post = |url: String, body: Value| send(reqwest::Method::POST, url, body);
+    let put = |url: String, body: Value| send(reqwest::Method::PUT, url, body);
+    let created = |(status, body): (u16, Value)| {
+        assert_eq!(status, 200, "{body}");
+        body["id"].as_str().expect("id").to_string()
+    };
+
+    let org = created(
+        post(
+            format!("{base}/api/v1/orgs"),
+            json!({"name": "Routes", "slug": "routes"}),
+        )
+        .await,
+    );
+    let team = created(
+        post(
+            format!("{base}/api/v1/orgs/{org}/teams"),
+            json!({"name": "core"}),
+        )
+        .await,
+    );
+    let project = created(
+        post(
+            format!("{base}/api/v1/teams/{team}/projects"),
+            json!({"name": "app"}),
+        )
+        .await,
+    );
+    let other_project = created(
+        post(
+            format!("{base}/api/v1/teams/{team}/projects"),
+            json!({"name": "batch"}),
+        )
+        .await,
+    );
+    let provider = |org: String, name: &'static str, project: Option<&str>| {
+        let mut body = json!({"name": name, "kind": "openai_compatible",
+                              "api_base": "http://127.0.0.1:9"});
+        if let Some(project) = project {
+            body["project_id"] = json!(project);
+        }
+        post(format!("{base}/api/v1/orgs/{org}/providers"), body)
+    };
+    let primary = created(provider(org.clone(), "primary", None).await);
+    let secondary = created(provider(org.clone(), "secondary", None).await);
+    let elsewhere = created(provider(org.clone(), "elsewhere", Some(&other_project)).await);
+    let other_org = created(
+        post(
+            format!("{base}/api/v1/orgs"),
+            json!({"name": "Other", "slug": "other"}),
+        )
+        .await,
+    );
+    let foreign = created(provider(other_org, "foreign", None).await);
+
+    let route = created(
+        post(
+            format!("{base}/api/v1/projects/{project}/routes"),
+            json!({"model": "chat", "strategy": "round_robin"}),
+        )
+        .await,
+    );
+    let route_url = format!("{base}/api/v1/routes/{route}");
+    let first = created(
+        post(
+            format!("{route_url}/targets"),
+            json!({"provider_id": primary, "weight": 1}),
+        )
+        .await,
+    );
+
+    let targets = || {
+        let client = client.clone();
+        let url = format!("{route_url}/targets");
+        async move {
+            let rows: Value = client.get(&url).send().await.unwrap().json().await.unwrap();
+            rows.as_array()
+                .unwrap()
+                .iter()
+                .map(|t| {
+                    (
+                        t["id"].as_str().unwrap().to_string(),
+                        t["provider_id"].as_str().unwrap().to_string(),
+                        t["upstream_model"].as_str().map(str::to_string),
+                        t["weight"].as_i64().unwrap(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        }
+    };
+    let last_audit = |action: &'static str| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_scalar::<_, Value>(
+                "select detail from audit_log where action = $1 order by at desc limit 1",
+            )
+            .bind(action)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        }
+    };
+
+    // an older client sends only `enabled`: the strategy and the targets stay
+    let before = targets().await;
+    let (status, row) = put(route_url.clone(), json!({"enabled": false})).await;
+    assert_eq!(status, 200, "{row}");
+    assert_eq!(row["enabled"], false);
+    assert_eq!(row["strategy"], "round_robin");
+    assert_eq!(targets().await, before);
+    assert_eq!(last_audit("route.set_enabled").await["enabled"], false);
+    let (status, row) = put(route_url.clone(), json!({"enabled": true})).await;
+    assert_eq!(status, 200, "{row}");
+
+    // strategy and targets in one call: the primary target keeps its id and
+    // takes the new weight, and the secondary one is added
+    let version = config_version(&pool).await;
+    let (status, row) = put(
+        route_url.clone(),
+        json!({
+            "strategy": "weighted",
+            "targets": [
+                {"provider_id": primary, "weight": 3},
+                {"provider_id": secondary, "upstream_model": "gpt-4o-mini", "weight": 1}
+            ]
+        }),
+    )
+    .await;
+    assert_eq!(status, 200, "{row}");
+    assert_eq!(row["strategy"], "weighted");
+    assert_eq!(row["enabled"], true, "an omitted enabled flag is kept");
+    assert!(
+        config_version(&pool).await > version,
+        "the edit bumps the version"
+    );
+    let now = targets().await;
+    assert_eq!(now.len(), 2, "{now:?}");
+    assert_eq!(now[0], (first.clone(), primary.clone(), None, 3));
+    assert_eq!(
+        (&now[1].1, now[1].2.as_deref(), now[1].3),
+        (&secondary, Some("gpt-4o-mini"), 1)
+    );
+    let secondary_target = now[1].0.clone();
+    let audit = last_audit("route.update").await;
+    assert_eq!(audit["strategy"], "weighted");
+    assert_eq!(audit["previous_strategy"], "round_robin");
+    assert_eq!(audit["targets"]["reweighted"][0]["id"], first.as_str());
+    assert_eq!(audit["targets"]["reweighted"][0]["previous_weight"], 1);
+    assert_eq!(
+        audit["targets"]["added"][0]["provider_id"],
+        secondary.as_str()
+    );
+
+    // the gateway's snapshot carries the new strategy and both weights
+    let snap: Value = client
+        .get(format!("{base}/internal/snapshot"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let served = snap["config"]["routes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["model"] == "chat")
+        .expect("route in snapshot")
+        .clone();
+    assert_eq!(served["strategy"], "weighted");
+    let mut weights: Vec<(String, u64)> = served["targets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| {
+            (
+                t["provider"].as_str().unwrap().to_string(),
+                t["weight"].as_u64().unwrap(),
+            )
+        })
+        .collect();
+    weights.sort();
+    assert_eq!(
+        weights,
+        vec![("primary".to_string(), 3), ("secondary".to_string(), 1)]
+    );
+
+    // the strategy alone leaves the targets alone
+    let before = targets().await;
+    let (status, row) = put(route_url.clone(), json!({"strategy": "cache_aware"})).await;
+    assert_eq!(status, 200, "{row}");
+    assert_eq!(row["strategy"], "cache_aware");
+    assert_eq!(targets().await, before);
+
+    // the targets alone leave the strategy alone, and a target the list no
+    // longer names is removed
+    let (status, row) = put(
+        route_url.clone(),
+        json!({"targets": [
+            {"provider_id": secondary, "upstream_model": "gpt-4o-mini", "weight": 2}
+        ]}),
+    )
+    .await;
+    assert_eq!(status, 200, "{row}");
+    assert_eq!(row["strategy"], "cache_aware");
+    assert_eq!(
+        targets().await,
+        vec![(
+            secondary_target.clone(),
+            secondary.clone(),
+            Some("gpt-4o-mini".to_string()),
+            2
+        )]
+    );
+    assert_eq!(
+        last_audit("route.update").await["targets"]["removed"][0]["id"],
+        first.as_str()
+    );
+
+    // every refusal leaves the route, its targets and the version untouched
+    let before = targets().await;
+    let version = config_version(&pool).await;
+    let ok_target = json!({"provider_id": primary, "weight": 1});
+    let unknown = uuid::Uuid::new_v4().to_string();
+    for (case, body, status, field) in [
+        (
+            "an unknown strategy",
+            json!({"strategy": "fastest_ever", "targets": [ok_target]}),
+            400,
+            None,
+        ),
+        (
+            "an empty target list",
+            json!({"strategy": "random", "targets": []}),
+            400,
+            Some("targets"),
+        ),
+        (
+            "a zero weight",
+            json!({"targets": [ok_target, {"provider_id": secondary, "weight": 0}]}),
+            400,
+            Some("targets[1].weight"),
+        ),
+        (
+            "a negative weight",
+            json!({"targets": [{"provider_id": secondary, "weight": -2}]}),
+            400,
+            Some("targets[0].weight"),
+        ),
+        (
+            "an unknown provider",
+            json!({"strategy": "random", "targets": [ok_target, {"provider_id": unknown}]}),
+            404,
+            None,
+        ),
+        (
+            "another org's provider",
+            json!({"targets": [{"provider_id": foreign}]}),
+            404,
+            None,
+        ),
+        (
+            "another project's provider",
+            json!({"targets": [ok_target, {"provider_id": elsewhere}]}),
+            409,
+            None,
+        ),
+        (
+            "a field the endpoint does not take",
+            json!({"model": "renamed"}),
+            400,
+            None,
+        ),
+    ] {
+        let (got, body) = put(route_url.clone(), body).await;
+        assert_eq!(got, status, "{case}: {body}");
+        if let Some(field) = field {
+            assert_eq!(body["error"]["code"], "invalid_field", "{case}: {body}");
+            assert_eq!(body["error"]["field"], field, "{case}: {body}");
+        }
+    }
+    assert_eq!(targets().await, before);
+    assert_eq!(config_version(&pool).await, version);
+    let (_, rows) = send(
+        reqwest::Method::GET,
+        format!("{base}/api/v1/projects/{project}/routes"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(rows[0]["strategy"], "cache_aware");
+
+    // a blank upstream model is stored as none, as the target endpoint does
+    let (status, row) = put(
+        route_url.clone(),
+        json!({"targets": [{"provider_id": primary, "upstream_model": "  ", "weight": 1}]}),
+    )
+    .await;
+    assert_eq!(status, 200, "{row}");
+    let now = targets().await;
+    assert_eq!(now.len(), 1);
+    assert_eq!(now[0].2, None);
+
+    // an empty body changes nothing
+    let version = config_version(&pool).await;
+    let (status, row) = put(route_url.clone(), json!({})).await;
+    assert_eq!(status, 200, "{row}");
+    assert_eq!(row["strategy"], "cache_aware");
+    assert_eq!(config_version(&pool).await, version);
+
+    let (status, _) = put(
+        format!("{base}/api/v1/routes/{}", uuid::Uuid::new_v4()),
+        json!({"strategy": "random"}),
+    )
+    .await;
+    assert_eq!(status, 404);
+}
+
+/// #2235: editing a route's strategy and targets takes `route:update`, the
+/// project admin's capability, like every other route write. A project member
+/// can read the route but not change it.
+#[tokio::test]
+async fn a_route_update_takes_the_project_admin() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("routes".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let call = |method: reqwest::Method, path: String, token: String, body: Value| {
+        let client = client.clone();
+        let base = base.clone();
+        async move {
+            let resp = client
+                .request(method, format!("{base}{path}"))
+                .bearer_auth(token)
+                .json(&body)
+                .send()
+                .await
+                .unwrap();
+            let status = resp.status().as_u16();
+            (status, resp.json::<Value>().await.unwrap_or(Value::Null))
+        }
+    };
+    let admin = |method: reqwest::Method, path: String, body: Value| {
+        call(method, path, "routes".to_string(), body)
+    };
+
+    let (_, org) = admin(
+        reqwest::Method::POST,
+        "/api/v1/orgs".into(),
+        json!({"name": "Acme", "slug": "acme"}),
+    )
+    .await;
+    let org_id = org["id"].as_str().unwrap().to_string();
+    let (_, team) = admin(
+        reqwest::Method::POST,
+        format!("/api/v1/orgs/{org_id}/teams"),
+        json!({"name": "core"}),
+    )
+    .await;
+    let team_id = team["id"].as_str().unwrap().to_string();
+    let (_, project) = admin(
+        reqwest::Method::POST,
+        format!("/api/v1/teams/{team_id}/projects"),
+        json!({"name": "app"}),
+    )
+    .await;
+    let project_id: uuid::Uuid = project["id"].as_str().unwrap().parse().unwrap();
+    let (_, provider) = admin(
+        reqwest::Method::POST,
+        format!("/api/v1/orgs/{org_id}/providers"),
+        json!({"name": "primary", "kind": "openai_compatible", "api_base": "http://127.0.0.1:9"}),
+    )
+    .await;
+    let provider_id = provider["id"].as_str().unwrap().to_string();
+    let (status, route) = admin(
+        reqwest::Method::POST,
+        format!("/api/v1/projects/{project_id}/routes"),
+        json!({"model": "chat"}),
+    )
+    .await;
+    assert_eq!(status, 200, "{route}");
+    let route_path = format!("/api/v1/routes/{}", route["id"].as_str().unwrap());
+
+    let member = seed_user(&pool, "member@acme.test", false).await;
+    seed_membership(&pool, member, None, None, Some(project_id), "member").await;
+    let project_admin = seed_user(&pool, "admin@acme.test", false).await;
+    seed_membership(&pool, project_admin, None, None, Some(project_id), "admin").await;
+    let member = seed_session(&pool, member, "route_update_member").await;
+    let project_admin = seed_session(&pool, project_admin, "route_update_admin").await;
+
+    let edit = json!({
+        "strategy": "weighted",
+        "targets": [{"provider_id": provider_id, "weight": 2}]
+    });
+    let (status, body) = call(
+        reqwest::Method::PUT,
+        route_path.clone(),
+        member,
+        edit.clone(),
+    )
+    .await;
+    assert_eq!(status, 403, "a project member cannot edit a route: {body}");
+    let (status, body) = call(reqwest::Method::PUT, route_path, project_admin, edit).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["strategy"], "weighted");
+}

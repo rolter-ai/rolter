@@ -1084,6 +1084,71 @@ export const AFailedKeyReadLeavesWithTheKeyScope: Story = {
   },
 };
 
+// the three reads behind the scope picker, each failing or never answering
+const PICKER_READS = [
+  { type: "Virtual key", path: "/virtual-keys", noun: /virtual keys/i },
+  { type: "Business unit", path: "/business-units", noun: /business units/i },
+  { type: "Customer", path: "/customers", noun: /customers/i },
+] as const;
+
+const pickerReadStub = (path: string, how: "fail" | "pend") =>
+  scoped(async (input) => {
+    const url = String(input);
+    if (url.includes(path)) {
+      return how === "fail"
+        ? json({ error: { message: "store unavailable" } }, 500)
+        : new Promise<Response>(() => {});
+    }
+    if (url.includes("/budgets")) return json(BUDGETS);
+    return json(RATE_LIMITS);
+  });
+
+const failedPickerRead = (i: number): Story => ({
+  render: () => (
+    <Harness fetchStub={pickerReadStub(PICKER_READS[i].path, "fail")}>
+      <Limits />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await pickOption(await canvas.findByLabelText("Scope type"), PICKER_READS[i].type);
+    await expectLoadError(canvasElement, PICKER_READS[i].noun);
+    await expect(canvas.getByText("store unavailable")).toBeVisible();
+    await expect(canvas.getByRole("button", { name: "Try again" })).toBeVisible();
+  },
+});
+
+const pendingPickerRead = (i: number): Story => ({
+  render: () => (
+    <Harness fetchStub={pickerReadStub(PICKER_READS[i].path, "pend")}>
+      <Limits />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await pickOption(await canvas.findByLabelText("Scope type"), PICKER_READS[i].type);
+    await expectSkeleton(canvasElement);
+    // a read that has not answered is not an empty one (#2211)
+    await expect(canvas.queryByText(/none are available to pick/i)).toBeNull();
+    await expect(canvas.queryByPlaceholderText(/00000000-0000/)).toBeNull();
+  },
+});
+
+/** #2959: a failed business-unit read says so beside the picker, as the key read does. */
+export const AFailedBusinessUnitReadSaysSo: Story = failedPickerRead(1);
+
+/** #2959: a failed customer read says so beside the picker. */
+export const AFailedCustomerReadSaysSo: Story = failedPickerRead(2);
+
+/** #2959: while the key read is pending the scope field is a skeleton, not a uuid box. */
+export const APendingKeyReadIsNotAnEmptyPicker: Story = pendingPickerRead(0);
+
+/** #2959: the same for business units. */
+export const APendingBusinessUnitReadIsNotAnEmptyPicker: Story = pendingPickerRead(1);
+
+/** #2959: the same for customers. */
+export const APendingCustomerReadIsNotAnEmptyPicker: Story = pendingPickerRead(2);
+
 // the periods the dashboard can name, and one it cannot
 const PERIOD_BUDGETS: BudgetRow[] = [
   { ...BUDGETS[0], id: "period-1", period: "30d", limit_usd: "500.00" },

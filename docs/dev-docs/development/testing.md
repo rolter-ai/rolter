@@ -88,6 +88,22 @@ share a single-threaded `serial-db` group; removing it (#1429) took the two suit
 from 389-572s to 155-342s on a 4-core machine with all 781 tests green in each of
 six runs. The file records the numbers.
 
+## Test-only environment variables
+
+`all_binary_cli_env_vars_are_documented_in_reference` in
+`crates/rolter/tests/env_var_names.rs` collects every `"ROLTER_*"` string literal
+under `crates/*/src`, `#[cfg(test)]` code included, and fails unless each one
+appears in `docs/user-docs/configuration/environment-variables.mdx`. The only
+names it skips are the ones starting with `ROLTER_TEST_` (or containing
+`_TEST_`).
+
+So a variable that only tests or developer tooling read must be named
+`ROLTER_TEST_*`, like `ROLTER_TEST_DATABASE_URL` or
+`ROLTER_TEST_UPDATE_RBAC_MATRIX`. Anything else is operator-facing and gets a
+row in the reference. #2743 added a developer switch named
+`ROLTER_UPDATE_RBAC_MATRIX`, and CI reported nothing but "exit code 100" until it
+was renamed.
+
 ## The Postgres test database
 
 The Postgres-backed tests self-skip unless `ROLTER_TEST_DATABASE_URL` points at
@@ -1585,9 +1601,11 @@ the double-invoke ran. `StrictModeHost` in `ui/src/pages/story-strict.tsx` is
 that host (#1887): `render` hands it the subject, it renders a `StrictMode` with
 the subject absent, and `mountStrictly()` from `ui/src/pages/story-harness.tsx`
 clicks its mount button and then calls `expectDoubleInvoked()`. A probe placed
-beside the subject counts its effect's mounts and cleanups, and
-`expectDoubleInvoked()` fails the story with the reason unless it reads two
-mounts and one cleanup:
+beside the subject counts its effect's mounts and cleanups in state owned by its
+own host (a context), so two hosts in one story never read each other's counts,
+and `expectDoubleInvoked()` fails the story with the reason unless every mounted
+host reads two mounts and one cleanup (give each host its own `label` and call
+`mountStrictly(label)` for each):
 
 ```tsx
 export const StrictModeDoesNotInventAnAbandon: Story = {

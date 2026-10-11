@@ -237,6 +237,26 @@ target with no evidence should not be ranked.
 
 Both external strategies perform network I/O only in background tasks. The request hot path reads bounded in-process state and atomics.
 
+## Changing a route's strategy and targets
+
+A route's strategy and its targets and weights change after creation through
+`PUT /api/v1/routes/{id}` (#2235); the user-facing contract is the
+[Route updates](../../user-docs/api/routes.mdx) API page and the store side is
+in [Data model](data-model.md). Every field is optional and an omitted one keeps
+its value, so the old `{"enabled": false}` body still only toggles the route.
+A target list is the route's whole list, matched to the stored targets by
+provider and upstream model: a weight edit keeps the target's id, and a changed
+provider or upstream model is a new target.
+
+No strategy is refused for the targets it is given. `build_with_stats` cannot
+fail, and each strategy whose signal is missing degrades rather than erroring
+(`precise_cache_aware` and `lmcache_aware` to least-load without a telemetry
+source, `fastest` and `predicted_latency` to least-load while cold), so the
+update checks the strategy against the same `STRATEGIES` allowlist creation
+uses and the targets against the single-target checks, and nothing more. A
+reload rebuilds every route's balancer anyway, so a strategy change carries no
+selection state across.
+
 ## Selecting a strategy from the dashboard
 
 The route and provider-group editors offer every strategy in this table except `adaptive`, which is governed by the deployment-wide `[adaptive_routing]` policy and has its own screen — a per-route dropdown would misrepresent how it is controlled. `precise_cache_aware` and `lmcache_aware` are offered with a hint that they need a telemetry source on the target providers, since without one they fall back to least-load silently rather than failing.

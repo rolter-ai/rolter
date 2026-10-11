@@ -2792,6 +2792,117 @@ impl RouteRepo<'_> {
         .ok_or_else(|| Error::NotFound(format!("route {id}")))
     }
 
+    /// Change any of a route's `enabled` flag, strategy and target list in one
+    /// transaction, so a gateway polling `/internal/snapshot` sees the route as
+    /// it was or as it is now and never a mix of the two.
+    ///
+    /// A field left `None` in `update` keeps its stored value. When
+    /// `update.targets` is present it is the route's whole target list, matched
+    /// against the stored targets by provider and upstream model, the natural
+    /// key the `rolter.toml` import uses as well: a match keeps its id and
+    /// `created_at` and takes the new weight, a stored target the list no longer
+    /// names is deleted, and an entry with no match is inserted. Each entry
+    /// claims at most one stored target, so a provider and model listed twice
+    /// keeps two rows. Nothing here validates the values; the caller applies the
+    /// same checks as route and target creation.
+    ///
+    /// Returns the route as stored afterwards and what happened to its targets.
+    pub async fn update(
+        &self,
+        id: Uuid,
+        update: &RouteUpdate<'_>,
+    ) -> Result<(Route, RouteTargetChanges)> {
+        let mut tx = self.0.begin().await.map_err(store_err)?;
+        // `for update` rather than the weaker lock an update statement takes:
+        // a target insert holds `for key share` on its route through the
+        // foreign key, which only this mode conflicts with, so a concurrent
+        // `POST .../targets` cannot slip a row in between the read of the
+        // stored targets below and the commit
+        let mut route: Route = sqlx::query_as(
+            "select id, project_id, model, strategy, enabled, params, param_policy, advanced, created_at
+             from routes where id = $1 for update",
+        )
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(store_err)?
+        .ok_or_else(|| Error::NotFound(format!("route {id}")))?;
+
+        if update.enabled.is_some() || update.strategy.is_some() {
+            route = sqlx::query_as(
+                "update routes
+                 set enabled = coalesce($2, enabled), strategy = coalesce($3, strategy)
+                 where id = $1
+                 returning id, project_id, model, strategy, enabled, params, param_policy, advanced, created_at",
+            )
+            .bind(id)
+            .bind(update.enabled)
+            .bind(update.strategy)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(store_err)?;
+        }
+
+        let mut changes = RouteTargetChanges::default();
+        if let Some(desired) = update.targets {
+            let stored: Vec<RouteTarget> = sqlx::query_as(
+                "select id, route_id, provider_id, upstream_model, weight, created_at
+                 from route_targets where route_id = $1 order by created_at, id",
+            )
+            .bind(id)
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(store_err)?;
+            let plan = plan_target_changes(&stored, desired);
+
+            if !plan.delete.is_empty() {
+                let ids: Vec<Uuid> = plan.delete.iter().map(|t| t.id).collect();
+                sqlx::query("delete from route_targets where id = any($1)")
+                    .bind(&ids)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(store_err)?;
+            }
+            for (target, weight) in plan.reweight {
+                let updated: RouteTarget = sqlx::query_as(
+                    "update route_targets set weight = $2 where id = $1
+                     returning id, route_id, provider_id, upstream_model, weight, created_at",
+                )
+                .bind(target.id)
+                .bind(weight)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(store_err)?;
+                changes.reweighted.push(ReweightedTarget {
+                    previous_weight: target.weight,
+                    target: updated,
+                });
+            }
+            for spec in plan.insert {
+                // `clock_timestamp()` rather than the column's `now()` default,
+                // which is fixed for the whole transaction: distinct times keep
+                // the new targets listed in the order the caller sent them
+                let created: RouteTarget = sqlx::query_as(
+                    "insert into route_targets (route_id, provider_id, upstream_model, weight, created_at)
+                     values ($1, $2, $3, $4, clock_timestamp())
+                     returning id, route_id, provider_id, upstream_model, weight, created_at",
+                )
+                .bind(id)
+                .bind(spec.provider_id)
+                .bind(spec.upstream_model.as_deref())
+                .bind(spec.weight)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(store_err)?;
+                changes.added.push(created);
+            }
+            changes.removed = plan.delete.into_iter().cloned().collect();
+        }
+
+        tx.commit().await.map_err(store_err)?;
+        Ok((route, changes))
+    }
+
     pub async fn delete(&self, id: Uuid) -> Result<()> {
         let res = sqlx::query("delete from routes where id = $1")
             .bind(id)
@@ -2896,6 +3007,103 @@ impl RouteTargetRepo<'_> {
         }
         Ok(())
     }
+}
+
+/// One target of a route as [`RouteRepo::update`] is asked to leave it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RouteTargetSpec {
+    pub provider_id: Uuid,
+    /// the model name sent upstream; `None` forwards the route's public name
+    pub upstream_model: Option<String>,
+    pub weight: i32,
+}
+
+/// The parts of a route [`RouteRepo::update`] changes. A field left `None`
+/// keeps the stored value.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RouteUpdate<'a> {
+    pub enabled: Option<bool>,
+    pub strategy: Option<&'a str>,
+    /// the route's complete target list when present
+    pub targets: Option<&'a [RouteTargetSpec]>,
+}
+
+/// A stored target whose weight [`RouteRepo::update`] changed.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ReweightedTarget {
+    /// the target as stored afterwards
+    #[serde(flatten)]
+    pub target: RouteTarget,
+    pub previous_weight: i32,
+}
+
+/// What [`RouteRepo::update`] did to a route's targets. All three are empty
+/// when the update carried no target list or the list matched what was stored.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct RouteTargetChanges {
+    /// entries that matched no stored target, as inserted
+    pub added: Vec<RouteTarget>,
+    /// stored targets that matched an entry with a different weight
+    pub reweighted: Vec<ReweightedTarget>,
+    /// stored targets the list no longer names, as they were before deletion
+    pub removed: Vec<RouteTarget>,
+}
+
+impl RouteTargetChanges {
+    pub fn is_empty(&self) -> bool {
+        self.added.is_empty() && self.reweighted.is_empty() && self.removed.is_empty()
+    }
+}
+
+/// How a desired target list maps onto a route's stored targets.
+#[derive(Debug, Default)]
+struct TargetPlan<'a> {
+    /// matched stored targets whose weight changes, with the new weight
+    reweight: Vec<(&'a RouteTarget, i32)>,
+    /// entries with no stored match, in the order they were given
+    insert: Vec<&'a RouteTargetSpec>,
+    /// stored targets no entry matched
+    delete: Vec<&'a RouteTarget>,
+}
+
+/// Match `desired` against `stored` by provider and upstream model.
+///
+/// The key is the one the `rolter.toml` import matches targets on (#927): the
+/// weight is what an operator edits, while a different provider or upstream
+/// model is a different target. Each entry claims the first unclaimed stored
+/// target with its key, so a route holding one provider and model twice keeps
+/// both rows when the list names it twice and loses one when it names it once.
+/// A match whose weight is unchanged is left alone, so it is neither written
+/// nor reported.
+fn plan_target_changes<'a>(
+    stored: &'a [RouteTarget],
+    desired: &'a [RouteTargetSpec],
+) -> TargetPlan<'a> {
+    let mut claimed = vec![false; stored.len()];
+    let mut plan = TargetPlan::default();
+    for spec in desired {
+        let found = stored.iter().enumerate().find(|(i, target)| {
+            !claimed[*i]
+                && target.provider_id == spec.provider_id
+                && target.upstream_model == spec.upstream_model
+        });
+        match found {
+            Some((i, target)) => {
+                claimed[i] = true;
+                if target.weight != spec.weight {
+                    plan.reweight.push((target, spec.weight));
+                }
+            }
+            None => plan.insert.push(spec),
+        }
+    }
+    plan.delete = stored
+        .iter()
+        .zip(&claimed)
+        .filter(|(_, claimed)| !**claimed)
+        .map(|(target, _)| target)
+        .collect();
+    plan
 }
 
 /// Virtual keys, scoped to a project. Callers are responsible for hashing
@@ -6487,5 +6695,212 @@ mod tests {
         .unwrap();
         assert!(repo.consume_login("stale", 600).await.unwrap().is_none());
         assert!(states().await.is_empty());
+    }
+
+    fn stored_target(provider_id: Uuid, upstream_model: Option<&str>, weight: i32) -> RouteTarget {
+        RouteTarget {
+            id: Uuid::new_v4(),
+            route_id: Uuid::nil(),
+            provider_id,
+            upstream_model: upstream_model.map(str::to_string),
+            weight,
+            created_at: Utc::now(),
+        }
+    }
+
+    fn spec(provider_id: Uuid, upstream_model: Option<&str>, weight: i32) -> RouteTargetSpec {
+        RouteTargetSpec {
+            provider_id,
+            upstream_model: upstream_model.map(str::to_string),
+            weight,
+        }
+    }
+
+    /// #2235: a target is matched by provider and upstream model, so a weight
+    /// edit keeps the row, a changed upstream model is a different target, and
+    /// an unchanged entry is neither written nor reported.
+    #[test]
+    fn target_plan_matches_on_provider_and_upstream_model() {
+        let (a, b, c) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        let stored = vec![
+            stored_target(a, None, 1),
+            stored_target(b, Some("gpt-4o"), 1),
+            stored_target(c, None, 3),
+        ];
+        let desired = vec![
+            // same key, new weight: kept and reweighted
+            spec(a, None, 5),
+            // same provider, other upstream model: a new target, and the old
+            // one goes
+            spec(b, Some("gpt-4o-mini"), 1),
+            // identical: left alone
+            spec(c, None, 3),
+        ];
+        let plan = plan_target_changes(&stored, &desired);
+        assert_eq!(
+            plan.reweight
+                .iter()
+                .map(|(t, w)| (t.id, *w))
+                .collect::<Vec<_>>(),
+            vec![(stored[0].id, 5)]
+        );
+        assert_eq!(plan.insert, vec![&desired[1]]);
+        assert_eq!(
+            plan.delete.iter().map(|t| t.id).collect::<Vec<_>>(),
+            vec![stored[1].id]
+        );
+    }
+
+    /// Each entry claims at most one stored row, so duplicates are counted
+    /// rather than collapsed: naming a twice-held key once drops one of them,
+    /// and naming it three times adds one.
+    #[test]
+    fn target_plan_counts_duplicate_keys() {
+        let a = Uuid::new_v4();
+        let stored = vec![stored_target(a, None, 1), stored_target(a, None, 2)];
+
+        let once = vec![spec(a, None, 2)];
+        let plan = plan_target_changes(&stored, &once);
+        // the first stored row is claimed and reweighted, the second one goes
+        assert_eq!(plan.reweight.len(), 1);
+        assert_eq!(plan.reweight[0].0.id, stored[0].id);
+        assert!(plan.insert.is_empty());
+        assert_eq!(plan.delete.len(), 1);
+        assert_eq!(plan.delete[0].id, stored[1].id);
+
+        let thrice = vec![spec(a, None, 1), spec(a, None, 2), spec(a, None, 1)];
+        let plan = plan_target_changes(&stored, &thrice);
+        assert!(plan.reweight.is_empty());
+        assert_eq!(plan.insert, vec![&thrice[2]]);
+        assert!(plan.delete.is_empty());
+    }
+
+    /// #2235: the strategy and the target list change in one transaction, the
+    /// targets that survive keep their ids, and a write that fails part way
+    /// leaves the route exactly as it was.
+    #[tokio::test]
+    async fn route_update_is_one_transaction() {
+        if !super::super::test_database::is_configured() {
+            eprintln!("skipping: {} not set", super::super::test_database::URL_ENV);
+            return;
+        }
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
+
+        let org = OrgRepo(&pool).create("acme", "acme").await.unwrap();
+        let team = TeamRepo(&pool).create(org.id, "core").await.unwrap();
+        let project = ProjectRepo(&pool).create(team.id, "default").await.unwrap();
+        let mut provider_ids = Vec::new();
+        for name in ["primary", "secondary"] {
+            let provider = ProviderRepo(&pool)
+                .create(
+                    org.id,
+                    name,
+                    name,
+                    "openai",
+                    "https://api.openai.com",
+                    Some("OPENAI_API_KEY"),
+                    None,
+                    &[],
+                    None,
+                )
+                .await
+                .unwrap();
+            provider_ids.push(provider.id);
+        }
+        let (primary, secondary) = (provider_ids[0], provider_ids[1]);
+        let routes = RouteRepo(&pool);
+        let route = routes
+            .create(project.id, "gpt-4o", "round_robin")
+            .await
+            .unwrap();
+        let targets = RouteTargetRepo(&pool);
+        let kept = targets.create(route.id, primary, None, 1).await.unwrap();
+        let dropped = targets
+            .create(route.id, primary, Some("gpt-4o-mini"), 1)
+            .await
+            .unwrap();
+
+        let desired = vec![spec(primary, None, 3), spec(secondary, None, 1)];
+        let (updated, changes) = routes
+            .update(
+                route.id,
+                &RouteUpdate {
+                    strategy: Some("weighted"),
+                    targets: Some(&desired),
+                    ..RouteUpdate::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(updated.strategy, "weighted");
+        assert!(updated.enabled, "an omitted enabled flag is kept");
+        assert_eq!(changes.reweighted.len(), 1);
+        assert_eq!(changes.reweighted[0].target.id, kept.id);
+        assert_eq!(changes.reweighted[0].previous_weight, 1);
+        assert_eq!(changes.added.len(), 1);
+        assert_eq!(changes.added[0].provider_id, secondary);
+        assert_eq!(
+            changes.removed.iter().map(|t| t.id).collect::<Vec<_>>(),
+            vec![dropped.id]
+        );
+        let listed = targets.list(route.id).await.unwrap();
+        assert_eq!(
+            listed.iter().map(|t| (t.id, t.weight)).collect::<Vec<_>>(),
+            vec![(kept.id, 3), (changes.added[0].id, 1)],
+            "the kept target keeps its id and its place"
+        );
+
+        // the second entry names a provider that does not exist, so its
+        // insert fails after the strategy write and the delete already ran in
+        // the same transaction: none of it may survive
+        let before: i64 = sqlx::query_scalar("select version from config_version where id = 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let broken = vec![spec(secondary, None, 1), spec(Uuid::new_v4(), None, 1)];
+        routes
+            .update(
+                route.id,
+                &RouteUpdate {
+                    enabled: Some(false),
+                    strategy: Some("random"),
+                    targets: Some(&broken),
+                },
+            )
+            .await
+            .expect_err("a target on an unknown provider fails the foreign key");
+        let after: i64 = sqlx::query_scalar("select version from config_version where id = 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(after, before, "a rolled-back update bumps nothing");
+        let route_now = routes.get(route.id).await.unwrap();
+        assert_eq!(route_now.strategy, "weighted");
+        assert!(route_now.enabled);
+        assert_eq!(
+            targets
+                .list(route.id)
+                .await
+                .unwrap()
+                .iter()
+                .map(|t| t.id)
+                .collect::<Vec<_>>(),
+            listed.iter().map(|t| t.id).collect::<Vec<_>>()
+        );
+
+        // an update naming nothing changes nothing and reports nothing
+        let (same, changes) = routes
+            .update(route.id, &RouteUpdate::default())
+            .await
+            .unwrap();
+        assert_eq!(same.strategy, "weighted");
+        assert!(changes.is_empty());
+
+        let missing = routes
+            .update(Uuid::new_v4(), &RouteUpdate::default())
+            .await
+            .expect_err("unknown route");
+        assert!(matches!(missing, Error::NotFound(_)), "{missing:?}");
     }
 }

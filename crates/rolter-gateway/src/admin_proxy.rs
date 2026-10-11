@@ -85,8 +85,14 @@ async fn forward(
     }
 }
 
+/// The log text for a failed control-plane request: a reqwest error quotes the
+/// configured control-plane url, which can carry a credential.
+fn masked_error(err: &dyn std::fmt::Display) -> String {
+    rolter_core::redact::redact_urls_in_text(&err.to_string())
+}
+
 fn bad_gateway(err: &dyn std::fmt::Display) -> Response {
-    tracing::warn!(error = %err, "control plane request failed");
+    tracing::warn!(error = %masked_error(err), "control plane request failed");
     (
         StatusCode::BAD_GATEWAY,
         Json(json!({"error": {"message": "control plane unreachable"}})),
@@ -98,6 +104,14 @@ fn bad_gateway(err: &dyn std::fmt::Display) -> Response {
 mod tests {
     use super::*;
     use axum::routing::post;
+
+    #[test]
+    fn the_log_text_does_not_quote_a_url_credential() {
+        let secret = format!("tok-{}", uuid::Uuid::new_v4().simple());
+        let err =
+            format!("error sending request for url (http://u:{secret}@cp:4001/x?token={secret})");
+        assert!(!masked_error(&err).contains(&secret));
+    }
 
     async fn serve(app: Router) -> std::net::SocketAddr {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

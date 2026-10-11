@@ -1037,7 +1037,7 @@ Header handling on the upstream leg of a request, and the base URL the dashboard
 </ParamField>
 
 <ParamField path="request_id_header" default="x-request-id" type="string">
-  The header meant to carry the end-to-end request id. Accepted and stored, but the gateway does not read it yet: it always reads, mints and echoes `x-request-id` ([#2925](https://github.com/rolter-ai/rolter/issues/2925)).
+  The header carrying the end-to-end request id. The gateway reads the caller's id from it, mints a UUID when it is missing or blank, echoes the id in it on the response and stores it as the request-log row's `request_id`. With another name set, `x-request-id` is an ordinary header the gateway neither reads nor sets. The name cannot be one that carries a credential, session state or message framing (`authorization`, `x-api-key`, `api-key`, `x-goog-api-key`, `proxy-authorization`, `cookie`, `set-cookie`, `host`, `content-length`, `content-type`, `transfer-encoding`, `connection` and the other hop-by-hop headers): a file naming one fails validation. See [Client settings](/configuration/client-settings#request-id-header).
 </ParamField>
 
 ```toml

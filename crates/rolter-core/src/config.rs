@@ -2571,8 +2571,44 @@ impl Default for CompatibilityConfig {
     }
 }
 
+/// The header carrying the end-to-end request id when `[client]
+/// request_id_header` is not set.
+pub const DEFAULT_REQUEST_ID_HEADER: &str = "x-request-id";
+
 fn default_request_id_header() -> String {
-    "x-request-id".to_string()
+    DEFAULT_REQUEST_ID_HEADER.to_string()
+}
+
+/// Header names that carry session state, refused as the request id header on
+/// top of [`RESERVED_ROUTE_HEADERS`].
+const SESSION_HEADERS: [&str; 2] = ["cookie", "set-cookie"];
+
+/// Why `name` cannot be the request id header, or `None` when it can.
+///
+/// The gateway reads the caller's id from this header, writes the id it
+/// mints back onto the request, echoes the id on the response and stores it
+/// in the request log. A name in [`RESERVED_ROUTE_HEADERS`] carries a
+/// credential or frames the message, and `cookie` / `set-cookie` carry
+/// session state. Reading one would copy a secret into the log and onto the
+/// response, and writing one would corrupt the message the id is written
+/// over, so they are refused here. The control plane checks the same rule on
+/// write and the gateway checks it again when it applies the setting, so all
+/// three agree on what is usable.
+pub fn request_id_header_problem(name: &str) -> Option<String> {
+    if !is_header_name(name) {
+        return Some(format!("'{name}' is not a valid header name"));
+    }
+    if is_reserved_route_header(name)
+        || SESSION_HEADERS
+            .iter()
+            .any(|reserved| reserved.eq_ignore_ascii_case(name))
+    {
+        return Some(format!(
+            "'{name}' carries a credential, session state or message framing, so it cannot \
+             carry the request id"
+        ));
+    }
+    None
 }
 
 /// What the gateway does with headers on the upstream leg, plus the base URL
@@ -2593,7 +2629,9 @@ pub struct ClientConfig {
     /// static headers added to every upstream request, lowercased names
     #[serde(default)]
     pub injected_headers: BTreeMap<String, String>,
-    /// header carrying the client-supplied correlation id
+    /// header carrying the end-to-end request id: the gateway reads the
+    /// caller's id from it, mints one when it is absent and echoes it on the
+    /// response. Must pass [`request_id_header_problem`]
     #[serde(default = "default_request_id_header")]
     pub request_id_header: String,
 }
@@ -3666,6 +3704,18 @@ impl GatewayConfig {
                 ));
             }
         }
+
+        // the control plane refuses an unusable request id header on write, so
+        // this covers a row written before it did or by sql. falling back to
+        // the default keeps correlation working instead of withholding the
+        // snapshot from every tenant over one header name (#2925)
+        if let Some(problem) = request_id_header_problem(&self.client.request_id_header) {
+            warnings.push(format!(
+                "client.request_id_header: {problem}; gateways use \
+                 '{DEFAULT_REQUEST_ID_HEADER}' instead"
+            ));
+            self.client.request_id_header = default_request_id_header();
+        }
         warnings
     }
 
@@ -4452,6 +4502,11 @@ impl GatewayConfig {
             for problem in route.advanced.header_problems() {
                 problems.push(format!("route '{}': {problem}", route.model));
             }
+        }
+        // the same split for the request id header: a file naming a credential
+        // or framing header is refused, the snapshot path resets it (#2925)
+        if let Some(problem) = request_id_header_problem(&self.client.request_id_header) {
+            problems.push(format!("client.request_id_header: {problem}"));
         }
 
         // validate the custom guardrail webhook (url/timeout/auth) at load time
@@ -5299,6 +5354,70 @@ mod tests {
         );
         cfg.validate_snapshot()
             .expect("what is left must validate, or the snapshot would 500");
+    }
+
+    #[test]
+    fn a_request_id_header_must_be_a_header_that_carries_nothing_else() {
+        for usable in ["x-request-id", "x-correlation-id", "X-Trace-Ref"] {
+            assert_eq!(request_id_header_problem(usable), None, "{usable}");
+        }
+        for unusable in [
+            "Authorization",
+            "x-api-key",
+            "x-goog-api-key",
+            "content-length",
+            "transfer-encoding",
+            "host",
+            "cookie",
+            "Set-Cookie",
+        ] {
+            let problem = request_id_header_problem(unusable)
+                .unwrap_or_else(|| panic!("{unusable} must be refused"));
+            assert!(problem.contains("cannot carry the request id"), "{problem}");
+        }
+        for malformed in ["", "x request id", "x-id\n"] {
+            let problem = request_id_header_problem(malformed)
+                .unwrap_or_else(|| panic!("{malformed:?} must be refused"));
+            assert!(problem.contains("not a valid header name"), "{problem}");
+        }
+    }
+
+    /// The gateway echoes the id on the response and logs it, so a file that
+    /// names a credential header would copy the caller's key into both.
+    #[test]
+    fn a_file_with_a_credential_request_id_header_fails_validation() {
+        let mut cfg = GatewayConfig::default();
+        cfg.client.request_id_header = "authorization".to_string();
+        let problems = cfg.validate().unwrap_err().join("\n");
+        assert!(
+            problems.contains("client.request_id_header: 'authorization'"),
+            "{problems}"
+        );
+
+        cfg.client.request_id_header = "x-correlation-id".to_string();
+        cfg.validate().expect("an ordinary header name is accepted");
+    }
+
+    /// One unusable header name must not withhold the snapshot from every
+    /// tenant: it falls back to the default and says so.
+    #[test]
+    fn the_snapshot_resets_an_unusable_request_id_header_to_the_default() {
+        let mut cfg = GatewayConfig::default();
+        cfg.client.request_id_header = "content-length".to_string();
+
+        let warnings = cfg.sanitize_for_snapshot().join("\n");
+        assert_eq!(cfg.client.request_id_header, DEFAULT_REQUEST_ID_HEADER);
+        assert!(
+            warnings.contains("client.request_id_header: 'content-length'"),
+            "{warnings}"
+        );
+        cfg.validate_snapshot()
+            .expect("the reset header must validate, or the snapshot would 500");
+
+        let mut kept = GatewayConfig::default();
+        kept.client.request_id_header = "x-correlation-id".to_string();
+        assert!(kept.sanitize_for_snapshot().is_empty());
+        assert_eq!(kept.client.request_id_header, "x-correlation-id");
     }
 
     /// A stored `advanced` blob written before #1665 still loads.

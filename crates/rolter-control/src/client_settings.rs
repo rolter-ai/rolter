@@ -139,7 +139,13 @@ fn validate_settings(body: &UpdateClientSettings) -> ApiResult<()> {
             )));
         }
     }
-    validate_header_name(&body.request_id_header)?;
+    let request_id_header = validate_header_name(&body.request_id_header)?;
+    // the gateway reads, echoes and logs this header, so it refuses a few
+    // names the upstream lists allow; checking the same rule here keeps a save
+    // from succeeding while the gateway keeps using the default (#2925)
+    if let Some(problem) = rolter_core::request_id_header_problem(&request_id_header) {
+        return Err(invalid(format!("request_id_header: {problem}")));
+    }
     Ok(())
 }
 
@@ -259,5 +265,21 @@ mod tests {
         let mut invalid_header = body();
         invalid_header.request_id_header = "x request id".to_string();
         assert!(validate_settings(&invalid_header).is_err());
+    }
+
+    /// The gateway would refuse these as the request id header and keep using
+    /// `x-request-id`, so a save that names one must fail rather than appear
+    /// to work.
+    #[test]
+    fn rejects_a_request_id_header_the_gateway_would_not_use() {
+        for name in ["Proxy-Authorization", "x-goog-api-key", "set-cookie", "te"] {
+            let mut reserved = body();
+            reserved.request_id_header = name.to_string();
+            assert!(validate_settings(&reserved).is_err(), "{name}");
+        }
+
+        let mut custom = body();
+        custom.request_id_header = "X-Correlation-Id".to_string();
+        assert!(validate_settings(&custom).is_ok());
     }
 }

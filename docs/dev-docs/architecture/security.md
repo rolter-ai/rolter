@@ -375,6 +375,8 @@ each path chooses between two ways of keeping it:
 | gateway `502` (`upstream_error_response` in `handlers.rs`)                          | the transport error with URLs masked; the row already stored the same masked text                                                                                                          | the masked text is the whole record: an API user can tell a refused connection from a timeout |
 | `body_read_failed` (`handlers.rs`), a body that stopped arriving after a `200`      | `upstream response body could not be read: ...` with URLs masked, in the `502` body **and** in the row's `error`, which the dashboard shows to people who never saw the provider's address | same masked text                                                                              |
 | MCP proxy `502` (`mcp_proxy.rs`), code `mcp_upstream_error`                         | the fixed sentence `MCP upstream request failed`                                                                                                                                           | gateway log (`mcp upstream request failed`), masked, with the server slug and the request id  |
+| realtime `502` (`connect_selected` in `realtime.rs`)                                | `upstream realtime connection failed: ...` with URLs masked (a tungstenite URL error quotes the address)                                                                                   | the masked text                                                                               |
+| admin proxy log line (`bad_gateway` in `admin_proxy.rs`); the body is fixed (#2501) | the body stays `control plane unreachable`                                                                                                                                                 | gateway log (`control plane request failed`), URLs masked                                     |
 | MCP OAuth refresh, exchange and callback: the authorization server did not answer   | `502`, code `authorization_server_unavailable`, one fixed sentence                                                                                                                         | control-plane log (`mcp oauth token request failed`), masked, built where the error is raised |
 | MCP OAuth refresh: rolter's own store or sealing failed (it used to answer a `400`) | the generic `500` of [What a 500 says](#what-a-500-says-2268)                                                                                                                              | control-plane log, raw (`ApiError::Core(Error::Store(..))` logs it on render)                 |
 
@@ -606,14 +608,15 @@ Two details carry the design:
   back.
 
 A captured body is joined to its log row on `log_id`, never on the caller's id.
-The gateway keeps whatever `x-request-id` the caller sent, so two tenants'
+The gateway keeps whatever request id the caller sent (in `x-request-id`, or
+the header `[client] request_id_header` names), so two tenants'
 requests can share an id; an id-only join let a caller log a bodiless request
 under an id seen on another project's rows and read that project's prompt
 through their own row, which the mask passed because it judges the row, not the
 body. `log_id` is a UUID the gateway mints per request when it queues the row
 and writes to both `request_logs` and `request_payloads`, so the caller can
 neither choose nor observe it, and a client that sends one constant id no
-longer collides with itself (#1937). The caller's `x-request-id` stays in
+longer collides with itself (#1937). The caller's request id stays in
 `request_id` for lookup and search. The join key also carries the row's
 `org_id` and `project_id`, which the gateway copies onto the payload row, so a
 body cannot meet a row of another project even if a key were somehow reused.

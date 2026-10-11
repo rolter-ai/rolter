@@ -74,11 +74,7 @@ If the requested model name does not match any configured route, Rolter returns 
 </ParamField>
 
 <ParamField header="x-request-id" type="string">
-  An optional client-supplied request identifier. Rolter echoes it in response headers and includes it in request logs for correlation.
-</ParamField>
-
-<ParamField header="x-correlation-id" type="string">
-  Alias for `x-request-id`. Both are accepted and echoed.
+  An optional client-supplied request identifier. Rolter echoes it in response headers and includes it in request logs for correlation. A deployment can carry the id in another header, such as `x-correlation-id`, by setting the [request ID header](/configuration/client-settings#request-id-header); `x-request-id` is then neither read nor echoed.
 </ParamField>
 
 ## Response headers
@@ -88,7 +84,7 @@ decision, so you can see which upstream served a request without enabling
 ClickHouse logging.
 
 <ResponseField name="x-request-id" type="string">
-  The end-to-end request id — the value you sent, or one Rolter generated.
+  The end-to-end request id — the value you sent, or one Rolter generated. Returned under the configured [request ID header](/configuration/client-settings#request-id-header) when the deployment sets one.
 </ResponseField>
 
 <ResponseField name="x-rolter-provider" type="string">

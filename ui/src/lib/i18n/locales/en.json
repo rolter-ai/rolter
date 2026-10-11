@@ -468,6 +468,17 @@
       "summary_other": "{{count}} fields need attention before this route can be saved."
     }
   },
+  "routeSheet": {
+    "title": "Edit route",
+    "enabled": "Enabled",
+    "enabledHint": "Off = kept in the list but excluded from routing. Clients calling this name get an error until it is switched back on.",
+    "save": "Save route",
+    "errors": {
+      "weightRow": "The control plane refused the weight of target {{n}}. Weights are whole numbers, 1 or more.",
+      "summary_one": "{{count}} field needs attention before this route can be saved.",
+      "summary_other": "{{count}} fields need attention before this route can be saved."
+    }
+  },
   "routeTargets": {
     "count_one": "{{count}} target",
     "count_other": "{{count}} targets",
@@ -554,7 +565,8 @@
       "noProjectBody": "Step 1 needs a project, and the team in scope has none yet. Create one here, or later with the + beside Project in the scope switcher in the sidebar.",
       "noTeamBody": "Step 1 needs a project, and a project belongs to a team. Add an organisation and a team with the + controls in the scope switcher in the sidebar, then come back to create the project.",
       "createProject": "Create project",
-      "noProjectDenied": "Step 1 needs a project, and this deployment has none. Ask an administrator to create one; creating a project takes the admin role.",
+      "noProjectDenied": "Step 1 needs a project, and the team in scope has none. Pick another team in the scope switcher in the sidebar, or ask an administrator to create one; creating a project takes the admin role.",
+      "noTeamDenied": "Step 1 needs a project, and a project belongs to a team, but there is no team in scope. Ask an administrator to set one up; creating a project takes the admin role.",
       "snippetLabel": "Request",
       "steps": {
         "call": {
@@ -823,7 +835,9 @@
       "summary_one": "{{count}} route · public model names clients call, resolved to upstream targets",
       "summary_other": "{{count}} routes · public model names clients call, resolved to upstream targets",
       "noTargets": "No targets yet.",
-      "disabledBadge": "disabled"
+      "disabledBadge": "disabled",
+      "edit": "Edit",
+      "editRoute": "Edit route {{model}}"
     },
     "pricing": {
       "unconvertible": "Priced in {{code}}, which has no conversion rate — this model's spend is missing from {{base}} totals and budgets.",

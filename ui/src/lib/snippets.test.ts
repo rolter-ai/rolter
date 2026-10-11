@@ -134,16 +134,88 @@ describe("renderSnippet", () => {
   });
 });
 
+describe("a turn that carried an image (#2955)", () => {
+  const pictured: SnippetRequest = {
+    model: "gpt-4o",
+    messages: [
+      { role: "user", content: "what is in this picture?", image: { mime: "image/png" } },
+      { role: "assistant", content: "A cat." },
+      { role: "user", content: "and the colour?" },
+    ],
+  };
+  const DATA_URL = /data:image\/png;base64,[A-Za-z0-9+/=]{20,}/;
+
+  test("curl keeps the content parts and reads the file into the url", () => {
+    const out = renderSnippet("curl", pictured, SAVED);
+    expect(out).toContain("IMAGE_B64=$(base64 < image.png | tr -d '\\n')");
+    expect(out).toContain(`'"$IMAGE_B64"'`);
+    const body = curlBody(out, "<b64>");
+    expect(body.messages).toEqual([
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "what is in this picture?" },
+          { type: "image_url", image_url: { url: "data:image/png;base64,<b64>" } },
+        ],
+      },
+      { role: "assistant", content: "A cat." },
+      { role: "user", content: "and the colour?" },
+    ]);
+  });
+
+  test("python and javascript read the file and keep the parts", () => {
+    const py = renderSnippet("python", pictured, SAVED);
+    expect(py).toContain("import base64");
+    expect(py).toContain('open("image.png", "rb")');
+    expect(py).toContain('"type": "image_url"');
+    expect(py).toContain('f"data:image/png;base64,{image}"');
+    const js = renderSnippet("javascript", pictured, SAVED);
+    expect(js).toContain('import { readFileSync } from "node:fs"');
+    expect(js).toContain('readFileSync("image.png").toString("base64")');
+    expect(js).toContain('type: "image_url"');
+    expect(js).toContain("`data:image/png;base64,${image}`");
+  });
+
+  test("no language inlines a data url", () => {
+    for (const lang of SNIPPET_LANGS) {
+      expect(renderSnippet(lang, pictured, SAVED)).not.toMatch(DATA_URL);
+    }
+  });
+
+  test("a text-only request imports and reads nothing", () => {
+    expect(renderSnippet("python", REQ, SAVED)).not.toContain("base64");
+    expect(renderSnippet("javascript", REQ, SAVED)).not.toContain("readFileSync");
+    expect(renderSnippet("curl", REQ, SAVED)).not.toContain("base64");
+  });
+
+  test("several images get a file and a variable each", () => {
+    const two: SnippetRequest = {
+      model: "gpt-4o",
+      messages: [
+        { role: "user", content: "a", image: { mime: "image/png" } },
+        { role: "user", content: "b", image: { mime: "image/jpeg" } },
+      ],
+    };
+    const out = renderSnippet("curl", two, SAVED);
+    expect(out).toContain("IMAGE_B64_1=$(base64 < image-1.png");
+    expect(out).toContain("IMAGE_B64_2=$(base64 < image-2.jpg");
+    expect(renderSnippet("python", two, SAVED)).toContain("image_2 = base64");
+    expect(renderSnippet("javascript", two, SAVED)).toContain("const image2 = readFileSync");
+  });
+});
+
 /**
  * The JSON body of a curl snippet, read back the way a POSIX shell reads the
  * single-quoted `-d` argument: `'\''` is a quote closed, an escaped quote, and
  * the quote opened again.
  */
-function curlBody(out: string) {
-  const quoted = out.slice(out.indexOf("-d '") + 4, out.lastIndexOf("'"));
-  return JSON.parse(quoted.split(`'\\''`).join("'")) as {
+function curlBody(out: string, picture = "") {
+  const quoted = out.slice(out.indexOf("\n  -d '") + 7, out.lastIndexOf("'"));
+  // the splice of a picture variable stands in for the base64 the file holds
+  const spliced = quoted.replace(/'"\$IMAGE_B64\w*"'/g, picture);
+  return JSON.parse(spliced.split(`'\\''`).join("'")) as {
     model: string;
-    messages: { role: string; content: string }[];
+    messages: { role: string; content: unknown }[];
     stream?: boolean;
   };
 }

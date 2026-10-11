@@ -432,9 +432,13 @@ pub fn build_router(state: AppState, metrics_path: &str, max_body_bytes: usize) 
             state.clone(),
             handlers::enforce_required_headers,
         ))
-        // ensure every request carries an x-request-id (generated when absent)
-        // and echo it on the response, for end-to-end correlation
-        .layer(axum::middleware::from_fn(trace::ensure_request_id))
+        // ensure every request carries a request id in the configured header
+        // (generated when absent) and echo it on the response, for end-to-end
+        // correlation. outside the ingress filter, so a refusal carries one too
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            trace::ensure_request_id,
+        ))
         // surface 4xx/5xx on the terminal at the default `info` filter; the stock
         // hook logs every response at `debug`, hiding errors in `uvx rolter`
         // (ROL-230). on_failure is disabled so classified 5xx are not double-logged

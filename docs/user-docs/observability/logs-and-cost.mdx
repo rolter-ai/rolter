@@ -30,7 +30,7 @@ Every request from a caller the gateway has identified writes one row to the `re
 | Field                   | Type          | Description                                                                                                                                     |
 | ----------------------- | ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
 | `ts`                    | DateTime64(3) | When the request **started** — the instant `latency_ms` is measured from                                                                        |
-| `request_id`            | String        | Unique request identifier, echoed in the `x-request-id` response header                                                                         |
+| `request_id`            | String        | Unique request identifier, echoed in the request id response header (`x-request-id` by default)                                                 |
 | `log_id`                | String        | A key the gateway mints for each request; it ties a row to its captured body. Empty on rows written before it existed                           |
 | `trace_id`              | String        | The caller's distributed-trace id (W3C `traceparent` or B3); empty when the caller sent none                                                    |
 | `model`                 | String        | The public model name the client requested                                                                                                      |
@@ -404,7 +404,7 @@ The control plane checks which of the four columns the table has by reading `sys
 
 ## Finding one request by its id
 
-Every gateway response carries `x-request-id`, and the same id is the row's `request_id`. When a client reports a failed call, that id takes you straight to it:
+Every gateway response carries `x-request-id` (or the header the deployment set as its [request ID header](/configuration/client-settings#request-id-header)), and the same id is the row's `request_id`. When a client reports a failed call, that id takes you straight to it:
 
 ```bash
 curl -si https://gateway.example.com/v1/chat/completions ... | grep -i x-request-id

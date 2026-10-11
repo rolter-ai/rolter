@@ -118,6 +118,7 @@ pub struct RealtimeQuery {
 pub async fn realtime(
     State(state): State<AppState>,
     headers: HeaderMap,
+    request_id: crate::trace::RequestId,
     Query(query): Query<RealtimeQuery>,
     ws: WebSocketUpgrade,
 ) -> Response {
@@ -227,12 +228,9 @@ pub async fn realtime(
         Err(message) => return api_error(StatusCode::BAD_GATEWAY, &message),
     };
 
-    // the ensure_request_id middleware guarantees this header is present
-    let request_id = headers
-        .get(crate::trace::REQUEST_ID_HEADER)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or_default()
-        .to_string();
+    // set by the ensure_request_id middleware, under whichever header the
+    // snapshot names
+    let request_id = request_id.as_str().to_string();
     crate::trace::record_tenant(&scope.org, &scope.team, &scope.project);
     // resolved before `scope` moves into the meter, and pinned for the session
     let trace_id = crate::trace::request_trace_id(&headers);
@@ -351,7 +349,7 @@ async fn connect_selected(
                 });
             }
             Err(error) => {
-                last_error = format!("upstream realtime connection failed: {error}");
+                last_error = connect_failure_message(&error);
                 if snap.cooldown.enabled() {
                     state
                         .cooldowns
@@ -362,6 +360,15 @@ async fn connect_selected(
         }
     }
     Err(last_error)
+}
+
+/// The `502` body for a failed upstream handshake. A tungstenite URL error
+/// quotes the address it was given, which can carry a credential, so the text
+/// is masked before it reaches the caller.
+fn connect_failure_message(error: &dyn std::fmt::Display) -> String {
+    rolter_core::redact::redact_urls_in_text(&format!(
+        "upstream realtime connection failed: {error}"
+    ))
 }
 
 /// Flatten routes into their strategy-led target order. Connections are tried
@@ -782,10 +789,20 @@ fn api_error(status: StatusCode, message: &str) -> Response {
 
 #[cfg(test)]
 mod tests {
-    use super::{realtime_url, Sessions};
+    use super::{connect_failure_message, realtime_url, Sessions};
     use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
     use std::sync::Arc;
     use std::time::Duration;
+
+    #[test]
+    fn a_connect_failure_body_does_not_quote_a_url_credential() {
+        let secret = format!("tok-{}", uuid::Uuid::new_v4().simple());
+        let err =
+            format!("unable to connect to wss://user:{secret}@rt.example/v1?api_key={secret}");
+        let body = connect_failure_message(&err);
+        assert!(body.starts_with("upstream realtime connection failed"));
+        assert!(!body.contains(&secret), "{body}");
+    }
 
     /// The drain is what keeps the runtime alive under a meter's last flush,
     /// so it must hold for as long as any meter is still running.
