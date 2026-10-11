@@ -55,10 +55,12 @@ async fn serve(app: Router) -> SocketAddr {
     addr
 }
 
-/// An address nothing listens on: bound to learn a free port, then released.
-async fn dead_address() -> SocketAddr {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    listener.local_addr().unwrap()
+/// An address that refuses connections at once. Port 1 on loopback is
+/// privileged, so no parallel test can start listening on it, which a port
+/// bound and then released does not promise: under nextest another test's stub
+/// server can take that port before the gateway connects (#2983).
+fn dead_address() -> SocketAddr {
+    SocketAddr::from(([127, 0, 0, 1], 1))
 }
 
 /// A stand-in for the ClickHouse HTTP interface keeping every `request_logs`
@@ -577,7 +579,7 @@ async fn a_request_that_succeeded_after_a_failover_records_its_attempts() {
 /// A connection that fails before any status line has no upstream status.
 #[tokio::test]
 async fn a_connection_that_fails_is_logged_without_an_upstream_status() {
-    let dead = dead_address().await;
+    let dead = dead_address();
     let rows = Rows::default();
     let config = config_over(
         rows.serve().await,
@@ -601,7 +603,7 @@ async fn a_connection_that_fails_is_logged_without_an_upstream_status() {
 /// 502 nor the request-log row the dashboard shows may repeat them.
 #[tokio::test]
 async fn a_connection_that_fails_does_not_repeat_the_provider_credentials() {
-    let dead = dead_address().await;
+    let dead = dead_address();
     let secret = format!("pw-{}", uuid::Uuid::new_v4().simple());
     let mut gone = provider("gone", ProviderKind::OpenaiCompatible, dead);
     gone.api_base = format!("http://svc:{secret}@{dead}/v1?api_key={secret}");
