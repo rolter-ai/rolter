@@ -297,14 +297,18 @@ fn strip_url(err: reqwest::Error) -> anyhow::Error {
     err.without_url().into()
 }
 
-/// Map a bucket name to a ClickHouse start-of-interval function. Whitelisted so
-/// the returned string is safe to splice into SQL.
-pub(crate) fn bucket_fn(bucket: &str) -> Option<&'static str> {
+/// Map a bucket name to a ClickHouse start-of-interval expression over `ts`.
+/// Whitelisted so the returned string is safe to splice into SQL. The zone is
+/// always explicit: without it the boundary is computed in the ClickHouse
+/// server's own zone, so a day starts at `21:00Z` on a Moscow server (#2984).
+/// `toStartOfWeek` takes the zone as its third argument, after the mode (0 is
+/// Sunday, as before).
+pub(crate) fn bucket_expr(bucket: &str) -> Option<&'static str> {
     match bucket {
-        "hour" => Some("toStartOfHour"),
-        "day" => Some("toStartOfDay"),
-        "week" => Some("toStartOfWeek"),
-        "month" => Some("toStartOfMonth"),
+        "hour" => Some("toStartOfHour(ts, 'UTC')"),
+        "day" => Some("toStartOfDay(ts, 'UTC')"),
+        "week" => Some("toStartOfWeek(ts, 0, 'UTC')"),
+        "month" => Some("toStartOfMonth(ts, 'UTC')"),
         _ => None,
     }
 }
@@ -419,8 +423,12 @@ pub(crate) fn with_access(
 /// `parseDateTime64BestEffort('')` throws "Cannot read DateTime" before the
 /// empty-string branch is ever selected (#1177). With `OrZero` the failed parse
 /// yields an unused epoch value and the `if` still picks the default bound.
-pub(crate) const WHERE_WINDOW: &str = "ts >= if({since:String} = '', now64(3) - interval 7 day, parseDateTime64BestEffortOrZero({since:String})) \
-     and ts < if({until:String} = '', now64(3), parseDateTime64BestEffortOrZero({until:String}))";
+///
+/// Both parses pass scale `3` and the zone `'UTC'`, so a zone-less bound
+/// (`2026-08-06`) means UTC midnight whatever zone the ClickHouse server runs
+/// in; a bound with `Z` or an offset keeps its own instant (#2984).
+pub(crate) const WHERE_WINDOW: &str = "ts >= if({since:String} = '', now64(3) - interval 7 day, parseDateTime64BestEffortOrZero({since:String}, 3, 'UTC')) \
+     and ts < if({until:String} = '', now64(3), parseDateTime64BestEffortOrZero({until:String}, 3, 'UTC'))";
 
 /// The key a captured body is joined to its log row on, evaluated against
 /// whichever table the clause sits in; both carry the same columns it reads.
@@ -670,7 +678,7 @@ async fn timeseries(
         Err(resp) => return resp,
     };
     let bucket = q.window.bucket.as_deref().unwrap_or("day");
-    let Some(bucket_expr) = bucket_fn(bucket) else {
+    let Some(bucket_expr) = bucket_expr(bucket) else {
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({"error": {"message": "bucket must be one of hour|day|week|month"}})),
@@ -678,7 +686,7 @@ async fn timeseries(
             .into_response();
     };
     let sql = format!(
-        "select {bucket_expr}(ts) as bucket, \
+        "select {bucket_expr} as bucket, \
                 {REQUESTS} as requests, \
                 {TOKENS} as tokens, \
                 {COST} as cost_usd \
@@ -1300,14 +1308,37 @@ mod tests {
     }
 
     #[test]
-    fn bucket_fn_whitelists() {
-        assert_eq!(bucket_fn("hour"), Some("toStartOfHour"));
-        assert_eq!(bucket_fn("day"), Some("toStartOfDay"));
-        assert_eq!(bucket_fn("week"), Some("toStartOfWeek"));
-        assert_eq!(bucket_fn("month"), Some("toStartOfMonth"));
+    fn bucket_expr_whitelists() {
+        assert_eq!(bucket_expr("hour"), Some("toStartOfHour(ts, 'UTC')"));
+        assert_eq!(bucket_expr("day"), Some("toStartOfDay(ts, 'UTC')"));
+        assert_eq!(bucket_expr("week"), Some("toStartOfWeek(ts, 0, 'UTC')"));
+        assert_eq!(bucket_expr("month"), Some("toStartOfMonth(ts, 'UTC')"));
         // anything else is rejected, so it can never be spliced into SQL
-        assert_eq!(bucket_fn("day; drop table request_logs"), None);
-        assert_eq!(bucket_fn(""), None);
+        assert_eq!(bucket_expr("day; drop table request_logs"), None);
+        assert_eq!(bucket_expr(""), None);
+    }
+
+    #[test]
+    fn bucket_boundaries_and_window_bounds_are_computed_in_utc() {
+        // a server on Europe/Moscow starts a day at 21:00Z unless the zone is
+        // explicit (#2984)
+        for bucket in ["hour", "day", "week", "month"] {
+            let expr = bucket_expr(bucket).unwrap();
+            assert!(expr.starts_with("toStartOf"), "{expr}");
+            assert!(
+                expr.ends_with(", 'UTC')"),
+                "{bucket} bucket has no zone: {expr}"
+            );
+        }
+        // a zone-less since/until is read as UTC, not as the server's zone
+        assert_eq!(WHERE_WINDOW.matches("{since:String}, 3, 'UTC')").count(), 1);
+        assert_eq!(WHERE_WINDOW.matches("{until:String}, 3, 'UTC')").count(), 1);
+        assert_eq!(
+            WHERE_WINDOW
+                .matches("parseDateTime64BestEffortOrZero(")
+                .count(),
+            2
+        );
     }
 
     #[test]
