@@ -13,6 +13,7 @@ import {
   type AccessProfileAssignmentRow,
   type AccessProfileRow,
 } from "@/lib/api";
+import { useOptionalAuth } from "@/lib/auth";
 import { errorDetail, useToast } from "@/lib/toast";
 
 type Kind = "user" | "team";
@@ -40,10 +41,15 @@ export function AssignProfileSheet({
   const [kind, setKind] = React.useState<Kind>("user");
   const [subject, setSubject] = React.useState("");
 
-  // a profile grants inside its own org, so both lists are that org's
+  // a profile grants inside its own org, so both lists are that org's. a
+  // superadmin also gets the accounts that hold no membership anywhere, such as
+  // the first administrator the seeder creates, which are otherwise nowhere to
+  // pick (#3010); the control plane ignores the flag for anyone else. the flag
+  // is in the key so the plain list other screens cache is not stood in for
+  const callerIsSuperadmin = !!useOptionalAuth()?.user?.is_superadmin;
   const users = useQuery({
-    queryKey: ["users", profile.org_id],
-    queryFn: () => fetchUsers(profile.org_id),
+    queryKey: ["users", profile.org_id, { includeUnassigned: callerIsSuperadmin }],
+    queryFn: () => fetchUsers(profile.org_id, { includeUnassigned: callerIsSuperadmin }),
     retry: false,
   });
   const orgScope = useOrgScope(profile.org_id);

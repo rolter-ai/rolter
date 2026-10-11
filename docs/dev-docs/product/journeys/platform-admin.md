@@ -120,10 +120,10 @@ trust?** Branches A1-a to A1-c are alternatives; A1-d and A1-e combine with any.
 
 ### A1-e — custom roles and access profiles (optional)
 
-| #     | step                                                        | where                                | expect                                                           | status   |
-| ----- | ----------------------------------------------------------- | ------------------------------------ | ---------------------------------------------------------------- | -------- |
-| A1e.1 | define a role that widens a built-in one by specific grants | **Governance → Roles & Permissions** | e.g. "viewer, plus create routes in project X"                   | verified |
-| A1e.2 | hand it to people, with an optional model/route policy      | **Governance → Access Profiles**     | the grant shows in `GET /api/v1/rbac/effective` for those people | verified |
+| #     | step                                                        | where                                                                                          | expect                                                           | status   |
+| ----- | ----------------------------------------------------------- | ---------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- | -------- |
+| A1e.1 | define a role that widens a built-in one by specific grants | **Governance → Roles & Permissions**                                                           | e.g. "viewer, plus create routes in project X"                   | verified |
+| A1e.2 | hand it to people, with an optional model/route policy      | **Governance → Access Profiles**, or the **Access profiles** column on **Users** and **Teams** | the grant shows in `GET /api/v1/rbac/effective` for those people | verified |
 
 ## A2 — lay out the tenancy
 

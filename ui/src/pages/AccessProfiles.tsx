@@ -40,6 +40,7 @@ import {
   type AccessProfileRow,
   type CustomRoleRow,
 } from "@/lib/api";
+import { useOptionalAuth } from "@/lib/auth";
 import { useScope } from "@/lib/scope";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useScreenReady } from "@/lib/ux-react";
@@ -90,9 +91,10 @@ function ProfileCard({
   const orgScope = useOrgScope(profile.org_id);
   // the same cache the assignment sheet reads, so naming who a profile reaches
   // costs the screen one users request however many cards it draws
+  const callerIsSuperadmin = !!useOptionalAuth()?.user?.is_superadmin;
   const people = useQuery({
-    queryKey: ["users", profile.org_id],
-    queryFn: () => fetchUsers(profile.org_id),
+    queryKey: ["users", profile.org_id, { includeUnassigned: callerIsSuperadmin }],
+    queryFn: () => fetchUsers(profile.org_id, { includeUnassigned: callerIsSuperadmin }),
     retry: false,
   });
   // a subject this account cannot resolve is drawn by its id rather than hidden:

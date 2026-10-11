@@ -13,6 +13,12 @@ import { ListSummary, PageBody, Toolbar } from "@/components/screen";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import {
+  AssignSubjectProfileSheet,
+  SubjectProfiles,
+  UnassignSubjectProfileDialog,
+  type UnassignTarget,
+} from "@/components/SubjectProfiles";
 import { createTeam, fetchBudgets, fetchMemberships, fetchTeams } from "@/lib/api";
 import { useCurrencyCode } from "@/lib/currency";
 import { useFormat } from "@/lib/i18n/format";
@@ -58,6 +64,8 @@ export default function Teams() {
 
   const [addOpen, setAddOpen] = React.useState(false);
   const [name, setName] = React.useState("");
+  const [profileTeam, setProfileTeam] = React.useState<{ id: string; name: string } | null>(null);
+  const [unassignProfile, setUnassignProfile] = React.useState<UnassignTarget | null>(null);
 
   const create = useMutation({
     mutationFn: () => createTeam(scope.orgId as string, { name }),
@@ -159,6 +167,18 @@ export default function Teams() {
                   </div>
                 </div>
               </div>
+              {scope.orgId && (
+                <div className="flex flex-col gap-1.5 border-t border-[color:var(--border-subtle)] pt-3">
+                  <Overline>{t("pages.teams.profiles")}</Overline>
+                  <SubjectProfiles
+                    orgId={scope.orgId}
+                    subject={{ team_id: team.id }}
+                    name={team.name}
+                    onAssign={() => setProfileTeam({ id: team.id, name: team.name })}
+                    onRemove={setUnassignProfile}
+                  />
+                </div>
+              )}
               {admin && (
                 <div className="flex items-center gap-2 border-t border-[color:var(--border-subtle)] pt-3">
                   <span className="text-xs text-[color:var(--text-subtle)]">
@@ -173,6 +193,19 @@ export default function Teams() {
           );
         })}
       </div>
+
+      {profileTeam && scope.orgId && (
+        <AssignSubjectProfileSheet
+          orgId={scope.orgId}
+          subject={{ team_id: profileTeam.id }}
+          name={profileTeam.name}
+          onClose={() => setProfileTeam(null)}
+        />
+      )}
+      <UnassignSubjectProfileDialog
+        target={unassignProfile}
+        onClose={() => setUnassignProfile(null)}
+      />
 
       <EditorSheet
         name="team-create"

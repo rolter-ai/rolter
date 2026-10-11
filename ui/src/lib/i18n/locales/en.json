@@ -2837,6 +2837,7 @@
       "summary_one": "{{count}} team · group users, share budgets and access",
       "summary_other": "{{count}} teams · group users, share budgets and access",
       "members": "Members",
+      "profiles": "Access profiles",
       "budget": "Budget",
       "admin": "admin",
       "addSubtitle": "Group users, share budgets and access.",
@@ -2910,6 +2911,7 @@
       "inviteAction": "Invite user",
       "colUser": "User",
       "colRoles": "Roles",
+      "colProfiles": "Access profiles",
       "colStatus": "Status",
       "colCreated": "Created",
       "noRoles": "no role in this org",
@@ -4632,5 +4634,21 @@
     "hintLocked": "Moving it to another project, or making it organization-wide, takes an organization admin.",
     "orgWide": "Organization-wide",
     "badge": "Project: {{project}}"
+  },
+  "subjectProfiles": {
+    "none": "no access profile",
+    "unread": "profiles not loaded",
+    "listLabel": "Access profiles held by {{name}}",
+    "assign": "Assign an access profile to {{name}}",
+    "remove": "Remove {{profile}} from {{name}}",
+    "sheetTitle": "Assign an access profile to {{name}}",
+    "sheetSubtitleUser": "The profile's roles and model policy apply to this person as soon as it is saved.",
+    "sheetSubtitleTeam": "Every current and future member of the team picks the profile's roles and model policy up.",
+    "field": "Access profile",
+    "fieldHint": "Profiles of this organization that this one does not hold yet.",
+    "nothingLeft": "No profile left to assign",
+    "unavailable": "The list could not be loaded",
+    "assigned": "{{profile}} assigned to {{name}}",
+    "failed": "Could not assign the profile"
   }
 }

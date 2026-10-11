@@ -47,6 +47,12 @@ import {
   Toolbar,
   primaryColumn,
 } from "@/components/screen";
+import {
+  AssignSubjectProfileSheet,
+  SubjectProfiles,
+  UnassignSubjectProfileDialog,
+  type UnassignTarget,
+} from "@/components/SubjectProfiles";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Combobox } from "@/components/ui/combobox";
@@ -151,6 +157,8 @@ export default function Users() {
   const [inviteOpen, setInviteOpen] = React.useState(false);
   const [editUser, setEditUser] = React.useState<UserRow | null>(null);
   const [roleUser, setRoleUser] = React.useState<UserRow | null>(null);
+  const [profileUser, setProfileUser] = React.useState<UserRow | null>(null);
+  const [unassignProfile, setUnassignProfile] = React.useState<UnassignTarget | null>(null);
   const [revokeTarget, setRevokeTarget] = React.useState<GrantTarget | null>(null);
   const [changeTarget, setChangeTarget] = React.useState<GrantTarget | null>(null);
   const [deactivateTarget, setDeactivateTarget] = React.useState<UserRow | null>(null);
@@ -228,7 +236,7 @@ export default function Users() {
 
   // the roles column holds one line per grant, each with its own two controls,
   // so it takes the widest share and the table a floor that fits a grant line
-  const GRID = `${primaryColumn(1.5)} 2.2fr 110px 0.9fr 110px`;
+  const GRID = `${primaryColumn(1.5)} 2.2fr 1.6fr 110px 0.9fr 110px`;
 
   return (
     <PageBody>
@@ -283,10 +291,11 @@ export default function Users() {
         />
       )}
 
-      <ListTable label={t("screens.gov-users.title")} minWidth={960}>
+      <ListTable label={t("screens.gov-users.title")} minWidth={1180}>
         <ListHeader grid={GRID}>
           <ListHeaderCell>{t("pages.users.colUser")}</ListHeaderCell>
           <ListHeaderCell>{t("pages.users.colRoles")}</ListHeaderCell>
+          <ListHeaderCell>{t("pages.users.colProfiles")}</ListHeaderCell>
           <ListHeaderCell>{t("pages.users.colStatus")}</ListHeaderCell>
           <ListHeaderCell>{t("pages.users.colCreated")}</ListHeaderCell>
           <ListActionsHeader />
@@ -349,6 +358,17 @@ export default function Users() {
                   onChange={(grant) => setChangeTarget({ grant, user })}
                   onRevoke={(grant) => setRevokeTarget({ grant, user })}
                 />
+              </ListCell>
+              <ListCell className="min-w-0">
+                {orgId && (
+                  <SubjectProfiles
+                    orgId={orgId}
+                    subject={{ user_id: user.id }}
+                    name={user.display_name || user.email}
+                    onAssign={() => setProfileUser(user)}
+                    onRemove={setUnassignProfile}
+                  />
+                )}
               </ListCell>
               <ListCell>
                 <Badge dot tone={active ? "success" : "danger"}>
@@ -456,6 +476,18 @@ export default function Users() {
         onClose={() => setEditUser(null)}
         onDone={invalidate}
         onDelete={setDeleteTarget}
+      />
+      {profileUser && orgId && (
+        <AssignSubjectProfileSheet
+          orgId={orgId}
+          subject={{ user_id: profileUser.id }}
+          name={profileUser.display_name || profileUser.email}
+          onClose={() => setProfileUser(null)}
+        />
+      )}
+      <UnassignSubjectProfileDialog
+        target={unassignProfile}
+        onClose={() => setUnassignProfile(null)}
       />
       {roleUser && orgId && (
         <AddRoleDialog
