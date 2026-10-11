@@ -266,13 +266,16 @@ fn check_example_values(env: &dyn Env, out: &mut Vec<Finding>) {
 /// Only an open bind is dangerous: with `ROLTER_ADMIN_TOKEN` set every
 /// management route is authenticated, and a pod has to listen on every
 /// interface for its Service to reach it, so the chart's `0.0.0.0` is intended.
+///
+/// An unset `ROLTER_CONTROL_HOST` is not a finding: the control plane's own
+/// default bind is `127.0.0.1`, so nothing is exposed by omission.
 fn check_exposure(env: &dyn Env, out: &mut Vec<Finding>) {
     if env.get("ROLTER_ADMIN_TOKEN").is_some() {
         return;
     }
     if env
         .get("ROLTER_CONTROL_HOST")
-        .is_none_or(|h| h == "0.0.0.0")
+        .is_some_and(|h| h == "0.0.0.0")
     {
         out.push(Finding::warn(
             "control plane binds 0.0.0.0",
@@ -1258,12 +1261,12 @@ mod tests {
     }
 
     #[test]
-    fn an_unset_control_host_warns_because_the_default_is_all_interfaces() {
+    fn an_unset_control_host_does_not_warn_because_the_default_is_loopback() {
         let mut env = FakeEnv::healthy();
         env.0.remove("ROLTER_CONTROL_HOST");
         env.0.remove("ROLTER_ADMIN_TOKEN");
         let findings = run_checks(&env, Role::Control);
-        assert!(findings.iter().any(|f| f.title.contains("0.0.0.0")));
+        assert!(!findings.iter().any(|f| f.title.contains("0.0.0.0")));
     }
 
     #[test]
