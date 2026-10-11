@@ -135,7 +135,7 @@ impl ClickHouseClient {
         let mut req = self
             .client
             .post(format!("{}/", self.base))
-            .query(&[("default_format", "JSON")]);
+            .query(&READ_SETTINGS);
         for (k, v) in params {
             req = req.query(&[(k.as_str(), v.as_str())]);
         }
@@ -535,6 +535,17 @@ pub(crate) fn next_keyset_cursor(rows: &[Value], id_column: &str) -> Option<Stri
         row.get(id_column)?.as_str()?
     ))
 }
+
+/// The settings every read carries. `date_time_output_format=iso` makes a
+/// `DateTime64` leave as `2026-08-06T10:00:00.123Z`: the instant in UTC with
+/// its zone. The default prints the wall clock of the server's own zone with
+/// none (`2026-08-06 13:00:00.123`), which the dashboard's `new Date(...)`
+/// reads as browser-local time (#2255). ClickHouse converts to UTC itself, so
+/// the output is right whatever zone the server runs in.
+const READ_SETTINGS: [(&str, &str); 2] = [
+    ("default_format", "JSON"),
+    ("date_time_output_format", "iso"),
+];
 
 #[allow(clippy::result_large_err)]
 pub(crate) fn client_or_503(state: &crate::ControlState) -> Result<&ClickHouseClient, Response> {
@@ -1148,6 +1159,35 @@ mod tests {
 
     /// A regression must fail the test, not hang the suite.
     const CEILING: Duration = Duration::from_secs(10);
+
+    #[tokio::test]
+    async fn reads_ask_clickhouse_for_iso_timestamps_with_their_zone() {
+        let seen: Arc<parking_lot::Mutex<Vec<String>>> = Arc::default();
+        let sink = seen.clone();
+        let app = axum::Router::new().fallback(axum::routing::post(
+            move |axum::extract::RawQuery(q): axum::extract::RawQuery| {
+                let sink = sink.clone();
+                async move {
+                    sink.lock().push(q.unwrap_or_default());
+                    // what clickhouse answers under `date_time_output_format=iso`
+                    Json(json!({"data": [{"ts": "2026-08-06T10:00:00.123Z"}]}))
+                }
+            },
+        ));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await });
+
+        let rows = ClickHouseClient::new(&url)
+            .query("select ts from t format JSON", &[("p".into(), "v".into())])
+            .await
+            .expect("the stub answers");
+        assert_eq!(rows[0]["ts"], "2026-08-06T10:00:00.123Z");
+        let query = seen.lock()[0].clone();
+        assert!(query.contains("date_time_output_format=iso"), "{query}");
+        assert!(query.contains("default_format=JSON"), "{query}");
+        assert!(query.contains("p=v"), "{query}");
+    }
 
     #[tokio::test]
     async fn a_stalled_clickhouse_read_times_out_without_leaking_the_url() {

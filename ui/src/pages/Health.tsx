@@ -73,9 +73,11 @@ function useSlaLabel(): (state: SlaState) => string {
 }
 
 /**
- * A bucket's start in milliseconds. ClickHouse writes `2026-08-06 10:00:00`
- * with no zone, in its own; every bucket shares that zone, so reading them all
- * as UTC keeps the gaps between them right, which is all `recentBurn` compares.
+ * A bucket's start in milliseconds. The control plane asks ClickHouse for ISO
+ * output, so a bucket carries its zone (`2026-08-06T10:00:00Z`) and is read as
+ * is. A zone-less `2026-08-06 10:00:00`, from a control plane that predates
+ * that (#2255), is read as UTC: every bucket shares the server's zone, so the
+ * gaps between them stay right, which is all `recentBurn` compares.
  */
 function bucketStart(bucket: string): number {
   const iso = bucket.replace(" ", "T");
