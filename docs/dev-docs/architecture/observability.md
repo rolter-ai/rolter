@@ -852,7 +852,7 @@ Milliseconds are kept (a `DateTime64(0)` or `DateTime` drops them, as before), a
 
 The same default hit `WHERE_WINDOW`: `parseDateTime64BestEffortOrZero('2026-08-06')` read a zone-less `since`/`until` as midnight in the server's zone (`2026-08-05T21:00Z` on Moscow). Both bounds now parse with `, 3, 'UTC'`, so a bare date or zone-less date-time means UTC; a bound with `Z` or an offset keeps its own instant, and the dashboard always sends `toISOString()`. The keyset cursor parse is left alone: its timestamp is the `iso` string the API handed out, and a cursor minted before #2255 carries the server-zone wall clock, which the server's own zone still reads correctly.
 
-The alternative, `session_timezone=UTC` on every read, was rejected: it needs ClickHouse 23.6 or newer (an older server rejects the setting, failing every read rather than mis-bucketing), and it would also change how the cursor and every other zone-less literal parses. Measured against `clickhouse/clickhouse-server:24-alpine` with `TZ=Europe/Moscow`, for a row written at `2026-08-31T21:30:00.123Z`:
+The alternative, `session_timezone=UTC` on every read, was rejected: it needs ClickHouse 23.6 or newer (an older server rejects the setting, failing every read rather than bucketing wrongly), and it would also change how the cursor and every other zone-less literal parses. Measured against `clickhouse/clickhouse-server:24-alpine` with `TZ=Europe/Moscow`, for a row written at `2026-08-31T21:30:00.123Z`:
 
 | expression              | before                 | after (`'UTC'`)        |
 | ----------------------- | ---------------------- | ---------------------- |
