@@ -3143,16 +3143,11 @@ async fn a_failure_hidden_by_failover_is_counted_against_the_target_that_failed(
 async fn a_superseded_attempt_is_not_counted_twice_by_the_error_row() {
     // two dead ports: every attempt is a connection failure, and the loop runs
     // out of untried targets before it runs out of retries
-    // the socket is bound but never listens: connects are refused, and holding
-    // it keeps the port from being handed to a parallel test
-    async fn dead_port() -> (tokio::net::TcpSocket, SocketAddr) {
-        let socket = tokio::net::TcpSocket::new_v4().unwrap();
-        socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
-        let addr = socket.local_addr().unwrap();
-        (socket, addr)
-    }
-    let (_guard_a, a) = dead_port().await;
-    let (_guard_b, b) = dead_port().await;
+    // privileged loopback ports refuse at once and no parallel test can start
+    // listening on them. a bound socket that never listens would do on linux
+    // only: macos drops the syn and the connect hangs until it times out (#2961)
+    let a = SocketAddr::from(([127, 0, 0, 1], 1));
+    let b = SocketAddr::from(([127, 0, 0, 1], 2));
 
     let mut config = config_for("test-model", vec![("a", a), ("b", b)]);
     config.cooldown.base_secs = 0;
