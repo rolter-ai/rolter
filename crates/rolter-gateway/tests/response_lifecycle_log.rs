@@ -40,10 +40,12 @@ async fn serve(app: Router) -> SocketAddr {
     addr
 }
 
-/// An address nothing listens on: bound to learn a free port, then released.
-async fn dead_address() -> SocketAddr {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    listener.local_addr().unwrap()
+/// An address that refuses connections at once. Port 1 on loopback is
+/// privileged, so no parallel test can start listening on it, which a port
+/// bound and then released does not promise: under nextest another test's stub
+/// server can take that port before the gateway connects (#2983).
+fn dead_address() -> SocketAddr {
+    SocketAddr::from(([127, 0, 0, 1], 1))
 }
 
 /// A stand-in for the ClickHouse HTTP interface keeping every `request_logs`
@@ -408,7 +410,7 @@ async fn a_provider_that_cannot_be_reached_is_logged_as_a_bad_gateway() {
 
     // the provider moves to an address nothing listens on; the stored response
     // stays in the registry across the reload
-    let dead = dead_address().await;
+    let dead = dead_address();
     let mut moved = config.clone();
     moved.providers[0].api_base = format!("http://{dead}");
     gw.state.reload(&moved, 2);
