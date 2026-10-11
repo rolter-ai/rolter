@@ -916,6 +916,45 @@ pub struct KvEventsConfig {
     pub stale_secs: u64,
 }
 
+impl KvEventsConfig {
+    /// Problems with the settings themselves, apart from whether the egress
+    /// policy allows the endpoint. Shared by the file config and the control
+    /// API so a stored provider is held to the same rules as a file one.
+    pub fn shape_problems(&self, provider: &str) -> Vec<String> {
+        let mut problems = Vec::new();
+        if !self.endpoint.starts_with("tcp://") || self.endpoint.len() <= "tcp://".len() {
+            problems.push(format!(
+                "provider '{provider}' kv_events.endpoint must be a non-empty tcp:// URL"
+            ));
+        }
+        if self.max_blocks == 0 || self.stale_secs == 0 {
+            problems.push(format!(
+                "provider '{provider}' kv_events max_blocks and stale_secs must be greater than zero"
+            ));
+        }
+        problems
+    }
+}
+
+impl LmCacheConfig {
+    /// Problems with the settings themselves, apart from the egress policy;
+    /// see [`KvEventsConfig::shape_problems`].
+    pub fn shape_problems(&self, provider: &str) -> Vec<String> {
+        let mut problems = Vec::new();
+        if !is_http_url(&self.endpoint) {
+            problems.push(format!(
+                "provider '{provider}' lmcache.endpoint must be an http(s) URL"
+            ));
+        }
+        if self.refresh_secs == 0 || self.stale_secs == 0 {
+            problems.push(format!(
+                "provider '{provider}' lmcache refresh_secs and stale_secs must be greater than zero"
+            ));
+        }
+        problems
+    }
+}
+
 fn default_kv_events_topic() -> String {
     "kv-events".to_string()
 }
@@ -4119,18 +4158,7 @@ impl GatewayConfig {
             ) {
                 problems.push(problem);
             }
-            if !kv.endpoint.starts_with("tcp://") || kv.endpoint.len() <= "tcp://".len() {
-                problems.push(format!(
-                    "provider '{}' kv_events.endpoint must be a non-empty tcp:// URL",
-                    provider.name
-                ));
-            }
-            if kv.max_blocks == 0 || kv.stale_secs == 0 {
-                problems.push(format!(
-                    "provider '{}' kv_events max_blocks and stale_secs must be greater than zero",
-                    provider.name
-                ));
-            }
+            problems.extend(kv.shape_problems(&provider.name));
         }
         if let Some(lmcache) = &provider.lmcache {
             if let Err(problem) = self.egress.check_url(
@@ -4139,18 +4167,7 @@ impl GatewayConfig {
             ) {
                 problems.push(problem);
             }
-            if !is_http_url(&lmcache.endpoint) {
-                problems.push(format!(
-                    "provider '{}' lmcache.endpoint must be an http(s) URL",
-                    provider.name
-                ));
-            }
-            if lmcache.refresh_secs == 0 || lmcache.stale_secs == 0 {
-                problems.push(format!(
-                    "provider '{}' lmcache refresh_secs and stale_secs must be greater than zero",
-                    provider.name
-                ));
-            }
+            problems.extend(lmcache.shape_problems(&provider.name));
         }
         problems
     }

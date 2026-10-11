@@ -177,6 +177,14 @@ fn render_provider_tier(out: &mut String, tier: &str, entries: &[ProviderConfig]
         if !provider.egress_proxies.is_empty() {
             key(out, "egress_proxies", &provider.egress_proxies);
         }
+        // inline tables, so they cannot capture the keys after them; every
+        // field is written out, which a re-import reads back identically
+        if let Some(kv) = &provider.kv_events {
+            key(out, "kv_events", kv);
+        }
+        if let Some(lmcache) = &provider.lmcache {
+            key(out, "lmcache", lmcache);
+        }
         // a file names no projects, so the scope round-trips as "the project
         // this file is imported into" (#1919)
         if provider.project_scoped {
@@ -776,6 +784,18 @@ models = ["gpt-4o"]
             "http://egress-a:3128".to_string(),
             "http://egress-b:3128".to_string(),
         ];
+        // #2236: the stored telemetry sources must survive the round trip
+        vllm.kv_events = Some(rolter_core::KvEventsConfig {
+            endpoint: "tcp://vllm-1:5557".to_string(),
+            topic: "kv".to_string(),
+            max_blocks: 500,
+            stale_secs: 12,
+        });
+        vllm.lmcache = Some(rolter_core::LmCacheConfig {
+            endpoint: "http://lmcache:9000".to_string(),
+            refresh_secs: 3,
+            stale_secs: 15,
+        });
         let price = config
             .model_prices
             .first_mut()
@@ -859,6 +879,32 @@ models = ["gpt-4o"]
             !rendered.contains("\n[[provider_groups]]"),
             "the deprecated flat array must not be emitted: {rendered}"
         );
+    }
+
+    /// #2236: a provider's telemetry sources leave with it and read back whole,
+    /// as inline tables that cannot capture the keys written after them.
+    #[test]
+    fn provider_telemetry_settings_round_trip() {
+        let rendered = render(&representative_config());
+        let back = GatewayConfig::from_toml_str(&rendered).expect("the export must re-parse");
+        let vllm = back
+            .providers
+            .iter()
+            .find(|p| p.name == "vllm-1")
+            .expect("the provider survives");
+        let kv = vllm.kv_events.as_ref().expect("kv_events survives");
+        assert_eq!(
+            (
+                kv.endpoint.as_str(),
+                kv.topic.as_str(),
+                kv.max_blocks,
+                kv.stale_secs
+            ),
+            ("tcp://vllm-1:5557", "kv", 500, 12)
+        );
+        let lmcache = vllm.lmcache.as_ref().expect("lmcache survives");
+        assert_eq!((lmcache.refresh_secs, lmcache.stale_secs), (3, 15));
+        assert_eq!(vllm.egress_proxy.as_deref(), Some("http://egress:3128"));
     }
 
     /// The `default` tier survives an export/import round trip.

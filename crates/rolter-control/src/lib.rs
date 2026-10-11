@@ -1772,6 +1772,8 @@ async fn seed_default_providers(pool: &sqlx::PgPool, config: &GatewayConfig) -> 
                 provider.api_key_env_name(),
                 provider.egress_proxy.as_deref(),
                 &provider.egress_proxies,
+                provider.kv_events.as_ref(),
+                provider.lmcache.as_ref(),
                 // `project_scoped` means the default project here (#1919)
                 provider.project_scoped.then_some(project_id),
             )
