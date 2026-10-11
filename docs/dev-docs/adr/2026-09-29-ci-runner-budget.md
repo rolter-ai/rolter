@@ -351,3 +351,26 @@ this decision depends on are linked above.
   way (PR median 8.3 min in both, burst 15.1 min folded against 15.4 separate)
   and it would save one slot per call, but static failures would then show about
   5 min later. It stays separate until #2037 stops the cold build.
+
+## Addendum (11 Oct 2026): the image smoke moved into `rust build`
+
+The layout table above and the last "Rejected" bullet describe
+`image smoke (published ports)` as a job of its own, kept separate until #2037
+stopped its cold build. #2037 did that in PR #2701: `rust build` now builds the
+dashboard, a debug build of the image binaries and a `runtime-prebuilt` image,
+then runs the published-ports smoke, all as steps of its own (the
+`image smoke (published ports)` rows of its report step). There is no
+separate smoke job any more, so a `quality.yml` call takes one slot fewer than
+the table says. The decision above is unchanged; only that row is out of date.
+
+PR #2701 also made the `rust-build` cache entry larger, since it now holds the
+debug build of the image binaries as well. The cache was already over
+GitHub's 10 GB limit before it (10.72 GB in #2037). On 11 Oct 2026
+`GET /repos/rolter-ai/rolter/actions/cache/usage` reported 11.07 GB across the
+active entries, with `rust-build` at 2.06 GB for the current `Cargo.lock` and
+1.90 GB for the previous one. Eviction is least recently used, so what goes is
+the previous lockfile's generation of each job's entry. Every current entry
+(`rust-build`, `rust-lint`, `test`, `coverage`, `codeql`) had been restored by
+that morning's runs, so the eviction is not thrashing `rust-build`. If a master
+run ever restores no `rust-build` entry while one for the same key was written
+the day before, that is the signal to file a follow-up (#2703).
