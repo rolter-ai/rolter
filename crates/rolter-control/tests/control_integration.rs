@@ -3049,6 +3049,188 @@ async fn a_route_with_unreadable_advanced_settings_is_not_served_open() {
     assert!(line.contains("advanced"), "{line}");
 }
 
+/// #2945: a stored provider whose own definition is invalid is left out of the
+/// snapshot, and so is every reference to it. A route that named it beside a
+/// healthy provider used to keep the dangling target, and `validate_snapshot`
+/// refused the whole snapshot with a 500 for every tenant. Now the route serves
+/// on the healthy target, a route with nothing else is dropped, a key that
+/// allowed only the omitted provider is denied rather than widened to every
+/// provider, and `GET /api/v1/config/problems` names each prune. The API
+/// refuses a malformed `api_base`, so the row is written with SQL, as an older
+/// build or a seed could leave it.
+#[tokio::test]
+async fn a_route_naming_an_omitted_provider_beside_a_healthy_one_still_serves() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let addr = serve(
+        rolter_control::test_app(pool.clone())
+            .await
+            .expect("build app"),
+    )
+    .await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let org_id: uuid::Uuid =
+        sqlx::query_scalar("insert into orgs (name, slug) values ('acme', 'acme') returning id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let team_id: uuid::Uuid =
+        sqlx::query_scalar("insert into teams (org_id, name) values ($1, 'core') returning id")
+            .bind(org_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let project_id: uuid::Uuid =
+        sqlx::query_scalar("insert into projects (team_id, name) values ($1, 'api') returning id")
+            .bind(team_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let mut provider_ids = std::collections::HashMap::new();
+    for (name, api_base) in [
+        ("healthy", "https://api.openai.com"),
+        ("broken", "not-a-url"),
+    ] {
+        let id: uuid::Uuid = sqlx::query_scalar(
+            "insert into providers (org_id, name, slug, kind, api_base, api_key_env)
+             values ($1, $2, $2, 'openai', $3, 'EDGE_KEY') returning id",
+        )
+        .bind(org_id)
+        .bind(name)
+        .bind(api_base)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        provider_ids.insert(name, id);
+    }
+    for (model, providers) in [
+        ("shared", ["healthy", "broken"].as_slice()),
+        ("solo", ["broken"].as_slice()),
+    ] {
+        let route_id: uuid::Uuid = sqlx::query_scalar(
+            "insert into routes (project_id, model, strategy) values ($1, $2, 'round_robin')
+             returning id",
+        )
+        .bind(project_id)
+        .bind(model)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        for provider in providers {
+            sqlx::query(
+                "insert into route_targets (route_id, provider_id, weight) values ($1, $2, 1)",
+            )
+            .bind(route_id)
+            .bind(provider_ids[provider])
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+    }
+    let mut key_ids = std::collections::HashMap::new();
+    for (name, providers) in [
+        ("mixed", vec!["broken", "healthy"]),
+        ("broken-only", vec!["broken"]),
+        ("open", vec![]),
+    ] {
+        let id: uuid::Uuid = sqlx::query_scalar(
+            "insert into virtual_keys (project_id, key_hash, key_prefix, name, providers)
+             values ($1, $2, 'sk-t', $3, $4) returning id",
+        )
+        .bind(project_id)
+        .bind(format!("hash-{}", uuid::Uuid::new_v4()))
+        .bind(name)
+        .bind(providers)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        key_ids.insert(name, id.to_string());
+    }
+
+    let response = client
+        .get(format!("{base}/internal/snapshot"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        reqwest::StatusCode::OK,
+        "one provider's defect must not refuse the snapshot"
+    );
+    let snapshot: Value = response.json().await.unwrap();
+    let config = &snapshot["config"];
+
+    let names = |items: &Value, field: &str| -> Vec<String> {
+        items
+            .as_array()
+            .unwrap_or_else(|| panic!("{field}: {snapshot}"))
+            .iter()
+            .map(|item| item[field].as_str().unwrap_or_default().to_string())
+            .collect()
+    };
+    assert_eq!(
+        names(&config["providers"], "name"),
+        ["healthy"],
+        "{snapshot}"
+    );
+    assert_eq!(names(&config["routes"], "model"), ["shared"], "{snapshot}");
+    assert_eq!(
+        names(&config["routes"][0]["targets"], "provider"),
+        ["healthy"],
+        "the route serves on its healthy target: {snapshot}"
+    );
+
+    // the key that allowed only the omitted provider is denied, not widened to
+    // every provider by an emptied allow-list
+    let keys = config["db_virtual_keys"].as_array().expect("keys");
+    let providers_of = |name: &str| -> Option<Vec<&str>> {
+        keys.iter().find(|k| k["id"] == key_ids[name]).map(|k| {
+            k["providers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(Value::as_str)
+                .collect()
+        })
+    };
+    assert_eq!(providers_of("mixed"), Some(vec!["healthy"]), "{snapshot}");
+    assert_eq!(providers_of("broken-only"), None, "{snapshot}");
+    assert_eq!(providers_of("open"), Some(vec![]), "{snapshot}");
+
+    let problems: Value = client
+        .get(format!("{base}/api/v1/config/problems"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let lines: Vec<&str> = problems["problems"]
+        .as_array()
+        .expect("problems")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    for needle in [
+        "provider 'broken' omitted from the snapshot".to_string(),
+        "route 'shared' target 'broken' omitted".to_string(),
+        "route 'solo' omitted".to_string(),
+        format!("virtual key '{}' omitted", key_ids["broken-only"]),
+        format!(
+            "virtual key '{}' allow-list entries 'broken' omitted",
+            key_ids["mixed"]
+        ),
+    ] {
+        assert!(
+            lines.iter().any(|line| line.contains(&needle)),
+            "{needle}: {lines:?}"
+        );
+    }
+}
+
 /// #2943: an unreadable `required_headers` used to load as no rule, and the
 /// ingress gate the operator configured stopped being enforced without a word.
 /// No snapshot is published while it cannot be read, so every gateway keeps the

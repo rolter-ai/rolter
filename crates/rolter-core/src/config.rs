@@ -3480,6 +3480,7 @@ impl GatewayConfig {
         // Cross-provider defects (empty or duplicated names) are deliberately
         // not considered here — silently dropping one of two colliding rows
         // would be worse than refusing, so `validate` still rejects those.
+        let mut omitted: std::collections::HashSet<String> = std::collections::HashSet::new();
         let invalid: Vec<(usize, String, Vec<String>)> = self
             .providers
             .iter()
@@ -3503,10 +3504,23 @@ impl GatewayConfig {
                     "provider '{name}' omitted from the snapshot: {}",
                     problems.join("; ")
                 ));
+                omitted.insert(name);
             }
+        }
+        // a name another provider still carries is not omitted: two rows
+        // sharing a name is a cross-row defect `validate` reports once one
+        // of them is gone, and pruning the references would take the
+        // surviving row's traffic with it
+        for provider in &self.providers {
+            omitted.remove(provider.name.as_str());
         }
 
         self.report_denied_operator_urls(&mut warnings);
+        // the omission above leaves every reference to that provider dangling,
+        // and `validate_snapshot` refuses the whole snapshot over a dangling
+        // one (#2945). prune each before the route pass below, which then
+        // drops a route left with nothing to serve
+        self.prune_omitted_provider_targets(&omitted, &mut warnings);
         self.prune_cross_project_targets(&mut warnings);
 
         let provider_names: std::collections::HashSet<&str> = self
@@ -3552,6 +3566,11 @@ impl GatewayConfig {
                 ));
             }
         }
+
+        // what is left to repair names an omitted provider from outside a
+        // route's targets, and is settled after the route pass so a route
+        // that was dropped does not also report a cache it no longer has
+        self.prune_omitted_provider_settings(&omitted, &mut warnings);
 
         // a route override naming a guardrail rule the effective set lacks is
         // pruned here, not refused: the store loads only enabled rows, so a
@@ -3644,43 +3663,107 @@ impl GatewayConfig {
     /// org-wide group owns no project, so it may not hold a scoped provider. A
     /// route or group from a file carries no tenancy, which is org-wide too.
     fn prune_cross_project_targets(&mut self, warnings: &mut Vec<String>) {
-        let scoped: HashMap<&str, &str> = self
+        // owned, since the prune below borrows the whole config mutably
+        let scoped: HashMap<String, String> = self
             .providers
             .iter()
             .filter_map(|p| {
-                let scope = p.tenancy.as_ref()?.project_id.as_deref()?;
-                Some((p.name.as_str(), scope))
+                let scope = p.tenancy.as_ref()?.project_id.clone()?;
+                Some((p.name.clone(), scope))
             })
             .collect();
         if scoped.is_empty() {
             return;
         }
-        let foreign = |provider: &str, owner: Option<&str>| {
-            scoped
-                .get(provider)
-                .is_some_and(|scope| owner != Some(*scope))
-        };
+        self.prune_targets_where(warnings, |provider, owner, owner_kind| {
+            let scope = scoped.get(provider)?;
+            (owner != Some(scope.as_str())).then(|| {
+                format!("the provider is scoped to a project other than the {owner_kind}'s")
+            })
+        });
+    }
+
+    /// Drop each route target, variant target and group member that names a
+    /// provider [`sanitize_for_snapshot`](Self::sanitize_for_snapshot) just
+    /// omitted, saying why in `warnings` (#2945).
+    ///
+    /// Omitting the provider is only half of removing it: every reference left
+    /// behind is a name `validate_snapshot` cannot resolve, and it refuses the
+    /// whole snapshot over one, which hands one provider's defect to every
+    /// tenant. The route pass that follows drops a route left with no target,
+    /// so a route is only ever lost when nothing else on it can serve.
+    fn prune_omitted_provider_targets(
+        &mut self,
+        omitted: &std::collections::HashSet<String>,
+        warnings: &mut Vec<String>,
+    ) {
+        if omitted.is_empty() {
+            return;
+        }
+        self.prune_targets_where(warnings, |provider, _owner, _owner_kind| {
+            omitted
+                .contains(provider)
+                .then(|| "the provider is itself omitted from the snapshot".to_string())
+        });
+    }
+
+    /// The pass behind both target prunes: remove every target, variant target
+    /// and group member for which `refuses(provider, owner_project, owner_kind)`
+    /// gives a reason, and report each one.
+    ///
+    /// `owner_project` is the project the route or group belongs to, and
+    /// `owner_kind` is `"route"` or `"group"` so a reason can name which.
+    ///
+    /// A variant left with no target is removed whole, because `validate` reads
+    /// a targetless variant as a defect of its own and the snapshot would be
+    /// refused after all. Its traffic share goes to the variants that remain,
+    /// the same as if an operator had deleted it.
+    fn prune_targets_where(
+        &mut self,
+        warnings: &mut Vec<String>,
+        refuses: impl Fn(&str, Option<&str>, &str) -> Option<String>,
+    ) {
+        // a free function rather than a closure, since the variant pass below
+        // needs the warnings while this one would still hold them
+        fn prune(
+            targets: &mut Vec<Target>,
+            place: &str,
+            warnings: &mut Vec<String>,
+            refuse: &impl Fn(&str) -> Option<String>,
+        ) {
+            targets.retain(|t| match refuse(&t.provider) {
+                Some(reason) => {
+                    warnings.push(format!(
+                        "{place} target '{}' omitted from the snapshot: {reason}",
+                        t.provider
+                    ));
+                    false
+                }
+                None => true,
+            });
+        }
         for route in &mut self.routes {
             let owner = route.tenancy.as_ref().and_then(|t| t.project_id.clone());
             let model = route.model.clone();
-            let mut prune = |targets: &mut Vec<Target>, place: String| {
-                targets.retain(|t| {
-                    let keep = !foreign(&t.provider, owner.as_deref());
-                    if !keep {
-                        warnings.push(format!(
-                            "{place} target '{}' omitted from the snapshot: the provider is \
-                             scoped to a project other than the route's",
-                            t.provider
-                        ));
-                    }
-                    keep
-                });
-            };
-            prune(&mut route.targets, format!("route '{model}'"));
-            for variant in &mut route.variants {
+            let refuse = |provider: &str| refuses(provider, owner.as_deref(), "route");
+            prune(
+                &mut route.targets,
+                &format!("route '{model}'"),
+                warnings,
+                &refuse,
+            );
+            route.variants.retain_mut(|variant| {
+                let had_targets = !variant.targets.is_empty();
                 let place = format!("route '{model}' variant '{}'", variant.name);
-                prune(&mut variant.targets, place);
-            }
+                prune(&mut variant.targets, &place, warnings, &refuse);
+                let emptied = had_targets && variant.targets.is_empty();
+                if emptied {
+                    warnings.push(format!(
+                        "{place} omitted from the snapshot: it has no target left to serve"
+                    ));
+                }
+                !emptied
+            });
         }
         for group in &mut self.provider_groups {
             let owner = group.tenancy.as_ref().and_then(|t| t.project_id.clone());
@@ -3688,18 +3771,68 @@ impl GatewayConfig {
                 .slug
                 .clone()
                 .unwrap_or_else(|| crate::slug::slugify(&group.name));
-            group.members.retain(|m| {
-                let keep = !foreign(&m.provider, owner.as_deref());
-                if !keep {
-                    warnings.push(format!(
-                        "provider group '{slug}' member '{}' omitted from the snapshot: the \
-                         provider is scoped to a project other than the group's",
-                        m.provider
-                    ));
-                }
-                keep
-            });
+            group
+                .members
+                .retain(|m| match refuses(&m.provider, owner.as_deref(), "group") {
+                    Some(reason) => {
+                        warnings.push(format!(
+                            "provider group '{slug}' member '{}' omitted from the snapshot: \
+                             {reason}",
+                            m.provider
+                        ));
+                        false
+                    }
+                    None => true,
+                });
         }
+    }
+
+    /// Repair every other reference to a provider
+    /// [`sanitize_for_snapshot`](Self::sanitize_for_snapshot) omitted, so none
+    /// is left for `validate_snapshot` to refuse the snapshot over (#2945).
+    ///
+    /// - A route's semantic cache whose embeddings provider is gone is switched
+    ///   off for that route. The cache is an optimisation in front of the
+    ///   route, so the route keeps serving, with its exact-match cache if it
+    ///   has one.
+    /// - A virtual key's `providers` allow-list loses the omitted names, but
+    ///   only while it stays non-empty. An empty list means every provider (see
+    ///   `KeyMeta::provider_allowed` in the gateway), so a key that allowed
+    ///   only omitted providers would be widened to all of them by the same
+    ///   edit; that key is left out of the snapshot instead, which denies it.
+    ///   This covers the file's keys and the store's, since neither is checked
+    ///   by the other's rules.
+    fn prune_omitted_provider_settings(
+        &mut self,
+        omitted: &std::collections::HashSet<String>,
+        warnings: &mut Vec<String>,
+    ) {
+        if omitted.is_empty() {
+            return;
+        }
+        for route in &mut self.routes {
+            let Some(cache) = route.cache.as_mut() else {
+                continue;
+            };
+            let Some(semantic) = cache.semantic.as_ref() else {
+                continue;
+            };
+            if omitted.contains(semantic.provider.as_str()) {
+                warnings.push(format!(
+                    "route '{}' semantic cache omitted from the snapshot: its embeddings \
+                     provider '{}' is itself omitted from the snapshot, so the route serves \
+                     without semantic lookups",
+                    route.model, semantic.provider
+                ));
+                cache.semantic = None;
+            }
+        }
+        self.virtual_keys.retain_mut(|vk| {
+            let label = vk.name.clone().unwrap_or_else(|| "<unnamed>".to_string());
+            prune_key_allow_list(&mut vk.providers, &label, omitted, warnings)
+        });
+        self.db_virtual_keys
+            .retain_mut(|vk| prune_key_allow_list(&mut vk.providers, &vk.id, omitted, warnings));
     }
 
     /// Drop each prompt template that fails validation on its own, saying why
@@ -4324,6 +4457,44 @@ impl GatewayConfig {
             Err(problems)
         }
     }
+}
+
+/// Take the omitted providers out of one virtual key's allow-list, returning
+/// whether the key stays in the snapshot (#2945).
+///
+/// `label` names the key in the problem line and must never be the secret.
+/// The list is edited only while it keeps an entry: emptying it would let the
+/// key reach every provider, so a key that allowed nothing but omitted
+/// providers is denied by leaving it out.
+fn prune_key_allow_list(
+    providers: &mut Vec<String>,
+    label: &str,
+    omitted: &std::collections::HashSet<String>,
+    warnings: &mut Vec<String>,
+) -> bool {
+    let named: Vec<String> = providers
+        .iter()
+        .filter(|name| omitted.contains(name.as_str()))
+        .cloned()
+        .collect();
+    if named.is_empty() {
+        return true;
+    }
+    let every_entry = named.len() == providers.len();
+    let named = named.join("', '");
+    if every_entry {
+        warnings.push(format!(
+            "virtual key '{label}' omitted from the snapshot: it allows only omitted \
+             providers ('{named}'), and an empty allow-list would let it reach every provider"
+        ));
+        return false;
+    }
+    providers.retain(|name| !omitted.contains(name.as_str()));
+    warnings.push(format!(
+        "virtual key '{label}' allow-list entries '{named}' omitted from the snapshot: the \
+         providers are themselves omitted, and the key stays limited to its other providers"
+    ));
+    true
 }
 
 fn validate_ca_bundle(path: &Path) -> std::result::Result<(), String> {
@@ -7121,19 +7292,498 @@ mod tests {
         .unwrap();
 
         let warnings = cfg.sanitize_for_snapshot();
-        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        // the provider, the target that named it, and the route left empty
+        assert_eq!(warnings.len(), 3, "{warnings:?}");
         assert!(
             warnings.iter().any(|w| w.contains("'broken'")),
             "{warnings:?}"
         );
         assert!(
-            warnings.iter().any(|w| w.contains("'orphaned'")),
+            warnings
+                .iter()
+                .any(|w| w.contains("route 'orphaned' omitted")),
             "{warnings:?}"
         );
 
         let models: Vec<_> = cfg.routes.iter().map(|r| r.model.as_str()).collect();
         assert_eq!(models, vec!["served"]);
         assert!(cfg.validate().is_ok(), "{:?}", cfg.validate());
+    }
+
+    /// A healthy provider beside one `provider_problems` omits (an openrouter
+    /// `api_base` that is not openrouter's), which the tests below hang
+    /// references on. `rest` is the routes, keys and groups that name them.
+    fn fleet_with_an_omitted_provider(rest: &str) -> GatewayConfig {
+        let head = r#"
+            [[providers]]
+            name = "openai"
+            kind = "openai"
+            api_base = "https://api.openai.com/v1"
+
+            [[providers]]
+            name = "bad"
+            kind = "openrouter"
+            api_base = "https://openrouter.example.com/v1"
+            api_key_env = "X"
+        "#;
+        toml::from_str(&format!("{head}\n{rest}")).unwrap()
+    }
+
+    /// #2945: a route that names the omitted provider and a healthy one kept
+    /// its dangling target, so `validate_snapshot` refused the snapshot for
+    /// every tenant over one provider's defect.
+    #[test]
+    fn sanitize_prunes_the_target_of_an_omitted_provider_beside_a_healthy_one() {
+        let mut cfg = fleet_with_an_omitted_provider(
+            r#"
+            [[routes]]
+            model = "m"
+            [[routes.targets]]
+            provider = "openai"
+            [[routes.targets]]
+            provider = "bad"
+            "#,
+        );
+        assert!(
+            cfg.validate_snapshot().is_err(),
+            "precondition: the dangling target is refused"
+        );
+
+        let warnings = cfg.sanitize_for_snapshot();
+
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        assert!(
+            warnings[0].contains("provider 'bad' omitted"),
+            "{warnings:?}"
+        );
+        assert!(
+            warnings[1].contains("route 'm' target 'bad' omitted"),
+            "{warnings:?}"
+        );
+        let targets: Vec<_> = cfg.routes[0]
+            .targets
+            .iter()
+            .map(|t| t.provider.as_str())
+            .collect();
+        assert_eq!(targets, ["openai"], "the route keeps its healthy target");
+        assert!(
+            cfg.validate_snapshot().is_ok(),
+            "{:?}",
+            cfg.validate_snapshot()
+        );
+    }
+
+    #[test]
+    fn sanitize_prunes_omitted_provider_variant_targets_and_the_variant_it_empties() {
+        let mut cfg = fleet_with_an_omitted_provider(
+            r#"
+            [[routes]]
+            model = "split"
+            [[routes.variants]]
+            name = "only-bad"
+            [[routes.variants.targets]]
+            provider = "bad"
+            [[routes.variants]]
+            name = "mixed"
+            [[routes.variants.targets]]
+            provider = "bad"
+            [[routes.variants.targets]]
+            provider = "openai"
+
+            [[routes]]
+            model = "all-bad"
+            [[routes.variants]]
+            name = "a"
+            [[routes.variants.targets]]
+            provider = "bad"
+            "#,
+        );
+
+        let warnings = cfg.sanitize_for_snapshot();
+
+        let split = cfg.routes.iter().find(|r| r.model == "split").unwrap();
+        let variants: Vec<_> = split.variants.iter().map(|v| v.name.as_str()).collect();
+        assert_eq!(
+            variants,
+            ["mixed"],
+            "a variant with no target left is removed, since validate reads a targetless one as a defect of its own"
+        );
+        let targets: Vec<_> = split.variants[0]
+            .targets
+            .iter()
+            .map(|t| t.provider.as_str())
+            .collect();
+        assert_eq!(targets, ["openai"]);
+        assert!(
+            cfg.routes.iter().all(|r| r.model != "all-bad"),
+            "a route whose every variant went has nothing to serve: {warnings:?}"
+        );
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("route 'split' variant 'only-bad' omitted")),
+            "{warnings:?}"
+        );
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("route 'split' variant 'mixed' target 'bad' omitted")),
+            "{warnings:?}"
+        );
+        assert!(
+            cfg.validate_snapshot().is_ok(),
+            "{:?}",
+            cfg.validate_snapshot()
+        );
+    }
+
+    #[test]
+    fn sanitize_prunes_omitted_provider_group_members() {
+        let mut cfg = fleet_with_an_omitted_provider(
+            r#"
+            [[provider_groups]]
+            name = "pool"
+            [[provider_groups.members]]
+            provider = "openai"
+            [[provider_groups.members]]
+            provider = "bad"
+
+            [[provider_groups]]
+            name = "doomed"
+            [[provider_groups.members]]
+            provider = "bad"
+            "#,
+        );
+
+        let warnings = cfg.sanitize_for_snapshot();
+
+        let members = |slug: &str| -> Vec<String> {
+            cfg.provider_groups
+                .iter()
+                .find(|g| g.name == slug)
+                .unwrap()
+                .members
+                .iter()
+                .map(|m| m.provider.clone())
+                .collect()
+        };
+        assert_eq!(members("pool"), ["openai"]);
+        // a group with no member never resolves, which is how it already reads
+        assert!(members("doomed").is_empty());
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("provider group 'pool' member 'bad' omitted")),
+            "{warnings:?}"
+        );
+        assert!(
+            cfg.validate_snapshot().is_ok(),
+            "{:?}",
+            cfg.validate_snapshot()
+        );
+    }
+
+    /// An empty `providers` allow-list means every provider (the gateway's
+    /// `KeyMeta::provider_allowed`), so emptying one by pruning would widen the
+    /// key. A key left with an entry is only narrowed to its other providers; a
+    /// key left with none is denied by leaving it out.
+    #[test]
+    fn sanitize_never_widens_a_key_by_emptying_its_provider_allow_list() {
+        let mut cfg = fleet_with_an_omitted_provider(
+            r#"
+            [[routes]]
+            model = "m"
+            [[routes.targets]]
+            provider = "openai"
+
+            [[virtual_keys]]
+            key = "sk-mixed-secret"
+            name = "mixed"
+            providers = ["bad", "openai"]
+
+            [[virtual_keys]]
+            key = "sk-only-bad-secret"
+            name = "only-bad"
+            providers = ["bad"]
+
+            [[virtual_keys]]
+            key = "sk-open-secret"
+            name = "open"
+
+            [[virtual_keys]]
+            key = "sk-healthy-secret"
+            name = "healthy"
+            providers = ["openai"]
+            "#,
+        );
+        let db_key = |id: &str, providers: &[&str]| VirtualKeyRecord {
+            key_hash: format!("hash-{id}"),
+            id: id.to_string(),
+            org_id: String::new(),
+            team_id: String::new(),
+            project_id: String::new(),
+            user_id: String::new(),
+            models: Vec::new(),
+            providers: providers.iter().map(|p| p.to_string()).collect(),
+            disabled: false,
+            expires_at: None,
+            cache: None,
+            business_unit_id: String::new(),
+            customer_id: String::new(),
+            access_policy: None,
+        };
+        cfg.db_virtual_keys = vec![
+            db_key("db-mixed", &["bad", "openai"]),
+            db_key("db-only-bad", &["bad", "bad"]),
+            db_key("db-open", &[]),
+        ];
+        assert!(
+            cfg.validate_snapshot().is_err(),
+            "precondition: a file key naming the omitted provider is refused"
+        );
+
+        let warnings = cfg.sanitize_for_snapshot();
+
+        let file_keys: Vec<(&str, &[String])> = cfg
+            .virtual_keys
+            .iter()
+            .map(|k| (k.name.as_deref().unwrap(), k.providers.as_slice()))
+            .collect();
+        assert_eq!(
+            file_keys,
+            [
+                ("mixed", &["openai".to_string()][..]),
+                ("open", &[][..]),
+                ("healthy", &["openai".to_string()][..]),
+            ],
+            "the key that allowed only an omitted provider is gone, not left allowing everything"
+        );
+        let db_keys: Vec<(&str, &[String])> = cfg
+            .db_virtual_keys
+            .iter()
+            .map(|k| (k.id.as_str(), k.providers.as_slice()))
+            .collect();
+        assert_eq!(
+            db_keys,
+            [
+                ("db-mixed", &["openai".to_string()][..]),
+                ("db-open", &[][..]),
+            ]
+        );
+        for needle in [
+            "virtual key 'only-bad' omitted",
+            "virtual key 'mixed' allow-list entries 'bad' omitted",
+            "virtual key 'db-only-bad' omitted",
+            "virtual key 'db-mixed' allow-list entries 'bad' omitted",
+        ] {
+            assert!(
+                warnings.iter().any(|w| w.contains(needle)),
+                "{needle}: {warnings:?}"
+            );
+        }
+        // the problem lines name a key, never its secret
+        assert!(
+            warnings.iter().all(|w| !w.contains("-secret")),
+            "{warnings:?}"
+        );
+        assert!(
+            cfg.validate_snapshot().is_ok(),
+            "{:?}",
+            cfg.validate_snapshot()
+        );
+    }
+
+    #[test]
+    fn sanitize_leaves_a_key_alone_when_it_names_no_omitted_provider() {
+        // pruning is by what was omitted, not by what is unknown: a name no
+        // provider ever carried is a typo `validate_snapshot` still refuses in
+        // a file config
+        let mut cfg = fleet_with_an_omitted_provider(
+            r#"
+            [[routes]]
+            model = "m"
+            [[routes.targets]]
+            provider = "openai"
+
+            [[virtual_keys]]
+            key = "sk-typo"
+            name = "typo"
+            providers = ["opennai"]
+            "#,
+        );
+
+        cfg.sanitize_for_snapshot();
+
+        assert_eq!(cfg.virtual_keys.len(), 1);
+        assert_eq!(cfg.virtual_keys[0].providers, ["opennai"]);
+        assert!(cfg.validate_snapshot().is_err());
+    }
+
+    #[test]
+    fn sanitize_switches_off_a_semantic_cache_whose_embeddings_provider_was_omitted() {
+        let mut cfg = fleet_with_an_omitted_provider(
+            r#"
+            [[routes]]
+            model = "cached"
+            [[routes.targets]]
+            provider = "openai"
+            [routes.cache]
+            ttl_secs = 60
+            [routes.cache.semantic]
+            provider = "bad"
+            model = "text-embedding-3-small"
+
+            [[routes]]
+            model = "kept"
+            [[routes.targets]]
+            provider = "openai"
+            [routes.cache.semantic]
+            provider = "openai"
+            model = "text-embedding-3-small"
+            "#,
+        );
+        assert!(
+            cfg.validate_snapshot().is_err(),
+            "precondition: the dangling embeddings provider is refused"
+        );
+
+        let warnings = cfg.sanitize_for_snapshot();
+
+        let cached = cfg.routes.iter().find(|r| r.model == "cached").unwrap();
+        let cache = cached.cache.as_ref().expect("the route keeps its cache");
+        assert!(cache.semantic.is_none(), "semantic lookup is off");
+        assert_eq!(
+            cache.ttl_secs,
+            Some(60),
+            "the rest of the cache is untouched"
+        );
+        assert!(
+            cfg.routes.iter().any(|r| r.model == "cached"),
+            "the route keeps serving"
+        );
+        let kept = cfg.routes.iter().find(|r| r.model == "kept").unwrap();
+        assert!(
+            kept.cache.as_ref().unwrap().semantic.is_some(),
+            "a semantic cache on a healthy provider is not touched"
+        );
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("route 'cached' semantic cache omitted")
+                    && w.contains("'bad'")),
+            "{warnings:?}"
+        );
+        assert!(
+            cfg.validate_snapshot().is_ok(),
+            "{:?}",
+            cfg.validate_snapshot()
+        );
+    }
+
+    #[test]
+    fn a_dropped_route_does_not_also_report_its_semantic_cache() {
+        let mut cfg = fleet_with_an_omitted_provider(
+            r#"
+            [[routes]]
+            model = "gone"
+            [[routes.targets]]
+            provider = "bad"
+            [routes.cache.semantic]
+            provider = "bad"
+            model = "text-embedding-3-small"
+            "#,
+        );
+
+        let warnings = cfg.sanitize_for_snapshot();
+
+        assert!(cfg.routes.is_empty());
+        assert!(
+            warnings.iter().all(|w| !w.contains("semantic cache")),
+            "{warnings:?}"
+        );
+        assert!(
+            cfg.validate_snapshot().is_ok(),
+            "{:?}",
+            cfg.validate_snapshot()
+        );
+    }
+
+    #[test]
+    fn a_name_another_provider_still_carries_is_not_treated_as_omitted() {
+        // two rows under one name is a defect `validate` reports; once the
+        // invalid one is gone the name resolves, and pruning every reference
+        // would take the surviving provider's traffic with it
+        let mut cfg: GatewayConfig = toml::from_str(
+            r#"
+            [[providers]]
+            name = "dup"
+            kind = "openai"
+            api_base = "not-a-url"
+
+            [[providers]]
+            name = "dup"
+            kind = "openai"
+            api_base = "https://api.openai.com/v1"
+
+            [[routes]]
+            model = "m"
+            [[routes.targets]]
+            provider = "dup"
+            "#,
+        )
+        .unwrap();
+
+        cfg.sanitize_for_snapshot();
+
+        assert_eq!(cfg.routes[0].targets.len(), 1);
+        assert!(
+            cfg.validate_snapshot().is_ok(),
+            "{:?}",
+            cfg.validate_snapshot()
+        );
+    }
+
+    #[test]
+    fn sanitize_prunes_a_variant_a_cross_project_prune_leaves_empty() {
+        let mut cfg = GatewayConfig {
+            providers: vec![
+                scoped_provider("p1-private", "org-1", Some("proj-1")),
+                scoped_provider("shared", "org-1", None),
+            ],
+            routes: vec![{
+                let mut route = route_in("split", "proj-2", &[]);
+                route.variants = vec![
+                    Variant {
+                        name: "foreign".to_string(),
+                        weight: 1,
+                        targets: route_in("x", "proj-2", &["p1-private"]).targets,
+                        params: Default::default(),
+                    },
+                    Variant {
+                        name: "shared".to_string(),
+                        weight: 1,
+                        targets: route_in("x", "proj-2", &["shared"]).targets,
+                        params: Default::default(),
+                    },
+                ];
+                route
+            }],
+            ..Default::default()
+        };
+
+        cfg.sanitize_for_snapshot();
+
+        let variants: Vec<_> = cfg.routes[0]
+            .variants
+            .iter()
+            .map(|v| v.name.as_str())
+            .collect();
+        assert_eq!(variants, ["shared"]);
+        assert!(
+            cfg.validate_snapshot().is_ok(),
+            "{:?}",
+            cfg.validate_snapshot()
+        );
     }
 
     #[test]
