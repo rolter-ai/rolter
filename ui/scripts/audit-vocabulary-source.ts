@@ -24,6 +24,9 @@ const NOT_ACTIONS = new Set([
   "control.request",
   "http.response.status_code",
   "index.html",
+  // field paths an egress refusal names on a provider's telemetry sources (#2236)
+  "kv_events.endpoint",
+  "lmcache.endpoint",
   "scalar.js",
   "snapshot.build",
   "snapshot.encode",
