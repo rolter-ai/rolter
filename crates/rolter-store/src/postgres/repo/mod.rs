@@ -1314,6 +1314,14 @@ pub enum ProviderDeletion {
 /// Upstream providers, scoped to an org.
 pub struct ProviderRepo<'a>(pub &'a PgPool);
 
+/// A provider's optional telemetry setting as the json the column holds.
+fn setting_json<T: serde::Serialize>(setting: Option<&T>) -> Result<Option<serde_json::Value>> {
+    setting
+        .map(serde_json::to_value)
+        .transpose()
+        .map_err(|err| Error::Store(format!("provider setting is not representable: {err}")))
+}
+
 impl ProviderRepo<'_> {
     /// Whether any provider in the deployment already has `name`. The gateway
     /// keys providers by name alone, across every org, so a second one would
@@ -1453,7 +1461,7 @@ impl ProviderRepo<'_> {
 
     pub async fn list(&self, org_id: Uuid) -> Result<Vec<Provider>> {
         sqlx::query_as(
-            "select id, org_id, name, slug, kind, api_base, api_key_env, egress_proxy, egress_proxies, project_id, created_at
+            "select id, org_id, name, slug, kind, api_base, api_key_env, egress_proxy, egress_proxies, kv_events, lmcache, project_id, created_at
              from providers where org_id = $1 order by name",
         )
         .bind(org_id)
@@ -1464,7 +1472,7 @@ impl ProviderRepo<'_> {
 
     pub async fn get(&self, id: Uuid) -> Result<Provider> {
         sqlx::query_as(
-            "select id, org_id, name, slug, kind, api_base, api_key_env, egress_proxy, egress_proxies, project_id, created_at
+            "select id, org_id, name, slug, kind, api_base, api_key_env, egress_proxy, egress_proxies, kv_events, lmcache, project_id, created_at
              from providers where id = $1",
         )
         .bind(id)
@@ -1485,12 +1493,14 @@ impl ProviderRepo<'_> {
         api_key_env: Option<&str>,
         egress_proxy: Option<&str>,
         egress_proxies: &[String],
+        kv_events: Option<&rolter_core::KvEventsConfig>,
+        lmcache: Option<&rolter_core::LmCacheConfig>,
         project_id: Option<Uuid>,
     ) -> Result<Provider> {
         sqlx::query_as(
-            "insert into providers (org_id, name, slug, kind, api_base, api_key_env, egress_proxy, egress_proxies, project_id)
-             values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-             returning id, org_id, name, slug, kind, api_base, api_key_env, egress_proxy, egress_proxies, project_id, created_at",
+            "insert into providers (org_id, name, slug, kind, api_base, api_key_env, egress_proxy, egress_proxies, project_id, kv_events, lmcache)
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+             returning id, org_id, name, slug, kind, api_base, api_key_env, egress_proxy, egress_proxies, kv_events, lmcache, project_id, created_at",
         )
         .bind(org_id)
         .bind(name)
@@ -1501,6 +1511,8 @@ impl ProviderRepo<'_> {
         .bind(egress_proxy)
         .bind(serde_json::json!(egress_proxies))
         .bind(project_id)
+        .bind(setting_json(kv_events)?)
+        .bind(setting_json(lmcache)?)
         .fetch_one(self.0)
         .await
         .map_err(store_err)
@@ -1521,6 +1533,8 @@ impl ProviderRepo<'_> {
         api_key_env: Option<Option<&str>>,
         egress_proxy: Option<Option<&str>>,
         egress_proxies: Option<&[String]>,
+        kv_events: Option<Option<&rolter_core::KvEventsConfig>>,
+        lmcache: Option<Option<&rolter_core::LmCacheConfig>>,
         project_id: Option<Option<Uuid>>,
     ) -> Result<Provider> {
         sqlx::query_as(
@@ -1531,9 +1545,11 @@ impl ProviderRepo<'_> {
                  api_key_env = case when $5 then $6 else api_key_env end,
                  egress_proxy = case when $7 then $8 else egress_proxy end,
                  egress_proxies = case when $9 then $10 else egress_proxies end,
-                 project_id = case when $11 then $12 else project_id end
+                 project_id = case when $11 then $12 else project_id end,
+                 kv_events = case when $13 then $14 else kv_events end,
+                 lmcache = case when $15 then $16 else lmcache end
              where id = $1
-             returning id, org_id, name, slug, kind, api_base, api_key_env, egress_proxy, egress_proxies, project_id, created_at",
+             returning id, org_id, name, slug, kind, api_base, api_key_env, egress_proxy, egress_proxies, kv_events, lmcache, project_id, created_at",
         )
         .bind(id)
         .bind(slug)
@@ -1547,6 +1563,10 @@ impl ProviderRepo<'_> {
         .bind(egress_proxies.map(|v| serde_json::json!(v)))
         .bind(project_id.is_some())
         .bind(project_id.flatten())
+        .bind(kv_events.is_some())
+        .bind(setting_json(kv_events.flatten())?)
+        .bind(lmcache.is_some())
+        .bind(setting_json(lmcache.flatten())?)
         .fetch_optional(self.0)
         .await
         .map_err(store_err)?
@@ -5714,6 +5734,8 @@ mod tests {
                 Some("OPENAI_API_KEY"),
                 None,
                 &[],
+                None,
+                None,
                 None,
             )
             .await

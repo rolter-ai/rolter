@@ -1035,6 +1035,7 @@ async fn update_business_unit(
     if let Some(name) = &body.name {
         require_non_empty(name, "name")?;
     }
+
     let slug_change =
         resolve_slug_change(body.slug.as_deref(), &existing.slug, body.allow_slug_change)?;
     let unit = repo
@@ -2996,6 +2997,12 @@ struct CreateProvider {
     egress_proxy: Option<String>,
     #[serde(default)]
     egress_proxies: Vec<String>,
+    /// vLLM kv-event stream `precise_cache_aware` reads; omit for none
+    #[serde(default)]
+    kv_events: Option<rolter_core::KvEventsConfig>,
+    /// LMCache controller `lmcache_aware` polls; omit for none
+    #[serde(default)]
+    lmcache: Option<rolter_core::LmCacheConfig>,
     /// scope the provider to one project of the org: only keys minted in it may
     /// reach the provider, through a route or `provider-slug/model`. Omit for an
     /// org-wide provider, usable by every project
@@ -3448,6 +3455,12 @@ async fn create_provider(
     require_allowed_egress(&state, &body.api_base, "api_base")?;
     validate_kind(&body.kind)?;
     require_wellformed_api_base(&body.kind, &body.api_base)?;
+    require_valid_telemetry(
+        &state,
+        &body.name,
+        body.kv_events.as_ref(),
+        body.lmcache.as_ref(),
+    )?;
     let slug = resolve_new_slug(&body.name, body.slug.as_deref())?;
     let providers = ProviderRepo(pool(&state));
     if providers.name_in_use(&body.name).await? {
@@ -3466,6 +3479,8 @@ async fn create_provider(
             body.api_key_env.as_deref(),
             body.egress_proxy.as_deref(),
             &body.egress_proxies,
+            body.kv_events.as_ref(),
+            body.lmcache.as_ref(),
             body.project_id,
         )
         .await?;
@@ -3516,10 +3531,41 @@ struct UpdateProvider {
     egress_proxy: Option<String>,
     /// omit to leave unchanged; an empty array clears
     egress_proxies: Option<Vec<String>>,
+    /// omit to leave unchanged; `null` clears; an object replaces the whole
+    /// setting (omitted fields inside it take their defaults)
+    #[serde(default, deserialize_with = "explicit_null")]
+    kv_events: Option<Option<rolter_core::KvEventsConfig>>,
+    /// omit to leave unchanged; `null` clears; see `kv_events`
+    #[serde(default, deserialize_with = "explicit_null")]
+    lmcache: Option<Option<rolter_core::LmCacheConfig>>,
     /// omit to leave the scope unchanged; a project id scopes the provider to
     /// that project; `null` makes it org-wide again
     #[serde(default, deserialize_with = "explicit_null")]
     project_id: Option<Option<Uuid>>,
+}
+
+/// Hold a provider's `kv_events` and `lmcache` to the rules the file config
+/// applies, and to the egress policy: the gateway dials both endpoints, so an
+/// SSRF target must be refused at write time like `api_base`.
+fn require_valid_telemetry(
+    state: &ControlState,
+    provider: &str,
+    kv_events: Option<&rolter_core::KvEventsConfig>,
+    lmcache: Option<&rolter_core::LmCacheConfig>,
+) -> ApiResult<()> {
+    if let Some(kv) = kv_events {
+        require_allowed_egress(state, &kv.endpoint, "kv_events.endpoint")?;
+        if let Some(problem) = kv.shape_problems(provider).into_iter().next() {
+            return Err(ApiError::Core(Error::Config(problem)));
+        }
+    }
+    if let Some(lmcache) = lmcache {
+        require_allowed_egress(state, &lmcache.endpoint, "lmcache.endpoint")?;
+        if let Some(problem) = lmcache.shape_problems(provider).into_iter().next() {
+            return Err(ApiError::Core(Error::Config(problem)));
+        }
+    }
+    Ok(())
 }
 
 /// Whether a request names an environment variable to read a credential from.
@@ -3591,6 +3637,12 @@ async fn update_provider(
         // against the kind this provider will have once the update lands
         require_wellformed_api_base(body.kind.as_deref().unwrap_or(&existing.kind), api_base)?;
     }
+    require_valid_telemetry(
+        &state,
+        &existing.name,
+        body.kv_events.as_ref().and_then(Option::as_ref),
+        body.lmcache.as_ref().and_then(Option::as_ref),
+    )?;
     let slug_change =
         resolve_slug_change(body.slug.as_deref(), &existing.slug, body.allow_slug_change)?;
     if let Some(slug) = slug_change.as_deref() {
@@ -3611,6 +3663,8 @@ async fn update_provider(
             tri_state(&body.api_key_env),
             tri_state(&body.egress_proxy),
             body.egress_proxies.as_deref(),
+            body.kv_events.as_ref().map(Option::as_ref),
+            body.lmcache.as_ref().map(Option::as_ref),
             body.project_id,
         )
         .await?;

@@ -2761,6 +2761,8 @@ fn provider_schemas(p: &Prim) -> Value {
                 "api_key_env": nullable_string,
                 "egress_proxy": nullable_string,
                 "egress_proxies": string_list,
+                "kv_events": {"oneOf": [{"$ref": "#/components/schemas/KvEventsConfig"}, {"type": "null"}], "description": "vLLM kv-event stream for `precise_cache_aware`; null has none"},
+                "lmcache": {"oneOf": [{"$ref": "#/components/schemas/LmCacheConfig"}, {"type": "null"}], "description": "LMCache controller for `lmcache_aware`; null has none"},
                 "project_id": {"type": ["string", "null"], "format": "uuid", "description": "the project the provider is scoped to; null is org-wide. Only keys minted in that project may reach it, through a route or by `slug/model`"},
                 "created_at": timestamp,
                 "has_stored_key": {"type": "boolean", "description": "whether a sealed key is stored for the provider (a row in `provider_keys`). An `api_key_env` does not count. The key, its ciphertext and its nonce are never returned"}
@@ -2778,6 +2780,8 @@ fn provider_schemas(p: &Prim) -> Value {
                 "api_key_env": nullable_string,
                 "egress_proxy": nullable_string,
                 "egress_proxies": string_list,
+                "kv_events": {"oneOf": [{"$ref": "#/components/schemas/KvEventsConfig"}, {"type": "null"}], "description": "omit for none"},
+                "lmcache": {"oneOf": [{"$ref": "#/components/schemas/LmCacheConfig"}, {"type": "null"}], "description": "omit for none"},
                 "project_id": {"type": ["string", "null"], "format": "uuid", "description": "scope the provider to one project of the org; omit for an org-wide provider. Needs the provider create capability at that project (an environment-variable credential needs it at the org)"}
             },
             "additionalProperties": false
@@ -2794,9 +2798,31 @@ fn provider_schemas(p: &Prim) -> Value {
                 "api_key_env": nullable_string,
                 "egress_proxy": nullable_string,
                 "egress_proxies": {"type": ["array", "null"], "items": {"type": "string"}},
+                "kv_events": {"oneOf": [{"$ref": "#/components/schemas/KvEventsConfig"}, {"type": "null"}], "description": "omit to leave unchanged, null to clear, an object to replace the whole setting"},
+                "lmcache": {"oneOf": [{"$ref": "#/components/schemas/LmCacheConfig"}, {"type": "null"}], "description": "omit to leave unchanged, null to clear, an object to replace the whole setting"},
                 "project_id": {"type": ["string", "null"], "format": "uuid", "description": "omit to leave the scope unchanged, a project id to scope the provider to it, null to make it org-wide. Refused with 409 while a route or group of another project uses the provider"}
             },
             "additionalProperties": false
+        },
+
+        "KvEventsConfig": {
+            "type": "object",
+            "required": ["endpoint"],
+            "properties": {
+                "endpoint": {"type": "string", "description": "ZMQ subscriber endpoint, a `tcp://` URL such as `tcp://vllm-0:5557`; checked against the egress policy"},
+                "topic": {"type": "string", "default": "kv-events"},
+                "max_blocks": {"type": "integer", "minimum": 1, "default": 1000000, "description": "resident block identities kept for the provider"},
+                "stale_secs": {"type": "integer", "minimum": 1, "default": 30, "description": "telemetry older than this is ignored"}
+            }
+        },
+        "LmCacheConfig": {
+            "type": "object",
+            "required": ["endpoint"],
+            "properties": {
+                "endpoint": {"type": "string", "description": "http(s) URL returning `{\"occupancy\": 0..1, \"cache_available\": bool}`; checked against the egress policy"},
+                "refresh_secs": {"type": "integer", "minimum": 1, "default": 2},
+                "stale_secs": {"type": "integer", "minimum": 1, "default": 10}
+            }
         },
 
         "ProviderGroup": {

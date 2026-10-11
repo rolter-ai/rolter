@@ -396,6 +396,13 @@ fn warn_on_surplus_api_keys(p: &rolter_core::ProviderConfig) {
     }
 }
 
+/// Whether a stored json setting equals the file's, compared as json so key
+/// order and defaults spelled out on one side do not read as a change.
+fn same_setting<T: serde::Serialize>(stored: &Option<serde_json::Value>, file: &Option<T>) -> bool {
+    let file = file.as_ref().and_then(|v| serde_json::to_value(v).ok());
+    *stored == file
+}
+
 /// Upsert an already-parsed bootstrap config. Split out from
 /// [`import_bootstrap_toml`] so the desired-state behaviour can be tested
 /// without going through a file on disk.
@@ -438,6 +445,8 @@ async fn import_config(
                     && row.api_key_env.as_deref() == api_key_env
                     && row.egress_proxy == p.egress_proxy
                     && row.egress_proxies.0 == p.egress_proxies
+                    && same_setting(&row.kv_events, &p.kv_events)
+                    && same_setting(&row.lmcache, &p.lmcache)
                     && row.project_id == scope;
                 if unchanged {
                     tracing::info!(provider = %p.name, "provider unchanged");
@@ -468,6 +477,8 @@ async fn import_config(
                             Some(api_key_env),
                             Some(p.egress_proxy.as_deref()),
                             Some(&p.egress_proxies),
+                            Some(p.kv_events.as_ref()),
+                            Some(p.lmcache.as_ref()),
                             Some(scope),
                         )
                         .await?;
@@ -494,6 +505,8 @@ async fn import_config(
                         api_key_env,
                         p.egress_proxy.as_deref(),
                         &p.egress_proxies,
+                        p.kv_events.as_ref(),
+                        p.lmcache.as_ref(),
                         scope,
                     )
                     .await?;

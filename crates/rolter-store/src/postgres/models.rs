@@ -183,6 +183,12 @@ pub struct Provider {
     pub api_key_env: Option<String>,
     pub egress_proxy: Option<String>,
     pub egress_proxies: sqlx::types::Json<Vec<String>>,
+    /// vLLM kv-event stream for `precise_cache_aware`, as the json object the
+    /// file config's `kv_events` table carries; `None` has no stream. Kept as
+    /// raw json so one unreadable row cannot fail a whole listing (#2236)
+    pub kv_events: Option<serde_json::Value>,
+    /// LMCache controller for `lmcache_aware`; see `kv_events`
+    pub lmcache: Option<serde_json::Value>,
     /// the project the provider is scoped to; `None` is org-wide. Only keys
     /// minted in that project may reach it (#1919)
     pub project_id: Option<Uuid>,

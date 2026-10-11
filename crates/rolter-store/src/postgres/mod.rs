@@ -180,6 +180,8 @@ struct ProviderRow {
     api_key_env: Option<String>,
     egress_proxy: Option<String>,
     egress_proxies: serde_json::Value,
+    kv_events: Option<serde_json::Value>,
+    lmcache: Option<serde_json::Value>,
     /// the project the provider is scoped to, `None` for org-wide (#1919)
     project_id: Option<Uuid>,
     /// sealed runtime credential from `provider_keys`, when one is stored
@@ -270,6 +272,8 @@ impl ProviderRow {
             }
             _ => None,
         };
+        let kv_events = telemetry_setting(&row.name, "kv_events", row.kv_events);
+        let lmcache = telemetry_setting(&row.name, "lmcache", row.lmcache);
         Ok(ProviderConfig {
             // for a provider `project_id` is the scope, not a home project: set,
             // it serves only that project's keys
@@ -286,8 +290,8 @@ impl ProviderRow {
             api_key_env: row.api_key_env,
             egress_proxy: row.egress_proxy,
             egress_proxies,
-            kv_events: None,
-            lmcache: None,
+            kv_events,
+            lmcache,
             ca_bundles: None,
             api_keys: Vec::new(),
             also_track_via_llm_call: false,
@@ -494,7 +498,7 @@ impl PostgresConfigStore {
     async fn load_providers(&self) -> Result<(Vec<ProviderConfig>, HashSet<String>)> {
         let rows: Vec<ProviderRow> = sqlx::query_as(
             "select p.org_id, p.name, p.slug, p.kind, p.api_base, p.api_key_env, p.egress_proxy,
-                    p.egress_proxies, p.project_id, pk.ciphertext, pk.nonce
+                    p.egress_proxies, p.kv_events, p.lmcache, p.project_id, pk.ciphertext, pk.nonce
              from providers p
              left join provider_keys pk on pk.provider_id = p.id
              order by p.name",
@@ -1458,6 +1462,25 @@ fn json_kind(value: &serde_json::Value) -> &'static str {
         serde_json::Value::String(_) => "a string",
         serde_json::Value::Array(_) => "an array",
         serde_json::Value::Object(_) => "an object",
+    }
+}
+
+/// Read a provider's `kv_events` or `lmcache` column. These only feed the
+/// cache-aware scorers, so a value that cannot be read costs the provider its
+/// telemetry (the strategy falls back to its other signals), not its place in
+/// the snapshot, and the log says which row to fix.
+fn telemetry_setting<T: serde::de::DeserializeOwned>(
+    provider: &str,
+    column: &str,
+    value: Option<serde_json::Value>,
+) -> Option<T> {
+    match serde_json::from_value(value?) {
+        Ok(setting) => Some(setting),
+        Err(err) => {
+            tracing::warn!(provider, column, error = %err,
+                "stored provider setting could not be read; serving provider without it");
+            None
+        }
     }
 }
 

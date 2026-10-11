@@ -23243,3 +23243,132 @@ async fn the_deployment_user_list_is_every_account_and_superadmin_only() {
         .unwrap();
     assert_eq!(anonymous.status(), 401, "no credential, no list");
 }
+
+/// #2236: a database provider stores `kv_events` and `lmcache`, serves them in
+/// the snapshot, keeps them through an update that omits them, clears them on
+/// `null`, and refuses a value the file config would refuse.
+#[tokio::test]
+async fn a_provider_stores_and_serves_cache_telemetry_settings() {
+    skip_without_db!();
+    let (app, db) = fresh_app().await;
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let org: Value = client
+        .post(format!("{base}/api/v1/orgs"))
+        .json(&json!({"name": "Telemetry", "slug": "telemetry"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_id = org["id"].as_str().unwrap().to_string();
+    let providers_url = format!("{base}/api/v1/orgs/{org_id}/providers");
+    let body = |extra: Value| {
+        let mut base = json!({
+            "name": "vllm", "kind": "openai_compatible", "api_base": "https://llm.example.com"
+        });
+        base.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        base
+    };
+
+    // refused: wrong scheme, zero interval, and an endpoint the egress policy denies
+    for bad in [
+        json!({"kv_events": {"endpoint": "http://vllm-0:5557"}}),
+        json!({"kv_events": {"endpoint": "tcp://vllm-0:5557", "stale_secs": 0}}),
+        json!({"lmcache": {"endpoint": "tcp://lmcache:9000"}}),
+        json!({"lmcache": {"endpoint": "http://lmcache:9000", "refresh_secs": 0}}),
+        json!({"lmcache": {"endpoint": "http://169.254.169.254/latest"}}),
+    ] {
+        let response = client
+            .post(&providers_url)
+            .json(&body(bad.clone()))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 400, "{bad}");
+    }
+
+    let created: Value = client
+        .post(&providers_url)
+        .json(&body(json!({
+            "kv_events": {"endpoint": "tcp://vllm-0:5557", "topic": "kv"},
+            "lmcache": {"endpoint": "http://lmcache:9000"}
+        })))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let provider_id = created["id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{created}"))
+        .to_string();
+    assert_eq!(created["kv_events"]["endpoint"], "tcp://vllm-0:5557");
+    assert_eq!(created["kv_events"]["max_blocks"], 1_000_000);
+    assert_eq!(created["lmcache"]["refresh_secs"], 2);
+
+    let served = || async {
+        let snap: Value = client
+            .get(format!("{base}/internal/snapshot"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        snap["config"]["providers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["name"] == "vllm")
+            .cloned()
+            .expect("provider in snapshot")
+    };
+    let snapped = served().await;
+    assert_eq!(snapped["kv_events"]["topic"], "kv");
+    assert_eq!(snapped["lmcache"]["endpoint"], "http://lmcache:9000");
+
+    let put = |patch: Value| {
+        let url = format!("{base}/api/v1/providers/{provider_id}");
+        let client = client.clone();
+        async move { client.put(url).json(&patch).send().await.unwrap() }
+    };
+
+    // an older client that sends neither field must not reset them
+    let kept: Value = put(json!({"api_base": "https://llm2.example.com"}))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(kept["kv_events"]["endpoint"], "tcp://vllm-0:5557");
+    assert_eq!(kept["lmcache"]["endpoint"], "http://lmcache:9000");
+    assert_eq!(served().await["kv_events"]["endpoint"], "tcp://vllm-0:5557");
+
+    // null clears one and leaves the other
+    let cleared: Value = put(json!({"kv_events": null})).await.json().await.unwrap();
+    assert!(cleared["kv_events"].is_null(), "{cleared}");
+    assert_eq!(cleared["lmcache"]["endpoint"], "http://lmcache:9000");
+    assert!(served().await["kv_events"].is_null());
+
+    // an invalid replacement is refused and changes nothing
+    let refused =
+        put(json!({"lmcache": {"endpoint": "http://lmcache:9000", "stale_secs": 0}})).await;
+    assert_eq!(refused.status(), 400);
+    assert_eq!(served().await["lmcache"]["refresh_secs"], 2);
+
+    // a stored value the loader cannot read costs the provider its setting,
+    // not the snapshot
+    sqlx::query("update providers set kv_events = '{\"topic\": 7}'::jsonb")
+        .execute(db.pool())
+        .await
+        .unwrap();
+    let degraded = served().await;
+    assert!(degraded["kv_events"].is_null(), "{degraded}");
+    assert_eq!(degraded["lmcache"]["endpoint"], "http://lmcache:9000");
+}
