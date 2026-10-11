@@ -5,7 +5,9 @@ import AccessProfiles from "./AccessProfiles";
 import {
   cancelConfirmation,
   clickWhenEnabled,
+  confirmation,
   confirmDestructive,
+  expectAllowed,
   expectEmptyState,
   expectLoadError,
   expectRefused,
@@ -31,7 +33,13 @@ import {
   uxEvents,
   type FetchStub,
 } from "./story-harness";
-import type { AccessProfileDetail, AccessProfileRow, CustomRoleRow } from "@/lib/api";
+import type {
+  AccessProfileAssignmentRow,
+  AccessProfileDetail,
+  AccessProfileRow,
+  CustomRoleRow,
+  UserRow,
+} from "@/lib/api";
 import { UxScreenProvider } from "@/lib/ux-react";
 
 const ORG = "org-1";
@@ -78,7 +86,7 @@ const DETAILS: Record<string, AccessProfileDetail> = {
     ],
     assignments: [
       { id: "a-1", profile_id: "p-1", user_id: "u-1", team_id: null, created_at: "" },
-      { id: "a-2", profile_id: "p-1", user_id: null, team_id: "t-1", created_at: "" },
+      { id: "a-2", profile_id: "p-1", user_id: null, team_id: TEAM.id, created_at: "" },
     ],
     policy: {
       profile_id: "p-1",
@@ -96,6 +104,25 @@ const DETAILS: Record<string, AccessProfileDetail> = {
     policy: null,
   },
 };
+
+// the accounts the org lists: `u-1` is already assigned to Support engineers,
+// `u-2` is who the assignment stories hand On-call to
+const USERS: UserRow[] = [
+  {
+    id: "u-1",
+    email: "ada@example.com",
+    display_name: "Ada Lovelace",
+    is_superadmin: false,
+    created_at: "2026-01-01T00:00:00Z",
+  },
+  {
+    id: "u-2",
+    email: "grace@example.com",
+    display_name: "Grace Hopper",
+    is_superadmin: false,
+    created_at: "2026-01-01T00:00:00Z",
+  },
+];
 
 const ROLES: CustomRoleRow[] = [
   {
@@ -138,6 +165,7 @@ function stub(
     if (detail) return json(details[detail[1]] ?? {});
     if (url.includes("/access-profiles")) return profiles();
     if (url.includes("/custom-roles")) return json(roles);
+    if (/\/orgs\/[^/]+\/users/.test(url)) return json(USERS);
     return json([]);
   });
 }
@@ -747,5 +775,241 @@ export const AbandoningTheEditorIsReported: Story = {
     // and it is an abandonment, not a save that got mislabelled
     expectNoUxEvent("form_submit", "access-profile-create");
     await expect(uxEvents().filter((e) => e.action === "form_abandon")).toHaveLength(1);
+  },
+};
+
+// ---------------------------------------------------------------------------
+// #2073: handing a profile to people
+//
+// A profile that reaches nobody grants nothing, and the card could only count
+// who it reached. The assignments are listed by name, added from a sheet and
+// removed behind the shared confirmation.
+
+/**
+ * An assignment the stub holds, so the card shows the outcome of a write: the
+ * detail answers what was posted and drops what was deleted, which a fixed
+ * fixture would not (#1260).
+ */
+function assignable() {
+  let extra: AccessProfileAssignmentRow[] = [];
+  let removed = new Set<string>();
+  const rec = recording(async (input, init) => {
+    const url = String(input);
+    if (init?.method === "POST" && url.includes("/access-profiles/p-2/assignments")) {
+      const body = JSON.parse(String(init.body)) as { user_id?: string; team_id?: string };
+      const row = {
+        id: `a-new-${extra.length}`,
+        profile_id: "p-2",
+        user_id: body.user_id ?? null,
+        team_id: body.team_id ?? null,
+        created_at: "",
+      };
+      extra = [...extra, row];
+      return json(row);
+    }
+    if (init?.method === "DELETE" && url.includes("/access-profile-assignments/")) {
+      removed = new Set([...removed, url.split("/").pop() as string]);
+      return json({}, 204);
+    }
+    const detail = /\/access-profiles\/([^/?]+)$/.exec(url);
+    if (detail && detail[1] === "p-2") {
+      return json({ ...DETAILS["p-2"], assignments: extra.filter((a) => !removed.has(a.id)) });
+    }
+    if (detail && detail[1] === "p-1") {
+      return json({
+        ...DETAILS["p-1"],
+        assignments: DETAILS["p-1"].assignments.filter((a) => !removed.has(a.id)),
+      });
+    }
+    return stub(async () => json(PROFILES))(input, init);
+  });
+  return rec;
+}
+
+const assigning = assignable();
+
+export const NamesWhoAProfileReaches: Story = {
+  render: () => (
+    <Harness fetchStub={assigning.stub} role="admin">
+      <AccessProfiles />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const list = await canvas.findByRole("list", { name: "Who Support engineers reaches" });
+    // by name, not by id: the user from the org's list and the team from the scope
+    await waitFor(() => expect(within(list).getByText("Ada Lovelace")).toBeVisible());
+    await expect(within(list).getByText("Platform")).toBeVisible();
+    await expectAllowed(canvasElement, "Assign Support engineers");
+  },
+};
+
+const userAssign = assignable();
+
+export const AssignsAUser: Story = {
+  render: () => (
+    <Harness fetchStub={userAssign.stub} role="admin">
+      <Toasted>
+        <AccessProfiles />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectAllowed(canvasElement, "Assign On-call");
+    await userEvent.click(canvas.getByRole("button", { name: "Assign On-call" }));
+
+    const form = within(sheet());
+    // an already-assigned account is not offered twice, and the save waits for a pick
+    // story-wait-allow: disabled by the sheet's own empty pick, not by the gate
+    await expect(form.getByRole("button", { name: "Assign profile" })).toBeDisabled();
+    const listbox = await openOptions(await form.findByRole("combobox", { name: "User" }));
+    await waitFor(() =>
+      expect(within(listbox).getByRole("option", { name: /Grace Hopper/ })).toBeVisible(),
+    );
+    await userEvent.click(within(listbox).getByRole("option", { name: /Grace Hopper/ }));
+    await userEvent.click(form.getByRole("button", { name: "Assign profile" }));
+
+    const body = await userAssign.expectSentBody("POST", "/access-profiles/p-2/assignments");
+    expect(body).toEqual({ user_id: "u-2" });
+
+    // the outcome: the sheet closes and the card now names who it reaches
+    await expectSheetClosed();
+    await expectToast(canvasElement, /On-call assigned/);
+    const list = await canvas.findByRole("list", { name: "Who On-call reaches" });
+    await expect(within(list).getByText("Grace Hopper")).toBeVisible();
+  },
+};
+
+const teamAssign = assignable();
+
+export const AssignsATeam: Story = {
+  render: () => (
+    <Harness fetchStub={teamAssign.stub} role="admin">
+      <AccessProfiles />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectAllowed(canvasElement, "Assign On-call");
+    await userEvent.click(canvas.getByRole("button", { name: "Assign On-call" }));
+
+    const form = within(sheet());
+    await userEvent.click(await form.findByRole("radio", { name: "Team" }));
+    await pickOption(await form.findByRole("combobox", { name: "Team" }), /Platform/);
+    await userEvent.click(form.getByRole("button", { name: "Assign profile" }));
+
+    const body = await teamAssign.expectSentBody("POST", "/access-profiles/p-2/assignments");
+    expect(body).toEqual({ team_id: TEAM.id });
+    await expectSheetClosed();
+    const list = await canvas.findByRole("list", { name: "Who On-call reaches" });
+    await expect(within(list).getByText("Platform")).toBeVisible();
+  },
+};
+
+// a refused save keeps the sheet and what was picked, and says why
+export const AssignRejectedByTheServer: Story = {
+  render: () => (
+    <Harness
+      role="admin"
+      fetchStub={async (input, init) =>
+        init?.method === "POST"
+          ? json(
+              {
+                error: {
+                  message: "an access profile may only be assigned to a team in its own org",
+                },
+              },
+              400,
+            )
+          : stub(async () => json(PROFILES))(input, init)
+      }
+    >
+      <AccessProfiles />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectAllowed(canvasElement, "Assign On-call");
+    await userEvent.click(canvas.getByRole("button", { name: "Assign On-call" }));
+
+    const form = within(sheet());
+    await pickOption(await form.findByRole("combobox", { name: "User" }), /Grace Hopper/);
+    await userEvent.click(form.getByRole("button", { name: "Assign profile" }));
+
+    await expect(await form.findByText("Could not assign the profile")).toBeVisible();
+    await expect(form.getByText(/only be assigned to a team in its own org/)).toBeVisible();
+    await expect(form.getByRole("combobox", { name: "User" })).toHaveValue("Grace Hopper");
+  },
+};
+
+const unassigning = assignable();
+
+export const RemovesAnAssignmentAfterConfirming: Story = {
+  render: () => (
+    <Harness fetchStub={unassigning.stub} role="admin">
+      <Toasted>
+        <AccessProfiles />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const remove = await canvas.findByRole("button", {
+      name: "Remove Ada Lovelace from Support engineers",
+    });
+    await expectAllowed(canvasElement, "Remove Ada Lovelace from Support engineers");
+
+    await userEvent.click(remove);
+    await cancelConfirmation();
+    unassigning.expectNotSent("DELETE", "/access-profile-assignments/a-1");
+
+    await userEvent.click(remove);
+    await confirmDestructive(/Remove Ada Lovelace from Support engineers\?/, "Remove assignment");
+    await unassigning.expectSent("DELETE", "/access-profile-assignments/a-1");
+
+    await expectSheetClosed();
+    await expectToast(canvasElement, /Ada Lovelace removed/);
+    await waitFor(() => expect(canvas.queryByText("Ada Lovelace")).not.toBeInTheDocument());
+  },
+};
+
+// the delete confirmation says how many people lose the profile
+export const DeleteConfirmationNamesTheReach: Story = {
+  render: () => (
+    <Harness fetchStub={assigning.stub} role="admin">
+      <AccessProfiles />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText("1 user · 1 team")).toBeVisible());
+    await userEvent.click(canvas.getByRole("button", { name: "Delete Support engineers" }));
+    const dialog = await confirmation();
+    await expect(within(dialog).getByText(/It reaches 1 user and 1 team\./)).toBeVisible();
+    await cancelConfirmation();
+
+    // the reach is known once the detail has landed
+    await expect(await canvas.findByText("Not assigned to anyone yet")).toBeVisible();
+    await userEvent.click(canvas.getByRole("button", { name: "Delete On-call" }));
+    await expect(
+      within(await confirmation()).getByText(/not assigned to anyone yet/),
+    ).toBeVisible();
+    await cancelConfirmation();
+  },
+};
+
+// assigning and unassigning are both `access_profile_assignment` writes, which a
+// viewer reads and may not change; a member is short of admin as well
+export const AssignmentRefusedToAViewer: Story = {
+  render: () => (
+    <Harness fetchStub={assigning.stub} role="viewer">
+      <AccessProfiles />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectRefused(canvasElement, "Assign Support engineers");
+    await expectRefused(canvasElement, "Assign On-call");
+    await expectRefused(canvasElement, "Remove Ada Lovelace from Support engineers");
   },
 };

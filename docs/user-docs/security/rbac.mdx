@@ -271,6 +271,8 @@ Creating or editing a role opens a grant grid: one row per resource the deployme
 
 **Access Profiles** reads `GET /api/v1/access-profiles/{id}` for each profile, so a card shows the roles composed into it, everyone it reaches, and the model policy it carries — the policy in particular has no list endpoint, and before this it could be written and never seen again. The same sheet creates and edits: name, the custom roles to compose, and the four allow/deny pattern lists, saved in one request.
 
+Each card lists, by name, the users and teams the profile reaches. The **Assign** button on a card opens a sheet where you choose **User** or **Team** and pick one from the organisation's own list; accounts and teams the profile already reaches are not offered again. A team assignment reaches every member of the team, current and future. The remove button beside a name asks for confirmation before it takes the assignment away, and the delete confirmation for a whole profile says how many users and teams lose it. Both need the admin role in the organisation (`access_profile_assignment:create` and `:delete`); a viewer sees who a profile reaches and finds the buttons refused. Every assignment is written to the audit log.
+
 Ticking a role opens **Where _role_ applies** beside it, so the `curl` above — "auditor across the org, and deploy admin on one project" — is one profile written on screen:
 
 - The default is the whole organization, which is the scope the control plane assumes when a composition names none. A profile written without touching the picker is exactly the profile the sheet wrote before.

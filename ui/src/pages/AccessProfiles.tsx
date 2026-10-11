@@ -1,8 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Loader2, Pencil, Shield, Trash2, Users } from "lucide-react";
+import { Loader2, Pencil, Shield, Trash2, User, UserPlus, Users } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
+import { AssignProfileSheet } from "@/components/AssignProfileSheet";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { EditorSheet } from "@/components/EditorSheet";
 import {
@@ -22,14 +23,18 @@ import { ListSummary, PageBody, Pill, Toolbar } from "@/components/screen";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import { DeleteIconButton } from "@/components/ui/delete-icon-button";
 import { Textarea } from "@/components/ui/textarea";
 import {
   createAccessProfile,
   deleteAccessProfile,
+  deleteAccessProfileAssignment,
+  fetchUsers,
   fetchAccessProfile,
   fetchAccessProfiles,
   fetchCustomRoles,
   updateAccessProfile,
+  type AccessProfileAssignmentRow,
   type AccessProfileDetail,
   type AccessProfilePolicyInput,
   type AccessProfileRow,
@@ -53,14 +58,26 @@ function ProfileCard({
   roleCatalog,
   onEdit,
   onDelete,
+  onAssign,
+  onUnassign,
   deleting,
+  unassigning,
 }: {
   profile: AccessProfileRow;
   /** the org's custom roles, so a composition can be named rather than shown as an id */
   roleCatalog: CustomRoleRow[];
   onEdit: (detail: AccessProfileDetail) => void;
-  onDelete: (profile: AccessProfileRow) => void;
+  /** the reach is what the confirmation names; null while the detail is not known */
+  onDelete: (profile: AccessProfileRow, reach: { users: number; teams: number } | null) => void;
+  onAssign: (profile: AccessProfileRow, assigned: AccessProfileAssignmentRow[]) => void;
+  onUnassign: (
+    profile: AccessProfileRow,
+    assignment: AccessProfileAssignmentRow,
+    name: string,
+  ) => void;
   deleting: boolean;
+  /** the assignment whose removal is in flight, if it is on this card */
+  unassigning: string | null;
 }) {
   const { t } = useTranslation();
   const detail = useQuery({
@@ -71,6 +88,20 @@ function ProfileCard({
   // shares react-query's cache with the sheet's picker, so a screen full of
   // cards pays for one teams request and one projects request
   const orgScope = useOrgScope(profile.org_id);
+  // the same cache the assignment sheet reads, so naming who a profile reaches
+  // costs the screen one users request however many cards it draws
+  const people = useQuery({
+    queryKey: ["users", profile.org_id],
+    queryFn: () => fetchUsers(profile.org_id),
+    retry: false,
+  });
+  // a subject this account cannot resolve is drawn by its id rather than hidden:
+  // the assignment is real, and removing it should not depend on a name lookup
+  const subjectName = (a: AccessProfileAssignmentRow): string => {
+    if (a.team_id) return orgScope.teams.find((x) => x.id === a.team_id)?.name ?? a.team_id;
+    const user = people.data?.find((x) => x.id === a.user_id);
+    return user ? user.display_name || user.email : (a.user_id ?? "");
+  };
 
   // only the compositions that are *narrower* than the profile's org: an
   // org-wide one is what the count already says, and repeating it for every
@@ -118,6 +149,43 @@ function ProfileCard({
               </span>
             )}
           </div>
+          {detail.data && detail.data.assignments.length > 0 && (
+            <ul
+              aria-label={t("pages.accessProfiles.reachLabel", { name: profile.name })}
+              className="mt-2 space-y-1"
+            >
+              {detail.data.assignments.map((a) => {
+                const name = subjectName(a);
+                return (
+                  <li key={a.id} className="flex items-center gap-2 text-sm">
+                    {a.team_id ? (
+                      <Users className="size-3.5 flex-none text-muted-foreground" aria-hidden />
+                    ) : (
+                      <User className="size-3.5 flex-none text-muted-foreground" aria-hidden />
+                    )}
+                    <span className="min-w-0 flex-1 truncate" title={name}>
+                      {name}
+                    </span>
+                    <span className="flex-none text-xs text-muted-foreground">
+                      {a.team_id
+                        ? t("pages.accessProfiles.assign.kindTeam")
+                        : t("pages.accessProfiles.assign.kindUser")}
+                    </span>
+                    <DeleteIconButton
+                      gate="access_profile_assignment:delete"
+                      control="access-profile-unassign"
+                      label={t("pages.accessProfiles.assign.remove", {
+                        name,
+                        profile: profile.name,
+                      })}
+                      pending={unassigning === a.id}
+                      onClick={() => onUnassign(profile, a, name)}
+                    />
+                  </li>
+                );
+              })}
+            </ul>
+          )}
           {detail.data && (
             <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
               <span>{t("pages.accessProfiles.roleCount", { count: roles })}</span>
@@ -150,6 +218,18 @@ function ProfileCard({
         </div>
         <div className="flex flex-none items-center gap-1">
           <GatedButton
+            gate="access_profile_assignment:create"
+            control="access-profile-assign"
+            variant="ghost"
+            size="icon"
+            title={t("pages.accessProfiles.assign.open", { name: profile.name })}
+            aria-label={t("pages.accessProfiles.assign.open", { name: profile.name })}
+            disabled={!detail.data}
+            onClick={() => detail.data && onAssign(profile, detail.data.assignments)}
+          >
+            <UserPlus className="size-4" />
+          </GatedButton>
+          <GatedButton
             gate="access_profile:update"
             control="access-profile-edit"
             variant="ghost"
@@ -169,7 +249,7 @@ function ProfileCard({
             title={t("pages.accessProfiles.deleteProfile", { name: profile.name })}
             aria-label={t("pages.accessProfiles.deleteProfile", { name: profile.name })}
             disabled={deleting}
-            onClick={() => onDelete(profile)}
+            onClick={() => onDelete(profile, detail.data ? { users, teams } : null)}
           >
             {deleting ? (
               <Loader2 className="size-4 motion-safe:animate-spin" />
@@ -333,13 +413,13 @@ export default function AccessProfiles() {
   });
 
   const remove = useMutation({
-    mutationFn: (profile: AccessProfileRow) => deleteAccessProfile(profile.id),
-    onSuccess: (_void, profile) => {
+    mutationFn: (target: { profile: AccessProfileRow }) => deleteAccessProfile(target.profile.id),
+    onSuccess: (_void, { profile }) => {
       invalidate();
       setDeleteTarget(null);
       toast.push({ tone: "success", title: t("toast.deleted", { what: profile.name }) });
     },
-    onError: (error, profile) =>
+    onError: (error, { profile }) =>
       toast.push({
         tone: "error",
         title: t("toast.deleteFailed", { what: profile.name }),
@@ -351,11 +431,45 @@ export default function AccessProfiles() {
   const [seed, setSeed] = React.useState("");
   // a profile reaches users and teams, so deleting it changes what a group of
   // people can do — confirmed by name first (#1179)
-  const [deleteTarget, setDeleteTarget] = React.useState<AccessProfileRow | null>(null);
-  const startDelete = (profile: AccessProfileRow) => {
+  const [deleteTarget, setDeleteTarget] = React.useState<{
+    profile: AccessProfileRow;
+    reach: { users: number; teams: number } | null;
+  } | null>(null);
+  const startDelete = (
+    profile: AccessProfileRow,
+    reach: { users: number; teams: number } | null,
+  ) => {
     remove.reset();
-    setDeleteTarget(profile);
+    setDeleteTarget({ profile, reach });
   };
+
+  const [assignTarget, setAssignTarget] = React.useState<{
+    profile: AccessProfileRow;
+    assigned: AccessProfileAssignmentRow[];
+  } | null>(null);
+  const [unassignTarget, setUnassignTarget] = React.useState<{
+    profile: AccessProfileRow;
+    assignment: AccessProfileAssignmentRow;
+    name: string;
+  } | null>(null);
+  const unassign = useMutation({
+    mutationFn: (target: { assignment: AccessProfileAssignmentRow }) =>
+      deleteAccessProfileAssignment(target.assignment.id),
+    onSuccess: (_void, target) => {
+      invalidate(target.assignment.profile_id);
+      setUnassignTarget(null);
+      toast.push({
+        tone: "success",
+        title: t("pages.accessProfiles.assign.removed", { name: unassignTarget?.name }),
+      });
+    },
+    onError: (error) =>
+      toast.push({
+        tone: "error",
+        title: t("pages.accessProfiles.assign.removeFailed", { name: unassignTarget?.name }),
+        detail: errorDetail(error),
+      }),
+  });
 
   const startCreate = () => {
     save.reset();
@@ -420,9 +534,19 @@ export default function AccessProfiles() {
             key={profile.id}
             profile={profile}
             roleCatalog={roles.data ?? []}
-            deleting={remove.isPending && remove.variables?.id === profile.id}
+            deleting={remove.isPending && remove.variables?.profile.id === profile.id}
+            unassigning={
+              unassign.isPending && unassign.variables?.assignment.profile_id === profile.id
+                ? unassign.variables.assignment.id
+                : null
+            }
             onEdit={startEdit}
             onDelete={startDelete}
+            onAssign={(p, assigned) => setAssignTarget({ profile: p, assigned })}
+            onUnassign={(p, assignment, name) => {
+              unassign.reset();
+              setUnassignTarget({ profile: p, assignment, name });
+            }}
           />
         ))}
       </div>
@@ -431,13 +555,51 @@ export default function AccessProfiles() {
         name="access-profile-delete"
         open={!!deleteTarget}
         onOpenChange={(o) => !o && setDeleteTarget(null)}
-        title={t("pages.accessProfiles.confirm.title", { name: deleteTarget?.name })}
-        description={t("pages.accessProfiles.confirm.body")}
+        title={t("pages.accessProfiles.confirm.title", { name: deleteTarget?.profile.name })}
+        description={
+          deleteTarget?.reach
+            ? `${t("pages.accessProfiles.confirm.body")} ${
+                deleteTarget.reach.users + deleteTarget.reach.teams === 0
+                  ? t("pages.accessProfiles.confirm.reachNone")
+                  : t("pages.accessProfiles.confirm.reach", {
+                      users: t("pages.accessProfiles.userCount", {
+                        count: deleteTarget.reach.users,
+                      }),
+                      teams: t("pages.accessProfiles.teamCount", {
+                        count: deleteTarget.reach.teams,
+                      }),
+                    })
+              }`
+            : t("pages.accessProfiles.confirm.body")
+        }
         confirmLabel={t("pages.accessProfiles.confirm.confirm")}
         pending={remove.isPending}
         error={remove.error}
         onConfirm={() => deleteTarget && remove.mutate(deleteTarget)}
       />
+
+      <ConfirmDialog
+        name="access-profile-unassign"
+        open={!!unassignTarget}
+        onOpenChange={(o) => !o && setUnassignTarget(null)}
+        title={t("pages.accessProfiles.assign.confirmTitle", {
+          name: unassignTarget?.name,
+          profile: unassignTarget?.profile.name,
+        })}
+        description={t("pages.accessProfiles.assign.confirmBody")}
+        confirmLabel={t("pages.accessProfiles.assign.confirmAction")}
+        pending={unassign.isPending}
+        error={unassign.error}
+        onConfirm={() => unassignTarget && unassign.mutate(unassignTarget)}
+      />
+
+      {assignTarget && (
+        <AssignProfileSheet
+          profile={assignTarget.profile}
+          assigned={assignTarget.assigned}
+          onClose={() => setAssignTarget(null)}
+        />
+      )}
 
       {draft && (
         <ProfileSheet
