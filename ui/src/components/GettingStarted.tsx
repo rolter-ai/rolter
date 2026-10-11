@@ -349,7 +349,9 @@ export function GettingStarted({ requests }: GettingStartedProps) {
               !noProjectExists
                 ? "pages.gettingStarted.noScopeBody"
                 : projectCreateDenied
-                  ? "pages.gettingStarted.noProjectDenied"
+                  ? scope.teamId
+                    ? "pages.gettingStarted.noProjectDenied"
+                    : "pages.gettingStarted.noTeamDenied"
                   : !scope.teamId
                     ? "pages.gettingStarted.noTeamBody"
                     : "pages.gettingStarted.noProjectBody",

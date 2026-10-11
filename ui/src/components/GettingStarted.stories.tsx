@@ -375,6 +375,8 @@ export const NoProjectAndCannotCreateOne: Story = {
       expect(canvas.getByText(en.pages.gettingStarted.noProjectDenied)).toBeInTheDocument(),
     );
     await expect(canvas.queryByText(en.pages.gettingStarted.noProjectBody)).toBeNull();
+    await expect(canvas.queryByText(en.pages.gettingStarted.noTeamDenied)).toBeNull();
+    expect(en.pages.gettingStarted.noProjectDenied).not.toMatch(/deployment/);
   },
 };
 

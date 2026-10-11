@@ -554,7 +554,8 @@
       "noProjectBody": "Step 1 needs a project, and the team in scope has none yet. Create one here, or later with the + beside Project in the scope switcher in the sidebar.",
       "noTeamBody": "Step 1 needs a project, and a project belongs to a team. Add an organisation and a team with the + controls in the scope switcher in the sidebar, then come back to create the project.",
       "createProject": "Create project",
-      "noProjectDenied": "Step 1 needs a project, and this deployment has none. Ask an administrator to create one; creating a project takes the admin role.",
+      "noProjectDenied": "Step 1 needs a project, and the team in scope has none. Pick another team in the scope switcher in the sidebar, or ask an administrator to create one; creating a project takes the admin role.",
+      "noTeamDenied": "Step 1 needs a project, and a project belongs to a team, but there is no team in scope. Ask an administrator to set one up; creating a project takes the admin role.",
       "snippetLabel": "Request",
       "steps": {
         "call": {
