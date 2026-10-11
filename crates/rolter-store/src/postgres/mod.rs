@@ -754,7 +754,8 @@ impl PostgresConfigStore {
             "select rt.route_id, p.org_id as provider_org_id, p.name as provider_name,
                     rt.upstream_model, rt.weight
              from route_targets rt
-             join providers p on p.id = rt.provider_id",
+             join providers p on p.id = rt.provider_id
+             order by rt.route_id, rt.created_at, rt.id",
         )
         .fetch_all(&self.pool)
         .await
@@ -2569,6 +2570,82 @@ mod tests {
             .await
             .unwrap();
         profile_id
+    }
+
+    /// #2962: a route's targets reach the snapshot ordered by `created_at`
+    /// then `id`, and a weight edit does not move one.
+    #[tokio::test]
+    async fn route_targets_load_in_a_stable_order() {
+        if !test_database::is_configured() {
+            eprintln!("skipping: {} not set", test_database::URL_ENV);
+            return;
+        }
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
+        let store = PostgresConfigStore {
+            pool: pool.clone(),
+            kek: None,
+        };
+        let org = repo::OrgRepo(&pool).create("acme", "acme").await.unwrap();
+        let team = repo::TeamRepo(&pool).create(org.id, "core").await.unwrap();
+        let project = repo::ProjectRepo(&pool)
+            .create(team.id, "default")
+            .await
+            .unwrap();
+        let route = repo::RouteRepo(&pool)
+            .create(project.id, "gpt-4o", "consistent_hash")
+            .await
+            .unwrap();
+        // inserted newest first, so heap order is the reverse of the wanted one (a is oldest)
+        let names = ["a", "b", "c"];
+        for (age, name) in names.iter().enumerate().rev() {
+            let provider = repo::ProviderRepo(&pool)
+                .create(
+                    org.id,
+                    name,
+                    name,
+                    "openai",
+                    "https://api.openai.com",
+                    Some("OPENAI_API_KEY"),
+                    None,
+                    &[],
+                    None,
+                    None,
+                    None,
+                )
+                .await
+                .unwrap();
+            sqlx::query(
+                "insert into route_targets (route_id, provider_id, weight, created_at)
+                 values ($1, $2, 1, now() - make_interval(secs => $3))",
+            )
+            .bind(route.id)
+            .bind(provider.id)
+            .bind((names.len() - age) as f64)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        let order = |routes: Vec<ModelRoute>| -> Vec<String> {
+            routes[0]
+                .targets
+                .iter()
+                .map(|t| t.provider.clone())
+                .collect()
+        };
+        let before = order(store.load_routes(&HashSet::new()).await.unwrap());
+        assert_eq!(before, ["a", "b", "c"].map(String::from));
+
+        // the oldest target is rewritten, which moves its heap tuple
+        sqlx::query(
+            "update route_targets set weight = 5
+             where id = (select id from route_targets order by created_at limit 1)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let after = order(store.load_routes(&HashSet::new()).await.unwrap());
+        assert_eq!(after, before, "a weight edit keeps the target order");
     }
 
     #[tokio::test]
