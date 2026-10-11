@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import * as React from "react";
-import { MemoryRouter, useInRouterContext } from "react-router";
+import { createMemoryRouter, RouterProvider, useInRouterContext } from "react-router";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import { Toaster } from "@/components/ui/toaster";
@@ -153,12 +153,30 @@ export function Harness({
   // screens link with the router's Link, which throws outside one; a story that
   // brings its own router keeps it
   const inRouter = useInRouterContext();
-  const routed = inRouter ? (
-    body
+  // a data router, so a screen using useBlocker mounts here too. the route
+  // renders the body through context, so the router is built once per route
+  const router = React.useMemo(
+    () =>
+      inRouter
+        ? null
+        : createMemoryRouter([{ path: "*", element: <HarnessBody /> }], {
+            initialEntries: route ? [route] : undefined,
+          }),
+    [inRouter, route],
+  );
+  const routed = router ? (
+    <HarnessBodyContext.Provider value={body}>
+      <RouterProvider router={router} />
+    </HarnessBodyContext.Provider>
   ) : (
-    <MemoryRouter initialEntries={route ? [route] : undefined}>{body}</MemoryRouter>
+    body
   );
   return <QueryClientProvider client={client}>{routed}</QueryClientProvider>;
+}
+
+const HarnessBodyContext = React.createContext<React.ReactNode>(null);
+function HarnessBody() {
+  return <>{React.useContext(HarnessBodyContext)}</>;
 }
 
 /**
