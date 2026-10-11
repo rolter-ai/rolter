@@ -115,6 +115,20 @@ and axe fails that story if the background turns translucent again. Keep
 `--red-tint` for hovers, chips and badges, whose text is chosen to clear AA on
 the tint over every surface.
 
+## Text selection is a token pair
+
+`index.css` carries one `::selection` rule, built from `--selection-bg` and
+`--selection-text` (#2419), so a selected value is not painted in the operating
+system's highlight colour. It matters for the show-once values, which are
+`select-all` and are selected on purpose after a failed copy. The pair is opaque,
+so it does not take on the surface under it: `--selection-text` (`--text-primary`,
+`#fafafa`) on `--selection-bg` (`--red-folk`, `#b41d21`) is 6.41:1 on
+`--surface-base`, `--surface-elevated` and `--surface-subtle` alike. The fill
+itself is 2.82:1 / 2.45:1 / 2.23:1 against those three, so it is a fill, not a
+shape that stands alone. The rule sits on the root and the highlight inherits, so
+the coloured tokens inside `.rl-code` take it too. `ui/scripts/selection-contrast.test.ts`
+pins the rule and the 4.5:1 floor.
+
 ## Categorical palettes are tokens too
 
 A series colour and an avatar chip are picked by _index_, not by meaning, so
