@@ -247,6 +247,14 @@ function sentBodies<T>(method: string, fragment: string): T[] {
     .map((c) => JSON.parse(c.body as string) as T);
 }
 
+/** the body of the one `PUT /routes/{id}` (not its `/params` or `/advanced` siblings) */
+async function routeUpdate(id: string): Promise<unknown> {
+  const sent = () =>
+    calls.calls.find((c) => c.method === "PUT" && c.url.endsWith(`/routes/${id}`) && c.body);
+  await waitFor(() => expect(sent()).toBeDefined());
+  return JSON.parse(sent()!.body as string);
+}
+
 const meta = {
   title: "Overlays/ModelSheet",
   component: ModelSheet,
@@ -606,12 +614,12 @@ export const Edit: Story = {
     // renaming is not supported yet, and the field says so rather than
     // accepting an edit the control plane would drop
     await expect(dialog.getByLabelText("Route name")).toBeDisabled();
-    // the strategy is shown as stored, and said to be fixed: the control plane
-    // takes it at creation and has no call that changes it (#1979)
+    // the strategy is shown as stored and can be changed: the route's update
+    // call takes it (#2979)
     const strategy = dialog.getByLabelText("Strategy");
     await expect(strategy).toHaveValue("round_robin");
-    await expect(strategy).toBeDisabled();
-    await expect(strategy).toHaveAccessibleDescription(/set when a route is created/);
+    await expect(strategy).toBeEnabled();
+    await expect(dialog.queryByText(/set when a route is created/)).not.toBeInTheDocument();
     // the stored providers' catalogues are not asked for just because the sheet
     // opened: an upstream call waits until somebody reaches for its models
     calls.expectNotSent("GET", "/providers/prov-1/models");
@@ -1064,12 +1072,12 @@ export const RefusesAWeightBelowOne: Story = {
 };
 
 /**
- * Editing a multi-target route shows every target and writes only what moved.
+ * Editing a multi-target route shows every target and saves them in one call.
  *
- * There is no update endpoint for a target, so a changed line is created anew
- * and its old row deleted — and every create goes out before any delete, so
- * the gateway never sees the route with nothing to send to part-way through.
- * An untouched line is left alone.
+ * The whole list goes to `PUT /routes/{id}` and the control plane keeps each
+ * target it can match by (provider, upstream model), so a weight edit keeps the
+ * target's id: nothing is created or deleted line by line. A line left out of
+ * the list is the one removed.
  */
 export const EditsEveryTargetOfAFleet: Story = {
   render: () => <Stage mode="edit" route={FLEET_ROUTE} />,
@@ -1083,23 +1091,113 @@ export const EditsEveryTargetOfAFleet: Story = {
     );
     await expect(dialog.getByLabelText("Strategy")).toHaveValue("cache_aware");
 
-    const weight = dialog.getByLabelText("Target 2 weight");
+    const weight = dialog.getByLabelText("Target 3 weight");
     await userEvent.clear(weight);
     await userEvent.type(weight, "2");
-    await userEvent.click(dialog.getByRole("button", { name: "Remove target 3" }));
+    await userEvent.click(dialog.getByRole("button", { name: "Remove target 2" }));
     await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
 
-    await calls.expectSent("DELETE", "/route-targets/fleet-3");
-    await calls.expectSent("DELETE", "/route-targets/fleet-2");
-    await expect(sentBodies("POST", "/routes/route-2/targets")).toEqual([
-      { provider_id: "prov-2", upstream_model: "meta-llama/Llama-3.1-70B", weight: 2 },
-    ]);
-    calls.expectNotSent("DELETE", "/route-targets/fleet-1");
-    const writes = calls.calls.filter((c) => c.method !== "GET").map((c) => `${c.method} ${c.url}`);
-    const creates = writes.filter((w) => w.includes("/routes/route-2/targets"));
-    const lastCreate = writes.lastIndexOf(creates[creates.length - 1]);
-    const firstDelete = writes.findIndex((w) => w.startsWith("DELETE"));
-    await expect(lastCreate).toBeLessThan(firstDelete);
+    const body = await routeUpdate("route-2");
+    await expect(body).toEqual({
+      targets: [
+        { provider_id: "prov-2", upstream_model: "meta-llama/Llama-3.1-70B", weight: 1 },
+        { provider_id: "prov-1", upstream_model: null, weight: 2 },
+      ],
+    });
+    calls.expectNotSent("POST", "/routes/route-2/targets");
+    calls.expectNotSent("DELETE", "/route-targets/");
+  },
+};
+
+/**
+ * A weight edit keeps the target. A stored target whose upstream model spells
+ * out the route's own name goes back exactly as stored: the sheet's usual
+ * "equal to the route name means absent" would send a different key, and the
+ * control plane would replace the target with a new one (#2979).
+ */
+export const KeepsAStoredUpstreamEqualToTheRouteName: Story = {
+  render: () => (
+    <Stage
+      mode="edit"
+      route={ROUTE}
+      stub={(input, init) =>
+        String(input).includes("/routes/route-1/targets")
+          ? Promise.resolve(json([{ ...TARGETS[0], upstream_model: "gpt-4o", weight: 1 }]))
+          : backing(input, init)
+      }
+    />
+  ),
+  play: async () => {
+    const dialog = within(sheet());
+    await seeded(dialog);
+    await expect(dialog.getByLabelText("Target 1 upstream model")).toHaveValue("gpt-4o");
+    const weight = dialog.getByLabelText("Target 1 weight");
+    await userEvent.clear(weight);
+    await userEvent.type(weight, "4");
+    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
+    await expect(await routeUpdate("route-1")).toEqual({
+      targets: [{ provider_id: "prov-1", upstream_model: "gpt-4o", weight: 4 }],
+    });
+    calls.expectNotSent("POST", "/routes/route-1/targets");
+    calls.expectNotSent("DELETE", "/route-targets/");
+  },
+};
+
+/** The strategy is editable on a stored route and travels in the same call as the targets. */
+export const ChangesTheStrategy: Story = {
+  render: () => <Stage mode="edit" route={ROUTE} />,
+  play: async () => {
+    const dialog = within(sheet());
+    await seeded(dialog);
+    await pickOption(dialog.getByLabelText("Strategy"), "weighted");
+    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
+    await expect(await routeUpdate("route-1")).toEqual({
+      strategy: "weighted",
+      targets: [{ provider_id: "prov-1", upstream_model: null, weight: 1 }],
+    });
+  },
+};
+
+/**
+ * A refusal the control plane pins to a target (`targets[1].weight`) is said at
+ * that line, the sheet stays open and nothing is announced as saved.
+ */
+export const MapsARefusedSaveToItsRow: Story = {
+  render: () => (
+    <Stage
+      mode="edit"
+      route={FLEET_ROUTE}
+      stub={(input, init) =>
+        init?.method === "PUT" && String(input).endsWith("/routes/route-2")
+          ? Promise.resolve(
+              json(
+                {
+                  error: {
+                    code: "invalid_field",
+                    message: "weight must be at least 1",
+                    field: "targets[1].weight",
+                  },
+                },
+                400,
+              ),
+            )
+          : backing(input, init)
+      }
+    />
+  ),
+  play: async () => {
+    const dialog = within(sheet());
+    await waitFor(() =>
+      expect(dialog.getByLabelText("Target 3 provider")).toHaveValue("openai-prod"),
+    );
+    const weight = dialog.getByLabelText("Target 2 weight");
+    await userEvent.clear(weight);
+    await userEvent.type(weight, "5");
+    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
+    await waitFor(() => expect(dialog.getByLabelText("Target 2 weight")).toBeInvalid());
+    await expect(dialog.getByLabelText("Target 1 weight")).toBeValid();
+    await expect(dialog.getByText(/refused the weight of target 2/)).toBeVisible();
+    await expect(sheet()).toBeVisible();
   },
 };
 
@@ -1327,7 +1425,10 @@ export const LeavesTheAdvancedBlobAloneWhenUntouched: Story = {
     await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
     await calls.expectSent("PUT", "/routes/route-1/params");
     calls.expectNotSent("PUT", "/routes/route-1/advanced");
-    // nor are the targets rewritten: an unchanged line is left as it is
+    // the targets go back unchanged in the one update call, never line by line
+    await expect(await routeUpdate("route-1")).toEqual({
+      targets: [{ provider_id: "prov-1", upstream_model: null, weight: 1 }],
+    });
     calls.expectNotSent("POST", "/routes/route-1/targets");
     calls.expectNotSent("DELETE", "/route-targets/");
   },

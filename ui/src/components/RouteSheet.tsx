@@ -5,7 +5,15 @@ import { useTranslation } from "react-i18next";
 import { useDiscardGuard } from "@/components/DiscardGuard";
 import { FormSkeleton } from "@/components/LoadingState";
 import { LoadError } from "@/components/LoadError";
-import { newTarget, TargetEditor, weightValid, type DraftTarget } from "@/components/ModelSheet";
+import {
+  newTarget,
+  refusalOf,
+  TargetEditor,
+  weightValid,
+  type DraftTarget,
+  type RefusalField,
+  type ServerRefusal,
+} from "@/components/ModelSheet";
 import { StrategyHint } from "@/components/StrategyHint";
 import { Button } from "@/components/ui/button";
 import { Combobox } from "@/components/ui/combobox";
@@ -22,7 +30,6 @@ import {
 } from "@/components/ui/sheet";
 import { SwitchRow } from "@/components/ui/switch-row";
 import {
-  ApiError,
   fetchRouteTargets,
   updateRoute,
   type ProviderRow,
@@ -42,28 +49,7 @@ interface Draft {
   targets: DraftTarget[];
 }
 
-type FieldKey = "targets" | "provider" | "weight";
-
-/**
- * A refusal the control plane pinned to one part of the target list: the whole
- * list (`targets`), or one entry's field (`targets[1].weight`). The entry is
- * kept by its draft `key` rather than its index, so removing an earlier line
- * does not move the message onto a neighbour.
- */
-interface ServerRefusal {
-  field: FieldKey;
-  key?: string;
-}
-
-/** `targets`, `targets[2].weight`, `targets[0].provider_id` */
-function refusalOf(error: unknown, targets: DraftTarget[]): ServerRefusal | null {
-  if (!(error instanceof ApiError) || error.code !== "invalid_field" || !error.field) return null;
-  const match = /^targets(?:\[(\d+)\]\.(weight|provider_id))?$/.exec(error.field);
-  if (!match) return null;
-  if (match[1] === undefined) return { field: "targets" };
-  const key = targets[Number(match[1])]?.key;
-  return key ? { field: match[2] === "weight" ? "weight" : "provider", key } : null;
-}
+type FieldKey = RefusalField;
 
 /**
  * The target list as the control plane takes it.

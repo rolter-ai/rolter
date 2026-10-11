@@ -360,8 +360,7 @@
     },
     "routing": {
       "strategy": "Strategy",
-      "strategyInfo": "How the gateway picks a target for each request. The load-balancing docs describe what each strategy does.",
-      "strategyFixed": "The strategy is set when a route is created and cannot be changed here yet."
+      "strategyInfo": "How the gateway picks a target for each request. The load-balancing docs describe what each strategy does."
     },
     "targets": {
       "title": "Targets",
