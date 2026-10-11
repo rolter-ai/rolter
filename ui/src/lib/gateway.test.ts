@@ -6,6 +6,7 @@ import {
   chatCompletion,
   fetchGatewayModels,
   gatewayBase,
+  getGatewayCallsInFlight,
   getPlaygroundKey,
   getPlaygroundKeyState,
   isKeyRefusal,
@@ -14,6 +15,7 @@ import {
   setKeyPropagationForTests,
   setPlaygroundKey,
   subscribePlaygroundKey,
+  trackGatewaySession,
 } from "@/lib/gateway";
 
 const originalStorage = globalThis.localStorage;
@@ -310,5 +312,32 @@ describe("the session and the key on /gw calls (#2486)", () => {
     await chatCompletion("m", []);
     expect(sent[0]?.headers.Authorization).toBeUndefined();
     expect(sent[0]?.headers["x-rolter-gateway-key"]).toBeUndefined();
+  });
+});
+
+/**
+ * A re-mint waits while this is above zero (#2608), so everything that holds
+ * the key for longer than a tick has to be in it (#2758).
+ */
+describe("gateway calls in flight", () => {
+  it("counts the model probe until it settles, refused or not", async () => {
+    let answer!: (r: Response) => void;
+    globalThis.fetch = (() =>
+      new Promise<Response>((resolve) => {
+        answer = resolve;
+      })) as unknown as typeof fetch;
+    const probe = fetchGatewayModels();
+    expect(getGatewayCallsInFlight()).toBe(1);
+    answer(new Response(JSON.stringify({ error: { message: "no" } }), { status: 401 }));
+    await probe.catch(() => undefined);
+    expect(getGatewayCallsInFlight()).toBe(0);
+  });
+
+  it("counts a realtime session from open to close, and releases once", () => {
+    const release = trackGatewaySession();
+    expect(getGatewayCallsInFlight()).toBe(1);
+    release();
+    release();
+    expect(getGatewayCallsInFlight()).toBe(0);
   });
 });
