@@ -139,7 +139,7 @@ The team stack layers `docker/docker-compose.team.yml` over the same file. It cl
       --env-file .env --profile preflight run --rm preflight
     ```
 
-    It prints `all pre-boot checks passed`. `--env-file` goes before `run`: the subcommand has no such flag. A warning fails the check, for example when `ROLTER_CONTROL_HOST` is `0.0.0.0`, which publishes the management plane on every interface.
+    It prints `all pre-boot checks passed`. `--env-file` goes before `run`: the subcommand has no such flag. A warning fails the check, for example when `ROLTER_CONTROL_HOST` is `0.0.0.0` and `ROLTER_ADMIN_TOKEN` is unset, which would publish an unauthenticated management plane on every interface. With the token set, an all-interfaces bind passes, because every management route is authenticated.
 
   </Step>
   <Step title="Start the stack">

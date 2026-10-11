@@ -52,8 +52,9 @@ control:
   # address the control plane binds inside the pod. Must stay reachable from
   # the Service, so it is not loopback here — which means an admin token is
   # required: with none set the control plane refuses to start rather than
-  # serve an unauthenticated management API to the cluster (#970). Supply one
-  # through `secretEnv` as ROLTER_ADMIN_TOKEN.
+  # serve an unauthenticated management API to the cluster (#970), unless
+  # ROLTER_ALLOW_OPEN_MODE is set to acknowledge it. Supply a token through
+  # `secretEnv` as ROLTER_ADMIN_TOKEN.
   host: 0.0.0.0
   service:
     type: ClusterIP
