@@ -108,6 +108,31 @@ How it differs from the `LoadError` row:
   same appearance, and the line going away on a good poll and coming back is a
   second one. Two cards fed by the same read each record their own row
 
+Build the target with `staleTarget(region)` from `ui/src/lib/ux.ts` rather than
+writing the suffix: the Dashboard's four `RefreshFailed` lines and its Recent
+card all go through it (#2700).
+
+### Which screens poll, and which can be stale
+
+Every screen that polls was audited for a failed poll that leaves earlier data on
+screen. Only the Dashboard does so silently, and it records. The rest either
+drop the data and show a `LoadError` (which records `error_state` itself), or say
+so in their own words, and need no `-stale` row:
+
+| Screen / read                            | Failed poll over data                                                                     | Records                                                                          |
+| ---------------------------------------- | ----------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| Dashboard (summary, spend, models)       | keeps the figures, `RefreshFailed` line                                                   | `dashboard*-stale`                                                               |
+| Dashboard Recent card                    | keeps the rows, notice in the card header                                                 | `dashboard-recent-stale`                                                         |
+| Cluster                                  | `isError` swaps the table for a `LoadError`; nothing stale stays up                       | `cluster-nodes` (`LoadError`)                                                    |
+| Adaptive routing dashboard               | `isError` swaps the screen for a `LoadError`; nothing stale stays up                      | `adaptive-routes` (`LoadError`)                                                  |
+| Logs                                     | keeps the rows and mounts a `LoadError` under them, so the existing row is not silent     | `request-logs` (`LoadError`)                                                     |
+| Config gateway line                      | `gatewayPickup(.., failed)` returns `unavailable` and drops the old answer                | none: it shows no stale data                                                     |
+| Security pickup line                     | same `unavailable` state, and the watch stops after `PICKUP_WATCH_MS`                     | none: it shows no stale data                                                     |
+| Header gateway pill (`useGatewayHealth`) | holds the last answer for `GATEWAY_HEALTH_STALE_MS` with the pulse off, then says unknown | none: global chrome with no screen key, and the pill itself shows it is not live |
+
+`useNow` and the MCP OAuth clock tick a timestamp and fetch nothing. A screen
+that starts polling must add a row here, or record `staleTarget(region)`.
+
 The `AStaleRefreshRecordsOneErrorStatePerAppearance` story in
 `Dashboard.stories.tsx` reads the queue.
 

@@ -7,6 +7,7 @@ import {
   resetUxForTests,
   sanitizeKey,
   setUxContext,
+  staleTarget,
   track,
   trackErrorState,
   trackFormAbandon,
@@ -354,5 +355,15 @@ describe("ux event emitters", () => {
       await flush();
       expect(sentBatch(fetchMock)[0]).not.toHaveProperty("user_id");
     });
+  });
+});
+
+describe("staleTarget", () => {
+  it("names the region and marks it stale", () => {
+    expect(staleTarget("dashboard-spend")).toBe("dashboard-spend-stale");
+  });
+
+  it("survives sanitizeKey, so the event is not dropped", () => {
+    expect(sanitizeKey(staleTarget("dashboard-recent"))).toBe("dashboard-recent-stale");
   });
 });
