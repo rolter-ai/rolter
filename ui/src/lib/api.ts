@@ -1252,6 +1252,27 @@ export function updateProjectSettings(
   return sendJson<ProjectSettings>("PUT", `/api/v1/projects/${id}/settings`, input);
 }
 
+/**
+ * Where a provider publishes KV-cache events, read by `precise_cache_aware`
+ * (#2236). A row always carries every key; a request may leave all but
+ * `endpoint` out and the control plane fills the defaults.
+ */
+export interface KvEventsConfig {
+  /** a `tcp://` address */
+  endpoint: string;
+  topic: string;
+  max_blocks: number;
+  stale_secs: number;
+}
+
+/** Where an LMCache controller is polled, read by `lmcache_aware` (#2236). */
+export interface LmCacheConfig {
+  /** an http(s) address */
+  endpoint: string;
+  refresh_secs: number;
+  stale_secs: number;
+}
+
 export interface ProviderRow {
   id: string;
   org_id: string;
@@ -1270,6 +1291,10 @@ export interface ProviderRow {
    * plane that predates scoping) is org-wide (#1919)
    */
   project_id?: string | null;
+  /** the KV-events source `precise_cache_aware` reads; `null` when none is set */
+  kv_events?: KvEventsConfig | null;
+  /** the LMCache source `lmcache_aware` reads; `null` when none is set */
+  lmcache?: LmCacheConfig | null;
   /**
    * Whether a sealed key is stored for the provider. An `api_key_env` does not
    * count, and the key itself is never returned. Absent from a control plane
@@ -1290,6 +1315,10 @@ export interface CreateProviderInput {
   egress_proxy?: string;
   /** scope the provider to a project of the org; omit for org-wide */
   project_id?: string;
+  /** omit for no KV-events source; keys other than `endpoint` take their defaults */
+  kv_events?: Partial<KvEventsConfig> & Pick<KvEventsConfig, "endpoint">;
+  /** omit for no LMCache source; keys other than `endpoint` take their defaults */
+  lmcache?: Partial<LmCacheConfig> & Pick<LmCacheConfig, "endpoint">;
 }
 
 export interface UpdateProviderInput {
@@ -1308,6 +1337,10 @@ export interface UpdateProviderInput {
   egress_proxies?: string[];
   /** omit to leave the scope unchanged; a project id scopes it; `null` makes it org-wide */
   project_id?: string | null;
+  /** omit to keep; `null` clears the source; an object replaces the whole setting */
+  kv_events?: (Partial<KvEventsConfig> & Pick<KvEventsConfig, "endpoint">) | null;
+  /** omit to keep; `null` clears the source; an object replaces the whole setting */
+  lmcache?: (Partial<LmCacheConfig> & Pick<LmCacheConfig, "endpoint">) | null;
 }
 
 /**

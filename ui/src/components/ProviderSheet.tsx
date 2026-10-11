@@ -11,7 +11,9 @@ import { ProjectScopeField, useMayWiden } from "@/components/ProjectScopeField";
 import { Button } from "@/components/ui/button";
 import { Combobox } from "@/components/ui/combobox";
 import { Field } from "@/components/ui/field";
+import { FormSection } from "@/components/ui/form-section";
 import { Input } from "@/components/ui/input";
+import { SwitchRow } from "@/components/ui/switch-row";
 import {
   Sheet,
   SheetActions,
@@ -20,6 +22,15 @@ import {
   SheetFooter,
   SheetHeader,
 } from "@/components/ui/sheet";
+import {
+  blankTelemetry,
+  kvPayload,
+  lmPayload,
+  telemetryFieldOf,
+  telemetryFrom,
+  type TelemetryDraft,
+  type TelemetryField,
+} from "@/lib/provider-telemetry";
 import { slugify } from "@/lib/slug";
 import { errorDetail, useToast } from "@/lib/toast";
 import { providerKindDescription, providerKindName } from "@/lib/provider-kinds";
@@ -136,6 +147,8 @@ interface ProviderDraft {
   egressProxy: string;
   /** the project the provider is scoped to; `""` is the whole organization */
   projectId: string;
+  /** the KV-events and LMCache sources the cache-aware strategies read (#2996) */
+  tel: TelemetryDraft;
 }
 
 function blankDraft(): ProviderDraft {
@@ -148,6 +161,7 @@ function blankDraft(): ProviderDraft {
     apiKeyEnv: "",
     egressProxy: "",
     projectId: "",
+    tel: blankTelemetry(),
   };
 }
 
@@ -161,6 +175,7 @@ function fromProvider(p: ProviderRow): ProviderDraft {
     apiKeyEnv: p.api_key_env ?? "",
     egressProxy: p.egress_proxy ?? "",
     projectId: p.project_id ?? "",
+    tel: telemetryFrom(p.kv_events, p.lmcache),
   };
 }
 
@@ -207,6 +222,11 @@ export function ProviderSheet({
   const envLocked = !mayWiden && scopeValue !== "";
 
   const set = (patch: Partial<ProviderDraft>) => setDraft((d) => ({ ...d, ...patch }));
+  const setTel = (patch: Partial<TelemetryDraft>) =>
+    setDraft((d) => ({ ...d, tel: { ...d.tel, ...patch } }));
+  // a section the operator folded by hand; otherwise it is open while its
+  // source is on, and always while a refusal is about one of its fields
+  const [folded, setFolded] = React.useState<{ kv?: boolean; lm?: boolean }>({});
 
   // whether /v1 belongs in api_base depends on the kind, so the hint, the
   // placeholder and the preview all follow the selected one (#947). deployment
@@ -263,6 +283,16 @@ export function ProviderSheet({
   // without shipping it somewhere first
   const toast = useToast();
 
+  const sourceChanged = (source: "kv" | "lm", p: ProviderRow) => {
+    const was = fromProvider(p).tel;
+    const keys = (
+      source === "kv"
+        ? ["kv", "kvEndpoint", "kvTopic", "kvMaxBlocks", "kvStaleSecs"]
+        : ["lm", "lmEndpoint", "lmRefreshSecs", "lmStaleSecs"]
+    ) as (keyof TelemetryDraft)[];
+    return keys.some((k) => was[k] !== draft.tel[k]);
+  };
+
   const test = useMutation({ mutationFn: () => testProvider(stored!.id) });
 
   const save = useMutation({
@@ -277,6 +307,8 @@ export function ProviderSheet({
           api_key_env: draft.apiKeyEnv || undefined,
           egress_proxy: draft.egressProxy || undefined,
           project_id: scopeValue || undefined,
+          kv_events: draft.tel.kv ? kvPayload(draft.tel) : undefined,
+          lmcache: draft.tel.lm ? lmPayload(draft.tel) : undefined,
         });
       }
       const p = stored;
@@ -289,6 +321,14 @@ export function ProviderSheet({
         // sent only when it moved: `null` is the word for org-wide again, and a
         // project admin's unchanged edit must not carry a scope the server refuses
         project_id: scopeValue !== (p.project_id ?? "") ? scopeValue || null : undefined,
+        // a source is replaced whole when any of its fields moved, and removing
+        // one has to say so: omitted would keep it, `null` clears it (#2996)
+        kv_events: sourceChanged("kv", p)
+          ? draft.tel.kv
+            ? kvPayload(draft.tel)
+            : null
+          : undefined,
+        lmcache: sourceChanged("lm", p) ? (draft.tel.lm ? lmPayload(draft.tel) : null) : undefined,
       });
     },
     onSuccess: (row) => {
@@ -354,6 +394,15 @@ export function ProviderSheet({
   }, [created]);
 
   const testHintId = React.useId();
+
+  // a 400 that names a telemetry key is shown on that field, not only in the
+  // footer, and the field's section opens so it can be seen (#2996)
+  const refusal = save.isError ? (save.error as Error).message : undefined;
+  const refusedField = refusal ? telemetryFieldOf(refusal) : null;
+  const fieldError = (field: TelemetryField) =>
+    refusedField === field && refusal ? refusal : undefined;
+  const kvOpen = refusedField?.startsWith("kv") ? true : (folded.kv ?? draft.tel.kv);
+  const lmOpen = refusedField?.startsWith("lm") ? true : (folded.lm ?? draft.tel.lm);
 
   const title = editing
     ? t("providerSheet.title.edit", { name: stored?.name ?? "" })
@@ -560,10 +609,140 @@ export function ProviderSheet({
             placeholder="http://proxy.internal:8080"
           />
         </Field>
+
+        <FormSection
+          title={t("providerSheet.telemetry.kv.title")}
+          info={t("providerSheet.telemetry.kv.info")}
+          open={kvOpen}
+          onToggle={() => setFolded((f) => ({ ...f, kv: !kvOpen }))}
+          className="space-y-3.5"
+        >
+          <SwitchRow
+            title={t("providerSheet.telemetry.kv.enable")}
+            hint={t("providerSheet.telemetry.kv.enableHint")}
+            checked={draft.tel.kv}
+            onChange={(kv) => setTel({ kv })}
+          />
+          {draft.tel.kv && (
+            <>
+              <Field
+                label={t("providerSheet.telemetry.endpoint")}
+                hint={t("providerSheet.telemetry.kv.endpointHint")}
+                error={fieldError("kvEndpoint")}
+              >
+                <Input
+                  value={draft.tel.kvEndpoint}
+                  onChange={(e) => setTel({ kvEndpoint: e.target.value })}
+                  placeholder="tcp://vllm.internal:5557"
+                  className="font-mono"
+                />
+              </Field>
+              <Field
+                label={t("providerSheet.telemetry.kv.topic")}
+                hint={t("providerSheet.telemetry.kv.topicHint")}
+                error={fieldError("kvTopic")}
+              >
+                <Input
+                  value={draft.tel.kvTopic}
+                  onChange={(e) => setTel({ kvTopic: e.target.value })}
+                  placeholder="kv-events"
+                  className="font-mono"
+                />
+              </Field>
+              <Field
+                label={t("providerSheet.telemetry.kv.maxBlocks")}
+                hint={t("providerSheet.telemetry.kv.maxBlocksHint")}
+                error={fieldError("kvMaxBlocks")}
+              >
+                <Input
+                  type="number"
+                  inputMode="numeric"
+                  min={1}
+                  value={draft.tel.kvMaxBlocks}
+                  onChange={(e) => setTel({ kvMaxBlocks: e.target.value })}
+                  placeholder="1000000"
+                />
+              </Field>
+              <Field
+                label={t("providerSheet.telemetry.staleSecs")}
+                hint={t("providerSheet.telemetry.kv.staleSecsHint")}
+                error={fieldError("kvStaleSecs")}
+              >
+                <Input
+                  type="number"
+                  inputMode="numeric"
+                  min={1}
+                  value={draft.tel.kvStaleSecs}
+                  onChange={(e) => setTel({ kvStaleSecs: e.target.value })}
+                  placeholder="30"
+                />
+              </Field>
+            </>
+          )}
+        </FormSection>
+
+        <FormSection
+          title={t("providerSheet.telemetry.lm.title")}
+          info={t("providerSheet.telemetry.lm.info")}
+          open={lmOpen}
+          onToggle={() => setFolded((f) => ({ ...f, lm: !lmOpen }))}
+          className="space-y-3.5"
+        >
+          <SwitchRow
+            title={t("providerSheet.telemetry.lm.enable")}
+            hint={t("providerSheet.telemetry.lm.enableHint")}
+            checked={draft.tel.lm}
+            onChange={(lm) => setTel({ lm })}
+          />
+          {draft.tel.lm && (
+            <>
+              <Field
+                label={t("providerSheet.telemetry.endpoint")}
+                hint={t("providerSheet.telemetry.lm.endpointHint")}
+                error={fieldError("lmEndpoint")}
+              >
+                <Input
+                  value={draft.tel.lmEndpoint}
+                  onChange={(e) => setTel({ lmEndpoint: e.target.value })}
+                  placeholder="http://lmcache.internal:9000"
+                  className="font-mono"
+                />
+              </Field>
+              <Field
+                label={t("providerSheet.telemetry.lm.refreshSecs")}
+                hint={t("providerSheet.telemetry.lm.refreshSecsHint")}
+                error={fieldError("lmRefreshSecs")}
+              >
+                <Input
+                  type="number"
+                  inputMode="numeric"
+                  min={1}
+                  value={draft.tel.lmRefreshSecs}
+                  onChange={(e) => setTel({ lmRefreshSecs: e.target.value })}
+                  placeholder="2"
+                />
+              </Field>
+              <Field
+                label={t("providerSheet.telemetry.staleSecs")}
+                hint={t("providerSheet.telemetry.lm.staleSecsHint")}
+                error={fieldError("lmStaleSecs")}
+              >
+                <Input
+                  type="number"
+                  inputMode="numeric"
+                  min={1}
+                  value={draft.tel.lmStaleSecs}
+                  onChange={(e) => setTel({ lmStaleSecs: e.target.value })}
+                  placeholder="10"
+                />
+              </Field>
+            </>
+          )}
+        </FormSection>
       </SheetBody>
 
       <SheetFooter>
-        <SheetError message={save.isError ? (save.error as Error).message : undefined} />
+        <SheetError message={refusedField ? undefined : refusal} />
         {created && test.isIdle && <CreatedNote name={created.name} />}
         {test.data && <TestOutcome result={test.data} />}
         <SheetError message={test.isError ? (test.error as Error).message : undefined} />

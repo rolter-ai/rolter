@@ -17,8 +17,7 @@ type Story = StoryObj<typeof meta>;
 
 /**
  * Degrades to least-load without KV events / an LMCache controller, and says
- * where that source is set: only in `rolter.toml`, since a provider added in
- * the dashboard cannot carry one yet (#2137).
+ * where that source is set: the provider sheet or `rolter.toml` (#2996).
  */
 export const NeedsTelemetry: Story = {
   beforeEach: withDocsBase(undefined),
@@ -31,10 +30,9 @@ export const NeedsTelemetry: Story = {
       expect(note).toHaveTextContent(en.pages.routing.strategyHints.needsTelemetry),
     );
     await expect(note).toHaveTextContent(/least-load/);
-    // the hint used to send operators to "the target providers" for a setting
-    // the provider sheet does not have
+    // it names both places the source is set
     await expect(note).toHaveTextContent(/rolter\.toml/);
-    await expect(note).toHaveTextContent(/added in the dashboard cannot carry one/);
+    await expect(note).toHaveTextContent(/in each provider.s sheet/);
   },
 };
 

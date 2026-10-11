@@ -13,9 +13,9 @@ import { strategyDocsPage, strategyHintKey } from "@/lib/strategies";
  * configured and does not behave as chosen — which is exactly the silence #897
  * was about, in a different place.
  *
- * The telemetry caveat also says where that source is set, since a provider
- * added in the dashboard cannot carry one yet (#2137, until #2236), and links
- * the cache-aware routing page when the deployment has a documentation host.
+ * The telemetry caveat also says where that source is set (the provider sheet
+ * or `rolter.toml`) and links the cache-aware routing page when the deployment
+ * has a documentation host.
  */
 export function StrategyHint({ strategy }: { strategy: string }) {
   const { t } = useTranslation();

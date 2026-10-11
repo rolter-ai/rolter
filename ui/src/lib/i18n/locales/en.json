@@ -814,7 +814,7 @@
     },
     "routing": {
       "strategyHints": {
-        "needsTelemetry": "Needs a cache-telemetry source (KV events or an LMCache controller) on the target providers. The source is set per provider in rolter.toml; a provider added in the dashboard cannot carry one yet. Without one, this strategy quietly falls back to least-load.",
+        "needsTelemetry": "Needs a cache-telemetry source (KV events or an LMCache controller) on the target providers. Set it in each provider's sheet, or in rolter.toml. Without one, this strategy quietly falls back to least-load.",
         "deploymentWide": "Controlled by the deployment-wide adaptive-routing policy, not from here. Kept so this route is not changed by saving."
       },
       "confirm": {
@@ -3738,6 +3738,32 @@
       "falcon": {
         "name": "Falcon",
         "description": "G42 and TII's hosted Falcon models"
+      }
+    },
+    "telemetry": {
+      "endpoint": "Endpoint",
+      "staleSecs": "Stale after (seconds)",
+      "kv": {
+        "title": "KV events source",
+        "info": "Where this provider publishes KV-cache events. precise_cache_aware routes to the target that already holds the prompt's blocks; without a source it falls back to least-load.",
+        "enable": "Read KV events from this provider",
+        "enableHint": "Used by the precise_cache_aware strategy.",
+        "endpointHint": "The tcp:// address of the ZMQ publisher, for example tcp://vllm.internal:5557.",
+        "topic": "Topic",
+        "topicHint": "The ZMQ topic to subscribe to. Blank uses kv-events.",
+        "maxBlocks": "Maximum tracked blocks",
+        "maxBlocksHint": "Most cached blocks kept for this provider. Blank uses 1000000.",
+        "staleSecsHint": "Events older than this are ignored. Blank uses 30."
+      },
+      "lm": {
+        "title": "LMCache source",
+        "info": "Where this provider's LMCache controller answers. lmcache_aware routes to the target the controller says holds the prompt; without a source it falls back to least-load.",
+        "enable": "Poll an LMCache controller for this provider",
+        "enableHint": "Used by the lmcache_aware strategy.",
+        "endpointHint": "The http:// or https:// address of the controller, for example http://lmcache.internal:9000.",
+        "refreshSecs": "Refresh every (seconds)",
+        "refreshSecsHint": "How often the controller is polled. Blank uses 2.",
+        "staleSecsHint": "A reading older than this is ignored. Blank uses 10."
       }
     }
   },
