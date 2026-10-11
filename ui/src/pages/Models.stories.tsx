@@ -28,7 +28,14 @@ import {
   uxEvents,
   type Recorder,
 } from "./story-harness";
-import type { EffectiveModelDto, GatewayConfigDto, LabelRow, RouteRow, UptimeRow } from "@/lib/api";
+import type {
+  EffectiveModelDto,
+  GatewayConfigDto,
+  LabelRow,
+  RouteRow,
+  TimelineRow,
+  UptimeRow,
+} from "@/lib/api";
 import { UxScreenProvider } from "@/lib/ux-react";
 
 const MODELS: EffectiveModelDto[] = [
@@ -270,6 +277,63 @@ const FLEET_UPTIME: UptimeRow[] = [
   uptimeRow({}),
   uptimeRow({ provider: "vllm-b", ok: 1940, errors: 60, uptime: 0.97, sla_breached: 1 }),
 ];
+
+// #2256: vllm-b meets the SLA over the window, but its last two hours failed
+// at 3x what the SLA allows
+const AT_RISK_UPTIME: UptimeRow[] = [
+  uptimeRow({}),
+  uptimeRow({ provider: "vllm-b", ok: 1994, errors: 6, uptime: 0.997 }),
+];
+
+const AT_RISK_TIMELINE: TimelineRow[] = [
+  ["vllm-a", 0, 0],
+  ["vllm-a", 1, 0],
+  ["vllm-b", 0, 0],
+  ["vllm-b", 1, 3],
+  ["vllm-b", 2, 3],
+].map(([provider, hour, errors]) => ({
+  bucket: `2026-09-29T${String(hour).padStart(2, "0")}:00:00Z`,
+  provider: provider as string,
+  target_id: "meta-llama/Llama-3.1-70B",
+  grain: "target" as const,
+  events: 100,
+  ok: 100 - (errors as number),
+  errors: errors as number,
+  timeouts: 0,
+}));
+
+/**
+ * A target that meets the SLA over seven days but is failing faster than it
+ * allows right now reads "SLA at risk" in words, in the row and in the list.
+ */
+export const TargetSlaAtRisk: Story = {
+  render: () => (
+    <Harness
+      fetchStub={routes([
+        ["/model-prices", () => []],
+        ["/currency", () => ({ base: "USD", rates: {} })],
+        ["/health/uptime", () => ({ data: AT_RISK_UPTIME })],
+        ["/health/timeline", () => ({ data: AT_RISK_TIMELINE })],
+        ["/config", () => FLEET_CONFIG],
+        ["/models", () => [FLEET_MODEL]],
+        ["/providers", () => []],
+        ["/routes", () => []],
+      ])}
+    >
+      <Models />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText("1 SLA at risk")).toBeVisible());
+    await expect(canvas.queryByText(/below SLA/)).toBeNull();
+    await userEvent.click(await canvas.findByRole("button", { name: "3 targets for llama-70b" }));
+    const list = await canvas.findByRole("list", { name: "Targets of llama-70b" });
+    const lines = within(list).getAllByRole("listitem");
+    await expect(lines[0]).toHaveTextContent(/99\.95% uptime$/);
+    await expect(lines[1]).toHaveTextContent(/vllm-b.*99\.70% uptime, SLA at risk/);
+  },
+};
 
 /**
  * A `cache_aware` route over three vLLM replicas (#1979).

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 
-import type { UptimeRow } from "@/lib/api";
+import type { TimelineRow, UptimeRow } from "@/lib/api";
 import { targetHealth, targetViews } from "@/lib/route-targets";
 
 const row = (patch: Partial<UptimeRow>): UptimeRow => ({
@@ -26,13 +26,18 @@ describe("targetHealth", () => {
       row({ uptime: 0.999 }),
       row({ grain: "target", target_id: "llama-70b", uptime: 0.95, sla_breached: 1 }),
     ];
-    expect(targetHealth(rows, "sim-a", "llama-70b")).toEqual({ uptime: 0.95, breached: true });
+    expect(targetHealth(rows, "sim-a", "llama-70b")).toEqual({
+      uptime: 0.95,
+      breached: true,
+      state: "breaching",
+    });
   });
 
   it("falls back to the provider's probe row for a target with no traffic yet", () => {
     expect(targetHealth([row({ uptime: 0.999 })], "sim-a", "llama-70b")).toEqual({
       uptime: 0.999,
       breached: false,
+      state: "within",
     });
   });
 
@@ -45,6 +50,27 @@ describe("targetHealth", () => {
     const legacy = row({ uptime: 0.9, sla_breached: 1 }) as Partial<UptimeRow>;
     delete legacy.grain;
     expect(targetHealth([legacy as UptimeRow], "sim-a", "llama-70b")?.breached).toBe(true);
+  });
+
+  it("reads the last two hours: at risk when they burn faster than the SLA allows", () => {
+    const bucket = (hour: string, errors: number): TimelineRow => ({
+      bucket: `2026-08-06T${hour}:00:00Z`,
+      provider: "sim-a",
+      target_id: "sim-a",
+      grain: "provider",
+      events: 100,
+      ok: 100 - errors,
+      errors,
+      timeouts: 0,
+    });
+    const rows = [row({ uptime: 0.995 })];
+    const burning = [bucket("08", 0), bucket("10", 3), bucket("11", 3)];
+    expect(targetHealth(rows, "sim-a", "llama-70b", burning)?.state).toBe("atRisk");
+    const early = [bucket("03", 5), bucket("10", 0), bucket("11", 0)];
+    expect(targetHealth(rows, "sim-a", "llama-70b", early)?.state).toBe("within");
+    expect(targetHealth(rows, "sim-a", "llama-70b")?.state).toBe("within");
+    const breached = [row({ uptime: 0.9, sla_breached: 1 })];
+    expect(targetHealth(breached, "sim-a", "llama-70b", early)?.state).toBe("breaching");
   });
 
   it("knows nothing when the rollup was not read", () => {

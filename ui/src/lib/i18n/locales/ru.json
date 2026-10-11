@@ -505,6 +505,7 @@
     "share": "{{share}} трафика",
     "uptime": "аптайм {{uptime}}",
     "belowSla": "аптайм {{uptime}}, ниже SLA",
+    "slaAtRisk": "аптайм {{uptime}}, SLA под угрозой",
     "noHealth": "нет данных о состоянии",
     "healthWindow": "Аптайм за последние 7 дней при цели SLA {{sla}}."
   },
@@ -717,6 +718,10 @@
         "failing_few": "{{count}} ниже SLA",
         "failing_many": "{{count}} ниже SLA",
         "failing_other": "{{count}} ниже SLA",
+        "atRisk_one": "{{count}} под угрозой SLA",
+        "atRisk_few": "{{count}} под угрозой SLA",
+        "atRisk_many": "{{count}} под угрозой SLA",
+        "atRisk_other": "{{count}} под угрозой SLA",
         "healthy": "все цели в пределах SLA"
       },
       "readOnlyPill": "только чтение",
