@@ -277,18 +277,18 @@ request time the `EgressClient` refuses the call, which is an ordinary call
 failure, so the block's own `failure_mode` decides: fail-closed refuses the
 request, fail-open lets it through. Each has a gateway test.
 
-| URL                                                                          | Save time                                               | Request time                                                                      |
-| ---------------------------------------------------------------------------- | ------------------------------------------------------- | --------------------------------------------------------------------------------- |
-| provider `api_base`, egress proxy                                            | `require_allowed_egress` (400); `provider_problems`     | `rolter-proxy` `EgressResolver` on every upstream client                          |
-| provider `status_page_url`                                                   | `provider_problems` (file config; provider row dropped) | `gateway::egress_client::EgressClient` (literal check and resolver, no redirects) |
-| provider `lmcache.endpoint`                                                  | `provider_problems`                                     | `EgressClient` on every refresh                                                   |
-| provider `kv_events.endpoint`                                                | `provider_problems`                                     | `kv_endpoint_permitted` before each connect (see the gap below)                   |
-| MCP server URL, MCP OAuth URLs                                               | `validate`; `require_allowed_egress`                    | `rolter-control` `egress_client::builder`                                         |
-| alert channel and connector endpoints                                        | `require_allowed_egress`-style check in each module     | `egress_client::builder` plus `url_deny_reason`                                   |
-| SSO issuer; discovery `authorization_endpoint`, `token_endpoint`, `jwks_uri` | `require_allowed_egress` on create and update           | `sso::idp_client` (`egress_client::builder`) and `check_idp_url` on every fetch   |
-| guardrail webhook `url` (file and registry)                                  | `require_allowed_egress` (400); `operator_url_problems` | `EgressClient` before each call; snapshot keeps it and reports it                 |
-| PII sanitizer `url`, `restore_url`                                           | `operator_url_problems` (not stored in the database)    | `EgressClient` before each call; snapshot keeps it and reports it                 |
-| plugin `endpoint`                                                            | `require_allowed_egress` (400); `operator_url_problems` | `EgressClient` before each call; snapshot keeps it and reports it                 |
+| URL                                                                          | Save time                                                         | Request time                                                                      |
+| ---------------------------------------------------------------------------- | ----------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| provider `api_base`, egress proxy                                            | `require_allowed_egress` (400); `provider_problems`               | `rolter-proxy` `EgressResolver` on every upstream client                          |
+| provider `status_page_url`                                                   | `provider_problems` (file config; snapshot clears the URL, #3005) | `gateway::egress_client::EgressClient` (literal check and resolver, no redirects) |
+| provider `lmcache.endpoint`                                                  | `provider_problems`                                               | `EgressClient` on every refresh                                                   |
+| provider `kv_events.endpoint`                                                | `provider_problems`                                               | `kv_endpoint_permitted` before each connect (see the gap below)                   |
+| MCP server URL, MCP OAuth URLs                                               | `validate`; `require_allowed_egress`                              | `rolter-control` `egress_client::builder`                                         |
+| alert channel and connector endpoints                                        | `require_allowed_egress`-style check in each module               | `egress_client::builder` plus `url_deny_reason`                                   |
+| SSO issuer; discovery `authorization_endpoint`, `token_endpoint`, `jwks_uri` | `require_allowed_egress` on create and update                     | `sso::idp_client` (`egress_client::builder`) and `check_idp_url` on every fetch   |
+| guardrail webhook `url` (file and registry)                                  | `require_allowed_egress` (400); `operator_url_problems`           | `EgressClient` before each call; snapshot keeps it and reports it                 |
+| PII sanitizer `url`, `restore_url`                                           | `operator_url_problems` (not stored in the database)              | `EgressClient` before each call; snapshot keeps it and reports it                 |
+| plugin `endpoint`                                                            | `require_allowed_egress` (400); `operator_url_problems`           | `EgressClient` before each call; snapshot keeps it and reports it                 |
 
 The gateway's `EgressClient` is one pooled client per `AppState`, bound to the
 same live policy handle as the upstream forwarder, so a reload re-tunes it. It

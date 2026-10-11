@@ -3736,7 +3736,7 @@ impl GatewayConfig {
         warnings
     }
 
-    /// Clear a provider's `kv_events` / `lmcache` setting when the egress
+    /// Clear a provider's `status_page_url`, `kv_events` or `lmcache` setting when the egress
     /// policy denies its endpoint or its shape is invalid, keeping the provider.
     /// Cache telemetry is optional, so losing it must not cost the provider its
     /// traffic (#2997); `validate` still refuses the same setting in a file.
@@ -3744,6 +3744,16 @@ impl GatewayConfig {
         let egress = self.egress.clone();
         for provider in &mut self.providers {
             let name = provider.name.clone();
+            if let Some(url) = &provider.status_page_url {
+                if let Err(p) = egress.check_url(url, &format!("provider '{name}' status_page_url"))
+                {
+                    warnings.push(format!(
+                        "provider '{name}' status_page_url omitted from the snapshot and the \
+                         provider serves without it: {p}"
+                    ));
+                    provider.status_page_url = None;
+                }
+            }
             if let Some(kv) = &provider.kv_events {
                 let mut problems = Vec::new();
                 if let Err(p) = egress.check_url(
@@ -8758,8 +8768,9 @@ mod tests {
         assert!(config.guardrail_webhook.enabled);
         assert!(config.pii_sanitizer.enabled);
         assert_eq!(config.plugins.instances.len(), 2);
-        // the provider is dropped like one with a denied api_base
-        assert!(config.providers.is_empty());
+        // the optional status page is cleared, the provider keeps serving (#3005)
+        assert_eq!(config.providers.len(), 1);
+        assert!(config.providers[0].status_page_url.is_none());
         for needle in [
             "guardrail_webhook.url",
             "pii_sanitizer.restore_url",
