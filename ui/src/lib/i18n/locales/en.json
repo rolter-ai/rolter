@@ -468,6 +468,17 @@
       "summary_other": "{{count}} fields need attention before this route can be saved."
     }
   },
+  "routeSheet": {
+    "title": "Edit route",
+    "enabled": "Enabled",
+    "enabledHint": "Off = kept in the list but excluded from routing. Clients calling this name get an error until it is switched back on.",
+    "save": "Save route",
+    "errors": {
+      "weightRow": "The control plane refused the weight of target {{n}}. Weights are whole numbers, 1 or more.",
+      "summary_one": "{{count}} field needs attention before this route can be saved.",
+      "summary_other": "{{count}} fields need attention before this route can be saved."
+    }
+  },
   "routeTargets": {
     "count_one": "{{count}} target",
     "count_other": "{{count}} targets",
@@ -824,7 +835,9 @@
       "summary_one": "{{count}} route · public model names clients call, resolved to upstream targets",
       "summary_other": "{{count}} routes · public model names clients call, resolved to upstream targets",
       "noTargets": "No targets yet.",
-      "disabledBadge": "disabled"
+      "disabledBadge": "disabled",
+      "edit": "Edit",
+      "editRoute": "Edit route {{model}}"
     },
     "pricing": {
       "unconvertible": "Priced in {{code}}, which has no conversion rate — this model's spend is missing from {{base}} totals and budgets.",

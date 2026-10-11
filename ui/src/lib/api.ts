@@ -1570,8 +1570,33 @@ export function createRoute(
   return sendJson<RouteRow>("POST", `/api/v1/projects/${projectId}/routes`, input);
 }
 
+/** one entry of a route's target list, as `PUT /api/v1/routes/{id}` takes it */
+export interface RouteTargetInput {
+  provider_id: string;
+  /** null or blank forwards the route's own name; a stored value is sent back unchanged */
+  upstream_model?: string | null;
+  weight: number;
+}
+
+/**
+ * The body of `PUT /api/v1/routes/{id}`. Every field is optional and an omitted
+ * one keeps its stored value. `targets` is the route's whole list, applied in
+ * one transaction: an entry is matched to a stored target by `provider_id` and
+ * `upstream_model` (a match keeps its id and takes the new weight), a stored
+ * target the list leaves out is deleted, and an unmatched entry is added.
+ */
+export interface UpdateRouteInput {
+  enabled?: boolean;
+  strategy?: string;
+  targets?: RouteTargetInput[];
+}
+
+export function updateRoute(id: string, input: UpdateRouteInput): Promise<RouteRow> {
+  return sendJson<RouteRow>("PUT", `/api/v1/routes/${id}`, input);
+}
+
 export function setRouteEnabled(id: string, enabled: boolean): Promise<RouteRow> {
-  return sendJson<RouteRow>("PUT", `/api/v1/routes/${id}`, { enabled });
+  return updateRoute(id, { enabled });
 }
 
 export function deleteRoute(id: string): Promise<void> {

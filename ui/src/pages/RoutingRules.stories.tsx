@@ -7,6 +7,7 @@ import {
   Toasted,
   cancelConfirmation,
   confirmDestructive,
+  expectAllowed,
   expectRefused,
   expectInStatusRegion,
   expectLoadError,
@@ -473,6 +474,7 @@ export const RefusedToAViewer: Story = {
   play: async ({ canvasElement }) => {
     await expectRefused(canvasElement, /add route/i);
     await expectRefused(canvasElement, "Delete route gpt-4o");
+    await expectRefused(canvasElement, "Edit route gpt-4o");
   },
 };
 
@@ -485,6 +487,191 @@ export const RefusedToAMember: Story = {
   play: async ({ canvasElement }) => {
     await expectRefused(canvasElement, /add route/i);
     await expectRefused(canvasElement, "Delete route claude-sonnet");
+    await expectRefused(canvasElement, "Edit route claude-sonnet");
+  },
+};
+
+// ------------------------------------------------------ route editor (#2134)
+
+interface RouteUpdate {
+  enabled?: boolean;
+  strategy?: string;
+  targets?: { provider_id: string; upstream_model: string | null; weight: number }[];
+}
+
+const updating = (stored: RouteTargetRow[] = TARGETS["route-1"]) =>
+  recording(
+    scoped(async (input, init) => {
+      const url = String(input);
+      if (init?.method === "PUT" && /\/routes\/route-1$/.test(url)) {
+        return json({ ...ROUTES[0], strategy: "round_robin" });
+      }
+      const targets = /\/routes\/route-1\/targets/.exec(url);
+      if (targets) return json(stored);
+      return answer(ROUTES)(input, init);
+    }),
+  );
+
+/**
+ * A two-target route is edited in one sheet: the strategy and a weight change,
+ * and the whole target list goes out in one PUT. The target with no upstream
+ * model goes back as null, so the control plane matches it to the stored one
+ * and keeps its id rather than replacing it.
+ */
+let edits: Recorder;
+export const EditsATwoTargetRoute: Story = {
+  render: () => {
+    edits = updating();
+    return (
+      <Harness fetchStub={edits.stub} role="admin">
+        <Toasted>
+          <RoutingRules />
+        </Toasted>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectAllowed(canvasElement, "Edit route gpt-4o");
+    await userEvent.click(await canvas.findByRole("button", { name: "Edit route gpt-4o" }));
+    const dialog = within(await within(document.body).findByRole("dialog"));
+    await expect(dialog.getByRole("heading", { name: "Edit route" })).toBeVisible();
+    await expect(await dialog.findByLabelText("Target 1 upstream model")).toHaveValue(
+      "gpt-4o-2024-08-06",
+    );
+    await expect(dialog.getByLabelText("Target 2 weight")).toHaveValue(20);
+    await expect(dialog.getByLabelText("Strategy")).toHaveValue("weighted");
+    await pickOption(dialog.getByLabelText("Strategy"), "round_robin");
+    const weight = dialog.getByLabelText("Target 2 weight");
+    await userEvent.clear(weight);
+    await userEvent.type(weight, "30");
+    await userEvent.click(dialog.getByRole("switch", { name: "Enabled" }));
+    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
+    await expect(await edits.expectSentBody<RouteUpdate>("PUT", "/api/v1/routes/route-1")).toEqual({
+      enabled: false,
+      strategy: "round_robin",
+      targets: [
+        { provider_id: "prov-1", upstream_model: "gpt-4o-2024-08-06", weight: 80 },
+        { provider_id: "prov-2", upstream_model: null, weight: 30 },
+      ],
+    });
+    await expectToast(canvasElement, /gpt-4o updated/);
+  },
+};
+
+/**
+ * A stored upstream model that spells out the route's own name goes back as it
+ * was read. Normalising it to "absent" would stop it matching the stored
+ * target, which the control plane would then replace with a new id.
+ */
+let keeps: Recorder;
+export const KeepsAnUpstreamModelEqualToTheRouteName: Story = {
+  render: () => {
+    keeps = updating([
+      { ...TARGETS["route-1"][0], upstream_model: "gpt-4o" },
+      TARGETS["route-1"][1],
+    ]);
+    return (
+      <Harness fetchStub={keeps.stub} role="admin">
+        <RoutingRules />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectAllowed(canvasElement, "Edit route gpt-4o");
+    await userEvent.click(await canvas.findByRole("button", { name: "Edit route gpt-4o" }));
+    const dialog = within(await within(document.body).findByRole("dialog"));
+    const weight = await dialog.findByLabelText("Target 1 weight");
+    await userEvent.clear(weight);
+    await userEvent.type(weight, "70");
+    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
+    const body = await keeps.expectSentBody<RouteUpdate>("PUT", "/api/v1/routes/route-1");
+    await expect(body.targets?.[0]).toEqual({
+      provider_id: "prov-1",
+      upstream_model: "gpt-4o",
+      weight: 70,
+    });
+    await expect(body.strategy).toBeUndefined();
+    await expect(body.enabled).toBeUndefined();
+  },
+};
+
+/** A line can be added and one removed; the list sent is the whole list. */
+let reshapes: Recorder;
+export const AddsAndRemovesATarget: Story = {
+  render: () => {
+    reshapes = updating();
+    return (
+      <Harness fetchStub={reshapes.stub} role="admin">
+        <RoutingRules />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectAllowed(canvasElement, "Edit route gpt-4o");
+    await userEvent.click(await canvas.findByRole("button", { name: "Edit route gpt-4o" }));
+    const dialog = within(await within(document.body).findByRole("dialog"));
+    await userEvent.click(await dialog.findByRole("button", { name: "Remove target 1" }));
+    await userEvent.click(dialog.getByRole("button", { name: "Add target" }));
+    await pickOption(dialog.getByLabelText("Target 2 provider"), "openai-prod");
+    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
+    await expect(
+      await reshapes.expectSentBody<RouteUpdate>("PUT", "/api/v1/routes/route-1"),
+    ).toEqual({
+      targets: [
+        { provider_id: "prov-2", upstream_model: null, weight: 20 },
+        { provider_id: "prov-1", upstream_model: null, weight: 1 },
+      ],
+    });
+  },
+};
+
+/**
+ * The control plane refuses the weight of the second target. The refusal is
+ * said on that line, the sheet stays open with the draft, and nothing is toasted
+ * as saved.
+ */
+export const RejectedSave: Story = {
+  render: () => (
+    <Harness
+      role="admin"
+      fetchStub={scoped(async (input, init) => {
+        if (init?.method === "PUT") {
+          return json(
+            {
+              error: {
+                code: "invalid_field",
+                message: "weight must be at least 1",
+                field: "targets[1].weight",
+              },
+            },
+            400,
+          );
+        }
+        return answer(ROUTES)(input, init);
+      })}
+    >
+      <RoutingRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectAllowed(canvasElement, "Edit route gpt-4o");
+    await userEvent.click(await canvas.findByRole("button", { name: "Edit route gpt-4o" }));
+    const dialog = within(await within(document.body).findByRole("dialog"));
+    const weight = await dialog.findByLabelText("Target 2 weight");
+    await userEvent.clear(weight);
+    await userEvent.type(weight, "5");
+    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
+    await waitFor(() => expect(dialog.getByLabelText("Target 2 weight")).toBeInvalid());
+    await expect(dialog.getByLabelText("Target 1 weight")).toBeValid();
+    await expect(dialog.getByText(/refused the weight of target 2/)).toBeVisible();
+    await expectAllowed(document.body, "Save route");
+    // fixing the line clears the refusal
+    await userEvent.type(dialog.getByLabelText("Target 2 weight"), "0");
+    await waitFor(() => expect(dialog.getByLabelText("Target 2 weight")).toBeValid());
   },
 };
 

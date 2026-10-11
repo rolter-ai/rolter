@@ -92,7 +92,7 @@ interface DraftHeader {
  * added in the sheet; `key` only keeps React's rows stable while lines are
  * added and removed.
  */
-interface DraftTarget {
+export interface DraftTarget {
   key: string;
   id?: string;
   providerId: string;
@@ -102,7 +102,12 @@ interface DraftTarget {
 }
 
 let targetKeys = 0;
-function newTarget(providerId: string, upstream = "", weight = "1", id?: string): DraftTarget {
+export function newTarget(
+  providerId: string,
+  upstream = "",
+  weight = "1",
+  id?: string,
+): DraftTarget {
   targetKeys += 1;
   return { key: `t${targetKeys}`, id, providerId, upstream, weight };
 }
@@ -224,7 +229,7 @@ function defaultCaps(modality: Modality): Caps {
  * `llama-3.1-8b` saved without a second look sent its traffic to
  * `anthropic-direct`. With a choice to make, the operator makes it.
  */
-function defaultProviderId(providers: ProviderRow[]): string {
+export function defaultProviderId(providers: ProviderRow[]): string {
   return providers.length === 1 ? providers[0].id : "";
 }
 
@@ -481,7 +486,7 @@ function seedParams(
 
 // a weight is a whole number from 1: `create_route_target` refuses anything
 // else, so the sheet says so before the save rather than after it
-function weightValid(weight: string): boolean {
+export function weightValid(weight: string): boolean {
   return /^\d+$/.test(weight.trim()) && Number(weight) >= 1;
 }
 
@@ -606,7 +611,7 @@ function buildPreview(
 // ---------------------------------------------------------------------------
 
 /** which of the target errors are on screen, as the sheet decided (#2810) */
-interface TargetErrorsShown {
+export interface TargetErrorsShown {
   /** the route has no target at all */
   empty: boolean;
   /** a line has no provider */
@@ -615,7 +620,7 @@ interface TargetErrorsShown {
   weight: boolean;
 }
 
-function TargetEditor({
+export function TargetEditor({
   targets,
   providers,
   hidden,
