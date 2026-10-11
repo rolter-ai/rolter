@@ -6,6 +6,96 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+## [0.1.1](https://github.com/rolter-ai/rolter/compare/rolter-store-v0.1.0...rolter-store-v0.1.1) - 2026-10-11
+
+### Bug Fixes
+- *(store)* fail closed when security or egress settings do not parse [#2943] ([#2948](https://github.com/rolter-ai/rolter/pull/2948)) by [@ormeilu](https://github.com/ormeilu)
+- *(store)* fail closed when a route's advanced settings do not parse [#2938] ([#2944](https://github.com/rolter-ai/rolter/pull/2944)) by [@ormeilu](https://github.com/ormeilu)
+- *(store)* serve dashboard-owned tables from the store in merged mode [#2922] ([#2941](https://github.com/rolter-ai/rolter/pull/2941)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* reject negative and NaN price rates, retire the unread route cache-write field [#2889, #2898, #2890] ([#2900](https://github.com/rolter-ai/rolter/pull/2900)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* superadmin mcp consent, lifecycle operation and account reads [#2859] ([#2874](https://github.com/rolter-ai/rolter/pull/2874)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* record the signed-in superadmin as the audit actor [#2844, #2857] ([#2862](https://github.com/rolter-ai/rolter/pull/2862)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* guard an org's last admin on scim and sso group sync ([#2671](https://github.com/rolter-ai/rolter/pull/2671)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* refuse deleting a referenced provider with a 409 ([#2600](https://github.com/rolter-ai/rolter/pull/2600)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* hide and refuse provider sign-in while single sign-on is off ([#2607](https://github.com/rolter-ai/rolter/pull/2607)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* refuse revoking an org's last admin grant ([#2556](https://github.com/rolter-ai/rolter/pull/2556)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* remove the virtual-key switch that never changed a decision ([#2550](https://github.com/rolter-ai/rolter/pull/2550)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* record the provider's org in health events ([#2493](https://github.com/rolter-ai/rolter/pull/2493)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* refuse to demote, deactivate or delete the last active superadmin [#2344] ([#2472](https://github.com/rolter-ai/rolter/pull/2472)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* replace a pending invitation instead of answering 500 ([#2473](https://github.com/rolter-ai/rolter/pull/2473)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* remove the unenforced dashboard password setting ([#2458](https://github.com/rolter-ai/rolter/pull/2458)) by [@ormeilu](https://github.com/ormeilu)
+- *(auth)* refuse turning off the last sso provider while password sign-in is off ([#2442](https://github.com/rolter-ai/rolter/pull/2442)) by [@ormeilu](https://github.com/ormeilu)
+- *(auth)* end a browser sso sign-in on the dashboard with a one-time code ([#2410](https://github.com/rolter-ai/rolter/pull/2410)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* let alert rules fire on no data and below a threshold [#2232] ([#2422](https://github.com/rolter-ai/rolter/pull/2422)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* refuse budget periods and caps the gateway does not enforce [#1902] ([#2388](https://github.com/rolter-ai/rolter/pull/2388)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* revoke live sessions on a superadmin password reset ([#1962](https://github.com/rolter-ai/rolter/pull/1962)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* scope analytics and health reads to the caller's tenancy [#1820] ([#1842](https://github.com/rolter-ai/rolter/pull/1842)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* make the ui_events opt-out reachable in a postgres deployment [#1748] ([#1767](https://github.com/rolter-ai/rolter/pull/1767)) by [@ormeilu](https://github.com/ormeilu)
+- *(store)* bump config_version on provider group writes ([#1702](https://github.com/rolter-ai/rolter/pull/1702)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* only demand a kek when set_oauth_client seals a secret [#1564] ([#1571](https://github.com/rolter-ai/rolter/pull/1571)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* validate set_auth before sealing, and only demand a kek to seal ([#1565](https://github.com/rolter-ai/rolter/pull/1565)) by [@ormeilu](https://github.com/ormeilu)
+- *(store)* clear the mcp oauth discovery cache when the issuer or discovery mode changes [#1432] ([#1507](https://github.com/rolter-ai/rolter/pull/1507)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* clear stale mcp oauth discovery cache on url change ([#1431](https://github.com/rolter-ai/rolter/pull/1431)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* bring the mcp oauth client up to the current spec ([#1419](https://github.com/rolter-ai/rolter/pull/1419)) by [@ormeilu](https://github.com/ormeilu)
+- *(core)* give ProviderConfig a Default so a new field is not a workspace-wide break [#1150] ([#1169](https://github.com/rolter-ai/rolter/pull/1169)) by [@ormeilu](https://github.com/ormeilu)
+
+### Build
+- *(store)* reach rolter-store optional deps only through dep: names [#1442] ([#2918](https://github.com/rolter-ai/rolter/pull/2918)) by [@ormeilu](https://github.com/ormeilu)
+
+### Dependencies
+- *(deps)* bump rust dependencies to their latest releases [#2906] ([#2914](https://github.com/rolter-ai/rolter/pull/2914)) by [@ormeilu](https://github.com/ormeilu)
+
+### Documentation
+- consolidate both doc trees under docs/ as user-docs and dev-docs [#1516] ([#1517](https://github.com/rolter-ai/rolter/pull/1517)) by [@ormeilu](https://github.com/ormeilu)
+- record what 1.0.0 guarantees on each api surface ([#1427](https://github.com/rolter-ai/rolter/pull/1427)) by [@ormeilu](https://github.com/ormeilu)
+
+### Features
+- *(gateway)* price anthropic 1 hour cache writes at their own rate [#2891] ([#2901](https://github.com/rolter-ai/rolter/pull/2901)) by [@ormeilu](https://github.com/ormeilu)
+- *(core)* price tokens written to the prompt cache [#2876] ([#2892](https://github.com/rolter-ai/rolter/pull/2892)) by [@ormeilu](https://github.com/ormeilu)
+- *(auth)* let a signed-in account change its own password [#2804] ([#2833](https://github.com/rolter-ai/rolter/pull/2833)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* sync display names from scim patch and default them from oidc [#2435] ([#2730](https://github.com/rolter-ai/rolter/pull/2730)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* report whether a provider has a stored key on its DTO [#2437] ([#2709](https://github.com/rolter-ai/rolter/pull/2709)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* give common validation and conflict errors stable codes [#2567] ([#2727](https://github.com/rolter-ai/rolter/pull/2727)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* count live virtual keys on business unit and customer listings ([#2675](https://github.com/rolter-ai/rolter/pull/2675)) by [@ormeilu](https://github.com/ormeilu)
+- *(ui)* edit an alert rule's comparison and no-data policy [#2423] ([#2504](https://github.com/rolter-ai/rolter/pull/2504)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* let providers and groups be scoped to one project ([#2470](https://github.com/rolter-ai/rolter/pull/2470)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* let every account save private filter presets [#1825] ([#2451](https://github.com/rolter-ai/rolter/pull/2451)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* persist a user's preferences and defaults server-side [#1824] ([#2447](https://github.com/rolter-ai/rolter/pull/2447)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* let every account edit its own display name and bio [#1823] ([#2433](https://github.com/rolter-ai/rolter/pull/2433)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* add a deployment-wide audit log read for superadmins ([#2399](https://github.com/rolter-ai/rolter/pull/2399)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* enrol a second factor at sign-in when the org requires one [#1852] ([#1906](https://github.com/rolter-ai/rolter/pull/1906)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* edit budgets and rate limits in place [#1285] ([#1907](https://github.com/rolter-ai/rolter/pull/1907)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* mint a playground key the server scopes itself [#1640] ([#1706](https://github.com/rolter-ai/rolter/pull/1706)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* list every project in an org in one request ([#1443](https://github.com/rolter-ai/rolter/pull/1443)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* spend stored MCP credentials and per-server timeouts ([#1446](https://github.com/rolter-ai/rolter/pull/1446)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* static credentials and per-server transport settings for mcp [#952] ([#1349](https://github.com/rolter-ai/rolter/pull/1349)) by [@ormeilu](https://github.com/ormeilu)
+- *(store)* label primitive for providers, routes, groups and models [#985] ([#1330](https://github.com/rolter-ai/rolter/pull/1330)) by [@ormeilu](https://github.com/ormeilu)
+- *(auth)* totp second factor for local accounts [#1078] ([#1324](https://github.com/rolter-ai/rolter/pull/1324)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* update an SSO provider in place instead of delete-and-recreate [#1233] ([#1299](https://github.com/rolter-ai/rolter/pull/1299)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* per-budget override for unpriced_policy [#996] ([#1286](https://github.com/rolter-ai/rolter/pull/1286)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* say whether an SSO provider has a client secret stored ([#1278](https://github.com/rolter-ai/rolter/pull/1278)) by [@ormeilu](https://github.com/ormeilu)
+- *(store)* verify and rotate the KEK against the control-plane store [#923] ([#1175](https://github.com/rolter-ai/rolter/pull/1175)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* require a name and an expiry when minting a virtual key [#945] ([#1172](https://github.com/rolter-ai/rolter/pull/1172)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* carry the security policy to the gateway and enforce it [#1162] ([#1165](https://github.com/rolter-ai/rolter/pull/1165)) by [@ormeilu](https://github.com/ormeilu)
+
+### Miscellaneous
+- *(store)* expire idle sso state rows and list the sso tables in the data model [#2414] ([#2617](https://github.com/rolter-ai/rolter/pull/2617)) by [@ormeilu](https://github.com/ormeilu)
+
+### Performance
+- *(store)* encode mfa hex with a lookup table instead of format! ([#1436](https://github.com/rolter-ai/rolter/pull/1436)) by [@ormeilu](https://github.com/ormeilu)
+
+### Refactoring
+- *(core)* compute money in exact decimal instead of f64 ([#1450](https://github.com/rolter-ai/rolter/pull/1450)) by [@ormeilu](https://github.com/ormeilu)
+- *(store)* extract the guardrail repo into its own module [#1042] ([#1320](https://github.com/rolter-ai/rolter/pull/1320)) by [@ormeilu](https://github.com/ormeilu)
+- *(store)* extract mcp repo into its own module [#1042] ([#1303](https://github.com/rolter-ai/rolter/pull/1303)) by [@ormeilu](https://github.com/ormeilu)
+
+### Testing
+- generate the remaining literal test credentials at run time [#2685] ([#2718](https://github.com/rolter-ai/rolter/pull/2718)) by [@ormeilu](https://github.com/ormeilu)
+- *(store)* wait out the sweep lock instead of a fixed retry budget ([#2688](https://github.com/rolter-ai/rolter/pull/2688)) by [@ormeilu](https://github.com/ormeilu)
+- *(store)* never fall back to the shared test database ([#2690](https://github.com/rolter-ai/rolter/pull/2690)) by [@ormeilu](https://github.com/ormeilu)
+- *(store)* one shared test postgres per machine, smaller test pools [#1735, #1736] ([#1914](https://github.com/rolter-ai/rolter/pull/1914)) by [@ormeilu](https://github.com/ormeilu)
+- *(store)* give every worktree its own postgres test database [#1430] ([#1734](https://github.com/rolter-ai/rolter/pull/1734)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* drop the per-test schema when an integration test finishes ([#1428](https://github.com/rolter-ai/rolter/pull/1428)) by [@ormeilu](https://github.com/ormeilu)
 ## [0.0.11](https://github.com/rolter-ai/rolter/compare/rolter-store-v0.0.10...rolter-store-v0.0.11) - 2026-08-13
 
 ### Bug Fixes
