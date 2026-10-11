@@ -1042,15 +1042,19 @@ export function expectNoUxEvent(action: UiEvent["action"], target?: string): voi
 }
 
 /**
- * Wait until the probe beside a `StrictModeHost` subject has seen StrictMode's
+ * Wait until the probe beside every mounted `StrictModeHost` subject has seen StrictMode's
  * simulated unmount and remount: two mounts and one cleanup. A story whose
  * StrictMode doubled nothing fails here, with the reason, instead of going
  * green against a lifecycle that never ran (#1887).
  */
 export async function expectDoubleInvoked(): Promise<void> {
   await waitFor(() => {
-    const failure = doubleInvokeFailure(strictProbeCounts());
-    if (failure !== null) throw new Error(failure);
+    const all = strictProbeCounts();
+    if (all.length === 0) throw new Error("no StrictModeHost is mounted");
+    for (const counts of all) {
+      const failure = doubleInvokeFailure(counts);
+      if (failure !== null) throw new Error(failure);
+    }
   });
 }
 
