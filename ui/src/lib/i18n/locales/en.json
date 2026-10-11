@@ -1520,7 +1520,9 @@
       "confirm": {
         "title": "Delete profile {{name}}?",
         "body": "Every user and team assigned this profile loses the roles and model policy it carries, immediately.",
-        "confirm": "Delete profile"
+        "confirm": "Delete profile",
+        "reach": "It reaches {{users}} and {{teams}}.",
+        "reachNone": "It is not assigned to anyone yet."
       },
       "userCount_one": "{{count}} user",
       "userCount_other": "{{count}} users",
@@ -1566,7 +1568,31 @@
       "allowedRoutes": "Allowed routes",
       "deniedRoutes": "Denied routes",
       "save": "Save profile",
-      "create": "Create profile"
+      "create": "Create profile",
+      "reachLabel": "Who {{name}} reaches",
+      "assign": {
+        "open": "Assign {{name}}",
+        "title": "Assign {{name}}",
+        "subtitle": "Everyone the profile reaches picks up its roles and model policy. A team assignment reaches every member of that team.",
+        "kindLabel": "Assign to",
+        "kindUser": "User",
+        "kindTeam": "Team",
+        "fieldUser": "User",
+        "fieldTeam": "Team",
+        "userHint": "Only accounts of this organization are offered.",
+        "teamHint": "Every current and future member of the team picks the profile up.",
+        "nobodyLeft": "No one left to assign",
+        "unavailable": "The list could not be loaded",
+        "save": "Assign profile",
+        "assigned": "{{name}} assigned",
+        "failed": "Could not assign the profile",
+        "remove": "Remove {{name}} from {{profile}}",
+        "confirmTitle": "Remove {{name}} from {{profile}}?",
+        "confirmBody": "They lose the roles and model policy this profile gives them, immediately. Access they hold another way is unaffected.",
+        "confirmAction": "Remove assignment",
+        "removed": "{{name}} removed",
+        "removeFailed": "Could not remove {{name}}"
+      }
     },
     "mcpCatalog": {
       "oauth": {
