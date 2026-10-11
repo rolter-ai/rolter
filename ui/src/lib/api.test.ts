@@ -17,6 +17,7 @@ import {
   apiBaseDoublesV1,
   resolveUpstreamUrl,
   isConvertible,
+  snapshotOmissions,
   unservedRoutes,
   type CurrencySettings,
 } from "./api";
@@ -744,5 +745,43 @@ describe("unservedRoutes", () => {
   it("is empty before the problems are known", () => {
     expect(unservedRoutes(undefined).size).toBe(0);
     expect(unservedRoutes([]).size).toBe(0);
+  });
+});
+
+/**
+ * The Effective config screen marks each provider and route the snapshot
+ * leaves out, with the reason (#2085). The fixtures are the exact strings
+ * `sanitize_for_snapshot` and `provider_problems` write.
+ */
+describe("snapshotOmissions", () => {
+  it("reads the name and the reason of a pruned provider and a pruned route", () => {
+    const { providers, routes } = snapshotOmissions([
+      "provider 'openrouter-edge' omitted from the snapshot: openrouter provider 'openrouter-edge' requires api_key_env",
+      "route 'gpt-4o-mini' omitted from the snapshot: it has no target that references a known provider with a positive weight",
+    ]);
+    expect([...providers]).toEqual([
+      ["openrouter-edge", "openrouter provider 'openrouter-edge' requires api_key_env"],
+    ]);
+    expect([...routes]).toEqual([
+      ["gpt-4o-mini", "it has no target that references a known provider with a positive weight"],
+    ]);
+  });
+
+  // a part of an entry going missing leaves the entry served: the screen must
+  // not mark the whole row for it
+  it("ignores a line about a target, a header or another kind of entry", () => {
+    const { providers, routes } = snapshotOmissions([
+      "route 'gpt-4o' target 'openrouter-edge' omitted from the snapshot: the provider is itself omitted from the snapshot",
+      "route 'gpt-4o': header 'host' names the request's framing; it is omitted from the snapshot and the route serves without it",
+      "provider group 'edge' member 'openrouter-edge' omitted from the snapshot: the provider is itself omitted from the snapshot",
+      "budget 'team-cap' on team 'research' has period '7d', which the gateway does not recognise, so it is enforced as a monthly cap; set it to one of daily, weekly, monthly",
+    ]);
+    expect(providers.size).toBe(0);
+    expect(routes.has("gpt-4o")).toBe(false);
+  });
+
+  it("is empty before the problems are known", () => {
+    const { providers, routes } = snapshotOmissions(undefined);
+    expect(providers.size + routes.size).toBe(0);
   });
 });

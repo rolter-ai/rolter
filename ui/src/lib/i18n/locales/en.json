@@ -205,6 +205,7 @@
       "modelPrices": "model prices",
       "models": "models",
       "config": "the effective config",
+      "configProblems": "the list of config problems",
       "configExport": "the configuration export",
       "providers": "providers",
       "plugins": "plugins",
@@ -3014,7 +3015,7 @@
         "title": "Every section",
         "count_one": "{{count}} section",
         "count_other": "{{count}} sections",
-        "body": "The whole document the gateway serves, as the control plane returns it — credentials, key digests and OAuth sessions are removed before it leaves the server.",
+        "body": "Every section of the stored config, as the control plane returns it. Credentials, key digests and OAuth sessions are removed before it leaves the server.",
         "copy": "Copy as JSON",
         "entries_one": "{{count}} entry",
         "entries_other": "{{count}} entries",
@@ -3053,10 +3054,19 @@
           "desc": "Upstream retries, timeouts, and the bounded admission queue."
         }
       },
-      "readOnlyNotice": "Admin-only · read-only view. Config is applied from <0>rolter.toml</0> or the control-plane store and synced on reload.",
+      "readOnlyNotice": "Read-only, for any signed-in account. This is the config the control plane stores, from <0>rolter.toml</0> and its database, with credentials removed.",
       "heading": "Effective config",
-      "reloadFree": "reload-free",
-      "hotSwapNote": "Config hot-swaps with no restart — the gateway polls the control plane's snapshot endpoint.",
+      "hotSwapNote": "Gateways poll the control plane for a snapshot built from this config and apply it with no restart. An entry the control plane cannot serve is left out of the snapshot and marked here.",
+      "gateways": {
+        "checking": "Checking the gateways…",
+        "unavailable": "Gateway versions could not be read",
+        "none": "No live gateway has reported",
+        "converged_one": "{{count}} live gateway runs the current config",
+        "converged_other": "All {{count}} live gateways run the current config",
+        "lagging_one": "{{converged}} of {{count}} live gateway runs the current config",
+        "lagging_other": "{{converged}} of {{count}} live gateways run the current config",
+        "link": "View nodes"
+      },
       "tables": {
         "providers": "Providers",
         "routes": "Routes",
@@ -3072,6 +3082,7 @@
         "weight": "weight {{value}}",
         "upstreamModel": "model {{model}}",
         "noTargets": "no targets",
+        "notServed": "not served",
         "emptyProvidersTitle": "No providers configured",
         "emptyProvidersBody": "Add a provider so the gateway has an upstream to call.",
         "addProvider": "Go to Providers",
@@ -4037,7 +4048,7 @@
     },
     "effective-config": {
       "title": "Effective config",
-      "subtitle": "The config every gateway is serving right now — providers, routes and keys from rolter.toml and the store, read-only."
+      "subtitle": "What the control plane stores and builds each gateway snapshot from: providers, routes and keys from rolter.toml and the database, with credentials removed. Read-only."
     },
     "security": {
       "title": "Security",
