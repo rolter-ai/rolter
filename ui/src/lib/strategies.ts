@@ -37,12 +37,8 @@ const NOT_OFFERED: readonly string[] = ["adaptive"];
  * hint instead, since the failure mode is a quiet degrade to least-load rather
  * than an error.
  *
- * A provider added in the dashboard cannot carry either source: the store
- * loads every database provider with neither, and the provider sheet has no
- * field for them. The hint therefore names `rolter.toml` as the place the
- * source is set, rather than leaving an operator to look for a provider
- * setting that does not exist (#2137). #2236 stores both on database
- * providers; when it lands, that caveat goes from the copy.
+ * The source is set per provider, in the provider sheet or in `rolter.toml`
+ * (#2236, #2996), and the hint says so.
  */
 export const NEEDS_TELEMETRY: readonly string[] = ["precise_cache_aware", "lmcache_aware"];
 

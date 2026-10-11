@@ -982,3 +982,106 @@ export const NoPreviewUntilTheKindIsKnown: Story = {
     await expect(canvas.queryByText(/chat\/completions/)).toBeNull();
   },
 };
+
+// ------------------------------------------------ cache telemetry sources (#2996)
+
+const WITH_SOURCES: ProviderRow = {
+  ...PROVIDER,
+  kv_events: {
+    endpoint: "tcp://vllm.internal:5557",
+    topic: "kv-events",
+    max_blocks: 1000000,
+    stale_secs: 30,
+  },
+  lmcache: { endpoint: "http://lmcache.internal:9000", refresh_secs: 2, stale_secs: 10 },
+};
+
+/** a create with a KV-events source sends exactly that object, and no lmcache key */
+export const AddingAKvEventsSource: Story = {
+  render: () => {
+    creation = recording(createStub());
+    return <Harness mode="add" fetchStub={creation.stub} />;
+  },
+  play: async () => {
+    const canvas = screen();
+    await fillTheForm("vllm-eu", "http://vllm.internal:8000");
+    // off until asked for, and the fields stay out of the way
+    await expect(canvas.queryByLabelText("Endpoint")).toBeNull();
+    await userEvent.click(await canvas.findByRole("button", { name: "KV events source" }));
+    await userEvent.click(
+      canvas.getByRole("switch", { name: "Read KV events from this provider" }),
+    );
+    await userEvent.type(await canvas.findByLabelText("Endpoint"), "tcp://vllm.internal:5557");
+    await userEvent.type(canvas.getByLabelText("Maximum tracked blocks"), "5000");
+    await userEvent.click(canvas.getByRole("button", { name: "Create provider" }));
+    const body = await creation.expectSentBody<Record<string, unknown>>("POST", "/orgs/");
+    await expect(body.kv_events).toEqual({
+      endpoint: "tcp://vllm.internal:5557",
+      max_blocks: 5000,
+    });
+    await expect("lmcache" in body).toBe(false);
+  },
+};
+
+/** removing a source sends `null`: omitting it would keep the stored one */
+export const ClearingASourceSendsNull: Story = {
+  render: () => {
+    creation = recording(async (input) =>
+      String(input).includes("/provider-kinds") ? json(KINDS) : json(WITH_SOURCES),
+    );
+    return <Harness provider={WITH_SOURCES} fetchStub={creation.stub} />;
+  },
+  play: async () => {
+    const canvas = screen();
+    // both sources open, seeded from the stored row
+    await expect(await canvas.findByDisplayValue("tcp://vllm.internal:5557")).toBeVisible();
+    await userEvent.click(
+      canvas.getByRole("switch", { name: "Read KV events from this provider" }),
+    );
+    await userEvent.click(canvas.getByRole("button", { name: "Save provider" }));
+    const body = await creation.expectSentBody<Record<string, unknown>>("PUT", "/providers/");
+    await expect(body.kv_events).toBeNull();
+    // the untouched source is left alone
+    await expect("lmcache" in body).toBe(false);
+  },
+};
+
+/** a refusal that names a key lands on that field, whose section opens for it */
+export const RefusedEndpointIsShownOnItsField: Story = {
+  render: () => (
+    <Harness
+      mode="add"
+      fetchStub={async (input, init) => {
+        if (String(input).includes("/provider-kinds")) return json(KINDS);
+        if (init?.method === "POST") {
+          return json(
+            {
+              error: {
+                message: "provider 'vllm-eu' lmcache.endpoint must be an http(s) URL",
+              },
+            },
+            400,
+          );
+        }
+        return json({});
+      }}
+    />
+  ),
+  play: async () => {
+    const canvas = screen();
+    await fillTheForm("vllm-eu", "http://vllm.internal:8000");
+    await userEvent.click(await canvas.findByRole("button", { name: "LMCache source" }));
+    await userEvent.click(
+      canvas.getByRole("switch", { name: "Poll an LMCache controller for this provider" }),
+    );
+    await userEvent.type(await canvas.findByLabelText("Endpoint"), "ftp://nope");
+    // fold the section: the refusal has to open it again
+    await userEvent.click(canvas.getByRole("button", { name: "LMCache source" }));
+    await userEvent.click(canvas.getByRole("button", { name: "Create provider" }));
+    const endpoint = await canvas.findByLabelText("Endpoint");
+    await waitFor(() => expect(endpoint).toBeInvalid());
+    await expect(endpoint).toHaveAccessibleDescription(
+      /lmcache\.endpoint must be an http\(s\) URL/,
+    );
+  },
+};
