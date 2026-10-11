@@ -178,7 +178,14 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 
-export const Loaded: Story = { render: () => <Harness fetchStub={loadedStub()} /> };
+export const Loaded: Story = {
+  render: () => <Harness fetchStub={loadedStub()} />,
+  play: async ({ canvasElement }) => {
+    await within(canvasElement).findAllByText("Incident coordinator");
+    // the shell's ScreenHeader owns the page's only h1 (#2241)
+    await expect(within(canvasElement).queryAllByRole("heading", { level: 1 })).toHaveLength(0);
+  },
+};
 
 export const Empty: Story = {
   render: () => {

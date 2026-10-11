@@ -223,6 +223,8 @@ export const Loaded: Story = {
     ).toBeVisible();
     await expect(card(canvasElement, "Production LLM Guard").getByText("enforced")).toBeVisible();
     await expect(card(canvasElement, "Staging evaluator").getByText("paused")).toBeVisible();
+    // the shell's ScreenHeader owns the page's only h1 (#2241)
+    await expect(within(canvasElement).queryAllByRole("heading", { level: 1 })).toHaveLength(0);
   },
 };
 export const Loading: Story = {

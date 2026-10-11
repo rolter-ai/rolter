@@ -798,12 +798,10 @@ function PromptWorkbench({
 }
 
 function SectionHeading({
-  eyebrow,
   title,
   description,
   action,
 }: {
-  eyebrow: string;
   title: string;
   description: string;
   action?: React.ReactNode;
@@ -811,10 +809,7 @@ function SectionHeading({
   return (
     <div className="mb-3 flex items-start justify-between gap-3">
       <div>
-        <p className="text-[0.6875rem] font-semibold uppercase tracking-[0.14em] text-[color:var(--red-folk-text)]">
-          {eyebrow}
-        </p>
-        <h3 className="mt-1 text-sm font-semibold">{title}</h3>
+        <h3 className="text-sm font-semibold">{title}</h3>
         <p className="mt-0.5 text-xs leading-5 text-muted-foreground">{description}</p>
       </div>
       {action}
@@ -835,7 +830,6 @@ function VariableEditor({
   return (
     <section aria-labelledby="variables-heading">
       <SectionHeading
-        eyebrow={t("pages.promptRepo.inputsEyebrow")}
         title={t("pages.promptRepo.variablesTitle")}
         description={t("pages.promptRepo.variablesDescription", { sample: VARIABLE_SAMPLE })}
         action={
@@ -945,7 +939,6 @@ function DecoratorEditor({
   return (
     <section>
       <SectionHeading
-        eyebrow={t("pages.promptRepo.compositionEyebrow")}
         title={t("pages.promptRepo.decoratorsTitle")}
         description={t("pages.promptRepo.decoratorsDescription")}
         action={
@@ -1097,7 +1090,6 @@ function ScopeEditor({
   return (
     <section>
       <SectionHeading
-        eyebrow={t("pages.promptRepo.deploymentEyebrow")}
         title={t("pages.promptRepo.scopesTitle")}
         description={t("pages.promptRepo.scopesDescription")}
       />
@@ -1151,7 +1143,6 @@ function PreviewPanel({
       className="border-t border-[color:var(--border-subtle)] bg-[color:var(--surface-app)] p-4 sm:p-5 2xl:border-l 2xl:border-t-0"
     >
       <SectionHeading
-        eyebrow={t("pages.promptRepo.liveRenderEyebrow")}
         title={t("pages.promptRepo.previewTitle")}
         description={t("pages.promptRepo.previewDescription")}
       />
