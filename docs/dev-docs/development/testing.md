@@ -1601,9 +1601,11 @@ the double-invoke ran. `StrictModeHost` in `ui/src/pages/story-strict.tsx` is
 that host (#1887): `render` hands it the subject, it renders a `StrictMode` with
 the subject absent, and `mountStrictly()` from `ui/src/pages/story-harness.tsx`
 clicks its mount button and then calls `expectDoubleInvoked()`. A probe placed
-beside the subject counts its effect's mounts and cleanups, and
-`expectDoubleInvoked()` fails the story with the reason unless it reads two
-mounts and one cleanup:
+beside the subject counts its effect's mounts and cleanups in state owned by its
+own host (a context), so two hosts in one story never read each other's counts,
+and `expectDoubleInvoked()` fails the story with the reason unless every mounted
+host reads two mounts and one cleanup (give each host its own `label` and call
+`mountStrictly(label)` for each):
 
 ```tsx
 export const StrictModeDoesNotInventAnAbandon: Story = {
