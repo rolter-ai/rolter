@@ -254,6 +254,19 @@ describe("formatters", () => {
     }
   });
 
+  test("a clickhouse timestamp with its zone renders at the zone's own time (#2255)", () => {
+    try {
+      // the control plane asks clickhouse for iso output, so a UTC instant
+      // arrives as 10:00Z and must show 13:00 in Moscow whatever the browser's zone is
+      setChartTimeZone("Europe/Moscow");
+      expect(formattersFor("en").dateTimeMs("2026-08-06T10:00:00.123Z")).toBe(
+        "Aug 6, 2026, 13:00:00.123 GMT+3",
+      );
+    } finally {
+      setChartTimeZone(undefined);
+    }
+  });
+
   test("a day is named only when the moment did not fall today", () => {
     const en = formattersFor("en");
     const now = new Date(2026, 9, 5, 15, 34, 56);

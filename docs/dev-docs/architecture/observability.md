@@ -833,13 +833,26 @@ Every ClickHouse call the control plane makes goes through one `reqwest` client 
 
 - **The gateway's writers retire idle connections after 2s too (#2696).** The request-log, health-event and MCP tool-call writers share one client from `crates/rolter-gateway/src/clickhouse_client.rs`, and its pool had the same 90s default, so a flush after about ten idle seconds could land on a connection ClickHouse was closing, get no response, and be dropped and counted in the `*_dropped_total` metrics. It now carries the same 2s `POOL_IDLE_TIMEOUT` with the same compile-time check that it stays under 3s, proven by a fake server that drops any second request on a connection. A deployment that sets ClickHouse's `keep_alive_timeout` below 2s reopens the race.
 
+### Timestamps on the read API (#2255)
+
+`ClickHouse::query` sends `default_format=JSON` and `date_time_output_format=iso` on every read. Under ClickHouse's default (`simple`) a `DateTime64(3)` such as `ts`, `max(ts) as last_event` or `toStartOfHour(ts) as bucket` leaves as `2026-08-06 13:00:00.123`: the wall clock of the server's own zone, with no zone. The gateway writes `ts` as a UTC instant (`clickhouse_ts` in `logging.rs`), and the dashboard parses the string with `new Date(value)`, which reads a zone-less date-time as browser-local time, so every time on LLM Logs, MCP Logs, the Dashboard charts and Health was shifted by the difference between the viewer's zone and the server's.
+
+With `iso`, every timestamp leaves as the UTC instant with a `Z`, whatever zone the server runs in. Measured against `clickhouse/clickhouse-server:24-alpine` with `TZ=Europe/Moscow`, a row written as `2026-08-06T10:00:00.123Z`:
+
+| setting  | `ts`                       | `toStartOfHour(ts)`    |
+| -------- | -------------------------- | ---------------------- |
+| `simple` | `2026-08-06 13:00:00.123`  | `2026-08-06 13:00:00`  |
+| `iso`    | `2026-08-06T10:00:00.123Z` | `2026-08-06T10:00:00Z` |
+
+Milliseconds are kept (a `DateTime64(0)` or `DateTime` drops them, as before), and `session_timezone` does not change the output. Nothing on the server parses these strings: rows are passed through as JSON values, and the keyset cursor (`ts|id`) is fed back to `parseDateTime64BestEffortOrZero`, which reads the `Z` as UTC. Bucket _boundaries_ are still computed in the server's zone (`toStartOfDay` on a Moscow server starts at `21:00Z`); a server on UTC, which is what the compose file and chart run, has none of this. The dashboard's Health screen reads a zone-less bucket as UTC for the "SLA at risk" comparison and accepts either form. `reads_ask_clickhouse_for_iso_timestamps_with_their_zone` in `analytics.rs` pins the setting.
+
 ### Time bounds on the read API
 
 Every control-plane read over ClickHouse (the five `/api/v1/analytics/*` endpoints, the three `/api/v1/health/*` rollups, `/api/v1/mcp/logs` and its summary, and `/api/v1/me/usage`) takes a caller-supplied `since`/`until`, and the two keyset-paged lists also take a cursor whose first half is a timestamp. All of them are bound as ClickHouse parameters and parsed in SQL with `parseDateTime64BestEffortOrZero`. The `OrZero` variant is required: ClickHouse constant-folds both branches of the `if` that picks the default window, so a strict parse of an absent (empty) bound aborts the query (#1177). Its side effect is that anything the parser cannot read becomes `1970-01-01`, so before #1192 a typo in `since` silently scanned the whole table.
 
 `crates/rolter-control/src/time_bounds.rs` closes that gap before any SQL is built:
 
-- `is_time_bound` accepts one grammar: `YYYY-MM-DD`, optionally followed by `T` or a space and `hh:mm[:ss[.f{1,9}]]`, optionally followed by `Z` or `±hh:mm`. That is RFC 3339 as the dashboard writes it (`toISOString()`), the `YYYY-MM-DD hh:mm:ss.sss` form ClickHouse returns for a `DateTime64(3)` under the default `date_time_output_format=simple` (so every cursor the API hands out), and a bare date.
+- `is_time_bound` accepts one grammar: `YYYY-MM-DD`, optionally followed by `T` or a space and `hh:mm[:ss[.f{1,9}]]`, optionally followed by `Z` or `±hh:mm`. That is RFC 3339 as the dashboard writes it (`toISOString()`), the `YYYY-MM-DD hh:mm:ss.sss` form ClickHouse returns for a `DateTime64(3)` under its default `date_time_output_format=simple` (a cursor minted before #2255 carries it), and the `YYYY-MM-DDThh:mm:ss.sssZ` form the read API now returns (so every cursor it hands out), and a bare date.
 - It is narrower than RFC 3339 exactly where ClickHouse misreads it. Measured against ClickHouse 24.10, each of these parses to the epoch: a lowercase `t` or `z`, year `0000`, a day the calendar lacks (`2026-02-30`), and an offset whose `+` a client left unencoded, which the query string decodes to a space. Years outside `DateTime64`'s `1900`-`2299` range are accepted because ClickHouse clamps them to that range instead.
 - The analytics, health, MCP-log and self-service modules import `time_bounds::Query` in place of axum's `Query`. It deserializes the same way, then checks `since` and `until` through the `TimeBounds` trait every windowed query type implements, so a new query type that never names its window does not compile. An empty bound still means "the default".
 - `analytics::parse_keyset_cursor` applies the same grammar to the cursor's timestamp half, for both the invocation list and the MCP call log.
