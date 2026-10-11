@@ -3505,6 +3505,7 @@
       "refused": "Your role in this project cannot mint keys. Paste a virtual key someone gave you to send requests.",
       "routeless": "This project has no routes yet, so this key reaches the built-in fake-llm only. Renew it once the project routes a model.",
       "routelessLink": "Open {{screen}}",
+      "remintFailed": "Couldn't pick up this project's new routes, so this key keeps its earlier reach. Renew it to retry.",
       "keyless": "This gateway takes requests without a key, so the Playground sends none. To test one, use a specific key below.",
       "idle": "Mint a key to send requests, or paste one below.",
       "manual": "Use a specific key",

@@ -2181,3 +2181,55 @@ export const AFailedMintIsOneErrorState: Story = {
     await expect(uxEvents().filter((e) => e.action === "error_state")).toHaveLength(1);
   },
 };
+
+/**
+ * The automatic re-mint after a route change can fail while the key minted
+ * earlier is still good (#2757). The band keeps reading "Active", Send keeps
+ * working with the old key, and the failure is a notice beside it rather than
+ * a "failed" session with a load error.
+ */
+let remintAttempts = 0;
+const remintFails = recording(
+  deployment(
+    async () => {
+      remintAttempts += 1;
+      return remintAttempts === 1
+        ? json({ ...minted("sk-rolter-first"), models: ["fake-llm"] })
+        : json({ error: { message: "store unavailable" } }, 500);
+    },
+    undefined,
+    undefined,
+    {
+      get routes() {
+        return projectRoutes;
+      },
+      gateway: () => json(GATEWAY_MODELS),
+      chat: () => completion("Still answered by the old key."),
+    },
+  ),
+);
+
+export const FailedRemintKeepsTheBandActive: Story = {
+  beforeEach: () => {
+    remintAttempts = 0;
+    projectRoutes.length = 0;
+  },
+  render: () => <Screen fetchStub={remintFails.stub} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText(/This project has no routes yet/);
+    projectRoutes.push(ROUTES[0]);
+    document.dispatchEvent(new Event("visibilitychange", { bubbles: true }));
+
+    await waitFor(() => expect(mintsIn(remintFails.calls)).toBe(2));
+    await canvas.findByText(/Couldn't pick up this project's new routes/);
+    await expect(canvas.getByText("Active")).toBeVisible();
+    await expect(canvas.queryByText("Failed")).toBeNull();
+    await expect(canvas.queryByRole("alert")).toBeNull();
+
+    const composer = await canvas.findByRole("textbox", { name: "Message to minicpm5-1b" });
+    await waitFor(() => expect(canvas.getByRole("button", { name: SEND })).toBeEnabled());
+    await sendMessage(canvas, composer, "hello");
+    await canvas.findByText("Still answered by the old key.");
+  },
+};
