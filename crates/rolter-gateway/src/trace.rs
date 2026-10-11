@@ -127,6 +127,7 @@ pub async fn ensure_request_id(
     let id = RequestId(header.clone());
     req.headers_mut().insert(name.clone(), header.clone());
     req.extensions_mut().insert(id.clone());
+    record_request_id(id.as_str());
     let mut resp = next.run(req).await;
     resp.headers_mut().insert(name, header);
     // the trace layer's response hook logs the id and has no snapshot to learn
@@ -186,6 +187,7 @@ impl<B> MakeSpan<B> for GatewayMakeSpan {
             rolter.org.id = tracing::field::Empty,
             rolter.team.id = tracing::field::Empty,
             rolter.project.id = tracing::field::Empty,
+            rolter.request.id = tracing::field::Empty,
         );
 
         let mut carrier = rolter_core::telemetry::TraceCarrier::new();
@@ -206,6 +208,19 @@ impl<B> MakeSpan<B> for GatewayMakeSpan {
 pub const ORG_ID: &str = "rolter.org.id";
 pub const TEAM_ID: &str = "rolter.team.id";
 pub const PROJECT_ID: &str = "rolter.project.id";
+/// Attribute name carrying the settled request id on exported spans (#2964).
+pub const REQUEST_ID: &str = "rolter.request.id";
+
+/// Stamp the settled request id onto the request span.
+///
+/// The span is built by the tower layer, outside [`ensure_request_id`], so the
+/// id (which may be minted, and whose header name comes from the live snapshot)
+/// is not known at span creation; it is recorded afterwards, the same way the
+/// tenant is. That keeps the layer order untouched. Recording onto a disabled
+/// or field-less span is a no-op, so an untraced deployment pays nothing.
+pub fn record_request_id(id: &str) {
+    Span::current().record(REQUEST_ID, id);
+}
 
 /// Stamp the resolved tenant onto the request span.
 ///
@@ -583,12 +598,31 @@ mod tests {
         assert_eq!(PROJECT_ID, "rolter.project.id");
 
         let declared = include_str!("trace.rs");
-        for name in [ORG_ID, TEAM_ID, PROJECT_ID] {
+        assert_eq!(REQUEST_ID, "rolter.request.id");
+        for name in [ORG_ID, TEAM_ID, PROJECT_ID, REQUEST_ID] {
             assert!(
                 declared.contains(&format!("{name} = tracing::field::Empty")),
                 "{name} must be declared on the gateway.request span"
             );
         }
+    }
+
+    /// The id a client quotes must be findable on the exported span, not only
+    /// through the log row (#2964).
+    #[test]
+    fn the_request_id_lands_on_the_request_span() {
+        use tracing_subscriber::layer::SubscriberExt as _;
+
+        let recorded = Recorded::default();
+        let subscriber = tracing_subscriber::registry().with(recorded.clone());
+        tracing::subscriber::with_default(subscriber, || {
+            let span =
+                tracing::info_span!("gateway.request", rolter.request.id = tracing::field::Empty);
+            let _entered = span.enter();
+            record_request_id("req-42");
+        });
+
+        assert_eq!(recorded.get(REQUEST_ID).as_deref(), Some("req-42"));
     }
 
     /// A config that skipped validation must still never make the gateway read
