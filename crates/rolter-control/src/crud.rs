@@ -31,8 +31,8 @@ use rolter_store::postgres::repo::{
     AuditLogCursor, AuditLogDirection, AuditLogFilter, AuditLogPage, AuditLogRepo, BudgetRepo,
     BusinessUnitRepo, CustomerRepo, LockoutGuard, MembershipRepo, MfaRepo, ModelPriceRepo, OrgRepo,
     ProjectRepo, PromptTemplateRepo, ProviderDeletion, ProviderGroupRepo, ProviderKeyRepo,
-    ProviderRepo, RateLimitRepo, RouteRepo, RouteTargetRepo, SessionRepo, SkillRepo, TeamRepo,
-    UserRepo, VirtualKeyRepo,
+    ProviderRepo, RateLimitRepo, RouteRepo, RouteTargetRepo, RouteTargetSpec, RouteUpdate,
+    SessionRepo, SkillRepo, TeamRepo, UserRepo, VirtualKeyRepo,
 };
 
 use crate::access_control::caller_policy;
@@ -143,7 +143,7 @@ pub fn router() -> Router<ControlState> {
         )
         .route(
             "/api/v1/routes/{id}",
-            put(set_route_enabled).delete(delete_route),
+            put(update_route).delete(delete_route),
         )
         .route("/api/v1/routes/{id}/params", put(set_route_params))
         .route(
@@ -4102,11 +4102,7 @@ async fn create_route(
     authorize(&state, &principal, chain, cap!("route", Create)).await?;
     require_non_empty(&body.model, "model")?;
     require_not_config_owned(&state.config_owned.models, &body.model, "model")?;
-    if !STRATEGIES.contains(&body.strategy.as_str()) {
-        return Err(ApiError::Core(Error::Config(format!(
-            "strategy must be one of {STRATEGIES:?}"
-        ))));
-    }
+    validate_strategy(&body.strategy)?;
     require_route_name_free(&state, org_id, &body.model).await?;
     let row = RouteRepo(pool(&state))
         .create(project_id, &body.model, &body.strategy)
@@ -4125,31 +4121,121 @@ async fn create_route(
     Ok(Json(row))
 }
 
+/// The body of `PUT /api/v1/routes/{id}`. Every field is optional, and one
+/// that is omitted (or `null`) keeps the stored value, so a client that only
+/// knows about `enabled` never resets the strategy or the targets.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct SetRouteEnabled {
-    enabled: bool,
+struct UpdateRoute {
+    #[serde(default)]
+    enabled: Option<bool>,
+    /// one of [`STRATEGIES`], the same allowlist route creation applies
+    #[serde(default)]
+    strategy: Option<String>,
+    /// the route's complete target list. Entries are matched to the stored
+    /// targets by provider and upstream model: a match keeps its id and takes
+    /// the new weight, a stored target the list leaves out is removed, and an
+    /// entry with no match is added. Each entry passes the checks
+    /// `POST /api/v1/routes/{id}/targets` applies, and the list may not be
+    /// empty
+    #[serde(default)]
+    targets: Option<Vec<RouteTargetInput>>,
 }
 
-async fn set_route_enabled(
+async fn update_route(
     principal: Principal,
     State(state): State<ControlState>,
     Path(id): Path<Uuid>,
-    SafeJson(body): SafeJson<SetRouteEnabled>,
+    SafeJson(body): SafeJson<UpdateRoute>,
 ) -> ApiResult<Json<Route>> {
-    let org_id = authorize_route(&state, &principal, id, cap!("route", Update)).await?;
-    let row = RouteRepo(pool(&state))
-        .set_enabled(id, body.enabled)
+    let repo = RouteRepo(pool(&state));
+    let existing = repo.get(id).await?;
+    let chain = ScopeChain::from_project(pool(&state), existing.project_id).await?;
+    let org_id = chain.org;
+    authorize(&state, &principal, chain, cap!("route", Update)).await?;
+    if body.enabled.is_none() && body.strategy.is_none() && body.targets.is_none() {
+        return Ok(Json(existing));
+    }
+    if let Some(strategy) = &body.strategy {
+        validate_strategy(strategy)?;
+    }
+    let targets = match &body.targets {
+        Some(targets) => {
+            // an empty list would leave the route nothing to serve; that is
+            // what disabling or deleting it is for, and the gateway would drop
+            // it from the snapshot either way
+            if targets.is_empty() {
+                return Err(invalid_field(
+                    "targets",
+                    "targets must name at least one target; disable or delete the route to \
+                     take it out of service",
+                ));
+            }
+            validate_route_targets(
+                &state,
+                org_id,
+                existing.project_id,
+                targets,
+                TargetPaths::InList,
+            )
+            .await?;
+            Some(
+                targets
+                    .iter()
+                    .map(RouteTargetInput::spec)
+                    .collect::<Vec<_>>(),
+            )
+        }
+        None => None,
+    };
+    let (row, changes) = repo
+        .update(
+            id,
+            &RouteUpdate {
+                enabled: body.enabled,
+                strategy: body.strategy.as_deref(),
+                targets: targets.as_deref(),
+            },
+        )
         .await?;
     publish_config_change(&state).await?;
+    // an `enabled`-only body is what this endpoint accepted before it took
+    // the strategy and targets (#2235), and it keeps its own audit action
+    if body.strategy.is_none() && body.targets.is_none() {
+        log_audit(
+            &state,
+            &principal,
+            org_id,
+            "route.set_enabled",
+            "route",
+            id,
+            serde_json::json!({"enabled": row.enabled}),
+        )
+        .await;
+        return Ok(Json(row));
+    }
+    let mut detail = serde_json::Map::new();
+    if let Some(enabled) = body.enabled {
+        detail.insert("enabled".into(), enabled.into());
+    }
+    if body.strategy.is_some() {
+        detail.insert("strategy".into(), row.strategy.clone().into());
+        detail.insert("previous_strategy".into(), existing.strategy.into());
+    }
+    if body.targets.is_some() {
+        detail.insert(
+            "targets".into(),
+            serde_json::to_value(&changes).unwrap_or_default(),
+        );
+    }
     log_audit(
         &state,
         &principal,
         org_id,
-        "route.set_enabled",
+        "route.update",
         "route",
         id,
-        serde_json::json!({"enabled": body.enabled}),
+        serde_json::Value::Object(detail),
     )
     .await;
     Ok(Json(row))
@@ -4408,47 +4494,110 @@ async fn list_route_targets(
     Ok(Json(RouteTargetRepo(pool(&state)).list(route_id).await?))
 }
 
+/// One route target as a client sends it, alone to
+/// `POST /api/v1/routes/{id}/targets` or in the list `PUT /api/v1/routes/{id}`
+/// takes.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct CreateRouteTarget {
+struct RouteTargetInput {
     provider_id: Uuid,
+    /// the model name sent upstream; omitted, `null` or blank forwards the
+    /// route's public name
     upstream_model: Option<String>,
     #[serde(default = "default_weight")]
     weight: i32,
+}
+
+impl RouteTargetInput {
+    /// The target as the store takes it. A blank upstream model is stored as
+    /// none, the way a provider group member's is: forwarding an empty model
+    /// name upstream is never what was meant, and it would match no target
+    /// that stores `null`.
+    fn spec(&self) -> RouteTargetSpec {
+        RouteTargetSpec {
+            provider_id: self.provider_id,
+            upstream_model: self
+                .upstream_model
+                .clone()
+                .filter(|model| !model.trim().is_empty()),
+            weight: self.weight,
+        }
+    }
 }
 
 fn default_weight() -> i32 {
     1
 }
 
+/// How [`validate_route_targets`] names a refused field: a lone target's body
+/// is the request root, while a list entry is `targets[i]`.
+#[derive(Clone, Copy)]
+enum TargetPaths {
+    Alone,
+    InList,
+}
+
+impl TargetPaths {
+    fn field(self, index: usize, name: &str) -> String {
+        match self {
+            Self::Alone => name.to_string(),
+            Self::InList => format!("targets[{index}].{name}"),
+        }
+    }
+}
+
+/// The checks every route target passes before it is stored, whether it is
+/// added alone or as part of a route's new target list: a positive weight, a
+/// provider in the route's org (an unknown or foreign one is the same 404), and
+/// one the route's project may use (#1919).
+async fn validate_route_targets(
+    state: &ControlState,
+    org_id: Option<Uuid>,
+    project_id: Uuid,
+    targets: &[RouteTargetInput],
+    paths: TargetPaths,
+) -> ApiResult<()> {
+    for (index, target) in targets.iter().enumerate() {
+        if target.weight <= 0 {
+            return Err(invalid_field(
+                paths.field(index, "weight"),
+                "weight must be > 0",
+            ));
+        }
+    }
+    let provider_ids: Vec<Uuid> = targets.iter().map(|t| t.provider_id).collect();
+    if let Some(org_id) = org_id {
+        require_providers_in_org(state, org_id, &provider_ids).await?;
+    }
+    // a route may use its own project's providers and org-wide ones (#1919)
+    require_providers_usable_from(state, &provider_ids, Some(project_id), "this route").await
+}
+
 async fn create_route_target(
     principal: Principal,
     State(state): State<ControlState>,
     Path(route_id): Path<Uuid>,
-    SafeJson(body): SafeJson<CreateRouteTarget>,
+    SafeJson(body): SafeJson<RouteTargetInput>,
 ) -> ApiResult<Json<RouteTarget>> {
-    let org_id = authorize_route(&state, &principal, route_id, cap!("route", Update)).await?;
-    if body.weight <= 0 {
-        return Err(ApiError::Core(Error::Config("weight must be > 0".into())));
-    }
-    if let Some(org_id) = org_id {
-        require_providers_in_org(&state, org_id, &[body.provider_id]).await?;
-    }
-    // a route may use its own project's providers and org-wide ones (#1919)
     let route = RouteRepo(pool(&state)).get(route_id).await?;
-    require_providers_usable_from(
+    let chain = ScopeChain::from_project(pool(&state), route.project_id).await?;
+    let org_id = chain.org;
+    authorize(&state, &principal, chain, cap!("route", Update)).await?;
+    validate_route_targets(
         &state,
-        &[body.provider_id],
-        Some(route.project_id),
-        "this route",
+        org_id,
+        route.project_id,
+        std::slice::from_ref(&body),
+        TargetPaths::Alone,
     )
     .await?;
+    let spec = body.spec();
     let row = RouteTargetRepo(pool(&state))
         .create(
             route_id,
-            body.provider_id,
-            body.upstream_model.as_deref(),
-            body.weight,
+            spec.provider_id,
+            spec.upstream_model.as_deref(),
+            spec.weight,
         )
         .await?;
     publish_config_change(&state).await?;
@@ -4459,7 +4608,7 @@ async fn create_route_target(
         "route_target.create",
         "route_target",
         row.id,
-        serde_json::json!({"route_id": route_id, "provider_id": body.provider_id}),
+        serde_json::json!({"route_id": route_id, "provider_id": spec.provider_id}),
     )
     .await;
     Ok(Json(row))

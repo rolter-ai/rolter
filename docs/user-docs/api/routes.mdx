@@ -1,0 +1,102 @@
+---
+title: "Route Updates"
+sidebarTitle: "Route updates"
+description: "PUT /api/v1/routes/{id} changes a route's enabled flag, its balancing strategy and its target list with weights in one transaction; a field you leave out keeps its stored value."
+---
+
+`PUT /api/v1/routes/{id}` edits a route that already exists. It changes any of
+three things: whether the route is served, its balancing strategy, and its
+targets with their weights. The route's public name, parameters and advanced
+settings have endpoints of their own (`/params`, `/advanced`, `/complexity`).
+
+Every field is optional. A field you leave out, or send as `null`, keeps the
+value the route already has, so a client that only sends `enabled` never resets
+the strategy or the targets. An empty body changes nothing and returns the
+route as it is.
+
+| Field      | Type    | Meaning                                                                                            |
+| ---------- | ------- | -------------------------------------------------------------------------------------------------- |
+| `enabled`  | boolean | `false` takes the route out of service without deleting it                                         |
+| `strategy` | string  | one of the strategies route creation accepts, listed in [Load balancing](/concepts/load-balancing) |
+| `targets`  | array   | the route's complete target list; see below                                                        |
+
+Each entry of `targets` has the same shape as the body of
+`POST /api/v1/routes/{route_id}/targets`:
+
+| Field            | Type    | Meaning                                                                          |
+| ---------------- | ------- | -------------------------------------------------------------------------------- |
+| `provider_id`    | uuid    | a provider of the route's organization (required)                                |
+| `upstream_model` | string  | the model name sent upstream; omitted, `null` or blank forwards the route's name |
+| `weight`         | integer | the target's share for strategies that read weights; at least 1, defaults to 1   |
+
+An entry carries only these three fields. A target's `id` is not one of them,
+and an entry that sends it is refused like any other unknown field.
+
+## How a target list is applied
+
+`targets` is the whole list, not a patch. Rolter matches each entry to a stored
+target by **provider and upstream model**, the same key a `rolter.toml` import
+matches on:
+
+- an entry that matches a stored target keeps that target, with its `id`, and
+  takes the entry's weight;
+- a stored target that no entry matches is removed;
+- an entry that matches no stored target is added.
+
+So changing a weight edits the target in place, while changing a target's
+provider or upstream model replaces it with a new one under a new `id`. Each
+entry claims at most one stored target: list the same provider and upstream
+model twice and the route keeps two targets for it.
+
+The strategy, the enabled flag and the whole target list change in one
+database transaction. Gateways pick the change up on their next config poll
+and see the route either as it was or as it is now, never with half a target
+list. A refused update changes nothing.
+
+## Example
+
+Move a route to weighted routing and send three quarters of its traffic to the
+first provider:
+
+```bash
+curl -s -X PUT https://control.example.com/api/v1/routes/$ROUTE_ID \
+  -H "Authorization: Bearer $ROLTER_SESSION_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "strategy": "weighted",
+    "targets": [
+      {"provider_id": "'"$PRIMARY_ID"'", "weight": 3},
+      {"provider_id": "'"$SECONDARY_ID"'", "upstream_model": "gpt-4o-mini", "weight": 1}
+    ]
+  }'
+```
+
+The response is the route row, as `GET /api/v1/projects/{project_id}/routes`
+lists it. List the targets with `GET /api/v1/routes/{route_id}/targets`.
+
+## Who may call it, and what it refuses
+
+Changing a route takes the **admin** role on its project (or on the project's
+team or organization), the same as creating one or adding a target. Each target
+entry is checked the way adding a single target is checked.
+
+| status | when                                                                                                      |
+| ------ | --------------------------------------------------------------------------------------------------------- |
+| `200`  | saved                                                                                                     |
+| `400`  | an unknown `strategy`, an empty `targets` list, a `weight` below 1, or a field the endpoint does not take |
+| `401`  | no valid session or admin token                                                                           |
+| `403`  | the caller is not an admin of the route's project                                                         |
+| `404`  | no such route, or a `provider_id` that is not a provider of the route's organization                      |
+| `409`  | `scope_mismatch`: a provider scoped to a different project                                                |
+
+A refused weight or an empty list answers with the `invalid_field` code and the
+field's path, such as `targets[1].weight`, so a client can point at the entry.
+An empty list is refused because it would leave the route nothing to serve;
+set `enabled` to `false` or delete the route instead.
+
+## Audit log
+
+An update that sends only `enabled` is recorded as `route.set_enabled`, as it
+always was. Any other update is recorded as `route.update`, with the new and
+previous strategy when it changed, and the targets that were added, reweighted
+(with the previous weight) and removed.
