@@ -37,7 +37,10 @@ export function KeyNextStep({ models }: { models: string[] }) {
   const titleId = React.useId();
   const model = models[0] ?? FIRST_REQUEST_MODEL;
   const request = React.useMemo(
-    () => (base ? renderSnippet("curl", { model, prompt: "hi" }, base) : null),
+    () =>
+      base
+        ? renderSnippet("curl", { model, messages: [{ role: "user", content: "hi" }] }, base)
+        : null,
     [model, base],
   );
 

@@ -2,7 +2,10 @@ import { describe, expect, test } from "bun:test";
 
 import { renderSnippet, SNIPPET_LANGS, type SnippetRequest } from "./snippets";
 
-const REQ: SnippetRequest = { model: "llama-3.1-8b", prompt: "hello there" };
+const REQ: SnippetRequest = {
+  model: "llama-3.1-8b",
+  messages: [{ role: "user", content: "hello there" }],
+};
 // the public base URL saved on Client Settings: the only address a snippet gets
 const SAVED = { url: "https://gateway.example.com" };
 
@@ -45,9 +48,7 @@ describe("renderSnippet", () => {
   });
 
   test("curl sends a body the gateway would accept", () => {
-    const out = renderSnippet("curl", REQ, SAVED);
-    const body = out.slice(out.indexOf("-d '") + 4, out.lastIndexOf("'"));
-    expect(JSON.parse(body)).toEqual({
+    expect(curlBody(renderSnippet("curl", REQ, SAVED))).toEqual({
       model: "llama-3.1-8b",
       messages: [{ role: "user", content: "hello there" }],
     });
@@ -55,7 +56,7 @@ describe("renderSnippet", () => {
 
   test("streaming changes the call shape, not just a flag", () => {
     const streamed = { ...REQ, stream: true };
-    expect(renderSnippet("curl", streamed, SAVED)).toContain('"stream":true');
+    expect(curlBody(renderSnippet("curl", streamed, SAVED)).stream).toBe(true);
     expect(renderSnippet("python", streamed, SAVED)).toContain("for chunk in stream");
     expect(renderSnippet("javascript", streamed, SAVED)).toContain("for await");
   });
@@ -72,7 +73,7 @@ describe("renderSnippet", () => {
   test("a prompt with quotes and newlines stays escaped", () => {
     const nasty: SnippetRequest = {
       model: "gpt-4o",
-      prompt: 'say "hi"\nthen stop',
+      messages: [{ role: "user", content: 'say "hi"\nthen stop' }],
     };
     for (const lang of SNIPPET_LANGS) {
       const out = renderSnippet(lang, nasty, SAVED);
@@ -80,8 +81,69 @@ describe("renderSnippet", () => {
       expect(out).toContain("\\n");
       expect(out).toContain('\\"hi\\"');
     }
-    const curlOut = renderSnippet("curl", nasty, SAVED);
-    const body = curlOut.slice(curlOut.indexOf("-d '") + 4, curlOut.lastIndexOf("'"));
-    expect(JSON.parse(body).messages[0].content).toBe('say "hi"\nthen stop');
+    expect(curlBody(renderSnippet("curl", nasty, SAVED)).messages[0].content).toBe(
+      'say "hi"\nthen stop',
+    );
+  });
+
+  // a chat column sends its whole thread, so the snippet has to carry every
+  // turn, in order, or it reproduces a request the column never made (#2058)
+  const THREAD: SnippetRequest = {
+    model: "llama-3.1-8b",
+    messages: [
+      { role: "user", content: "my name is Anya" },
+      { role: "assistant", content: "Nice to meet you, Anya." },
+      { role: "user", content: "what is my name?" },
+    ],
+  };
+
+  test("every language carries every turn of the conversation, in order", () => {
+    for (const lang of SNIPPET_LANGS) {
+      const out = renderSnippet(lang, THREAD, SAVED);
+      const at = THREAD.messages.map((m) => out.indexOf(m.content));
+      expect(at.every((i) => i >= 0)).toBe(true);
+      expect([...at].sort((a, b) => a - b)).toEqual(at);
+      expect(out).toContain('"assistant"');
+    }
+    expect(curlBody(renderSnippet("curl", THREAD, SAVED)).messages).toEqual(THREAD.messages);
+    expect(curlBody(renderSnippet("curl", { ...THREAD, stream: true }, SAVED)).stream).toBe(true);
+  });
+
+  test("each turn is a line of its own", () => {
+    for (const lang of SNIPPET_LANGS) {
+      const lines = renderSnippet(lang, THREAD, SAVED).split("\n");
+      for (const m of THREAD.messages) {
+        expect(lines.filter((line) => line.includes(m.content))).toHaveLength(1);
+      }
+    }
+  });
+
+  // an apostrophe in a reply ("it's") would close curl's single-quoted body
+  // and hand the rest of the JSON to the shell
+  test("an apostrophe in any turn survives curl's single quotes", () => {
+    const quoted: SnippetRequest = {
+      model: "gpt-4o",
+      messages: [
+        { role: "user", content: "what's up?" },
+        { role: "assistant", content: "It's fine, isn't it?" },
+      ],
+    };
+    const out = renderSnippet("curl", quoted, SAVED);
+    expect(out).toContain(`'\\''`);
+    expect(curlBody(out).messages).toEqual(quoted.messages);
   });
 });
+
+/**
+ * The JSON body of a curl snippet, read back the way a POSIX shell reads the
+ * single-quoted `-d` argument: `'\''` is a quote closed, an escaped quote, and
+ * the quote opened again.
+ */
+function curlBody(out: string) {
+  const quoted = out.slice(out.indexOf("-d '") + 4, out.lastIndexOf("'"));
+  return JSON.parse(quoted.split(`'\\''`).join("'")) as {
+    model: string;
+    messages: { role: string; content: string }[];
+    stream?: boolean;
+  };
+}

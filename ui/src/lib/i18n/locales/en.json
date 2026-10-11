@@ -892,6 +892,7 @@
       "removeAttachmentFor": "Remove attachment for {{model}}",
       "attachImageFor": "Attach image for {{model}}",
       "threadAria": "Conversation with {{model}}",
+      "clearThread": "Clear the conversation with {{model}}",
       "sendTo": "Send to {{model}}",
       "copyAsCodeFor": "Copy as code for {{model}}",
       "sendMessageTo": "Send a message to {{model}}.",

@@ -1,6 +1,7 @@
 import { useMutation, useQuery, type UseMutationResult } from "@tanstack/react-query";
 import {
   Check,
+  Eraser,
   GitCompare,
   ImageIcon,
   Mic,
@@ -67,6 +68,7 @@ import {
 import { useFormat } from "@/lib/i18n/format";
 import { useOptionalPreferences } from "@/lib/preferences";
 import { useScope } from "@/lib/scope";
+import type { SnippetMessage } from "@/lib/snippets";
 import { useNow } from "@/lib/use-now";
 import { cn } from "@/lib/utils";
 import { useScreenReady } from "@/lib/ux-react";
@@ -863,7 +865,25 @@ function isSendKey(e: React.KeyboardEvent): boolean {
 interface Msg {
   role: "user" | "assistant";
   text: string;
+  /** the image a user turn carried, as the `data:` URL it was attached as */
+  image?: string;
   pending?: boolean;
+}
+
+/**
+ * A turn as the gateway reads it. Its image goes along only while multimodal
+ * is on, the same switch that shows it in the thread, so the request carries
+ * what the column shows (#2058).
+ */
+function chatMessage(msg: Msg, multimodal: boolean): ChatMessage {
+  if (!multimodal || !msg.image) return { role: msg.role, content: msg.text };
+  return {
+    role: msg.role,
+    content: [
+      { type: "text", text: msg.text },
+      { type: "image_url", image_url: { url: msg.image } },
+    ],
+  };
 }
 
 function ChatColumn({
@@ -901,7 +921,8 @@ function ChatColumn({
   const [image, setImage] = React.useState<string | null>(null);
   const [error, setError] = React.useState<ErrorCopy | null>(null);
   const [busy, setBusy] = React.useState(false);
-  const [lastPrompt, setLastPrompt] = React.useState("");
+  // the turns of the last request the column sent, for Copy as code
+  const [lastSent, setLastSent] = React.useState<SnippetMessage[] | null>(null);
   // the finished reply, for the live region: `id` makes a reply identical to
   // the last one a new node, so it is announced again
   const [announced, setAnnounced] = React.useState<{ id: number; text: string } | null>(null);
@@ -918,6 +939,9 @@ function ChatColumn({
     el.style.height = `${el.scrollHeight + el.offsetHeight - el.clientHeight}px`;
   }, [draft]);
 
+  // an image attached before multimodal went off is neither shown nor sent
+  const attached = multimodal ? image : null;
+
   const attach = (f: File) => {
     const reader = new FileReader();
     reader.onload = () => setImage(reader.result as string);
@@ -927,27 +951,25 @@ function ChatColumn({
   const send = async () => {
     // Enter reaches here without the button, so the gate is checked here too
     if (!draft.trim() || busy || gate.blocked) return;
-    const userText = draft;
-    setLastPrompt(userText);
-    const attached = image;
+    const turn: Msg = attached
+      ? { role: "user", text: draft, image: attached }
+      : { role: "user", text: draft };
+    // the whole thread goes out, not only the newest line, so the model answers
+    // the conversation the column shows (#2058). a reply is only ever in flight
+    // while `busy` holds Send back, so the thread holds no placeholder here
+    const thread = [...msgs, turn];
+    setLastSent(thread.map((m) => ({ role: m.role, content: m.text })));
     setDraft("");
     setImage(null);
     setError(null);
-    setMsgs((m) => [
-      ...m,
-      { role: "user", text: userText },
-      { role: "assistant", text: "…", pending: true },
-    ]);
+    setMsgs([...thread, { role: "assistant", text: "…", pending: true }]);
     setBusy(true);
 
-    const content: ChatMessage["content"] = attached
-      ? [
-          { type: "text", text: userText },
-          { type: "image_url", image_url: { url: attached } },
-        ]
-      : userText;
     try {
-      const reply = await chatCompletion(model, [{ role: "user", content }]);
+      const reply = await chatCompletion(
+        model,
+        thread.map((m) => chatMessage(m, multimodal)),
+      );
       setMsgs((m) =>
         m.map((msg, i) => (i === m.length - 1 ? { role: "assistant", text: reply } : msg)),
       );
@@ -956,11 +978,27 @@ function ChatColumn({
         text: t("pages.playground.replyAnnounce", { model, reply }),
       }));
     } catch (e) {
-      setMsgs((m) => m.slice(0, -1));
+      // the thread goes back to what it was before the send, and the message
+      // back into the composer, so a retry is one more Send and the next turn
+      // never follows a question nobody answered. a draft typed while waiting
+      // stays, after the message it was meant to follow
+      setMsgs((m) => m.slice(0, -2));
+      setDraft((d) => (d.trim() ? `${turn.text}\n\n${d}` : turn.text));
+      setImage((i) => i ?? turn.image ?? null);
       setError(describeError(e, t));
     } finally {
       setBusy(false);
     }
+  };
+
+  // starting over keeps the draft: it is the next message, not the thread
+  const clear = () => {
+    setMsgs([]);
+    setError(null);
+    setLastSent(null);
+    setAnnounced(null);
+    // the button disables itself, and focus would fall to the page
+    composer.current?.focus();
   };
 
   return (
@@ -972,12 +1010,13 @@ function ChatColumn({
           onChange={onModel}
           label={position === null ? undefined : t("pages.playground.modelAriaFor", { model: who })}
         />
-        {/* the last thing sent, so the snippet reproduces a call that is known
-            to work rather than whatever is half-typed in the composer */}
+        {/* the last request sent, every turn of it, so the snippet reproduces
+            a call that went out rather than whatever is half-typed in the
+            composer */}
         <CopyAsCodeButton
           request={{
             model,
-            prompt: lastPrompt || draft || "Hello!",
+            messages: lastSent ?? [{ role: "user", content: draft || "Hello!" }],
           }}
           label={t("pages.playground.copyAsCodeFor", { model: who })}
         />
@@ -991,6 +1030,19 @@ function ChatColumn({
           title={rawLabel}
         >
           <Pilcrow className="h-3.5 w-3.5" />
+        </Button>
+        {/* no confirmation, like Remove column beside it: the thread lives in
+            the page and nothing on the server goes with it */}
+        <Button
+          size="icon"
+          variant="ghost"
+          className="h-8 w-8"
+          onClick={clear}
+          disabled={busy || msgs.length === 0}
+          aria-label={t("pages.playground.clearThread", { model: who })}
+          title={t("pages.playground.clearThread", { model: who })}
+        >
+          <Eraser className="h-3.5 w-3.5" />
         </Button>
         {position !== null && (
           <Button
@@ -1051,6 +1103,12 @@ function ChatColumn({
             ) : (
               <Markdown source={m.text} />
             )}
+            {/* marked while multimodal is on, which is when the next send carries it again */}
+            {multimodal && m.image && (
+              <span className="inline-flex items-center gap-1.5 self-start text-[0.625rem] text-muted-foreground">
+                <ImageIcon aria-hidden className="h-3 w-3" /> {t("pages.playground.imageAttached")}
+              </span>
+            )}
           </div>
         ))}
       </div>
@@ -1060,9 +1118,9 @@ function ChatColumn({
       <div aria-live="polite" aria-atomic="true" className="sr-only">
         {announced && <p key={announced.id}>{announced.text}</p>}
       </div>
-      {(error || image) && (
+      {(error || attached) && (
         <div className="px-3 pb-1">
-          {image && (
+          {attached && (
             <div className="mb-1 inline-flex items-center gap-1.5 rounded bg-[color:var(--surface-subtle)] px-2 py-1 text-[0.625rem] text-muted-foreground">
               <ImageIcon className="h-3 w-3" /> {t("pages.playground.imageAttached")}
               <button

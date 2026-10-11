@@ -10,12 +10,22 @@
 
 import type { GatewayBase } from "@/lib/gateway";
 
+/** One turn of the conversation, as the snippet writes it out. */
+export interface SnippetMessage {
+  role: "system" | "user" | "assistant";
+  /** the turn's text; multimodal parts are flattened to their text */
+  content: string;
+}
+
 /** The request the Playground issued, in OpenAI terms. */
 export interface SnippetRequest {
   /** the rolter route name, which is what the caller passes as `model` */
   model: string;
-  /** user-visible prompt text; multimodal parts are flattened to their text */
-  prompt: string;
+  /**
+   * every turn the request carried, in order: a chat column sends its whole
+   * thread, so a snippet with only the last prompt would not reproduce it (#2058)
+   */
+  messages: SnippetMessage[];
   /** whether the caller asked for SSE */
   stream?: boolean;
 }
@@ -37,30 +47,56 @@ export const KEY_ENV = "ROLTER_API_KEY";
 /** JSON-encode for embedding inside a source literal. */
 const j = (v: unknown) => JSON.stringify(v);
 
+/**
+ * Quote for a POSIX shell's single quotes. Nothing inside them is special
+ * except the closing quote itself, which an assistant turn ("it's") brings in
+ * as soon as the body carries more than the operator's own prompt.
+ */
+const shellQuote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
+
+/** The turns, one line each, indented and written in `item`'s literal syntax. */
+const turnLines = (req: SnippetRequest, indent: string, item: (m: SnippetMessage) => string) =>
+  req.messages.map((m) => `${indent}${item(m)}`);
+
 function curl(req: SnippetRequest, base: GatewayBase): string {
   const body = {
     model: req.model,
-    messages: [{ role: "user", content: req.prompt }],
+    messages: req.messages.map(({ role, content }) => ({ role, content })),
     ...(req.stream ? { stream: true } : {}),
   };
+  // a single prompt stays the one-liner it has always been. a conversation is
+  // laid out a turn to a line, the way the thread it came from reads
+  const json =
+    req.messages.length > 1
+      ? `{
+  "model": ${j(req.model)},
+  "messages": [
+${turnLines(req, "    ", (m) => `{"role": ${j(m.role)}, "content": ${j(m.content)}}`).join(",\n")}
+  ]${req.stream ? `,\n  "stream": true` : ""}
+}`
+      : j(body);
   return `curl ${base.url}/v1/chat/completions \\
   -H "Authorization: Bearer $${KEY_ENV}" \\
   -H "Content-Type: application/json" \\
-  -d '${JSON.stringify(body)}'`;
+  -d ${shellQuote(json)}`;
 }
 
 function python(req: SnippetRequest, base: GatewayBase): string {
+  // a JSON string is a valid Python string literal, escapes and all
+  const messages = `messages=[
+${turnLines(req, "        ", (m) => `{"role": ${j(m.role)}, "content": ${j(m.content)}},`).join("\n")}
+    ],`;
   const call = req.stream
     ? `stream = client.chat.completions.create(
     model=${j(req.model)},
-    messages=[{"role": "user", "content": ${j(req.prompt)}}],
+    ${messages}
     stream=True,
 )
 for chunk in stream:
     print(chunk.choices[0].delta.content or "", end="")`
     : `response = client.chat.completions.create(
     model=${j(req.model)},
-    messages=[{"role": "user", "content": ${j(req.prompt)}}],
+    ${messages}
 )
 print(response.choices[0].message.content)`;
 
@@ -77,10 +113,13 @@ ${call}`;
 }
 
 function javascript(req: SnippetRequest, base: GatewayBase): string {
+  const messages = `messages: [
+${turnLines(req, "    ", (m) => `{ role: ${j(m.role)}, content: ${j(m.content)} },`).join("\n")}
+  ],`;
   const call = req.stream
     ? `const stream = await client.chat.completions.create({
   model: ${j(req.model)},
-  messages: [{ role: "user", content: ${j(req.prompt)} }],
+  ${messages}
   stream: true,
 });
 for await (const chunk of stream) {
@@ -88,7 +127,7 @@ for await (const chunk of stream) {
 }`
     : `const response = await client.chat.completions.create({
   model: ${j(req.model)},
-  messages: [{ role: "user", content: ${j(req.prompt)} }],
+  ${messages}
 });
 console.log(response.choices[0].message.content);`;
 

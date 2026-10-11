@@ -925,7 +925,7 @@ async function sendMessage(canvas: ReturnType<typeof within>, composer: HTMLElem
  * The roles are words in the dashboard's language rather than the `user` /
  * `assistant` enum. The reply is read out through a polite live region that is
  * not the thread, so the message just typed is not read back, and what goes to
- * the gateway is still the one user turn: multi-turn context is #2058's call.
+ * the gateway is that one user turn.
  */
 const replied = recording(
   deployment(async () => json(minted()), undefined, undefined, {
@@ -1048,37 +1048,275 @@ export const ReplyRendersMarkdown: Story = {
 };
 
 /**
- * A gateway refusal lands in an `ErrorNote`, announced as an alert. The turn
- * that failed leaves its question in the thread, the placeholder for the reply
- * goes, Send opens again, and the next send clears the note.
+ * A gateway refusal lands in an `ErrorNote`, announced as an alert (#2058). The
+ * thread is left as it was before the send, with no question in it that nobody
+ * answered, and the message is back in the composer, so a retry is one more
+ * Send. The retry carries the conversation once, and clears the note.
  */
+const failing = recording(
+  deployment(async () => json(minted()), undefined, undefined, {
+    chat: (_, n) =>
+      n === 0
+        ? completion("Hi there.")
+        : n === 1
+          ? json({ error: { message: "upstream unavailable: no healthy target" } }, 503)
+          : completion("Back online."),
+  }),
+);
+
 export const FailedSendShowsTheError: Story = {
-  render: () => (
-    <Screen
-      fetchStub={deployment(async () => json(minted()), undefined, undefined, {
-        chat: (_, n) =>
-          n === 0
-            ? json({ error: { message: "upstream unavailable: no healthy target" } }, 503)
-            : completion("Back online."),
-      })}
-    />
-  ),
+  render: () => <Screen fetchStub={failing.stub} />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const composer = await readyComposer(canvas);
+    const thread = within(canvas.getByRole("region", { name: "Conversation with minicpm5-1b" }));
+    await sendMessage(canvas, composer, "Hello");
+    await canvas.findByText("Hi there.");
+    await readyComposer(canvas);
     await sendMessage(canvas, composer, "Are you there?");
 
     const alert = await canvas.findByRole("alert");
     await expect(alert).toHaveTextContent("upstream unavailable: no healthy target");
-    await expect(canvas.getByText("Are you there?")).toBeVisible();
-    await expect(canvas.queryByText("…")).toBeNull();
-    await expect(canvas.queryByText("Assistant")).toBeNull();
-    await expect(canvas.queryByText(/ replied: /)).toBeNull();
-    await waitFor(() => expect(canvas.getByRole("button", { name: SEND })).toBeEnabled());
+    await expect(thread.getByText("Hi there.")).toBeVisible();
+    await expect(thread.queryByText("Are you there?")).toBeNull();
+    await expect(thread.queryByText("…")).toBeNull();
+    await expect(thread.getAllByText("You")).toHaveLength(1);
+    await expect(canvas.queryByText(/ replied: Back/)).toBeNull();
+    await expect(composer).toHaveValue("Are you there?");
 
-    await sendMessage(canvas, composer, "Again");
+    await readyComposer(canvas);
+    await userEvent.click(canvas.getByRole("button", { name: SEND }));
     await canvas.findByText("Back online.");
     await expect(canvas.queryByRole("alert")).toBeNull();
+    const [, failed, retried] = chatsIn(failing.calls);
+    await expect(retried.messages).toEqual([
+      { role: "user", content: "Hello" },
+      { role: "assistant", content: "Hi there." },
+      { role: "user", content: "Are you there?" },
+    ]);
+    await expect(failed.messages).toEqual(retried.messages);
+  },
+};
+
+/**
+ * A message typed while a reply was on its way is not lost when that reply
+ * fails: the failed message comes back ahead of it, the order the two were
+ * written in (#2058).
+ */
+let refuse: () => void = () => {};
+const typedAhead = recording(
+  deployment(async () => json(minted()), undefined, undefined, {
+    chat: () =>
+      new Promise<Response>((resolve) => {
+        refuse = () => resolve(json({ error: { message: "upstream timed out" } }, 504));
+      }),
+  }),
+);
+
+export const FailedSendKeepsADraftTypedWhileWaiting: Story = {
+  render: () => <Screen fetchStub={typedAhead.stub} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const composer = await readyComposer(canvas);
+    await sendMessage(canvas, composer, "first question");
+    await canvas.findByText("…");
+    await userEvent.type(composer, "and a follow-up");
+
+    refuse();
+    await canvas.findByRole("alert");
+    await expect(composer).toHaveValue("first question\n\nand a follow-up");
+    await expect(canvas.queryByText("…")).toBeNull();
+  },
+};
+
+/**
+ * Every send carries the column's whole thread, not only the newest line
+ * (#2058). The second request holds the first question, its answer and the new
+ * question, in order, so the model answers the conversation the column shows.
+ */
+const conversation = recording(
+  deployment(async () => json(minted()), undefined, undefined, {
+    chat: (request) =>
+      completion(request.messages.length === 1 ? "Nice to meet you, Anya." : "Your name is Anya."),
+  }),
+);
+
+export const SendsTheWholeConversation: Story = {
+  render: () => <Screen fetchStub={conversation.stub} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const composer = await readyComposer(canvas);
+    await sendMessage(canvas, composer, "my name is Anya");
+    await canvas.findByText("Nice to meet you, Anya.");
+    await readyComposer(canvas);
+    await sendMessage(canvas, composer, "what is my name?");
+    await canvas.findByText("Your name is Anya.");
+
+    const [first, second] = chatsIn(conversation.calls);
+    await expect(first.messages).toEqual([{ role: "user", content: "my name is Anya" }]);
+    await expect(second).toEqual({
+      model: "minicpm5-1b",
+      messages: [
+        { role: "user", content: "my name is Anya" },
+        { role: "assistant", content: "Nice to meet you, Anya." },
+        { role: "user", content: "what is my name?" },
+      ],
+      stream: false,
+    });
+  },
+};
+
+/**
+ * Clear starts the column over (#2058): the thread empties, the next send
+ * carries the new message alone, and the unsent draft stays, since it is the
+ * next message rather than part of the thread. Clear disables itself on an
+ * empty thread, so it hands focus to the composer instead of dropping it.
+ */
+const startOver = recording(
+  deployment(async () => json(minted()), undefined, undefined, {
+    chat: (request) => completion(`turns: ${request.messages.length}`),
+  }),
+);
+
+export const ClearStartsTheConversationOver: Story = {
+  render: () => <Screen fetchStub={startOver.stub} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const composer = await readyComposer(canvas);
+    const thread = within(canvas.getByRole("region", { name: "Conversation with minicpm5-1b" }));
+    const clear = canvas.getByRole("button", { name: "Clear the conversation with minicpm5-1b" });
+    // story-wait-allow: disabled by its own empty thread from the first paint
+    await expect(clear).toBeDisabled();
+
+    await sendMessage(canvas, composer, "first");
+    await thread.findByText("turns: 1");
+    await readyComposer(canvas);
+    await sendMessage(canvas, composer, "second");
+    await thread.findByText("turns: 3");
+    await userEvent.type(composer, "kept draft");
+
+    await waitFor(() => expect(clear).toBeEnabled());
+    await userEvent.click(clear);
+    await waitFor(() => expect(thread.queryByText("turns: 3")).toBeNull());
+    await expect(thread.queryByText("first")).toBeNull();
+    await expect(thread.getByText("Send a message to minicpm5-1b.")).toBeVisible();
+    await expect(composer).toHaveValue("kept draft");
+    await expect(composer).toHaveFocus();
+    await expect(clear).toBeDisabled();
+
+    await userEvent.keyboard("{Enter}");
+    await thread.findByText("turns: 1");
+    await expect(chatsIn(startOver.calls)[2].messages).toEqual([
+      { role: "user", content: "kept draft" },
+    ]);
+  },
+};
+
+/**
+ * An image travels with the turn it was attached to, on every later send too,
+ * and the turn says it carried one (#2058). With multimodal switched off the
+ * thread stops showing it and no image part goes out, so the request still
+ * matches the column.
+ */
+const pictured = recording(
+  deployment(async () => json(minted()), undefined, undefined, {
+    chat: (request) => completion(`turns: ${request.messages.length}`),
+  }),
+);
+
+export const ImagesStayWithTheirTurn: Story = {
+  render: () => <Screen fetchStub={pictured.stub} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const composer = await readyComposer(canvas);
+    const thread = within(canvas.getByRole("region", { name: "Conversation with minicpm5-1b" }));
+    const multimodal = canvas.getByRole("switch", { name: en.pages.playground.multimodal });
+    await userEvent.click(multimodal);
+    const file = await waitFor(() => {
+      const input = canvasElement.querySelector<HTMLInputElement>('input[type="file"]');
+      expect(input).not.toBeNull();
+      return input as HTMLInputElement;
+    });
+    await userEvent.upload(file, new File(["x"], "pic.png", { type: "image/png" }));
+    await canvas.findByRole("button", { name: "Remove attachment" });
+
+    await sendMessage(canvas, composer, "what is in this picture?");
+    await thread.findByText("turns: 1");
+    await expect(thread.getByText(en.pages.playground.imageAttached)).toBeVisible();
+    await readyComposer(canvas);
+    await sendMessage(canvas, composer, "and the colour?");
+    await thread.findByText("turns: 3");
+
+    const picture = {
+      role: "user",
+      content: [
+        { type: "text", text: "what is in this picture?" },
+        {
+          type: "image_url",
+          image_url: { url: expect.stringMatching(/^data:image\/png;base64,/) },
+        },
+      ],
+    };
+    const [first, second] = chatsIn(pictured.calls);
+    await expect(first.messages).toEqual([picture]);
+    await expect(second.messages).toEqual([
+      picture,
+      { role: "assistant", content: "turns: 1" },
+      { role: "user", content: "and the colour?" },
+    ]);
+
+    await userEvent.click(multimodal);
+    await waitFor(() => expect(thread.queryByText(en.pages.playground.imageAttached)).toBeNull());
+    await sendMessage(canvas, composer, "text only now");
+    await thread.findByText("turns: 5");
+    await expect(chatsIn(pictured.calls)[2].messages[0]).toEqual({
+      role: "user",
+      content: "what is in this picture?",
+    });
+  },
+};
+
+/**
+ * Copy as code writes out the request the column last sent, every turn of it,
+ * and not the reply that came back (#2058). Needs a saved gateway address,
+ * which a superadmin reads from Client Settings.
+ */
+const anyaReplies = deployment(async () => json(minted()), undefined, undefined, {
+  chat: (request) =>
+    completion(request.messages.length === 1 ? "Nice to meet you, Anya." : "Your name is Anya."),
+});
+const snippetThread = recording(async (input, init) =>
+  String(input).includes("/api/v1/client-settings")
+    ? json({ public_base_url: "https://gateway.example.com" })
+    : anyaReplies(input, init),
+);
+
+export const CopyAsCodeCarriesTheConversation: Story = {
+  render: () => <Screen fetchStub={snippetThread.stub} role="superadmin" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const composer = await readyComposer(canvas);
+    await sendMessage(canvas, composer, "my name is Anya");
+    await canvas.findByText("Nice to meet you, Anya.");
+    await readyComposer(canvas);
+    await sendMessage(canvas, composer, "what is my name?");
+    await canvas.findByText("Your name is Anya.");
+
+    await userEvent.click(canvas.getByRole("button", { name: "Copy as code for minicpm5-1b" }));
+    const dialog = await within(document.body).findByRole("dialog");
+    await waitFor(() => expect(dialog).toHaveTextContent(/gateway\.example\.com/));
+    for (const tab of ["curl", "Python", "JavaScript"]) {
+      await userEvent.click(within(dialog).getByRole("tab", { name: tab }));
+      await waitFor(() => {
+        const text = dialog.textContent ?? "";
+        const at = ["my name is Anya", "Nice to meet you, Anya.", "what is my name?"].map((turn) =>
+          text.indexOf(turn),
+        );
+        expect(at.every((i) => i >= 0)).toBe(true);
+        expect([...at].sort((a, b) => a - b)).toEqual(at);
+      });
+      await expect(dialog.textContent ?? "").not.toContain("Your name is Anya.");
+    }
   },
 };
 
@@ -1265,7 +1503,7 @@ export const ThreadIsAKeyboardStop: Story = {
     // the reply outruns the column, which is the case that needs the keyboard
     await waitFor(() => expect(thread.scrollHeight).toBeGreaterThan(thread.clientHeight));
 
-    canvas.getByRole("button", { name: "Show raw text" }).focus();
+    canvas.getByRole("button", { name: "Clear the conversation with minicpm5-1b" }).focus();
     await userEvent.tab();
     await expect(thread).toHaveFocus();
     await userEvent.tab();
@@ -1287,6 +1525,7 @@ export const RepeatedButtonsNameTheirColumn: Story = {
 
     await canvas.findByRole("button", { name: "Send to minicpm5-1b" });
     await canvas.findByRole("button", { name: "Copy as code for minicpm5-1b" });
+    await canvas.findByRole("button", { name: "Clear the conversation with minicpm5-1b" });
     await canvas.findByRole("region", { name: "Conversation with minicpm5-1b" });
     await expect(canvas.queryByRole("button", { name: /^Remove column/ })).toBeNull();
 
@@ -1298,6 +1537,9 @@ export const RepeatedButtonsNameTheirColumn: Story = {
     ] as const) {
       await canvas.findByRole("button", { name: `Send to ${model}, column ${n}` });
       await canvas.findByRole("button", { name: `Copy as code for ${model}, column ${n}` });
+      await canvas.findByRole("button", {
+        name: `Clear the conversation with ${model}, column ${n}`,
+      });
       await canvas.findByRole("button", { name: `Remove column ${n} (${model})` });
       await canvas.findByRole("region", { name: `Conversation with ${model}, column ${n}` });
     }
@@ -1313,6 +1555,7 @@ export const RepeatedButtonsNameTheirColumn: Story = {
     await canvas.findByRole("button", { name: "Send to minicpm5-1b, column 2" });
     expectDistinctNames(canvas.getAllByRole("button", { name: SEND }), 2);
     expectDistinctNames(canvas.getAllByRole("button", { name: /^Copy as code for / }), 2);
+    expectDistinctNames(canvas.getAllByRole("button", { name: /^Clear the conversation / }), 2);
     expectDistinctNames(canvas.getAllByRole("button", { name: /^Remove column / }), 2);
     expectDistinctNames(canvas.getAllByRole("region", { name: /^Conversation with / }), 2);
 
@@ -1388,6 +1631,7 @@ export const RepeatedButtonNamesInRussian: Story = {
     await canvas.findByRole("button", { name: fill(pg.sendTo, { model: first }) });
     await canvas.findByRole("button", { name: fill(pg.sendTo, { model: second }) });
     await canvas.findByRole("button", { name: fill(pg.copyAsCodeFor, { model: second }) });
+    await canvas.findByRole("button", { name: fill(pg.clearThread, { model: second }) });
     await canvas.findByRole("button", { name: fill(pg.removeColumn, { model: "fake-llm", n: 2 }) });
     await canvas.findByRole("region", { name: fill(pg.threadAria, { model: first }) });
 

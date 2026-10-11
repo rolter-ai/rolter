@@ -64,6 +64,18 @@ caller gets the proxy without a 403. The Client Settings screen calls
 `gatewayBase(form.publicBaseUrl)` directly instead, so its example follows the
 field while it is being edited.
 
+## What a Playground snippet reproduces
+
+A chat column sends its whole thread on every send (#2058), so the snippet
+behind its **Copy as code** is the last request the column sent: every turn of
+it, in order, without the reply that came back. Before anything is sent it is
+the draft, or a placeholder prompt. `SnippetRequest` in `ui/src/lib/snippets.ts`
+carries the turns as `messages`, and each language lays a conversation out one
+turn to a line; curl keeps a single prompt on the one line it has always had.
+An assistant turn brings apostrophes into curl's single-quoted body, so the body
+goes through `shellQuote`, which writes each `'` as `'\''`. Image parts are
+flattened to their text: a `data:` URL is too long to paste into a terminal.
+
 ## Why Prism (refractor), not Shiki
 
 Both were measured as a browser bundle carrying the grammars the dashboard
