@@ -3573,6 +3573,7 @@ impl GatewayConfig {
         // Cross-provider defects (empty or duplicated names) are deliberately
         // not considered here — silently dropping one of two colliding rows
         // would be worse than refusing, so `validate` still rejects those.
+        self.strip_unusable_telemetry(&mut warnings);
         let mut omitted: std::collections::HashSet<String> = std::collections::HashSet::new();
         let invalid: Vec<(usize, String, Vec<String>)> = self
             .providers
@@ -3733,6 +3734,52 @@ impl GatewayConfig {
             self.client.request_id_header = default_request_id_header();
         }
         warnings
+    }
+
+    /// Clear a provider's `kv_events` / `lmcache` setting when the egress
+    /// policy denies its endpoint or its shape is invalid, keeping the provider.
+    /// Cache telemetry is optional, so losing it must not cost the provider its
+    /// traffic (#2997); `validate` still refuses the same setting in a file.
+    fn strip_unusable_telemetry(&mut self, warnings: &mut Vec<String>) {
+        let egress = self.egress.clone();
+        for provider in &mut self.providers {
+            let name = provider.name.clone();
+            if let Some(kv) = &provider.kv_events {
+                let mut problems = Vec::new();
+                if let Err(p) = egress.check_url(
+                    &kv.endpoint,
+                    &format!("provider '{name}' kv_events.endpoint"),
+                ) {
+                    problems.push(p);
+                }
+                problems.extend(kv.shape_problems(&name));
+                if !problems.is_empty() {
+                    warnings.push(format!(
+                        "provider '{name}' kv_events omitted from the snapshot and the provider \
+                         serves without it: {}",
+                        problems.join("; ")
+                    ));
+                    provider.kv_events = None;
+                }
+            }
+            if let Some(lm) = &provider.lmcache {
+                let mut problems = Vec::new();
+                if let Err(p) =
+                    egress.check_url(&lm.endpoint, &format!("provider '{name}' lmcache.endpoint"))
+                {
+                    problems.push(p);
+                }
+                problems.extend(lm.shape_problems(&name));
+                if !problems.is_empty() {
+                    warnings.push(format!(
+                        "provider '{name}' lmcache omitted from the snapshot and the provider \
+                         serves without it: {}",
+                        problems.join("; ")
+                    ));
+                    provider.lmcache = None;
+                }
+            }
+        }
     }
 
     /// Report each gateway-side URL the egress policy denies in `warnings`,
@@ -8624,6 +8671,54 @@ mod tests {
                 "{field}: no problem names it"
             );
         }
+    }
+
+    /// #2997: a denied or malformed telemetry setting costs the provider its
+    /// cache telemetry, not its traffic.
+    #[test]
+    fn the_snapshot_clears_a_denied_telemetry_endpoint_and_keeps_the_provider() {
+        let mut config = egress_config();
+        config.providers[0].kv_events = Some(KvEventsConfig {
+            endpoint: "tcp://169.254.169.254:5557".to_string(),
+            topic: "kv-events".to_string(),
+            max_blocks: 10,
+            stale_secs: 30,
+        });
+        config.providers[0].lmcache = Some(LmCacheConfig {
+            endpoint: METADATA.to_string(),
+            refresh_secs: 2,
+            stale_secs: 10,
+        });
+        // file configs stay strict
+        assert!(config.validate().is_err());
+
+        let warnings = config.sanitize_for_snapshot();
+
+        assert_eq!(config.providers.len(), 1, "the provider keeps serving");
+        assert!(config.providers[0].kv_events.is_none());
+        assert!(config.providers[0].lmcache.is_none());
+        assert!(config.validate_snapshot().is_ok());
+        assert!(config.validate().is_ok(), "nothing denied is left");
+        for needle in ["kv_events", "lmcache"] {
+            assert!(
+                warnings.iter().any(|w| w.contains(needle)),
+                "no warning names {needle}: {warnings:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_snapshot_keeps_an_allowed_telemetry_setting() {
+        let mut config = egress_config();
+        config.providers[0].kv_events = Some(KvEventsConfig {
+            endpoint: "tcp://vllm-0.example.com:5557".to_string(),
+            topic: "kv-events".to_string(),
+            max_blocks: 10,
+            stale_secs: 30,
+        });
+        let warnings = config.sanitize_for_snapshot();
+        assert!(config.providers[0].kv_events.is_some());
+        assert!(warnings.is_empty(), "{warnings:?}");
     }
 
     #[test]
