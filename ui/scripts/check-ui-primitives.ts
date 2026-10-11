@@ -112,6 +112,7 @@ export type RuleId =
   | "pre"
   | "native-dialog"
   | "hand-rolled-confirmation"
+  | "inline-two-step-confirmation"
   | "shadowed-primitive"
   | "hand-rolled-switch-row"
   | "bare-animation"
@@ -160,6 +161,11 @@ const ADVICE: Record<RuleId, string> = {
     "the UX-stream rows, so a fix to `ConfirmDialog` never reaches it. Use " +
     "`ConfirmDialog` from `@/components/ConfirmDialog`; a typed confirmation " +
     "goes in its `children` with `confirmDisabled`.",
+  "inline-two-step-confirmation":
+    "a destructive button that flips a local flag and swaps in a second " +
+    "destructive button is a confirmation assembled inline (#1893): it works out " +
+    "its own pending and error rules and emits none of the UX-stream rows. Open " +
+    "a `ConfirmDialog` from `@/components/ConfirmDialog` instead.",
   "hand-rolled-switch-row":
     "a title, a hint and a bare `<Switch>` laid out by hand is `SwitchRow` " +
     "typed again, which is how #2242 found four screens with their own copy " +
@@ -273,6 +279,50 @@ export function destructiveFooters(masked: string): number[] {
 }
 
 /**
+ * The 0-based lines of every destructive `Button` that starts an inline
+ * two-step confirmation (#2345).
+ *
+ * The shape is a flag-and-swap: a destructive `Button` whose handler sets a
+ * local boolean (`const [confirmDelete, setConfirmDelete] = useState(false)`)
+ * to true, and a destructive `Button` that the same flag chooses — either a
+ * second one rendered after it (`{confirmDelete && <Button …>}`) or the first
+ * one relabelled in place (`confirmDelete ? … : …`). No `DialogFooter` holds
+ * it, which is why `destructiveFooters` never saw the Users sheet. A destructive
+ * button that merely opens a `ConfirmDialog` sets a flag too, but nothing
+ * destructive is chosen by it, so it passes. Reported at the first button.
+ */
+export function inlineTwoStepConfirmations(masked: string): number[] {
+  const found: number[] = [];
+  const flags = [
+    ...masked.matchAll(
+      /const\s*\[\s*(\w+)\s*,\s*(set\w+)\s*\]\s*=\s*useState(?:<boolean>)?\(\s*false\s*\)/g,
+    ),
+  ];
+  if (!flags.length) return found;
+  const buttons: { start: number; end: number; tag: string }[] = [];
+  const open = /<Button[\s>]/g;
+  let match: RegExpExecArray | null;
+  while ((match = open.exec(masked))) {
+    const end = endOfTag(masked, match.index);
+    const tag = masked.slice(match.index, end);
+    if (/["'`]destructive["'`]/.test(tag)) buttons.push({ start: match.index, end, tag });
+  }
+  for (const [, flag, setter] of flags) {
+    const sets = new RegExp(`\\b${setter}\\(\\s*true\\s*\\)`);
+    const reads = new RegExp(`(?<![\\w.])${flag}\\b(?!\\s*[,\\]])`);
+    const first = buttons.find((b) => sets.test(b.tag));
+    if (!first) continue;
+    // the same button relabelled by the flag it sets
+    const relabelled = reads.test(first.tag.replace(new RegExp(`\\b${setter}\\b`, "g"), ""));
+    const swapped = buttons.some(
+      (b) => b.start > first.start && reads.test(masked.slice(first.end, b.end)),
+    );
+    if (relabelled || swapped) found.push(masked.slice(0, first.start).split("\n").length - 1);
+  }
+  return found;
+}
+
+/**
  * The 0-based lines of every bare `<Switch>` that sits in a hand-built row.
  *
  * A row is a `justify-between` container opened within the
@@ -380,6 +430,9 @@ export function checkSource(
   }
   for (const index of destructiveFooters(masked)) {
     record(index, "hand-rolled-confirmation", "<DialogFooter> with a destructive button");
+  }
+  for (const index of inlineTwoStepConfirmations(masked)) {
+    record(index, "inline-two-step-confirmation", "destructive button that swaps in a second");
   }
 
   return { violations, waivers };
