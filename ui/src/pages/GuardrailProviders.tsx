@@ -221,7 +221,7 @@ function GuardrailProvidersScreen() {
           }
         />
       ) : (
-        <div className="grid gap-3 md:grid-cols-2">
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
           {providers.map((provider) => (
             <PolicyCard
               key={provider.id}

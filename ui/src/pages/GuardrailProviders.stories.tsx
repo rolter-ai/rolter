@@ -22,6 +22,9 @@ import {
   type StoryRole,
 } from "./story-harness";
 import type { GuardrailProviderInput, GuardrailProviderRow } from "@/lib/api";
+import ru from "@/lib/i18n/locales/ru.json";
+import en from "@/lib/i18n/locales/en.json";
+import { phoneFits } from "@/lib/story-viewport";
 import { UxScreenProvider } from "@/lib/ux-react";
 
 const PROVIDERS: GuardrailProviderRow[] = [
@@ -1079,3 +1082,16 @@ export const PausingWhileEnforcementIsUnknown: Story = {
     await expect(confirm.queryByText(NOTHING_CHECKS)).toBeNull();
   },
 };
+
+// the cards at a phone's width in both languages (#2252)
+const providersFit = phoneFits({
+  render: () => <Harness fetchStub={registry(PROVIDERS)} />,
+  ready: async (canvas, locale) => {
+    await canvas.findByText("Production LLM Guard");
+    await waitFor(() =>
+      expect(document.body).toHaveTextContent((locale === "ru" ? ru : en).guardrailPanel.enforced),
+    );
+  },
+});
+export const SmallPhone: Story = providersFit("small", "en");
+export const SmallPhoneInRussian: Story = providersFit("small", "ru");

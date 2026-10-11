@@ -24,7 +24,7 @@ import type { GuardrailRuleInput, GuardrailRuleRow } from "@/lib/api";
 import type { EffectiveRule } from "@/lib/guardrail-policy";
 import en from "@/lib/i18n/locales/en.json";
 import ru from "@/lib/i18n/locales/ru.json";
-import { atShort, expectInViewport } from "@/lib/story-viewport";
+import { atShort, expectInViewport, phoneFits } from "@/lib/story-viewport";
 
 const RULES: GuardrailRuleRow[] = [
   {
@@ -1081,3 +1081,17 @@ export const RefusedToAViewer: Story = {
   render: () => <Harness fetchStub={async () => json(RULES)} role="viewer" />,
   play: async ({ canvasElement }) => expectForbidden(canvasElement),
 };
+
+// the cards at a phone's width: the Russian action labels are the longest, and
+// a card that cannot shrink pushed the page sideways at 320 px (#2252)
+const rulesFit = phoneFits({
+  render: () => <Harness fetchStub={withPolicy(async () => json(RULES))} />,
+  ready: async (canvas, locale) => {
+    await canvas.findByRole("heading", { name: /Redact customer email/, level: 2 });
+    await waitFor(() =>
+      expect(document.body).toHaveTextContent((locale === "ru" ? ru : en).guardrailPanel.enforced),
+    );
+  },
+});
+export const SmallPhone: Story = rulesFit("small", "en");
+export const SmallPhoneInRussian: Story = rulesFit("small", "ru");
