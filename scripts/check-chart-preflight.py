@@ -33,7 +33,11 @@ CONFIG_MOUNT = "/etc/rolter/rolter.toml"
 def main(binary):
     docs = [d for d in yaml.safe_load_all(sys.stdin) if isinstance(d, dict)]
     config = next(
-        (d["data"]["rolter.toml"] for d in docs if d.get("kind") == "ConfigMap" and "rolter.toml" in (d.get("data") or {})),
+        (
+            d["data"]["rolter.toml"]
+            for d in docs
+            if d.get("kind") == "ConfigMap" and "rolter.toml" in (d.get("data") or {})
+        ),
         None,
     )
     if config is None:
