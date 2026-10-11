@@ -38,7 +38,7 @@ const GATEWAY_MODELS = {
 };
 
 /** What the control plane serves: bare route ids, nothing else. */
-const ROUTES = [{ id: "r-1", model: "minicpm5-1b", strategy: "round_robin" }];
+const ROUTES = [{ id: "r-1", model: "minicpm5-1b", strategy: "round_robin", enabled: true }];
 
 /**
  * The dogfood stack from #1853: the store lists a route the snapshot prunes,
@@ -434,7 +434,7 @@ export const RoutelessProjectReachesTheBuiltin: Story = {
  * a returning tab re-reads it, on visibility. One mint more, not a loop, and
  * the second key is the one the next message goes out with.
  */
-const projectRoutes: { id: string; model: string; strategy: string }[] = [];
+const projectRoutes: { id: string; model: string; strategy: string; enabled: boolean }[] = [];
 const reminting = recording(
   deployment(
     async () =>
@@ -481,6 +481,30 @@ export const RouteAddedRemintsTheKey: Story = {
     await waitFor(() => expect(canvas.getByRole("button", { name: SEND })).toBeEnabled());
     await sendMessage(canvas, composer, "hello");
     await canvas.findByText("Hello from the new route.");
+  },
+};
+
+/**
+ * A disabled route serves nothing and the server leaves it out of the key's
+ * reach (#2759), so the screen must leave it out of the comparison too: a
+ * project whose only route is disabled holds a built-in-only key and is
+ * already up to date, not forever one mint short.
+ */
+const disabledOnly = recording(
+  deployment(async () => json({ ...minted(), models: ["fake-llm"] }), undefined, undefined, {
+    routes: [{ ...ROUTES[0], enabled: false }],
+    gateway: () => json({ data: [{ id: "fake-llm", object: "model", owned_by: "rolter" }] }),
+  }),
+);
+
+export const DisabledRouteDoesNotRemintTheKey: Story = {
+  render: () => <Screen fetchStub={disabledOnly.stub} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText("Active");
+    document.dispatchEvent(new Event("visibilitychange", { bubbles: true }));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    await expect(mintsIn(disabledOnly.calls)).toBe(1);
   },
 };
 

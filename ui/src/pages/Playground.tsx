@@ -349,7 +349,7 @@ function isBuiltinOnly(state: PlaygroundKeyState): boolean {
 
 /**
  * The reach `mint_playground_key` gives a project with these routes, as one
- * comparable string: the distinct public names, sorted, and the built-in alone
+ * comparable string: the distinct public names of the enabled routes, sorted, and the built-in alone
  * when there are none (#2300).
  */
 function mintedReach(models: readonly string[]): string {
@@ -439,7 +439,9 @@ function useKeySession(): KeySession {
     getGatewayCallsInFlight,
     getGatewayCallsInFlight,
   );
-  const wanted = routes.data ? mintedReach(routes.data.map((r) => r.model)) : null;
+  const wanted = routes.data
+    ? mintedReach(routes.data.filter((r) => r.enabled).map((r) => r.model))
+    : null;
   const held = reachSignature(state.models);
   // one re-mint per route set: a failed one is left to the Renew button, and a
   // set the control plane keeps answering differently cannot turn into a loop

@@ -633,7 +633,7 @@ pub(crate) const PLAYGROUND_PURPOSE: &str = "playground";
 /// and the TTL is fixed.
 ///
 /// An empty `models` list on a virtual key means *every* model, so the list is
-/// never left empty. A project with no routes yet gets a key scoped to the
+/// never left empty. A project with no enabled routes yet gets a key scoped to the
 /// built-in `fake-llm` alone (#2300): that is the one model a fresh deployment
 /// can answer, and it is what the first step of Getting started sends, so the
 /// Playground works before any provider or route exists without the key
@@ -654,6 +654,9 @@ async fn mint_playground_key(
         .list(project_id)
         .await?
         .into_iter()
+        // a disabled route serves nothing, so the key must not name it: it
+        // would widen the key past what the project actually answers (#2759)
+        .filter(|route| route.enabled)
         .map(|route| route.model)
         .collect();
     if models.is_empty() {
