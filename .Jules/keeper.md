@@ -37,3 +37,8 @@
 
 **Learning:** User-facing configuration fields on `ProviderConfig` in `crates/rolter-core/src/config.rs` (`slug`, `status_page_url`, `ca_bundles`) can quietly drift from `docs/user-docs/configuration/config-file.mdx` if drift guard tests only cover `ServerConfig` and `VirtualKeyConfig`.
 **Action:** Guard `ProviderConfig` documentation completeness using `all_provider_config_fields_are_documented_in_config_file_reference` in `crates/rolter/tests/env_var_names.rs`.
+
+## 2026-10-11 - Provider-specific runtime environment variables drifting from reference docs
+
+**Learning:** Provider-specific runtime environment variables read directly via `std::env::var` (such as `OPENROUTER_HTTP_REFERER` or `OPENROUTER_X_TITLE` in `crates/rolter-proxy`) can quietly drift from `docs/user-docs/configuration/environment-variables.mdx` if drift guard tests only scan for `"ROLTER_"` string literals.
+**Action:** Include all provider-specific runtime environment variables in `all_binary_cli_env_vars_are_documented_in_reference` inside `crates/rolter/tests/env_var_names.rs` to assert completeness in reference documentation.

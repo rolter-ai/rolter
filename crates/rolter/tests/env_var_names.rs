@@ -182,6 +182,8 @@ fn the_scan_finds_the_names_the_binaries_read() {
 fn all_binary_cli_env_vars_are_documented_in_reference() {
     let mut vars = prefixed_names();
     vars.insert("CLICKHOUSE_URL".to_string());
+    vars.insert("OPENROUTER_HTTP_REFERER".to_string());
+    vars.insert("OPENROUTER_X_TITLE".to_string());
     vars.retain(|v| {
         !v.starts_with("ROLTER_TEST_") && !v.contains("_TEST_") && v != "ROLTER_MASTER_KEY"
     });
