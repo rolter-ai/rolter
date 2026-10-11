@@ -7,7 +7,10 @@ import {
   Harness,
   Toasted,
   expectEmptyState,
+  expectGateAnswered,
   expectListTable,
+  expectLoadError,
+  expectNoFalseEmpty,
   expectRefused,
   expectSkeleton,
   expectToast,
@@ -19,6 +22,7 @@ import {
   type FetchStub,
   type StoryRole,
 } from "./story-harness";
+import type { ClusterNodeRow } from "@/lib/api";
 import en from "@/lib/i18n/locales/en.json";
 
 // the screen links its related settings through react-router, so the story
@@ -77,10 +81,71 @@ const CONFIG = {
   unpriced_policy: "ignore",
 };
 
-const loaded = scoped(async (input) =>
-  String(input).includes("/api/v1/config") ? json(CONFIG) : json([]),
-);
-const forbidden = scoped(async () => json({ error: { message: "forbidden" } }, 403));
+// one cluster node as `GET /api/v1/cluster/nodes` lists it
+const node = (over: Partial<ClusterNodeRow>): ClusterNodeRow => ({
+  id: "gw-1",
+  role: "gateway",
+  build_version: "0.9.0",
+  config_version: 12,
+  desired_state: "active",
+  state_changed_at: "2026-09-01T08:00:00Z",
+  first_seen_at: "2026-09-01T08:00:00Z",
+  last_seen_at: "2026-09-01T09:00:00Z",
+  live: true,
+  converged: true,
+  ...over,
+});
+
+// two live gateways on the current version, plus what the line must not count:
+// one that stopped polling and the control plane itself
+const CONVERGED = [
+  node({ id: "gw-1" }),
+  node({ id: "gw-2" }),
+  node({ id: "gw-old", live: false, converged: false, config_version: 9 }),
+  node({ id: "cp-1", role: "control" }),
+];
+
+/**
+ * The control plane as this screen talks to it: the stored config, the lines
+ * the snapshot leaves out, the cluster inventory and the export. Each answer
+ * can be swapped for one story; everything else answers like a healthy
+ * deployment with nothing left out.
+ */
+function api({
+  config = () => json(CONFIG),
+  problems = () => json({ problems: [] }),
+  nodes = () => json(CONVERGED),
+  exported = () => json({ error: { message: "not stubbed" } }, 500),
+}: {
+  config?: () => Response;
+  problems?: () => Response;
+  nodes?: () => Response;
+  exported?: () => Response;
+} = {}): FetchStub {
+  return scoped(async (input) => {
+    const path = new URL(String(input), "http://localhost").pathname;
+    if (path === "/api/v1/config") return config();
+    if (path === "/api/v1/config/problems") return problems();
+    if (path === "/api/v1/config/export") return exported();
+    if (path === "/api/v1/cluster/nodes") return nodes();
+    return json([]);
+  });
+}
+
+const loaded = api();
+const FORBIDDEN = () => json({ error: { message: "forbidden" } }, 403);
+const forbidden = api({ config: FORBIDDEN, problems: FORBIDDEN, nodes: FORBIDDEN });
+
+/**
+ * Assert nothing on screen is coloured as a success.
+ *
+ * The screen used to carry a green "reload-free" dot and a green check that
+ * rendered in every state, a failed load included (#2085). A success colour is
+ * a claim about the fleet, so it may appear only where the inventory made it.
+ */
+async function expectNoSuccessStatus(canvasElement: HTMLElement): Promise<void> {
+  await expect(canvasElement.querySelectorAll('[class*="--status-success"]')).toHaveLength(0);
+}
 
 const meta = {
   title: "Screens/Config",
@@ -118,6 +183,9 @@ export const Loaded: Story = {
     await expect(canvas.getByText("3 fields")).toBeVisible();
     await expect(canvas.queryByText("db_virtual_keys")).toBeNull();
     await expect(canvas.queryByText("mcp_oauth_sessions")).toBeNull();
+    // nothing is left out of the snapshot, so nothing is marked
+    await expect(canvas.queryByText("not served")).toBeNull();
+    await expect(canvas.queryByText(/not being served/)).toBeNull();
 
     await userEvent.click(canvas.getByText("cache"));
     // the block highlights through a lazy chunk that splits the JSON into token
@@ -140,11 +208,9 @@ export const KindNamesInRussian: Story = {
   },
 };
 
-const empty = scoped(async (input) =>
-  String(input).includes("/api/v1/config")
-    ? json({ providers: [], routes: [], virtual_keys: [], server: { port: 4000 } })
-    : json([]),
-);
+const empty = api({
+  config: () => json({ providers: [], routes: [], virtual_keys: [], server: { port: 4000 } }),
+});
 
 // a fresh install: each table says it is empty and points at where to fill it
 export const Empty: Story = {
@@ -160,14 +226,214 @@ export const Empty: Story = {
 
 export const Loading: Story = {
   render: () => <Stage fetchStub={pending} />,
-  play: async ({ canvasElement }) => expectSkeleton(canvasElement),
+  play: async ({ canvasElement }) => {
+    await expectSkeleton(canvasElement);
+    await expectNoFalseEmpty(canvasElement, /No (providers|routes) configured/);
+    await expectNoSuccessStatus(canvasElement);
+  },
 };
 
+// a refused read is one alert under no healthy-looking indicator: the problems
+// read is refused as well, and the config's alert is the one that says so
 export const Forbidden: Story = {
   render: () => <Stage fetchStub={forbidden} />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(await canvas.findByRole("alert")).toHaveTextContent(/do not have access/i);
+    await expect(canvas.getAllByRole("alert")).toHaveLength(1);
+    await expectNoFalseEmpty(canvasElement, /No (providers|routes) configured/);
+    await expectNoSuccessStatus(canvasElement);
+  },
+};
+
+// what a store that cannot read `security_settings.required_headers` answers
+// since #2943: the config load fails, and the problems read says why
+const UNLOADABLE = [
+  "security_settings.required_headers is unreadable: header 'x-tenant' has a value that is not a non-empty string",
+  "the config could not be loaded, so no snapshot is being published and gateways keep serving the config they last received; the control plane log has the cause",
+];
+
+// the config read fails while the problems read answers: the screen says the
+// load failed and still shows what the control plane can say about why, with
+// no gateway line, for a superadmin who could otherwise read one
+export const ConfigFailsWhileProblemsAnswer: Story = {
+  render: () => (
+    <Stage
+      fetchStub={withCapabilities(
+        "superadmin",
+        api({
+          config: () => json({ error: { message: "internal server error" } }, 500),
+          problems: () => json({ problems: UNLOADABLE }),
+        }),
+      )}
+      role="superadmin"
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectLoadError(canvasElement, /failed to return the effective config/);
+    await expect(
+      await canvas.findByText("2 config entries are not being served as written"),
+    ).toBeVisible();
+    await expect(canvas.getByText(/required_headers is unreadable/)).toBeVisible();
+    await expect(canvas.getByText(/no snapshot is being published/)).toBeVisible();
+    await expectGateAnswered();
+    await expect(canvas.queryByText(/live gateway/)).toBeNull();
+    await expect(canvas.queryByRole("link", { name: "View nodes" })).toBeNull();
+    await expectNoFalseEmpty(canvasElement, /No (providers|routes) configured/);
+    await expectNoSuccessStatus(canvasElement);
+  },
+};
+
+// a provider defined wrong is left out of the snapshot, the route that called
+// only it goes with it, and of two scopes' routes sharing `gpt-4o` only the
+// one with nothing to serve is pruned. the lines are the exact sentences
+// `sanitize_for_snapshot` writes
+const OMITTED_CONFIG = {
+  ...CONFIG,
+  providers: [
+    ...CONFIG.providers,
+    { name: "openrouter-edge", kind: "openrouter", api_base: "https://edge.example.com/v1" },
+  ],
+  routes: [
+    ...CONFIG.routes,
+    {
+      model: "claude-sonnet-4",
+      strategy: "round_robin",
+      targets: [{ provider: "openrouter-edge", model: null, weight: 1 }],
+    },
+  ],
+};
+const PROVIDER_REASON =
+  "openrouter provider 'openrouter-edge' api_base must be https://openrouter.ai/api/v1 unless the provider sets allow_custom_api_base = true";
+const ROUTE_REASON = "it has no target that references a known provider with a positive weight";
+const OMITTED = [
+  `provider 'openrouter-edge' omitted from the snapshot: ${PROVIDER_REASON}`,
+  "route 'claude-sonnet-4' target 'openrouter-edge' omitted from the snapshot: the provider is itself omitted from the snapshot",
+  `route 'claude-sonnet-4' omitted from the snapshot: ${ROUTE_REASON}`,
+  `route 'gpt-4o' omitted from the snapshot: ${ROUTE_REASON}`,
+];
+
+/** The row of `table` whose first cell reads `name`, the `index`th of them. */
+function rowNamed(table: HTMLElement, name: string, index = 0): HTMLElement {
+  const rows = within(table)
+    .getAllByRole("row")
+    .filter((row) => within(row).queryAllByRole("cell")[0]?.textContent?.startsWith(name));
+  return rows[index];
+}
+
+// every row the snapshot leaves out says so, with the control plane's reason,
+// and the notice above the tables counts every line (#2085)
+export const OmittedEntriesAreMarked: Story = {
+  render: () => (
+    <Stage
+      fetchStub={api({
+        config: () => json(OMITTED_CONFIG),
+        problems: () => json({ problems: OMITTED }),
+      })}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(
+      await canvas.findByText("4 config entries are not being served as written"),
+    ).toBeVisible();
+
+    const providers = canvas.getByRole("table", { name: "Providers" });
+    const edge = rowNamed(providers, "openrouter-edge");
+    await waitFor(() => expect(within(edge).getByText("not served")).toBeVisible());
+    const reason = within(edge).getByText(PROVIDER_REASON);
+    await expect(reason).toBeVisible();
+    // the sentence is the control plane's, in English whatever the locale
+    await expect(reason).toHaveAttribute("lang", "en");
+    await expect(within(rowNamed(providers, "openai-prod")).queryByText("not served")).toBeNull();
+
+    const routes = canvas.getByRole("table", { name: "Routes" });
+    const claude = rowNamed(routes, "claude-sonnet-4");
+    await expect(within(claude).getByText("not served")).toBeVisible();
+    await expect(within(claude).getByText(ROUTE_REASON)).toBeVisible();
+    // the served `gpt-4o` keeps no mark, its targetless twin is the one pruned
+    await expect(within(rowNamed(routes, "gpt-4o", 0)).queryByText("not served")).toBeNull();
+    await expect(within(rowNamed(routes, "gpt-4o", 1)).getByText("not served")).toBeVisible();
+    await expectListTable(canvasElement, "Providers");
+    await expectListTable(canvasElement, "Routes");
+  },
+};
+
+// the omissions could not be read: the tables still render, and the screen
+// says it cannot tell which of their rows are served rather than marking none
+export const ProblemsReadFails: Story = {
+  render: () => (
+    <Stage
+      fetchStub={api({
+        problems: () => json({ error: { message: "internal server error" } }, 500),
+      })}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    await expectLoadError(canvasElement, /failed to return the list of config problems/);
+    const providers = await within(canvasElement).findByRole("table", { name: "Providers" });
+    await expect(within(providers).getByText("openai-prod")).toBeVisible();
+  },
+};
+
+const asSuperadmin = (stub: FetchStub) => withCapabilities("superadmin", stub);
+
+// a caller who may read the inventory is told how many live gateways run the
+// current config, and where to look; stale nodes and the control plane do not count
+export const GatewaysConverged: Story = {
+  render: () => <Stage fetchStub={asSuperadmin(loaded)} role="superadmin" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const line = await canvas.findByText("All 2 live gateways run the current config");
+    await expect(line.className).toMatch(/--status-success-text/);
+    await expect(canvas.getByRole("link", { name: "View nodes" })).toHaveAttribute(
+      "href",
+      "/cluster",
+    );
+  },
+};
+
+// a gateway behind the current version turns the line into a warning
+export const GatewaysLagging: Story = {
+  render: () => (
+    <Stage
+      fetchStub={asSuperadmin(
+        api({
+          nodes: () =>
+            json([
+              node({ id: "gw-1" }),
+              node({ id: "gw-2", converged: false, config_version: 11 }),
+            ]),
+        }),
+      )}
+      role="superadmin"
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const line = await within(canvasElement).findByText(
+      "1 of 2 live gateways run the current config",
+    );
+    await expect(line.className).toMatch(/--status-warning-text/);
+    await expectNoSuccessStatus(canvasElement);
+  },
+};
+
+// an inventory that could not be read knows nothing about the fleet, so the
+// line says that in plain text rather than in a status colour
+export const GatewaysUnreadable: Story = {
+  render: () => (
+    <Stage
+      fetchStub={asSuperadmin(
+        api({ nodes: () => json({ error: { message: "internal server error" } }, 500) }),
+      )}
+      role="superadmin"
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const line = await within(canvasElement).findByText("Gateway versions could not be read");
+    await expect(line.className).toMatch(/--text-subtle/);
+    await expectNoSuccessStatus(canvasElement);
   },
 };
 
@@ -203,9 +469,7 @@ async function captureDownload(names: string[], run: () => Promise<void>): Promi
 // refusal cannot leave this story asserting a sentence nothing renders
 const NEEDS_SUPERADMIN = en.rbac.needsSuperadmin;
 
-const exporting = recording(
-  scoped(async (input) => (String(input).includes(EXPORT_PATH) ? toml() : json(CONFIG))),
-);
+const exporting = recording(api({ exported: toml }));
 
 // the whole point of the button: one GET to the endpoint the control plane
 // already gates, and the document handed to the browser as a dated file
@@ -226,11 +490,7 @@ export const ExportsTheConfiguration: Story = {
 };
 
 const exportFails = recording(
-  scoped(async (input) =>
-    String(input).includes(EXPORT_PATH)
-      ? json({ error: { message: "store unavailable" } }, 500)
-      : json(CONFIG),
-  ),
+  api({ exported: () => json({ error: { message: "store unavailable" } }, 500) }),
 );
 
 // a failed export says so in the toast queue rather than silently downloading
@@ -253,12 +513,21 @@ export const ExportFails: Story = {
 // the endpoint is whole-deployment and superadmin-only, so every scoped role —
 // a viewer included — is refused before the click, and the tooltip says which
 // role would allow it rather than leaving "disabled" as the whole answer
+const viewing = recording(api());
+
+// any signed-in role reads the config, so a viewer gets the tables; the
+// cluster inventory is superadmin-only, so a viewer gets no gateway line and
+// the screen never asks for one
 export const AsViewer: Story = {
-  render: () => <Stage fetchStub={withCapabilities("viewer", loaded)} role="viewer" />,
+  render: () => <Stage fetchStub={withCapabilities("viewer", viewing.stub)} role="viewer" />,
   play: async ({ canvasElement }) => {
     await expectRefused(canvasElement, "Export rolter.toml", NEEDS_SUPERADMIN);
     // reading is untouched: the tables still render for a viewer
     const providers = await within(canvasElement).findByRole("table", { name: "Providers" });
     await expect(within(providers).getByText("openai-prod")).toBeVisible();
+    await expectGateAnswered();
+    await expect(within(canvasElement).queryByText(/live gateway/)).toBeNull();
+    await expect(within(canvasElement).queryByRole("link", { name: "View nodes" })).toBeNull();
+    viewing.expectNotSent("GET", "/api/v1/cluster/nodes");
   },
 };

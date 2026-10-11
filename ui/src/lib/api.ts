@@ -12,6 +12,8 @@ export interface RouteDto {
   model: string;
   strategy: string;
   targets: TargetDto[];
+  /** A/B variants; a route with none serves from `targets` alone */
+  variants?: { name: string; targets: TargetDto[] }[];
 }
 
 export interface VirtualKeyDto {
@@ -544,27 +546,54 @@ export function fetchConfigProblems(): Promise<string[]> {
   return getJson<{ problems: string[] }>("/api/v1/config/problems").then((r) => r.problems);
 }
 
-// the one line `RolterConfig::sanitize_for_snapshot` (crates/rolter-core/src/
-// config.rs) writes for a route it prunes. greedy, so a model name that itself
-// contains a quote still comes out whole
-const OMITTED_ROUTE = /^route '(.+)' omitted from the snapshot:/;
+// the lines `RolterConfig::sanitize_for_snapshot` (crates/rolter-core/src/
+// config.rs) writes for a provider or a route it prunes whole. the name is
+// greedy, so one that itself contains a quote still comes out whole; the
+// reason is everything after the colon. a line about one part of a route
+// (`route 'm' target 'p' omitted …`) reads as a name no route carries, so it
+// marks nothing
+const OMITTED_PROVIDER = /^provider '(.+)' omitted from the snapshot: (.*)$/s;
+const OMITTED_ROUTE = /^route '(.+)' omitted from the snapshot: (.*)$/s;
+
+/** Providers and routes left out of the gateway's snapshot whole, each with its reason. */
+export interface SnapshotOmissions {
+  /** provider name → why it is not served */
+  providers: Map<string, string>;
+  /** route model → why it is not served */
+  routes: Map<string, string>;
+}
+
+/**
+ * The providers and routes `/api/v1/config/problems` reports as left out of
+ * the gateway's snapshot, and so not served (#2085).
+ *
+ * The endpoint reports sentences rather than records (#1876 would add the
+ * records), so this reads the two shapes written for a pruned provider and a
+ * pruned route and ignores every other line: a target, a header or a price
+ * dropped from an entry that is still served is not the entry going missing.
+ */
+export function snapshotOmissions(problems: readonly string[] | undefined): SnapshotOmissions {
+  const providers = new Map<string, string>();
+  const routes = new Map<string, string>();
+  for (const problem of problems ?? []) {
+    const provider = OMITTED_PROVIDER.exec(problem);
+    if (provider) providers.set(provider[1], provider[2]);
+    const route = OMITTED_ROUTE.exec(problem);
+    if (route) routes.set(route[1], route[2]);
+  }
+  return { providers, routes };
+}
 
 /**
  * The routes `/api/v1/config/problems` reports as left out of the gateway's
  * snapshot, and so not served (#1853).
  *
- * The endpoint reports sentences rather than records, so this reads the one
- * shape written for a pruned route and ignores every other line. A provider
- * dropped for its own defect needs no line of its own here: a route left with
- * no target on a known provider is pruned after it, and reported as such.
+ * A provider dropped for its own defect needs no line of its own here: a route
+ * left with no target on a known provider is pruned after it, and reported as
+ * such.
  */
 export function unservedRoutes(problems: readonly string[] | undefined): Set<string> {
-  const routes = new Set<string>();
-  for (const problem of problems ?? []) {
-    const match = OMITTED_ROUTE.exec(problem);
-    if (match) routes.add(match[1]);
-  }
-  return routes;
+  return new Set(snapshotOmissions(problems).routes.keys());
 }
 
 /**

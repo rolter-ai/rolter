@@ -167,7 +167,8 @@ sets `[security] virtual_key_required = true` is read as
     rule it has, a gateway that restarts in the meantime serves nothing until it
     is repaired, and parts of the dashboard that show the effective config
     return an error. `GET /api/v1/config/problems` names the setting and the
-    entry at fault, and saving the rule again on this screen, or with
+    entry at fault, and the **Effective config** screen lists that line under
+    its error. Saving the rule again on this screen, or with
     `PUT /api/v1/security-settings`, repairs it. See
     [Upgrading](/deployment/upgrading#security-and-egress-settings).
 

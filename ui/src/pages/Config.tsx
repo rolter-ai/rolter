@@ -1,12 +1,14 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
+import type { TFunction } from "i18next";
 import { Trans, useTranslation } from "react-i18next";
-import { ArrowRight, Check, Download, ShieldCheck } from "lucide-react";
+import { AlertTriangle, ArrowRight, Download, RefreshCw, ShieldCheck } from "lucide-react";
 import { Link, useNavigate } from "react-router";
 
 import { CopyButton } from "@/components/CopyButton";
 import { GatedButton } from "@/components/GatedButton";
 import { LoadError } from "@/components/LoadError";
 import { TableSkeleton } from "@/components/LoadingState";
+import { UnservedConfigNotice } from "@/components/UnservedConfigNotice";
 import {
   ListCell,
   ListEmptyRow,
@@ -16,34 +18,56 @@ import {
   ListTable,
   primaryColumn,
 } from "@/components/screen";
+import { Badge } from "@/components/ui/badge";
 import { CodeBlock } from "@/components/ui/code-block";
 import { EmptyState } from "@/components/ui/empty-state";
 import {
   exportConfigToml,
+  fetchClusterNodes,
   fetchConfig,
+  fetchConfigProblems,
+  snapshotOmissions,
   type GatewayConfigDto,
   type ProviderDto,
   type RouteDto,
+  type SnapshotOmissions,
   type VirtualKeyDto,
 } from "@/lib/api";
+import { useCan } from "@/lib/can";
+import { gatewayPickup, type Pickup } from "@/lib/gateway-pickup";
 import { providerKindName } from "@/lib/provider-kinds";
 import { errorDetail, useToast } from "@/lib/toast";
 import type { ReadState } from "@/lib/read-state";
 import { useScreenReady } from "@/lib/ux-react";
 
-// effective config: structured read-only provider / route tables. feature flags
-// used to render here from a mock; they are persisted and hot-reloaded now, so
-// this screen points at the real one rather than shipping a second, fake copy
-// of the same switches (#564)
+// how often the gateway line asks the inventory again. the Cluster screen polls
+// on the same clock, and they share the query
+const NODES_POLL_MS = 15_000;
+
+// effective config: the stored config, read-only, with credentials removed.
+// feature flags used to render here from a mock; they are persisted and
+// hot-reloaded now, so this screen points at the real one rather than shipping
+// a second, fake copy of the same switches (#564).
+//
+// `GET /api/v1/config` is what the control plane stores, not the snapshot the
+// gateways receive: `sanitize_for_snapshot` leaves out an entry it cannot serve
+// on the way there. `GET /api/v1/config/problems` says which, so every row it
+// names is marked, and the gateways' own versions say whether they run it (#2085)
 export default function Config() {
   const { t } = useTranslation();
+  const can = useCan();
   const config = useQuery({ queryKey: ["config"], queryFn: fetchConfig });
+  // the same key as Providers and the Playground, so the three agree. it is
+  // asked even when the config read fails: since #2943 a setting the store
+  // cannot read fails the whole load, and this is the read that says which
+  const problems = useQuery({ queryKey: ["config-problems"], queryFn: fetchConfigProblems });
 
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
   // `config` is the query the user is actually waiting on for this screen
   useScreenReady(!config.isLoading);
 
   const cfg = config.data;
+  const omissions = snapshotOmissions(problems.data);
   const summary = cfg
     ? t("pages.config.summary.line", {
         providers: t("pages.config.summary.providers", { count: cfg.providers.length }),
@@ -58,11 +82,13 @@ export default function Config() {
         <div className="flex flex-wrap items-center gap-2.5">
           <h2 className="text-base font-medium">{t("pages.config.heading")}</h2>
           <span className="font-mono text-xs text-[color:var(--text-subtle)]">{summary}</span>
-          <span className="ml-auto inline-flex items-center gap-1.5 text-xs text-[color:var(--status-success-text)]">
-            <span className="h-[7px] w-[7px] rounded-full bg-[color:var(--status-success)]" />
-            {t("pages.config.reloadFree")}
-          </span>
-          <ExportButton />
+          <div className="ml-auto flex flex-wrap items-center gap-2.5">
+            {/* only a caller who may read the inventory is told about it, and
+                only over a config that loaded: a gateway line that reads
+                healthy above a failed load is the claim #2085 removed */}
+            {cfg && can("cluster_node", "read") === true && <GatewayLine />}
+            <ExportButton />
+          </div>
         </div>
         <div className="inline-flex items-center gap-2 rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] px-3 py-2 text-xs text-muted-foreground">
           <ShieldCheck className="h-3.5 w-3.5 flex-none text-[color:var(--red-folk-text)]" />
@@ -85,18 +111,38 @@ export default function Config() {
             target="config"
           />
         )}
+        {/* a store that is down fails both reads, and that is one outage: the
+            config's alert above says it, so this one speaks only alone */}
+        {problems.isError && !config.isError && (
+          // load-error-allow: the omissions only decorate the tables, whose own states live on the config read
+          <LoadError
+            error={problems.error}
+            resource={t("errors.resources.configProblems")}
+            onRetry={() => problems.refetch()}
+            target="config-problems"
+          />
+        )}
+        <UnservedConfigNotice problems={problems.data ?? []} />
         {config.isLoading && <TableSkeleton rows={6} />}
 
         {cfg && (
           <>
-            <ProvidersTable read={config} providers={cfg.providers} />
-            <RoutesTable read={config} routes={cfg.routes} />
+            <ProvidersTable read={config} providers={cfg.providers} omissions={omissions} />
+            <RoutesTable
+              read={config}
+              routes={cfg.routes}
+              providers={cfg.providers}
+              omissions={omissions}
+            />
             {cfg.virtual_keys.length > 0 && <VirtualKeysTable keys={cfg.virtual_keys} />}
           </>
         )}
 
         <p className="flex items-start gap-2 text-xs text-muted-foreground">
-          <Check className="mt-0.5 h-3.5 w-3.5 flex-none text-[color:var(--status-success-text)]" />
+          <RefreshCw
+            aria-hidden
+            className="mt-0.5 h-3.5 w-3.5 flex-none text-[color:var(--text-subtle)]"
+          />
           {t("pages.config.hotSwapNote")}
         </p>
 
@@ -130,6 +176,125 @@ export default function Config() {
   );
 }
 
+/**
+ * How many live gateways run the control plane's current config version, read
+ * from the cluster inventory, with the way to the Cluster screen beside it.
+ *
+ * Only `converged` is coloured as a success and only `lagging` as a warning:
+ * a read that is out, failed or found no gateway knows nothing about the
+ * fleet, so it says so in plain text.
+ */
+function GatewayLine() {
+  const { t } = useTranslation();
+  const nodes = useQuery({
+    queryKey: ["cluster-nodes"],
+    queryFn: fetchClusterNodes,
+    retry: false,
+    // a failed first read stops asking, so its line does not flicker back to
+    // "checking" on every poll; the next visit asks again
+    refetchInterval: (query) =>
+      query.state.status === "error" && query.state.data === undefined ? false : NODES_POLL_MS,
+  });
+  const pickup = gatewayPickup(nodes.data, nodes.isError);
+  const tone =
+    pickup.state === "converged"
+      ? "text-[color:var(--status-success-text)]"
+      : pickup.state === "lagging"
+        ? "text-[color:var(--status-warning-text)]"
+        : "text-[color:var(--text-subtle)]";
+  const dot =
+    pickup.state === "converged"
+      ? "bg-[color:var(--status-success)]"
+      : pickup.state === "lagging"
+        ? "bg-[color:var(--status-warning)]"
+        : null;
+  return (
+    <span className="inline-flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+      <span className={`inline-flex items-center gap-1.5 ${tone}`}>
+        {dot && <span aria-hidden className={`h-[7px] w-[7px] flex-none rounded-full ${dot}`} />}
+        {gatewayLine(t, pickup)}
+      </span>
+      <Link
+        to="/cluster"
+        className="rounded-sm font-medium text-foreground underline decoration-[color:var(--border-strong)] underline-offset-4 transition-colors hover:decoration-current focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        {t("pages.config.gateways.link")}
+      </Link>
+    </span>
+  );
+}
+
+function gatewayLine(t: TFunction, pickup: Pickup): string {
+  switch (pickup.state) {
+    case "checking":
+      return t("pages.config.gateways.checking");
+    case "unavailable":
+      return t("pages.config.gateways.unavailable");
+    case "none":
+      return t("pages.config.gateways.none");
+    case "converged":
+      return t("pages.config.gateways.converged", { count: pickup.total });
+    case "lagging":
+      return t("pages.config.gateways.lagging", {
+        count: pickup.total,
+        converged: pickup.converged,
+      });
+  }
+}
+
+/**
+ * Why each route row is not served, or `undefined` for one that is.
+ *
+ * A problem line names a route by its model, and `GET /api/v1/config` strips
+ * tenancy, so two scopes' routes can share one name. Where they do, the row
+ * that was pruned is the one with nothing left to serve: no weighted target on
+ * a provider the snapshot keeps, and no variant with a target. Where that
+ * cannot tell them apart neither row is marked, and the notice above the
+ * tables still carries the line.
+ */
+function routeOmissions(
+  routes: RouteDto[],
+  providers: ProviderDto[],
+  omissions: SnapshotOmissions,
+): (string | undefined)[] {
+  const kept = new Set(
+    providers.map((p) => p.name).filter((name) => !omissions.providers.has(name)),
+  );
+  const shared = new Map<string, number>();
+  for (const route of routes) shared.set(route.model, (shared.get(route.model) ?? 0) + 1);
+  return routes.map((route) => {
+    const reason = omissions.routes.get(route.model);
+    if (reason === undefined || shared.get(route.model) === 1) return reason;
+    const servable =
+      route.targets.some((target) => target.weight > 0 && kept.has(target.provider)) ||
+      (route.variants ?? []).some((variant) =>
+        variant.targets.some((target) => kept.has(target.provider)),
+      );
+    return servable ? undefined : reason;
+  });
+}
+
+/** The badge on a row the snapshot leaves out. */
+function NotServed() {
+  const { t } = useTranslation();
+  return <Badge tone="warning">{t("pages.config.tables.notServed")}</Badge>;
+}
+
+/**
+ * The control plane's reason a row is not served, in its own words.
+ *
+ * The sentence comes from `sanitize_for_snapshot` and is English in every
+ * locale, so it says so to a screen reader.
+ */
+function OmissionReason({ reason }: { reason: string }) {
+  return (
+    <span className="flex items-start gap-1.5 font-sans text-[color:var(--status-warning-text)]">
+      <AlertTriangle aria-hidden className="mt-px h-3.5 w-3.5 flex-none" />
+      <span lang="en">{reason}</span>
+    </span>
+  );
+}
+
 const PROVIDER_GRID = `${primaryColumn(1)} 1.1fr 2fr`;
 const ROUTE_GRID = `${primaryColumn(1.2)} 1.1fr 2fr`;
 const KEY_GRID = `${primaryColumn(1)} 2fr`;
@@ -146,7 +311,15 @@ function TableSection({ title, children }: { title: string; children: React.Reac
   );
 }
 
-function ProvidersTable({ read, providers }: { read: ReadState; providers: ProviderDto[] }) {
+function ProvidersTable({
+  read,
+  providers,
+  omissions,
+}: {
+  read: ReadState;
+  providers: ProviderDto[];
+  omissions: SnapshotOmissions;
+}) {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const title = t("pages.config.tables.providers");
@@ -158,15 +331,30 @@ function ProvidersTable({ read, providers }: { read: ReadState; providers: Provi
           <ListHeaderCell>{t("pages.config.tables.kind")}</ListHeaderCell>
           <ListHeaderCell>{t("pages.config.tables.apiBase")}</ListHeaderCell>
         </ListHeader>
-        {providers.map((p, i) => (
-          <ListRow key={`${p.name}-${i}`} grid={PROVIDER_GRID}>
-            <ListCell className={VALUE}>{p.name}</ListCell>
-            <ListCell className="min-w-0 text-xs text-[color:var(--text-secondary)]">
-              {providerKindName(p.kind, t)}
-            </ListCell>
-            <ListCell className={`${VALUE} text-muted-foreground`}>{p.api_base}</ListCell>
-          </ListRow>
-        ))}
+        {providers.map((p, i) => {
+          // a provider name the snapshot leaves out is carried by no row it
+          // keeps (`sanitize_for_snapshot`), so the name alone is the row
+          const omitted = omissions.providers.get(p.name);
+          return (
+            <ListRow
+              key={`${p.name}-${i}`}
+              grid={PROVIDER_GRID}
+              className={omitted === undefined ? undefined : "items-start"}
+            >
+              <ListCell className={`${VALUE} flex flex-col items-start gap-1`}>
+                <span>{p.name}</span>
+                {omitted !== undefined && <NotServed />}
+              </ListCell>
+              <ListCell className="min-w-0 text-xs text-[color:var(--text-secondary)]">
+                {providerKindName(p.kind, t)}
+              </ListCell>
+              <ListCell className={`${VALUE} flex flex-col gap-1 text-muted-foreground`}>
+                <span>{p.api_base}</span>
+                {omitted !== undefined && <OmissionReason reason={omitted} />}
+              </ListCell>
+            </ListRow>
+          );
+        })}
         <ListEmptyRow read={read} rows={providers.length}>
           <EmptyState
             uxTarget="config-providers"
@@ -188,10 +376,21 @@ function ProvidersTable({ read, providers }: { read: ReadState; providers: Provi
   );
 }
 
-function RoutesTable({ read, routes }: { read: ReadState; routes: RouteDto[] }) {
+function RoutesTable({
+  read,
+  routes,
+  providers,
+  omissions,
+}: {
+  read: ReadState;
+  routes: RouteDto[];
+  providers: ProviderDto[];
+  omissions: SnapshotOmissions;
+}) {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const title = t("pages.config.tables.routes");
+  const omitted = routeOmissions(routes, providers, omissions);
   return (
     <TableSection title={title}>
       <ListTable label={title} minWidth={600}>
@@ -202,27 +401,34 @@ function RoutesTable({ read, routes }: { read: ReadState; routes: RouteDto[] }) 
         </ListHeader>
         {/* the endpoint strips tenancy, so two orgs' routes can share a public
             name: the position keeps the keys apart */}
-        {routes.map((r, i) => (
-          <ListRow key={`${r.model}-${i}`} grid={ROUTE_GRID} className="items-start">
-            <ListCell className={VALUE}>{r.model}</ListCell>
-            <ListCell className={`${VALUE} text-[color:var(--text-secondary)]`}>
-              {r.strategy}
-            </ListCell>
-            <ListCell className={`${VALUE} flex flex-col gap-1 text-muted-foreground`}>
-              {r.targets.length === 0 && <span>{t("pages.config.tables.noTargets")}</span>}
-              {r.targets.map((target, j) => (
-                <span key={`${target.provider}-${j}`}>
-                  <span className="text-foreground">{target.provider}</span>
-                  {target.model ? (
-                    <> · {t("pages.config.tables.upstreamModel", { model: target.model })}</>
-                  ) : null}
-                  {" · "}
-                  {t("pages.config.tables.weight", { value: target.weight })}
-                </span>
-              ))}
-            </ListCell>
-          </ListRow>
-        ))}
+        {routes.map((r, i) => {
+          const reason = omitted[i];
+          return (
+            <ListRow key={`${r.model}-${i}`} grid={ROUTE_GRID} className="items-start">
+              <ListCell className={`${VALUE} flex flex-col items-start gap-1`}>
+                <span>{r.model}</span>
+                {reason !== undefined && <NotServed />}
+              </ListCell>
+              <ListCell className={`${VALUE} text-[color:var(--text-secondary)]`}>
+                {r.strategy}
+              </ListCell>
+              <ListCell className={`${VALUE} flex flex-col gap-1 text-muted-foreground`}>
+                {r.targets.length === 0 && <span>{t("pages.config.tables.noTargets")}</span>}
+                {r.targets.map((target, j) => (
+                  <span key={`${target.provider}-${j}`}>
+                    <span className="text-foreground">{target.provider}</span>
+                    {target.model ? (
+                      <> · {t("pages.config.tables.upstreamModel", { model: target.model })}</>
+                    ) : null}
+                    {" · "}
+                    {t("pages.config.tables.weight", { value: target.weight })}
+                  </span>
+                ))}
+                {reason !== undefined && <OmissionReason reason={reason} />}
+              </ListCell>
+            </ListRow>
+          );
+        })}
         <ListEmptyRow read={read} rows={routes.length}>
           <EmptyState
             uxTarget="config-routes"
@@ -274,8 +480,8 @@ function VirtualKeysTable({ keys }: { keys: VirtualKeyDto[] }) {
  * Save the deployment's configuration as an importable `rolter.toml` (#1313).
  *
  * The document is rendered by the control plane, not by this screen: what the
- * viewer above shows is the *effective* config the gateway runs, and what
- * `rolter-seed --import` accepts is a narrower file. Downloading the rendered
+ * viewer above shows is the whole stored config with credentials removed, and
+ * what `rolter-seed --import` accepts is a narrower file. Downloading the rendered
  * JSON would hand the operator something that looks importable and is not.
  *
  * Gated on `config_export:read` — the whole-deployment, superadmin-only pair
@@ -339,9 +545,9 @@ function RelatedLink({ to, title, desc }: { to: string; title: string; desc: str
   );
 }
 
-// the three tables above are the parts an operator reads daily; the document
-// the gateway actually serves has some forty sections, and until now the
-// screen called itself "effective config" while showing three of them (#1204).
+// the three tables above are the parts an operator reads daily; the stored
+// document has some forty sections, and until now the screen called itself
+// "effective config" while showing three of them (#1204).
 // every remaining section renders here, collapsed, as the JSON the control
 // plane returns — credentials are redacted before it leaves the server
 const TABLED = new Set(["providers", "routes", "virtual_keys"]);
