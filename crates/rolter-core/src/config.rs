@@ -2145,6 +2145,34 @@ pub enum BudgetScope {
     Customer,
 }
 
+impl BudgetScope {
+    /// The scope's name inside a Redis spend key.
+    pub fn key_label(self) -> &'static str {
+        match self {
+            BudgetScope::Org => "org",
+            BudgetScope::Team => "team",
+            BudgetScope::Project => "project",
+            BudgetScope::Key => "key",
+            BudgetScope::BusinessUnit => "business_unit",
+            BudgetScope::Customer => "customer",
+        }
+    }
+
+    /// The scope a stored `budgets.scope_type` names; `None` for a value the
+    /// gateway does not enforce.
+    pub fn from_scope_type(scope_type: &str) -> Option<BudgetScope> {
+        Some(match scope_type {
+            "org" => BudgetScope::Org,
+            "team" => BudgetScope::Team,
+            "project" => BudgetScope::Project,
+            "virtual_key" => BudgetScope::Key,
+            "business_unit" => BudgetScope::BusinessUnit,
+            "customer" => BudgetScope::Customer,
+            _ => return None,
+        })
+    }
+}
+
 /// The rolling window a budget resets on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -2197,6 +2225,27 @@ impl BudgetPeriod {
             BudgetPeriod::Daily => now.format("%Y%m%d").to_string(),
             BudgetPeriod::Monthly => now.format("%Y%m").to_string(),
             BudgetPeriod::Total => "all".to_string(),
+        }
+    }
+
+    /// When the window that contains `now` ends and the counter starts again
+    /// from zero; `None` for [`BudgetPeriod::Total`], which never resets.
+    pub fn next_reset(&self, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+        use chrono::{Datelike, TimeZone};
+        match self {
+            BudgetPeriod::Daily => {
+                let next = now.date_naive().succ_opt()?;
+                Utc.from_utc_datetime(&next.and_hms_opt(0, 0, 0)?).into()
+            }
+            BudgetPeriod::Monthly => {
+                let (year, month) = if now.month() == 12 {
+                    (now.year() + 1, 1)
+                } else {
+                    (now.year(), now.month() + 1)
+                };
+                Utc.with_ymd_and_hms(year, month, 1, 0, 0, 0).single()
+            }
+            BudgetPeriod::Total => None,
         }
     }
 
@@ -2270,6 +2319,22 @@ pub struct BudgetConfig {
     /// resolution is a `max`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unpriced_policy: Option<UnpricedPolicy>,
+}
+
+impl BudgetConfig {
+    /// The Redis key holding this budget's spend counter for the window that
+    /// contains `now`.
+    ///
+    /// The gateway writes and reads it, and the control plane reads it to show
+    /// the spend so far, so the layout lives here once.
+    pub fn spend_key(&self, now: DateTime<Utc>) -> String {
+        format!(
+            "rolter:budget:{}:{}:{}",
+            self.scope.key_label(),
+            self.id,
+            self.period.bucket(now)
+        )
+    }
 }
 
 /// A throughput cap applied to a scope over a rolling one-minute window. The
@@ -4939,6 +5004,46 @@ fn is_proxy_reference(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn at(y: i32, m: u32, d: u32, h: u32) -> DateTime<Utc> {
+        use chrono::TimeZone;
+        Utc.with_ymd_and_hms(y, m, d, h, 30, 0)
+            .single()
+            .expect("a valid time")
+    }
+
+    #[test]
+    fn a_window_resets_at_the_start_of_the_next_one() {
+        assert_eq!(
+            BudgetPeriod::Daily.next_reset(at(2026, 10, 11, 23)),
+            Some(at(2026, 10, 12, 0) - chrono::Duration::minutes(30))
+        );
+        assert_eq!(
+            BudgetPeriod::Monthly.next_reset(at(2026, 12, 31, 23)),
+            Some(at(2027, 1, 1, 0) - chrono::Duration::minutes(30))
+        );
+        assert_eq!(BudgetPeriod::Total.next_reset(at(2026, 1, 1, 0)), None);
+    }
+
+    #[test]
+    fn the_spend_key_names_scope_id_and_window() {
+        let budget = BudgetConfig {
+            scope: BudgetScope::Key,
+            id: "abc".into(),
+            limit_usd: Default::default(),
+            period: BudgetPeriod::Monthly,
+            unpriced_policy: None,
+        };
+        assert_eq!(
+            budget.spend_key(at(2026, 10, 11, 1)),
+            "rolter:budget:key:abc:202610"
+        );
+        assert_eq!(
+            BudgetScope::from_scope_type("virtual_key"),
+            Some(BudgetScope::Key)
+        );
+        assert_eq!(BudgetScope::from_scope_type("nope"), None);
+    }
 
     /// A decimal literal for tests. `rust_decimal`'s `dec!` macro would read
     /// slightly better, but its `macros` feature pulls `rust_decimal_macros`,

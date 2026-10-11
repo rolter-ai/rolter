@@ -19,7 +19,9 @@ use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
 use rolter_core::slug::{is_valid_slug, slugify};
-use rolter_core::{AdvancedModelConfig, BudgetPeriod, Error, MAX_ROUTE_RETRIES};
+use rolter_core::{
+    AdvancedModelConfig, BudgetConfig, BudgetPeriod, BudgetScope, Error, MAX_ROUTE_RETRIES,
+};
 use rolter_store::postgres::crypto::{Kek, KEK_ENV};
 use rolter_store::postgres::models::{
     AuditLogEntry, Budget, BusinessUnit, BusinessUnitListing, Customer, CustomerListing,
@@ -177,6 +179,7 @@ pub fn router() -> Router<ControlState> {
             put(set_virtual_key_attribution),
         )
         .route("/api/v1/budgets", get(list_budgets).post(create_budget))
+        .route("/api/v1/budgets/spend", get(budget_spend))
         .route(
             "/api/v1/budgets/{id}",
             patch(update_budget).delete(delete_budget),
@@ -5065,6 +5068,128 @@ async fn list_budgets(
             .list_for_scope(&scope.scope_type, scope.scope_id)
             .await?,
     ))
+}
+
+/// Spend so far against one budget, as the gateway counts it.
+#[derive(Serialize, Debug, PartialEq)]
+struct BudgetSpend {
+    /// the budget row's id
+    id: Uuid,
+    /// the counter in the settlement currency, four places like `limit_usd`;
+    /// `null` when the counter could not be read, never zero
+    spent_usd: Option<String>,
+    /// start of the next window; `null` for a budget that never resets
+    resets_at: Option<String>,
+}
+
+#[derive(Serialize)]
+struct BudgetSpendResponse {
+    /// `ok`, `not_configured` (no Redis URL on the control plane) or
+    /// `unavailable` (Redis did not answer)
+    status: &'static str,
+    budgets: Vec<BudgetSpend>,
+}
+
+/// How long the dashboard waits on Redis before it shows the spend as unknown.
+const SPEND_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// The Redis keys of a scope's budgets, in row order, with each row's reset.
+fn spend_plan(rows: &[Budget], now: DateTime<Utc>) -> Vec<(Uuid, Option<String>, String)> {
+    rows.iter()
+        .filter_map(|row| {
+            let scope = BudgetScope::from_scope_type(&row.scope_type)?;
+            // the same fallback the snapshot loader applies to a period it
+            // does not recognise, so the figure is the one being enforced
+            let period = BudgetPeriod::parse(&row.period).unwrap_or(BudgetPeriod::Monthly);
+            let budget = BudgetConfig {
+                scope,
+                id: row.scope_id.to_string(),
+                limit_usd: Default::default(),
+                period,
+                unpriced_policy: None,
+            };
+            let reset = period
+                .next_reset(now)
+                .map(|at| at.to_rfc3339_opts(SecondsFormat::Secs, true));
+            Some((row.id, reset, budget.spend_key(now)))
+        })
+        .collect()
+}
+
+async fn read_spend(client: &redis::Client, keys: &[String]) -> Option<Vec<Option<String>>> {
+    let read = async {
+        let mut conn = client.get_multiplexed_async_connection().await.ok()?;
+        redis::cmd("MGET")
+            .arg(keys)
+            .query_async::<Vec<Option<String>>>(&mut conn)
+            .await
+            .ok()
+    };
+    tokio::time::timeout(SPEND_READ_TIMEOUT, read).await.ok()?
+}
+
+/// Spend so far against each budget on a scope (#2091).
+///
+/// Reads the counters the gateway enforces from Redis, under the keys and
+/// windows [`BudgetConfig::spend_key`] defines, so the figure is the one a 402
+/// is decided on. A counter that cannot be read comes back as `null` with a
+/// `status` saying why; reporting it as zero would show a spent budget as
+/// untouched.
+async fn budget_spend(
+    principal: Principal,
+    State(state): State<ControlState>,
+    Query(scope): Query<ScopeQuery>,
+) -> ApiResult<Json<BudgetSpendResponse>> {
+    validate_scope(&scope.scope_type)?;
+    let chain = ScopeChain::from_scope(pool(&state), &scope.scope_type, scope.scope_id).await?;
+    authorize_scope_read(&state, &principal, &scope, chain, cap!("budget", Read)).await?;
+    let rows = BudgetRepo(pool(&state))
+        .list_for_scope(&scope.scope_type, scope.scope_id)
+        .await?;
+    let plan = spend_plan(&rows, Utc::now());
+    let unknown = |status: &'static str| {
+        Json(BudgetSpendResponse {
+            status,
+            budgets: plan
+                .iter()
+                .map(|(id, reset, _)| BudgetSpend {
+                    id: *id,
+                    spent_usd: None,
+                    resets_at: reset.clone(),
+                })
+                .collect(),
+        })
+    };
+    let Some(client) = state.redis.as_ref() else {
+        return Ok(unknown("not_configured"));
+    };
+    if plan.is_empty() {
+        return Ok(Json(BudgetSpendResponse {
+            status: "ok",
+            budgets: Vec::new(),
+        }));
+    }
+    let keys: Vec<String> = plan.iter().map(|(_, _, key)| key.clone()).collect();
+    let Some(values) = read_spend(client, &keys).await else {
+        return Ok(unknown("unavailable"));
+    };
+    let mut budgets = Vec::with_capacity(plan.len());
+    for ((id, reset, _), value) in plan.iter().zip(values) {
+        // an absent key is a window nothing has been spent in yet
+        let spent = match value {
+            None => Some(0.0),
+            Some(text) => text.parse::<f64>().ok().filter(|v| v.is_finite()),
+        };
+        budgets.push(BudgetSpend {
+            id: *id,
+            spent_usd: spent.map(|v| format!("{v:.4}")),
+            resets_at: reset.clone(),
+        });
+    }
+    Ok(Json(BudgetSpendResponse {
+        status: "ok",
+        budgets,
+    }))
 }
 
 #[derive(Deserialize)]

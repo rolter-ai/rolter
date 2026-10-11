@@ -2613,6 +2613,15 @@
         "monthly": "Resets on the 1st of each month at 00:00 UTC",
         "total": "Never resets"
       },
+      "spend": {
+        "barLabel": "Spend against the cap",
+        "summary": "{{spent}} spent · {{remaining}} left · {{percent}}",
+        "exhausted": "{{spent}} spent · cap reached ({{percent}})",
+        "used": "{{percent}} of the cap used",
+        "resets": "Resets {{when}}",
+        "unavailable": "Spend so far is unavailable: the control plane could not read the gateway’s counter.",
+        "notConfigured": "Spend so far is not shown: the control plane has no Redis connection (ROLTER_REDIS_URL), so it cannot read the gateway’s counter."
+      },
       "periodUnrecognised": "The gateway does not recognise the period “{{period}}” and enforces this budget as monthly. Edit the budget to pick a period.",
       "periodUnrecognisedHint": "The gateway does not recognise “{{period}}” and enforces this budget as monthly. There are no rolling windows: pick the window to count over.",
       "rateLimitSheetTitle": "Add rate limit",

@@ -29,6 +29,7 @@ import {
   createRateLimit,
   deleteBudget,
   deleteRateLimit,
+  fetchBudgetSpend,
   fetchBudgets,
   fetchBusinessUnits,
   fetchCustomers,
@@ -39,12 +40,14 @@ import {
   updateBudget,
   updateRateLimit,
   type BudgetRow,
+  type BudgetSpendReport,
   type UnpricedPolicy,
   type RateLimitRow,
   type UpdateBudgetInput,
   type UpdateRateLimitInput,
 } from "@/lib/api";
 import { PERIOD_KINDS, periodKind } from "@/lib/budget-period";
+import { spendFigures, type SpendTone } from "@/lib/budget-spend";
 import { useCurrencyCode } from "@/lib/currency";
 import { useFormat } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
@@ -117,6 +120,15 @@ export default function Limits() {
     queryKey: ["budgets", scopeType, scopeId],
     queryFn: () => fetchBudgets(scopeType, scopeId),
     enabled: !!scopeId,
+  });
+
+  // the gateway's own counters, read through the control plane. a separate
+  // query so a slow or failed read never holds the budgets themselves back
+  const spend = useQuery({
+    queryKey: ["budgets", scopeType, scopeId, "spend"],
+    queryFn: () => fetchBudgetSpend(scopeType, scopeId),
+    enabled: !!scopeId,
+    refetchInterval: 30_000,
   });
 
   const rateLimits = useQuery({
@@ -356,6 +368,7 @@ export default function Limits() {
               key={budget.id}
               budget={budget}
               scope={scopeName}
+              spend={spend.isLoading ? "loading" : spend.isError ? null : (spend.data ?? null)}
               gateAt={capGateScope(budget, {
                 byTeam: orgScope.byTeam,
                 keyProjectId: scope.projectId,
@@ -615,9 +628,87 @@ function LimitCard({
   );
 }
 
+const SPEND_BAR_TONE: Record<SpendTone, string> = {
+  ok: "bg-primary",
+  warning: "bg-[color:var(--status-warning)]",
+  danger: "bg-[color:var(--status-danger)]",
+};
+
+const SPEND_TEXT_TONE: Record<SpendTone, string> = {
+  ok: "text-muted-foreground",
+  warning: "text-[color:var(--status-warning-text)]",
+  danger: "text-[color:var(--status-danger-text)]",
+};
+
+/**
+ * Spent against the cap, as figures and a bar, with the reset time (#2091).
+ *
+ * The counter is the one the gateway enforces. When the control plane could not
+ * read it the card says so; a missing figure is never drawn as an empty bar,
+ * because that is what an untouched budget looks like.
+ */
+function BudgetSpend({
+  budget,
+  spend,
+}: {
+  budget: BudgetRow;
+  spend: BudgetSpendReport | "loading" | null;
+}) {
+  const { t } = useTranslation();
+  const fmt = useFormat();
+  const currency = useCurrencyCode();
+  if (spend === "loading") return null;
+  const row = spend?.budgets.find((entry) => entry.id === budget.id);
+  const figures = spendFigures(row, budget.limit_usd);
+  if (!figures) {
+    return (
+      <p className="text-xs text-muted-foreground" data-spend="unavailable">
+        {spend?.status === "not_configured"
+          ? t("pages.limits.spend.notConfigured")
+          : t("pages.limits.spend.unavailable")}
+      </p>
+    );
+  }
+  const percent = fmt.percent(figures.ratio, 0);
+  const money = (value: number) => fmt.currency(value, currency);
+  return (
+    <div className="space-y-1.5" data-spend={figures.tone}>
+      <div
+        role="progressbar"
+        aria-label={t("pages.limits.spend.barLabel")}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={Math.round(figures.fraction * 100)}
+        aria-valuetext={t("pages.limits.spend.used", { percent })}
+        className="h-1.5 w-full overflow-hidden rounded-full bg-muted"
+      >
+        <div
+          className={`h-full rounded-full ${SPEND_BAR_TONE[figures.tone]}`}
+          style={{ width: `${figures.fraction * 100}%` }}
+        />
+      </div>
+      <p className={`text-xs ${SPEND_TEXT_TONE[figures.tone]}`}>
+        {figures.tone === "danger"
+          ? t("pages.limits.spend.exhausted", { spent: money(figures.spent), percent })
+          : t("pages.limits.spend.summary", {
+              spent: money(figures.spent),
+              remaining: money(figures.remaining),
+              percent,
+            })}
+      </p>
+      {row?.resets_at && (
+        <p className="text-xs text-muted-foreground">
+          {t("pages.limits.spend.resets", { when: fmt.dateTime(row.resets_at) })}
+        </p>
+      )}
+    </div>
+  );
+}
+
 function BudgetCard({
   budget,
   scope,
+  spend,
   onEdit,
   onDelete,
   deleting,
@@ -625,6 +716,8 @@ function BudgetCard({
 }: {
   budget: BudgetRow;
   scope: string;
+  /** "loading" while the read is in flight, null when it failed outright */
+  spend: BudgetSpendReport | "loading" | null;
   gateAt: RowScope | undefined;
   onEdit: () => void;
   onDelete: () => void;
@@ -677,6 +770,7 @@ function BudgetCard({
           </Badge>
         )}
       </div>
+      <BudgetSpend budget={budget} spend={spend} />
       {/* the card is the one place the row's claim meets what the gateway does
           with it: a `7d` badge alone reads as a weekly cap (#1902) */}
       {!recognised && (

@@ -23856,3 +23856,87 @@ async fn a_route_update_takes_the_project_admin() {
     assert_eq!(status, 200, "{body}");
     assert_eq!(body["strategy"], "weighted");
 }
+
+/// The spend read reports the counter the gateway keeps, and says so when it
+/// cannot (#2091). A control plane without Redis must answer `not_configured`
+/// with no figure at all, since zero would read as an untouched budget.
+#[tokio::test]
+async fn budget_spend_reads_the_gateway_counter_and_never_invents_zero() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let redis_url = std::env::var("ROLTER_TEST_REDIS_URL")
+        .ok()
+        .filter(|url| !url.is_empty());
+    let app = match &redis_url {
+        Some(url) => rolter_control::test_app_with_redis(pool.clone(), url)
+            .await
+            .expect("build app"),
+        None => rolter_control::test_app(pool.clone())
+            .await
+            .expect("build app"),
+    };
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let org: Value = client
+        .post(format!("{base}/api/v1/orgs"))
+        .json(&json!({"name": "Spender", "slug": "spender"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_id = org["id"].as_str().expect("org id").to_string();
+    let budget: Value = client
+        .post(format!("{base}/api/v1/budgets"))
+        .json(
+            &json!({"scope_type": "org", "scope_id": org_id, "limit_usd": "100", "period": "30d"}),
+        )
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let url = format!("{base}/api/v1/budgets/spend?scope_type=org&scope_id={org_id}");
+
+    let Some(redis_url) = redis_url else {
+        let report: Value = client.get(&url).send().await.unwrap().json().await.unwrap();
+        assert_eq!(report["status"], "not_configured");
+        assert_eq!(report["budgets"][0]["id"], budget["id"]);
+        assert!(report["budgets"][0]["spent_usd"].is_null());
+        assert!(report["budgets"][0]["resets_at"].is_string());
+        return;
+    };
+
+    // nothing recorded yet is a real zero
+    let report: Value = client.get(&url).send().await.unwrap().json().await.unwrap();
+    assert_eq!(report["status"], "ok");
+    assert_eq!(report["budgets"][0]["spent_usd"], "0.0000");
+
+    let key = format!(
+        "rolter:budget:org:{org_id}:{}",
+        chrono::Utc::now().format("%Y%m")
+    );
+    let redis = redis::Client::open(redis_url.as_str()).expect("redis url");
+    let mut conn = redis
+        .get_multiplexed_async_connection()
+        .await
+        .expect("redis");
+    let _: f64 = redis::cmd("INCRBYFLOAT")
+        .arg(&key)
+        .arg(12.5)
+        .query_async(&mut conn)
+        .await
+        .expect("record spend");
+    let report: Value = client.get(&url).send().await.unwrap().json().await.unwrap();
+    let _: i64 = redis::cmd("DEL")
+        .arg(&key)
+        .query_async(&mut conn)
+        .await
+        .expect("clean up");
+    assert_eq!(report["budgets"][0]["spent_usd"], "12.5000");
+}

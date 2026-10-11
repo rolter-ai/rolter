@@ -58,24 +58,8 @@ impl ScopeIds {
     }
 }
 
-fn scope_str(scope: BudgetScope) -> &'static str {
-    match scope {
-        BudgetScope::Org => "org",
-        BudgetScope::Team => "team",
-        BudgetScope::Project => "project",
-        BudgetScope::Key => "key",
-        BudgetScope::BusinessUnit => "business_unit",
-        BudgetScope::Customer => "customer",
-    }
-}
-
 fn spend_key(budget: &BudgetConfig, now: chrono::DateTime<Utc>) -> String {
-    format!(
-        "rolter:budget:{}:{}:{}",
-        scope_str(budget.scope),
-        budget.id,
-        budget.period.bucket(now)
-    )
+    budget.spend_key(now)
 }
 
 /// Enforces spend caps against Redis. Cheap to clone (shared connection).

@@ -243,6 +243,10 @@ unchanged.
   deployments that use the dashboard.
 </Note>
 
+### Seeing the spend so far
+
+Each budget card on **Budgets & Limits** shows how much of the cap is spent, how much is left and when the counter resets. The bar turns to the warning colour at 80% of the cap and to the danger colour once the cap is reached, and the same figures are written out beside it. The number is the counter the gateway enforces, read from Redis by the control plane through [`GET /api/v1/budgets/spend`](/api/budgets-and-rate-limits#spend-so-far), so the control plane needs the same `ROLTER_REDIS_URL` as the gateways. Without it, or while Redis is unreachable, the card says the spend is unavailable instead of showing zero.
+
 ## Step 3 — Configure rate limits
 
 A rate limit rejects requests with **HTTP 429** (plus a `Retry-After` header) when the number of requests or tokens in the trailing one-minute window exceeds the cap. Add one `[[rate_limits]]` block per scope you want to throttle.
