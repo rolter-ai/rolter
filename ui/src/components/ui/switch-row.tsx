@@ -1,3 +1,4 @@
+import * as React from "react";
 import { useTranslation } from "react-i18next";
 
 import { InfoHint } from "@/components/ui/info-hint";
@@ -43,6 +44,7 @@ export function SwitchRow({
   control = "switch",
 }: SwitchRowProps) {
   const { t } = useTranslation();
+  const hintId = React.useId();
   const { denied, reason } = useGate(gate);
   const refusal = useRefusedClick(denied, control, gate);
   return (
@@ -52,7 +54,11 @@ export function SwitchRow({
           <span className="text-sm">{title}</span>
           {info && <InfoHint text={info} label={t("common.aboutField", { label: title })} />}
         </div>
-        {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
+        {hint && (
+          <p id={hintId} className="text-xs text-muted-foreground">
+            {hint}
+          </p>
+        )}
       </div>
       {/* `display: contents` for the reason `GatedSwitch` gives: on the event
           path, out of the layout */}
@@ -63,6 +69,7 @@ export function SwitchRow({
           disabled={disabled || denied}
           title={denied ? reason : undefined}
           aria-label={title}
+          aria-describedby={hint ? hintId : undefined}
         />
       </span>
     </div>

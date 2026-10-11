@@ -23,7 +23,7 @@ import { Combobox } from "@/components/ui/combobox";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 
-import { Switch } from "@/components/ui/switch";
+import { SwitchRow } from "@/components/ui/switch-row";
 import {
   createGuardrailProvider,
   deleteGuardrailProvider,
@@ -753,20 +753,12 @@ function ProviderDialog({
             />
           </Field>
         )}
-        <div className="flex items-start justify-between gap-4 rounded-lg border border-[color:var(--border-subtle)] p-3">
-          <div>
-            <p className="text-sm font-medium">{t("pages.guardrailProviders.activateLabel")}</p>
-            <p id="provider-activate-hint" className="mt-0.5 text-xs text-muted-foreground">
-              {activateHint}
-            </p>
-          </div>
-          <Switch
-            checked={form.enabled}
-            aria-label={t("pages.guardrailProviders.activateLabel")}
-            aria-describedby="provider-activate-hint"
-            onCheckedChange={(enabled) => set({ enabled })}
-          />
-        </div>
+        <SwitchRow
+          title={t("pages.guardrailProviders.activateLabel")}
+          hint={activateHint}
+          checked={form.enabled}
+          onChange={(enabled) => set({ enabled })}
+        />
         {form.failure_mode === "fail_open" && (
           <p className="rounded-lg bg-[color:var(--status-warning)]/10 p-3 text-xs text-[color:var(--status-warning-text)]">
             {t("pages.guardrailProviders.failOpenWarning")}

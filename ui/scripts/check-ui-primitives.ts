@@ -113,6 +113,7 @@ export type RuleId =
   | "native-dialog"
   | "hand-rolled-confirmation"
   | "shadowed-primitive"
+  | "hand-rolled-switch-row"
   | "bare-animation"
   | "duplicated-shape";
 
@@ -159,6 +160,11 @@ const ADVICE: Record<RuleId, string> = {
     "the UX-stream rows, so a fix to `ConfirmDialog` never reaches it. Use " +
     "`ConfirmDialog` from `@/components/ConfirmDialog`; a typed confirmation " +
     "goes in its `children` with `confirmDisabled`.",
+  "hand-rolled-switch-row":
+    "a title, a hint and a bare `<Switch>` laid out by hand is `SwitchRow` " +
+    "typed again, which is how #2242 found four screens with their own copy " +
+    "(`ToggleRow` among them) that none of the other rules could see. Use " +
+    "`SwitchRow` from `@/components/ui/switch-row`.",
   "shadowed-primitive":
     "this re-declares a component `src/components/ui/` already exports, " +
     "without importing it — a second copy of a primitive, which is how #1044 " +
@@ -267,6 +273,29 @@ export function destructiveFooters(masked: string): number[] {
 }
 
 /**
+ * The 0-based lines of every bare `<Switch>` that sits in a hand-built row.
+ *
+ * A row is a `justify-between` container opened within the
+ * ten lines above the switch, with a title in `font-medium` or `text-sm`
+ * between them. `GatedSwitch` is never matched (the tag name ends at
+ * `Switch`), and a switch in a `SettingsPanel`'s `action` slot has no such
+ * container above it: the panel owns its title. Narrow on purpose, like the
+ * other element rules: it names the shape, it does not infer intent.
+ */
+export function handRolledSwitchRows(masked: string): number[] {
+  const lines = masked.split("\n");
+  const found: number[] = [];
+  lines.forEach((line, index) => {
+    if (!/<Switch[\s/>]/.test(line) && !/<Switch$/.test(line)) return;
+    const above = lines.slice(Math.max(0, index - 10), index).join("\n");
+    if (/justify-between/.test(above) && /font-medium|text-sm/.test(above)) {
+      found.push(index);
+    }
+  });
+  return found;
+}
+
+/**
  * Every rule broken in one file.
  *
  * `primitives` is the set of shared component names; pass `[]` to check only
@@ -346,6 +375,9 @@ export function checkSource(
       record(index, "shadowed-primitive", (shadowed[1] ?? shadowed[2])!);
     }
   });
+  for (const index of handRolledSwitchRows(masked)) {
+    record(index, "hand-rolled-switch-row", "<Switch> in a hand-built row");
+  }
   for (const index of destructiveFooters(masked)) {
     record(index, "hand-rolled-confirmation", "<DialogFooter> with a destructive button");
   }
