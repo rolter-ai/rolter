@@ -191,6 +191,8 @@ export const Loaded: Story = {
       canvas.queryByRole("region", { name: /switched off|Could not confirm/ }),
     ).toBeNull();
     await expect(canvas.queryByRole("heading", { name: "Config-file rules" })).toBeNull();
+    // the shell's ScreenHeader owns the page's only h1 (#2241)
+    await expect(within(canvasElement).queryAllByRole("heading", { level: 1 })).toHaveLength(0);
     // no route overrides a rule, so no card names one
     await expect(canvasElement).not.toHaveTextContent(/Off for traffic/);
   },

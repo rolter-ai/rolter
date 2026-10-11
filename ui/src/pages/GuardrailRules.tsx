@@ -260,13 +260,7 @@ function GuardrailRulesScreen() {
     <div className="mx-auto flex max-w-[1120px] flex-col gap-5 p-[22px]">
       <div className="flex flex-col gap-3 border-b border-[color:var(--border-subtle)] pb-5 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <p className="font-mono text-[0.6875rem] uppercase tracking-[0.16em] text-[color:var(--status-danger-text)]">
-            {t("pages.guardrailRules.eyebrow")}
-          </p>
-          <h1 className="mt-1 text-xl font-semibold tracking-tight">
-            {t("pages.guardrailRules.heading")}
-          </h1>
-          <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
+          <p className="max-w-2xl text-sm text-muted-foreground">
             {t("pages.guardrailRules.intro")}
           </p>
         </div>

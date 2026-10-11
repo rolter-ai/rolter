@@ -306,6 +306,8 @@ export const CatalogLoaded: Story = {
     await waitFor(() => expect(canvas.getByText("GitHub")).toBeVisible());
     await expect(canvas.getByText("3 declared tools")).toBeVisible();
     await expect(canvas.getByRole("switch", { name: "Enable Sentry" })).not.toBeChecked();
+    // the shell's ScreenHeader owns the page's only h1 (#2241)
+    await expect(canvas.queryAllByRole("heading", { level: 1 })).toHaveLength(0);
   },
 };
 export const CatalogLoading: Story = {
