@@ -53,6 +53,10 @@ Set it with `project_id` on `POST /api/v1/orgs/{org_id}/providers` and `/provide
   A provider whose stored `egress_proxies` is not a list of proxy URLs, which only a row written around the API with SQL can cause, is left out of the snapshot, with every route target and group member that named it, rather than served on a direct connection around the proxy pool you configured. `GET /api/v1/config/problems` names the provider; set the pool again or delete the provider. See [Upgrading](/deployment/upgrading#security-and-egress-settings).
 </Note>
 
+<Note>
+  A provider whose own definition is invalid, such as an `api_base` that is not an `http://` or `https://` URL or a hosted adapter without `api_key_env`, is left out of the snapshot, and so is every reference to it. The route targets and group members that named it go, and a route left with none stops being served. A virtual key whose `providers` list names only that provider is denied rather than opened to every provider, since an empty list means all of them; a key that also lists others stays limited to those. A route's semantic cache that used it as the embeddings provider is switched off while the route keeps serving. `GET /api/v1/config/problems` lists each of these; fix or delete the provider.
+</Note>
+
 ### Provider kinds
 
 | Kind                | Use case                                                       |

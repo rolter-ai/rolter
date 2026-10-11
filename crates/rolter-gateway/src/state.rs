@@ -1198,6 +1198,23 @@ mod tests {
         }
     }
 
+    /// `GatewayConfig::sanitize_for_snapshot` removes a key whose allow-list
+    /// names only omitted providers rather than emptying the list, because an
+    /// empty one is the widest grant a key can hold (#2945). This pins the
+    /// reading that decision rests on.
+    #[test]
+    fn an_empty_provider_allow_list_permits_every_provider() {
+        let open = KeyMeta::default();
+        assert!(open.provider_allowed("anything"));
+
+        let limited = KeyMeta {
+            providers: vec!["openai".to_string()],
+            ..Default::default()
+        };
+        assert!(limited.provider_allowed("openai"));
+        assert!(!limited.provider_allowed("anything"));
+    }
+
     #[test]
     fn target_costs_prefer_upstream_model_price() {
         let prices: HashMap<String, ModelPriceConfig> = [
