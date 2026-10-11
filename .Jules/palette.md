@@ -52,3 +52,8 @@
 
 **Learning:** Hand-rolled filter buttons on pages like `Models.tsx` lacked standard radio group keyboard navigation (`roving tabindex`) and screen reader announcements (`role="radiogroup"` / `role="radio"`).
 **Action:** Replace custom filter buttons with the `<Segmented />` primitive from `ui/src/components/ui/segmented.tsx`, ensuring proper `ariaLabel` localization and updating story assertions to use `getByRole("radiogroup")` and `getByRole("radio")`.
+
+## 2026-10-11 - AccessProfiles DeleteIconButton Primitive
+
+**Learning:** Hand-rolled icon buttons using GatedButton with Trash2 and Loader2 manually recreate button styling and pending state checks, missing standard design system traits like hover border states (hover:border-[color:var(--status-danger)]).
+**Action:** Replace custom gated icon delete buttons on list/card items with DeleteIconButton from @/components/ui/delete-icon-button.
