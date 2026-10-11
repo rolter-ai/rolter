@@ -56,7 +56,9 @@ def main(binary):
                 # covered by check-chart-update-check.py
                 env["ROLTER_UPDATE_CHECK"] = "false"
                 where = f"{doc['kind']}/{doc['metadata']['name']}"
-                result = subprocess.run([binary, *args], env=env, capture_output=True, text=True)
+                result = subprocess.run(
+                    [binary, *args], env=env, capture_output=True, text=True, check=False
+                )
                 ran.append(where)
                 print(f"--- {where}: rolter {' '.join(args)} (exit {result.returncode})")
                 print(result.stdout + result.stderr)
