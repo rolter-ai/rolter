@@ -30,6 +30,7 @@ import {
   scoped,
   sheet,
   answerDiscardPrompt,
+  uxEvents,
   type Recorder,
 } from "./story-harness";
 import type { BudgetRow, RateLimitRow, VirtualKeyRow } from "@/lib/api";
@@ -995,6 +996,91 @@ export const AVirtualKeyScopeIsNamedByItsKeyName: Story = {
       ).toBeVisible(),
     );
     await cancelConfirmation();
+  },
+};
+
+const KEY_READ_FAILED = { error: { message: "store unavailable" } };
+// the key read fails until `keyReadsFail` is cleared, and counts every attempt
+let keyReads = 0;
+let keyReadsFail = true;
+const keyReadFails = scoped(async (input) => {
+  const url = String(input);
+  if (url.includes("/virtual-keys")) {
+    keyReads += 1;
+    return keyReadsFail ? json(KEY_READ_FAILED, 500) : json(KEYS);
+  }
+  if (url.includes("/budgets")) return json(BUDGETS);
+  return json(RATE_LIMITS);
+});
+
+/**
+ * #2642: the virtual-key read only feeds the scope picker, and a failure of it
+ * left a bare uuid box with nothing on screen saying why. It is a `LoadError`
+ * beside the picker now: it names the keys, quotes the control plane, records
+ * one `error_state` under the picker's region, and its retry brings the picker
+ * back.
+ */
+export const AFailedKeyReadSaysSoBesideThePicker: Story = {
+  beforeEach: recordUxEvents,
+  render: () => {
+    keyReads = 0;
+    keyReadsFail = true;
+    return (
+      <Harness fetchStub={keyReadFails}>
+        <UxScreenProvider screen="limits">
+          <Limits />
+        </UxScreenProvider>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    // a project scope reads no keys, so nothing has failed yet
+    await expect(await canvas.findByText("$500.00")).toBeVisible();
+    await expect(canvas.queryAllByRole("alert")).toHaveLength(0);
+
+    await pickOption(await canvas.findByLabelText("Scope type"), "Virtual key");
+    await expectLoadError(canvasElement, /failed to return virtual keys/i);
+    await expect(canvas.getByText("store unavailable")).toBeVisible();
+    const failed = await expectUxEvent("error_state", "scope-virtual-keys");
+    await expect(failed.screen).toBe("limits");
+    await expect(uxEvents().filter((e) => e.action === "error_state")).toHaveLength(1);
+
+    keyReadsFail = false;
+    await userEvent.click(canvas.getByRole("button", { name: "Try again" }));
+    await waitFor(() => expect(canvas.queryAllByRole("alert")).toHaveLength(0));
+    await pickOption(await canvas.findByLabelText("Scope"), "backend service");
+    await expect(keyReads).toBe(2);
+    // the read that answered is not a second incident
+    await expect(uxEvents().filter((e) => e.action === "error_state")).toHaveLength(1);
+  },
+};
+
+/**
+ * The failed key read keeps its error after another scope type is picked, and
+ * that type's picker has nothing to do with keys, so the alert goes with the
+ * virtual-key scope (#2642).
+ */
+export const AFailedKeyReadLeavesWithTheKeyScope: Story = {
+  render: () => {
+    keyReads = 0;
+    keyReadsFail = true;
+    return (
+      <Harness fetchStub={keyReadFails}>
+        <Limits />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const scopeType = await canvas.findByLabelText("Scope type");
+    await pickOption(scopeType, "Virtual key");
+    await expectLoadError(canvasElement, /failed to return virtual keys/i);
+
+    await pickOption(scopeType, "Team");
+    await waitFor(() => expect(canvas.queryAllByRole("alert")).toHaveLength(0));
+    await expect(await canvas.findByLabelText("Scope")).toBeVisible();
+    await expect(keyReads).toBe(1);
   },
 };
 
