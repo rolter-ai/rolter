@@ -511,13 +511,20 @@ type KeyMessage =
   | "refused"
   | "idle";
 
+/** a key is held and has not run out, so Send keeps working whatever the last mint said */
+function holdsValidKey(session: KeySession): boolean {
+  return !!session.state.key && !(session.state.minted && session.expired);
+}
+
 function keyMessage(
   session: KeySession,
   gateway: { rejected: boolean; keyless: boolean },
 ): KeyMessage {
   const { state } = session;
   if (session.pending) return "pending";
-  if (session.mint.error) return "failed";
+  // a failed mint only fails the band when there is no key to fall back on: an
+  // earlier key that has not run out still works, and the error is a notice (#2757)
+  if (session.mint.error && !holdsValidKey(session)) return "failed";
   if (state.key) {
     if (state.minted && session.expired) return "expired";
     if (gateway.rejected) return "rejected";
@@ -645,6 +652,11 @@ function SessionKeyBar({
                 </Link>
               </>
             )}
+          </p>
+        )}
+        {mint.error && message !== "failed" && (
+          <p role="status" className="text-xs leading-snug text-[color:var(--text-subtle)]">
+            {t("playground.key.remintFailed")}
           </p>
         )}
         <ManualKeyField
