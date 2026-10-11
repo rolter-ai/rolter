@@ -10648,6 +10648,46 @@ async fn playground_key_is_scoped_by_the_server() {
         );
     }
 
+    // a disabled route serves nothing, so a key minted afterwards must not
+    // name it (#2759)
+    let retired = post(
+        &client,
+        format!("{base}/api/v1/projects/{project_id}/routes"),
+        json!({"model": "retired-model", "strategy": "round_robin"}),
+    )
+    .await;
+    let retired_id = retired["id"].as_str().unwrap();
+    let off = client
+        .put(format!("{base}/api/v1/routes/{retired_id}"))
+        .json(&json!({"enabled": false}))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        off.status().is_success(),
+        "disable failed: {}",
+        off.status()
+    );
+    let after: Value = client
+        .post(format!(
+            "{base}/api/v1/me/projects/{project_id}/playground-key"
+        ))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let mut models: Vec<&str> = after["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m.as_str().unwrap())
+        .collect();
+    models.sort_unstable();
+    assert_eq!(models, vec!["claude-sonnet-4", "gpt-4o", "o3-mini"]);
+
     // a session is required: the endpoint mints a credential, so it is never
     // reachable without one
     let anon = client

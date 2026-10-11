@@ -271,6 +271,7 @@ A single neutral zinc ramp carries almost every pixel; two reds and four status 
 - **Muted Zinc** (`text-muted`): descriptions, idle nav items, table headers.
 - **Subtle Zinc** (`text-subtle`): the dimmest text allowed; 4.90:1 on the Zinc Band.
 - **Zinc Shape** (`zinc-shape`): hairlines, icons at rest, chart fills. Never text.
+- **Selection** (`selection-bg`, `selection-text`): selected text is Near White on the brand red (`red-folk`), 6.41:1 and opaque, so it reads the same on Graphite, Raised Graphite and the Zinc Band. The fill is 2.82:1 / 2.45:1 / 2.23:1 against those surfaces; the glyph ratio is what carries it. One `::selection` rule in `index.css`.
 - **Hairlines** (`border-subtle`, `border-default`, `border-strong`): translucent white borders at
   8%, 15% and 24%. They do the separating work shadows would do elsewhere.
 
