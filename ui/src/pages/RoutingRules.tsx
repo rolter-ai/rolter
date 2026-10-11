@@ -26,7 +26,8 @@ import {
 } from "@/lib/api";
 import { useFormat } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
-import { strategyTone, usesWeights } from "@/lib/strategies";
+import { StrategyBadge } from "@/components/StrategyBadge";
+import { usesWeights } from "@/lib/strategies";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useScreenReady } from "@/lib/ux-react";
 
@@ -202,7 +203,6 @@ export default function RoutingRules() {
       <div className="grid gap-3.5 [grid-template-columns:repeat(auto-fill,minmax(min(360px,100%),1fr))]">
         {shown.map((r) => {
           const targets: TargetsState = targetsByRoute.get(r.id) ?? { kind: "loading" };
-          const tone = strategyTone(r.strategy);
           return (
             <div
               key={r.id}
@@ -210,12 +210,7 @@ export default function RoutingRules() {
             >
               <div className="flex items-center gap-2.5">
                 <span className="min-w-0 truncate font-mono text-sm font-semibold">{r.model}</span>
-                <span
-                  className="whitespace-nowrap rounded-[6px] px-2 py-[3px] font-mono text-[0.6875rem] uppercase tracking-[0.04em]"
-                  style={{ color: tone[0], background: tone[1] }}
-                >
-                  {r.strategy}
-                </span>
+                <StrategyBadge strategy={r.strategy} />
                 <LabelChips labels={labels.bySubject(r.id)} />
                 {!r.enabled && (
                   <span className="rounded-[6px] bg-[color:var(--surface-subtle)] px-2 py-[3px] font-mono text-[0.6875rem] uppercase text-[color:var(--text-subtle)]">

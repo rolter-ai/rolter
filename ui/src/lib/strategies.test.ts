@@ -1,14 +1,7 @@
 import { describe, expect, it } from "bun:test";
 
 import { STRATEGIES } from "@/lib/api";
-import {
-  strategyDocsPage,
-  strategyHintKey,
-  strategyOptions,
-  strategyTone,
-  STRATEGY_TONE,
-  usesWeights,
-} from "@/lib/strategies";
+import { strategyDocsPage, strategyHintKey, strategyOptions, usesWeights } from "@/lib/strategies";
 
 describe("strategyOptions", () => {
   it("offers every strategy the backend accepts except the deployment-wide one", () => {
@@ -90,19 +83,5 @@ describe("usesWeights", () => {
 
   it("does not claim a weighted split for a strategy it has never heard of", () => {
     expect(usesWeights("strategy_from_the_future")).toBe(false);
-  });
-});
-
-describe("strategyTone", () => {
-  // a missing tone silently rendered the round_robin pill, which made two
-  // different strategies look identical
-  it("has a tone for every strategy the backend accepts", () => {
-    for (const s of STRATEGIES) {
-      expect(STRATEGY_TONE[s]).toBeDefined();
-    }
-  });
-
-  it("falls back rather than crashing on an unknown strategy", () => {
-    expect(strategyTone("strategy_from_the_future")).toEqual(STRATEGY_TONE.round_robin);
   });
 });

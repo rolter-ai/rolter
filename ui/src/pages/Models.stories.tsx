@@ -302,7 +302,7 @@ export const CacheAwareMultiTargetRoute: Story = {
     await expect(strategy).toHaveTextContent(/^cache_aware$/);
     // verbatim: not the uppercase pill that read `CACHE_AWARE`
     await expect(getComputedStyle(strategy).textTransform).toBe("none");
-    await expect(strategy.className).toContain("font-mono");
+    await expect(strategy.closest("span.font-mono")).not.toBeNull();
 
     const toggle = await canvas.findByRole("button", { name: "3 targets for llama-70b" });
     await expect(toggle).toHaveAttribute("aria-expanded", "false");

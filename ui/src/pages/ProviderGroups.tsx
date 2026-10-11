@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { StrategyBadge } from "@/components/StrategyBadge";
 import { Building2, Layers, Tag } from "lucide-react";
 import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
@@ -201,7 +202,7 @@ export default function ProviderGroups() {
               <LabelChips labels={labels.bySubject(group.id)} />
             </ListCell>
             <ListCell>
-              <Badge tone="outline">{group.strategy}</Badge>
+              <StrategyBadge strategy={group.strategy} />
             </ListCell>
             <ListCell className="flex min-w-0 items-center gap-1">
               <span className="truncate font-mono text-xs text-[color:var(--text-secondary)]">
