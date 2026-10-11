@@ -170,6 +170,7 @@
               "api/org-projects",
               "api/deployment-users",
               "api/providers",
+              "api/routes",
               "api/attribution-listings",
               "api/project-settings",
               "api/budgets-and-rate-limits",
