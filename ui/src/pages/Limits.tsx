@@ -7,7 +7,7 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { GatedButton } from "@/components/GatedButton";
 import { DeleteIconButton } from "@/components/ui/delete-icon-button";
 import { LoadError } from "@/components/LoadError";
-import { CardGridSkeleton } from "@/components/LoadingState";
+import { CardGridSkeleton, ControlSkeleton } from "@/components/LoadingState";
 import { EditorSheet } from "@/components/EditorSheet";
 import { PageBody, RowIconButton } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
@@ -211,6 +211,17 @@ export default function Limits() {
   // "the project this cap applies to" reads as nonsense over an empty uuid
   // field (#1202)
   const hasPicker = scopeOptions.length > 0;
+  // the read behind the picked type's picker. a read that has not answered holds
+  // no rows either, so it must not read as an empty one (#2959)
+  const pickerRead =
+    scopeType === "virtual_key"
+      ? { query: virtualKeys, target: "scope-virtual-keys", resource: "virtualKeys" }
+      : scopeType === "business_unit"
+        ? { query: businessUnits, target: "scope-business-units", resource: "businessUnits" }
+        : scopeType === "customer"
+          ? { query: customers, target: "scope-customers", resource: "customers" }
+          : null;
+  const pickerPending = !!pickerRead?.query.isLoading;
   // a scope typed in as a uuid has no name to show, and is shown as that uuid
   const scopeName = scopeOptions.find((option) => option.value === scopeId)?.label ?? scopeId;
   // the delete confirmations open on it, so the type comes with the name
@@ -250,11 +261,17 @@ export default function Limits() {
           </Field>
           <Field
             label={t("pages.limits.scopeLabel")}
-            hint={t(hasPicker ? "pages.limits.scopeHint" : "pages.limits.scopeIdHint", {
-              type: t(`pages.limits.scopeTypes.${scopeType}`),
-            })}
+            hint={
+              pickerPending
+                ? undefined
+                : t(hasPicker ? "pages.limits.scopeHint" : "pages.limits.scopeIdHint", {
+                    type: t(`pages.limits.scopeTypes.${scopeType}`),
+                  })
+            }
           >
-            {hasPicker ? (
+            {pickerPending ? (
+              <ControlSkeleton width="100%" />
+            ) : hasPicker ? (
               <Combobox
                 value={scopeId}
                 onChange={setScopeId}
@@ -270,18 +287,18 @@ export default function Limits() {
               />
             )}
           </Field>
-          {/* the key list only feeds the picker, which falls back to a bare
-              uuid box without it, so a failed read is said here (#2642). the
+          {/* the picker reads only feed the picker, which falls back to a bare uuid
+              box without them, so a failed read is said here (#2642, #2959). the
               query keeps its error once another scope type is picked, hence
-              the type check */}
-          {scopeType === "virtual_key" && virtualKeys.error && (
+              the read is the picked type's own */}
+          {pickerRead?.query.error && (
             <div className="sm:col-span-2">
               {/* load-error-allow: the scope picker's options; a picker has no empty state of its own */}
               <LoadError
-                error={virtualKeys.error}
-                resource={t("errors.resources.virtualKeys")}
-                onRetry={() => virtualKeys.refetch()}
-                target="scope-virtual-keys"
+                error={pickerRead.query.error}
+                resource={t(`errors.resources.${pickerRead.resource}`)}
+                onRetry={() => pickerRead.query.refetch()}
+                target={pickerRead.target}
               />
             </div>
           )}
