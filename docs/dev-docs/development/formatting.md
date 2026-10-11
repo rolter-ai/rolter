@@ -130,6 +130,20 @@ link target would break the book build or the docs site silently. The
 `llms.txt tracks the docs nav` check was confirmed green on the reformatted tree
 for the same reason.
 
+## Python under `scripts/`
+
+The standalone scripts under `scripts/*.py` are formatted by `ruff format`, not
+prettier, and the check is a merge gate beside `ruff check`: the
+`ruff (scripts)` step of `quality.yml`'s `static checks` job and the `ruff`
+prek hook run both ([#2769]). The width is `line-length = 100` in `ruff.toml`,
+the same as prettier's `printWidth`, so a script wraps like the markdown and
+YAML beside it; everything else is ruff's default style. Format with:
+
+```bash
+uvx --from "$(bash scripts/tool-pin.sh ruff)" ruff format scripts
+```
+
 [#1695]: https://github.com/rolter-ai/rolter/issues/1695
 [#1723]: https://github.com/rolter-ai/rolter/issues/1723
 [#1741]: https://github.com/rolter-ai/rolter/issues/1741
+[#2769]: https://github.com/rolter-ai/rolter/issues/2769

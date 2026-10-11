@@ -996,11 +996,15 @@ jobs:
       # ── python: the gate scripts under scripts/ ───────────────────────────
       # the release handoff and rendered-manifest checkers are part of the merge
       # gate, so drift in them is drift in the gate. rules live in ruff.toml;
-      # the pin is bumped by hand like the zizmor one (#2185)
+      # the pin is bumped by hand like the zizmor one (#2185). formatting is
+      # gated too, like prettier is for the docs (#2769)
       - name: ruff (scripts)
         id: ruff
         if: ${{ !cancelled() && steps.uv.outcome == 'success' }}
-        run: uvx --from "$(bash scripts/tool-pin.sh ruff)" ruff check scripts
+        run: |
+          ruff=$(bash scripts/tool-pin.sh ruff)
+          uvx --from "$ruff" ruff check scripts
+          uvx --from "$ruff" ruff format --check scripts
 
       # ── board automation: the add-to-board retry policy ───────────────────
       # project-automation.yml decides which GitHub API failures to wait out and

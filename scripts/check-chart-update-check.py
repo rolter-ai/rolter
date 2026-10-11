@@ -40,13 +40,19 @@ def main(expected):
             if LAUNCHER not in (c.get("command") or []):
                 continue
             seen += 1
-            values = [e.get("value") for e in c.get("env") or [] if e.get("name") == "ROLTER_UPDATE_CHECK"]
+            values = [
+                e.get("value") for e in c.get("env") or [] if e.get("name") == "ROLTER_UPDATE_CHECK"
+            ]
             where = f"{doc.get('kind')}/{(doc.get('metadata') or {}).get('name')} container {c.get('name')}"
             if not values or values[-1] != expected:
-                failures.append(f"{where}: ROLTER_UPDATE_CHECK is {values or 'unset'}, want {expected!r}")
+                failures.append(
+                    f"{where}: ROLTER_UPDATE_CHECK is {values or 'unset'}, want {expected!r}"
+                )
     # one launcher container per Deployment; none means the check proves nothing
     if seen < 2:
-        failures.append(f"found {seen} launcher containers, want at least 2 (control and gateway preflight)")
+        failures.append(
+            f"found {seen} launcher containers, want at least 2 (control and gateway preflight)"
+        )
     for f in failures:
         print(f"error: {f}", file=sys.stderr)
     return 1 if failures else 0
