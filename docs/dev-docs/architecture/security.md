@@ -75,8 +75,13 @@ Load-bearing properties, each with a test that fails if it stops holding:
 
 - **Every rule can only close, never open** — except `auth_bypass_routes`,
   which an operator writes out path by path. The default for the whole struct
-  is "no extra rules", so a store that cannot be read leaves the deployment
-  where it was rather than opening one that was closing.
+  is "no extra rules", which is exactly why it must never stand in for a value
+  that could not be read: a `required_headers` that is not an object of header
+  names to non-empty strings makes `PostgresConfigStore::load` fail, so no
+  snapshot is published and every gateway keeps the policy it last received
+  (#2943). The line in `GET /api/v1/config/problems` names the entry at fault,
+  never a value, and `PUT /api/v1/security-settings` repairs it. See
+  [Config and hot reload](config-and-hot-reload.md).
 - **Nothing in the snapshot decides whether a keyless gateway is open.**
   `authenticate` reads `server.require_auth` when the gateway's own config file
   sets it, and otherwise `AppState::managed_auth` (true when the gateway polls a

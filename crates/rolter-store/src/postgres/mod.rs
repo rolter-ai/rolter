@@ -20,7 +20,7 @@ use rolter_core::{
 use rust_decimal::Decimal;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{FromRow, PgPool};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use uuid::Uuid;
 
 use crate::postgres::models::{
@@ -192,7 +192,15 @@ impl ProviderRow {
     /// when both are present. A missing KEK or an undecryptable credential
     /// degrades to `api_key: None` with a warning rather than failing the
     /// whole config load, so one bad key cannot take down snapshot serving.
-    fn into_config(self, kek: Option<&crypto::Kek>) -> Result<ProviderConfig> {
+    ///
+    /// `egress_proxies` is the pool [`egress_proxies_from_value`] read from the
+    /// row, which the caller has already checked: a row whose pool cannot be
+    /// read never gets this far.
+    fn into_config(
+        self,
+        kek: Option<&crypto::Kek>,
+        egress_proxies: Vec<String>,
+    ) -> Result<ProviderConfig> {
         let row = self;
         let kind = match row.kind.as_str() {
             "openai" => ProviderKind::Openai,
@@ -277,7 +285,7 @@ impl ProviderRow {
             api_key,
             api_key_env: row.api_key_env,
             egress_proxy: row.egress_proxy,
-            egress_proxies: serde_json::from_value(row.egress_proxies).unwrap_or_default(),
+            egress_proxies,
             kv_events: None,
             lmcache: None,
             ca_bundles: None,
@@ -478,7 +486,12 @@ impl PostgresConfigStore {
         Self { pool, kek }
     }
 
-    async fn load_providers(&self) -> Result<Vec<ProviderConfig>> {
+    /// The providers to serve, and the names of the ones left out because their
+    /// `egress_proxies` could not be read (#2943). A caller that goes on to
+    /// build route targets or group members from the provider rows must skip
+    /// those names, or the snapshot ends up naming a provider it does not
+    /// carry.
+    async fn load_providers(&self) -> Result<(Vec<ProviderConfig>, HashSet<String>)> {
         let rows: Vec<ProviderRow> = sqlx::query_as(
             "select p.org_id, p.name, p.slug, p.kind, p.api_base, p.api_key_env, p.egress_proxy,
                     p.egress_proxies, p.project_id, pk.ciphertext, pk.nonce
@@ -489,9 +502,18 @@ impl PostgresConfigStore {
         .fetch_all(&self.pool)
         .await
         .map_err(store_err)?;
-        rows.into_iter()
-            .map(|row| row.into_config(self.kek.as_ref()))
-            .collect()
+        let mut providers = Vec::with_capacity(rows.len());
+        let mut left_out = HashSet::new();
+        for row in rows {
+            match egress_proxies_from_value(&row.name, &row.egress_proxies) {
+                Ok(proxies) => providers.push(row.into_config(self.kek.as_ref(), proxies)?),
+                Err(problem) => {
+                    tracing::warn!("{problem}");
+                    left_out.insert(row.name);
+                }
+            }
+        }
+        Ok((providers, left_out))
     }
 
     async fn load_feature_flags(&self) -> Result<FeatureFlags> {
@@ -720,7 +742,8 @@ impl PostgresConfigStore {
         .map_err(store_err)
     }
 
-    async fn load_routes(&self) -> Result<Vec<ModelRoute>> {
+    /// `left_out` names the providers [`Self::load_providers`] did not return.
+    async fn load_routes(&self, left_out: &HashSet<String>) -> Result<Vec<ModelRoute>> {
         let route_rows = self.enabled_route_rows().await?;
 
         let target_rows: Vec<TargetRow> = sqlx::query_as(
@@ -749,6 +772,10 @@ impl PostgresConfigStore {
             let targets = target_rows
                 .iter()
                 .filter(|t| t.route_id == r.id)
+                // a provider that was left out of the snapshot cannot be named
+                // by a target: the dangling name would fail validation of the
+                // whole snapshot, not just this route (#2943)
+                .filter(|t| !left_out.contains(&t.provider_name))
                 // a target on another org's provider would spend that
                 // org's credential; the write path refuses one now, and a
                 // row written before it did is dropped here (#1844)
@@ -790,7 +817,10 @@ impl PostgresConfigStore {
     /// Load provider groups and their members into `ProviderGroupConfig`
     /// (ADR-0017 addendum, ADR-0022). A member with a null `upstream_model`
     /// forwards the requested model as-is.
-    async fn load_provider_groups(&self) -> Result<Vec<ProviderGroupConfig>> {
+    async fn load_provider_groups(
+        &self,
+        left_out: &HashSet<String>,
+    ) -> Result<Vec<ProviderGroupConfig>> {
         let group_rows: Vec<ProviderGroupRow> = sqlx::query_as(
             "select id, org_id, name, slug, strategy, project_id from provider_groups order by name",
         )
@@ -817,7 +847,10 @@ impl PostgresConfigStore {
                 let members = member_rows
                     .iter()
                     .filter(|m| m.group_id == g.id)
-                    // same rule as a route target: never another org's provider
+                    // same rule as a route target: never name a provider that
+                    // was left out of the snapshot (#2943)
+                    .filter(|m| !left_out.contains(&m.provider_name))
+                    // and never another org's provider
                     .filter(|m| {
                         let same_org = m.provider_org_id == g.org_id;
                         if !same_org {
@@ -1415,6 +1448,181 @@ fn route_settings_from_row(row: &RouteRow) -> std::result::Result<RouteSettings,
     })
 }
 
+/// What kind of JSON value this is, for a problem line that must not echo it:
+/// a stored value can carry a proxy URL with credentials or a shared secret.
+fn json_kind(value: &serde_json::Value) -> &'static str {
+    match value {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "a boolean",
+        serde_json::Value::Number(_) => "a number",
+        serde_json::Value::String(_) => "a string",
+        serde_json::Value::Array(_) => "an array",
+        serde_json::Value::Object(_) => "an object",
+    }
+}
+
+/// Read `providers.egress_proxies` into the provider's proxy pool, or say why
+/// it cannot be read.
+///
+/// The column is a `jsonb` array, and the migration that added it checks only
+/// that (0018). An array holding anything but strings used to load as an empty
+/// pool, which is the "no proxy configured" reading: the provider fell back to
+/// its single `egress_proxy`, or to a direct connection, so traffic the operator
+/// had forced through a proxy left the network without it (#2943). The default
+/// is the permissive one, so it gets the answer routes got in #2938: the
+/// provider is left out of the snapshot and its routes do not use it, which an
+/// operator can see, rather than reaching the upstream around the pool. The
+/// control plane writes the column from a `Vec<String>`, so reaching this takes
+/// a row written by SQL, a seed or an import, and migration 0086 refuses it from
+/// then on.
+fn egress_proxies_from_value(
+    provider: &str,
+    value: &serde_json::Value,
+) -> std::result::Result<Vec<String>, String> {
+    let unreadable = |detail: String| {
+        format!(
+            "provider '{provider}' has an egress_proxies value that cannot be read ({detail}), so \
+             the provider is left out of the snapshot and nothing is routed to it, rather than \
+             reaching its upstream without the proxy pool; set egress_proxies to a list of proxy \
+             URLs or delete the provider"
+        )
+    };
+    let Some(entries) = value.as_array() else {
+        return Err(unreadable(format!(
+            "it is {}, not a list",
+            json_kind(value)
+        )));
+    };
+    entries
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| {
+            entry.as_str().map(str::to_string).ok_or_else(|| {
+                unreadable(format!(
+                    "entry {index} is {}, not a string",
+                    json_kind(entry)
+                ))
+            })
+        })
+        .collect()
+}
+
+/// Read `security_settings.required_headers` into the ingress rule, or say why
+/// it cannot be read.
+///
+/// This is a gate: a request that does not carry every header here, with its
+/// exact value, is refused before authentication. The column is a `jsonb` with
+/// no shape check (0021), and the loader used to read what it could and drop the
+/// rest, so a value that was not an object loaded as no rule at all and an entry
+/// whose value was not a string vanished from the rule, with nothing said
+/// anywhere (#2943). Every one of those turns a refusal the operator configured
+/// into an admission.
+///
+/// So an unreadable value is an error, and `load` returns it: no snapshot is
+/// built, none is published, and a gateway keeps the config it last received,
+/// gate included. Neither answer that keeps serving is safe. Reading the value
+/// as no rule opens the deployment, and guessing a value locks it, for every
+/// tenant, on a reading nobody wrote. The line names the setting and each entry
+/// at fault but never a value, since an operator may well have put a shared
+/// secret there.
+///
+/// A value counts as readable when it is the shape the API writes: an object
+/// whose names are header names and whose values are strings that are not blank.
+/// A name that differs only in case or padding from another is the same header,
+/// and two values for one header is a rule that cannot be read either.
+fn required_headers_from_value(
+    value: &serde_json::Value,
+) -> std::result::Result<BTreeMap<String, String>, String> {
+    let unreadable = |detail: String| {
+        format!(
+            "security setting required_headers cannot be read ({detail}), so no config snapshot \
+             is published and gateways keep the config they last received: dropping the rule \
+             would admit requests it exists to refuse. Replace it with PUT \
+             /api/v1/security-settings, or in the dashboard under Security"
+        )
+    };
+    let Some(object) = value.as_object() else {
+        return Err(unreadable(format!(
+            "it is {}, not an object of header names to values",
+            json_kind(value)
+        )));
+    };
+    let mut headers = BTreeMap::new();
+    let mut reasons = Vec::new();
+    for (name, value) in object {
+        let name = name.trim().to_ascii_lowercase();
+        if name.is_empty() {
+            reasons.push("an entry has an empty header name".to_string());
+            continue;
+        }
+        let Some(value) = value.as_str().filter(|value| !value.trim().is_empty()) else {
+            reasons.push(format!(
+                "header '{name}' has a value that is not a non-empty string"
+            ));
+            continue;
+        };
+        if headers
+            .insert(name.clone(), value.to_string())
+            .is_some_and(|earlier| earlier != value)
+        {
+            reasons.push(format!(
+                "header '{name}' is listed twice with different values"
+            ));
+        }
+    }
+    if reasons.is_empty() {
+        Ok(headers)
+    } else {
+        Err(unreadable(reasons.join("; ")))
+    }
+}
+
+/// Read `client_settings.injected_headers`, keeping what is readable and saying
+/// what was not.
+///
+/// Unlike [`required_headers_from_value`] this does not fail the load. An
+/// injected header is added to a request on its way to the upstream and gates
+/// nothing, so serving without the one that cannot be read is a smaller
+/// service, not a wider one; what #2943 asked of it is that the omission is
+/// reported rather than silent.
+fn injected_headers_from_value(
+    value: &serde_json::Value,
+) -> (BTreeMap<String, String>, Option<String>) {
+    let report = |detail: String| {
+        format!(
+            "client setting injected_headers has {detail}, so they are not injected; save the \
+             client settings again to repair them"
+        )
+    };
+    let Some(object) = value.as_object() else {
+        return (
+            BTreeMap::new(),
+            Some(report(format!(
+                "a value that is {}, not an object of header names to values",
+                json_kind(value)
+            ))),
+        );
+    };
+    let mut headers = BTreeMap::new();
+    let mut unreadable = Vec::new();
+    for (name, value) in object {
+        let name = name.trim().to_ascii_lowercase();
+        match value.as_str() {
+            Some(value) if !name.is_empty() => {
+                headers.insert(name, value.to_string());
+            }
+            _ => unreadable.push(format!("'{name}'")),
+        }
+    }
+    let problem = (!unreadable.is_empty()).then(|| {
+        report(format!(
+            "entries that are not a header name with a string value ({})",
+            unreadable.join(", ")
+        ))
+    });
+    (headers, problem)
+}
+
 /// Read one `model_prices` row into the config type, or say why it cannot be.
 ///
 /// The columns are `numeric(12,6)` cast to text and parsed straight into
@@ -1526,13 +1734,17 @@ impl ConfigStore for PostgresConfigStore {
         let compatibility = self.load_compatibility_policy().await?;
         let client_settings = self.load_client_settings().await?;
         let security = self.load_security_policy().await?;
+        // read before anything else is built: a gate that cannot be read means
+        // there is no config worth assembling (see `required_headers_from_value`)
+        let required_headers =
+            required_headers_from_value(&security.required_headers).map_err(Error::Store)?;
         let model_defaults = self.load_model_defaults().await?;
         let adaptive = self.load_adaptive_routing_policy().await?;
         let guardrails = self.load_guardrails().await?;
         let guardrail_webhook = self.load_guardrail_webhook().await?;
-        let providers = self.load_providers().await?;
-        let routes = self.load_routes().await?;
-        let provider_groups = self.load_provider_groups().await?;
+        let (providers, left_out) = self.load_providers().await?;
+        let routes = self.load_routes(&left_out).await?;
+        let provider_groups = self.load_provider_groups(&left_out).await?;
         let model_prices = self.load_model_prices().await?;
         let db_virtual_keys = self.load_virtual_keys().await?;
         let mcp_servers = self.load_mcp_servers().await?;
@@ -1590,6 +1802,13 @@ impl ConfigStore for PostgresConfigStore {
         config.queue.block_timeout_ms = runtime_policy.queue_block_ms.max(0) as u64;
         config.compatibility.anthropic_version = compatibility.anthropic_version;
         config.compatibility.default_max_tokens = compatibility.default_max_tokens.max(1) as u32;
+        // injected headers add to a request and gate nothing, so an unreadable
+        // value degrades to injecting fewer of them, said out loud
+        let (injected_headers, injected_problem) =
+            injected_headers_from_value(&client_settings.injected_headers);
+        if let Some(problem) = injected_problem {
+            tracing::warn!("{problem}");
+        }
         config.client = rolter_core::ClientConfig {
             public_base_url: client_settings.public_base_url,
             forwarded_headers: client_settings
@@ -1598,41 +1817,11 @@ impl ConfigStore for PostgresConfigStore {
                 .map(|h| h.trim().to_ascii_lowercase())
                 .filter(|h| !h.is_empty())
                 .collect(),
-            // a non-object column would mean a hand-edited row; treat it as
-            // "no injected headers" rather than failing every snapshot poll
-            injected_headers: client_settings
-                .injected_headers
-                .as_object()
-                .map(|map| {
-                    map.iter()
-                        .filter_map(|(name, value)| {
-                            let value = value.as_str()?;
-                            Some((name.trim().to_ascii_lowercase(), value.to_string()))
-                        })
-                        .filter(|(name, _)| !name.is_empty())
-                        .collect()
-                })
-                .unwrap_or_default(),
+            injected_headers,
             request_id_header: client_settings.request_id_header.to_ascii_lowercase(),
         };
         config.security = rolter_core::SecurityPolicyConfig {
-            // same treatment as injected_headers: a hand-edited non-object row
-            // must not take the fleet's config propagation down with it. an
-            // unreadable rule is dropped, never silently turned into a
-            // different rule
-            required_headers: security
-                .required_headers
-                .as_object()
-                .map(|map| {
-                    map.iter()
-                        .filter_map(|(name, value)| {
-                            let value = value.as_str()?;
-                            Some((name.trim().to_ascii_lowercase(), value.to_string()))
-                        })
-                        .filter(|(name, value)| !name.is_empty() && !value.is_empty())
-                        .collect()
-                })
-                .unwrap_or_default(),
+            required_headers,
             auth_bypass_routes: security
                 .auth_bypass_routes
                 .into_iter()
@@ -1692,6 +1881,25 @@ impl ConfigStore for PostgresConfigStore {
                 .await?
                 .iter()
                 .filter_map(|row| route_settings_from_row(row).err()),
+        );
+        // the security gate and the egress pools (#2943). a gate that cannot be
+        // read makes `load` fail outright, so this is the one place an operator
+        // can read why
+        problems.extend(
+            required_headers_from_value(&self.load_security_policy().await?.required_headers).err(),
+        );
+        problems.extend(
+            injected_headers_from_value(&self.load_client_settings().await?.injected_headers).1,
+        );
+        let proxies: Vec<(String, serde_json::Value)> =
+            sqlx::query_as("select name, egress_proxies from providers order by name")
+                .fetch_all(&self.pool)
+                .await
+                .map_err(store_err)?;
+        problems.extend(
+            proxies
+                .iter()
+                .filter_map(|(name, value)| egress_proxies_from_value(name, value).err()),
         );
         Ok(problems)
     }
@@ -4062,7 +4270,7 @@ mod tests {
         }
 
         let store = PostgresConfigStore::new(pool);
-        let routes = store.load_routes().await.unwrap();
+        let routes = store.load_routes(&HashSet::new()).await.unwrap();
         let route = routes
             .iter()
             .find(|r| r.model == "gpt-4o")
@@ -4074,7 +4282,7 @@ mod tests {
             "a cross-org target survived the load"
         );
 
-        let groups = store.load_provider_groups().await.unwrap();
+        let groups = store.load_provider_groups(&HashSet::new()).await.unwrap();
         let group = groups
             .iter()
             .find(|g| g.slug.as_deref() == Some("pool"))
@@ -4503,5 +4711,652 @@ mod tests {
             assert!(line.contains(&format!("a {column} value")), "{line}");
             assert!(line.contains("left out of the snapshot"), "{line}");
         }
+    }
+
+    /// The three shape checks of migration 0086, dropped so a test can write by
+    /// SQL what a seed, an import or an older control plane could have left.
+    async fn drop_shape_checks(pool: &PgPool) {
+        for (table, constraint) in SHAPE_CHECKS {
+            sqlx::query(sqlx::AssertSqlSafe(format!(
+                "alter table {table} drop constraint {constraint}"
+            )))
+            .execute(pool)
+            .await
+            .unwrap();
+        }
+        // 0018's array check would refuse the non-array rows as well
+        sqlx::query("alter table providers drop constraint providers_egress_proxies_array")
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+
+    /// (table, constraint) for each check migration 0086 adds.
+    const SHAPE_CHECKS: [(&str, &str); 3] = [
+        (
+            "security_settings",
+            "security_settings_required_headers_shape",
+        ),
+        ("providers", "providers_egress_proxies_strings"),
+        ("client_settings", "client_settings_injected_headers_shape"),
+    ];
+
+    async fn validated_shape_checks(pool: &PgPool) -> Vec<(String, bool)> {
+        sqlx::query_as(
+            "select conname::text, convalidated from pg_constraint
+             where conname in ('security_settings_required_headers_shape',
+                               'providers_egress_proxies_strings',
+                               'client_settings_injected_headers_shape')
+               and connamespace = current_schema()::regnamespace
+             order by conname",
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap()
+    }
+
+    /// An org with one team and project, for the tests that need a route.
+    async fn seed_project(pool: &PgPool) -> (Uuid, Uuid) {
+        let org_id: Uuid = sqlx::query_scalar(
+            "insert into orgs (name, slug) values ('acme', 'acme') returning id",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        let team_id: Uuid =
+            sqlx::query_scalar("insert into teams (org_id, name) values ($1, 'core') returning id")
+                .bind(org_id)
+                .fetch_one(pool)
+                .await
+                .unwrap();
+        let project_id: Uuid = sqlx::query_scalar(
+            "insert into projects (team_id, name) values ($1, 'api') returning id",
+        )
+        .bind(team_id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        (org_id, project_id)
+    }
+
+    #[test]
+    fn a_proxy_pool_is_read_only_when_every_entry_is_a_string() {
+        use serde_json::json;
+        assert_eq!(
+            egress_proxies_from_value("edge", &json!([])).unwrap(),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            egress_proxies_from_value("edge", &json!(["http://a:3128", "socks5://b:1080"]))
+                .unwrap(),
+            ["http://a:3128", "socks5://b:1080"]
+        );
+        let line = egress_proxies_from_value("edge", &json!(["http://a:3128", 7])).unwrap_err();
+        assert!(line.contains("provider 'edge'"), "{line}");
+        assert!(line.contains("entry 1 is a number"), "{line}");
+        assert!(line.contains("left out of the snapshot"), "{line}");
+        // a bare string is the likeliest hand-written mistake, and it may carry
+        // credentials, so what it was is not repeated
+        let line = egress_proxies_from_value("edge", &json!("http://user:hunter2@proxy:3128"))
+            .unwrap_err();
+        assert!(line.contains("it is a string, not a list"), "{line}");
+        assert!(!line.contains("hunter2"), "{line}");
+        for value in [json!({"a": "b"}), json!(null), json!(true), json!(3)] {
+            assert!(
+                egress_proxies_from_value("edge", &value).is_err(),
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_required_headers_rule_is_read_only_when_every_entry_is() {
+        use serde_json::json;
+        assert!(required_headers_from_value(&json!({})).unwrap().is_empty());
+        // names are lowercased and trimmed, the value is kept exactly
+        let rule =
+            required_headers_from_value(&json!({" X-WAF ": "edge", "x-tenant": " a b "})).unwrap();
+        assert_eq!(rule["x-waf"], "edge");
+        assert_eq!(rule["x-tenant"], " a b ");
+        // one header written twice to the same value is still one rule
+        assert_eq!(
+            required_headers_from_value(&json!({"x-waf": "edge", "X-Waf": "edge"}))
+                .unwrap()
+                .len(),
+            1
+        );
+
+        for (value, detail) in [
+            (json!([]), "it is an array, not an object"),
+            (json!("x-waf=edge"), "it is a string, not an object"),
+            (json!(null), "it is null, not an object"),
+            (
+                json!({"x-waf": 7}),
+                "header 'x-waf' has a value that is not",
+            ),
+            (
+                json!({"x-waf": null}),
+                "header 'x-waf' has a value that is not",
+            ),
+            (
+                json!({"x-waf": ["a"]}),
+                "header 'x-waf' has a value that is not",
+            ),
+            (
+                json!({"x-waf": ""}),
+                "header 'x-waf' has a value that is not",
+            ),
+            (
+                json!({"x-waf": "  "}),
+                "header 'x-waf' has a value that is not",
+            ),
+            (json!({" ": "edge"}), "an entry has an empty header name"),
+            (
+                json!({"x-waf": "a", "X-Waf": "b"}),
+                "header 'x-waf' is listed twice with different values",
+            ),
+        ] {
+            let line = required_headers_from_value(&value).unwrap_err();
+            assert!(line.contains(detail), "{value}: {line}");
+            assert!(line.contains("no config snapshot is published"), "{line}");
+        }
+
+        // every entry at fault is named, and no value is ever repeated
+        let line = required_headers_from_value(
+            &json!({"x-ok": "kept-secret", "x-a": 1, "x-b": {"nested": "also-secret"}}),
+        )
+        .unwrap_err();
+        assert!(line.contains("'x-a'") && line.contains("'x-b'"), "{line}");
+        assert!(!line.contains("secret"), "{line}");
+    }
+
+    #[test]
+    fn injected_headers_keep_what_reads_and_report_what_does_not() {
+        use serde_json::json;
+        let (headers, problem) = injected_headers_from_value(&json!({"X-Team": "platform"}));
+        assert_eq!(headers["x-team"], "platform");
+        assert!(problem.is_none());
+
+        let (headers, problem) =
+            injected_headers_from_value(&json!({"x-team": "platform", "x-bad": 3, " ": "v"}));
+        assert_eq!(headers.len(), 1);
+        let line = problem.expect("an entry that cannot be read is reported");
+        assert!(line.contains("'x-bad'"), "{line}");
+        assert!(line.contains("not injected"), "{line}");
+
+        let (headers, problem) = injected_headers_from_value(&json!(["x-team"]));
+        assert!(headers.is_empty());
+        assert!(problem.unwrap().contains("an array"));
+    }
+
+    /// #2943: an unreadable `required_headers` used to load as no rule, or lose
+    /// the entries it could not read, and the deployment stopped refusing the
+    /// requests it was configured to refuse. The load fails instead, so no
+    /// snapshot is built and a gateway keeps the one it has, and the store says
+    /// why through `load_problems`, which still answers.
+    #[tokio::test]
+    async fn an_unreadable_required_headers_rule_fails_the_load_instead_of_being_dropped() {
+        if !test_database::is_configured() {
+            eprintln!("skipping: {} not set", test_database::URL_ENV);
+            return;
+        }
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
+        let store = PostgresConfigStore::new(pool.clone());
+
+        sqlx::query(
+            "update security_settings set required_headers = '{\"x-waf\":\"edge-secret\"}'::jsonb",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let config = store.load().await.unwrap();
+        assert_eq!(config.security.required_headers["x-waf"], "edge-secret");
+        assert!(store.load_problems().await.unwrap().is_empty());
+
+        // the api and the check refuse each of these; write them the way an
+        // older database, a seed or hand-run sql could have
+        drop_shape_checks(&pool).await;
+        for unreadable in [
+            // not an object: used to be no rule at all
+            "[\"x-waf\"]",
+            "\"x-waf=edge-secret\"",
+            "null",
+            // an object, but an entry the rule cannot be read from: used to be
+            // dropped, leaving the rest of the rule or none of it
+            "{\"x-waf\":\"edge-secret\",\"x-tenant\":7}",
+            "{\"x-waf\":\"edge-secret\",\"x-tenant\":\"\"}",
+            "{\"x-waf\":\"edge-secret\",\"x-tenant\":null}",
+            "{\"x-waf\":\"edge-secret\",\" \":\"v\"}",
+            "{\"x-waf\":\"edge-secret\",\"X-WAF\":\"other\"}",
+        ] {
+            sqlx::query("update security_settings set required_headers = $1::jsonb")
+                .bind(unreadable)
+                .execute(&pool)
+                .await
+                .unwrap();
+            let error = store
+                .load()
+                .await
+                .expect_err(&format!("{unreadable} must not load as a weaker rule"));
+            assert!(
+                matches!(&error, Error::Store(message) if message.contains("required_headers")),
+                "{unreadable}: {error}"
+            );
+
+            let problems = store.load_problems().await.unwrap();
+            assert_eq!(problems.len(), 1, "{unreadable}: {problems:?}");
+            assert!(problems[0].contains("required_headers"), "{problems:?}");
+            assert!(
+                problems[0].contains("no config snapshot is published"),
+                "{problems:?}"
+            );
+            // a value is never repeated: it may be a shared secret
+            assert!(!problems[0].contains("edge-secret"), "{problems:?}");
+            assert!(!error.to_string().contains("edge-secret"), "{error}");
+        }
+
+        // repaired through the same write the api does, it loads again
+        sqlx::query(
+            "update security_settings set required_headers = '{\"x-waf\":\"edge-secret\"}'::jsonb",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let config = store.load().await.unwrap();
+        assert_eq!(config.security.required_headers["x-waf"], "edge-secret");
+        assert!(store.load_problems().await.unwrap().is_empty());
+    }
+
+    /// #2943: a provider whose proxy pool cannot be read used to load with an
+    /// empty one and reach its upstream directly. It is left out now, and
+    /// nothing that named it is left dangling, so the rest of the snapshot is
+    /// still one that validates.
+    #[tokio::test]
+    async fn a_provider_whose_proxy_pool_does_not_parse_is_left_out_not_served_direct() {
+        if !test_database::is_configured() {
+            eprintln!("skipping: {} not set", test_database::URL_ENV);
+            return;
+        }
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
+        let (org_id, project_id) = seed_project(&pool).await;
+        drop_shape_checks(&pool).await;
+
+        // (name, egress_proxy, egress_proxies)
+        let providers = [
+            ("pooled", None, "[\"http://proxy.example.com:3128\"]"),
+            ("plain", None, "[]"),
+            // the proxy it should have used; the single `egress_proxy` is the
+            // fallback the unreadable pool used to fall back to
+            (
+                "bad-entry",
+                Some("http://legacy.example.com:3128"),
+                "[\"http://proxy.example.com:3128\", 7]",
+            ),
+            ("bad-nested", None, "[[\"http://proxy.example.com:3128\"]]"),
+            ("bad-shape", None, "{\"http\":\"proxy.example.com\"}"),
+            ("bad-scalar", None, "\"http://proxy.example.com:3128\""),
+        ];
+        let mut ids = std::collections::HashMap::new();
+        for (name, egress_proxy, egress_proxies) in providers {
+            let id: Uuid = sqlx::query_scalar(
+                "insert into providers (org_id, name, slug, kind, api_base, api_key_env,
+                                        egress_proxy, egress_proxies)
+                 values ($1, $2, $2, 'openai_compatible', 'https://llm.example.com/v1',
+                         'UPSTREAM_KEY', $3, $4::jsonb)
+                 returning id",
+            )
+            .bind(org_id)
+            .bind(name)
+            .bind(egress_proxy)
+            .bind(egress_proxies)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            ids.insert(name, id);
+        }
+        // a route that can still be served by another target, a route with
+        // nowhere left to go, and a group that loses a member
+        let targets = |model: &str, names: &[&str]| {
+            let model = model.to_string();
+            let names: Vec<Uuid> = names.iter().map(|name| ids[name]).collect();
+            let pool = pool.clone();
+            async move {
+                let route_id: Uuid = sqlx::query_scalar(
+                    "insert into routes (project_id, model, strategy)
+                     values ($1, $2, 'round_robin') returning id",
+                )
+                .bind(project_id)
+                .bind(&model)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+                for provider_id in names {
+                    sqlx::query(
+                        "insert into route_targets (route_id, provider_id, weight)
+                         values ($1, $2, 1)",
+                    )
+                    .bind(route_id)
+                    .bind(provider_id)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+                }
+            }
+        };
+        targets("shared", &["pooled", "bad-entry"]).await;
+        targets("only-bad", &["bad-entry", "bad-shape"]).await;
+        targets("healthy", &["plain"]).await;
+        let group_id: Uuid = sqlx::query_scalar(
+            "insert into provider_groups (org_id, name, slug, strategy)
+             values ($1, 'pool', 'pool', 'round_robin') returning id",
+        )
+        .bind(org_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        for (position, name) in ["pooled", "bad-nested"].into_iter().enumerate() {
+            sqlx::query(
+                "insert into provider_group_members (group_id, provider_id, weight, position)
+                 values ($1, $2, 1, $3)",
+            )
+            .bind(group_id)
+            .bind(ids[name])
+            .bind(position as i32)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let store = PostgresConfigStore::new(pool);
+        let mut config = store.load().await.unwrap();
+        let served: Vec<&str> = config.providers.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(
+            served,
+            ["plain", "pooled"],
+            "a provider whose pool cannot be read must not be served around it"
+        );
+        let pooled = &config.providers[1];
+        assert_eq!(pooled.egress_proxies, ["http://proxy.example.com:3128"]);
+
+        // nothing names a provider the snapshot does not carry: the whole
+        // snapshot would be refused for it otherwise
+        let target_names = |model: &str| -> Vec<String> {
+            config
+                .routes
+                .iter()
+                .find(|r| r.model == model)
+                .unwrap_or_else(|| panic!("route {model} is missing"))
+                .targets
+                .iter()
+                .map(|t| t.provider.clone())
+                .collect()
+        };
+        assert_eq!(target_names("shared"), ["pooled"]);
+        assert!(target_names("only-bad").is_empty());
+        assert_eq!(target_names("healthy"), ["plain"]);
+        let members: Vec<&str> = config.provider_groups[0]
+            .members
+            .iter()
+            .map(|m| m.provider.as_str())
+            .collect();
+        assert_eq!(members, ["pooled"]);
+
+        // the control plane's own pruning then finishes the job, and what is
+        // left is a snapshot a gateway accepts
+        let omitted = config.sanitize_for_snapshot();
+        assert!(
+            omitted
+                .iter()
+                .any(|line| line.contains("route 'only-bad' omitted")),
+            "{omitted:?}"
+        );
+        let models: Vec<&str> = config.routes.iter().map(|r| r.model.as_str()).collect();
+        assert_eq!(models, ["healthy", "shared"]);
+        config
+            .validate_snapshot()
+            .expect("the remaining snapshot is servable");
+
+        let problems = store.load_problems().await.unwrap();
+        assert_eq!(problems.len(), 4, "{problems:?}");
+        for name in ["bad-entry", "bad-nested", "bad-shape", "bad-scalar"] {
+            let line = problems
+                .iter()
+                .find(|p| p.contains(&format!("provider '{name}'")))
+                .unwrap_or_else(|| panic!("{name} is not reported: {problems:?}"));
+            assert!(line.contains("egress_proxies"), "{line}");
+            assert!(line.contains("left out of the snapshot"), "{line}");
+            assert!(!line.contains("proxy.example.com"), "{line}");
+        }
+    }
+
+    /// #2943: injected headers gate nothing, so an unreadable entry costs the
+    /// request that header and is reported, instead of failing the snapshot.
+    #[tokio::test]
+    async fn unreadable_injected_headers_are_dropped_and_reported() {
+        if !test_database::is_configured() {
+            eprintln!("skipping: {} not set", test_database::URL_ENV);
+            return;
+        }
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
+        let store = PostgresConfigStore::new(pool.clone());
+        drop_shape_checks(&pool).await;
+
+        sqlx::query(
+            "update client_settings set injected_headers =
+                '{\"x-team\":\"platform\",\"x-bad\":3}'::jsonb",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let config = store.load().await.unwrap();
+        assert_eq!(config.client.injected_headers.len(), 1);
+        assert_eq!(config.client.injected_headers["x-team"], "platform");
+        let problems = store.load_problems().await.unwrap();
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].contains("injected_headers"), "{problems:?}");
+        assert!(problems[0].contains("'x-bad'"), "{problems:?}");
+
+        sqlx::query("update client_settings set injected_headers = '[\"x-team\"]'::jsonb")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let config = store.load().await.unwrap();
+        assert!(config.client.injected_headers.is_empty());
+        let problems = store.load_problems().await.unwrap();
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].contains("an array"), "{problems:?}");
+    }
+
+    /// #2943: the database refuses what the loader would have to guess at, and
+    /// accepts what the api writes.
+    #[tokio::test]
+    async fn the_database_refuses_security_and_egress_values_the_loader_cannot_read() {
+        if !test_database::is_configured() {
+            eprintln!("skipping: {} not set", test_database::URL_ENV);
+            return;
+        }
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
+        let (org_id, _) = seed_project(&pool).await;
+
+        let clean = validated_shape_checks(&pool).await;
+        assert_eq!(clean.len(), 3, "{clean:?}");
+        assert!(clean.iter().all(|(_, validated)| *validated), "{clean:?}");
+
+        for value in [
+            "{}",
+            "{\"x-waf\":\"edge\"}",
+            "{\"x-waf\":\"edge\",\"x-tenant\":\"a b\"}",
+        ] {
+            for (table, column) in [
+                ("security_settings", "required_headers"),
+                ("client_settings", "injected_headers"),
+            ] {
+                sqlx::query(sqlx::AssertSqlSafe(format!(
+                    "update {table} set {column} = '{value}'::jsonb"
+                )))
+                .execute(&pool)
+                .await
+                .unwrap_or_else(|e| panic!("{table}.{column} = {value} should be accepted: {e}"));
+            }
+        }
+        // an injected value may be empty, a required one may not
+        sqlx::query("update client_settings set injected_headers = '{\"x-a\":\"\"}'::jsonb")
+            .execute(&pool)
+            .await
+            .expect("an empty injected value is a header with no value");
+
+        for value in [
+            "[]",
+            "\"x\"",
+            "null",
+            "{\"x-a\":1}",
+            "{\"x-a\":null}",
+            "{\"x-a\":[\"b\"]}",
+            "{\"x-a\":{\"b\":\"c\"}}",
+            "{\"x-a\":true}",
+            "{\"x-ok\":\"b\",\"x-a\":2}",
+            "{\" \":\"b\"}",
+            "{\"\":\"b\"}",
+        ] {
+            for (table, column) in [
+                ("security_settings", "required_headers"),
+                ("client_settings", "injected_headers"),
+            ] {
+                let error = sqlx::query(sqlx::AssertSqlSafe(format!(
+                    "update {table} set {column} = '{value}'::jsonb"
+                )))
+                .execute(&pool)
+                .await
+                .expect_err(&format!("{table}.{column} = {value} should be refused"));
+                assert!(
+                    error.to_string().contains("_shape"),
+                    "{table}.{column} = {value}: {error}"
+                );
+            }
+        }
+        for value in ["{\"x-a\":\"\"}", "{\"x-a\":\" \"}"] {
+            sqlx::query(sqlx::AssertSqlSafe(format!(
+                "update security_settings set required_headers = '{value}'::jsonb"
+            )))
+            .execute(&pool)
+            .await
+            .expect_err(&format!(
+                "a required header with value {value} locks every request out"
+            ));
+        }
+
+        for (egress_proxies, accepted) in [
+            ("[]", true),
+            ("[\"http://proxy.example.com:3128\"]", true),
+            ("[\"\"]", true),
+            ("[7]", false),
+            ("[\"http://proxy.example.com:3128\", null]", false),
+            ("[[\"http://proxy.example.com:3128\"]]", false),
+            ("[{\"url\":\"http://proxy.example.com:3128\"}]", false),
+            ("{\"a\":\"b\"}", false),
+            ("\"http://proxy.example.com:3128\"", false),
+        ] {
+            let outcome = sqlx::query(
+                "insert into providers (org_id, name, slug, kind, api_base, egress_proxies)
+                 values ($1, gen_random_uuid()::text, gen_random_uuid()::text, 'openai',
+                         'https://api.openai.com/v1', $2::jsonb)",
+            )
+            .bind(org_id)
+            .bind(egress_proxies)
+            .execute(&pool)
+            .await;
+            assert_eq!(outcome.is_ok(), accepted, "{egress_proxies}: {outcome:?}");
+        }
+    }
+
+    /// #2943: the migration applies over a row that already breaks it, as any
+    /// deployment written to by hand could hold, leaves exactly that check
+    /// unvalidated, and still binds every write from then on.
+    #[tokio::test]
+    async fn the_shape_checks_migration_applies_over_a_bad_row_and_binds_new_writes() {
+        if !test_database::is_configured() {
+            eprintln!("skipping: {} not set", test_database::URL_ENV);
+            return;
+        }
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
+        let (org_id, _) = seed_project(&pool).await;
+
+        // the database as it was before 0086: no checks, and two bad rows
+        drop_shape_checks(&pool).await;
+        sqlx::query("update security_settings set required_headers = '{\"x-waf\":7}'::jsonb")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "insert into providers (org_id, name, slug, kind, api_base, egress_proxies)
+             values ($1, 'bad', 'bad', 'openai', 'https://api.openai.com/v1', '[7]'::jsonb)",
+        )
+        .bind(org_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        sqlx::raw_sql(include_str!(
+            "../../migrations/0086_security_egress_settings_shape.sql"
+        ))
+        .execute(&pool)
+        .await
+        .expect("the migration applies over a row that breaks it");
+
+        // unvalidated where a row breaks the rule, validated where none does
+        assert_eq!(
+            validated_shape_checks(&pool).await,
+            [
+                ("client_settings_injected_headers_shape".to_string(), true),
+                ("providers_egress_proxies_strings".to_string(), false),
+                (
+                    "security_settings_required_headers_shape".to_string(),
+                    false
+                ),
+            ]
+        );
+
+        // every write from now on is held to it
+        sqlx::query("update client_settings set injected_headers = '{\"x-a\":1}'::jsonb")
+            .execute(&pool)
+            .await
+            .expect_err("a new bad injected header is refused");
+        sqlx::query(
+            "insert into providers (org_id, name, slug, kind, api_base, egress_proxies)
+             values ($1, 'worse', 'worse', 'openai', 'https://api.openai.com/v1', '[8]'::jsonb)",
+        )
+        .bind(org_id)
+        .execute(&pool)
+        .await
+        .expect_err("a new bad proxy pool is refused");
+
+        // the operator's fix: correct the rows, then validate
+        sqlx::query(
+            "update security_settings set required_headers = '{\"x-waf\":\"edge\"}'::jsonb",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("update providers set egress_proxies = '[]'::jsonb where name = 'bad'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        for (table, constraint) in SHAPE_CHECKS {
+            sqlx::query(sqlx::AssertSqlSafe(format!(
+                "alter table {table} validate constraint {constraint}"
+            )))
+            .execute(&pool)
+            .await
+            .unwrap_or_else(|e| {
+                panic!("{constraint} should validate once the rows are fixed: {e}")
+            });
+        }
+        let fixed = validated_shape_checks(&pool).await;
+        assert!(fixed.iter().all(|(_, validated)| *validated), "{fixed:?}");
     }
 }

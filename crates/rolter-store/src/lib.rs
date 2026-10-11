@@ -27,6 +27,12 @@ pub use postgres::PostgresConfigStore;
 #[async_trait]
 pub trait ConfigStore: Send + Sync {
     /// Load the current configuration snapshot.
+    ///
+    /// Fails, rather than returning a weaker config, when a stored value that
+    /// gates traffic cannot be read, such as the security settings'
+    /// `required_headers` (#2943): the caller then publishes nothing and the
+    /// gateways keep what they have. [`load_problems`](Self::load_problems) says
+    /// which value it was.
     async fn load(&self) -> Result<GatewayConfig>;
     /// Persist a new configuration snapshot.
     async fn save(&self, config: GatewayConfig) -> Result<()>;
@@ -46,8 +52,10 @@ pub trait ConfigStore: Send + Sync {
     /// served but makes the guess silent; this is where it is said out loud
     /// (#1902). A row is left out rather than defaulted when the default would
     /// be the permissive reading of it, such as a route whose `advanced`
-    /// settings do not parse (#2938). Empty for a store with no free-text rows
-    /// to misread.
+    /// settings do not parse (#2938), or a provider whose proxy pool does not
+    /// (#2943). A setting that gates traffic and cannot be read at all makes
+    /// `load` fail instead, and this is then the only place its cause is listed.
+    /// Empty for a store with no free-text rows to misread.
     async fn load_problems(&self) -> Result<Vec<String>> {
         Ok(Vec::new())
     }

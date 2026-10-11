@@ -3049,6 +3049,281 @@ async fn a_route_with_unreadable_advanced_settings_is_not_served_open() {
     assert!(line.contains("advanced"), "{line}");
 }
 
+/// #2943: an unreadable `required_headers` used to load as no rule, and the
+/// ingress gate the operator configured stopped being enforced without a word.
+/// No snapshot is published while it cannot be read, so every gateway keeps the
+/// one it has, gate included; `GET /api/v1/config/problems` still answers and
+/// says why; and the setting can be repaired through the API that owns it,
+/// after which the next snapshot carries the rule again.
+#[tokio::test]
+async fn an_unreadable_required_headers_gate_withholds_the_snapshot_until_repaired() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app =
+        rolter_control::test_app_with_admin_token(pool.clone(), Some(admin_token().to_string()))
+            .await
+            .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let gate_value = format!("edge-{}", uuid::Uuid::new_v4());
+
+    let put_gate = |headers: Value| {
+        client
+            .put(format!("{base}/api/v1/security-settings"))
+            .bearer_auth(admin_token())
+            .json(&json!({
+                "allowed_origins": [],
+                "allowed_headers": [],
+                "required_headers": headers,
+                "auth_bypass_routes": [],
+            }))
+            .send()
+    };
+    let snapshot = || async {
+        client
+            .get(format!("{base}/internal/snapshot"))
+            .bearer_auth(admin_token())
+            .send()
+            .await
+            .unwrap()
+    };
+    let problems = || async {
+        let response = client
+            .get(format!("{base}/api/v1/config/problems"))
+            .bearer_auth(admin_token())
+            .send()
+            .await
+            .unwrap();
+        let status = response.status().as_u16();
+        (status, response.json::<Value>().await.unwrap())
+    };
+
+    // the rule is saved through the api and reaches the snapshot
+    let saved = put_gate(json!({"X-Mesh-Id": gate_value})).await.unwrap();
+    assert_eq!(saved.status(), 200);
+    let served: Value = snapshot().await.json().await.unwrap();
+    assert_eq!(
+        served["config"]["security"]["required_headers"]["x-mesh-id"], gate_value,
+        "{served}"
+    );
+    let version = served["version"].as_i64().unwrap();
+
+    // then a value the api would have refused is written around it
+    sqlx::query(
+        "alter table security_settings
+         drop constraint security_settings_required_headers_shape",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "update security_settings
+         set required_headers = jsonb_build_object('x-mesh-id', $1::text, 'x-tenant', 7)",
+    )
+    .bind(&gate_value)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let refused = client
+        .get(format!("{base}/internal/snapshot"))
+        .query(&[("version", version.to_string())])
+        .bearer_auth(admin_token())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        refused.status(),
+        500,
+        "a snapshot without the gate must not be published"
+    );
+    let body = refused.text().await.unwrap();
+    assert!(!body.contains(&gate_value), "{body}");
+
+    // the operator is told why, and the value is not repeated
+    let (status, listed) = problems().await;
+    assert_eq!(status, 200, "{listed}");
+    let lines = listed["problems"].as_array().expect("problems");
+    assert!(
+        lines.iter().any(|line| {
+            let line = line.as_str().unwrap();
+            line.contains("required_headers") && line.contains("'x-tenant'")
+        }),
+        "{listed}"
+    );
+    assert!(!listed.to_string().contains(&gate_value), "{listed}");
+
+    // and the setting can still be read and repaired where it lives
+    let raw: Value = client
+        .get(format!("{base}/api/v1/security-settings"))
+        .bearer_auth(admin_token())
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(raw["required_headers"]["x-tenant"], 7, "{raw}");
+    let repaired = put_gate(json!({"X-Mesh-Id": gate_value})).await.unwrap();
+    assert_eq!(repaired.status(), 200);
+
+    let served: Value = snapshot().await.json().await.unwrap();
+    assert_eq!(
+        served["config"]["security"]["required_headers"]["x-mesh-id"], gate_value,
+        "{served}"
+    );
+    assert!(served["version"].as_i64().unwrap() > version, "{served}");
+    let (status, listed) = problems().await;
+    assert_eq!(status, 200, "{listed}");
+    assert!(
+        listed["problems"].as_array().unwrap().is_empty(),
+        "{listed}"
+    );
+}
+
+/// #2943: a provider whose `egress_proxies` holds something that is not a proxy
+/// URL used to load with an empty pool and reach its upstream directly. It is
+/// left out of the snapshot instead, along with every target that named it, so
+/// the snapshot is still served and the providers beside it keep working.
+#[tokio::test]
+async fn a_provider_with_an_unreadable_proxy_pool_is_left_out_of_the_snapshot() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let addr = serve(
+        rolter_control::test_app(pool.clone())
+            .await
+            .expect("build app"),
+    )
+    .await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let org_id: uuid::Uuid =
+        sqlx::query_scalar("insert into orgs (name, slug) values ('acme', 'acme') returning id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let team_id: uuid::Uuid =
+        sqlx::query_scalar("insert into teams (org_id, name) values ($1, 'core') returning id")
+            .bind(org_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let project_id: uuid::Uuid =
+        sqlx::query_scalar("insert into projects (team_id, name) values ($1, 'api') returning id")
+            .bind(team_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    sqlx::query("alter table providers drop constraint providers_egress_proxies_strings")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let mut provider_ids = std::collections::HashMap::new();
+    for (name, egress_proxies) in [
+        ("pooled", r#"["http://proxy.example.com:3128"]"#),
+        ("unreadable", r#"["http://proxy.example.com:3128", 7]"#),
+    ] {
+        let id: uuid::Uuid = sqlx::query_scalar(
+            "insert into providers (org_id, name, slug, kind, api_base, api_key_env,
+                                    egress_proxies)
+             values ($1, $2, $2, 'openai_compatible', 'https://llm.example.com/v1',
+                     'UPSTREAM_KEY', $3::jsonb)
+             returning id",
+        )
+        .bind(org_id)
+        .bind(name)
+        .bind(egress_proxies)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        provider_ids.insert(name, id);
+    }
+    for (model, targets) in [
+        ("shared", vec!["pooled", "unreadable"]),
+        ("only-unreadable", vec!["unreadable"]),
+    ] {
+        let route_id: uuid::Uuid = sqlx::query_scalar(
+            "insert into routes (project_id, model, strategy)
+             values ($1, $2, 'round_robin') returning id",
+        )
+        .bind(project_id)
+        .bind(model)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        for name in targets {
+            sqlx::query(
+                "insert into route_targets (route_id, provider_id, weight) values ($1, $2, 1)",
+            )
+            .bind(route_id)
+            .bind(provider_ids[name])
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+    }
+
+    let response = client
+        .get(format!("{base}/internal/snapshot"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        200,
+        "one unreadable pool must not withhold the snapshot from every tenant"
+    );
+    let snapshot: Value = response.json().await.unwrap();
+    let names = |key: &str, field: &str| -> Vec<String> {
+        snapshot["config"][key]
+            .as_array()
+            .expect(key)
+            .iter()
+            .filter_map(|item| item[field].as_str().map(str::to_string))
+            .collect()
+    };
+    assert_eq!(names("providers", "name"), ["pooled"], "{snapshot}");
+    assert_eq!(names("routes", "model"), ["shared"], "{snapshot}");
+    let targets: Vec<&str> = snapshot["config"]["routes"][0]["targets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|target| target["provider"].as_str())
+        .collect();
+    assert_eq!(targets, ["pooled"], "{snapshot}");
+
+    let problems: Value = client
+        .get(format!("{base}/api/v1/config/problems"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let lines: Vec<&str> = problems["problems"]
+        .as_array()
+        .expect("problems")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("provider 'unreadable'") && line.contains("egress_proxies")),
+        "{problems}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("route 'only-unreadable' omitted")),
+        "{problems}"
+    );
+}
+
 /// Editing a budget or rate limit takes `update` on it, which the matrix
 /// grants to an admin of the scope and not to a viewer (#1285). Both reach the
 /// row's own scope chain, so the check is against where the cap already lives.

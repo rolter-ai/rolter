@@ -423,6 +423,79 @@ mod tests {
         assert_eq!(state.metrics.config_version.load(Relaxed), 0);
     }
 
+    /// #2943: the control plane answers `500` rather than publish a snapshot
+    /// without a gate it could not read (`security_settings.required_headers`).
+    /// The gateway must go on enforcing the gate it already holds, not fall
+    /// back to a config without it: that is the whole of what makes refusing to
+    /// publish the safe answer.
+    #[tokio::test]
+    async fn a_refused_snapshot_leaves_the_gate_the_gateway_already_holds() {
+        use axum::routing::get;
+        use axum::Router;
+        use std::sync::atomic::AtomicBool;
+
+        let refusing = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&refusing);
+        let app = Router::new().route(
+            "/internal/snapshot",
+            get(move || {
+                let flag = Arc::clone(&flag);
+                async move {
+                    use axum::response::IntoResponse;
+                    if flag.load(Relaxed) {
+                        return (
+                            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                            axum::Json(serde_json::json!({
+                                "error": {"message": "failed to load config snapshot"}
+                            })),
+                        )
+                            .into_response();
+                    }
+                    axum::Json(serde_json::json!({
+                        "version": 5,
+                        "config": {"security": {"required_headers": {"x-mesh-id": "edge"}}}
+                    }))
+                    .into_response()
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let state = AppState::new(&GatewayConfig::default());
+        let client = Client::new();
+        let url = format!("http://{addr}/internal/snapshot");
+        assert_eq!(
+            poll_once(&client, &state, &url, None).await.unwrap(),
+            Some(5)
+        );
+        let held = |state: &AppState| {
+            state
+                .snapshot
+                .load()
+                .security
+                .required_headers
+                .get("x-mesh-id")
+                .cloned()
+        };
+        assert_eq!(held(&state).as_deref(), Some("edge"));
+
+        // a newer version exists, and the control plane will not build it
+        refusing.store(true, Relaxed);
+        state.metrics.config_version.store(4, Relaxed);
+        let err = poll_once(&client, &state, &url, None).await.unwrap_err();
+        assert!(err.to_string().contains("500"), "{err}");
+        assert_eq!(
+            held(&state).as_deref(),
+            Some("edge"),
+            "the gate was dropped"
+        );
+        assert_eq!(state.metrics.config_reloads_total.load(Relaxed), 1);
+    }
+
     /// #926: a snapshot that carries `problems` is a *partial* config, not a
     /// broken one. It must apply — the alternative is the gateway refusing the
     /// same fleet config the control plane just decided to serve.

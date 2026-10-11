@@ -156,6 +156,47 @@ where advanced ?| array['base_url', 'insecure_tls', 'pricing']
 
 A `rolter.toml` that sets any of them under `[routes.advanced]` still loads. `rolter check` and the gateway's startup log report each one as an unknown key.
 
+## Security and egress settings
+
+The migration `0086_security_egress_settings_shape.sql` makes the database refuse three settings whose stored shape the API already enforced: `required_headers` on the security settings, `egress_proxies` on a provider, and `injected_headers` on the client settings. Before it, a value written around the API with SQL, a seed or an import could be read back as something weaker than what you meant (#2943), and now each is handled on purpose:
+
+| Setting                                | If a stored value cannot be read                                                                                                                                                                                                                                                                                                 |
+| -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `required_headers` (security settings) | The control plane publishes **no snapshot**. Gateways keep the config they last received, rule included, and a gateway that restarts meanwhile serves nothing until the rule is repaired. The effective-config views in the dashboard return an error, while the **Security** screen and `/api/v1/config/problems` keep working. |
+| `egress_proxies` (a provider)          | That provider is left out of the snapshot, with every route target and group member that named it, so its traffic never goes out around the proxy pool. A route with no other target is not served.                                                                                                                              |
+| `injected_headers` (client settings)   | The entries that cannot be read are not injected, and the rest are. This setting gates nothing.                                                                                                                                                                                                                                  |
+
+Each case is listed by `GET /api/v1/config/problems` and logged by the control plane, naming the setting, the provider or the header, and never a value. A header's value is not repeated because it may be a shared secret. A required header counts as unreadable when the setting is not an object, when a value is not a string or is blank, when a name is blank, or when one header is listed twice with different values.
+
+The migration cannot fail on a database that already holds such a row. It adds each check as `NOT VALID`, which binds every insert and update from then on and leaves the rows already there alone, then validates the ones it can. A database with no bad row ends with all three checks validated and needs nothing from you. A check whose table does hold a bad row stays `NOT VALID`, and the migration prints a notice naming it. To see whether any is still unvalidated:
+
+```sql
+select conname, convalidated
+from pg_constraint
+where conname in ('security_settings_required_headers_shape',
+                  'providers_egress_proxies_strings',
+                  'client_settings_injected_headers_shape');
+```
+
+Find the rows that break them, correct each one, then validate whatever the first query still shows as `convalidated = false`. Save the security settings again from the **Security** screen, or `PUT /api/v1/security-settings`, to repair `required_headers`; set a provider's proxy pool on the **Providers** screen; save the client settings again for `injected_headers`.
+
+```sql
+select name, egress_proxies
+from providers
+where case when jsonb_typeof(egress_proxies) = 'array'
+           then jsonb_path_exists(egress_proxies, 'strict $[*] ? (@.type() != "string")')
+           else true end;
+
+select required_headers from security_settings
+where case when jsonb_typeof(required_headers) = 'object'
+           then jsonb_path_exists(required_headers, 'strict $.keyvalue() ? (@.key like_regex "^\\s*$" || @.value.type() != "string" || @.value like_regex "^\\s*$")')
+           else true end;
+
+alter table security_settings validate constraint security_settings_required_headers_shape;
+```
+
+Validating is optional: an unvalidated check protects new writes just the same. It only changes what `convalidated` reports.
+
 ## Upstream TLS trust store
 
 Rolter now verifies upstream HTTPS against the host's system trust store (`/etc/ssl/certs`, or the bundle `SSL_CERT_FILE` names) instead of a copy of the public roots built into the binary. The published images ship `ca-certificates`, so they need nothing from you. A binary you run on a host or in an image of your own with no CA store fails every upstream handshake until you install `ca-certificates` or point `SSL_CERT_FILE` at a PEM bundle. `ROLTER_CA_BUNDLE` and `[tls].ca_bundles` still add private CAs on top of that store.
