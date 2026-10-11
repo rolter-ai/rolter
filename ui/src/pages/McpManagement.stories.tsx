@@ -871,7 +871,9 @@ export const AuthClearCredentialConfirms: Story = {
     const dialog = await openConfigure(canvasElement, "Context7");
     await userEvent.click(dialog.getByRole("button", { name: "Clear stored credential" }));
     const confirm = within(await within(document.body).findByRole("dialog"));
-    await expect(confirm.getByText("Clear the stored credential for Context7?")).toBeVisible();
+    await waitFor(() =>
+      expect(confirm.getByText("Clear the stored credential for Context7?")).toBeVisible(),
+    );
     await userEvent.click(confirm.getByRole("button", { name: "Cancel" }));
     clears.expectNotSent("PUT", "/auth");
 

@@ -415,11 +415,13 @@ export const EditsAChannelKeepingItsSecret: Story = {
     );
     // the stored secret is never read back, and the field says what a blank does
     await expect(form.getByLabelText(/Bearer secret/)).toHaveValue("");
-    await expect(
-      form.getByText(
-        "A secret is stored. Leave this blank to keep it, or type a new one to replace it.",
-      ),
-    ).toBeVisible();
+    await waitFor(() =>
+      expect(
+        form.getByText(
+          "A secret is stored. Leave this blank to keep it, or type a new one to replace it.",
+        ),
+      ).toBeVisible(),
+    );
 
     await userEvent.clear(name);
     await userEvent.type(name, "ops-chat");
@@ -456,7 +458,9 @@ export const EditsASwitchedOffChannel: Story = {
       await within(document.body).findByRole("dialog", { name: "Edit channel pager" }),
     );
     await waitFor(() => expect(form.getByLabelText("Name")).toHaveValue("pager"));
-    await expect(form.getByText("No secret is stored. Type one to add it.")).toBeVisible();
+    await waitFor(() =>
+      expect(form.getByText("No secret is stored. Type one to add it.")).toBeVisible(),
+    );
 
     await userEvent.type(form.getByLabelText(/Bearer secret/), "pager-bearer");
     await userEvent.click(form.getByRole("button", { name: "Save" }));
@@ -498,7 +502,7 @@ export const AChannelEditSaysWhenTheSecretIsDropped: Story = {
     // another path on the same origin keeps it
     await userEvent.clear(endpoint);
     await userEvent.type(endpoint, "https://alerts.example.com/rolter/chat");
-    await expect(form.getByText(keeps)).toBeVisible();
+    await waitFor(() => expect(form.getByText(keeps)).toBeVisible());
     await expect(form.queryByText(drops)).toBeNull();
 
     // another host does not
@@ -617,7 +621,7 @@ export const TheThresholdFollowsTheSignal: Story = {
     await clickWhenEnabled(canvasElement, /add rule/i);
     const form = within(sheet());
     await expect(await form.findByLabelText("Threshold (%)")).toHaveValue(5);
-    await expect(form.getByText("From 0 to 100%.")).toBeVisible();
+    await waitFor(() => expect(form.getByText("From 0 to 100%.")).toBeVisible());
     await expect(
       form.getByText("Share of requests in the window that ended in a 5xx status."),
     ).toBeVisible();
@@ -785,7 +789,9 @@ export const TheRuleWindowHoldsToTheApiBounds: Story = {
       await userEvent.type(windowInput, outside);
       await waitFor(() => expect(windowInput).toHaveAttribute("aria-invalid", "true"));
       await expect(create).toBeDisabled();
-      await expect(within(form).getByText("From 60 to 86400 seconds.")).toBeVisible();
+      await waitFor(() =>
+        expect(within(form).getByText("From 60 to 86400 seconds.")).toBeVisible(),
+      );
     }
     ruleCreates.expectNotSent("POST", "/alert-rules");
 
@@ -846,7 +852,9 @@ export const EditsARule: Story = {
     await expect(form.getByLabelText("Signal")).toHaveValue("Error rate");
     await expect(form.getByLabelText("Window (seconds)")).toHaveValue(300);
     await expect(form.getByLabelText("Channel")).toHaveValue("ops-slack");
-    await expect(form.getByText("The rule keeps its state and history.")).toBeVisible();
+    await waitFor(() =>
+      expect(form.getByText("The rule keeps its state and history.")).toBeVisible(),
+    );
 
     await userEvent.clear(threshold);
     await userEvent.type(threshold, "2");
@@ -1978,7 +1986,7 @@ export const ComparisonAndNoDataAreChosenInTheForm: Story = {
     await userEvent.type(form.getByLabelText("Name"), "errors gone quiet");
     const comparison = form.getByRole("radiogroup", { name: "Comparison" });
     await expect(within(comparison).getByRole("radio", { name: "Above or equal" })).toBeChecked();
-    await expect(form.getByText(/threshold is inclusive/)).toBeVisible();
+    await waitFor(() => expect(form.getByText(/threshold is inclusive/)).toBeVisible());
     const noData = form.getByRole("radiogroup", { name: "When there is no data" });
     await expect(within(noData).getByRole("radio", { name: "Keep current state" })).toBeChecked();
 
@@ -2013,7 +2021,9 @@ export const NoDataIsOfferedOnlyToSignalsThatHaveIt: Story = {
     await clickWhenEnabled(canvasElement, /add rule/i);
     const form = within(sheet());
     await userEvent.type(form.getByLabelText("Name"), "traffic stopped");
-    await expect(form.getByRole("radiogroup", { name: "When there is no data" })).toBeVisible();
+    await waitFor(() =>
+      expect(form.getByRole("radiogroup", { name: "When there is no data" })).toBeVisible(),
+    );
     await userEvent.click(
       within(form.getByRole("radiogroup", { name: "When there is no data" })).getByRole("radio", {
         name: "Resolve",

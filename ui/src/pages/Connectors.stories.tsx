@@ -538,7 +538,7 @@ export const CollectorConfigEmpty: Story = {
     await waitFor(() => expect(canvas.getByText(/No connectors yet/)).toBeVisible());
     await userEvent.click(canvas.getByRole("button", { name: /Collector config/ }));
     const dialog = within(await within(document.body).findByRole("dialog"));
-    await expect(dialog.getByText(/Nothing to deliver yet/)).toBeVisible();
+    await waitFor(() => expect(dialog.getByText(/Nothing to deliver yet/)).toBeVisible());
     // the other empty state is for connectors that exist
     await expect(dialog.queryByText(copy.allOffTitle)).toBeNull();
   },
@@ -1365,9 +1365,11 @@ export const FailedDeleteShowsOnItsCard: Story = {
     await userEvent.click(canvas.getByLabelText("Delete connector signoz"));
     await confirmDestructive(/signoz/, /delete connector/i);
     await refusedDelete.expectSent("DELETE", "/connectors/c-1");
-    await expect(
-      await within(await confirmation()).findByText(/referenced by a pipeline/),
-    ).toBeVisible();
+    await waitFor(async () =>
+      expect(
+        await within(await confirmation()).findByText(/referenced by a pipeline/),
+      ).toBeVisible(),
+    );
 
     await cancelConfirmation();
     const card = within(canvas.getByRole("group", { name: "signoz" }));
@@ -1540,7 +1542,7 @@ export const CollectorConfigAllSwitchedOffInRussianAtMobile: Story = {
     await userEvent.click(canvas.getByRole("button", { name: copy.open }));
     const dialog = within(await within(document.body).findByRole("dialog"));
 
-    await expect(await dialog.findByText(copy.allOffTitle)).toBeVisible();
+    await waitFor(() => expect(dialog.getByText(copy.allOffTitle)).toBeVisible());
     const body = dialog.getByText(copy.allOffBody);
     await expect(body).toBeVisible();
     await expect(body.scrollWidth).toBeLessThanOrEqual(body.clientWidth);

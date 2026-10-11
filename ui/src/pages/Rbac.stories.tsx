@@ -569,7 +569,7 @@ export const EditsACustomRole: Story = {
     // seeded from the stored role: the pair it already grants is ticked
     await waitFor(() => expect(form.getByLabelText("Create on virtual_key")).toBeChecked());
     // and the retired pair is accounted for rather than silently dropped
-    await expect(form.getByText(/does not define/)).toBeVisible();
+    await waitFor(() => expect(form.getByText(/does not define/)).toBeVisible());
     // the slug is the role's stable handle, so an edit does not offer it
     await expect(form.queryByLabelText("Slug")).toBeNull();
 

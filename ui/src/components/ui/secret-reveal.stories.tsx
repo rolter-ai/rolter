@@ -295,7 +295,7 @@ export const InRussian: Story = {
 
     await userEvent.click(within(dialog).getByRole("button", { name: ru.common.done }));
     const prompt = await screen().findByRole("dialog", { name: ru.common.secret.closeTitle });
-    await expect(within(prompt).getByText(ru.common.secret.closeBody)).toBeVisible();
+    await waitFor(() => expect(within(prompt).getByText(ru.common.secret.closeBody)).toBeVisible());
     await userEvent.click(
       within(prompt).getByRole("button", { name: ru.common.secret.closeConfirm }),
     );

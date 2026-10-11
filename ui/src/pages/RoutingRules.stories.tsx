@@ -209,7 +209,7 @@ export const AddRouteOpensTheRouteSheet: Story = {
     await waitFor(() => expect(add).toBeEnabled());
     await userEvent.click(add);
     const dialog = within(await within(document.body).findByRole("dialog"));
-    await expect(dialog.getByRole("heading", { name: "Add route" })).toBeVisible();
+    await waitFor(() => expect(dialog.getByRole("heading", { name: "Add route" })).toBeVisible());
     // two providers to choose between, so the target starts on neither: the
     // first one alphabetically is not where this route's traffic should go
     await expect(await dialog.findByLabelText("Target 1 provider")).toHaveValue("");
@@ -535,7 +535,7 @@ export const EditsATwoTargetRoute: Story = {
     await expectAllowed(canvasElement, "Edit route gpt-4o");
     await userEvent.click(await canvas.findByRole("button", { name: "Edit route gpt-4o" }));
     const dialog = within(await within(document.body).findByRole("dialog"));
-    await expect(dialog.getByRole("heading", { name: "Edit route" })).toBeVisible();
+    await waitFor(() => expect(dialog.getByRole("heading", { name: "Edit route" })).toBeVisible());
     await expect(await dialog.findByLabelText("Target 1 upstream model")).toHaveValue(
       "gpt-4o-2024-08-06",
     );
@@ -667,7 +667,7 @@ export const RejectedSave: Story = {
     await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
     await waitFor(() => expect(dialog.getByLabelText("Target 2 weight")).toBeInvalid());
     await expect(dialog.getByLabelText("Target 1 weight")).toBeValid();
-    await expect(dialog.getByText(/refused the weight of target 2/)).toBeVisible();
+    await waitFor(() => expect(dialog.getByText(/refused the weight of target 2/)).toBeVisible());
     await expectAllowed(document.body, "Save route");
     // fixing the line clears the refusal
     await userEvent.type(dialog.getByLabelText("Target 2 weight"), "0");
@@ -775,7 +775,7 @@ export const LabelPanel: Story = {
     await waitFor(() => expect(canvas.getAllByText("gpt-4o").length).toBeGreaterThan(0));
     await userEvent.click(canvas.getByRole("button", { name: "Labels on gpt-4o" }));
     const panel = within(await within(document.body).findByRole("dialog"));
-    await expect(await panel.findByText(/priced on every target/)).toBeVisible();
+    await waitFor(() => expect(panel.getByText(/priced on every target/)).toBeVisible());
     await expect(panel.getByRole("button", { name: "Remove tier=gold" })).toBeVisible();
     await expect(panel.queryByRole("button", { name: "Remove tier=observed-gold" })).toBeNull();
   },

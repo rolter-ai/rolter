@@ -1,6 +1,13 @@
 import { describe, it, expect } from "bun:test";
 
-import { checkAll, checkSource, inGatedStory, queriedRole, waitedLines } from "./check-story-waits";
+import {
+  checkAll,
+  checkSource,
+  inGatedStory,
+  queriedRole,
+  statements,
+  waitedLines,
+} from "./check-story-waits";
 
 /** a story object, which is the unit the gate rule is scoped to */
 function story(role: string | null, ...statements: string[]): string {
@@ -199,7 +206,7 @@ describe("the sheet-row rule", () => {
       ),
       "a.stories.tsx",
     );
-    expect(violations).toEqual([]);
+    expect(violations.filter((v) => v.rule === "sheet-row")).toEqual([]);
   });
 
   it("only looks at the statement the sheet opened on", () => {
@@ -301,5 +308,142 @@ describe("helpers", () => {
 describe("the tree", () => {
   it("has no zero-latency assertion left", () => {
     expect(checkAll().violations).toEqual([]);
+  });
+});
+
+describe("the overlay-visible rule", () => {
+  const flagged = (...statements: string[]) =>
+    checkSource(story(null, ...statements), "a.stories.tsx").violations.filter(
+      (v) => v.rule === "overlay-visible",
+    );
+
+  it("flags a one-shot read inside a dialog found by role", () => {
+    const hits = flagged(
+      '    const dialog = await within(document.body).findByRole("dialog");',
+      '    await expect(within(dialog).getByText("Edit")).toBeVisible();',
+    );
+    expect(hits).toHaveLength(1);
+    expect(hits[0].line).toBe(9);
+  });
+
+  it("flags a drawer found as a complementary landmark, past a focus waiter", () => {
+    const hits = flagged(
+      '    const drawer = await canvas.findByRole("complementary", { name: "Details" });',
+      "    await waitFor(() => expect(drawer).toHaveFocus());",
+      '    await expect(within(drawer).getByText("deadline")).toBeVisible();',
+    );
+    expect(hits).toHaveLength(1);
+  });
+
+  it("flags a name bound from sheet() or confirmation(), and a multi-line read", () => {
+    expect(
+      flagged(
+        "    const form = within(sheet());",
+        '    await expect(form.getByText("x")).toBeVisible();',
+      ),
+    ).toHaveLength(1);
+    expect(
+      flagged(
+        "    const dialog = within(await confirmation());",
+        "    await expect(",
+        '      dialog.getByText("Delete it?"),',
+        "    ).toBeVisible();",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("flags a read written straight onto the lookup", () => {
+    expect(
+      flagged('    await expect(await within(document.body).findByRole("dialog")).toBeVisible();'),
+    ).toHaveLength(1);
+    expect(
+      flagged(
+        "    await userEvent.click(open);",
+        "    await confirmation();",
+        '    await expect(within(sheet()).getByText("x")).toBeVisible();',
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("accepts a waitFor on visibility, wrapped or on the overlay itself", () => {
+    expect(
+      flagged(
+        '    const dialog = await within(document.body).findByRole("dialog");',
+        "    await waitFor(() => expect(dialog).toBeVisible());",
+        '    await expect(within(dialog).getByText("Edit")).toBeVisible();',
+      ),
+    ).toEqual([]);
+    expect(
+      flagged(
+        "    const form = within(sheet());",
+        '    await waitFor(() => expect(form.getByText("x")).toBeVisible());',
+        '    await expect(form.getByText("y")).toBeVisible();',
+      ),
+    ).toEqual([]);
+  });
+
+  it("does not take a waiter on something other than visibility as settling", () => {
+    expect(
+      flagged(
+        '    const dialog = await within(document.body).findByRole("dialog");',
+        "    await waitFor(() => expect(dialog).toHaveFocus());",
+        "    await expect(dialog).toBeVisible();",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("flags only the first read: once it passed the overlay is opaque", () => {
+    expect(
+      flagged(
+        '    const dialog = await within(document.body).findByRole("dialog");',
+        '    await expect(dialog.getByText("a")).toBeVisible();',
+        '    await expect(dialog.getByText("b")).toBeVisible();',
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("leaves a read that is not about the overlay, or not about visibility", () => {
+    expect(
+      flagged(
+        '    const dialog = await within(document.body).findByRole("dialog");',
+        '    await expect(canvas.getByText("page")).toBeVisible();',
+        '    await expect(dialog.getByText("a")).toBeInTheDocument();',
+        "    await expect(dialog).not.toBeVisible();",
+      ),
+    ).toEqual([]);
+  });
+
+  it("keeps overlays of one story from reaching the next", () => {
+    const source = [
+      story(null, '    const dialog = await within(document.body).findByRole("dialog");'),
+      story(null, '    await expect(dialog.getByText("a")).toBeVisible();'),
+    ].join("\n");
+    expect(checkSource(source, "a.stories.tsx").violations).toEqual([]);
+  });
+
+  it("honours a waiver above the read", () => {
+    const { violations, waivers } = checkSource(
+      story(
+        null,
+        '    const dialog = await within(document.body).findByRole("dialog");',
+        "    // story-wait-allow: the dialog is mounted open, no animation",
+        "    await expect(dialog).toBeVisible();",
+      ),
+      "a.stories.tsx",
+    );
+    expect(violations).toEqual([]);
+    expect(waivers).toHaveLength(1);
+  });
+});
+
+describe("statements", () => {
+  it("groups a call that spans lines and ignores a paren inside a string", () => {
+    const found = statements([
+      "await expect(",
+      '  a.getByText("("),',
+      ").toBeVisible();",
+      "next();",
+    ]);
+    expect(found.map((s) => s.at)).toEqual([0, 3]);
   });
 });

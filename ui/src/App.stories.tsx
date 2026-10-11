@@ -438,7 +438,7 @@ export const GettingStartedOpensCreateProject: Story = {
     await expect(canvas.queryByRole("menuitem", { name: en.scope.newProject })).toBeNull();
     await userEvent.click(create);
     const dialog = within(await confirmation());
-    await expect(dialog.getByText(en.scope.newProject)).toBeVisible();
+    await waitFor(() => expect(dialog.getByText(en.scope.newProject)).toBeVisible());
     await expect(dialog.getByText(en.scope.newProjectHint)).toBeVisible();
   },
 };
@@ -1365,7 +1365,7 @@ export const ShortcutReferenceIgnoresTyping: Story = {
     // outside one it opens, which is what makes the three above a guard rather
     // than a handler that never fires
     await userEvent.keyboard("?");
-    await expect(await body.findByRole("dialog", { name: shortcuts.title })).toBeVisible();
+    await waitFor(() => expect(body.getByRole("dialog", { name: shortcuts.title })).toBeVisible());
   },
 };
 
@@ -1476,7 +1476,7 @@ export const ShortcutReferenceFromIconRail: Story = {
     const body = within(document.body);
 
     await userEvent.click(within(rail).getByRole("button", { name: SHORTCUTS_FOOTER }));
-    await expect(await body.findByRole("dialog", { name: shortcuts.title })).toBeVisible();
+    await waitFor(() => expect(body.getByRole("dialog", { name: shortcuts.title })).toBeVisible());
     await expectNoHorizontalOverflow();
   },
 };
@@ -1496,7 +1496,7 @@ export const ShortcutReferenceFromDrawer: Story = {
     const drawer = await canvas.findByRole("dialog", { name: NAV_LABEL });
 
     await userEvent.click(await within(drawer).findByRole("button", { name: SHORTCUTS_FOOTER }));
-    await expect(await body.findByRole("dialog", { name: shortcuts.title })).toBeVisible();
+    await waitFor(() => expect(body.getByRole("dialog", { name: shortcuts.title })).toBeVisible());
     await expectNoHorizontalOverflow();
   },
 };

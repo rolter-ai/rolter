@@ -1328,7 +1328,7 @@ control disabled by its own form state cannot pass for a permitted one. The
 probe is the harness's and never the dashboard's: no production component
 learns a test-only attribute.
 
-`bun run check:waits` (`ui/scripts/check-story-waits.ts`) enforces all three
+`bun run check:waits` (`ui/scripts/check-story-waits.ts`) enforces all four
 shapes, in the same `ui, storybook, docs` job as `check:focus` and on the same
 grep-level terms:
 
@@ -1339,12 +1339,30 @@ grep-level terms:
   control starts in
 - a `getByRole("checkbox" | "radio" | "row" | "cell" | "option" | …)` on the
   statement right after `sheet()` or a `findByRole("dialog")`
+- a one-shot `toBeVisible()` on an overlay that just opened (#2291), below
 
 The second rule looks only at roles a screen renders one of per row of fetched
 data. A `heading` or a confirm `button` is part of the sheet's own markup and
 paints with it, and flagging those would mean a waiver on every editor story —
 which is how a guard gets switched off. `getByLabelText` is out for the same
 reason: a sheet's fields are in its first paint.
+
+The fourth rule is about time rather than data. A drawer, sheet or dialog fades
+in, so its first animation frame is at opacity 0, and `findByRole("dialog")`
+resolves on existence, not on the fade: a `toBeVisible()` read once right after
+it can land on that frame and fail only on a loaded runner (#2287 fixed nine
+plays that did). The rule follows the overlay through the play. A name bound
+from `sheet()`, `confirmation()` or `findByRole("dialog" | "complementary")` is
+unsettled until a `waitFor(… toBeVisible())` mentions it, and the first
+`toBeVisible()` that reads the name (or `within(name)`) before that is the
+violation; a `waitFor` that waits on something else, such as focus, settles
+nothing. Only the first read is flagged: once it has passed the overlay is
+opaque. A read written straight onto the lookup, `expect(await confirmation())`,
+is flagged too. The fix is to wrap the read, `await waitFor(() =>
+expect(within(dialog).getByText(…)).toBeVisible())`, or to wait once on the
+overlay itself before looping over its contents. The enter animations are left
+on in the test runner on purpose, so the reduced-motion stories (#2006) keep
+testing real motion settings.
 
 A case the rule is genuinely not about carries `// story-wait-allow: <reason>`
 in the comment block above the line, the way `check:primitives` takes its

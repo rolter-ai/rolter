@@ -104,7 +104,7 @@ export const Add: Story = {
   render: () => <Stage mode="add" />,
   play: async () => {
     const dialog = within(sheet());
-    await expect(dialog.getByText("Add provider group")).toBeVisible();
+    await waitFor(() => expect(dialog.getByText("Add provider group")).toBeVisible());
     // a group with nothing in it resolves to nothing, and says so rather than
     // leaving an empty area where members would be
     await expect(dialog.getByText(/A group with no members resolves to nothing/)).toBeVisible();
@@ -133,7 +133,7 @@ export const NoProvidersYet: Story = {
   render: () => <Stage mode="add" providers={[]} />,
   play: async () => {
     const dialog = within(sheet());
-    await expect(dialog.getByText(/add providers first/)).toBeVisible();
+    await waitFor(() => expect(dialog.getByText(/add providers first/)).toBeVisible());
     await expect(dialog.getByRole("button", { name: /add member/i })).toBeDisabled();
   },
 };
@@ -176,7 +176,7 @@ export const SlugIsLockedUntilUnlocked: Story = {
     await expect(dialog.getByLabelText("Slug")).toBeDisabled();
     await userEvent.click(dialog.getByRole("switch"));
     await expect(dialog.getByLabelText("Slug")).toBeEnabled();
-    await expect(dialog.getByText(/breaks any client using the old/)).toBeVisible();
+    await waitFor(() => expect(dialog.getByText(/breaks any client using the old/)).toBeVisible());
   },
 };
 

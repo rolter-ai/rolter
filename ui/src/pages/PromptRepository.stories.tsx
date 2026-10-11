@@ -652,7 +652,9 @@ export const RenamesTemplateKeepingSlug: Story = {
     await userEvent.click(await canvas.findByRole("button", { name: "Rename Support concierge" }));
     const page = within(canvasElement.ownerDocument.body);
     const dialog = within(await page.findByRole("dialog"));
-    await expect(dialog.getByRole("heading", { name: "Rename prompt template" })).toBeVisible();
+    await waitFor(() =>
+      expect(dialog.getByRole("heading", { name: "Rename prompt template" })).toBeVisible(),
+    );
     // the slug is the stable identity: it is stated, never offered as a field
     await expect(dialog.getByText(/support-concierge/)).toBeVisible();
     const [name] = dialog.getAllByRole("textbox");

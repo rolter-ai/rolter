@@ -735,7 +735,9 @@ export const TogglingARoleOffLeavesTheDraftClean: Story = {
     const role = () => form.getByRole("checkbox", { name: /Support engineer/ });
     await form.findByRole("checkbox", { name: /Support engineer/ });
     await userEvent.click(role());
-    await expect(await form.findByLabelText("Where Support engineer applies")).toBeVisible();
+    await waitFor(() =>
+      expect(form.getByLabelText("Where Support engineer applies")).toBeVisible(),
+    );
     await userEvent.click(role());
     await waitFor(() => expect(role()).not.toBeChecked());
 
@@ -938,7 +940,7 @@ export const AssignRejectedByTheServer: Story = {
     await pickOption(await form.findByRole("combobox", { name: "User" }), /Grace Hopper/);
     await userEvent.click(form.getByRole("button", { name: "Assign profile" }));
 
-    await expect(await form.findByText("Could not assign the profile")).toBeVisible();
+    await waitFor(() => expect(form.getByText("Could not assign the profile")).toBeVisible());
     await expect(form.getByText(/only be assigned to a team in its own org/)).toBeVisible();
     await expect(form.getByRole("combobox", { name: "User" })).toHaveValue("Grace Hopper");
   },
@@ -987,15 +989,17 @@ export const DeleteConfirmationNamesTheReach: Story = {
     await waitFor(() => expect(canvas.getByText("1 user · 1 team")).toBeVisible());
     await userEvent.click(canvas.getByRole("button", { name: "Delete Support engineers" }));
     const dialog = await confirmation();
-    await expect(within(dialog).getByText(/It reaches 1 user and 1 team\./)).toBeVisible();
+    await waitFor(() =>
+      expect(within(dialog).getByText(/It reaches 1 user and 1 team\./)).toBeVisible(),
+    );
     await cancelConfirmation();
 
     // the reach is known once the detail has landed
     await expect(await canvas.findByText("Not assigned to anyone yet")).toBeVisible();
     await userEvent.click(canvas.getByRole("button", { name: "Delete On-call" }));
-    await expect(
-      within(await confirmation()).getByText(/not assigned to anyone yet/),
-    ).toBeVisible();
+    await waitFor(async () =>
+      expect(within(await confirmation()).getByText(/not assigned to anyone yet/)).toBeVisible(),
+    );
     await cancelConfirmation();
   },
 };

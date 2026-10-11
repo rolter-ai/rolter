@@ -441,7 +441,7 @@ export const AutoLabelsAreReadOnly: Story = {
     await waitFor(() => expect(canvas.getAllByText("openai-prod").length).toBeGreaterThan(0));
     await userEvent.click(canvas.getByRole("button", { name: "Labels on openai-prod" }));
     const panel = within(await within(document.body).findByRole("dialog"));
-    await expect(await panel.findByText(/priced from the last 24h/)).toBeVisible();
+    await waitFor(() => expect(panel.getByText(/priced from the last 24h/)).toBeVisible());
     // the custom one can go; the observation cannot
     await expect(panel.getByRole("button", { name: "Remove tier=gold" })).toBeVisible();
     // and only this provider's labels: `region=eu` belongs to the other row

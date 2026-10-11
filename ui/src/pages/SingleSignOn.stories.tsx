@@ -418,7 +418,7 @@ export const RefusesASlugOutsideTheCharset: Story = {
     await expect(slug).toHaveValue("Acme Okta");
     await expect(slug).toHaveAttribute("aria-invalid", "true");
     const reason = `${SLUG_INVALID} Try acme-okta.`;
-    await expect(panel.getByText(reason)).toBeVisible();
+    await waitFor(() => expect(panel.getByText(reason)).toBeVisible());
     // the field announces the rule and the reason together
     await expect(slug).toHaveAccessibleDescription(/up to 63 characters.*Try acme-okta\./);
 
