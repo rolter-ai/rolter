@@ -22,6 +22,9 @@ import {
   type StoryRole,
 } from "./story-harness";
 import type { GuardrailProviderInput, GuardrailProviderRow } from "@/lib/api";
+import ru from "@/lib/i18n/locales/ru.json";
+import en from "@/lib/i18n/locales/en.json";
+import { phoneFits } from "@/lib/story-viewport";
 import { UxScreenProvider } from "@/lib/ux-react";
 
 const PROVIDERS: GuardrailProviderRow[] = [
@@ -223,6 +226,8 @@ export const Loaded: Story = {
     ).toBeVisible();
     await expect(card(canvasElement, "Production LLM Guard").getByText("enforced")).toBeVisible();
     await expect(card(canvasElement, "Staging evaluator").getByText("paused")).toBeVisible();
+    // the shell's ScreenHeader owns the page's only h1 (#2241)
+    await expect(within(canvasElement).queryAllByRole("heading", { level: 1 })).toHaveLength(0);
   },
 };
 export const Loading: Story = {
@@ -1079,3 +1084,16 @@ export const PausingWhileEnforcementIsUnknown: Story = {
     await expect(confirm.queryByText(NOTHING_CHECKS)).toBeNull();
   },
 };
+
+// the cards at a phone's width in both languages (#2252)
+const providersFit = phoneFits({
+  render: () => <Harness fetchStub={registry(PROVIDERS)} />,
+  ready: async (canvas, locale) => {
+    await canvas.findByText("Production LLM Guard");
+    await waitFor(() =>
+      expect(document.body).toHaveTextContent((locale === "ru" ? ru : en).guardrailPanel.enforced),
+    );
+  },
+});
+export const SmallPhone: Story = providersFit("small", "en");
+export const SmallPhoneInRussian: Story = providersFit("small", "ru");

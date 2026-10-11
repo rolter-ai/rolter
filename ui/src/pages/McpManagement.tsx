@@ -136,22 +136,11 @@ function Dialog({
   );
 }
 
-function PageLead({
-  eyebrow,
-  children,
-  action,
-}: {
-  eyebrow: string;
-  children: React.ReactNode;
-  action?: React.ReactNode;
-}) {
+function PageLead({ children, action }: { children: React.ReactNode; action?: React.ReactNode }) {
   return (
     <div className="flex flex-col gap-4 border-b border-[color:var(--border-subtle)] pb-5 sm:flex-row sm:items-end">
       <div className="min-w-0 flex-1">
-        <p className="font-mono text-[10px] uppercase tracking-[0.24em] text-[color:var(--red-folk-text)]">
-          {eyebrow}
-        </p>
-        <div className="mt-2 text-sm leading-relaxed text-muted-foreground">{children}</div>
+        <div className="text-sm leading-relaxed text-muted-foreground">{children}</div>
       </div>
       {action}
     </div>
@@ -642,7 +631,6 @@ export function McpCatalog() {
   return (
     <PageBody>
       <PageLead
-        eyebrow={t("pages.mcpCatalog.eyebrow")}
         action={
           <GatedButton
             gate="mcp_server:create"
@@ -1348,7 +1336,7 @@ export function McpLibrary() {
   });
   return (
     <PageBody>
-      <PageLead eyebrow={t("pages.mcpLibrary.eyebrow")}>{t("pages.mcpLibrary.lead")}</PageLead>
+      <PageLead>{t("pages.mcpLibrary.lead")}</PageLead>
       {/* every curated definition in mcp_oauth.rs carries its tool manifest as
         of #1252, so this row normally has something in it: it is what an
         installed server arrives with, what the tool tally counts, and what a
@@ -1465,7 +1453,6 @@ export function ToolGroups() {
   return (
     <PageBody>
       <PageLead
-        eyebrow={t("pages.tool-groups.eyebrow")}
         action={
           <Button disabled={!servers.data?.length} onClick={() => setEditing(null)}>
             <Plus className="h-4 w-4" aria-hidden />
@@ -1759,7 +1746,7 @@ function McpSettingsForm({
   });
   return (
     <PageBody>
-      <PageLead eyebrow={t("pages.mcpSettings.eyebrow")}>{t("pages.mcpSettings.lead")}</PageLead>
+      <PageLead>{t("pages.mcpSettings.lead")}</PageLead>
       <div className="grid gap-4 lg:grid-cols-2">
         <section className="rounded-[10px] border border-[color:var(--border-default)] bg-card p-5">
           <div className="flex items-center gap-2">

@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react";
+import { useQuery } from "@tanstack/react-query";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import FeatureFlags from "./FeatureFlags";
@@ -13,7 +14,7 @@ import {
   type FetchStub,
   type StoryRole,
 } from "./story-harness";
-import type { FeatureFlagsDto } from "@/lib/api";
+import { fetchConfig, type FeatureFlagsDto } from "@/lib/api";
 
 const BASE: FeatureFlagsDto = {
   response_cache: true,
@@ -313,5 +314,42 @@ export const ConfirmSendsThePut: Story = {
     await expect(body.circuit_breaker).toBe(false);
     await expect(body.guardrails).toBe(true);
     await expectToast(canvasElement, /feature flags updated/i);
+  },
+};
+
+// stands in for the Effective config and Models screens, which share this key
+function ConfigReader() {
+  useQuery({ queryKey: ["config"], queryFn: fetchConfig });
+  return null;
+}
+
+const configRecorder = recording(async (input, init) => {
+  if (init?.method === "PUT") return json({ ...BASE, ...JSON.parse(String(init.body)) });
+  if (String(input).includes("/api/v1/config")) return json({});
+  return json(BASE);
+});
+
+// a saved flag rewrites the effective config, so the shared config query is
+// fetched again rather than served from its cache (#2284)
+export const SaveRefetchesTheEffectiveConfig: Story = {
+  render: () => (
+    <ScreenHarness fetchStub={configRecorder.stub}>
+      <Toasted>
+        <ConfigReader />
+        <FeatureFlags />
+      </Toasted>
+    </ScreenHarness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const configReads = () =>
+      configRecorder.calls.filter((c) => c.method === "GET" && c.url.includes("/api/v1/config"))
+        .length;
+    await userEvent.click(await canvas.findByRole("switch", { name: "Circuit Breaker" }));
+    await waitFor(() => expect(configReads()).toBe(1));
+    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
+    await confirmChanges(canvasElement);
+    await expectToast(canvasElement, /feature flags updated/i);
+    await waitFor(() => expect(configReads()).toBe(2));
   },
 };

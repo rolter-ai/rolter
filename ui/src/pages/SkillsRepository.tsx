@@ -753,7 +753,6 @@ function SkillWorkbench({
       <div className="space-y-7 p-4 sm:p-5">
         <section>
           <SectionHeading
-            eyebrow={t("pages.skillsRepo.artifactEyebrow")}
             title={t("pages.skillsRepo.contentSourceTitle")}
             description={t("pages.skillsRepo.contentSourceDescription")}
           />
@@ -804,7 +803,6 @@ function SkillWorkbench({
 
         <section>
           <SectionHeading
-            eyebrow={t("pages.skillsRepo.manifestEyebrow")}
             title={t("pages.skillsRepo.versionMetadataTitle")}
             description={t("pages.skillsRepo.versionMetadataDescription")}
           />
@@ -867,21 +865,10 @@ function SourceOption({
   );
 }
 
-function SectionHeading({
-  eyebrow,
-  title,
-  description,
-}: {
-  eyebrow: string;
-  title: string;
-  description: string;
-}) {
+function SectionHeading({ title, description }: { title: string; description: string }) {
   return (
     <div className="mb-3">
-      <p className="text-[0.6875rem] font-semibold uppercase tracking-[0.14em] text-[color:var(--red-folk-text)]">
-        {eyebrow}
-      </p>
-      <h3 className="mt-1 text-sm font-semibold">{title}</h3>
+      <h3 className="text-sm font-semibold">{title}</h3>
       <p className="mt-0.5 text-xs leading-5 text-muted-foreground">{description}</p>
     </div>
   );

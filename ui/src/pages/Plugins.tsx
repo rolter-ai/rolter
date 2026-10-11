@@ -160,15 +160,7 @@ export default function Plugins() {
     <div className="mx-auto flex max-w-[1180px] flex-col gap-5 p-[22px]">
       <header className="flex flex-col gap-3 border-b border-[color:var(--border-subtle)] pb-5 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <div className="flex flex-wrap items-center gap-2">
-            <p className="font-mono text-[0.6875rem] uppercase tracking-[0.16em] text-[color:var(--status-info-text)]">
-              {t("pages.plugins.eyebrow")}
-            </p>
-          </div>
-          <h1 className="mt-1 text-xl font-semibold tracking-tight">
-            {t("pages.plugins.heading")}
-          </h1>
-          <p className="mt-1 max-w-2xl text-sm text-muted-foreground">{t("pages.plugins.intro")}</p>
+          <p className="max-w-2xl text-sm text-muted-foreground">{t("pages.plugins.intro")}</p>
         </div>
         <GatedButton gate="plugin:create" control="plugin-install" onClick={() => setEditing(null)}>
           <Plus className="h-4 w-4" aria-hidden /> {t("pages.plugins.install")}

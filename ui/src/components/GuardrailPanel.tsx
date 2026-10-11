@@ -71,7 +71,7 @@ export function PolicyCard({
   };
   const Heading = headingLevel;
   return (
-    <article className="flex min-h-[172px] flex-col rounded-[10px] border border-[color:var(--border-subtle)] bg-[color:var(--surface-raised)] p-4 transition-colors hover:border-[color:var(--border-default)]">
+    <article className="flex min-h-[172px] min-w-0 flex-col rounded-[10px] border border-[color:var(--border-subtle)] bg-[color:var(--surface-raised)] p-4 transition-colors hover:border-[color:var(--border-default)]">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
@@ -85,7 +85,7 @@ export function PolicyCard({
       </div>
       <div className="mt-3 flex flex-wrap gap-1.5">{badges}</div>
       <div className="mt-3 text-xs text-[color:var(--text-subtle)]">{details}</div>
-      <div className="mt-auto flex justify-end gap-2 pt-4">{actions}</div>
+      <div className="mt-auto flex flex-wrap justify-end gap-2 pt-4">{actions}</div>
     </article>
   );
 }
