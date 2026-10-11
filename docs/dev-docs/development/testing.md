@@ -88,6 +88,22 @@ share a single-threaded `serial-db` group; removing it (#1429) took the two suit
 from 389-572s to 155-342s on a 4-core machine with all 781 tests green in each of
 six runs. The file records the numbers.
 
+## Test-only environment variables
+
+`all_binary_cli_env_vars_are_documented_in_reference` in
+`crates/rolter/tests/env_var_names.rs` collects every `"ROLTER_*"` string literal
+under `crates/*/src`, `#[cfg(test)]` code included, and fails unless each one
+appears in `docs/user-docs/configuration/environment-variables.mdx`. The only
+names it skips are the ones starting with `ROLTER_TEST_` (or containing
+`_TEST_`).
+
+So a variable that only tests or developer tooling read must be named
+`ROLTER_TEST_*`, like `ROLTER_TEST_DATABASE_URL` or
+`ROLTER_TEST_UPDATE_RBAC_MATRIX`. Anything else is operator-facing and gets a
+row in the reference. #2743 added a developer switch named
+`ROLTER_UPDATE_RBAC_MATRIX`, and CI reported nothing but "exit code 100" until it
+was renamed.
+
 ## The Postgres test database
 
 The Postgres-backed tests self-skip unless `ROLTER_TEST_DATABASE_URL` points at
