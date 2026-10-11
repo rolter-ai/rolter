@@ -31,7 +31,6 @@ import { Textarea } from "@/components/ui/textarea";
 import {
   createRoute,
   createRouteTarget,
-  deleteRouteTarget,
   fetchCurrencySettings,
   fetchModelPrices,
   fetchProviderModels,
@@ -44,7 +43,11 @@ import {
   setRouteAdvanced,
   setRouteEnabled,
   STRATEGIES,
+  updateRoute,
   updateRouteParams,
+  ApiError,
+  type RouteTargetInput,
+  type UpdateRouteInput,
   upsertModelPrice,
   type EffectiveModelDto,
   type ProviderRow,
@@ -505,16 +508,49 @@ function targetInput(target: DraftTarget, publicName: string) {
   };
 }
 
-function sameTarget(
-  row: RouteTargetRow,
-  input: ReturnType<typeof targetInput>,
-  publicName: string,
-): boolean {
-  return (
-    row.provider_id === input.provider_id &&
-    upstreamFor(row.upstream_model, publicName) === input.upstream_model &&
-    row.weight === input.weight
-  );
+export type RefusalField = "targets" | "provider" | "weight";
+
+/**
+ * A refusal the control plane pinned to one part of the target list: the whole
+ * list (`targets`), or one entry's field (`targets[1].weight`). The entry is
+ * kept by its draft `key` rather than its index, so removing an earlier line
+ * does not move the message onto a neighbour.
+ */
+export interface ServerRefusal {
+  field: RefusalField;
+  key?: string;
+}
+
+/** `targets`, `targets[2].weight`, `targets[0].provider_id` */
+export function refusalOf(error: unknown, targets: DraftTarget[]): ServerRefusal | null {
+  if (!(error instanceof ApiError) || error.code !== "invalid_field" || !error.field) return null;
+  const match = /^targets(?:\[(\d+)\]\.(weight|provider_id))?$/.exec(error.field);
+  if (!match) return null;
+  if (match[1] === undefined) return { field: "targets" };
+  const key = targets[Number(match[1])]?.key;
+  return key ? { field: match[2] === "weight" ? "weight" : "provider", key } : null;
+}
+
+/**
+ * The target list as `PUT /api/v1/routes/{id}` takes it.
+ *
+ * A stored line goes back with its `upstream_model` exactly as it was read, so
+ * the entry matches the stored target by (provider, upstream model) and keeps
+ * its id. That is why it does not use `upstreamFor`: a stored model that spells
+ * out the route's own name would turn into "absent", a different key, and the
+ * target would be replaced with a new id (#2235). A line added in the sheet has
+ * no stored value to keep, so it is normalised like a created one.
+ */
+function targetsToApi(targets: DraftTarget[], publicName: string): RouteTargetInput[] {
+  return targets.map((tg) => ({
+    provider_id: tg.providerId,
+    upstream_model: tg.id
+      ? tg.upstream.trim() === ""
+        ? null
+        : tg.upstream
+      : (upstreamFor(tg.upstream, publicName) ?? null),
+    weight: Number(tg.weight),
+  }));
 }
 
 function effLock(mode: LockMode, locked: boolean): boolean {
@@ -578,15 +614,19 @@ function buildPreview(
   providerName: (id: string) => string,
   advanced: Record<string, unknown>,
   seededRates: SeededRates,
+  editing: boolean,
 ) {
   const { params, paramPolicy } = paramsToApi(draft);
   const publicName = draft.name.trim();
   const hasPricing = draft.price.input.trim() !== "" || draft.price.output.trim() !== "";
   const obj = {
     route: { model: publicName || undefined, strategy: draft.strategy, enabled: draft.enabled },
+    // an edit previews the list the update call will carry, stored models as stored
     targets: draft.targets.map((tg) => ({
       provider: providerName(tg.providerId) || undefined,
-      upstream_model: upstreamFor(tg.upstream, publicName),
+      upstream_model: editing
+        ? targetsToApi([tg], publicName)[0].upstream_model
+        : upstreamFor(tg.upstream, publicName),
       weight: weightValid(tg.weight) ? Number(tg.weight) : tg.weight,
     })),
     params,
@@ -935,6 +975,7 @@ export function ModelSheet({
   // which errors are on screen: none on a pristine sheet, a field's own once it
   // was visited, all of them once a save was refused (#2810)
   const visibility = useErrorVisibility<FieldKey>();
+  const [refusal, setRefusal] = React.useState<ServerRefusal | null>(null);
   const [secOpen, setSecOpen] = React.useState<Record<SectionKey, boolean>>({
     general: true,
     routing: true,
@@ -1037,6 +1078,7 @@ export function ModelSheet({
     setDraft(d);
     seededRatesRef.current = { cacheWrite: d.price.cacheWrite, cacheWrite1h: d.price.cacheWrite1h };
     visibility.reset();
+    setRefusal(null);
     setDupFrom("");
     setSecOpen({
       general: true,
@@ -1114,15 +1156,22 @@ export function ModelSheet({
       : "";
   // a route with no target is accepted by the API and answers every request
   // with an error, so the sheet does not create one
-  const errTargets = !readonly && draft.targets.length === 0 ? t("modelSheet.errors.targets") : "";
+  // a refusal from the control plane marks the same fields until the list is edited
+  const errTargets =
+    !readonly && (draft.targets.length === 0 || refusal?.field === "targets")
+      ? t("modelSheet.errors.targets")
+      : "";
   // a target with no provider is not a target: the control plane would refuse
   // it, and a default that picked one for the operator sent traffic to the
   // wrong provider (#2810). only a blank line counts: a stored target whose
   // provider this project cannot use is kept as it is
   const providerRowInvalid = (tg: DraftTarget) => tg.providerId === "";
   const errProvider =
-    !readonly && draft.targets.some(providerRowInvalid) ? t("modelSheet.errors.provider") : "";
-  const weightRowInvalid = (tg: DraftTarget) => !weightValid(tg.weight);
+    !readonly && (draft.targets.some(providerRowInvalid) || refusal?.field === "provider")
+      ? t("modelSheet.errors.provider")
+      : "";
+  const weightRowInvalid = (tg: DraftTarget) =>
+    !weightValid(tg.weight) || (refusal?.field === "weight" && refusal.key === tg.key);
   const errWeight =
     !readonly && draft.targets.some(weightRowInvalid) ? t("modelSheet.errors.weight") : "";
   // blank inherits the gateway's budget; 0 turns retries off for the route
@@ -1170,7 +1219,15 @@ export function ModelSheet({
   };
   const problems = (Object.keys(found) as FieldKey[]).filter((key) => found[key]);
   // what the sheet says under each field: its error, once it may be shown
-  const shownError = (key: FieldKey) => (visibility.shows(key) ? found[key] : "");
+  // a refusal from the control plane is already news: show it without waiting
+  // for the field to be visited
+  const shownError = (key: FieldKey) =>
+    visibility.shows(key) || refusal?.field === key ? found[key] : "";
+  const rowNumber = (key?: string) => draft.targets.findIndex((tg) => tg.key === key) + 1;
+  const weightMessage =
+    refusal?.field === "weight" && !draft.targets.some((tg) => !weightValid(tg.weight))
+      ? t("routeSheet.errors.weightRow", { n: rowNumber(refusal.key) })
+      : shownError("weight");
   // a refused save puts one line above the buttons, which counts what is left
   // to fix; each problem itself is stated once, at its own field
   const summary = visibility.attempts > 0 && problems.length > 0;
@@ -1179,7 +1236,6 @@ export function ModelSheet({
   const ids = {
     nameHint: `${fid}-name-hint`,
     nameErr: `${fid}-name-err`,
-    strategyHint: `${fid}-strategy-hint`,
     targetsLabel: `${fid}-targets-label`,
     targetsErr: `${fid}-targets-err`,
     providerErr: `${fid}-provider-err`,
@@ -1254,25 +1310,14 @@ export function ModelSheet({
       // edit
       const r = route!;
       await updateRouteParams(r.id, params, paramPolicy);
-      if (draft.enabled !== r.enabled) await setRouteEnabled(r.id, draft.enabled);
-      // a target has no update endpoint (#2208), so a changed line is a new target and
-      // the old one goes. every create runs before any delete: the gateway
-      // picks up each write as it lands, and this order never leaves the route
-      // with nothing to send to part-way through the save
-      const stored = targets.data ?? [];
-      const kept = new Set<string>();
-      for (const target of draft.targets) {
-        const input = targetInput(target, r.model);
-        const was = target.id ? stored.find((row) => row.id === target.id) : undefined;
-        if (was && sameTarget(was, input, r.model)) {
-          kept.add(was.id);
-          continue;
-        }
-        await createRouteTarget(r.id, input);
-      }
-      for (const row of stored) {
-        if (!kept.has(row.id)) await deleteRouteTarget(row.id);
-      }
+      // one request for the enabled flag, the strategy and the whole target
+      // list: the control plane applies them in a single transaction, so a
+      // refused save leaves the route as it was, and a weight edit keeps the
+      // target's id
+      const input: UpdateRouteInput = { targets: targetsToApi(draft.targets, r.model) };
+      if (draft.enabled !== r.enabled) input.enabled = draft.enabled;
+      if (draft.strategy !== r.strategy) input.strategy = draft.strategy;
+      await updateRoute(r.id, input);
       if (hasPricing) {
         await upsertModelPrice({
           model: r.model,
@@ -1311,6 +1356,12 @@ export function ModelSheet({
     },
     onError: (error) => {
       ux.failed();
+      // a refusal about one line is said at that line; anything else has no row to sit on
+      const named = mode === "edit" ? refusalOf(error, draft.targets) : null;
+      if (named) {
+        setRefusal(named);
+        return;
+      }
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: publicName }),
@@ -1650,19 +1701,11 @@ export function ModelSheet({
               id="ms-strategy"
               className="font-mono"
               value={draft.strategy}
-              // the control plane takes a strategy when the route is created
-              // and has no call that changes it afterwards (#2208)
-              disabled={readonly || mode === "edit"}
-              aria-describedby={mode === "edit" ? ids.strategyHint : undefined}
+              disabled={readonly}
               onChange={(strategy) => set({ strategy })}
               options={strategyOptions(draft.strategy).map((s) => ({ value: s, label: s }))}
             />
             <StrategyHint strategy={draft.strategy} />
-            {mode === "edit" && (
-              <p id={ids.strategyHint} className="text-xs text-muted-foreground">
-                {t("modelSheet.routing.strategyFixed")}
-              </p>
-            )}
           </div>
           {readonly ? (
             configTargets && configTargets.length > 0 ? (
@@ -1695,12 +1738,13 @@ export function ModelSheet({
               shown={{
                 empty: !!shownError("targets"),
                 provider: !!shownError("provider"),
-                weight: !!shownError("weight"),
+                weight: !!weightMessage,
               }}
               providerInvalid={providerRowInvalid}
               weightInvalid={weightRowInvalid}
               onChange={(next) => {
                 set({ targets: next });
+                setRefusal(null);
                 // emptying the list is what the "add a target" error is about
                 if (next.length < draft.targets.length) visibility.touch("targets");
               }}
@@ -1709,7 +1753,7 @@ export function ModelSheet({
           )}
           <FieldError id={ids.targetsErr} error={shownError("targets")} />
           <FieldError id={ids.providerErr} error={shownError("provider")} />
-          <FieldError id={ids.weightErr} error={shownError("weight")} />
+          <FieldError id={ids.weightErr} error={weightMessage} />
         </FormSection>
 
         {/* ===== Default parameters ===== */}
@@ -2154,7 +2198,13 @@ export function ModelSheet({
               block so a mistyped key or a stray quote shows up here rather
               than after saving (#949) */}
           <CodeBlock
-            value={buildPreview(draft, providerName, advancedPayload, seededRatesRef.current)}
+            value={buildPreview(
+              draft,
+              providerName,
+              advancedPayload,
+              seededRatesRef.current,
+              mode === "edit",
+            )}
             language="json"
             label={t("modelSheet.configPreview")}
             maxHeight={280}
@@ -2178,7 +2228,7 @@ export function ModelSheet({
         )}
         <SheetError
           message={
-            save.isError
+            save.isError && !refusal
               ? advancedRejected
                 ? t("modelSheet.advancedRejected", { message: (save.error as Error).message })
                 : (save.error as Error).message
