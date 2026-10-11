@@ -1321,6 +1321,53 @@ export const CopyAsCodeCarriesTheConversation: Story = {
 };
 
 /**
+ * Copy as code keeps an image turn's content parts and reads the picture from
+ * a file instead of inlining the data: URL (#2955).
+ */
+const pictureSnippet = recording(async (input, init) =>
+  String(input).includes("/api/v1/client-settings")
+    ? json({ public_base_url: "https://gateway.example.com" })
+    : anyaReplies(input, init),
+);
+
+export const CopyAsCodeKeepsTheImagePart: Story = {
+  render: () => <Screen fetchStub={pictureSnippet.stub} role="superadmin" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const composer = await readyComposer(canvas);
+    await userEvent.click(canvas.getByRole("switch", { name: en.pages.playground.multimodal }));
+    const file = await waitFor(() => {
+      const input = canvasElement.querySelector<HTMLInputElement>('input[type="file"]');
+      expect(input).not.toBeNull();
+      return input as HTMLInputElement;
+    });
+    await userEvent.upload(file, new File(["x"], "pic.png", { type: "image/png" }));
+    await canvas.findByRole("button", { name: "Remove attachment" });
+    await sendMessage(canvas, composer, "what is in this picture?");
+    await canvas.findByText("Nice to meet you, Anya.");
+
+    await userEvent.click(canvas.getByRole("button", { name: "Copy as code for minicpm5-1b" }));
+    const dialog = await within(document.body).findByRole("dialog");
+    await waitFor(() => expect(dialog).toHaveTextContent(/gateway\.example\.com/));
+    const expected: Record<string, string[]> = {
+      curl: ["image_url", "base64 < image.png", "$IMAGE_B64"],
+      Python: ["image_url", 'open("image.png", "rb")', "{image}"],
+      JavaScript: ["image_url", 'readFileSync("image.png")', "${image}"],
+    };
+    for (const [tab, parts] of Object.entries(expected)) {
+      await userEvent.click(within(dialog).getByRole("tab", { name: tab }));
+      await waitFor(() => {
+        const text = dialog.textContent ?? "";
+        for (const part of parts) expect(text).toContain(part);
+      });
+      await expect(dialog.textContent ?? "").not.toMatch(
+        /data:image\/png;base64,[A-Za-z0-9+/=]{4}/,
+      );
+    }
+  },
+};
+
+/**
  * Enter sends and Shift+Enter adds a line (#2062). The composer grows with its
  * draft and goes back to one line once the message is out; the message that
  * leaves keeps its newline.

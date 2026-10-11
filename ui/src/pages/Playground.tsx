@@ -886,6 +886,11 @@ function chatMessage(msg: Msg, multimodal: boolean): ChatMessage {
   };
 }
 
+/** the media type of a `data:` URL, `image/png` when it does not say */
+function dataUrlMime(url: string): string {
+  return /^data:([^;,]+)/.exec(url)?.[1] ?? "image/png";
+}
+
 function ChatColumn({
   models,
   model,
@@ -958,7 +963,15 @@ function ChatColumn({
     // the conversation the column shows (#2058). a reply is only ever in flight
     // while `busy` holds Send back, so the thread holds no placeholder here
     const thread = [...msgs, turn];
-    setLastSent(thread.map((m) => ({ role: m.role, content: m.text })));
+    // an image goes into the snippet as a part read from a file, never as the
+    // data: URL itself (#2955), and only while the request carried it
+    setLastSent(
+      thread.map((m) => ({
+        role: m.role,
+        content: m.text,
+        ...(multimodal && m.image ? { image: { mime: dataUrlMime(m.image) } } : {}),
+      })),
+    );
     setDraft("");
     setImage(null);
     setError(null);
