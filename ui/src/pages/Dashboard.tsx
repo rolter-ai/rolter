@@ -41,6 +41,7 @@ import {
 } from "@/lib/time-window";
 import { cn } from "@/lib/utils";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { staleTarget } from "@/lib/ux";
 
 const num = (v: number | string | undefined): number => Number(v ?? 0);
 
@@ -156,16 +157,16 @@ function CardRead<T>({
 // is not on screen, so nothing else would say this data is going stale
 function RefreshFailed({
   read,
-  target,
+  region,
 }: {
   read: Pick<UseQueryResult<unknown>, "isError" | "data" | "errorUpdatedAt">;
-  /** the card's region on the UX event, suffixed `-stale` to tell it from a `LoadError` */
-  target: string;
+  /** the card's region; the UX event's target is `staleTarget(region)`, told apart from a `LoadError` */
+  region: string;
 }) {
   const { t } = useTranslation();
   const fmt = useFormat();
   const stale = read.isError && read.data !== undefined;
-  useErrorState(stale, target);
+  useErrorState(stale, staleTarget(region));
   if (!stale) return null;
   return (
     <p className="mt-2 text-xs text-[color:var(--status-danger-text)]">
@@ -256,7 +257,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
   // cards are drawn, as the other lines are
   useErrorState(
     !unavailable && !outage && recent.isError && recent.data !== undefined,
-    "dashboard-recent-stale",
+    staleTarget("dashboard-recent"),
   );
 
   if (unavailable || outage) {
@@ -372,7 +373,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
             );
           }}
         </CardRead>
-        <RefreshFailed read={summary} target="dashboard-stale" />
+        <RefreshFailed read={summary} region="dashboard" />
       </div>
 
       <IncompleteSpendNotice
@@ -435,7 +436,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
                 );
               }}
             </CardRead>
-            <RefreshFailed read={series} target="dashboard-spend-stale" />
+            <RefreshFailed read={series} region="dashboard-spend" />
           </CardContent>
         </Card>
         <Card data-testid="dashboard-traffic">
@@ -480,7 +481,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
                 );
               }}
             </CardRead>
-            <RefreshFailed read={byModel} target="dashboard-traffic-stale" />
+            <RefreshFailed read={byModel} region="dashboard-traffic" />
           </CardContent>
         </Card>
       </div>
@@ -543,7 +544,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
                 );
               }}
             </CardRead>
-            <RefreshFailed read={byModel} target="dashboard-by-model-stale" />
+            <RefreshFailed read={byModel} region="dashboard-by-model" />
           </CardContent>
         </Card>
         <Card data-testid="dashboard-recent">

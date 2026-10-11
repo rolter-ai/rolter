@@ -416,6 +416,17 @@ export const trackEmptyState = (screen: string, target?: string) =>
 export const trackErrorState = (screen: string, target?: string) =>
   track(screen, "error_state", { target, outcome: "error" });
 
+/** Suffix that marks an `error_state` as a refresh that failed over data still on screen (#2640). */
+export const STALE_TARGET_SUFFIX = "-stale";
+
+/**
+ * The `error_state` target for a region whose refresh failed while its earlier
+ * data stays on screen: the region's own name, then `-stale`. Dead-states
+ * queries tell the two apart with `target LIKE '%-stale'`, so every screen
+ * builds the target here rather than spelling the suffix (#2700).
+ */
+export const staleTarget = (region: string): string => `${region}${STALE_TARGET_SUFFIX}`;
+
 /** A save round-tripped and the user saw the confirmation. */
 export const trackSaveConfirmed = (screen: string, target: string, durationMs?: number) =>
   track(screen, "save_confirmed", { target, outcome: "ok", durationMs });
