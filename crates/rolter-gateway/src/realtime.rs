@@ -118,6 +118,7 @@ pub struct RealtimeQuery {
 pub async fn realtime(
     State(state): State<AppState>,
     headers: HeaderMap,
+    request_id: crate::trace::RequestId,
     Query(query): Query<RealtimeQuery>,
     ws: WebSocketUpgrade,
 ) -> Response {
@@ -227,12 +228,9 @@ pub async fn realtime(
         Err(message) => return api_error(StatusCode::BAD_GATEWAY, &message),
     };
 
-    // the ensure_request_id middleware guarantees this header is present
-    let request_id = headers
-        .get(crate::trace::REQUEST_ID_HEADER)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or_default()
-        .to_string();
+    // set by the ensure_request_id middleware, under whichever header the
+    // snapshot names
+    let request_id = request_id.as_str().to_string();
     crate::trace::record_tenant(&scope.org, &scope.team, &scope.project);
     // resolved before `scope` moves into the meter, and pinned for the session
     let trace_id = crate::trace::request_trace_id(&headers);

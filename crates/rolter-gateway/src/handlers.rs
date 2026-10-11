@@ -26,6 +26,7 @@ use crate::fake_llm;
 use crate::logging::RequestLog;
 use crate::rate_limits::TokenRecorder;
 use crate::state::{AppState, KeyMeta, Snapshot};
+use crate::trace::RequestId;
 use crate::upstream_failure::{self, StatusFailure};
 
 /// Liveness probe. Stays `200` while draining: the process is healthy, it is
@@ -451,59 +452,102 @@ pub(crate) fn model_visible_to(key: Option<&KeyMeta>, entry: &crate::state::Rout
 pub async fn chat_completions(
     State(state): State<AppState>,
     headers: HeaderMap,
+    request_id: RequestId,
     body: Bytes,
 ) -> Response {
-    proxy(state, headers, body, "/v1/chat/completions").await
+    proxy(state, headers, request_id, body, "/v1/chat/completions").await
 }
 
 pub async fn completions(
     State(state): State<AppState>,
     headers: HeaderMap,
+    request_id: RequestId,
     body: Bytes,
 ) -> Response {
-    proxy(state, headers, body, "/v1/completions").await
+    proxy(state, headers, request_id, body, "/v1/completions").await
 }
 
 /// OpenAI Responses API. This intentionally shares the JSON proxy pipeline so
 /// provider-native fields and SSE events remain byte-for-byte passthrough.
-pub async fn responses(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
-    proxy(state, headers, body, "/v1/responses").await
+pub async fn responses(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    request_id: RequestId,
+    body: Bytes,
+) -> Response {
+    proxy(state, headers, request_id, body, "/v1/responses").await
 }
 
 pub async fn retrieve_response(
     state: State<AppState>,
     headers: HeaderMap,
+    request_id: RequestId,
     path: Path<String>,
     uri: OriginalUri,
 ) -> Response {
-    response_lifecycle(state, headers, path, uri, LifecycleOperation::Retrieve).await
+    response_lifecycle(
+        state,
+        headers,
+        request_id,
+        path,
+        uri,
+        LifecycleOperation::Retrieve,
+    )
+    .await
 }
 
 pub async fn delete_response(
     state: State<AppState>,
     headers: HeaderMap,
+    request_id: RequestId,
     path: Path<String>,
     uri: OriginalUri,
 ) -> Response {
-    response_lifecycle(state, headers, path, uri, LifecycleOperation::Delete).await
+    response_lifecycle(
+        state,
+        headers,
+        request_id,
+        path,
+        uri,
+        LifecycleOperation::Delete,
+    )
+    .await
 }
 
 pub async fn cancel_response(
     state: State<AppState>,
     headers: HeaderMap,
+    request_id: RequestId,
     path: Path<String>,
     uri: OriginalUri,
 ) -> Response {
-    response_lifecycle(state, headers, path, uri, LifecycleOperation::Cancel).await
+    response_lifecycle(
+        state,
+        headers,
+        request_id,
+        path,
+        uri,
+        LifecycleOperation::Cancel,
+    )
+    .await
 }
 
 pub async fn response_input_items(
     state: State<AppState>,
     headers: HeaderMap,
+    request_id: RequestId,
     path: Path<String>,
     uri: OriginalUri,
 ) -> Response {
-    response_lifecycle(state, headers, path, uri, LifecycleOperation::InputItems).await
+    response_lifecycle(
+        state,
+        headers,
+        request_id,
+        path,
+        uri,
+        LifecycleOperation::InputItems,
+    )
+    .await
 }
 
 #[derive(Clone, Copy)]
@@ -554,6 +598,7 @@ impl LifecycleOperation {
 async fn response_lifecycle(
     State(state): State<AppState>,
     headers: HeaderMap,
+    request_id: RequestId,
     Path(response_id): Path<String>,
     OriginalUri(uri): OriginalUri,
     operation: LifecycleOperation,
@@ -574,6 +619,7 @@ async fn response_lifecycle(
     let call = LifecycleLog {
         state: &state,
         headers: &headers,
+        request_id: request_id.as_str(),
         scope: &scope,
         operation: operation.label(),
         sample_rate: snap.logging.sample_rate,
@@ -704,6 +750,7 @@ enum UpstreamLeg<'a> {
 struct LifecycleLog<'a> {
     state: &'a AppState,
     headers: &'a HeaderMap,
+    request_id: &'a str,
     scope: &'a ScopeIds,
     operation: &'static str,
     sample_rate: f64,
@@ -723,6 +770,7 @@ impl LifecycleLog<'_> {
         let model = &model[..model.floor_char_boundary(REFUSAL_MODEL_MAX_BYTES)];
         let ctx = RequestLogCtx::new(
             self.headers,
+            self.request_id,
             self.scope,
             model,
             self.sample_rate,
@@ -847,6 +895,7 @@ fn response_not_found() -> Response {
 pub async fn unsupported_response_lifecycle(
     State(state): State<AppState>,
     headers: HeaderMap,
+    request_id: RequestId,
     OriginalUri(uri): OriginalUri,
     Path(_response_id): Path<String>,
 ) -> Response {
@@ -868,6 +917,7 @@ pub async fn unsupported_response_lifecycle(
     LifecycleLog {
         state: &state,
         headers: &headers,
+        request_id: request_id.as_str(),
         scope: &scope,
         operation,
         sample_rate: snap.logging.sample_rate,
@@ -894,52 +944,67 @@ fn provider_key_fingerprint(key: &str) -> String {
     rolter_auth::hex::encode(&Sha256::digest(key.as_bytes()))
 }
 
-pub async fn messages(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
-    proxy(state, headers, body, "/v1/messages").await
+pub async fn messages(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    request_id: RequestId,
+    body: Bytes,
+) -> Response {
+    proxy(state, headers, request_id, body, "/v1/messages").await
 }
 
 pub async fn embeddings(
     State(state): State<AppState>,
     headers: HeaderMap,
+    request_id: RequestId,
     body: Bytes,
 ) -> Response {
-    proxy(state, headers, body, "/v1/embeddings").await
+    proxy(state, headers, request_id, body, "/v1/embeddings").await
 }
 
-pub async fn rerank(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
-    proxy(state, headers, body, "/v1/rerank").await
+pub async fn rerank(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    request_id: RequestId,
+    body: Bytes,
+) -> Response {
+    proxy(state, headers, request_id, body, "/v1/rerank").await
 }
 
 pub async fn images_generations(
     State(state): State<AppState>,
     headers: HeaderMap,
+    request_id: RequestId,
     body: Bytes,
 ) -> Response {
-    proxy(state, headers, body, "/v1/images/generations").await
+    proxy(state, headers, request_id, body, "/v1/images/generations").await
 }
 
 pub async fn audio_speech(
     State(state): State<AppState>,
     headers: HeaderMap,
+    request_id: RequestId,
     body: Bytes,
 ) -> Response {
-    proxy(state, headers, body, "/v1/audio/speech").await
+    proxy(state, headers, request_id, body, "/v1/audio/speech").await
 }
 
 pub async fn audio_transcriptions(
     State(state): State<AppState>,
     headers: HeaderMap,
+    request_id: RequestId,
     body: Bytes,
 ) -> Response {
-    proxy_multipart(state, headers, body, "/v1/audio/transcriptions").await
+    proxy_multipart(state, headers, request_id, body, "/v1/audio/transcriptions").await
 }
 
 pub async fn audio_translations(
     State(state): State<AppState>,
     headers: HeaderMap,
+    request_id: RequestId,
     body: Bytes,
 ) -> Response {
-    proxy_multipart(state, headers, body, "/v1/audio/translations").await
+    proxy_multipart(state, headers, request_id, body, "/v1/audio/translations").await
 }
 
 /// Rewrite the plain-text `413` that axum's `DefaultBodyLimit` returns into the
@@ -1398,7 +1463,13 @@ pub(crate) async fn rate_limit_refusal(
     Some(resp)
 }
 
-async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> Response {
+async fn proxy(
+    state: AppState,
+    headers: HeaderMap,
+    request_id: RequestId,
+    body: Bytes,
+    path: &str,
+) -> Response {
     state.metrics.requests_total.fetch_add(1, Relaxed);
     let started = Instant::now();
 
@@ -1441,6 +1512,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
     let refuse = Refusals {
         state: &state,
         headers: &headers,
+        request_id: request_id.as_str(),
         scope: &scope,
         model: &model,
         sample_rate: snap.logging.sample_rate,
@@ -1458,10 +1530,7 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
     // pre_route plugins: consult before the route is resolved, while only the
     // key's scope and raw request are known. Block rejects; transform rewrites
     // `parsed` in place. Org/project-scoped, ordered by position (#509)
-    let trace_id = headers
-        .get(crate::trace::REQUEST_ID_HEADER)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or_default();
+    let trace_id = request_id.as_str();
     let pre_route_plugins = snap.plugins.for_stage(
         rolter_core::PluginStage::PreRoute,
         &scope.org,
@@ -1509,7 +1578,14 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
     // built-in fake-llm answers locally unless a configured route shadows it
     // for this caller; another org's route of that name does not
     if model == fake_llm::MODEL_NAME && snap.named_route_for(&model, vk.as_ref()).is_none() {
-        let ctx = RequestLogCtx::new(&headers, &scope, &model, snap.logging.sample_rate, started);
+        let ctx = RequestLogCtx::new(
+            &headers,
+            request_id.as_str(),
+            &scope,
+            &model,
+            snap.logging.sample_rate,
+            started,
+        );
         return log_builtin(&state.log, ctx, fake_llm::respond(path, &parsed));
     }
 
@@ -1955,12 +2031,9 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
         ticket: pii_ticket.as_ref(),
         will_restore,
     });
-    // the ensure_request_id middleware guarantees this header is present
-    let request_id = headers
-        .get(crate::trace::REQUEST_ID_HEADER)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or_default()
-        .to_string();
+    // set by the ensure_request_id middleware, under whichever header the
+    // snapshot names
+    let request_id = request_id.as_str().to_string();
     // adopt the caller's distributed trace when one was propagated inbound
     let trace_id = crate::trace::request_trace_id(&headers);
 
@@ -2935,7 +3008,13 @@ async fn proxy(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> 
 /// the circuit breaker match the classic single-pool path; variant routing and per-model param
 /// injection do not apply (they're JSON-only), and the route target's upstream
 /// model name is not rewritten into the multipart body.
-async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path: &str) -> Response {
+async fn proxy_multipart(
+    state: AppState,
+    headers: HeaderMap,
+    request_id: RequestId,
+    body: Bytes,
+    path: &str,
+) -> Response {
     state.metrics.requests_total.fetch_add(1, Relaxed);
     let started = Instant::now();
 
@@ -2977,6 +3056,7 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
     let refuse = Refusals {
         state: &state,
         headers: &headers,
+        request_id: request_id.as_str(),
         scope: &scope,
         model: &model,
         sample_rate: snap.logging.sample_rate,
@@ -2997,7 +3077,14 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
     // built-in fake-llm answers locally unless a configured route shadows it
     // for this caller; another org's route of that name does not
     if model == fake_llm::MODEL_NAME && snap.named_route_for(&model, vk.as_ref()).is_none() {
-        let ctx = RequestLogCtx::new(&headers, &scope, &model, snap.logging.sample_rate, started);
+        let ctx = RequestLogCtx::new(
+            &headers,
+            request_id.as_str(),
+            &scope,
+            &model,
+            snap.logging.sample_rate,
+            started,
+        );
         let reply =
             fake_llm::Reply::untokenized(fake_llm::transcription(response_format.as_deref()));
         return log_builtin(&state.log, ctx, reply);
@@ -3032,11 +3119,7 @@ async fn proxy_multipart(state: AppState, headers: HeaderMap, body: Bytes, path:
         return refuse.log(denial.into_response());
     }
 
-    let request_id = headers
-        .get(crate::trace::REQUEST_ID_HEADER)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or_default()
-        .to_string();
+    let request_id = request_id.as_str().to_string();
     let trace_id = crate::trace::request_trace_id(&headers);
     let (vk_id, org_id, team_id, project_id) = (
         scope.key.clone(),
@@ -4364,18 +4447,16 @@ impl RequestLogCtx {
     /// caller asked for.
     fn new(
         headers: &HeaderMap,
+        request_id: &str,
         scope: &ScopeIds,
         model: &str,
         sample_rate: f64,
         started: Instant,
     ) -> Self {
         Self {
-            // the ensure_request_id middleware guarantees this header is present
-            request_id: headers
-                .get(crate::trace::REQUEST_ID_HEADER)
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or_default()
-                .to_string(),
+            // the id the ensure_request_id middleware settled on, which is the
+            // one the response echoes
+            request_id: request_id.to_string(),
             // adopts the caller's distributed trace when one was propagated inbound
             trace_id: crate::trace::request_trace_id(headers),
             vk_id: scope.key.clone(),
@@ -4455,6 +4536,7 @@ fn refusal_error(response: &Response) -> String {
 struct Refusals<'a> {
     state: &'a AppState,
     headers: &'a HeaderMap,
+    request_id: &'a str,
     scope: &'a ScopeIds,
     model: &'a str,
     sample_rate: f64,
@@ -4470,6 +4552,7 @@ impl Refusals<'_> {
         let model = &self.model[..self.model.floor_char_boundary(REFUSAL_MODEL_MAX_BYTES)];
         let ctx = RequestLogCtx::new(
             self.headers,
+            self.request_id,
             self.scope,
             model,
             self.sample_rate,
@@ -5318,7 +5401,8 @@ mod tests {
     async fn fake_llm_serves_chat_completions_without_config() {
         let state = AppState::new(&GatewayConfig::default());
         let body = Bytes::from(r#"{"model": "fake-llm", "messages": []}"#);
-        let resp = chat_completions(State(state), HeaderMap::new(), body).await;
+        let resp =
+            chat_completions(State(state), HeaderMap::new(), RequestId::default(), body).await;
         assert_eq!(resp.status(), StatusCode::OK);
         let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         let value: Value = serde_json::from_slice(&body).unwrap();
@@ -5330,7 +5414,7 @@ mod tests {
     async fn fake_llm_serves_messages_without_config() {
         let state = AppState::new(&GatewayConfig::default());
         let body = Bytes::from(r#"{"model": "fake-llm", "messages": []}"#);
-        let resp = messages(State(state), HeaderMap::new(), body).await;
+        let resp = messages(State(state), HeaderMap::new(), RequestId::default(), body).await;
         assert_eq!(resp.status(), StatusCode::OK);
         let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         let value: Value = serde_json::from_slice(&body).unwrap();
@@ -5342,7 +5426,7 @@ mod tests {
     async fn fake_llm_serves_responses_without_config() {
         let state = AppState::new(&GatewayConfig::default());
         let body = Bytes::from(r#"{"model": "fake-llm", "input": "hello"}"#);
-        let resp = responses(State(state), HeaderMap::new(), body).await;
+        let resp = responses(State(state), HeaderMap::new(), RequestId::default(), body).await;
         assert_eq!(resp.status(), StatusCode::OK);
         let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         let value: Value = serde_json::from_slice(&body).unwrap();
@@ -5355,6 +5439,7 @@ mod tests {
         let resp = unsupported_response_lifecycle(
             State(state),
             HeaderMap::new(),
+            RequestId::default(),
             OriginalUri("/v1/responses/resp_other_tenant/compact".parse().unwrap()),
             Path("resp_other_tenant".to_string()),
         )
@@ -5369,7 +5454,7 @@ mod tests {
     async fn fake_llm_not_served_on_legacy_completions() {
         let state = AppState::new(&GatewayConfig::default());
         let body = Bytes::from(r#"{"model": "fake-llm", "prompt": "hi"}"#);
-        let resp = completions(State(state), HeaderMap::new(), body).await;
+        let resp = completions(State(state), HeaderMap::new(), RequestId::default(), body).await;
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 
@@ -5377,7 +5462,8 @@ mod tests {
     async fn fake_llm_respects_virtual_key_auth() {
         let state = AppState::new(&config_with_keys());
         let body = Bytes::from(r#"{"model": "fake-llm", "messages": []}"#);
-        let resp = chat_completions(State(state), HeaderMap::new(), body).await;
+        let resp =
+            chat_completions(State(state), HeaderMap::new(), RequestId::default(), body).await;
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 
@@ -5468,9 +5554,21 @@ mod tests {
         state.managed_auth = true;
         let chat = || Bytes::from(r#"{"model": "fake-llm", "messages": []}"#);
 
-        let resp = chat_completions(State(state.clone()), bearer("sk-playground"), chat()).await;
+        let resp = chat_completions(
+            State(state.clone()),
+            bearer("sk-playground"),
+            RequestId::default(),
+            chat(),
+        )
+        .await;
         assert_eq!(resp.status(), StatusCode::OK);
-        let resp = messages(State(state.clone()), bearer("sk-playground"), chat()).await;
+        let resp = messages(
+            State(state.clone()),
+            bearer("sk-playground"),
+            RequestId::default(),
+            chat(),
+        )
+        .await;
         assert_eq!(resp.status(), StatusCode::OK);
         let resp = list_models(State(state.clone()), bearer("sk-playground")).await;
         assert_eq!(
@@ -5480,11 +5578,18 @@ mod tests {
 
         // the key reaches the builtin and nothing else
         let other = Bytes::from(r#"{"model": "gpt-4o", "messages": []}"#);
-        let resp = chat_completions(State(state.clone()), bearer("sk-playground"), other).await;
+        let resp = chat_completions(
+            State(state.clone()),
+            bearer("sk-playground"),
+            RequestId::default(),
+            other,
+        )
+        .await;
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
 
         // and a managed gateway still wants a key, even for the builtin
-        let resp = chat_completions(State(state), HeaderMap::new(), chat()).await;
+        let resp =
+            chat_completions(State(state), HeaderMap::new(), RequestId::default(), chat()).await;
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 

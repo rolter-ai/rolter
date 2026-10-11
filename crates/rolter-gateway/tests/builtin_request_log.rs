@@ -429,3 +429,95 @@ async fn a_configured_route_named_fake_llm_is_logged_as_its_provider() {
     let row = rows.row_for("shadowed").await;
     assert_eq!(row["provider"], "shadow", "{row}");
 }
+
+/// The row is stamped with the id the response echoes, read from the header
+/// `[client] request_id_header` names rather than from `x-request-id` (#2925).
+/// Covers the built-in, a provider request and a minted id, which take three
+/// different paths to the row.
+#[tokio::test]
+async fn rows_carry_the_id_from_the_configured_request_id_header() {
+    let rows = Rows::default();
+    let upstream = serve(Router::new().route(
+        "/v1/chat/completions",
+        post(|| async {
+            axum::Json(json!({
+                "id": "x", "object": "chat.completion", "model": "real-model",
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": "hi"},
+                             "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+            }))
+        }),
+    ))
+    .await;
+    let mut config = config(rows.serve().await);
+    config.client.request_id_header = "x-correlation-id".into();
+    config.providers.push(ProviderConfig {
+        name: "upstream".into(),
+        kind: ProviderKind::OpenaiCompatible,
+        api_base: format!("http://{upstream}"),
+        ..Default::default()
+    });
+    config.routes.push(ModelRoute {
+        model: "real-model".into(),
+        strategy: BalancingStrategy::RoundRobin,
+        targets: vec![Target {
+            provider: "upstream".into(),
+            model: None,
+            weight: 1,
+        }],
+        params: Default::default(),
+        param_policy: Default::default(),
+        advanced: Default::default(),
+        cache: None,
+        variants: Default::default(),
+        tenancy: None,
+    });
+    let gw = gateway(&config).await;
+    let send = |model: &'static str, correlation: Option<&'static str>| async move {
+        let mut request = reqwest::Client::new()
+            .post(format!("http://{gw}/v1/chat/completions"))
+            .bearer_auth(KEY)
+            // a decoy in the default header: the row must not pick it up
+            .header("x-request-id", "decoy")
+            .json(&json!({"model": model, "messages": [{"role": "user", "content": "hi"}]}));
+        if let Some(id) = correlation {
+            request = request.header("x-correlation-id", id);
+        }
+        let response = request.send().await.unwrap();
+        assert_eq!(response.status(), 200, "{model}");
+        let echoed = response
+            .headers()
+            .get("x-correlation-id")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        let _ = response.bytes().await.unwrap();
+        echoed
+    };
+
+    assert_eq!(send("fake-llm", Some("corr-builtin")).await, "corr-builtin");
+    let row = rows.row_for("corr-builtin").await;
+    assert_builtin_row(&row, 200, 0);
+
+    assert_eq!(
+        send("real-model", Some("corr-provider")).await,
+        "corr-provider"
+    );
+    let row = rows.row_for("corr-provider").await;
+    assert_eq!(row["provider"], "upstream", "{row}");
+
+    let minted = send("real-model", None).await;
+    assert_eq!(minted.len(), 36, "expected a minted uuid, got `{minted}`");
+    let row = rows.row_for(&minted).await;
+    assert_eq!(row["provider"], "upstream", "{row}");
+
+    assert!(
+        !rows
+            .logs
+            .lock()
+            .iter()
+            .any(|row| row["request_id"] == "decoy"),
+        "a row took its id from x-request-id: {:?}",
+        rows.logs.lock()
+    );
+}

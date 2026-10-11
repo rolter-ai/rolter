@@ -510,7 +510,7 @@ disabled = false # revoke without deleting
 # public_base_url = "https://gateway.example.com"   # advisory: the dashboard builds its snippets from it
 # forwarded_headers = ["x-tenant-id"]               # inbound headers passed to the provider; default []
 # injected_headers = { "x-partner-id" = "acme" }    # static headers added to every upstream request; default {}
-# request_id_header = "x-request-id"                # stored, but the gateway always uses x-request-id (#2925)
+# request_id_header = "x-request-id"                # header the request id is read from and echoed in
 
 # --- inference defaults ---
 # parameters filled in when a client leaves them out. a value the client sent is

@@ -3502,6 +3502,120 @@ async fn preserves_caller_supplied_request_id() {
     );
 }
 
+/// Send a `fake-llm` chat request carrying `headers` and return the response.
+async fn chat_with_headers(gw: SocketAddr, headers: &[(&str, &str)]) -> reqwest::Response {
+    let mut request = reqwest::Client::new()
+        .post(format!("http://{gw}/v1/chat/completions"))
+        .json(&json!({"model": "fake-llm", "messages": []}));
+    for (name, value) in headers {
+        request = request.header(*name, *value);
+    }
+    request.send().await.unwrap()
+}
+
+fn response_header<'a>(response: &'a reqwest::Response, name: &str) -> Option<&'a str> {
+    response
+        .headers()
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+}
+
+/// `[client] request_id_header` names the header the id travels in (#2925).
+/// The gateway reads the caller's id from it, mints one into it when it is
+/// absent and echoes it there, and `x-request-id` becomes an ordinary header it
+/// neither reads nor sets. A reload switches the name for the next request.
+#[tokio::test]
+async fn a_configured_request_id_header_is_read_and_echoed_and_hot_swaps() {
+    let mut config = GatewayConfig::default();
+    config.client.request_id_header = "x-correlation-id".to_string();
+    let state = rolter_gateway::AppState::with_logging(&config, None);
+    let gw = serve(rolter_gateway::build_router(
+        state.clone(),
+        "/metrics",
+        32 * 1024 * 1024,
+    ))
+    .await;
+
+    // the caller's id is read from the configured header and echoed in it,
+    // even with an `x-request-id` beside it
+    let resp = chat_with_headers(
+        gw,
+        &[
+            ("x-correlation-id", "caller-corr-1"),
+            ("x-request-id", "not-the-id"),
+        ],
+    )
+    .await;
+    assert_eq!(resp.status(), 200);
+    assert_eq!(
+        response_header(&resp, "x-correlation-id"),
+        Some("caller-corr-1")
+    );
+    assert_eq!(response_header(&resp, "x-request-id"), None);
+
+    // `x-request-id` alone is not an id any more: one is minted instead
+    let resp = chat_with_headers(gw, &[("x-request-id", "not-the-id")]).await;
+    let minted = response_header(&resp, "x-correlation-id").unwrap_or_default();
+    assert_eq!(minted.len(), 36, "expected a minted uuid, got `{minted}`");
+    assert_eq!(response_header(&resp, "x-request-id"), None);
+
+    // back to the default without a restart
+    state.reload(&GatewayConfig::default(), 1);
+    let resp = chat_with_headers(
+        gw,
+        &[
+            ("x-correlation-id", "stale-name"),
+            ("x-request-id", "caller-req-2"),
+        ],
+    )
+    .await;
+    assert_eq!(response_header(&resp, "x-request-id"), Some("caller-req-2"));
+    assert_eq!(response_header(&resp, "x-correlation-id"), None);
+}
+
+/// A minted id is written back onto the request under the configured name, so
+/// an operator who forwards that header hands the provider the same id the
+/// caller gets back.
+#[tokio::test]
+async fn a_forwarded_request_id_header_carries_the_minted_id_upstream() {
+    use axum::http::HeaderMap;
+    use std::sync::Mutex;
+
+    let seen: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let captured = seen.clone();
+    let app = Router::new().route(
+        "/v1/chat/completions",
+        post(move |headers: HeaderMap, _body: Json<Value>| {
+            let captured = captured.clone();
+            async move {
+                *captured.lock().unwrap() = headers
+                    .get("x-correlation-id")
+                    .and_then(|v| v.to_str().ok())
+                    .map(str::to_string);
+                Json(json!({"choices": [{"message": {"content": "ok"}}]}))
+            }
+        }),
+    );
+    let upstream = serve(app).await;
+    let mut config = config_for("test-model", vec![("up", upstream)]);
+    config.client.request_id_header = "x-correlation-id".to_string();
+    config.client.forwarded_headers = vec!["x-correlation-id".to_string()];
+    let gw = serve_gateway(&config).await;
+
+    let resp = reqwest::Client::new()
+        .post(format!("http://{gw}/v1/chat/completions"))
+        .json(&json!({"model": "test-model", "messages": []}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let echoed = response_header(&resp, "x-correlation-id")
+        .unwrap_or_default()
+        .to_string();
+    assert_eq!(echoed.len(), 36, "expected a minted uuid, got `{echoed}`");
+    assert_eq!(seen.lock().unwrap().as_deref(), Some(echoed.as_str()));
+}
+
 // ── config hot-reload: arc-swap snapshot swap serves new routing live ────────
 
 #[tokio::test]

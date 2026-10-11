@@ -606,14 +606,15 @@ Two details carry the design:
   back.
 
 A captured body is joined to its log row on `log_id`, never on the caller's id.
-The gateway keeps whatever `x-request-id` the caller sent, so two tenants'
+The gateway keeps whatever request id the caller sent (in `x-request-id`, or
+the header `[client] request_id_header` names), so two tenants'
 requests can share an id; an id-only join let a caller log a bodiless request
 under an id seen on another project's rows and read that project's prompt
 through their own row, which the mask passed because it judges the row, not the
 body. `log_id` is a UUID the gateway mints per request when it queues the row
 and writes to both `request_logs` and `request_payloads`, so the caller can
 neither choose nor observe it, and a client that sends one constant id no
-longer collides with itself (#1937). The caller's `x-request-id` stays in
+longer collides with itself (#1937). The caller's request id stays in
 `request_id` for lookup and search. The join key also carries the row's
 `org_id` and `project_id`, which the gateway copies onto the payload row, so a
 body cannot meet a row of another project even if a key were somehow reused.

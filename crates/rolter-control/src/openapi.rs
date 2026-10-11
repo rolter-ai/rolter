@@ -582,8 +582,9 @@ const INVOCATIONS_QUERY: &[QueryParam] = &[
     QueryParam::new(
         "request_id",
         "string",
-        "exact request id — the `x-request-id` the gateway returned; with no \
-         `since`, searches every retained row rather than the last 7 days",
+        "exact request id — the one the gateway returned in `x-request-id`, or in \
+         the header `request_id_header` names; with no `since`, searches every \
+         retained row rather than the last 7 days",
     ),
     QueryParam::new(
         "trace_id",
