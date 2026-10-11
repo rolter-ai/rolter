@@ -326,6 +326,7 @@ function GuardrailRulesScreen() {
           {rules.length === 0 ? (
             // with config-file rules below, "no rules" would misstate the policy
             <GuardrailEmpty
+              uxTarget="guardrail-rules"
               title={
                 fileRules.length > 0
                   ? t("pages.guardrailRules.emptyFileTitle")

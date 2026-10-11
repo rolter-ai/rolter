@@ -21,17 +21,20 @@ export function GuardrailLoading() {
 }
 
 export function GuardrailEmpty({
+  uxTarget,
   title,
   description,
   action,
 }: {
+  /** the screen's own region, the name its `LoadError` carries */
+  uxTarget: string;
   title: string;
   description: string;
   action: React.ReactNode;
 }) {
   return (
     <EmptyState
-      uxTarget="guardrail-list"
+      uxTarget={uxTarget}
       icon={<ShieldCheck />}
       title={title}
       description={description}

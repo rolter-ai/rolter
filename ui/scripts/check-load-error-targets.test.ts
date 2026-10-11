@@ -50,6 +50,16 @@ describe("the pairing rule", () => {
     expect(violations).toEqual([]);
   });
 
+  it("flags an empty state in a file with no LoadError (#2720)", () => {
+    const { violations } = checkSource(["const a = 1;", empty('"keys"')].join("\n"), "a.tsx");
+    expect(violations).toEqual([{ file: "a.tsx", line: 2, target: "keys" }]);
+  });
+
+  it("reads a uxTarget passed to a wrapper like an EmptyState's own", () => {
+    const source = [`<GuardrailEmpty uxTarget="rules" title="t" />`, alert('"rules"')].join("\n");
+    expect(checkSource(source, "a.tsx").violations).toEqual([]);
+  });
+
   it("ignores a file with no EmptyState — there is no list to pair with", () => {
     expect(checkSource(alert('"profile"'), "a.tsx").violations).toEqual([]);
   });

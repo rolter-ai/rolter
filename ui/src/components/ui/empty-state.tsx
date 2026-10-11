@@ -23,6 +23,13 @@ export interface EmptyStateProps extends Omit<React.HTMLAttributes<HTMLDivElemen
    * that *a* placeholder was shown on this screen.
    */
   uxTarget?: string;
+  /**
+   * A single muted line instead of the centred placeholder, for a list that
+   * lives inside a sheet, a card or an expanded row where the block would
+   * dwarf its surroundings. It records the same `empty_state` event, which a
+   * bare `<p>` never did.
+   */
+  inline?: boolean;
 }
 
 export function EmptyState({
@@ -32,11 +39,19 @@ export function EmptyState({
   actions,
   thread = true,
   uxTarget,
+  inline = false,
   className,
   ...props
 }: EmptyStateProps) {
   // no-ops outside a UxScreenProvider, which is what Storybook and the tests get
   useEmptyState(uxTarget);
+  if (inline) {
+    return (
+      <p className={cn("text-xs text-muted-foreground", className)} {...(props as object)}>
+        {description ?? title}
+      </p>
+    );
+  }
   return (
     <div
       className={cn(

@@ -202,6 +202,7 @@ function GuardrailProvidersScreen() {
         />
       ) : providers.length === 0 ? (
         <GuardrailEmpty
+          uxTarget="guardrail-providers"
           title={t("pages.guardrailProviders.emptyTitle")}
           description={t("pages.guardrailProviders.emptyBody")}
           action={

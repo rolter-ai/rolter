@@ -32,6 +32,18 @@ export const WithAction: Story = {
   },
 };
 
+// a list inside a sheet or an expanded row: one muted line, same event
+export const Inline: Story = {
+  args: {
+    inline: true,
+    uxTarget: "route-targets",
+    description: "This route has no targets.",
+  },
+  play: async ({ canvasElement }) => {
+    await expect(within(canvasElement).getByText("This route has no targets.")).toBeVisible();
+  },
+};
+
 function LocationProbe() {
   return <output data-testid="location">{useLocation().pathname}</output>;
 }

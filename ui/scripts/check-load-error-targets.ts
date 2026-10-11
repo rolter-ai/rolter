@@ -14,10 +14,13 @@
 // side by side, and a pairing that needs another file to hold it is the drift
 // the rule exists to stop.
 //
-// A file with no `EmptyState` literal at all is not a list screen — a settings
-// form, a profile card, a scope picker — and has no second row to drift from,
-// so it is not read. The rule bites where a screen has both states and one of
-// them names a region the other does not.
+// A file with no `uxTarget` literal at all is not read for pairing: a settings
+// form, a profile card or a scope picker has no second row to drift from. The
+// audit of #2720 found the opposite shape too — an empty state with no
+// `LoadError` beside it — and a wrapper (`GuardrailEmpty`) that hard-coded one
+// region for two screens, so a `uxTarget` literal in a file with no
+// `<LoadError` at all fails as well. A list reached through a wrapper passes
+// `uxTarget="…"` at the call site, which is what makes it readable here.
 //
 // Only string literals are read. A `target={target}` that a wrapper forwards
 // (`McpOAuth`, `Dashboard`) names nothing in this file, so there is nothing to
@@ -106,6 +109,17 @@ export function checkSource(source: string, file: string): Result {
   // card or a drawer fails alone, and there is no second row to drift from
   if (paired.size === 0) return { violations, waivers };
 
+  // the other half-state: an empty state whose failure has nowhere to show
+  if (!/<LoadError\b/.test(blanked)) {
+    const at = blanked.search(/\buxTarget=/);
+    violations.push({
+      file,
+      line: blanked.slice(0, at).split("\n").length,
+      target: [...paired].join(" | "),
+    });
+    return { violations, waivers };
+  }
+
   for (const m of blanked.matchAll(/<LoadError\b/g)) {
     const props = element(blanked, m.index);
     const value = propValue(props, "target");
@@ -157,13 +171,16 @@ if (import.meta.main) {
   }
 
   if (violations.length > 0) {
-    console.error(`\n${violations.length} LoadError target(s) with no EmptyState partner:`);
+    console.error(
+      `\n${violations.length} region(s) with one of LoadError / EmptyState but no partner:`,
+    );
     for (const v of violations) console.error(`  ${v.file}:${v.line}  target="${v.target}"`);
     console.error(
       "\nThe dead-states query pairs an error state with its empty state by region\n" +
         "name. Name the `LoadError` target like the list's `EmptyState` `uxTarget`.\n" +
         "A region that genuinely has no empty state carries\n" +
-        "`// load-error-allow: <reason>` in the comment block above the `<LoadError`.",
+        "`// load-error-allow: <reason>` in the comment block above the `<LoadError`.\n" +
+        "An `EmptyState` in a file with no `LoadError` needs one: its read can fail too.",
     );
     process.exit(1);
   }
