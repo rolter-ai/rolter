@@ -5,6 +5,7 @@ import AccessProfiles from "./AccessProfiles";
 import {
   cancelConfirmation,
   clickWhenEnabled,
+  adminOfProject,
   confirmation,
   confirmDestructive,
   expectAllowed,
@@ -1004,6 +1005,23 @@ export const DeleteConfirmationNamesTheReach: Story = {
 export const AssignmentRefusedToAViewer: Story = {
   render: () => (
     <Harness fetchStub={assigning.stub} role="viewer">
+      <AccessProfiles />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectRefused(canvasElement, "Assign Support engineers");
+    await expectRefused(canvasElement, "Assign On-call");
+    await expectRefused(canvasElement, "Remove Ada Lovelace from Support engineers");
+  },
+};
+
+// `access_profile_assignment` is an org-scoped row: the control plane checks it
+// at the profile's org, where an admin of one project holds nothing. The gate
+// answers for the same chain, so the buttons are refused rather than offered
+// and answered with a 403 (rbac-gating.md, "What `effective` answers per scope")
+export const AssignmentRefusedToAProjectAdmin: Story = {
+  render: () => (
+    <Harness fetchStub={assigning.stub} role={adminOfProject(PROJECT.id)}>
       <AccessProfiles />
     </Harness>
   ),
