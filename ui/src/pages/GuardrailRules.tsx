@@ -119,8 +119,8 @@ function GuardrailRulesScreen() {
   });
 
   // the same cache entry the Effective config and Models screens read, fetched
-  // afresh on every visit: a flag flipped on Feature Flags a moment ago must
-  // not be reported from a cached copy
+  // afresh on every visit: the config can also change outside this tab, which
+  // the flag save's invalidation of ["config"] does not cover (#2284)
   const config = useQuery({
     queryKey: ["config"],
     queryFn: fetchConfig,
