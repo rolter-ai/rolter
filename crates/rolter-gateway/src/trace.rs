@@ -1,10 +1,14 @@
-//! Request correlation: an end-to-end `x-request-id` and inbound distributed-
-//! trace continuation (ROL-60).
+//! Request correlation: an end-to-end request id and inbound distributed-trace
+//! continuation (ROL-60).
 //!
-//! [`ensure_request_id`] is a middleware that guarantees every request carries an
-//! `x-request-id` — reusing the caller's when present, else minting a UUID — and
+//! [`ensure_request_id`] is a middleware that guarantees every request carries a
+//! request id — reusing the caller's when present, else minting a UUID — and
 //! echoes it on the response so a client can correlate its call with the gateway
-//! logs. [`inbound_trace_id`] pulls the trace id out of a W3C `traceparent` or a
+//! logs. The header it travels in is `[client] request_id_header`
+//! (`x-request-id` unless configured), read from the live snapshot so a change
+//! applies without a restart (#2925). Handlers take the id as a [`RequestId`]
+//! rather than reading a header, so they never need to know its name.
+//! [`inbound_trace_id`] pulls the trace id out of a W3C `traceparent` or a
 //! B3 header so the request log adopts the caller's trace instead of starting a
 //! disconnected one; the id is stored on each [`RequestLog`](crate::logging::RequestLog)
 //! and surfaces in ClickHouse for cross-service correlation.
@@ -16,44 +20,118 @@
 //! gateway, and the provider request in one correctly-parented trace. All of it
 //! is inert unless an OTLP endpoint is configured.
 
+use std::convert::Infallible;
 use std::time::Duration;
 
-use axum::extract::Request;
-use axum::http::{HeaderMap, HeaderValue};
+use axum::extract::{FromRequestParts, Request, State};
+use axum::http::request::Parts;
+use axum::http::{HeaderMap, HeaderName, HeaderValue};
 use axum::middleware::Next;
 use axum::response::Response;
 use tower_http::trace::{MakeSpan, OnResponse};
 use tracing::Span;
 
-/// header carrying the end-to-end request id
-pub const REQUEST_ID_HEADER: &str = "x-request-id";
+use crate::state::AppState;
 
 /// Pipeline-stage span, defined in `rolter-core` so the proxy's translation
 /// stages use the same one. Re-exported here because that is where the gateway
 /// reaches for tracing helpers.
 pub(crate) use rolter_core::stage_span;
 
-/// Ensure the request has an `x-request-id` (generating one when absent or
-/// blank), expose it to downstream handlers via the request headers, and mirror
-/// it onto the response.
-pub async fn ensure_request_id(mut req: Request, next: Next) -> Response {
-    let id = req
+/// The header name a snapshot carries the request id in, from `[client]
+/// request_id_header`.
+///
+/// A name that fails [`rolter_core::request_id_header_problem`] falls back to
+/// `x-request-id`. Config validation and the control plane both refuse such a
+/// name before it gets here, so the fallback only guards a config that skipped
+/// validation; reading a credential header as the id would copy the caller's
+/// key into the response and the request log.
+pub fn request_id_header_name(configured: &str) -> HeaderName {
+    let default = || HeaderName::from_static(rolter_core::DEFAULT_REQUEST_ID_HEADER);
+    if let Some(problem) = rolter_core::request_id_header_problem(configured) {
+        tracing::warn!(
+            %problem,
+            "client.request_id_header is unusable; using {}",
+            rolter_core::DEFAULT_REQUEST_ID_HEADER
+        );
+        return default();
+    }
+    HeaderName::from_bytes(configured.as_bytes()).unwrap_or_else(|_| default())
+}
+
+/// The request id [`ensure_request_id`] settled on for this request.
+///
+/// It travels in the request's extensions rather than being read back from a
+/// header, so every reader sees the value the response echoes even when a
+/// snapshot reload renames the header while the request is in flight. Extract
+/// it like any other axum extractor; it never rejects, and is empty only for a
+/// request that did not pass through the middleware.
+#[derive(Clone, Debug)]
+pub struct RequestId(HeaderValue);
+
+impl RequestId {
+    /// The id as text, empty when the request carried none.
+    pub fn as_str(&self) -> &str {
+        // built from a `&str` the header map accepted, so this only fails for a
+        // value that was never a request id
+        self.0.to_str().unwrap_or_default()
+    }
+}
+
+impl Default for RequestId {
+    fn default() -> Self {
+        Self(HeaderValue::from_static(""))
+    }
+}
+
+impl<S: Send + Sync> FromRequestParts<S> for RequestId {
+    type Rejection = Infallible;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        Ok(parts.extensions.get::<Self>().cloned().unwrap_or_default())
+    }
+}
+
+/// Ensure the request has a request id in the configured header (generating
+/// one when absent or blank), hand it to handlers as a [`RequestId`], and
+/// mirror it onto the response under the same header.
+///
+/// The id is also written back onto the request's own headers, so a minted id
+/// reaches an upstream that forwards the header (an allowlisted
+/// `forwarded_headers` entry, an MCP server) exactly as a caller-supplied one
+/// does.
+pub async fn ensure_request_id(
+    State(state): State<AppState>,
+    mut req: Request,
+    next: Next,
+) -> Response {
+    // one name for the whole request: a reload between the lookup and the
+    // echo must not read the id from one header and return it in another
+    let name = state.snapshot.load().request_id_header.clone();
+    let inbound = req
         .headers()
-        .get(REQUEST_ID_HEADER)
+        .get(&name)
         .and_then(|v| v.to_str().ok())
         .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(new_request_id);
+        .filter(|s| !s.is_empty());
+    let header = match inbound {
+        Some(id) => HeaderValue::from_str(id),
+        None => HeaderValue::try_from(new_request_id()),
+    };
 
     // a generated uuid is always a valid header value; a caller-supplied one that
     // isn't is dropped rather than failing the request
-    let Ok(header) = HeaderValue::from_str(&id) else {
+    let Ok(header) = header else {
         return next.run(req).await;
     };
-    req.headers_mut().insert(REQUEST_ID_HEADER, header.clone());
+    let id = RequestId(header.clone());
+    req.headers_mut().insert(name.clone(), header.clone());
+    req.extensions_mut().insert(id.clone());
     let mut resp = next.run(req).await;
-    resp.headers_mut().insert(REQUEST_ID_HEADER, header);
+    resp.headers_mut().insert(name, header);
+    // the trace layer's response hook logs the id and has no snapshot to learn
+    // the header name from
+    resp.extensions_mut().insert(id);
     resp
 }
 
@@ -200,9 +278,9 @@ impl<B> OnResponse<B> for StatusAwareOnResponse {
         let status = response.status();
         let latency_ms = latency.as_millis();
         let request_id = response
-            .headers()
-            .get(REQUEST_ID_HEADER)
-            .and_then(|v| v.to_str().ok())
+            .extensions()
+            .get::<RequestId>()
+            .map(RequestId::as_str)
             .unwrap_or("");
         // the message + level are fixed per status class; the macro must still be
         // invoked per-branch because the level is a compile-time argument
@@ -511,6 +589,43 @@ mod tests {
                 "{name} must be declared on the gateway.request span"
             );
         }
+    }
+
+    /// A config that skipped validation must still never make the gateway read
+    /// a credential as the request id or write the id over message framing.
+    #[test]
+    fn an_unusable_request_id_header_falls_back_to_x_request_id() {
+        assert_eq!(
+            request_id_header_name("X-Correlation-Id"),
+            "x-correlation-id"
+        );
+        assert_eq!(request_id_header_name("x-request-id"), "x-request-id");
+        for unusable in [
+            "authorization",
+            "Content-Length",
+            "cookie",
+            "not a header",
+            "",
+        ] {
+            assert_eq!(
+                request_id_header_name(unusable),
+                "x-request-id",
+                "{unusable:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_request_that_skipped_the_middleware_has_an_empty_request_id() {
+        let (mut parts, ()) = axum::http::Request::new(()).into_parts();
+        let Ok(id) = RequestId::from_request_parts(&mut parts, &()).await;
+        assert_eq!(id.as_str(), "");
+
+        parts
+            .extensions
+            .insert(RequestId(HeaderValue::from_static("abc-123")));
+        let Ok(id) = RequestId::from_request_parts(&mut parts, &()).await;
+        assert_eq!(id.as_str(), "abc-123");
     }
 
     #[test]

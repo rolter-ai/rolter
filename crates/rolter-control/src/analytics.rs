@@ -785,8 +785,9 @@ pub struct InvocationsQuery {
     pub(crate) customer: Option<String>,
     /// status class: all|error|success (defaults to all)
     pub(crate) status: Option<String>,
-    /// exact request id — the `x-request-id` the gateway returned to the
-    /// client — to look one request up by (#1849)
+    /// exact request id — the one the gateway returned to the client in
+    /// `x-request-id`, or in the header `request_id_header` names — to look
+    /// one request up by (#1849)
     pub(crate) request_id: Option<String>,
     /// exact trace id, the W3C trace a request's spans were recorded under
     pub(crate) trace_id: Option<String>,
@@ -836,8 +837,8 @@ impl TimeBounds for InvocationsQuery {
 ///
 /// A body is attached to the log row it was captured with, never to every row
 /// that shares its `request_id`. The gateway takes that id from the caller's
-/// `x-request-id` header, so two requests from different tenants can carry the
-/// same one. Joining on the id alone let a caller log a bodiless request under
+/// request id header (`x-request-id` unless `request_id_header` names another),
+/// so two requests from different tenants can carry the same one. Joining on the id alone let a caller log a bodiless request under
 /// an id they had seen in another project and read that project's prompt
 /// through their own row, which the mask above passes because it is evaluated
 /// against the row, not against the body. Adding the row's `ts` narrowed that

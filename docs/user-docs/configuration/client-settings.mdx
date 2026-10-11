@@ -58,9 +58,13 @@ The same reserved list applies here.
 
 ## Request ID header
 
-The header carrying the end-to-end request id. Rolter reuses the caller's value when one is present, mints a UUID when it is not, and echoes it on the response so a client can find its own call in the logs.
+The header carrying the end-to-end request id. Rolter reuses the caller's value when one is present, mints a UUID when it is missing or blank, and echoes it on the response so a client can find its own call in the logs. The same id is the `request_id` of the call's row in **LLM Logs** and the MCP tool-call log, and it appears on the gateway's log line for a failed request.
 
-Default is `x-request-id`. It must be a valid header name and cannot be one of the reserved names.
+Default is `x-request-id`. Set another name, such as `x-correlation-id`, when your clients already send their id under it. The gateway then reads and echoes only that header: an `x-request-id` a caller sends is ignored, and none is added to the response. A change reaches every gateway with the next snapshot and applies from the next request, without a restart.
+
+The id is not sent to the provider unless you list the same header under **Forwarded request headers**. A listed header carries the caller's id, or the one Rolter minted, so the provider's logs and yours share it. An MCP server receives it either way, because the MCP proxy passes the caller's headers through.
+
+The name must be a valid header name. Besides the reserved names above, it cannot be a header that carries a credential, session state or message framing, because the id is copied into the logs and written onto the response: `x-goog-api-key`, `proxy-authorization`, `set-cookie`, `expect`, `te`, `trailer`, `upgrade`, `keep-alive` and the other hop-by-hop headers are refused as well.
 
 ---
 

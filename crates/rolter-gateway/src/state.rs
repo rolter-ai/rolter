@@ -217,6 +217,9 @@ pub struct Snapshot {
     /// deployment-wide ingress policy set on the control plane's Security
     /// screen and carried here by the snapshot (#1162)
     pub security: rolter_core::SecurityPolicyConfig,
+    /// header the request id is read from and echoed in, parsed once per
+    /// snapshot from `[client] request_id_header` (#2925)
+    pub request_id_header: axum::http::HeaderName,
     /// per-model token pricing, keyed by public model name, with every rate
     /// already expressed in [`Self::base_currency`] — a model priced in EUR
     /// arrives here converted, so the hot path never does FX (#650)
@@ -583,6 +586,9 @@ impl Snapshot {
             pepper,
             require_auth: config.server.require_auth,
             security: config.security.clone(),
+            request_id_header: crate::trace::request_id_header_name(
+                &config.client.request_id_header,
+            ),
             prices,
             base_currency,
             budgets: Arc::new(config.budgets.clone()),

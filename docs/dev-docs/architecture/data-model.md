@@ -117,7 +117,8 @@ means; rows written before #1210 carry flush time.
 
 A request's log row and its payload row also share a `log_id` (UUID, minted by
 the gateway, empty on rows older than `012_request_log_key.sql`). It is the join
-key between them; `request_id` is the caller's `x-request-id` and is not unique.
+key between them; `request_id` is the caller's request id (`x-request-id` unless
+`[client] request_id_header` names another header) and is not unique.
 `request_payloads` additionally carries the row's `org_id` and `project_id`.
 Because the table is ordered by `(request_id, ts)`, `014_request_payloads_log_id_index.sql`
 adds a `bloom_filter` data-skipping index on `log_id` so the lookup skips granules instead of
