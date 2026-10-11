@@ -124,7 +124,7 @@ A spend budget blocks incoming requests with **HTTP 402** once the cumulative co
 </ParamField>
 
 <Note>
-  `business_unit` and `customer` are not part of the org → team → project chain: they are the [cost-attribution dimensions](/observability/logs-and-cost) a virtual key rolls its spend up to, so a budget on one caps everything attributed to it regardless of which project the traffic came through. The control plane API and the dashboard's **Budgets & Limits** screen accept all six scopes; in the dashboard, picking one of these two lists your org's business units or customers rather than asking for a UUID.
+  `business_unit` and `customer` are not part of the org → team → project chain: they are the [cost-attribution dimensions](/observability/logs-and-cost) a virtual key rolls its spend up to, so a budget on one caps everything attributed to it regardless of which project the traffic came through. The control plane API and the dashboard's **Budgets & Limits** screen accept all six scopes; in the dashboard, picking one of these two lists your org's business units or customers rather than asking for a UUID. Picking a virtual key lists the current project's keys the same way; if the control plane cannot return them, the screen says so under the scope picker with a **Try again** button, and the field takes the key's UUID meanwhile.
 </Note>
 
 <ParamField path="limit_usd" type="float" required>

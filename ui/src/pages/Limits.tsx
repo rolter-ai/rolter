@@ -52,7 +52,7 @@ import { RowCapabilityScope, type RowScope } from "@/lib/can";
 import { capGateScope } from "@/lib/limit-scope";
 import { useOrgScope } from "@/components/OrgScopePicker";
 import { errorDetail, useToast } from "@/lib/toast";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 // the picker's placeholder per scope type, as catalog keys
 const SCOPE_PLACEHOLDERS: Record<string, string> = {
@@ -112,10 +112,6 @@ export default function Limits() {
   // `virtualKeys` is the query the user is actually waiting on for this screen
 
   useScreenReady(!virtualKeys.isLoading);
-
-  // the key list has no `LoadError` of its own to record a failure, so it is
-  // reported here; budgets and rate limits record theirs (#2444)
-  useErrorState(!!virtualKeys.error, "limits");
 
   const budgets = useQuery({
     queryKey: ["budgets", scopeType, scopeId],
@@ -274,6 +270,21 @@ export default function Limits() {
               />
             )}
           </Field>
+          {/* the key list only feeds the picker, which falls back to a bare
+              uuid box without it, so a failed read is said here (#2642). the
+              query keeps its error once another scope type is picked, hence
+              the type check */}
+          {scopeType === "virtual_key" && virtualKeys.error && (
+            <div className="sm:col-span-2">
+              {/* load-error-allow: the scope picker's options; a picker has no empty state of its own */}
+              <LoadError
+                error={virtualKeys.error}
+                resource={t("errors.resources.virtualKeys")}
+                onRetry={() => virtualKeys.refetch()}
+                target="scope-virtual-keys"
+              />
+            </div>
+          )}
         </CardContent>
       </Card>
 

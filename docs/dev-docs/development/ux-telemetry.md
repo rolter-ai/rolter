@@ -69,8 +69,11 @@ write why; every run prints each waiver. Fourteen sit in the tree today.
 
 The hook is still exported for the one case the component cannot see: a read
 whose failure renders no `LoadError` at all. MCP Logs reports its summary
-(`mcp-log-summary`), which only blanks the figures, and Limits its virtual-key list
-(`limits`), which only feeds the scope picker; each says so beside the call.
+(`mcp-log-summary`), which only blanks the figures, and says so beside the call.
+A read that only feeds a picker is not that case: Limits' virtual-key list puts
+a `LoadError` under its scope picker (`scope-virtual-keys`, waived from the
+pairing check since a picker has no empty state), so nothing on that screen
+calls the hook (#2642).
 `ForbiddenScreen` is a `LoadError` too, so a screen the role gate refuses up
 front records `error_state` under `forbidden`.
 
