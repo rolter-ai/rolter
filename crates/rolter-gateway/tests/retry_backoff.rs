@@ -306,13 +306,12 @@ fn with_a_sibling_target(config: &mut GatewayConfig, addr: SocketAddr) {
     });
 }
 
-/// A socket that is bound but never listens: connects are refused, and holding
-/// it keeps the port from being handed to a parallel test.
-fn dead_port() -> (tokio::net::TcpSocket, SocketAddr) {
-    let socket = tokio::net::TcpSocket::new_v4().unwrap();
-    socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
-    let addr = socket.local_addr().unwrap();
-    (socket, addr)
+/// An address that refuses connections at once. Port 1 on loopback is
+/// privileged, so no parallel test can start listening on it. A socket that is
+/// bound but never listens would do on Linux only: macOS drops the SYN and the
+/// connect hangs until it times out (#2961).
+fn dead_port() -> SocketAddr {
+    SocketAddr::from(([127, 0, 0, 1], 1))
 }
 
 /// The case from the issue: one target, one call, nothing retried.
@@ -378,7 +377,7 @@ async fn a_failover_counts_once_and_the_last_target_does_not() {
 /// A connection failure takes the arm that has no response to read.
 #[tokio::test]
 async fn a_single_target_that_refuses_the_connection_retries_nothing() {
-    let (_held, addr) = dead_port();
+    let addr = dead_port();
     let gw = gateway(&config_over(addr)).await;
 
     let (response, _) = promptly(chat(gw)).await;
@@ -389,7 +388,7 @@ async fn a_single_target_that_refuses_the_connection_retries_nothing() {
 
 #[tokio::test]
 async fn refused_connections_count_the_failover_and_not_the_last_target() {
-    let (_held, addr) = dead_port();
+    let addr = dead_port();
     let mut config = config_over(addr);
     with_a_sibling_target(&mut config, addr);
     let gw = gateway(&config).await;
