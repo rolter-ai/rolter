@@ -91,7 +91,7 @@ Rolter participates in distributed tracing on both sides of the gateway:
     When a client sends a request with W3C `traceparent` / `tracestate` headers (or `b3` headers), Rolter reads them and continues the existing trace. The gateway span becomes a child of the caller's span — ideal for applications that already instrument their HTTP clients.
   </Step>
   <Step title="Request ID correlation">
-    Rolter takes the caller's request id from `x-request-id` (or the header set as the [request ID header](/configuration/client-settings#request-id-header)) and generates a unique one when none is sent. The id is echoed in that response header and stored on the request's log row, which also carries the trace id, so a request id a client quotes leads straight to its trace.
+    Rolter takes the caller's request id from `x-request-id` (or the header set as the [request ID header](/configuration/client-settings#request-id-header)) and generates a unique one when none is sent. The id is echoed in that response header and stored on the request's log row, which also carries the trace id. It is also recorded on the `gateway.request` span as the `rolter.request.id` attribute, so a request id a client quotes leads straight to its trace, even without request logging.
   </Step>
   <Step title="Outbound context injection">
     Rolter injects the active trace context into every upstream request it makes. If your self-hosted engine (vLLM, SGLang, TGI) exports its own spans, they join the same distributed trace automatically — no glue code required.

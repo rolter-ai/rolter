@@ -127,6 +127,7 @@ pub async fn ensure_request_id(
     let id = RequestId(header.clone());
     req.headers_mut().insert(name.clone(), header.clone());
     req.extensions_mut().insert(id.clone());
+    record_request_id(id.as_str());
     let mut resp = next.run(req).await;
     resp.headers_mut().insert(name, header);
     // the trace layer's response hook logs the id and has no snapshot to learn
@@ -165,6 +166,7 @@ impl<B> MakeSpan<B> for GatewayMakeSpan {
                 method = %req.method(),
                 uri = %req.uri(),
                 version = ?req.version(),
+                rolter.request.id = tracing::field::Empty,
             );
         }
 
@@ -186,6 +188,7 @@ impl<B> MakeSpan<B> for GatewayMakeSpan {
             rolter.org.id = tracing::field::Empty,
             rolter.team.id = tracing::field::Empty,
             rolter.project.id = tracing::field::Empty,
+            rolter.request.id = tracing::field::Empty,
         );
 
         let mut carrier = rolter_core::telemetry::TraceCarrier::new();
@@ -206,6 +209,19 @@ impl<B> MakeSpan<B> for GatewayMakeSpan {
 pub const ORG_ID: &str = "rolter.org.id";
 pub const TEAM_ID: &str = "rolter.team.id";
 pub const PROJECT_ID: &str = "rolter.project.id";
+/// Attribute name carrying the settled request id on exported spans (#2964).
+pub const REQUEST_ID: &str = "rolter.request.id";
+
+/// Stamp the settled request id onto the request span.
+///
+/// The span is built by the tower layer, outside [`ensure_request_id`], so the
+/// id (which may be minted, and whose header name comes from the live snapshot)
+/// is not known at span creation; it is recorded afterwards, the same way the
+/// tenant is. That keeps the layer order untouched. Recording onto a disabled
+/// or field-less span is a no-op, so an untraced deployment pays nothing.
+pub fn record_request_id(id: &str) {
+    Span::current().record(REQUEST_ID, id);
+}
 
 /// Stamp the resolved tenant onto the request span.
 ///
@@ -583,12 +599,75 @@ mod tests {
         assert_eq!(PROJECT_ID, "rolter.project.id");
 
         let declared = include_str!("trace.rs");
-        for name in [ORG_ID, TEAM_ID, PROJECT_ID] {
+        assert_eq!(REQUEST_ID, "rolter.request.id");
+        for name in [ORG_ID, TEAM_ID, PROJECT_ID, REQUEST_ID] {
             assert!(
                 declared.contains(&format!("{name} = tracing::field::Empty")),
                 "{name} must be declared on the gateway.request span"
             );
         }
+    }
+
+    /// The id a client quotes must be findable on the exported span, not only
+    /// through the log row (#2964).
+    #[test]
+    fn the_request_id_lands_on_the_request_span() {
+        use tracing_subscriber::layer::SubscriberExt as _;
+
+        let recorded = Recorded::default();
+        let subscriber = tracing_subscriber::registry().with(recorded.clone());
+        tracing::subscriber::with_default(subscriber, || {
+            let span =
+                tracing::info_span!("gateway.request", rolter.request.id = tracing::field::Empty);
+            let _entered = span.enter();
+            record_request_id("req-42");
+        });
+
+        assert_eq!(recorded.get(REQUEST_ID).as_deref(), Some("req-42"));
+    }
+
+    /// Drives the real router, so the layer order, `GatewayMakeSpan` and
+    /// `ensure_request_id` are tested together: the span is built before the
+    /// middleware runs, which is why the id has to be recorded afterwards.
+    /// A current-thread runtime keeps the server task on the thread the
+    /// thread-local subscriber is installed on.
+    #[tokio::test]
+    async fn the_request_span_carries_the_echoed_request_id() {
+        use tracing_subscriber::layer::SubscriberExt as _;
+
+        let recorded = Recorded::default();
+        let _guard =
+            tracing::subscriber::set_default(tracing_subscriber::registry().with(recorded.clone()));
+        let app = crate::build_router_from_config(&rolter_core::GatewayConfig::default());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let url = format!("http://{addr}/v1/models");
+        let client = reqwest::Client::new();
+
+        let supplied = client
+            .get(&url)
+            .header("x-request-id", "caller-id-7")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(supplied.headers()["x-request-id"], "caller-id-7");
+        assert_eq!(recorded.get(REQUEST_ID).as_deref(), Some("caller-id-7"));
+
+        let minted = client.get(&url).send().await.unwrap();
+        let echoed = minted.headers()["x-request-id"]
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(!echoed.is_empty());
+        let seen = recorded.0.lock();
+        let last = seen
+            .iter()
+            .rfind(|(k, _)| k == REQUEST_ID)
+            .map(|(_, v)| v.as_str());
+        assert_eq!(last, Some(echoed.as_str()));
     }
 
     /// A config that skipped validation must still never make the gateway read
