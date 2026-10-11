@@ -380,6 +380,41 @@ export const NoProjectAndCannotCreateOne: Story = {
   },
 };
 
+// a caller who cannot create a project, in a deployment with no org or team
+const noTeamNoCreate: FetchStub = async (input, init) => {
+  const path = new URL(String(input), "http://localhost").pathname;
+  if (path === "/api/v1/rbac/effective") {
+    const member = effectiveFor("member");
+    return json({ ...member, allowed: [...member.allowed, "route:create"] });
+  }
+  if (path === "/api/v1/rbac/matrix") return json(matrixFixture());
+  return noProject(input, init);
+};
+
+/**
+ * Refused with no team in scope: the sentence must not claim a team it does not
+ * have, and there is no scope switcher choice to point at (#2775).
+ */
+export const NoTeamAndCannotCreateOne: Story = {
+  render: () => (
+    <MemoryRouter>
+      <Harness fetchStub={noTeamNoCreate}>
+        <CapabilityProvider>
+          <GettingStarted />
+        </CapabilityProvider>
+      </Harness>
+    </MemoryRouter>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() =>
+      expect(canvas.getByText(en.pages.gettingStarted.noTeamDenied)).toBeInTheDocument(),
+    );
+    await expect(canvas.queryByText(en.pages.gettingStarted.noProjectDenied)).toBeNull();
+    await expect(canvas.queryByText(en.pages.gettingStarted.noTeamBody)).toBeNull();
+  },
+};
+
 /**
  * Dismissing it leaves the way back. A one-way dismissal would make the only
  * page that names the order unreachable for anyone who clicked it once.
