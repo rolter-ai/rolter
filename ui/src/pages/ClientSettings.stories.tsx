@@ -27,6 +27,7 @@ const BASE: ClientSettingsDto = {
   updated_at: "2026-08-05T12:00:00Z",
   always_propagated: ["traceparent", "tracestate", "b3"],
   reserved: RESERVED,
+  request_id_refused: ["authorization", "cookie", "set-cookie", "te", "x-goog-api-key"],
 };
 
 const CONFIGURED: ClientSettingsDto = {
@@ -209,6 +210,22 @@ export const MarksEveryInvalidField: Story = {
     await expect(canvas.getByText("2 fields need attention")).toBeVisible();
     await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
     await expect(name).toHaveFocus();
+  },
+};
+
+// a name the gateway refuses for the request id is caught inline, before any
+// save, from the list the API returns (#2970)
+export const RefusesACredentialHeaderAsTheRequestId: Story = {
+  render: () => <Harness fetchStub={async () => json(BASE)} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const requestId = await canvas.findByLabelText("Request ID header");
+    await userEvent.clear(requestId);
+    await userEvent.type(requestId, "X-Goog-Api-Key");
+    await waitFor(() => expect(requestId).toHaveAttribute("aria-invalid", "true"));
+    await expect(requestId).toHaveAccessibleDescription(
+      "'x-goog-api-key' carries a credential, session state or message framing, so it cannot be the request ID header.",
+    );
   },
 };
 

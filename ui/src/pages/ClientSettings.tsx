@@ -89,9 +89,10 @@ const fieldOrder = (form: FormState): FieldKey[] => [
 // header rules answer with the header itself, which belongs to no one field
 const WIRE_FIELDS: Record<string, FieldKey> = {
   public_base_url: "publicBaseUrl",
+  request_id_header: "requestIdHeader",
 };
 
-function validate(form: FormState, reserved: string[]): FieldErrors {
+function validate(form: FormState, reserved: string[], requestIdRefused: string[]): FieldErrors {
   const errors: FieldErrors = {};
   const url = form.publicBaseUrl.trim();
   if (url !== "" && !/^https?:\/\//.test(url)) {
@@ -151,6 +152,11 @@ function validate(form: FormState, reserved: string[]): FieldErrors {
   } else if (reserved.includes(requestId)) {
     errors.requestIdHeader = {
       key: "pages.clientSettings.errors.reservedHeader",
+      values: { name: requestId },
+    };
+  } else if (requestIdRefused.includes(requestId)) {
+    errors.requestIdHeader = {
+      key: "pages.clientSettings.errors.requestIdRefused",
       values: { name: requestId },
     };
   }
@@ -262,7 +268,7 @@ function ClientSettingsScreen() {
       return next;
     });
   };
-  const local = validate(form, dto.reserved);
+  const local = validate(form, dto.reserved, dto.request_id_refused ?? []);
   const errorOf = (key: FieldKey): string | undefined => {
     const found = local[key];
     return found ? t(found.key, found.values) : serverErrors[key];

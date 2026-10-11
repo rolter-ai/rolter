@@ -3184,6 +3184,7 @@
         "controlCharacters": "Value for '{{name}}' must not contain control characters.",
         "tooManyForwarded": "At most 64 forwarded headers are allowed.",
         "tooManyInjected": "At most 64 injected headers are allowed.",
+        "requestIdRefused": "'{{name}}' carries a credential, session state or message framing, so it cannot be the request ID header.",
         "badRequestIdHeader": "Request ID header is not a valid header name."
       },
       "injectedValuePlaceholder": "value"
