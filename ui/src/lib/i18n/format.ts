@@ -116,16 +116,12 @@ const CLOCK_MS = {
 
 // a named month so `08/06` is never read as 8 June or 6 August, and the zone
 // so the instant is unambiguous on an audit or incident timeline (#2219)
-const STAMP: Intl.DateTimeFormatOptions = {
-  year: "numeric",
-  month: "short",
-  day: "numeric",
-  ...CLOCK,
-  timeZoneName: "short",
-};
+const STAMP_DATE: Intl.DateTimeFormatOptions = { year: "numeric", month: "short", day: "numeric" };
 
-const STAMP_MS = {
-  ...STAMP,
+const STAMP_CLOCK: Intl.DateTimeFormatOptions = { ...CLOCK, timeZoneName: "short" };
+
+const STAMP_CLOCK_MS = {
+  ...STAMP_CLOCK,
   fractionalSecondDigits: 3,
 } as Intl.DateTimeFormatOptions;
 
@@ -183,6 +179,13 @@ export function formattersFor(locale: Locale): Formatters {
     const zoned = activeTimeZone ? { ...options, timeZone: activeTimeZone } : options;
     return dateFormat(locale, zoned).format(date);
   };
+  // the date and the clock are formatted apart and joined here: one formatter
+  // takes its connector from the runtime's ICU data (`,` in older CLDR, `at` in
+  // newer), so the same instant would read differently per browser (#2953)
+  const joined = (value: Date | string | number, clock: Intl.DateTimeFormatOptions) => {
+    const day = stamp(value, STAMP_DATE);
+    return day === "" ? "" : `${day}, ${stamp(value, clock)}`;
+  };
   return {
     locale,
     number: (value, options) => numberFormat(locale, options).format(value),
@@ -212,8 +215,8 @@ export function formattersFor(locale: Locale): Formatters {
       }).format(seconds / scale[1]);
     },
     date: (value, options) => stamp(value, options ?? DATE),
-    dateTime: (value) => stamp(value, STAMP),
-    dateTimeMs: (value) => stamp(value, STAMP_MS),
+    dateTime: (value) => joined(value, STAMP_CLOCK),
+    dateTimeMs: (value) => joined(value, STAMP_CLOCK_MS),
     time: (value) => stamp(value, CLOCK),
     timeMs: (value) => stamp(value, CLOCK_MS),
     timeShort: (value) => stamp(value, { ...CLOCK, second: undefined }),
