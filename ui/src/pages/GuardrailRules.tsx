@@ -347,7 +347,7 @@ function GuardrailRulesScreen() {
               }
             />
           ) : (
-            <div className="grid gap-3 md:grid-cols-2">
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
               {rules.map((rule) => {
                 const state = resolution?.rows.get(rule.id);
                 return (
@@ -430,7 +430,7 @@ function GuardrailRulesScreen() {
                   />
                 </p>
               </div>
-              <div className="grid gap-3 md:grid-cols-2">
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
                 {fileRules.map((rule) => (
                   <PolicyCard
                     key={rule.name}
