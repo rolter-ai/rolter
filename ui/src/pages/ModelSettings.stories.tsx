@@ -14,6 +14,8 @@ import {
   type StoryRole,
 } from "./story-harness";
 import type { ModelDefaultsDto } from "@/lib/api";
+import en from "@/lib/i18n/locales/en.json";
+import ru from "@/lib/i18n/locales/ru.json";
 import { phoneFits } from "@/lib/story-viewport";
 
 const BASE: ModelDefaultsDto = {
@@ -405,7 +407,11 @@ export const RefusedToAViewer: Story = {
 // longer than English and overflowed twice as many screens (#2004)
 const modelFits = phoneFits({
   render: () => <Harness fetchStub={answering(CONFIGURED)} />,
-  ready: (canvas) => canvas.findByLabelText("Default model"),
+  // the label in the language the story is drawn in: a screen already in Russian
+  // never shows the English one, and only a screen that beats the catalog swap to
+  // its first paint does. which of the two a run gets is timing, not the story
+  ready: (canvas, locale) =>
+    canvas.findByLabelText((locale === "ru" ? ru : en).pages.modelSettings.model.defaultModel),
 });
 export const MobileFits: Story = modelFits("mobile", "en");
 export const SmallPhone: Story = modelFits("small", "en");
