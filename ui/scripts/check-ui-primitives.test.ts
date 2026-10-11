@@ -5,6 +5,7 @@ import {
   checkSource,
   collectShapes,
   describeViolation,
+  handRolledSwitchRows,
   duplicatedShapes,
   importedPrimitives,
   readPrimitiveNames,
@@ -18,6 +19,37 @@ import { REPEATED_SHAPES } from "./repeated-shapes-allowlist";
 
 const PRIMITIVES = ["Card", "Combobox", "Dialog", "Field", "SwitchRow"];
 const SCREEN = "src/pages/Example.tsx";
+
+describe("the hand-rolled-switch-row rule", () => {
+  const row = `<div className="flex items-start justify-between gap-4">
+  <p className="text-sm font-medium">{label}</p>
+  <Switch checked={on} aria-label={label} />
+</div>`;
+
+  it("fails a title and a bare Switch laid out by hand", () => {
+    expect(handRolledSwitchRows(row)).toEqual([2]);
+    const found = checkSource(row, SCREEN, PRIMITIVES).violations.map((v) => v.rule);
+    expect(found).toEqual(["hand-rolled-switch-row"]);
+  });
+
+  it("passes a SwitchRow, a GatedSwitch and a panel action", () => {
+    expect(handRolledSwitchRows(`<SwitchRow title="a" checked onChange={f} />`)).toEqual([]);
+    expect(
+      handRolledSwitchRows(`<div className="justify-between">\n<GatedSwitch checked />`),
+    ).toEqual([]);
+    expect(
+      handRolledSwitchRows(`<SettingsPanel title="x" action={\n<Switch checked />\n}>`),
+    ).toEqual([]);
+  });
+
+  it("is waivable at the point of use", () => {
+    const waived = row.replace(
+      "  <Switch",
+      "  {/* ui-primitives-allow: the switch is inline text */}\n  <Switch",
+    );
+    expect(checkSource(waived, SCREEN, PRIMITIVES).violations).toEqual([]);
+  });
+});
 
 describe("the bare-animation rule", () => {
   it("fails a bare animate-spin and animate-pulse, in a primitive too", () => {

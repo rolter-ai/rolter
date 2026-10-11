@@ -22,7 +22,7 @@ import { Combobox } from "@/components/ui/combobox";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { Switch } from "@/components/ui/switch";
+import { SwitchRow } from "@/components/ui/switch-row";
 import { Textarea } from "@/components/ui/textarea";
 import {
   createPlugin,
@@ -664,17 +664,12 @@ function PluginDialog({
             onChange={(event) => set({ config: event.target.value })}
           />
         </Field>
-        <div className="flex items-start justify-between gap-4 rounded-lg border border-[color:var(--border-subtle)] p-3">
-          <div>
-            <p className="text-sm font-medium">{t("pages.plugins.enabledTitle")}</p>
-            <p className="mt-0.5 text-xs text-muted-foreground">{t("pages.plugins.enabledHint")}</p>
-          </div>
-          <Switch
-            checked={form.enabled}
-            aria-label={t("pages.plugins.enabledTitle")}
-            onCheckedChange={(enabled) => set({ enabled })}
-          />
-        </div>
+        <SwitchRow
+          title={t("pages.plugins.enabledTitle")}
+          hint={t("pages.plugins.enabledHint")}
+          checked={form.enabled}
+          onChange={(enabled) => set({ enabled })}
+        />
         {/* a refusal that names no field still needs saying in the dialog */}
         {mutation.isError && !serverFieldError(mutation.error, PLUGIN_WIRE_FIELDS) && (
           <p role="alert" className="text-xs text-[color:var(--status-danger-text)]">

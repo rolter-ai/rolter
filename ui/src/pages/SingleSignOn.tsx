@@ -30,7 +30,7 @@ import { Field } from "@/components/ui/field";
 import { describedBy, FieldError } from "@/components/ui/field-error";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Switch } from "@/components/ui/switch";
+import { SwitchRow } from "@/components/ui/switch-row";
 import {
   createSsoGroupMapping,
   createSsoProvider,
@@ -473,32 +473,18 @@ function SignInPolicyCard({
         <p className="mt-1 text-sm text-muted-foreground">{t("pages.sso.policy.subtitle")}</p>
       </header>
       <div className="flex flex-col gap-4 px-4 py-4">
-        <div className="flex items-start justify-between gap-4">
-          <div className="min-w-0">
-            <p className="text-sm font-medium text-foreground">
-              {t("pages.sso.policy.passwordLabel")}
-            </p>
-            <p className="mt-1 text-sm text-muted-foreground">
-              {t("pages.sso.policy.passwordHint")}
-            </p>
-          </div>
-          <Switch
-            checked={password}
-            onCheckedChange={setPassword}
-            aria-label={t("pages.sso.policy.passwordLabel")}
-          />
-        </div>
-        <div className="flex items-start justify-between gap-4">
-          <div className="min-w-0">
-            <p className="text-sm font-medium text-foreground">{t("pages.sso.policy.ssoLabel")}</p>
-            <p className="mt-1 text-sm text-muted-foreground">{t("pages.sso.policy.ssoHint")}</p>
-          </div>
-          <Switch
-            checked={sso}
-            onCheckedChange={setSso}
-            aria-label={t("pages.sso.policy.ssoLabel")}
-          />
-        </div>
+        <SwitchRow
+          title={t("pages.sso.policy.passwordLabel")}
+          hint={t("pages.sso.policy.passwordHint")}
+          checked={password}
+          onChange={setPassword}
+        />
+        <SwitchRow
+          title={t("pages.sso.policy.ssoLabel")}
+          hint={t("pages.sso.policy.ssoHint")}
+          checked={sso}
+          onChange={setSso}
+        />
         {/* not a switch: four values, and the two `required_*` ones differ in
             who they bind rather than in how much they do */}
         <Field

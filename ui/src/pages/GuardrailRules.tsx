@@ -37,7 +37,7 @@ import { Combobox } from "@/components/ui/combobox";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 
-import { Switch } from "@/components/ui/switch";
+import { SwitchRow } from "@/components/ui/switch-row";
 import { Tag } from "@/components/ui/tag";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -682,15 +682,15 @@ function RuleDialog({
             />
           </Field>
         )}
-        <ToggleRow
-          label={t("pages.guardrailRules.toggleEnabled")}
-          description={t("pages.guardrailRules.toggleEnabledHint")}
+        <SwitchRow
+          title={t("pages.guardrailRules.toggleEnabled")}
+          hint={t("pages.guardrailRules.toggleEnabledHint")}
           checked={form.enabled}
           onChange={(enabled) => set({ enabled })}
         />
-        <ToggleRow
-          label={t("pages.guardrailRules.toggleSystem")}
-          description={t("pages.guardrailRules.toggleSystemHint")}
+        <SwitchRow
+          title={t("pages.guardrailRules.toggleSystem")}
+          hint={t("pages.guardrailRules.toggleSystemHint")}
           checked={form.include_system}
           onChange={(include_system) => set({ include_system })}
         />
@@ -877,28 +877,6 @@ function StreamingEffect({
       {icon}
       <span>{text}</span>
     </p>
-  );
-}
-
-function ToggleRow({
-  label,
-  description,
-  checked,
-  onChange,
-}: {
-  label: string;
-  description: string;
-  checked: boolean;
-  onChange: (value: boolean) => void;
-}) {
-  return (
-    <div className="flex items-start justify-between gap-4 rounded-lg border border-[color:var(--border-subtle)] p-3">
-      <div>
-        <p className="text-sm font-medium">{label}</p>
-        <p className="mt-0.5 text-xs text-muted-foreground">{description}</p>
-      </div>
-      <Switch checked={checked} aria-label={label} onCheckedChange={onChange} />
-    </div>
   );
 }
 

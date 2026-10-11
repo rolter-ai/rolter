@@ -179,19 +179,35 @@ screen's wording stays in the screen's namespace and arrives as a prop.
 
 `bun run check:primitives` (`ui/scripts/check-ui-primitives.ts`) is what keeps
 this page from being advice. It runs in the `ui, storybook, docs` job and fails on
-seven things: a bare `<select>`, a raw `<pre>`, a `window.confirm`/`alert`/
+eight things: a bare `<select>`, a raw `<pre>`, a `window.confirm`/`alert`/
 `prompt`, a component re-declared under a name `src/components/ui/` already
 exports, the same element markup hand-written in three or more files, and a
 `DialogFooter` holding a `"destructive"` button, which is a confirmation
 assembled by hand rather than taken from `ConfirmDialog` (see
 [destructive actions](destructive-actions.md)), and a bare `animate-spin` /
 `animate-pulse`, which must be `motion-safe:` so `prefers-reduced-motion` stops
-it (#2006). The fourth is this page's rule
+it (#2006), and a bare `<Switch>` in a hand-built row (below). The fourth is this page's rule
 — #1044 sat undiscovered for months because nothing looked, and seven
 primitives stayed trapped in one sheet's file.
 
 The shared names are read out of `src/components/ui/*.tsx` rather than listed in
 the script, so a primitive added tomorrow is covered the day it lands.
+
+### Hand-rolled switch rows
+
+`hand-rolled-switch-row` (#2242) catches `SwitchRow` typed again under another
+name: a title, a hint and a bare `<Switch>` in a `justify-between` container.
+`ToggleRow` in `GuardrailRules` and the activate and enabled rows in
+`GuardrailProviders`, `Plugins` and `McpManagement` were all that, and neither
+the name rule nor the shape rule could see them. It flags a `<Switch>` with a
+`justify-between` container in the ten lines above it and a `font-medium` or
+`text-sm` title between them.
+
+It deliberately leaves alone `GatedSwitch` (a different tag), a switch in a
+`SettingsPanel`'s `action` slot (the panel owns the title), and an inline
+`<label><Switch>` with no `justify-between`. When a row genuinely is not a
+`SwitchRow`, waive it with `ui-primitives-allow: <reason>` in the comment
+directly above the `<Switch>` line, as with the other element rules.
 
 ### Repeated shapes
 
