@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { StrategyBadge } from "@/components/StrategyBadge";
 import { Boxes, ChevronRight, Lock, Tag } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
@@ -462,12 +463,8 @@ export default function Models() {
                 >
                   {r.providerName}
                 </ListCell>
-                {/* verbatim and in mono: a strategy is a config value an operator
-                copies into rolter.toml, not a label to restyle (#1979) */}
-                <ListCell className="flex min-w-0 flex-col gap-0.5">
-                  <span className="truncate font-mono text-xs text-foreground" title={r.strategy}>
-                    {r.strategy}
-                  </span>
+                <ListCell className="flex min-w-0 flex-col items-start gap-0.5">
+                  <StrategyBadge strategy={r.strategy} />
                   {/* the caveat is written in the row rather than behind a
                       tooltip, which the table's scroll frame clips on the last
                       rows; the sentence opens with the targets below */}
