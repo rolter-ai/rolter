@@ -406,7 +406,7 @@ function ConnectorsScreen() {
                 />
               </div>
               <div className="flex flex-wrap items-center gap-2">
-                <Pill color="var(--text-secondary)" tint="var(--surface-subtle)">
+                <Pill verbatim color="var(--text-secondary)" tint="var(--surface-subtle)">
                   {c.kind}
                 </Pill>
                 {/* health is its own axis: a connector that was never turned

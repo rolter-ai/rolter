@@ -705,7 +705,7 @@ function ProviderCard({
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <span className="font-medium text-foreground">{provider.name}</span>
-            <Pill color="var(--text-secondary)" tint="var(--surface-subtle)">
+            <Pill verbatim color="var(--text-secondary)" tint="var(--surface-subtle)">
               {provider.slug}
             </Pill>
             {provider.enabled ? (

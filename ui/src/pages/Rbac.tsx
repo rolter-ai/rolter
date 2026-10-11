@@ -694,7 +694,7 @@ function CustomRolesTab({ matrix, orgId }: { matrix: RbacMatrix; orgId?: string 
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="font-medium">{role.name}</span>
-                  <Pill color="var(--text-secondary)" tint="var(--surface-subtle)">
+                  <Pill verbatim color="var(--text-secondary)" tint="var(--surface-subtle)">
                     {role.slug}
                   </Pill>
                   <span className="text-xs text-muted-foreground">

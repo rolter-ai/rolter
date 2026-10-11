@@ -734,3 +734,26 @@ export const ARevealedTitleGoesWhenTheRoomComes: Story = {
     await expect(long).not.toHaveAttribute("title");
   },
 };
+
+/** a slug is copied back into config, so a verbatim pill keeps its case (#2212) */
+export const PillKeepsAnIdentifierVerbatim: Story = {
+  render: () => (
+    <PageBody>
+      <div className="flex gap-2 text-sm">
+        <Pill verbatim color="var(--text-secondary)" border="var(--border-subtle)">
+          support-engineer
+        </Pill>
+        <Pill color="var(--text-secondary)" border="var(--border-subtle)">
+          tag
+        </Pill>
+      </div>
+    </PageBody>
+  ),
+  play: async ({ canvasElement }) => {
+    const c = within(canvasElement);
+    const slug = c.getByText("support-engineer");
+    await expect(slug).toHaveTextContent("support-engineer");
+    await expect(getComputedStyle(slug).textTransform).toBe("none");
+    await expect(getComputedStyle(c.getByText("tag")).textTransform).toBe("uppercase");
+  },
+};
