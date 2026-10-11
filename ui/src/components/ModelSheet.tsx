@@ -614,15 +614,19 @@ function buildPreview(
   providerName: (id: string) => string,
   advanced: Record<string, unknown>,
   seededRates: SeededRates,
+  editing: boolean,
 ) {
   const { params, paramPolicy } = paramsToApi(draft);
   const publicName = draft.name.trim();
   const hasPricing = draft.price.input.trim() !== "" || draft.price.output.trim() !== "";
   const obj = {
     route: { model: publicName || undefined, strategy: draft.strategy, enabled: draft.enabled },
+    // an edit previews the list the update call will carry, stored models as stored
     targets: draft.targets.map((tg) => ({
       provider: providerName(tg.providerId) || undefined,
-      upstream_model: upstreamFor(tg.upstream, publicName),
+      upstream_model: editing
+        ? targetsToApi([tg], publicName)[0].upstream_model
+        : upstreamFor(tg.upstream, publicName),
       weight: weightValid(tg.weight) ? Number(tg.weight) : tg.weight,
     })),
     params,
@@ -2194,7 +2198,13 @@ export function ModelSheet({
               block so a mistyped key or a stray quote shows up here rather
               than after saving (#949) */}
           <CodeBlock
-            value={buildPreview(draft, providerName, advancedPayload, seededRatesRef.current)}
+            value={buildPreview(
+              draft,
+              providerName,
+              advancedPayload,
+              seededRatesRef.current,
+              mode === "edit",
+            )}
             language="json"
             label={t("modelSheet.configPreview")}
             maxHeight={280}

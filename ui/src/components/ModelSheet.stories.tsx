@@ -1131,6 +1131,9 @@ export const KeepsAStoredUpstreamEqualToTheRouteName: Story = {
     const dialog = within(sheet());
     await seeded(dialog);
     await expect(dialog.getByLabelText("Target 1 upstream model")).toHaveValue("gpt-4o");
+    // the preview is the list the save sends, stored model included
+    await userEvent.click(dialog.getByRole("button", { name: "Config preview" }));
+    await waitFor(() => expect(sheet()).toHaveTextContent(/"upstream_model": "gpt-4o"/));
     const weight = dialog.getByLabelText("Target 1 weight");
     await userEvent.clear(weight);
     await userEvent.type(weight, "4");
