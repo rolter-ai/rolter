@@ -209,6 +209,17 @@ It deliberately leaves alone `GatedSwitch` (a different tag), a switch in a
 `SwitchRow`, waive it with `ui-primitives-allow: <reason>` in the comment
 directly above the `<Switch>` line, as with the other element rules.
 
+### Inline two-step confirmations
+
+`inline-two-step-confirmation` (#2345) catches a delete confirmed without a
+dialog at all: a destructive `Button` whose handler sets a `useState(false)`
+flag, where that flag then chooses a later destructive `Button` or relabels the
+first. The Users sheet had exactly this (#1893), and `hand-rolled-confirmation`
+could not see it because no `DialogFooter` was involved. Open a `ConfirmDialog`
+instead; a destructive button that only sets a flag read by a `ConfirmDialog`
+passes. Waive with `ui-primitives-allow: <reason>` above the first button. See
+[destructive actions](destructive-actions.md).
+
 ### Repeated shapes
 
 The name rule only catches a duplicate that happens to pick the shared

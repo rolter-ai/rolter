@@ -149,6 +149,69 @@ describe("the hand-rolled-confirmation rule", () => {
   });
 });
 
+describe("the inline-two-step-confirmation rule", () => {
+  // the shape the Users sheet had (#1893): a destructive button flips a local
+  // flag, and the flag swaps in a body and a second destructive button
+  const flagAndSwap =
+    `export function UserSheet() {\n` +
+    `  const [confirmDelete, setConfirmDelete] = useState(false);\n` +
+    `  return (\n` +
+    `    <Sheet>\n` +
+    `      {!confirmDelete && (\n` +
+    `        <Button variant="destructive" onClick={() => setConfirmDelete(true)}>{t("common.delete")}</Button>\n` +
+    `      )}\n` +
+    `      {confirmDelete && (\n` +
+    `        <Button variant="destructive" onClick={remove}>{t("users.confirmDelete")}</Button>\n` +
+    `      )}\n` +
+    `    </Sheet>\n` +
+    `  );\n` +
+    `}`;
+
+  it("fails a destructive button whose flag swaps in a second one", () => {
+    const [violation] = checkSource(flagAndSwap, SCREEN).violations;
+    expect(violation).toMatchObject({ rule: "inline-two-step-confirmation", line: 6 });
+    expect(describeViolation(violation!)).toContain("ConfirmDialog");
+  });
+
+  it("fails one button relabelled by the flag it sets", () => {
+    const source =
+      `const [armed, setArmed] = useState(false);\n` +
+      `<Button variant="destructive" onClick={() => (armed ? remove() : setArmed(true))}>\n` +
+      `  {armed ? t("common.confirm") : t("common.delete")}\n` +
+      `</Button>`;
+    expect(checkSource(source, SCREEN).violations).toMatchObject([
+      { rule: "inline-two-step-confirmation", line: 2 },
+    ]);
+  });
+
+  it("passes a destructive button that opens a ConfirmDialog", () => {
+    const source =
+      `const [confirmDelete, setConfirmDelete] = useState(false);\n` +
+      `<Button variant="destructive" onClick={() => setConfirmDelete(true)}>{t("common.delete")}</Button>\n` +
+      `<ConfirmDialog open={confirmDelete} onOpenChange={setConfirmDelete} onConfirm={remove} />`;
+    expect(checkSource(source, SCREEN).violations).toEqual([]);
+  });
+
+  it("passes a flag that never sets from a destructive button", () => {
+    const source =
+      `const [open, setOpen] = useState(false);\n` +
+      `<Button onClick={() => setOpen(true)}>{t("common.add")}</Button>\n` +
+      `{open && <Button variant="destructive" onClick={remove} />}`;
+    expect(checkSource(source, SCREEN).violations).toEqual([]);
+  });
+
+  it("honours a waiver above the first button", () => {
+    const waived = flagAndSwap.replace(
+      `        <Button variant="destructive" onClick={() => setConfirmDelete`,
+      `        {/* ui-primitives-allow: a one-off with a typed confirmation */}\n` +
+        `        <Button variant="destructive" onClick={() => setConfirmDelete`,
+    );
+    const { violations, waivers } = checkSource(waived, SCREEN);
+    expect(violations).toEqual([]);
+    expect(waivers).toMatchObject([{ rule: "inline-two-step-confirmation" }]);
+  });
+});
+
 describe("comments and strings", () => {
   it("ignores the rule named in a comment", () => {
     // every `window.confirm` in the dashboard today is a comment saying what a

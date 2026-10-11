@@ -287,7 +287,14 @@ with `confirmDisabled`.
 deleted through a destructive button that flipped a local flag and swapped in
 its own body, error line and second button (#1893). No `DialogFooter` held it,
 so `check:primitives` never saw it, and it reported none of the rows below.
-#2345 tracks teaching the check that shape.
+`bun run check:primitives` now fails it too (`inline-two-step-confirmation`,
+#2345): a component with a `"destructive"` `Button` whose handler sets a local
+`useState(false)` flag to true, where that flag also chooses a later destructive
+`Button` (`{confirmDelete && …}`) or relabels the first. A destructive button
+that only opens a `ConfirmDialog` passes, since the flag chooses nothing
+destructive. The waiver is `ui-primitives-allow: <reason>` above the first
+button; it is deliberately narrow, so a flag held in a reducer or a prop is not
+seen.
 
 **No confirmation at all is the case no check catches.** `DeleteIconButton`
 looks the same whether its `onClick` opens a dialog or sends the request, so
