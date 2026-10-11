@@ -6,6 +6,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+## [0.1.1](https://github.com/rolter-ai/rolter/compare/rolter-proxy-v0.1.0...rolter-proxy-v0.1.1) - 2026-10-11
+
+### Bug Fixes
+- *(gateway)* apply or retire route advanced settings that were never read [#2924] ([#2942](https://github.com/rolter-ai/rolter/pull/2942)) by [@ormeilu](https://github.com/ormeilu)
+- *(proxy)* settle gemini compat thinking tokens and provider cache-hit fields [#2880] ([#2923](https://github.com/rolter-ai/rolter/pull/2923)) by [@ormeilu](https://github.com/ormeilu)
+- *(proxy)* qwen cache writes, reasoning tokens, usage spellings [#2879, #2881, #2882, #2880, #2888] ([#2893](https://github.com/rolter-ai/rolter/pull/2893)) by [@ormeilu](https://github.com/ormeilu)
+- *(proxy)* count gemini thinking tokens and other cache-hit spellings [#2875, #2877] ([#2883](https://github.com/rolter-ai/rolter/pull/2883)) by [@ormeilu](https://github.com/ormeilu)
+- *(proxy)* carry the prompt-cache split across dialects, count only real retries [#2863, #2866] ([#2878](https://github.com/rolter-ai/rolter/pull/2878)) by [@ormeilu](https://github.com/ormeilu)
+- *(ui)* make the provider sheet's preview and hints follow the kind [#2811] ([#2840](https://github.com/rolter-ai/rolter/pull/2840)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* send the anthropic key as x-api-key in the provider connection test [#2806] ([#2827](https://github.com/rolter-ai/rolter/pull/2827)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* enforce the egress policy at connect time for control-plane webhooks ([#2393](https://github.com/rolter-ai/rolter/pull/2393)) by [@ormeilu](https://github.com/ormeilu)
+- *(proxy)* restore forward_bearer as a deprecated shim [#1473] ([#1501](https://github.com/rolter-ai/rolter/pull/1501)) by [@ormeilu](https://github.com/ormeilu)
+- *(core)* give ProviderConfig a Default so a new field is not a workspace-wide break [#1150] ([#1169](https://github.com/rolter-ai/rolter/pull/1169)) by [@ormeilu](https://github.com/ormeilu)
+
+### Dependencies
+- *(deps)* bump rust dependencies to their latest releases [#2906] ([#2914](https://github.com/rolter-ai/rolter/pull/2914)) by [@ormeilu](https://github.com/ormeilu)
+
+### Documentation
+- consolidate both doc trees under docs/ as user-docs and dev-docs [#1516] ([#1517](https://github.com/rolter-ai/rolter/pull/1517)) by [@ormeilu](https://github.com/ormeilu)
+- record what 1.0.0 guarantees on each api surface ([#1427](https://github.com/rolter-ai/rolter/pull/1427)) by [@ormeilu](https://github.com/ormeilu)
+
+### Features
+- *(gateway)* price anthropic 1 hour cache writes at their own rate [#2891] ([#2901](https://github.com/rolter-ai/rolter/pull/2901)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* spend stored MCP credentials and per-server timeouts ([#1446](https://github.com/rolter-ai/rolter/pull/1446)) by [@ormeilu](https://github.com/ormeilu)
+
+### Performance
+- *(proxy)* replace eager unwrap_or in json translation [ROL-PERF] ([#1457](https://github.com/rolter-ai/rolter/pull/1457)) by [@ormeilu](https://github.com/ormeilu)
+- *(proxy)* replace eager unwrap_or allocations with lazy unwrap_or_else ([#1448](https://github.com/rolter-ai/rolter/pull/1448)) by [@ormeilu](https://github.com/ormeilu)
 ## [0.0.11](https://github.com/rolter-ai/rolter/compare/rolter-proxy-v0.0.10...rolter-proxy-v0.0.11) - 2026-08-13
 
 ### Bug Fixes

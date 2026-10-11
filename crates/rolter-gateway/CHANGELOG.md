@@ -6,6 +6,99 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+## [0.1.1](https://github.com/rolter-ai/rolter/compare/v0.1.0...v0.1.1) - 2026-10-11
+
+### Bug Fixes
+- *(store)* fail closed when security or egress settings do not parse [#2943] ([#2948](https://github.com/rolter-ai/rolter/pull/2948)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* apply or retire route advanced settings that were never read [#2924] ([#2942](https://github.com/rolter-ai/rolter/pull/2942)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* keep upstream urls and store errors out of error bodies [#2919] ([#2934](https://github.com/rolter-ai/rolter/pull/2934)) by [@ormeilu](https://github.com/ormeilu)
+- *(proxy)* settle gemini compat thinking tokens and provider cache-hit fields [#2880] ([#2923](https://github.com/rolter-ai/rolter/pull/2923)) by [@ormeilu](https://github.com/ormeilu)
+- *(proxy)* qwen cache writes, reasoning tokens, usage spellings [#2879, #2881, #2882, #2880, #2888] ([#2893](https://github.com/rolter-ai/rolter/pull/2893)) by [@ormeilu](https://github.com/ormeilu)
+- *(proxy)* count gemini thinking tokens and other cache-hit spellings [#2875, #2877] ([#2883](https://github.com/rolter-ai/rolter/pull/2883)) by [@ormeilu](https://github.com/ormeilu)
+- *(proxy)* carry the prompt-cache split across dialects, count only real retries [#2863, #2866] ([#2878](https://github.com/rolter-ai/rolter/pull/2878)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* llm-call health url and cached responses input tokens [#2818, #2847] ([#2864](https://github.com/rolter-ai/rolter/pull/2864)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* read usage from streamed responses api answers [#2819] ([#2854](https://github.com/rolter-ai/rolter/pull/2854)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* log requests that fail after upstream errors, keep the reason [#2807] ([#2832](https://github.com/rolter-ai/rolter/pull/2832)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* send the anthropic key as x-api-key in the provider connection test [#2806] ([#2827](https://github.com/rolter-ai/rolter/pull/2827)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* hide secret env values in --help output [#2793] ([#2821](https://github.com/rolter-ai/rolter/pull/2821)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* log built-in fake-llm requests like any provider request [#2802] ([#2820](https://github.com/rolter-ai/rolter/pull/2820)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* redact control plane error details in admin proxy 502 responses ([#2501](https://github.com/rolter-ai/rolter/pull/2501)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* retire idle clickhouse connections before the server closes them ([#2706](https://github.com/rolter-ai/rolter/pull/2706)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* close the log, health and mcp writers on the first turn after stop ([#2628](https://github.com/rolter-ai/rolter/pull/2628)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* let the first getting started call work before a route exists ([#2610](https://github.com/rolter-ai/rolter/pull/2610)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* re-scope a live realtime session when its key moves ([#2579](https://github.com/rolter-ai/rolter/pull/2579)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* scale sampled request-log analytics by the sample rate ([#2580](https://github.com/rolter-ai/rolter/pull/2580)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* remove the virtual-key switch that never changed a decision ([#2550](https://github.com/rolter-ai/rolter/pull/2550)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* apply the egress policy to every operator-written url [#2383] ([#2492](https://github.com/rolter-ai/rolter/pull/2492)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* refuse a realtime session under a fail-closed PII sanitizer ([#2498](https://github.com/rolter-ai/rolter/pull/2498)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* scan function-call arguments on realtime sessions [#2489] ([#2497](https://github.com/rolter-ai/rolter/pull/2497)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* key captured bodies on a gateway-minted log id [#1937] ([#2494](https://github.com/rolter-ai/rolter/pull/2494)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* record the provider's org in health events ([#2493](https://github.com/rolter-ai/rolter/pull/2493)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* apply guardrails, the webhook and plugins to realtime sessions [#1880] ([#2491](https://github.com/rolter-ai/rolter/pull/2491)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* give the invalid-key 401 the openai invalid_api_key code ([#2480](https://github.com/rolter-ai/rolter/pull/2480)) by [@ormeilu](https://github.com/ormeilu)
+- *(core)* keep datastore credentials out of startup logs ([#2460](https://github.com/rolter-ai/rolter/pull/2460)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* remove the unenforced dashboard password setting ([#2458](https://github.com/rolter-ai/rolter/pull/2458)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* bound the clickhouse writers' connect and request time ([#2456](https://github.com/rolter-ai/rolter/pull/2456)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* close live realtime sessions when their key is revoked ([#2386](https://github.com/rolter-ai/rolter/pull/2386)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* drain request-log, health-event and usage sinks on shutdown ([#2372](https://github.com/rolter-ai/rolter/pull/2372)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* run provider queues concurrently and report redis and aborts [#1815] ([#1865](https://github.com/rolter-ai/rolter/pull/1865)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* balance cache-aware routes and expose provider queues [#1851] ([#1863](https://github.com/rolter-ai/rolter/pull/1863)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* scope analytics and health reads to the caller's tenancy [#1820] ([#1842](https://github.com/rolter-ai/rolter/pull/1842)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* meter realtime sessions against budgets and rate limits [#1396] ([#1913](https://github.com/rolter-ai/rolter/pull/1913)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* remove panic points in kv cache telemetry message parser ([#1814](https://github.com/rolter-ai/rolter/pull/1814)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* re-check route authorization on responses lifecycle calls ([#1788](https://github.com/rolter-ai/rolter/pull/1788)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* make rpm admission atomic across concurrent requests ([#1786](https://github.com/rolter-ai/rolter/pull/1786)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* refuse a stream a fail-closed post_response plugin must approve [#1776] ([#1785](https://github.com/rolter-ai/rolter/pull/1785)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* apply post-response policy on every cache path [#1477] ([#1778](https://github.com/rolter-ai/rolter/pull/1778)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* reconnect redis-backed enforcers after connection loss ([#1770](https://github.com/rolter-ai/rolter/pull/1770)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* treat an out-of-range balancer pick as no pick ([#1782](https://github.com/rolter-ai/rolter/pull/1782)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* enforce route visibility and access policy on audio uploads ([#1780](https://github.com/rolter-ai/rolter/pull/1780)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* meter upstream usage even when output policy blocks delivery ([#1773](https://github.com/rolter-ai/rolter/pull/1773)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* partition semantic cache by response contract [#1476] ([#1768](https://github.com/rolter-ai/rolter/pull/1768)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* build a group's balancer once per snapshot, not per request ([#1713](https://github.com/rolter-ai/rolter/pull/1713)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* make a missing node identity audible ([#1705](https://github.com/rolter-ai/rolter/pull/1705)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* record upstream failures hidden by a successful failover ([#1704](https://github.com/rolter-ai/rolter/pull/1704)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* replace unwrap with hex encode [ROL-SEC] ([#1460](https://github.com/rolter-ai/rolter/pull/1460)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* break invocation-list ties so burst rows page stably ([#1391](https://github.com/rolter-ai/rolter/pull/1391)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* stamp request logs with the request time, not the batch flush time ([#1223](https://github.com/rolter-ai/rolter/pull/1223)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* give the fleet one place to decide where request logs go [#929] ([#1174](https://github.com/rolter-ai/rolter/pull/1174)) by [@ormeilu](https://github.com/ormeilu)
+- *(core)* give ProviderConfig a Default so a new field is not a workspace-wide break [#1150] ([#1169](https://github.com/rolter-ai/rolter/pull/1169)) by [@ormeilu](https://github.com/ormeilu)
+
+### Dependencies
+- *(deps)* bump rust dependencies to their latest releases [#2906] ([#2914](https://github.com/rolter-ai/rolter/pull/2914)) by [@ormeilu](https://github.com/ormeilu)
+
+### Documentation
+- consolidate both doc trees under docs/ as user-docs and dev-docs [#1516] ([#1517](https://github.com/rolter-ai/rolter/pull/1517)) by [@ormeilu](https://github.com/ormeilu)
+- record what 1.0.0 guarantees on each api surface ([#1427](https://github.com/rolter-ai/rolter/pull/1427)) by [@ormeilu](https://github.com/ormeilu)
+- *(ui)* distinguish virtual keys, provider keys and admin tokens [#943] ([#1163](https://github.com/rolter-ai/rolter/pull/1163)) by [@ormeilu](https://github.com/ormeilu)
+
+### Features
+- *(gateway)* price anthropic 1 hour cache writes at their own rate [#2891] ([#2901](https://github.com/rolter-ai/rolter/pull/2901)) by [@ormeilu](https://github.com/ormeilu)
+- *(core)* price tokens written to the prompt cache [#2876] ([#2892](https://github.com/rolter-ai/rolter/pull/2892)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* log responses lifecycle calls, skip a pointless retry wait [#2836, #2835] ([#2868](https://github.com/rolter-ai/rolter/pull/2868)) by [@ormeilu](https://github.com/ormeilu)
+- *(core)* warn when a standalone gateway config sets project_scoped ([#2604](https://github.com/rolter-ai/rolter/pull/2604)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* let providers and groups be scoped to one project ([#2470](https://github.com/rolter-ai/rolter/pull/2470)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* record proxied mcp tool calls in the mcp tool-call log [#2395] ([#2431](https://github.com/rolter-ai/rolter/pull/2431)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* list a provider's probed catalogue in /v1/models [#1647] ([#1726](https://github.com/rolter-ai/rolter/pull/1726)) by [@ormeilu](https://github.com/ormeilu)
+- *(core)* warn about unrecognised rolter.toml keys at startup ([#1438](https://github.com/rolter-ai/rolter/pull/1438)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* spend stored MCP credentials and per-server timeouts ([#1446](https://github.com/rolter-ai/rolter/pull/1446)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* per-budget override for unpriced_policy [#996] ([#1286](https://github.com/rolter-ai/rolter/pull/1286)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* require a name and an expiry when minting a virtual key [#945] ([#1172](https://github.com/rolter-ai/rolter/pull/1172)) by [@ormeilu](https://github.com/ormeilu)
+- *(control)* carry the security policy to the gateway and enforce it [#1162] ([#1165](https://github.com/rolter-ai/rolter/pull/1165)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* finish the GenAI attribute set — response.id and embeddings ([#1155](https://github.com/rolter-ai/rolter/pull/1155)) by [@ormeilu](https://github.com/ormeilu)
+
+### Performance
+- *(gateway)* eliminate intermediate Vec allocation in encoding_formats ([#1302](https://github.com/rolter-ai/rolter/pull/1302)) by [@ormeilu](https://github.com/ormeilu)
+
+### Refactoring
+- *(core)* compute money in exact decimal instead of f64 ([#1450](https://github.com/rolter-ai/rolter/pull/1450)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* share the scope and budget stages between proxy paths [#1041] ([#1322](https://github.com/rolter-ai/rolter/pull/1322)) by [@ormeilu](https://github.com/ormeilu)
+
+### Testing
+- generate the remaining literal test credentials at run time [#2685] ([#2718](https://github.com/rolter-ai/rolter/pull/2718)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* cover the usage-recorder drain and a send racing the shutdown close ([#2619](https://github.com/rolter-ai/rolter/pull/2619)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* retry the realtime sigterm test on a port another test took ([#2526](https://github.com/rolter-ai/rolter/pull/2526)) by [@ormeilu](https://github.com/ormeilu)
+- *(gateway)* count allocations on the admission hot path [#1054] ([#1321](https://github.com/rolter-ai/rolter/pull/1321)) by [@ormeilu](https://github.com/ormeilu)
 ## [0.0.11](https://github.com/rolter-ai/rolter/compare/v0.0.10...v0.0.11) - 2026-08-13
 
 ### Bug Fixes
