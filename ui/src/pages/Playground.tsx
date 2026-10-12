@@ -40,7 +40,7 @@ import {
   fetchModels,
   fetchRoutes,
   mintPlaygroundKey,
-  unservedRoutes,
+  unservedModels,
   type MintedKey,
 } from "@/lib/api";
 import { useCan, useCapabilities } from "@/lib/can";
@@ -177,7 +177,10 @@ function useModelCatalog(session: KeySession): ModelCatalog {
 
   // one entry per public name: several projects can route the same model
   const configured = [...new Set((routes.data ?? []).map((m) => m.model))];
-  const unserved = unservedRoutes(problems.data);
+  const unserved = unservedModels(
+    problems.data?.omitted,
+    (routes.data ?? []).map((m) => m.model),
+  );
   const served = configured.filter((model) => !unserved.has(model));
 
   const options: ModelOption[] = gateway.data

@@ -451,8 +451,8 @@ so the Playground's first `GET /gw/v1/models` with a fresh key answers `401`
 with doubling backoff for about two poll intervals (10 s), and only then falls
 back to the control plane's route list. A pasted key gets one attempt, and any
 status other than `401` falls back at once, since neither is something waiting
-can fix. The fallback drops the routes `/api/v1/config/problems` reports as
-omitted from the snapshot, and nothing is preselected from it until that list
+can fix. The fallback drops the routes `/api/v1/config/problems` lists under
+`omitted` (`kind: route`), and nothing is preselected from it until that list
 has answered, so the chat column cannot open on a route the gateway never
 received.
 

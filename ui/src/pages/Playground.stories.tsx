@@ -54,6 +54,14 @@ const DOGFOOD_PROBLEMS = {
   problems: [
     "route 'claude-sonnet-4' omitted from the snapshot: it has no target that references a known provider with a positive weight",
   ],
+  omitted: [
+    {
+      kind: "route",
+      name: "claude-sonnet-4",
+      reason: "it has no target that references a known provider with a positive weight",
+      index: 0,
+    },
+  ],
 };
 
 const MINT_PATH = "/playground-key";

@@ -163,6 +163,7 @@
               "api/models",
               "api/health-and-metrics",
               "api/stability",
+              "api/config-problems",
               "api/ui-events",
               "api/version",
               "api/public-url",
