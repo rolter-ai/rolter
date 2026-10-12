@@ -29,7 +29,7 @@ Every published template whose scopes match a request applies to it, in slug ord
 
 ## Send variables from the client
 
-Callers pass variable values in a `rolter_template_vars` object in the request body, beside `model` and `messages`. Every value is a string. The gateway removes the object before it forwards the request upstream.
+Callers pass variable values in a `rolter_template_vars` object in the request body, beside `model` and `messages`. Every value is a string. The gateway removes the object before it forwards the request upstream, including when no template applies to the route.
 
 ```json
 {
