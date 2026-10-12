@@ -513,6 +513,21 @@ const ALERT_HISTORY_QUERY: &[QueryParam] = &[
         "string",
         "exact alert rule id; omit for every rule",
     ),
+    QueryParam::new(
+        "state",
+        "string",
+        "`firing` or `resolved`; omit for both",
+    ),
+    QueryParam::new(
+        "delivery_status",
+        "string",
+        "`delivered`, `failed` or `skipped`; omit for all",
+    ),
+    QueryParam::new(
+        "before",
+        "string",
+        "keyset cursor `<sent_at>,<id>` of the last row of the previous page; returns the rows strictly older",
+    ),
     QueryParam::new("limit", "integer", "page size; the server caps it"),
 ];
 
@@ -1820,7 +1835,8 @@ fn operations() -> Vec<Op> {
                 "listAlertNotifications",
                 "Page alert transitions and their delivery",
             )
-            .query(ALERT_HISTORY_QUERY),
+            .query(ALERT_HISTORY_QUERY)
+            .ok(Payload::List("AlertNotification")),
         ],
     ));
 
@@ -2457,12 +2473,69 @@ fn schemas() -> Value {
         virtual_key_schemas(&p),
         governance_schemas(&p),
         stability_schemas(&p),
+        alerting_schemas(&p),
     ] {
         if let Value::Object(entries) = group {
             out.extend(entries);
         }
     }
     Value::Object(out)
+}
+
+/// Alert history rows and rules, where the stable `detail_code` and
+/// `last_error_code` values are listed (#2334) and the recorded reading
+/// (#2301) is typed.
+fn alerting_schemas(p: &Prim) -> Value {
+    let uuid = &p.uuid;
+    let timestamp = &p.timestamp;
+    let nullable_string = &p.nullable_string;
+    let nullable_number = json!({"type": ["number", "null"]});
+    let nullable_object = json!({"type": ["object", "null"]});
+    json!({
+        "AlertNotification": {
+            "type": "object",
+            "required": ["id", "rule_id", "state", "delivery_status", "sent_at"],
+            "properties": {
+                "id": uuid, "rule_id": uuid,
+                "channel_id": p.nullable_uuid,
+                "state": {"type": "string", "enum": ["firing", "resolved"]},
+                "delivery_status": {"type": "string", "enum": ["delivered", "failed", "skipped"]},
+                "detail": {"type": ["string", "null"], "description": "English fallback for detail_code"},
+                "detail_code": {
+                    "type": ["string", "null"],
+                    "enum": ["http_ok", "http_error", "timeout", "connect_failed", "delivery_failed",
+                             "egress_denied", "secret_unsealable", "secret_invalid",
+                             "client_unavailable", "no_channel", "channel_disabled", null],
+                    "description": "stable code of detail; null on rows written before codes existed"
+                },
+                "detail_params": {
+                    "type": ["object", "null"],
+                    "description": "the numbers detail_code interpolates (`status`, `seconds`) and `no_data: true` for a no-data transition"
+                },
+                "value": {
+                    "type": ["number", "null"],
+                    "description": "the reading the row was written for, in the signal's API unit; null for a no-data transition and on older rows"
+                },
+                "threshold": nullable_number,
+                "sent_at": timestamp
+            }
+        },
+        "AlertRuleError": {
+            "type": "object",
+            "description": "the error fields of an alert rule",
+            "properties": {
+                "last_error": nullable_string,
+                "last_error_code": {
+                    "type": ["string", "null"],
+                    "enum": ["clickhouse_not_configured", "unknown_signal", "query_timeout",
+                             "clickhouse_timeout", "clickhouse_unreachable",
+                             "clickhouse_bad_response", "query_failed", "clickhouse_error", null],
+                    "description": "stable code of last_error, which is its English fallback"
+                },
+                "last_error_params": nullable_object
+            }
+        }
+    })
 }
 
 /// The stability marker (#1385). `stable` is in the enum for completeness, but

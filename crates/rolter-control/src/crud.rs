@@ -233,6 +233,9 @@ pub(crate) enum ApiError {
     /// purpose, such as a store that is not configured or a write it refused.
     /// Rendered verbatim, so it must never carry anything a driver said.
     Curated(String),
+    /// A [`ApiError::Curated`] failure (500) that also carries a stable `code`
+    /// a client can translate. `code` is part of the API and never renamed
+    CodedInternal { code: &'static str, message: String },
     /// mutation collides with a config-file-owned resource (409)
     Conflict(String),
     /// a 409 a client can branch on: `code` is part of the API and never
@@ -282,6 +285,7 @@ impl IntoResponse for ApiError {
         let code = match &self {
             Self::CodedConflict { code, .. }
             | Self::CodedForbidden { code, .. }
+            | Self::CodedInternal { code, .. }
             | Self::BadGateway { code, .. } => Some(*code),
             Self::InvalidField { .. } => Some(INVALID_FIELD),
             Self::Core(Error::AlreadyExists(_)) => Some(NAME_TAKEN),
@@ -314,7 +318,9 @@ impl IntoResponse for ApiError {
                     )
                 }
             },
-            Self::Curated(message) => (StatusCode::INTERNAL_SERVER_ERROR, message),
+            Self::Curated(message) | Self::CodedInternal { message, .. } => {
+                (StatusCode::INTERNAL_SERVER_ERROR, message)
+            }
             Self::BadGateway { message, .. } => (StatusCode::BAD_GATEWAY, message),
             Self::InvalidField { message, .. } => (StatusCode::BAD_REQUEST, message),
             Self::Conflict(message) | Self::CodedConflict { message, .. } => {

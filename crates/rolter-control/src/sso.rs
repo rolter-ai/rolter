@@ -207,6 +207,7 @@ fn api_error_message(err: ApiError) -> String {
             }
         },
         ApiError::Curated(msg)
+        | ApiError::CodedInternal { message: msg, .. }
         | ApiError::Conflict(msg)
         | ApiError::CodedConflict { message: msg, .. }
         | ApiError::BadGateway { message: msg, .. }
