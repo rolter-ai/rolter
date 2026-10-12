@@ -824,6 +824,7 @@
         "body": "Clients calling this model name stop resolving to any provider the moment the route is gone.",
         "confirm": "Delete route"
       },
+      "healthUnavailable": "Target health is unavailable here, so the cards show none. It needs the analytics store and analytics access.",
       "targetCount_one": "{{count}} target",
       "targetCount_other": "{{count}} targets",
       "emptyTitle": "No routes yet",

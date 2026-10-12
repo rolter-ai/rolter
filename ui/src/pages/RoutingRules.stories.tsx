@@ -24,7 +24,14 @@ import {
   expectEmptyState,
   expectForbidden,
 } from "./story-harness";
-import type { LabelRow, ProviderRow, RouteRow, RouteTargetRow } from "@/lib/api";
+import type {
+  LabelRow,
+  ProviderRow,
+  RouteRow,
+  RouteTargetRow,
+  TimelineRow,
+  UptimeRow,
+} from "@/lib/api";
 
 const PROVIDERS: ProviderRow[] = [
   {
@@ -360,6 +367,132 @@ export const CacheAwareDrawsNoShare: Story = {
     const weighted = within(canvas.getByRole("list", { name: "Targets of gpt-4o" }));
     await expect(weighted.getByText("80%")).toBeInTheDocument();
     await expect(weighted.getAllByTestId("target-share")).toHaveLength(2);
+  },
+};
+
+// --------------------------------------------------- target health (#2246)
+
+const uptimeRow = (patch: Partial<UptimeRow>): UptimeRow => ({
+  provider: "openai-prod",
+  target_id: "gpt-4o-2024-08-06",
+  grain: "target",
+  sources: ["passive"],
+  events: 2000,
+  ok: 1999,
+  errors: 1,
+  timeouts: 0,
+  uptime: 0.9995,
+  failure_rate: 0.0005,
+  error_budget_burn: 0.05,
+  sla_breached: 0,
+  last_event: "2026-09-29T08:00:00Z",
+  ...patch,
+});
+
+// openai-prod is healthy, azure-west is under its SLA, and nothing has observed
+// the qwen-coder targets of route-3
+const HEALTH_UPTIME: UptimeRow[] = [
+  uptimeRow({}),
+  uptimeRow({
+    provider: "azure-west",
+    target_id: "gpt-4o",
+    ok: 1940,
+    errors: 60,
+    uptime: 0.97,
+    sla_breached: 1,
+  }),
+];
+
+const withHealth = (uptime: () => Response | Promise<Response>, routes = ROUTES) =>
+  scoped(async (input, init) => {
+    const url = String(input);
+    if (url.includes("/health/uptime")) return uptime();
+    if (url.includes("/health/timeline")) return json({ data: [] });
+    return answer(routes)(input, init);
+  });
+
+/**
+ * Each target says where it stands against the SLA in words beside its dot,
+ * from the rollup Model Catalog and Health read. A target nothing has observed
+ * says "no health data" rather than borrowing a colour.
+ */
+export const TargetHealthStates: Story = {
+  render: () => (
+    <Harness fetchStub={withHealth(() => json({ data: HEALTH_UPTIME }), [ROUTES[0], CACHE_AWARE])}>
+      <RoutingRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const gpt = within(await canvas.findByRole("list", { name: "Targets of gpt-4o" }));
+    await expect(await gpt.findByText("99.95% uptime")).toBeInTheDocument();
+    await expect(gpt.getByText("97.00% uptime, below SLA")).toBeInTheDocument();
+    const qwen = within(canvas.getByRole("list", { name: "Targets of qwen-coder" }));
+    await expect(qwen.getAllByText("no health data")).toHaveLength(2);
+    await expect(canvas.queryByTestId("health-unavailable")).toBeNull();
+  },
+};
+
+/**
+ * A target that meets the SLA over the week but whose last two hours failed
+ * faster than it allows reads "SLA at risk", the same state Models draws.
+ */
+export const TargetHealthAtRisk: Story = {
+  render: () => (
+    <Harness
+      fetchStub={scoped(async (input, init) => {
+        const url = String(input);
+        if (url.includes("/health/uptime"))
+          return json({ data: [uptimeRow({ ok: 1994, errors: 6, uptime: 0.997 })] });
+        if (url.includes("/health/timeline")) {
+          const rows: TimelineRow[] = [0, 1, 2].map((hour) => ({
+            bucket: `2026-09-29T0${hour}:00:00Z`,
+            provider: "openai-prod",
+            target_id: "gpt-4o-2024-08-06",
+            grain: "target",
+            events: 100,
+            ok: hour === 0 ? 100 : 97,
+            errors: hour === 0 ? 0 : 3,
+            timeouts: 0,
+          }));
+          return json({ data: rows });
+        }
+        return answer([ROUTES[0]])(input, init);
+      })}
+    >
+      <RoutingRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("99.70% uptime, SLA at risk")).toBeInTheDocument();
+  },
+};
+
+/**
+ * A deployment with no analytics store answers the rollup with a 503. The
+ * screen says so once, the cards still render, and no row claims "no health
+ * data" about a target nobody asked after.
+ */
+export const TargetHealthUnavailable: Story = {
+  render: () => (
+    <Harness
+      fetchStub={withHealth(() =>
+        json({ error: { message: "analytics store not configured" } }, 503),
+      )}
+    >
+      <RoutingRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const note = await canvas.findByTestId("health-unavailable");
+    await expect(note).toHaveTextContent(/Target health is unavailable/);
+    await expect(note).toHaveTextContent(/analytics store not configured/);
+    await expect(canvas.getAllByTestId("health-unavailable")).toHaveLength(1);
+    const targets = within(await canvas.findByRole("list", { name: "Targets of gpt-4o" }));
+    await expect(targets.getByText("80%")).toBeInTheDocument();
+    await expect(canvas.queryByText(/no health data|uptime/)).toBeNull();
   },
 };
 

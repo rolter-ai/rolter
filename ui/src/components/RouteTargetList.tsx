@@ -1,6 +1,7 @@
 import { Trans, useTranslation } from "react-i18next";
 
 import { StatusDot } from "@/components/screen";
+import { healthPresentation } from "@/components/target-health";
 import { useFormat } from "@/lib/i18n/format";
 import { HEALTH_SLA, type RouteTargetView } from "@/lib/route-targets";
 import { usesWeights } from "@/lib/strategies";
@@ -65,19 +66,7 @@ export function RouteTargetList({
             className="grid items-center gap-x-3 font-mono text-xs"
             style={{ gridTemplateColumns: columns }}
           >
-            {health && (
-              <StatusDot
-                color={
-                  !tg.health
-                    ? "var(--zinc-500)"
-                    : tg.health.state === "breaching"
-                      ? "var(--status-danger)"
-                      : tg.health.state === "atRisk"
-                        ? "var(--status-warning)"
-                        : "var(--status-success)"
-                }
-              />
-            )}
+            {health && <StatusDot color={healthPresentation(tg.health).color} />}
             <span className="truncate text-[color:var(--text-secondary)]">{tg.provider}</span>
             <span className="truncate text-muted-foreground">{tg.upstream}</span>
             <span className="whitespace-nowrap text-right text-[color:var(--text-secondary)]">
@@ -94,27 +83,12 @@ export function RouteTargetList({
               <span
                 className={cn(
                   "whitespace-nowrap text-right",
-                  !tg.health
-                    ? "text-[color:var(--text-subtle)]"
-                    : tg.health.state === "breaching"
-                      ? "text-[color:var(--status-danger-text)]"
-                      : tg.health.state === "atRisk"
-                        ? "text-[color:var(--status-warning-text)]"
-                        : "text-[color:var(--text-secondary)]",
+                  healthPresentation(tg.health).textClass,
                 )}
               >
-                {!tg.health
-                  ? t("routeTargets.noHealth")
-                  : t(
-                      tg.health.state === "breaching"
-                        ? "routeTargets.belowSla"
-                        : tg.health.state === "atRisk"
-                          ? "routeTargets.slaAtRisk"
-                          : "routeTargets.uptime",
-                      {
-                        uptime: fmt.percent(tg.health.uptime, 2),
-                      },
-                    )}
+                {t(healthPresentation(tg.health).labelKey, {
+                  uptime: tg.health ? fmt.percent(tg.health.uptime, 2) : "",
+                })}
               </span>
             )}
           </li>
