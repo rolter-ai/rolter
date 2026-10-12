@@ -94,6 +94,49 @@ export const Loaded: Story = {
 };
 
 /**
+ * Figures go through `useFormat()`, the window is stated beside the pager, and the
+ * drawer's ids can be copied and followed to the request log (#2165).
+ */
+export const FormatsFiguresAndOffersTheIds: Story = {
+  render: () => (
+    <Harness
+      fetchStub={routes([
+        ["/mcp/logs/summary", () => ({ data: [{ ...SUMMARY, calls: 12345, failures: 1234 }] })],
+        ["/mcp/logs/evt-1", () => ({ ...call(), arguments: null, result: null })],
+        ["/mcp/logs", () => ({ data: [call()], next_cursor: null })],
+      ])}
+    >
+      <McpLogs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText("12,345");
+    await expect(canvas.getByText("1,234")).toBeInTheDocument();
+    await expect(canvas.getByText(en.pages.mcpLogs.window)).toBeInTheDocument();
+    await userEvent.click(
+      await canvas.findByRole("button", { name: /Open call details for search_issues/ }),
+    );
+    const drawer = within(await canvas.findByRole("complementary", { name: "MCP call details" }));
+    await expect(await drawer.findByText("req-1")).toBeInTheDocument();
+    await expect(drawer.getByText("trace-1")).toBeInTheDocument();
+    // the drawer fades in; poll visibility rather than read the first frame (#2287)
+    await waitFor(() => {
+      expect(
+        drawer.getByRole("button", { name: new RegExp(en.pages.mcpLogs.copyRequest) }),
+      ).toBeVisible();
+      expect(
+        drawer.getByRole("button", { name: new RegExp(en.pages.mcpLogs.copyTrace) }),
+      ).toBeVisible();
+    });
+    await expect(drawer.getByRole("link", { name: en.pages.mcpLogs.openInLogs })).toHaveAttribute(
+      "href",
+      "/logs?request_id=req-1",
+    );
+  },
+};
+
+/**
  * An event opens from the keyboard, not only from a mouse click on its row
  * (#2022).
  *
@@ -178,6 +221,10 @@ export const Empty: Story = {
   ),
   play: async ({ canvasElement }) => {
     await expectEmptyState(canvasElement, /No MCP tool calls yet/);
+    // the empty state says what lands here and points at where it comes from
+    await expect(
+      within(canvasElement).getByRole("link", { name: en.pages.mcpLogs.emptyAction }),
+    ).toHaveAttribute("href", "/mcp-catalog");
   },
 };
 
@@ -250,6 +297,11 @@ export const Error_: Story = {
   ),
   play: async ({ canvasElement }) => {
     await expectLoadError(canvasElement, /failed to return MCP tool-call logs/i);
+    // the summary failing is announced on its own, not left as four dashes (#2165)
+    await expectLoadError(canvasElement, /failed to return MCP call summary/i);
+    const canvas = within(canvasElement);
+    await expect(canvas.getAllByText("—")).toHaveLength(4);
+    await expect(canvas.getAllByRole("button", { name: /try again/i }).length).toBeGreaterThan(0);
   },
 };
 
@@ -285,7 +337,7 @@ export const NoAnalyticsStore: Story = {
     );
     // what the screen will show once the store is there is named
     await expect(panel).toHaveTextContent(/every tool call they proxy/);
-    await expect(canvas.queryByText(en.pages.mcpLogs.calls24h)).toBeNull();
+    await expect(canvas.queryByText(en.pages.mcpLogs.calls)).toBeNull();
     await expect(canvas.queryByRole("combobox")).toBeNull();
   },
 };

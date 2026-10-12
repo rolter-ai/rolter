@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { ChevronRight, SearchX, Wrench, X } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
+import { Link } from "react-router";
 
 import { Overline } from "@/components/ui/overline";
 import { AnalyticsUnavailable } from "@/components/AnalyticsUnavailable";
@@ -20,8 +21,10 @@ import {
 import { Button } from "@/components/ui/button";
 import { CodeBlock } from "@/components/ui/code-block";
 import { Combobox } from "@/components/ui/combobox";
-import { EmptyState } from "@/components/ui/empty-state";
+import { CopyableText } from "@/components/ui/copyable-value";
+import { EmptyState, EmptyStateLink } from "@/components/ui/empty-state";
 import { Sheet, SheetBody, SheetHeader } from "@/components/ui/sheet";
+import { STAT_GRID, StatCard } from "@/components/ui/stat-card";
 import {
   AnalyticsUnavailableError,
   ApiError,
@@ -37,7 +40,7 @@ import { useOptionalAuth } from "@/lib/auth";
 import { useFormat } from "@/lib/i18n/format";
 import { useDrawerA11y } from "@/lib/use-drawer-a11y";
 import { BELOW_LG, useMediaQuery } from "@/lib/use-media-query";
-import { useErrorState, useScreenReady } from "@/lib/ux-react";
+import { useScreenReady } from "@/lib/ux-react";
 
 // a tool payload is JSON when it parses as JSON, and opaque text when it does
 // not; highlighting the second as JSON would invent structure that is not there
@@ -92,13 +95,6 @@ function McpLogsScreen() {
 
   useScreenReady(!summary.isLoading);
 
-  // the summary has no `LoadError` of its own to record a failure, so it is
-  // reported here; the call list and the detail drawer record theirs (#2444).
-  // no analytics store is a supported shape, stated below, not an error state
-  useErrorState(
-    !!summary.error && !(summary.error instanceof AnalyticsUnavailableError),
-    "mcp-log-summary",
-  );
   const logs = useQuery({
     queryKey: ["mcp-logs", status, transport, mine ? myId : "", cursor],
     queryFn: () =>
@@ -147,23 +143,35 @@ function McpLogsScreen() {
 
   return (
     <PageBody className="h-full min-h-0">
-      <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2 lg:grid-cols-4">
+      {/* a summary that failed is announced, not dashed: the dash below means
+          "not loaded yet" and nothing else (#2165). it records `error_state`
+          itself, as the call list's alert does */}
+      {summary.isError && (
+        // load-error-allow: the four figures have no empty state of their own; the call list pairs as mcp-logs
+        <LoadError
+          error={summary.error}
+          resource={t("errors.resources.mcpSummary")}
+          onRetry={() => void summary.refetch()}
+          target="mcp-log-summary"
+        />
+      )}
+      <div className={STAT_GRID}>
         {/* a window the deployment proxied nothing in answers with no row at
             all, and that is a count of zero, not an unknown one — the dash is
             for a summary that has not arrived or did not load (#1611) */}
-        <McpStat
-          label={t("pages.mcpLogs.calls24h")}
-          value={summary.isSuccess ? String(summary.data?.calls ?? 0) : "—"}
+        <StatCard
+          label={t("pages.mcpLogs.calls")}
+          value={summary.isSuccess ? fmt.number(Number(summary.data?.calls ?? 0)) : "—"}
         />
-        <McpStat
+        <StatCard
           label={t("pages.mcpLogs.failures")}
-          value={summary.isSuccess ? String(summary.data?.failures ?? 0) : "—"}
+          value={summary.isSuccess ? fmt.number(Number(summary.data?.failures ?? 0)) : "—"}
         />
-        <McpStat
+        <StatCard
           label={t("pages.mcpLogs.avgLatency")}
           value={latencyStat(summary.data?.avg_latency_ms, ms)}
         />
-        <McpStat
+        <StatCard
           label={t("pages.mcpLogs.p95Latency")}
           value={latencyStat(summary.data?.p95_latency_ms, ms)}
         />
@@ -212,6 +220,9 @@ function McpLogsScreen() {
           </Button>
         )}
         <div className="ml-auto flex items-center gap-2">
+          {/* the window is fixed, so the table and the pager say it too, not
+              only the tiles above them */}
+          <span className="text-xs text-muted-foreground">{t("pages.mcpLogs.window")}</span>
           <Button
             size="sm"
             variant="outline"
@@ -259,7 +270,11 @@ function McpLogsScreen() {
                   <Button variant="outline" onClick={clearFilters}>
                     {t("common.clearFilters")}
                   </Button>
-                ) : undefined
+                ) : (
+                  <EmptyStateLink to="/mcp-catalog">
+                    {t("pages.mcpLogs.emptyAction")}
+                  </EmptyStateLink>
+                )
               }
             />
           )}
@@ -346,15 +361,6 @@ function latencyStat(value: number | null | undefined, ms: (v: number) => string
   return ms(Number(value));
 }
 
-function McpStat({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-[10px] border border-[color:var(--border-subtle)] bg-card p-4">
-      <Overline className="mb-1">{label}</Overline>
-      <div className="font-mono text-xl font-semibold">{value}</div>
-    </div>
-  );
-}
-
 function DetailDrawer({ eventId, onClose }: { eventId: string; onClose: () => void }) {
   const { t } = useTranslation();
   const fmt = useFormat();
@@ -416,8 +422,26 @@ function DetailDrawer({ eventId, onClose }: { eventId: string; onClose: () => vo
             />
             <DrawerStat label={t("pages.mcpLogs.transport")} value={d.transport} />
             <DrawerStat label={t("pages.mcpLogs.time")} value={fmt.dateTime(d.ts)} />
-            <DrawerStat label={t("pages.mcpLogs.request")} value={d.request_id || "—"} />
-            <DrawerStat label={t("pages.mcpLogs.trace")} value={d.trace_id || "—"} />
+            <DrawerId
+              label={t("pages.mcpLogs.request")}
+              value={d.request_id}
+              copyLabel={t("pages.mcpLogs.copyRequest")}
+            >
+              {/* the gateway request this call rode on is a row in the request log */}
+              {d.request_id && (
+                <Link
+                  to={`/logs?request_id=${encodeURIComponent(d.request_id)}`}
+                  className="text-xs underline underline-offset-4 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                >
+                  {t("pages.mcpLogs.openInLogs")}
+                </Link>
+              )}
+            </DrawerId>
+            <DrawerId
+              label={t("pages.mcpLogs.trace")}
+              value={d.trace_id}
+              copyLabel={t("pages.mcpLogs.copyTrace")}
+            />
           </div>
           {d.error && <p className="text-xs text-[color:var(--status-danger-text)]">{d.error}</p>}
           {Number(d.payload_withheld ?? 0) === 1 && !d.arguments && !d.result && (
@@ -496,6 +520,37 @@ function DrawerStat({ label, value }: { label: string; value: string }) {
     <div className="min-w-0">
       <Overline>{label}</Overline>
       <div className="truncate font-mono text-xs text-[color:var(--text-secondary)]">{value}</div>
+    </div>
+  );
+}
+
+// an id is checked by its end and pasted elsewhere, so it wraps and copies
+// rather than truncating; it spans the drawer's row on a two-column grid
+function DrawerId({
+  label,
+  value,
+  copyLabel,
+  children,
+}: {
+  label: string;
+  value: string | null | undefined;
+  copyLabel: string;
+  children?: React.ReactNode;
+}) {
+  return (
+    <div className="min-w-0 sm:col-span-2">
+      <Overline>{label}</Overline>
+      {value ? (
+        <CopyableText
+          variant="inline"
+          value={value}
+          copyLabel={copyLabel}
+          className="text-xs text-[color:var(--text-secondary)]"
+        />
+      ) : (
+        <div className="font-mono text-xs text-[color:var(--text-secondary)]">—</div>
+      )}
+      {children}
     </div>
   );
 }
