@@ -48,7 +48,9 @@ use rolter_store::postgres::repo::{
 };
 
 use crate::auth::session_pepper;
-use crate::crud::{log_audit, pool, require_non_empty, ApiError, ApiResult, SafeJson};
+use crate::crud::{
+    invalid_field, log_audit, pool, require_non_empty, ApiError, ApiResult, SafeJson,
+};
 use crate::rbac::{authorize, Principal, ScopeChain};
 use crate::rbac_matrix::cap;
 use crate::ControlState;
@@ -212,6 +214,7 @@ fn api_error_message(err: ApiError) -> String {
         | ApiError::CodedConflict { message: msg, .. }
         | ApiError::BadGateway { message: msg, .. }
         | ApiError::InvalidField { message: msg, .. }
+        | ApiError::InvalidBody(msg)
         | ApiError::CodedForbidden { message: msg, .. } => msg,
         ApiError::Unauthenticated => "unauthenticated".to_string(),
         ApiError::Forbidden => "forbidden".to_string(),
@@ -1250,10 +1253,13 @@ fn validate_slug(slug: &str) -> ApiResult<()> {
     if slug_is_valid(slug) {
         Ok(())
     } else {
-        Err(invalid(format!(
+        Err(invalid_field(
+            "slug",
+            format!(
             "slug must be lowercase letters, digits and hyphens, start with a letter or digit, \
              and be at most {SLUG_MAX_LEN} characters"
-        )))
+            ),
+        ))
     }
 }
 
@@ -1276,16 +1282,20 @@ async fn create_provider(
     require_non_empty(&body.issuer, "issuer")?;
     require_non_empty(&body.client_id, "client_id")?;
     if !body.issuer.starts_with("https://") && !body.issuer.starts_with("http://") {
-        return Err(invalid("issuer must be an http(s) url"));
+        return Err(invalid_field("issuer", "issuer must be an http(s) url"));
     }
     crate::crud::require_allowed_egress(&state, &body.issuer, "issuer")?;
     if let Some(role) = &body.default_role {
-        parse_role(role)?;
+        parse_role(role, "default_role")?;
     }
     let sealed = match &body.client_secret {
         Some(secret) if !secret.is_empty() => {
-            let kek = Kek::from_env()
-                .ok_or_else(|| invalid("ROLTER_KEK must be configured to store a client secret"))?;
+            let kek = Kek::from_env().ok_or_else(|| {
+                invalid_field(
+                    "client_secret",
+                    "ROLTER_KEK must be configured to store a client secret",
+                )
+            })?;
             Some(kek.encrypt(secret)?)
         }
         _ => None,
@@ -1322,11 +1332,14 @@ async fn create_provider(
 /// The roles a group mapping may grant. Shared with
 /// [`crate::scim_groups`], so both provisioning paths accept exactly the same
 /// set and neither can hand out something the other refuses.
-pub(crate) fn parse_role(role: &str) -> ApiResult<()> {
+pub(crate) fn parse_role(role: &str, field: &str) -> ApiResult<()> {
     if matches!(role, "admin" | "member" | "viewer") {
         Ok(())
     } else {
-        Err(invalid("role must be one of admin, member, viewer"))
+        Err(invalid_field(
+            field,
+            format!("{field} must be one of admin, member, viewer"),
+        ))
     }
 }
 
@@ -1416,18 +1429,22 @@ async fn update_provider(
     require_non_empty(&body.issuer, "issuer")?;
     require_non_empty(&body.client_id, "client_id")?;
     if !body.issuer.starts_with("https://") && !body.issuer.starts_with("http://") {
-        return Err(invalid("issuer must be an http(s) url"));
+        return Err(invalid_field("issuer", "issuer must be an http(s) url"));
     }
     crate::crud::require_allowed_egress(&state, &body.issuer, "issuer")?;
     if let Some(role) = &body.default_role {
-        parse_role(role)?;
+        parse_role(role, "default_role")?;
     }
     // sealing happens before anything is written, so a missing ROLTER_KEK
     // fails the whole request rather than half-applying the edit
     let sealed = match &body.client_secret {
         Some(secret) if !secret.is_empty() => {
-            let kek = Kek::from_env()
-                .ok_or_else(|| invalid("ROLTER_KEK must be configured to store a client secret"))?;
+            let kek = Kek::from_env().ok_or_else(|| {
+                invalid_field(
+                    "client_secret",
+                    "ROLTER_KEK must be configured to store a client secret",
+                )
+            })?;
             Some(kek.encrypt(secret)?)
         }
         _ => None,
@@ -1543,7 +1560,7 @@ async fn create_mapping(
     )
     .await?;
     require_non_empty(&body.group_name, "group_name")?;
-    parse_role(&body.role)?;
+    parse_role(&body.role, "role")?;
     // a mapping may only grant inside the provider's own org, or an IdP admin
     // could hand their users a foothold in someone else's tenant
     let scope_org = match (body.org_id, body.team_id, body.project_id) {
@@ -1646,7 +1663,7 @@ async fn sqlx_mapping(state: &ControlState, id: Uuid) -> ApiResult<SsoGroupMappi
     .bind(id)
     .fetch_optional(pool(state))
     .await
-    .map_err(|e| ApiError::Core(rolter_core::Error::Store(e.to_string())))?;
+    .map_err(rolter_store::postgres::store_err)?;
     mapping.ok_or_else(|| {
         ApiError::Core(rolter_core::Error::NotFound(format!(
             "sso group mapping {id}"
@@ -1913,7 +1930,7 @@ mod tests {
     fn the_refusal_states_the_rule_and_is_a_bad_request() {
         let err = validate_slug("Okta").expect_err("an uppercase slug is refused");
         assert!(
-            matches!(err, ApiError::Core(rolter_core::Error::Config(_))),
+            matches!(&err, ApiError::InvalidField { field, .. } if field == "slug"),
             "a refused slug is a 400, not a store error: {err:?}"
         );
         let message = api_error_message(err);
@@ -1934,11 +1951,11 @@ mod tests {
 
     #[test]
     fn only_the_three_built_in_roles_are_mappable() {
-        assert!(parse_role("admin").is_ok());
-        assert!(parse_role("member").is_ok());
-        assert!(parse_role("viewer").is_ok());
-        assert!(parse_role("superadmin").is_err());
-        assert!(parse_role("").is_err());
+        assert!(parse_role("admin", "role").is_ok());
+        assert!(parse_role("member", "role").is_ok());
+        assert!(parse_role("viewer", "role").is_ok());
+        assert!(parse_role("superadmin", "role").is_err());
+        assert!(parse_role("", "role").is_err());
     }
 
     #[test]

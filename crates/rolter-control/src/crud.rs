@@ -251,6 +251,11 @@ pub(crate) enum ApiError {
     /// [`INVALID_FIELD`] and the field's path, so a client can translate the
     /// refusal and point at the input it came from (#2567)
     InvalidField { field: String, message: String },
+    /// a 400 for a request body that is not the JSON the endpoint takes:
+    /// malformed, the wrong shape or an unknown type, rendered with the stable
+    /// code [`INVALID_BODY`]. The parser cannot tell which input was wrong
+    /// reliably, so unlike [`ApiError::InvalidField`] it names no field
+    InvalidBody(String),
     /// missing or invalid credentials (401)
     Unauthenticated,
     /// authenticated but lacking the required role at the scope (403)
@@ -288,6 +293,7 @@ impl IntoResponse for ApiError {
             | Self::CodedInternal { code, .. }
             | Self::BadGateway { code, .. } => Some(*code),
             Self::InvalidField { .. } => Some(INVALID_FIELD),
+            Self::InvalidBody(_) => Some(INVALID_BODY),
             Self::Core(Error::AlreadyExists(_)) => Some(NAME_TAKEN),
             // the same code the sign-in answers a lock with, so a client reads
             // one name for it wherever a password is being guessed
@@ -322,7 +328,9 @@ impl IntoResponse for ApiError {
                 (StatusCode::INTERNAL_SERVER_ERROR, message)
             }
             Self::BadGateway { message, .. } => (StatusCode::BAD_GATEWAY, message),
-            Self::InvalidField { message, .. } => (StatusCode::BAD_REQUEST, message),
+            Self::InvalidField { message, .. } | Self::InvalidBody(message) => {
+                (StatusCode::BAD_REQUEST, message)
+            }
             Self::Conflict(message) | Self::CodedConflict { message, .. } => {
                 (StatusCode::CONFLICT, message)
             }
@@ -367,6 +375,10 @@ pub(crate) type ApiResult<T> = Result<T, ApiError>;
 /// stable code of a 400 refusing one field of the request (#2567). The body
 /// also carries `field`, the field's path (`name`, `metadata.team`, `tags[2]`)
 pub(crate) const INVALID_FIELD: &str = "invalid_field";
+
+/// stable code of the 400 for a request body that does not parse: malformed
+/// JSON, or JSON that is not the shape the endpoint takes (#2729)
+pub(crate) const INVALID_BODY: &str = "invalid_body";
 
 /// stable code of the 409 for a name, slug, email or key that another record
 /// already holds (#2567). Raised by the explicit checks and, as the backstop for
@@ -473,10 +485,10 @@ where
     async fn from_request(req: axum::extract::Request, state: &S) -> Result<Self, Self::Rejection> {
         let Json(value) = Json::<serde_json::Value>::from_request(req, state)
             .await
-            .map_err(|rejection| ApiError::Core(Error::Config(rejection.body_text())))?;
+            .map_err(|rejection| ApiError::InvalidBody(rejection.body_text()))?;
         reject_control_chars(&value, "")?;
         let parsed = serde_json::from_value(value)
-            .map_err(|err| ApiError::Core(Error::Config(format!("invalid request body: {err}"))))?;
+            .map_err(|err| ApiError::InvalidBody(format!("invalid request body: {err}")))?;
         Ok(Self(parsed))
     }
 }
@@ -500,13 +512,13 @@ where
             S,
         >>::from_request(req, state)
         .await
-        .map_err(|rejection| ApiError::Core(Error::Config(rejection.body_text())))?
+        .map_err(|rejection| ApiError::InvalidBody(rejection.body_text()))?
         else {
             return Ok(None);
         };
         reject_control_chars(&value, "")?;
         let parsed = serde_json::from_value(value)
-            .map_err(|err| ApiError::Core(Error::Config(format!("invalid request body: {err}"))))?;
+            .map_err(|err| ApiError::InvalidBody(format!("invalid request body: {err}")))?;
         Ok(Some(Self(parsed)))
     }
 }
@@ -2578,7 +2590,7 @@ async fn resolve_probe_credential(
             .bind(id)
             .fetch_optional(pool(state))
             .await
-            .map_err(|e| Error::Store(e.to_string()))?;
+            .map_err(rolter_store::postgres::store_err)?;
     Ok(match sealed {
         Some((ciphertext, nonce)) => match Kek::from_env() {
             Some(kek) => match kek.decrypt(&ciphertext, &nonce) {
@@ -2730,7 +2742,7 @@ async fn test_provider(
     .bind(id)
     .fetch_optional(pool(&state))
     .await
-    .map_err(|e| Error::Store(e.to_string()))?
+    .map_err(rolter_store::postgres::store_err)?
     .ok_or_else(|| Error::NotFound(format!("provider {id}")))?;
     let (org_id, name, kind, api_base, api_key_env) = row;
 
@@ -7045,6 +7057,22 @@ mod error_body_tests {
             body["error"]["message"],
             crate::ingest_failure::INSERT_FAILED
         );
+    }
+
+    #[tokio::test]
+    async fn an_unparsable_body_is_a_coded_400_that_names_no_field() {
+        let (status, body) =
+            rendered(ApiError::InvalidBody("invalid request body: x".into())).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"]["code"], INVALID_BODY);
+        assert!(body["error"].get("field").is_none(), "{body}");
+    }
+
+    #[tokio::test]
+    async fn a_unique_violation_is_a_409_name_taken() {
+        let (status, body) = rendered(ApiError::Core(Error::AlreadyExists("x".into()))).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["error"]["code"], NAME_TAKEN);
     }
 
     /// Validation and lookups are written for the caller, and stay as they are.

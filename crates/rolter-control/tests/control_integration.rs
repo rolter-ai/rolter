@@ -22240,6 +22240,36 @@ async fn common_refusals_carry_a_stable_code() {
     assert_eq!(status, 400, "{body}");
     assert_eq!(body["error"]["code"], "invalid_field", "{body}");
     assert_eq!(body["error"]["field"], "name", "{body}");
+
+    // a body that is not the shape the endpoint takes is coded, with no field
+    let (status, body) = post(
+        format!("{base}/api/v1/orgs"),
+        json!({"name": 7, "slug": "x"}),
+    )
+    .await;
+    assert_eq!(status, 400, "{body}");
+    assert_eq!(body["error"]["code"], "invalid_body", "{body}");
+    assert!(body["error"].get("field").is_none(), "{body}");
+
+    // a settings refusal names the list row, not just the message prefix
+    let res = client
+        .put(format!("{base}/api/v1/client-settings"))
+        .bearer_auth("admintok")
+        .json(&json!({
+            "forwarded_headers": [],
+            "injected_headers": {"bad header": "v"},
+            "request_id_header": "x-request-id"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status().as_u16(), 400);
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "invalid_field", "{body}");
+    assert_eq!(
+        body["error"]["field"], "injected_headers.bad header",
+        "{body}"
+    );
 }
 
 #[tokio::test]

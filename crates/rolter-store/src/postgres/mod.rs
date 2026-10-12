@@ -30,7 +30,13 @@ use crate::postgres::models::{
 };
 use crate::ConfigStore;
 
-fn store_err(err: sqlx::Error) -> Error {
+/// Map a `sqlx` failure onto the store's error type: a unique violation onto
+/// [`Error::AlreadyExists`], anything else onto [`Error::Store`].
+///
+/// Public so the control plane's own queries (the ones outside a repository)
+/// answer a unique violation the way the repositories do, with a `409` rather
+/// than a `500` (#2729).
+pub fn store_err(err: sqlx::Error) -> Error {
     repo::support::store_err(err)
 }
 

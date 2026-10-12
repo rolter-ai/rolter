@@ -27,6 +27,18 @@ describe("describeError", () => {
     });
   });
 
+  it("translates invalid_body and keeps the parser's words as detail", () => {
+    const copy = describeError(
+      new ApiError("invalid request body: invalid type: integer `7`", 400, "invalid_body"),
+      t,
+    );
+    expect(copy).toEqual({
+      message: "errors.api.codes.invalid_body",
+      detail: "invalid request body: invalid type: integer `7`",
+    });
+    expect(KNOWN_ERROR_CODES).toContain("invalid_body");
+  });
+
   it("translates a taken name without the server's words", () => {
     const copy = describeError(new ApiError("provider name 'x' is in use", 409, "name_taken"), t);
     expect(copy).toEqual({ message: "errors.api.codes.name_taken" });

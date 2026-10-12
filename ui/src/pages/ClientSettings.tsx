@@ -15,7 +15,7 @@ import { describedBy, FieldError } from "@/components/ui/field-error";
 import { Input } from "@/components/ui/input";
 import { SettingsPanel } from "@/components/ui/settings-panel";
 import { fetchClientSettings, updateClientSettings, type ClientSettingsDto } from "@/lib/api";
-import { serverFieldError } from "@/lib/field-errors";
+import { serverFieldError, serverFieldPath } from "@/lib/field-errors";
 import { gatewayBase } from "@/lib/gateway";
 import { errorDetail, useToast } from "@/lib/toast";
 import { CLIENT_SETTINGS_QUERY_KEY } from "@/lib/use-gateway-base";
@@ -85,10 +85,11 @@ const fieldOrder = (form: FormState): FieldKey[] => [
   "requestIdHeader",
 ];
 
-// the wire names a 400 opens with, mapped to the field they belong to; the
-// header rules answer with the header itself, which belongs to no one field
+// the wire names a 400 carries as `field`, mapped to the form field they belong
+// to; an injected header is refused by row and placed in `onError` instead
 const WIRE_FIELDS: Record<string, FieldKey> = {
   public_base_url: "publicBaseUrl",
+  forwarded_headers: "forwarded",
   request_id_header: "requestIdHeader",
 };
 
@@ -220,6 +221,20 @@ function ClientSettingsScreen() {
       });
     },
     onError: (error) => {
+      // an injected header is refused by row: `injected_headers.<name>`
+      const path = serverFieldPath(error);
+      const injectedName = path?.path.startsWith("injected_headers.")
+        ? path.path.slice("injected_headers.".length)
+        : null;
+      const row =
+        injectedName === null
+          ? undefined
+          : form?.injected.find((r) => r.name.trim().toLowerCase() === injectedName);
+      if (row && error instanceof Error) {
+        setServerErrors({ [nameKey(row)]: error.message });
+        document.getElementById(idOf(nameKey(row)))?.focus();
+        return;
+      }
       const named = serverFieldError(error, WIRE_FIELDS);
       if (named) {
         setServerErrors({ [named.field]: named.message });

@@ -39,7 +39,7 @@ use rolter_core::{EgressPolicy, Error};
 use rolter_store::postgres::crypto::{Kek, KEK_ENV};
 use rolter_store::postgres::repo::AuditLogRepo;
 
-use crate::crud::{pool, ApiError, ApiResult, SafeJson};
+use crate::crud::{invalid_field, pool, ApiError, ApiResult, SafeJson};
 use crate::rbac::{authorize_superadmin, Principal};
 use crate::rbac_matrix::superadmin_cap;
 use crate::ControlState;
@@ -273,13 +273,12 @@ impl RuleInput {
     }
 }
 
-fn invalid(message: impl Into<String>) -> ApiError {
-    ApiError::Core(Error::Config(message.into()))
-}
-
-fn validate_name(value: &str, field: &str) -> ApiResult<()> {
+fn validate_name(value: &str, label: &str) -> ApiResult<()> {
     if value.trim().is_empty() || value.len() > 128 || value.chars().any(char::is_control) {
-        return Err(invalid(format!("{field} must be 1-128 visible characters")));
+        return Err(invalid_field(
+            "name",
+            format!("{label} must be 1-128 visible characters"),
+        ));
     }
     Ok(())
 }
@@ -292,25 +291,28 @@ fn validate_name(value: &str, field: &str) -> ApiResult<()> {
 fn validate_channel(input: &ChannelInput) -> ApiResult<reqwest::Url> {
     validate_name(&input.name, "channel name")?;
     let endpoint = reqwest::Url::parse(input.endpoint.trim())
-        .map_err(|_| invalid("channel endpoint must be a valid http(s) URL"))?;
+        .map_err(|_| invalid_field("endpoint", "channel endpoint must be a valid http(s) URL"))?;
     if !matches!(endpoint.scheme(), "http" | "https")
         || endpoint.host_str().is_none()
         || !endpoint.username().is_empty()
         || endpoint.password().is_some()
     {
-        return Err(invalid(
+        return Err(invalid_field(
+            "endpoint",
             "channel endpoint must be an http(s) URL without userinfo",
         ));
     }
     if let Some(secret) = &input.managed_secret {
         if secret.trim().is_empty() {
-            return Err(invalid("managed_secret must not be empty"));
+            return Err(invalid_field(
+                "managed_secret",
+                "managed_secret must not be empty",
+            ));
         }
         // checked here rather than found at the first delivery, where a
         // trailing newline from a file would fail every alert with no hint
         if bearer(secret).is_none() {
-            return Err(invalid(
-                "managed_secret must be a valid HTTP header value, without control characters or line breaks",
+            return Err(invalid_field("managed_secret", "managed_secret must be a valid HTTP header value, without control characters or line breaks",
             ));
         }
     }
@@ -322,7 +324,7 @@ fn validate_channel(input: &ChannelInput) -> ApiResult<reqwest::Url> {
 fn check_egress(egress: &EgressPolicy, endpoint: &reqwest::Url) -> ApiResult<()> {
     egress
         .check_url(endpoint.as_str(), "channel endpoint")
-        .map_err(invalid)
+        .map_err(|message| invalid_field("endpoint", message))
 }
 
 /// The `Authorization` value a channel secret is sent as, or `None` when the
@@ -336,29 +338,39 @@ fn bearer(secret: &str) -> Option<HeaderValue> {
 fn validate_rule(input: &RuleInput) -> ApiResult<()> {
     validate_name(&input.name, "rule name")?;
     if !SIGNALS.contains(&input.signal.as_str()) {
-        return Err(invalid(format!("signal must be one of {SIGNALS:?}")));
+        return Err(invalid_field(
+            "signal",
+            format!("signal must be one of {SIGNALS:?}"),
+        ));
     }
     if !input.threshold.is_finite() || input.threshold < 0.0 {
-        return Err(invalid("threshold must be a finite non-negative number"));
+        return Err(invalid_field(
+            "threshold",
+            "threshold must be a finite non-negative number",
+        ));
     }
     if !(60..=86_400).contains(&input.window_secs) {
-        return Err(invalid("window_secs must be between 60 and 86400"));
+        return Err(invalid_field(
+            "window_secs",
+            "window_secs must be between 60 and 86400",
+        ));
     }
     if !COMPARISONS.contains(&input.comparison().as_str()) {
-        return Err(invalid(format!(
-            "comparison must be one of {COMPARISONS:?}"
-        )));
+        return Err(invalid_field(
+            "comparison",
+            format!("comparison must be one of {COMPARISONS:?}"),
+        ));
     }
     if !NO_DATA_POLICIES.contains(&input.no_data().as_str()) {
-        return Err(invalid(format!(
-            "no_data must be one of {NO_DATA_POLICIES:?}"
-        )));
+        return Err(invalid_field(
+            "no_data",
+            format!("no_data must be one of {NO_DATA_POLICIES:?}"),
+        ));
     }
     // rejected rather than stored inert: a policy that can never apply reads
     // as protection the rule does not have
     if input.no_data() != "ignore" && !can_lack_data(&input.signal) {
-        return Err(invalid(
-            "no_data applies only to error_rate and p95_latency_ms; the other signals read 0 for an empty window (use comparison below on request_volume to catch stopped traffic)",
+        return Err(invalid_field("no_data", "no_data applies only to error_rate and p95_latency_ms; the other signals read 0 for an empty window (use comparison below on request_volume to catch stopped traffic)",
         ));
     }
     Ok(())
@@ -366,9 +378,10 @@ fn validate_rule(input: &RuleInput) -> ApiResult<()> {
 
 fn seal(secret: &str) -> ApiResult<(Vec<u8>, Vec<u8>)> {
     let Some(kek) = Kek::from_env() else {
-        return Err(invalid(format!(
-            "storing channel credentials requires {KEK_ENV}"
-        )));
+        return Err(invalid_field(
+            "managed_secret",
+            format!("storing channel credentials requires {KEK_ENV}"),
+        ));
     };
     kek.encrypt(secret)
         .map_err(|_| ApiError::Curated("failed to encrypt channel credential".into()))
@@ -394,7 +407,7 @@ async fn list_channels(
         )))
         .fetch_all(pool(&state))
         .await
-        .map_err(|e| Error::Store(e.to_string()))?,
+        .map_err(rolter_store::postgres::store_err)?,
     ))
 }
 
@@ -411,7 +424,7 @@ async fn create_channel(
         "insert into alert_channels (name, kind, endpoint, enabled, secret_ciphertext, secret_nonce) values ($1, 'webhook', $2, $3, $4, $5) returning {}", channel_columns())))
         .bind(input.name.trim()).bind(endpoint.as_str()).bind(input.enabled)
         .bind(secret.as_ref().map(|(c, _)| c.as_slice())).bind(secret.as_ref().map(|(_, n)| n.as_slice()))
-        .fetch_one(pool(&state)).await.map_err(|e| Error::Store(e.to_string()))?;
+        .fetch_one(pool(&state)).await.map_err(rolter_store::postgres::store_err)?;
     audit(
         &state,
         &principal,
@@ -432,7 +445,10 @@ async fn update_channel(
     authorize_superadmin(&principal, superadmin_cap!("alert_channel", Update))?;
     let endpoint = validate_channel(&input)?;
     let secret = input.managed_secret.as_deref().map(seal).transpose()?;
-    let mut tx = pool(&state).begin().await.map_err(store_error)?;
+    let mut tx = pool(&state)
+        .begin()
+        .await
+        .map_err(rolter_store::postgres::store_err)?;
     // no key update rather than for update: an evaluation delivering to this
     // channel holds it for key share, and an edit need not wait for that
     let (stored, had_secret): (String, bool) = sqlx::query_as(
@@ -441,7 +457,7 @@ async fn update_channel(
     .bind(id)
     .fetch_optional(&mut *tx)
     .await
-    .map_err(store_error)?
+    .map_err(rolter_store::postgres::store_err)?
     .ok_or_else(|| Error::NotFound(format!("alert channel {id}")))?;
     let stored = reqwest::Url::parse(&stored).ok();
     let endpoint_changed = stored.as_ref() != Some(&endpoint);
@@ -471,8 +487,10 @@ async fn update_channel(
     .bind(clear_secret)
     .fetch_one(&mut *tx)
     .await
-    .map_err(store_error)?;
-    tx.commit().await.map_err(store_error)?;
+    .map_err(rolter_store::postgres::store_err)?;
+    tx.commit()
+        .await
+        .map_err(rolter_store::postgres::store_err)?;
     // whether the endpoint moved and what became of the secret, never the
     // endpoint itself: its query string can carry a token
     audit(
@@ -502,7 +520,7 @@ async fn delete_channel(
         .bind(id)
         .execute(pool(&state))
         .await
-        .map_err(|e| Error::Store(e.to_string()))?
+        .map_err(rolter_store::postgres::store_err)?
         .rows_affected()
         == 0
     {
@@ -533,7 +551,7 @@ async fn list_rules(
         )))
         .fetch_all(pool(&state))
         .await
-        .map_err(|e| Error::Store(e.to_string()))?,
+        .map_err(rolter_store::postgres::store_err)?,
     ))
 }
 
@@ -546,7 +564,7 @@ async fn create_rule(
     validate_rule(&input)?;
     let rule: Rule = sqlx::query_as(sqlx::AssertSqlSafe(format!("insert into alert_rules (name, signal, threshold, comparison, no_data, window_secs, channel_id, enabled) values ($1,$2,$3,$7,$8,$4,$5,$6) returning {}", rule_columns())))
         .bind(input.name.trim()).bind(&input.signal).bind(input.threshold).bind(input.window_secs).bind(input.channel_id).bind(input.enabled).bind(input.comparison()).bind(input.no_data())
-        .fetch_one(pool(&state)).await.map_err(|e| Error::Store(e.to_string()))?;
+        .fetch_one(pool(&state)).await.map_err(rolter_store::postgres::store_err)?;
     audit(
         &state,
         &principal,
@@ -568,7 +586,7 @@ async fn update_rule(
     validate_rule(&input)?;
     let rule: Rule = sqlx::query_as(sqlx::AssertSqlSafe(format!("update alert_rules set name=$2, signal=$3, threshold=$4, window_secs=$5, channel_id=$6, enabled=$7, comparison=coalesce($8, comparison), no_data=coalesce($9, no_data), updated_at=now() where id=$1 returning {}", rule_columns())))
         .bind(id).bind(input.name.trim()).bind(&input.signal).bind(input.threshold).bind(input.window_secs).bind(input.channel_id).bind(input.enabled).bind(&input.comparison).bind(input.no_data_for_update())
-        .fetch_optional(pool(&state)).await.map_err(|e| Error::Store(e.to_string()))?
+        .fetch_optional(pool(&state)).await.map_err(rolter_store::postgres::store_err)?
         .ok_or_else(|| Error::NotFound(format!("alert rule {id}")))?;
     audit(
         &state,
@@ -591,7 +609,7 @@ async fn delete_rule(
         .bind(id)
         .execute(pool(&state))
         .await
-        .map_err(|e| Error::Store(e.to_string()))?
+        .map_err(rolter_store::postgres::store_err)?
         .rows_affected()
         == 0
     {
@@ -687,7 +705,7 @@ async fn list_history(
     .bind(limit)
     .fetch_all(pool(&state))
     .await
-    .map_err(|e| Error::Store(e.to_string()))?;
+    .map_err(rolter_store::postgres::store_err)?;
     Ok(Json(history))
 }
 
@@ -718,7 +736,7 @@ async fn evaluate_enabled(state: &ControlState) -> Result<(), Error> {
         sqlx::query_scalar("select id from alert_rules where enabled order by name")
             .fetch_all(pool(state))
             .await
-            .map_err(store_error)?;
+            .map_err(rolter_store::postgres::store_err)?;
     let kek = Kek::from_env();
     for id in ids {
         if let Err(error) = evaluate_one(state, id, Lock::SkipLocked, kek.as_ref()).await {
@@ -726,10 +744,6 @@ async fn evaluate_enabled(state: &ControlState) -> Result<(), Error> {
         }
     }
     Ok(())
-}
-
-fn store_error(error: sqlx::Error) -> Error {
-    Error::Store(error.to_string())
 }
 
 /// How [`evaluate_one`] takes the rule's row lock.
@@ -794,13 +808,16 @@ async fn evaluate_one(
     .bind(id)
     .fetch_optional(pool(state))
     .await
-    .map_err(store_error)?
+    .map_err(rolter_store::postgres::store_err)?
     else {
         return Ok(None);
     };
     let reading = read_signal(state, &unlocked.signal, unlocked.window_secs).await;
 
-    let mut tx = pool(state).begin().await.map_err(store_error)?;
+    let mut tx = pool(state)
+        .begin()
+        .await
+        .map_err(rolter_store::postgres::store_err)?;
     // the channel is locked before the rule: deleting a channel locks it and
     // then, through on delete set null, every rule naming it, so taking the
     // two in that same order makes a delete wait for an in-flight delivery
@@ -813,7 +830,7 @@ async fn evaluate_one(
         .bind(channel_id)
         .fetch_optional(&mut *tx)
         .await
-        .map_err(store_error)?,
+        .map_err(rolter_store::postgres::store_err)?,
         None => None,
     };
     let locking = match lock {
@@ -827,7 +844,7 @@ async fn evaluate_one(
     .bind(id)
     .fetch_optional(&mut *tx)
     .await
-    .map_err(store_error)?
+    .map_err(rolter_store::postgres::store_err)?
     else {
         return Ok(None);
     };
@@ -864,8 +881,10 @@ async fn evaluate_one(
             .bind(&reason.params)
             .execute(&mut *tx)
             .await
-            .map_err(store_error)?;
-            tx.commit().await.map_err(store_error)?;
+            .map_err(rolter_store::postgres::store_err)?;
+            tx.commit()
+                .await
+                .map_err(rolter_store::postgres::store_err)?;
             // `read_signal` words the reason for the rule card, and never with
             // the ClickHouse endpoint in it, so the caller may read it too
             return Err(ApiError::CodedInternal {
@@ -882,7 +901,7 @@ async fn evaluate_one(
     .bind(HISTORY_WINDOW)
     .fetch_all(&mut *tx)
     .await
-    .map_err(store_error)?;
+    .map_err(rolter_store::postgres::store_err)?;
     let next_state = judge(&rule, value, held_state(&rule.state, &history));
     // the time the reading was taken rather than now(), so a later reading
     // can tell this one is older
@@ -896,7 +915,7 @@ async fn evaluate_one(
     .bind(read_at)
     .fetch_one(&mut *tx)
     .await
-    .map_err(store_error)?;
+    .map_err(rolter_store::postgres::store_err)?;
     let redeliver = match (&channel, lock) {
         (Some(channel), Lock::Wait) if channel.enabled => Redeliver::Now,
         (Some(channel), Lock::SkipLocked) if channel.enabled => Redeliver::After(read_at),
@@ -919,7 +938,9 @@ async fn evaluate_one(
         }
         None => None,
     };
-    tx.commit().await.map_err(store_error)?;
+    tx.commit()
+        .await
+        .map_err(rolter_store::postgres::store_err)?;
     let notified = notification
         .as_ref()
         .is_some_and(|n| n.delivery_status == "delivered");
@@ -1148,7 +1169,7 @@ fn metric_sql(signal: &str, window_secs: i32) -> ApiResult<String> {
         "spend_velocity" => format!("sum(cost_usd) * 3600 / {window}"),
         "request_volume" => "count()".to_string(),
         "provider_health_flaps" => "countIf(outcome != 'ok')".to_string(),
-        _ => return Err(invalid("unknown alert signal")),
+        _ => return Err(invalid_field("signal", "unknown alert signal")),
     };
     let table = if signal == "provider_health_flaps" {
         "provider_health_events"
@@ -1277,7 +1298,7 @@ async fn report(
     .bind(rule.threshold)
     .fetch_one(&mut **tx)
     .await
-    .map_err(store_error)?;
+    .map_err(rolter_store::postgres::store_err)?;
     Ok(notification)
 }
 

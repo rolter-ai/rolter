@@ -8,13 +8,13 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use rolter_core::{
-    BuiltinRule, Error, FailureMode, GuardAction, GuardStage, GuardrailRule,
-    GuardrailWebhookConfig, GuardrailsConfig, WebhookAuth, WebhookStage,
+    BuiltinRule, FailureMode, GuardAction, GuardStage, GuardrailRule, GuardrailWebhookConfig,
+    GuardrailsConfig, WebhookAuth, WebhookStage,
 };
 use rolter_store::postgres::models::{GuardrailProvider, GuardrailRule as GuardrailRuleRow};
 use rolter_store::postgres::repo::{GuardrailProviderInput, GuardrailRepo, GuardrailRuleInput};
 
-use crate::crud::{log_audit, pool, publish_config_change, ApiError, ApiResult, SafeJson};
+use crate::crud::{invalid_field, log_audit, pool, publish_config_change, ApiResult, SafeJson};
 use crate::rbac::{authorize_superadmin, Principal};
 use crate::rbac_matrix::superadmin_cap;
 use crate::ControlState;
@@ -113,10 +113,6 @@ impl ProviderBody {
     }
 }
 
-fn invalid(message: impl Into<String>) -> ApiError {
-    ApiError::Core(Error::Config(message.into()))
-}
-
 fn parse_builtin(value: Option<&str>) -> ApiResult<Option<BuiltinRule>> {
     match value {
         None => Ok(None),
@@ -124,27 +120,36 @@ fn parse_builtin(value: Option<&str>) -> ApiResult<Option<BuiltinRule>> {
         Some("phone") => Ok(Some(BuiltinRule::Phone)),
         Some("api_token") => Ok(Some(BuiltinRule::ApiToken)),
         Some("payment_card") => Ok(Some(BuiltinRule::PaymentCard)),
-        Some(value) => Err(invalid(format!(
-            "unknown built-in guardrail rule '{value}'"
-        ))),
+        Some(value) => Err(invalid_field(
+            "builtin",
+            format!("unknown built-in guardrail rule '{value}'"),
+        )),
     }
 }
 
 fn validate_rule(body: &RuleBody) -> ApiResult<()> {
     if body.position < 0 {
-        return Err(invalid("position must be zero or greater"));
+        return Err(invalid_field(
+            "position",
+            "position must be zero or greater",
+        ));
     }
     if !matches!(body.source_type.as_str(), "builtin" | "pattern") {
-        return Err(invalid("source_type must be builtin or pattern"));
+        return Err(invalid_field(
+            "source_type",
+            "source_type must be builtin or pattern",
+        ));
     }
     match body.source_type.as_str() {
         "builtin" if body.builtin.is_none() || body.pattern.is_some() => {
-            return Err(invalid(
+            return Err(invalid_field(
+                "builtin",
                 "a built-in rule requires builtin and must not set pattern",
             ));
         }
         "pattern" if body.builtin.is_some() || body.pattern.as_deref().unwrap_or("").is_empty() => {
-            return Err(invalid(
+            return Err(invalid_field(
+                "pattern",
                 "a pattern rule requires pattern and must not set builtin",
             ));
         }
@@ -153,13 +158,23 @@ fn validate_rule(body: &RuleBody) -> ApiResult<()> {
     let stage = match body.stage.as_str() {
         "pre_call" => GuardStage::PreCall,
         "post_call" => GuardStage::PostCall,
-        _ => return Err(invalid("stage must be pre_call or post_call")),
+        _ => {
+            return Err(invalid_field(
+                "stage",
+                "stage must be pre_call or post_call",
+            ))
+        }
     };
     let action = match body.action.as_str() {
         "annotate" => GuardAction::Annotate,
         "block" => GuardAction::Block,
         "redact" => GuardAction::Redact,
-        _ => return Err(invalid("action must be annotate, block or redact")),
+        _ => {
+            return Err(invalid_field(
+                "action",
+                "action must be annotate, block or redact",
+            ))
+        }
     };
     let rule = GuardrailRule {
         name: body.name.clone(),
@@ -176,34 +191,50 @@ fn validate_rule(body: &RuleBody) -> ApiResult<()> {
         ..GuardrailsConfig::default()
     }
     .validate();
+    // the core check reports one joined text, so the field is the one a rule
+    // problem most often concerns (an unparsable pattern)
     if problems.is_empty() {
         Ok(())
     } else {
-        Err(invalid(problems.join("; ")))
+        Err(invalid_field("pattern", problems.join("; ")))
     }
 }
 
 fn validate_provider(body: &ProviderBody) -> ApiResult<()> {
     if body.name.trim().is_empty() {
-        return Err(invalid("name must not be empty"));
+        return Err(invalid_field("name", "name must not be empty"));
     }
     if body.timeout_ms <= 0 || body.max_retries < 0 || body.max_body_bytes <= 0 {
-        return Err(invalid(
+        return Err(invalid_field(
+            "timeout_ms",
             "timeout_ms and max_body_bytes must be positive; max_retries must not be negative",
         ));
     }
     if !(body.url.starts_with("http://") || body.url.starts_with("https://")) {
-        return Err(invalid("url must start with http:// or https://"));
+        return Err(invalid_field(
+            "url",
+            "url must start with http:// or https://",
+        ));
     }
     let stage = match body.stage.as_str() {
         "pre_call" => WebhookStage::PreCall,
         "post_call" => WebhookStage::PostCall,
-        _ => return Err(invalid("stage must be pre_call or post_call")),
+        _ => {
+            return Err(invalid_field(
+                "stage",
+                "stage must be pre_call or post_call",
+            ))
+        }
     };
     let failure_mode = match body.failure_mode.as_str() {
         "fail_open" => FailureMode::FailOpen,
         "fail_closed" => FailureMode::FailClosed,
-        _ => return Err(invalid("failure_mode must be fail_open or fail_closed")),
+        _ => {
+            return Err(invalid_field(
+                "failure_mode",
+                "failure_mode must be fail_open or fail_closed",
+            ))
+        }
     };
     let auth = match (body.auth_kind.as_str(), body.auth_env.as_deref()) {
         ("none", None) => None,
@@ -213,11 +244,24 @@ fn validate_provider(body: &ProviderBody) -> ApiResult<()> {
         ("shared_secret", Some(value)) => Some(WebhookAuth::SharedSecret {
             secret_env: value.to_string(),
         }),
-        ("none", Some(_)) => return Err(invalid("auth_env must be empty when auth_kind is none")),
-        ("bearer" | "shared_secret", None) => {
-            return Err(invalid("auth_env is required for the selected auth_kind"));
+        ("none", Some(_)) => {
+            return Err(invalid_field(
+                "auth_env",
+                "auth_env must be empty when auth_kind is none",
+            ))
         }
-        _ => return Err(invalid("auth_kind must be none, bearer or shared_secret")),
+        ("bearer" | "shared_secret", None) => {
+            return Err(invalid_field(
+                "auth_env",
+                "auth_env is required for the selected auth_kind",
+            ));
+        }
+        _ => {
+            return Err(invalid_field(
+                "auth_kind",
+                "auth_kind must be none, bearer or shared_secret",
+            ))
+        }
     };
     let problems = GuardrailWebhookConfig {
         enabled: body.enabled,
@@ -230,10 +274,11 @@ fn validate_provider(body: &ProviderBody) -> ApiResult<()> {
         auth,
     }
     .validate();
+    // as above: the joined text cannot name one field, so the endpoint stands in
     if problems.is_empty() {
         Ok(())
     } else {
-        Err(invalid(problems.join("; ")))
+        Err(invalid_field("url", problems.join("; ")))
     }
 }
 
