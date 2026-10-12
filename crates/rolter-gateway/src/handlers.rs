@@ -1685,6 +1685,12 @@ async fn proxy(
     // before guardrails so any appended user/assistant content is still scanned
     // (ROL-256).
     let mut template_applied = false;
+    // the field is rolter-only, so it must never reach an upstream: whether or not
+    // a template ends up rendering, a body that carried it is re-serialized
+    // without it rather than forwarded as received
+    let carried_template_vars = parsed
+        .get(rolter_core::prompt_templates::TEMPLATE_VARS_FIELD)
+        .is_some();
     let template_scope = rolter_core::PromptTemplateRequestScope {
         route_model: &entry.route.model,
         org_id: &scope.org,
@@ -1719,7 +1725,12 @@ async fn proxy(
                 );
             }
         }
+    } else if carried_template_vars {
+        if let Some(object) = parsed.as_object_mut() {
+            object.remove(rolter_core::prompt_templates::TEMPLATE_VARS_FIELD);
+        }
     }
+    template_applied |= carried_template_vars;
 
     // both the built-in scan and the webhook consult are pre-call guardrail work,
     // so they share one stage: a request slowed by a sluggish guardrail service

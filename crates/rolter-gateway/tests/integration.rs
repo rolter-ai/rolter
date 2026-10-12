@@ -5703,3 +5703,118 @@ async fn every_invalid_key_401_carries_the_openai_invalid_api_key_code() {
         );
     }
 }
+
+mod template_vars_leak {
+    use super::*;
+    use parking_lot::Mutex;
+    use rolter_core::{Decorator, PromptTemplate};
+
+    type Seen = Arc<Mutex<Vec<Value>>>;
+
+    async fn record_chat(State(seen): State<Seen>, Json(body): Json<Value>) -> impl IntoResponse {
+        seen.lock().push(body.clone());
+        mock_openai(Json(body)).await
+    }
+
+    async fn record_messages(
+        State(seen): State<Seen>,
+        Json(body): Json<Value>,
+    ) -> impl IntoResponse {
+        seen.lock().push(body);
+        Json(json!({
+            "id": "msg_1", "type": "message", "model": "claude", "role": "assistant",
+            "content": [{"type": "text", "text": "pong"}], "stop_reason": "end_turn",
+            "usage": {"input_tokens": 1, "output_tokens": 1}
+        }))
+    }
+
+    async fn upstream() -> (SocketAddr, Seen) {
+        let seen = Seen::default();
+        let app = Router::new()
+            .route("/v1/chat/completions", post(record_chat))
+            .route("/v1/messages", post(record_messages))
+            .with_state(seen.clone());
+        (serve(app).await, seen)
+    }
+
+    /// a template that only decorates another route, so it is active for the
+    /// gateway but renders nothing for the route under test
+    fn unrelated_template() -> PromptTemplate {
+        PromptTemplate {
+            id: "other".to_string(),
+            version: 1,
+            routes: vec!["some-other-model".to_string()],
+            scopes: Vec::new(),
+            variables: Vec::new(),
+            decorators: vec![Decorator {
+                role: Default::default(),
+                position: Default::default(),
+                content: "hello".to_string(),
+            }],
+        }
+    }
+
+    async fn send(gw: SocketAddr, path: &str, mut body: Value) -> reqwest::Response {
+        body["rolter_template_vars"] = json!({"persona": "a support agent"});
+        reqwest::Client::new()
+            .post(format!("http://{gw}{path}"))
+            .json(&body)
+            .send()
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn field_never_reaches_the_upstream_without_an_applicable_template() {
+        for with_unrelated_template in [false, true] {
+            let (addr, seen) = upstream().await;
+            let mut config = config_for("test-model", vec![("up", addr)]);
+            if with_unrelated_template {
+                config.prompt_templates.enabled = true;
+                config.prompt_templates.templates.push(unrelated_template());
+            }
+            let gw = serve_gateway(&config).await;
+            let chat =
+                json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}]});
+
+            let resp = send(gw, "/v1/chat/completions", chat.clone()).await;
+            assert_eq!(resp.status(), 200);
+            let mut streaming = chat;
+            streaming["stream"] = json!(true);
+            let resp = send(gw, "/v1/chat/completions", streaming).await;
+            assert_eq!(resp.status(), 200);
+            let _ = resp.bytes().await.unwrap();
+
+            let seen = seen.lock();
+            assert_eq!(seen.len(), 2);
+            for body in seen.iter() {
+                assert!(
+                    body.get("rolter_template_vars").is_none(),
+                    "forwarded (unrelated template: {with_unrelated_template}): {body}"
+                );
+                assert_eq!(body["messages"][0]["content"], "hi");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn field_is_stripped_on_the_anthropic_dialect_too() {
+        let (addr, seen) = upstream().await;
+        let mut config = config_for("test-model", vec![("up", addr)]);
+        config.providers[0].kind = ProviderKind::Anthropic;
+        let gw = serve_gateway(&config).await;
+
+        let resp = send(
+            gw,
+            "/v1/messages",
+            json!({"model": "test-model", "max_tokens": 8,
+                   "messages": [{"role": "user", "content": "hi"}]}),
+        )
+        .await;
+        assert_eq!(resp.status(), 200);
+
+        let seen = seen.lock();
+        assert_eq!(seen.len(), 1);
+        assert!(seen[0].get("rolter_template_vars").is_none(), "{}", seen[0]);
+    }
+}
