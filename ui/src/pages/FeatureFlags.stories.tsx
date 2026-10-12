@@ -164,7 +164,7 @@ export const TurnsOffAFlagThatBecameUnavailable: Story = {
     await expect(canvas.getByText(/cannot be turned back on/i)).toBeVisible();
     await userEvent.click(cacheAware);
     await expect(cacheAware).toHaveAttribute("aria-checked", "false");
-    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
+    await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
     await confirmChanges(canvasElement);
     await expectToast(canvasElement, /feature flags updated/i);
     // saved off, it is an ordinary unavailable flag again: no way back on
@@ -190,7 +190,7 @@ export const SavesChanges: Story = {
     await expect(complexity).toHaveAttribute("aria-checked", "false");
     await userEvent.click(complexity);
     await expect(complexity).toHaveAttribute("aria-checked", "true");
-    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
+    await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
     await confirmChanges(canvasElement);
     await expectToast(canvasElement, /feature flags updated/i);
   },
@@ -220,7 +220,7 @@ export const SaveRejectedByTheServer: Story = {
     const canvas = within(canvasElement);
     const complexity = await canvas.findByRole("switch", { name: "Complexity Routing" });
     await userEvent.click(complexity);
-    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
+    await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
     await confirmChanges(canvasElement);
 
     await expectToast(canvasElement, /needs an adaptive policy first/, "error");
@@ -256,15 +256,15 @@ export const SaveWaitsForAChange: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const complexity = await canvas.findByRole("switch", { name: "Complexity Routing" });
-    await expect(canvas.getByRole("button", { name: "Save Changes" })).toBeDisabled();
+    await expect(canvas.getByRole("button", { name: "Save changes" })).toBeDisabled();
     await expect(canvas.getByText(/last saved/i)).toBeVisible();
     await userEvent.click(complexity);
     await expect(canvas.getByText("Changed")).toBeVisible();
-    await expect(canvas.getByRole("button", { name: "Save Changes" })).toBeEnabled();
+    await expect(canvas.getByRole("button", { name: "Save changes" })).toBeEnabled();
     // flipped back to the stored value, it is no longer a change
     await userEvent.click(complexity);
     await expect(canvas.queryByText("Changed")).toBeNull();
-    await expect(canvas.getByRole("button", { name: "Save Changes" })).toBeDisabled();
+    await expect(canvas.getByRole("button", { name: "Save changes" })).toBeDisabled();
   },
 };
 
@@ -276,7 +276,7 @@ export const ConfirmShowsTheDiff: Story = {
     const canvas = within(canvasElement);
     await userEvent.click(await canvas.findByRole("switch", { name: "Guardrails" }));
     await userEvent.click(await canvas.findByRole("switch", { name: "Complexity Routing" }));
-    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
+    await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
     const d = within(await dialog());
     await expect(d.getByText("Guardrails")).toBeVisible();
     await expect(d.getByText(/every pre- and post-call guardrail rule stops/i)).toBeVisible();
@@ -297,12 +297,12 @@ export const CancelLeavesStateUnchanged: Story = {
     const canvas = within(canvasElement);
     const guardrails = await canvas.findByRole("switch", { name: "Guardrails" });
     await userEvent.click(guardrails);
-    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
+    await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
     const d = within(await dialog());
     await userEvent.click(d.getByRole("button", { name: "Cancel" }));
     await waitFor(() => expect(within(document.body).queryByRole("dialog")).toBeNull());
     await expect(guardrails).toHaveAttribute("aria-checked", "false");
-    await expect(canvas.getByRole("button", { name: "Save Changes" })).toBeEnabled();
+    await expect(canvas.getByRole("button", { name: "Save changes" })).toBeEnabled();
   },
 };
 
@@ -317,7 +317,7 @@ export const ConfirmSendsThePut: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(await canvas.findByRole("switch", { name: "Circuit Breaker" }));
-    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
+    await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
     await expect(await dialog()).toBeVisible();
     putRecorder.expectNotSent("PUT", "/feature-flags");
     await confirmChanges(canvasElement);
@@ -358,7 +358,7 @@ export const SaveRefetchesTheEffectiveConfig: Story = {
         .length;
     await userEvent.click(await canvas.findByRole("switch", { name: "Circuit Breaker" }));
     await waitFor(() => expect(configReads()).toBe(1));
-    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
+    await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
     await confirmChanges(canvasElement);
     await expectToast(canvasElement, /feature flags updated/i);
     await waitFor(() => expect(configReads()).toBe(2));

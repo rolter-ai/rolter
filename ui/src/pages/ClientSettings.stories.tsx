@@ -166,7 +166,7 @@ export const RejectsAReservedHeader: Story = {
     await expect(forwarded).toHaveAccessibleDescription(
       "'authorization' is managed by the gateway.",
     );
-    await expect(canvas.getByRole("button", { name: "Save Changes" })).toHaveAttribute(
+    await expect(canvas.getByRole("button", { name: "Save changes" })).toHaveAttribute(
       "aria-disabled",
       "true",
     );
@@ -208,7 +208,7 @@ export const MarksEveryInvalidField: Story = {
       "aria-invalid",
     );
     await expect(canvas.getByText("2 fields need attention")).toBeVisible();
-    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
+    await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
     await expect(name).toHaveFocus();
   },
 };
@@ -245,7 +245,7 @@ export const ServerRejectionLandsOnTheField: Story = {
     const url = await canvas.findByLabelText("Public base URL");
     await userEvent.clear(url);
     await userEvent.type(url, "https://gateway.example.com");
-    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
+    await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
     await waitFor(() => expect(url).toHaveAttribute("aria-invalid", "true"));
     await expect(url).toHaveAccessibleDescription(
       "public_base_url must be at most 2048 characters",
@@ -270,7 +270,7 @@ export const SavesChanges: Story = {
     await userEvent.click(await canvas.findByRole("button", { name: "Add header" }));
     await userEvent.type(canvas.getByLabelText("Injected header name 1"), "x-partner-id");
     await userEvent.type(canvas.getByLabelText("Injected header value 1"), "acme");
-    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
+    await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
     await expectToast(canvasElement, /client settings updated/i);
     await expect(canvas.getByLabelText("Injected header value 1")).toHaveValue("acme");
   },
@@ -298,7 +298,7 @@ export const SaveRejectedByTheServer: Story = {
     await userEvent.click(await canvas.findByRole("button", { name: "Add header" }));
     await userEvent.type(canvas.getByLabelText("Injected header name 1"), "x-partner-id");
     await userEvent.type(canvas.getByLabelText("Injected header value 1"), "acme");
-    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
+    await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
 
     await expectToast(canvasElement, /reserved by the gateway/, "error");
     await waitFor(() =>

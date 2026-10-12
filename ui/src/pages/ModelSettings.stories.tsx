@@ -132,7 +132,7 @@ export const PicksAModel: Story = {
     await userEvent.click(
       await within(document.body).findByRole("option", { name: "claude-sonnet" }),
     );
-    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
+    await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
     await expectToast(canvasElement, /model settings updated/i);
     await expect(JSON.parse(String(sent[sent.length - 1]))).toMatchObject({
       default_model: "claude-sonnet",
@@ -150,7 +150,7 @@ export const AcceptsATypedGroupAddress: Story = {
     await userEvent.click(
       await within(document.body).findByRole("option", { name: /edge\/gpt-4o/ }),
     );
-    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
+    await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
     await expectToast(canvasElement, /model settings updated/i);
     await expect(JSON.parse(String(sent[sent.length - 1]))).toMatchObject({
       default_model: "edge/gpt-4o",
@@ -233,7 +233,7 @@ export const RejectsAnOutOfRangeTemperature: Story = {
     await userEvent.type(temperature, "3");
     await waitFor(() => expect(temperature).toHaveAttribute("aria-invalid", "true"));
     await expect(temperature).toHaveAccessibleDescription("Temperature must be between 0 and 2.");
-    await expect(canvas.getByRole("button", { name: "Save Changes" })).toHaveAttribute(
+    await expect(canvas.getByRole("button", { name: "Save changes" })).toHaveAttribute(
       "aria-disabled",
       "true",
     );
@@ -262,7 +262,7 @@ export const MarksEveryInvalidField: Story = {
     );
     await expect(canvas.getByLabelText("Temperature")).not.toHaveAttribute("aria-invalid");
     await expect(canvas.getByText("2 fields need attention")).toBeVisible();
-    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
+    await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
     await expect(topP).toHaveFocus();
   },
 };
@@ -282,7 +282,7 @@ export const ServerRejectionLandsOnTheField: Story = {
     const canvas = within(canvasElement);
     const model = await canvas.findByLabelText("Default model");
     await userEvent.type(model, "x");
-    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
+    await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
     await waitFor(() => expect(model).toHaveAttribute("aria-invalid", "true"));
     await expect(model).toHaveAccessibleDescription("default_model must be at most 256 characters");
     await waitFor(() => expect(model).toHaveFocus());
@@ -299,12 +299,12 @@ export const DefaultsOffIgnoresAnOutOfRangeTemperature: Story = {
     await waitFor(() => expect(canvas.getByLabelText("Temperature")).toBeDisabled());
     await expect(canvas.getByLabelText("Temperature")).toHaveValue("3");
     await expect(canvas.queryByText("Temperature must be between 0 and 2.")).toBeNull();
-    await expect(canvas.getByRole("button", { name: "Save Changes" })).not.toHaveAttribute(
+    await expect(canvas.getByRole("button", { name: "Save changes" })).not.toHaveAttribute(
       "aria-disabled",
     );
     await userEvent.click(canvas.getByRole("switch", { name: "Apply defaults" }));
     await waitFor(() =>
-      expect(canvas.getByRole("button", { name: "Save Changes" })).toHaveAttribute(
+      expect(canvas.getByRole("button", { name: "Save changes" })).toHaveAttribute(
         "aria-disabled",
         "true",
       ),
@@ -327,7 +327,7 @@ export const SwitchingOffKeepsTheStoredValue: Story = {
     await userEvent.clear(temperature);
     await userEvent.type(temperature, "5");
     await userEvent.click(canvas.getByRole("switch", { name: "Apply defaults" }));
-    const save = canvas.getByRole("button", { name: "Save Changes" });
+    const save = canvas.getByRole("button", { name: "Save changes" });
     await expect(save).not.toHaveAttribute("aria-disabled");
     await userEvent.click(save);
     const body = await switchingOff.expectSentBody<ModelDefaultsDto>("PUT", "model-defaults");
@@ -346,7 +346,7 @@ export const SavesChanges: Story = {
     const tokens = await canvas.findByLabelText("Max tokens");
     await userEvent.clear(tokens);
     await userEvent.type(tokens, "4096");
-    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
+    await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
     await expectToast(canvasElement, /model settings updated/i);
     await expect(canvas.getByLabelText("Max tokens")).toHaveValue("4096");
   },
@@ -375,7 +375,7 @@ export const SaveRejectedByTheServer: Story = {
     const field = await canvas.findByLabelText("Max tokens");
     await userEvent.clear(field);
     await userEvent.type(field, "4096");
-    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
+    await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
     await expectToast(canvasElement, /above the ceiling/, "error");
     await waitFor(() => expect(canvas.getByLabelText("Max tokens")).toHaveValue("4096"));
   },

@@ -175,7 +175,7 @@ export const AClearedSampleRateCannotBeSaved: Story = {
     await expect(rate).toHaveAccessibleDescription(
       /Sample rate must be between 0 and 100 percent\./,
     );
-    await expect(canvas.getByRole("button", { name: "Save Changes" })).toHaveAttribute(
+    await expect(canvas.getByRole("button", { name: "Save changes" })).toHaveAttribute(
       "aria-disabled",
       "true",
     );
@@ -216,7 +216,7 @@ export const CaptureOffIgnoresAnOutOfRangeMaxBytes: Story = {
     await waitFor(() => expect(maxBytes()).toBeDisabled());
     await expect(maxBytes()).not.toHaveAttribute("aria-invalid", "true");
     await expect(canvas.queryByText(/Max payload bytes must be/)).toBeNull();
-    await expect(canvas.getByRole("button", { name: "Save Changes" })).not.toHaveAttribute(
+    await expect(canvas.getByRole("button", { name: "Save changes" })).not.toHaveAttribute(
       "aria-disabled",
       "true",
     );
@@ -224,7 +224,7 @@ export const CaptureOffIgnoresAnOutOfRangeMaxBytes: Story = {
     await userEvent.click(canvas.getByRole("switch", { name: /capture/i }));
     await waitFor(() => expect(maxBytes()).toHaveAttribute("aria-invalid", "true"));
     await expect(maxBytes()).toHaveAccessibleDescription(/Max payload bytes must be/);
-    await expect(canvas.getByRole("button", { name: "Save Changes" })).toHaveAttribute(
+    await expect(canvas.getByRole("button", { name: "Save changes" })).toHaveAttribute(
       "aria-disabled",
       "true",
     );
@@ -261,7 +261,7 @@ export const PayloadRetentionCannotOutliveLogs: Story = {
     await expect(hours).toHaveAccessibleDescription(
       "Payload retention cannot outlive log retention.",
     );
-    await expect(canvas.getByRole("button", { name: "Save Changes" })).toHaveAttribute(
+    await expect(canvas.getByRole("button", { name: "Save changes" })).toHaveAttribute(
       "aria-disabled",
       "true",
     );
@@ -291,7 +291,7 @@ export const MarksEveryInvalidField: Story = {
       "Payload retention must be a whole number of hours between 1 and 8760.",
     );
     await expect(canvas.getByText("2 fields need attention")).toBeVisible();
-    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
+    await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
     await expect(days).toHaveFocus();
   },
 };
@@ -311,7 +311,7 @@ export const ServerRejectionLandsOnTheField: Story = {
     const canvas = within(canvasElement);
     const days = await canvas.findByLabelText("Retention days");
     await userEvent.type(days, "0");
-    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
+    await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
     await waitFor(() => expect(days).toHaveAttribute("aria-invalid", "true"));
     await expect(days).toHaveAccessibleDescription("retention_days must be between 1 and 3650");
     await waitFor(() => expect(days).toHaveFocus());
@@ -337,7 +337,7 @@ export const SavesSampleRateAsFraction: Story = {
     await expect(rate).toHaveValue("25");
     await userEvent.clear(rate);
     await userEvent.type(rate, "10");
-    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
+    await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
     await expectToast(canvasElement, /logs settings updated/i);
     // the response echoes the stored fraction, which renders back as percent
     await expect(canvas.getByLabelText("Sample rate percent")).toHaveValue("10");
@@ -372,7 +372,7 @@ export const SwitchesDashboardUsageEventsOff: Story = {
     await expect(toggle).toBeChecked();
     await userEvent.click(toggle);
     await expect(toggle).not.toBeChecked();
-    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
+    await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
     await expectToast(canvasElement, /logs settings updated/i);
     await expect(canvas.getByRole("switch", { name: "Dashboard Usage Events" })).not.toBeChecked();
   },
@@ -400,7 +400,7 @@ export const SaveRejectedByTheServer: Story = {
     const rate = await canvas.findByLabelText("Sample rate percent");
     await userEvent.clear(rate);
     await userEvent.type(rate, "10");
-    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
+    await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
 
     await expectToast(canvasElement, /collector rejected the sample rate/, "error");
     await waitFor(() => expect(canvas.getByLabelText("Sample rate percent")).toHaveValue("10"));

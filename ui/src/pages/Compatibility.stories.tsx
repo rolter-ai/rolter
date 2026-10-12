@@ -95,7 +95,7 @@ export const RejectsAnUndatedVersion: Story = {
       ),
     );
     await expect(version).toHaveAttribute("aria-invalid", "true");
-    await expect(canvas.getByRole("button", { name: "Save Changes" })).toHaveAttribute(
+    await expect(canvas.getByRole("button", { name: "Save changes" })).toHaveAttribute(
       "aria-disabled",
       "true",
     );
@@ -125,7 +125,7 @@ export const MarksEveryInvalidField: Story = {
       "Default max tokens must be a whole number between 1 and 1000000.",
     );
     await expect(canvas.getByText("2 fields need attention")).toBeVisible();
-    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
+    await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
     await expect(version).toHaveFocus();
   },
 };
@@ -149,7 +149,7 @@ export const ServerRejectionLandsOnTheField: Story = {
     const tokens = await canvas.findByLabelText("Default max tokens");
     await userEvent.clear(tokens);
     await userEvent.type(tokens, "8192");
-    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
+    await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
     await waitFor(() => expect(tokens).toHaveAttribute("aria-invalid", "true"));
     await expect(tokens).toHaveAccessibleDescription(
       "default_max_tokens must be between 1 and 1000000",
@@ -174,7 +174,7 @@ export const SavesChanges: Story = {
     const tokens = await canvas.findByLabelText("Default max tokens");
     await userEvent.clear(tokens);
     await userEvent.type(tokens, "8192");
-    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
+    await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
     await expectToast(canvasElement, /compatibility settings updated/i);
     await expect(canvas.getByLabelText("Default max tokens")).toHaveValue("8192");
   },
@@ -203,7 +203,7 @@ export const SaveRejectedByTheServer: Story = {
     const field = await canvas.findByLabelText("Default max tokens");
     await userEvent.clear(field);
     await userEvent.type(field, "8192");
-    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
+    await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
     await expectToast(canvasElement, /above this deployment's ceiling/, "error");
     await waitFor(() => expect(canvas.getByLabelText("Default max tokens")).toHaveValue("8192"));
   },

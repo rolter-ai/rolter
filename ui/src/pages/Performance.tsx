@@ -7,7 +7,8 @@ import { LoadError } from "@/components/LoadError";
 import { PanelSkeleton } from "@/components/LoadingState";
 import { Button } from "@/components/ui/button";
 import { Combobox } from "@/components/ui/combobox";
-import { describedBy, FieldError } from "@/components/ui/field-error";
+import { Badge } from "@/components/ui/badge";
+import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { SettingsPanel } from "@/components/ui/settings-panel";
 import { Switch } from "@/components/ui/switch";
@@ -20,6 +21,7 @@ import {
 } from "@/lib/api";
 import { serverFieldError } from "@/lib/field-errors";
 import { errorDetail, useToast } from "@/lib/toast";
+import { useLeaveGuard } from "@/lib/use-leave-guard";
 import { useScreenReady } from "@/lib/ux-react";
 
 interface FormState {
@@ -53,6 +55,13 @@ const BACKPRESSURE_COPY: Record<BackpressurePolicy, string> = {
   drop: "pages.performance.backpressure.drop",
   block: "pages.performance.backpressure.block",
   error: "pages.performance.backpressure.error",
+};
+
+// the catalog key naming each policy in the dropdown
+const BACKPRESSURE_LABEL: Record<BackpressurePolicy, string> = {
+  drop: "pages.performance.backpressureLabel.drop",
+  block: "pages.performance.backpressureLabel.block",
+  error: "pages.performance.backpressureLabel.error",
 };
 
 const inRange = (value: string, min: number, max: number) => {
@@ -163,6 +172,17 @@ function PerformanceScreen() {
       setForm(fromDto(policy.data));
     }
   }, [policy.data, form]);
+
+  // the fields that differ from what the server holds; an edit that is typed
+  // back to the stored value is no edit, and a draft is lost on navigation
+  // (#2584)
+  const changed = React.useMemo(() => {
+    if (!form || !policy.data) return [];
+    const stored = fromDto(policy.data);
+    return (Object.keys(stored) as (keyof FormState)[]).filter((key) => form[key] !== stored[key]);
+  }, [form, policy.data]);
+  const dirty = changed.length > 0;
+  const leavePrompt = useLeaveGuard(dirty);
 
   const save = useMutation({
     mutationFn: (f: FormState) => {
@@ -276,12 +296,30 @@ function PerformanceScreen() {
     },
   });
   const queue = form.queueEnabled;
+  // a panel says it holds an edit, so the field that moved is findable among ten
+  const editedBadge = (...keys: (keyof FormState)[]) =>
+    keys.some((key) => changed.includes(key)) ? (
+      <Badge tone="warning">{t("pages.performance.edited")}</Badge>
+    ) : undefined;
+  const discard = () => {
+    if (policy.data) setForm(fromDto(policy.data));
+    setServerErrors({});
+    save.reset();
+  };
+  const statusId = `${base}-status`;
+  let status: string | null = null;
+  if (invalid.length > 0) {
+    status = t("common.fieldsNeedAttention", { count: invalid.length });
+  } else if (dirty) {
+    status = t("pages.performance.status.changed", { count: changed.length });
+  }
 
   return (
     <div className="mx-auto flex max-w-[840px] flex-col gap-3.5 p-[22px]">
       <SettingsPanel
         title={t("pages.performance.retries.title")}
         description={t("pages.performance.retries.desc")}
+        badge={editedBadge("retryMaxRetries", "retryBaseMs", "retryMaxMs")}
       >
         <NumberField
           label={t("pages.performance.retries.maxRetries")}
@@ -300,6 +338,7 @@ function PerformanceScreen() {
       <SettingsPanel
         title={t("pages.performance.timeouts.title")}
         description={t("pages.performance.timeouts.desc")}
+        badge={editedBadge("timeoutConnectS", "timeoutRequestS")}
       >
         <NumberField
           label={t("pages.performance.timeouts.connect")}
@@ -314,6 +353,13 @@ function PerformanceScreen() {
       <SettingsPanel
         title={t("pages.performance.queue.title")}
         description={t("pages.performance.queue.desc")}
+        badge={editedBadge(
+          "queueEnabled",
+          "queueCapacity",
+          "queueWorkers",
+          "queueBackpressure",
+          "queueBlockMs",
+        )}
         dimmed={!queue}
         action={
           <Switch
@@ -333,25 +379,22 @@ function PerformanceScreen() {
           {...numberField("queueWorkers")}
           disabled={!queue}
         />
-        <div className="flex min-w-[200px] flex-col gap-1.5">
-          <label
-            htmlFor="perf-queue-backpressure"
-            className="text-xs font-medium text-[color:var(--text-secondary)]"
-          >
-            {t("pages.performance.queue.whenFull")}
-          </label>
+        <Field
+          label={t("pages.performance.queue.whenFull")}
+          hint={t(BACKPRESSURE_COPY[form.queueBackpressure])}
+          className="min-w-[200px]"
+        >
           <Combobox
             id="perf-queue-backpressure"
             value={form.queueBackpressure}
             disabled={!queue}
-            aria-label={t("pages.performance.queue.whenFull")}
             onChange={(picked) => set({ queueBackpressure: picked as BackpressurePolicy })}
-            options={BACKPRESSURE_POLICIES.map((p) => ({ value: p, label: p }))}
+            options={BACKPRESSURE_POLICIES.map((p) => ({
+              value: p,
+              label: t(BACKPRESSURE_LABEL[p]),
+            }))}
           />
-          <span className="text-[0.6875rem] text-[color:var(--text-subtle)]">
-            {t(BACKPRESSURE_COPY[form.queueBackpressure])}
-          </span>
-        </div>
+        </Field>
         <NumberField
           label={t("pages.performance.queue.blockTimeout")}
           {...numberField("queueBlockMs")}
@@ -359,25 +402,40 @@ function PerformanceScreen() {
         />
       </SettingsPanel>
 
-      <div className="sticky bottom-0 flex items-center justify-end gap-3 border-t border-[color:var(--border-subtle)] bg-background py-3">
-        {invalid.length > 0 && (
-          <span role="status" className="text-xs text-[color:var(--status-danger-text)]">
-            {t("common.fieldsNeedAttention", { count: invalid.length })}
-          </span>
+      <div className="sticky bottom-0 flex flex-wrap items-center justify-end gap-3 border-t border-[color:var(--border-subtle)] bg-background py-3">
+        {status && (
+          <p
+            id={statusId}
+            role="status"
+            className={`min-w-0 text-xs sm:mr-auto ${
+              invalid.length > 0
+                ? "text-[color:var(--status-danger-text)]"
+                : "text-[color:var(--text-subtle)]"
+            }`}
+          >
+            {status}
+          </p>
         )}
+        <Button variant="outline" disabled={!dirty || save.isPending} onClick={discard}>
+          {t("pages.performance.discard")}
+        </Button>
         <Button
-          disabled={save.isPending}
+          disabled={!dirty || save.isPending}
           aria-disabled={invalid.length > 0 || undefined}
+          aria-describedby={status ? statusId : undefined}
           className={invalid.length > 0 ? "opacity-50" : undefined}
           onClick={submit}
         >
           {save.isPending ? t("common.saving") : t("common.saveChanges")}
         </Button>
       </div>
+      {leavePrompt}
     </div>
   );
 }
 
+// a screen row is a `Field`: it names the input, and an error under it is the
+// input's description, so a screen reader hears the reason on the field (#2123)
 function NumberField({
   id,
   label,
@@ -393,24 +451,17 @@ function NumberField({
   disabled?: boolean;
   onChange: (v: string) => void;
 }) {
-  const errorId = `${id}-error`;
   return (
-    <div className="flex flex-col gap-1.5">
-      <label htmlFor={id} className="text-xs font-medium text-[color:var(--text-secondary)]">
-        {label}
-      </label>
+    <Field label={label} error={error}>
       <Input
         id={id}
         className="max-w-[160px]"
         inputMode="numeric"
-        aria-invalid={error ? true : undefined}
-        aria-describedby={describedBy(!!error && errorId)}
         value={value}
         disabled={disabled}
         onChange={(e) => onChange(e.target.value)}
       />
-      <FieldError id={errorId} error={error} />
-    </div>
+    </Field>
   );
 }
 

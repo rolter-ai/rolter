@@ -111,7 +111,7 @@ export const RejectsAnAllZeroBlend: Story = {
     const latency = canvas.getByLabelText("Latency weight");
     await waitFor(() => expect(latency).toHaveAttribute("aria-invalid", "true"));
     await expect(latency).toHaveAccessibleDescription(/At least one weight must be positive/);
-    await expect(canvas.getByRole("button", { name: "Save Changes" })).toHaveAttribute(
+    await expect(canvas.getByRole("button", { name: "Save changes" })).toHaveAttribute(
       "aria-disabled",
       "true",
     );
@@ -154,7 +154,7 @@ export const MarksEveryInvalidField: Story = {
     );
     await expect(canvas.getByLabelText("Latency weight")).not.toHaveAttribute("aria-invalid");
     await expect(canvas.getByText("2 fields need attention")).toBeVisible();
-    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
+    await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
     await expect(cost).toHaveFocus();
   },
 };
@@ -175,7 +175,7 @@ export const ServerRejectionLandsOnTheField: Story = {
     const ratio = await canvas.findByLabelText("Exploration ratio");
     await userEvent.clear(ratio);
     await userEvent.type(ratio, "10");
-    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
+    await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
     await waitFor(() => expect(ratio).toHaveAttribute("aria-invalid", "true"));
     await expect(ratio).toHaveAccessibleDescription("exploration_ratio must be between 0 and 0.5");
     await waitFor(() => expect(ratio).toHaveFocus());
@@ -200,7 +200,7 @@ export const SavesChanges: Story = {
     const ratio = canvas.getByLabelText("Exploration ratio");
     await userEvent.clear(ratio);
     await userEvent.type(ratio, "7");
-    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
+    await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
     await expectToast(canvasElement, /adaptive routing settings updated/i);
     // the percent typed travels as the fraction the API takes
     const body = await rec.expectSentBody<{ exploration_ratio: number }>("PUT", "adaptive-routing");
@@ -235,7 +235,7 @@ export const SaveRejectedByTheServer: Story = {
     const field = await canvas.findByLabelText("Cost weight");
     await userEvent.clear(field);
     await userEvent.type(field, "2");
-    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
+    await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
     await expectToast(canvasElement, /non-zero/, "error");
     await waitFor(() => expect(canvas.getByLabelText("Cost weight")).toHaveValue("2"));
   },
