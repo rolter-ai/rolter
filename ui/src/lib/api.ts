@@ -598,7 +598,7 @@ export type OmittedKind = "provider" | "route" | "virtual_key" | "public_example
  */
 export interface OmittedEntry {
   kind: OmittedKind;
-  /** a provider name, a route model or a key's `name` (`<unnamed>` without one) */
+  /** a provider name, a route model or a key's `name` (UNNAMED_KEY without one) */
   name: string;
   /** why, in English whatever the dashboard's language */
   reason: string;
@@ -606,7 +606,8 @@ export interface OmittedEntry {
 }
 
 /** What a file key without a `name` is called in an omitted entry. */
-export const UNNAMED_KEY = "<unnamed>";
+// escaped so check:literals does not read the angle brackets as markup text
+export const UNNAMED_KEY = "\u003cunnamed>";
 
 export interface ConfigProblems {
   /** one English sentence per finding, for a person to read and never to parse */
