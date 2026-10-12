@@ -7,9 +7,9 @@ import { superadminOnly } from "@/components/ForbiddenScreen";
 import { LoadError } from "@/components/LoadError";
 import { PanelSkeleton } from "@/components/LoadingState";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { describedBy, FieldError } from "@/components/ui/field-error";
+import { FieldError } from "@/components/ui/field-error";
 import { Input } from "@/components/ui/input";
+import { SaveBar } from "@/components/ui/save-bar";
 import { SettingsPanel } from "@/components/ui/settings-panel";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -20,8 +20,9 @@ import {
   MAX_EXPLORATION_RATIO,
   type AdaptiveRoutingPolicyDto,
 } from "@/lib/api";
-import { serverFieldError } from "@/lib/field-errors";
-import { errorDetail, useToast } from "@/lib/toast";
+import { errorText } from "@/lib/error-copy";
+import { useToast } from "@/lib/toast";
+import { translateErrors, useFieldErrors } from "@/lib/use-field-errors";
 import { useScreenReady } from "@/lib/ux-react";
 
 interface FormState {
@@ -113,6 +114,13 @@ function validate(form: FormState): FieldErrors {
 
 const MAX_EXPLORATION_PERCENT = Number((MAX_EXPLORATION_RATIO * 100).toFixed(4));
 
+// the bounds the validation copy interpolates
+const LIMITS = {
+  maxWeight: MAX_ADAPTIVE_WEIGHT,
+  maxPercent: MAX_EXPLORATION_PERCENT,
+  maxSamples: MAX_ADAPTIVE_MIN_SAMPLES,
+};
+
 // global adaptive-routing policy, persisted via /api/v1/adaptive-routing-policy
 // (superadmin only). only the ratio between the weights matters — the blend is
 // a weighted sum of signals each scored in [0, 1] (#544, #565)
@@ -131,7 +139,6 @@ function AdaptiveSettingsScreen() {
   useScreenReady(!policy.isLoading);
 
   const [form, setForm] = React.useState<FormState | null>(null);
-  const [serverErrors, setServerErrors] = React.useState<FieldErrors>({});
   const base = React.useId();
   const ids: Record<FieldKey, string> = {
     latencyWeight: `${base}-latency`,
@@ -145,6 +152,13 @@ function AdaptiveSettingsScreen() {
       setForm(fromDto(policy.data));
     }
   }, [policy.data, form]);
+
+  const fields = useFieldErrors<FieldKey>({
+    order: FIELD_ORDER,
+    wire: WIRE_FIELDS,
+    idOf: (key) => ids[key],
+    local: form ? translateErrors(validate(form), t, LIMITS) : {},
+  });
 
   const save = useMutation({
     mutationFn: (f: FormState) =>
@@ -162,7 +176,7 @@ function AdaptiveSettingsScreen() {
       // value it already had; the refetch is what makes the save stick (#1197)
       void queryClient.invalidateQueries({ queryKey: ["adaptive-routing-policy"] });
       setForm(fromDto(dto));
-      setServerErrors({});
+      fields.clear();
       toast.push({
         tone: "success",
         title: t("toast.saved"),
@@ -170,16 +184,11 @@ function AdaptiveSettingsScreen() {
       });
     },
     onError: (error) => {
-      const named = serverFieldError(error, WIRE_FIELDS);
-      if (named) {
-        setServerErrors({ [named.field]: named.message });
-        document.getElementById(ids[named.field])?.focus();
-        return;
-      }
+      if (fields.refuse(error)) return;
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: t("errors.resources.adaptiveSettings") }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       });
     },
   });
@@ -211,38 +220,8 @@ function AdaptiveSettingsScreen() {
   // an edit answers the server's complaint about that field
   const edit = (key: FieldKey, value: string) => {
     set({ [key]: value });
-    setServerErrors((e) => ({ ...e, [key]: undefined }));
+    fields.edit(key);
   };
-  const local = validate(form);
-  const limits = {
-    maxWeight: MAX_ADAPTIVE_WEIGHT,
-    maxPercent: MAX_EXPLORATION_PERCENT,
-    maxSamples: MAX_ADAPTIVE_MIN_SAMPLES,
-  };
-  const errorFor = (key: FieldKey) => {
-    const localKey = local[key];
-    return localKey ? t(localKey, limits) : serverErrors[key];
-  };
-  const errors = Object.fromEntries(FIELD_ORDER.map((key) => [key, errorFor(key)])) as Record<
-    FieldKey,
-    string | undefined
-  >;
-  const invalid = FIELD_ORDER.filter((key) => errors[key]);
-  // Save stays pressable while the form is invalid so a press can say why: it
-  // moves focus to the first field at fault rather than doing nothing (#2651)
-  const submit = () => {
-    if (invalid.length > 0) {
-      document.getElementById(ids[invalid[0]])?.focus();
-      return;
-    }
-    save.mutate(form);
-  };
-  const errorId = (key: FieldKey) => `${ids[key]}-error`;
-  const invalidProps = (key: FieldKey) => ({
-    id: ids[key],
-    "aria-invalid": errors[key] ? (true as const) : undefined,
-    "aria-describedby": describedBy(!!errors[key] && errorId(key)),
-  });
   const affected = policy.data?.affected_routes ?? [];
   const total = WEIGHTS.reduce((a, [key]) => a + (Number(form[key]) || 0), 0);
 
@@ -316,12 +295,12 @@ function AdaptiveSettingsScreen() {
                     className="w-[92px]"
                     inputMode="decimal"
                     aria-label={t("pages.adaptiveSettings.weightAria", { label })}
-                    {...invalidProps(key)}
+                    {...fields.inputProps(key)}
                     value={form[key]}
                     onChange={(e) => edit(key, e.target.value)}
                   />
                 </div>
-                <FieldError id={errorId(key)} error={errors[key]} />
+                <FieldError id={fields.errorId(key)} error={fields.errorOf(key)} />
               </div>
             );
           })}
@@ -342,7 +321,7 @@ function AdaptiveSettingsScreen() {
                 className="w-[92px]"
                 inputMode="decimal"
                 aria-label={t("pages.adaptiveSettings.explorationRatio")}
-                {...invalidProps("explorationRatio")}
+                {...fields.inputProps("explorationRatio")}
                 value={form.explorationRatio}
                 onChange={(e) => edit("explorationRatio", e.target.value)}
               />
@@ -350,7 +329,10 @@ function AdaptiveSettingsScreen() {
                 %
               </span>
             </div>
-            <FieldError id={errorId("explorationRatio")} error={errors.explorationRatio} />
+            <FieldError
+              id={fields.errorId("explorationRatio")}
+              error={fields.errorOf("explorationRatio")}
+            />
           </div>
           <div className="flex flex-col gap-1.5">
             <div className="flex items-center gap-3">
@@ -359,39 +341,31 @@ function AdaptiveSettingsScreen() {
                 className="w-[92px]"
                 inputMode="numeric"
                 aria-label={t("pages.adaptiveSettings.warmUpSamples")}
-                {...invalidProps("minSamples")}
+                {...fields.inputProps("minSamples")}
                 value={form.minSamples}
                 onChange={(e) => edit("minSamples", e.target.value)}
               />
             </div>
-            <FieldError id={errorId("minSamples")} error={errors.minSamples} />
+            <FieldError id={fields.errorId("minSamples")} error={fields.errorOf("minSamples")} />
           </div>
         </div>
       </SettingsPanel>
 
-      <div className="sticky bottom-0 flex flex-wrap items-center justify-end gap-3 border-t border-[color:var(--border-subtle)] bg-background py-3">
-        {/* a save has no visible effect here, so the way to the live view sits
-            beside it; the dashboard links back */}
-        <Link
-          to="/adaptive-dashboard"
-          className="mr-auto rounded-sm text-sm font-medium text-foreground underline decoration-[color:var(--border-strong)] underline-offset-4 transition-colors hover:decoration-current focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          {t("pages.adaptiveSettings.viewDashboard")}
-        </Link>
-        {invalid.length > 0 && (
-          <span role="status" className="text-xs text-[color:var(--status-danger-text)]">
-            {t("common.fieldsNeedAttention", { count: invalid.length })}
-          </span>
-        )}
-        <Button
-          disabled={save.isPending}
-          aria-disabled={invalid.length > 0 || undefined}
-          className={invalid.length > 0 ? "opacity-50" : undefined}
-          onClick={submit}
-        >
-          {save.isPending ? t("common.saving") : t("common.saveChanges")}
-        </Button>
-      </div>
+      <SaveBar
+        invalid={fields.invalid.length}
+        pending={save.isPending}
+        onSave={() => fields.submit(() => save.mutate(form))}
+        leading={
+          // a save has no visible effect here, so the way to the live view sits
+          // beside it; the dashboard links back
+          <Link
+            to="/adaptive-dashboard"
+            className="mr-auto rounded-sm text-sm font-medium text-foreground underline decoration-[color:var(--border-strong)] underline-offset-4 transition-colors hover:decoration-current focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            {t("pages.adaptiveSettings.viewDashboard")}
+          </Link>
+        }
+      />
     </div>
   );
 }

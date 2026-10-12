@@ -29,8 +29,9 @@ import {
 } from "@/lib/api";
 import { cacheWrite1hPatch, cacheWritePatch } from "@/lib/cache-write-rate";
 import { useErrorVisibility } from "@/lib/error-visibility";
-import { serverFieldError } from "@/lib/field-errors";
-import { errorDetail, useToast } from "@/lib/toast";
+import { errorText } from "@/lib/error-copy";
+import { useToast } from "@/lib/toast";
+import { useFieldErrors } from "@/lib/use-field-errors";
 import { useScreenReady } from "@/lib/ux-react";
 
 const PRICES_QUERY_KEY = ["model-prices"];
@@ -238,7 +239,7 @@ export default function Pricing() {
               toast.push({
                 tone: "error",
                 title: t("toast.deleteFailed", { what }),
-                detail: errorDetail(error),
+                detail: errorText(error, t),
               }),
           });
         }}
@@ -285,8 +286,6 @@ function UpsertPriceDialog({
   const [cachedInputPerMtok, setCachedInputPerMtok] = React.useState("");
   const [cacheWritePerMtok, setCacheWritePerMtok] = React.useState("");
   const [cacheWrite1hPerMtok, setCacheWrite1hPerMtok] = React.useState("");
-  // what the control plane refused, by field; it holds until that input is edited
-  const [serverErrors, setServerErrors] = React.useState<Partial<Record<PriceField, string>>>({});
   const baseCurrency = settings?.base ?? "USD";
   const [currency, setCurrency] = React.useState(baseCurrency);
   const visibility = useErrorVisibility<PriceField>();
@@ -295,14 +294,6 @@ function UpsertPriceDialog({
     cacheWrite: `${idBase}-cache-write`,
     cacheWrite1h: `${idBase}-cache-write-1h`,
   };
-
-  // editing an input retires the control plane's refusal of its old value
-  const clearRefusal = (field: PriceField) =>
-    setServerErrors((prev) => {
-      if (!(field in prev)) return prev;
-      const { [field]: _gone, ...rest } = prev;
-      return rest;
-    });
 
   // names worth offering: the routes the gateway serves and the models seen in
   // traffic. both are suggestions — an analytics store may be absent
@@ -348,10 +339,36 @@ function UpsertPriceDialog({
       setCachedInputPerMtok(existing?.cached_input_per_mtok ?? "");
       setCacheWritePerMtok(existing?.cache_write_per_mtok ?? "");
       setCacheWrite1hPerMtok(existing?.cache_write_1h_per_mtok ?? "");
-      setServerErrors({});
+      fields.clear();
       setCurrency(existing?.currency ?? baseCurrency);
     }
   }, [open, existing]);
+
+  // a price is valid when it was typed and is a number of 0 or more
+  const priceError = (value: string) =>
+    !value.trim()
+      ? t("pages.pricing.priceRequired")
+      : !(Number(value) >= 0)
+        ? t("pages.pricing.priceInvalid")
+        : undefined;
+  const errors = {
+    model: model.trim() ? undefined : t("pages.pricing.modelRequired"),
+    input: priceError(inputPerMtok),
+    output: priceError(outputPerMtok),
+    // an optional price is only wrong when it was typed and is not a number
+    cached: cachedInputPerMtok.trim() ? priceError(cachedInputPerMtok) : undefined,
+    cacheWrite: cacheWritePerMtok.trim() ? priceError(cacheWritePerMtok) : undefined,
+    cacheWrite1h: cacheWrite1hPerMtok.trim() ? priceError(cacheWrite1hPerMtok) : undefined,
+    currency: currency.trim() ? undefined : t("pages.pricing.currencyRequired"),
+  };
+  const fields = useFieldErrors<PriceField>({
+    order: ["model", "input", "output", "cached", "cacheWrite", "cacheWrite1h", "currency"],
+    wire: WIRE_FIELDS,
+    idOf: (field) => (field === "cacheWrite" || field === "cacheWrite1h" ? writeIds[field] : field),
+    local: errors,
+    // a field's error waits for a refused save, so the form opens with none
+    shows: visibility.shows,
+  });
 
   const submit = useMutation({
     mutationFn: () =>
@@ -384,41 +401,17 @@ function UpsertPriceDialog({
     onError: (error) => {
       // a refusal that names one of the rate inputs stays on that input, with
       // the sheet still open and focus on it, rather than in a toast
-      const named = serverFieldError(error, WIRE_FIELDS);
-      if (named) {
-        setServerErrors({ [named.field]: named.message });
-        document.getElementById(writeIds[named.field])?.focus();
-        return;
-      }
+      if (fields.refuse(error)) return;
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: model }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       });
     },
   });
 
-  // a price is valid when it was typed and is a number of 0 or more
-  const priceError = (value: string) =>
-    !value.trim()
-      ? t("pages.pricing.priceRequired")
-      : !(Number(value) >= 0)
-        ? t("pages.pricing.priceInvalid")
-        : undefined;
-  const errors = {
-    model: model.trim() ? undefined : t("pages.pricing.modelRequired"),
-    input: priceError(inputPerMtok),
-    output: priceError(outputPerMtok),
-    // an optional price is only wrong when it was typed and is not a number
-    cached: cachedInputPerMtok.trim() ? priceError(cachedInputPerMtok) : undefined,
-    cacheWrite: cacheWritePerMtok.trim() ? priceError(cacheWritePerMtok) : undefined,
-    cacheWrite1h: cacheWrite1hPerMtok.trim() ? priceError(cacheWrite1hPerMtok) : undefined,
-    currency: currency.trim() ? undefined : t("pages.pricing.currencyRequired"),
-  };
   const invalid = Object.values(errors).some(Boolean);
-  // a field's error waits for a refused save, so the form opens with none
-  const shown = (field: PriceField) =>
-    (visibility.shows(field) ? errors[field] : undefined) ?? serverErrors[field];
+  const shown = fields.errorOf;
 
   const dirty =
     model.trim() !== (existing?.model ?? "") ||
@@ -442,9 +435,7 @@ function UpsertPriceDialog({
       subtitle={t("pages.pricing.editSubtitle")}
       dirty={dirty}
       errorMessage={
-        submit.isError && Object.keys(serverErrors).length === 0
-          ? (submit.error as Error).message
-          : undefined
+        submit.isError && !fields.names(submit.error) ? errorText(submit.error, t) : undefined
       }
       saveLabel={t("common.save")}
       canSave
@@ -520,7 +511,7 @@ function UpsertPriceDialog({
             value={cacheWritePerMtok}
             onChange={(e) => {
               setCacheWritePerMtok(e.target.value);
-              clearRefusal("cacheWrite");
+              fields.edit("cacheWrite");
             }}
             placeholder={t("pages.pricing.cacheWritePlaceholder")}
           />
@@ -539,7 +530,7 @@ function UpsertPriceDialog({
             value={cacheWrite1hPerMtok}
             onChange={(e) => {
               setCacheWrite1hPerMtok(e.target.value);
-              clearRefusal("cacheWrite1h");
+              fields.edit("cacheWrite1h");
             }}
             placeholder={t("pages.pricing.cacheWrite1hPlaceholder")}
           />

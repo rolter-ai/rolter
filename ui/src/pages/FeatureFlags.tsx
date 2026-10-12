@@ -19,9 +19,10 @@ import {
   type FeatureFlagsDto,
   type UnavailableFlagDto,
 } from "@/lib/api";
+import { errorText } from "@/lib/error-copy";
 import { useFormat } from "@/lib/i18n/format";
 import { useLeaveGuard } from "@/lib/use-leave-guard";
-import { errorDetail, useToast } from "@/lib/toast";
+import { useToast } from "@/lib/toast";
 import { useScreenReady } from "@/lib/ux-react";
 
 interface FlagCopy {
@@ -121,7 +122,7 @@ function FeatureFlagsScreen() {
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: t("errors.resources.featureFlags") }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       });
     },
   });

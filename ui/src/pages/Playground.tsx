@@ -1762,6 +1762,7 @@ function RealtimeMode({ models }: { models: ModelOption[] }) {
         append(`○ ${t("pages.playground.realtimeLog.closed")}`);
       };
     } catch (e) {
+      // raw-error-allow: a WebSocket constructor failure, not a control-plane answer
       append("✕ " + (e as Error).message);
     }
   };

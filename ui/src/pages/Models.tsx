@@ -49,11 +49,12 @@ import {
   type RouteDto,
   type RouteRow,
 } from "@/lib/api";
+import { errorText } from "@/lib/error-copy";
 import { useFormat } from "@/lib/i18n/format";
 import { HEALTH_SLA, targetViews, type RouteTargetView } from "@/lib/route-targets";
 import { useScope } from "@/lib/scope";
 import { strategyHintKey } from "@/lib/strategies";
-import { errorDetail, useToast } from "@/lib/toast";
+import { useToast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { useScreenReady } from "@/lib/ux-react";
 
@@ -727,7 +728,7 @@ export default function Models() {
               toast.push({
                 tone: "error",
                 title: t("toast.deleteFailed", { what }),
-                detail: errorDetail(error),
+                detail: errorText(error, t),
               });
             },
           });

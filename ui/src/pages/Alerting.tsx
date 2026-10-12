@@ -56,6 +56,7 @@ import {
   type AlertNotificationRow,
   type AlertRuleRow,
 } from "@/lib/api";
+import { errorText } from "@/lib/error-copy";
 import { deliveryDetail, evaluateErrorText, isNoDataRow, ruleErrorText } from "@/lib/alert-codes";
 import {
   defaultThresholdInput,
@@ -83,7 +84,7 @@ import {
 import { useCurrencyCode } from "@/lib/currency";
 import { useFormat } from "@/lib/i18n/format";
 import { movesOrigin } from "@/lib/origin";
-import { errorDetail, useToast } from "@/lib/toast";
+import { useToast } from "@/lib/toast";
 import { useNow } from "@/lib/use-now";
 import { cn } from "@/lib/utils";
 import { useScreenReady } from "@/lib/ux-react";
@@ -177,7 +178,7 @@ function AlertChannelsScreen() {
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: c.name }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       });
     },
   });
@@ -321,7 +322,7 @@ function AlertChannelsScreen() {
               toast.push({
                 tone: "error",
                 title: t("toast.deleteFailed", { what }),
-                detail: errorDetail(error),
+                detail: errorText(error, t),
               });
             },
           });
@@ -386,7 +387,7 @@ function ChannelSheet({
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: name }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       });
     },
   });
@@ -426,7 +427,7 @@ function ChannelSheet({
       dirty={
         name !== (existing?.name ?? "") || endpoint !== (existing?.endpoint ?? "") || secret !== ""
       }
-      errorMessage={save.isError ? (save.error as Error).message : undefined}
+      errorMessage={save.isError ? errorText(save.error, t) : undefined}
       saveLabel={existing ? t("common.save") : t("common.create")}
       canSave={Boolean(name.trim() && endpoint.trim())}
       saving={save.isPending}
@@ -506,7 +507,7 @@ function AlertRulesScreen() {
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: r.name }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       });
     },
   });
@@ -558,7 +559,7 @@ function AlertRulesScreen() {
       toast.push({
         tone: "error",
         title: t("pages.alerting.rules.evaluateFailed", { name: ruleName(id) }),
-        detail: evaluateErrorText(error, t, errorDetail),
+        detail: evaluateErrorText(error, t, (e) => errorText(e, t)),
       });
     },
   });
@@ -779,7 +780,7 @@ function AlertRulesScreen() {
               toast.push({
                 tone: "error",
                 title: t("toast.deleteFailed", { what }),
-                detail: errorDetail(error),
+                detail: errorText(error, t),
               });
             },
           });
@@ -940,7 +941,7 @@ function RuleSheet({
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: name }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       });
     },
   });
@@ -1002,7 +1003,7 @@ function RuleSheet({
         existing ? t("pages.alerting.rules.editSubtitle") : t("pages.alerting.rules.sheetSubtitle")
       }
       dirty={dirty}
-      errorMessage={save.isError ? (save.error as Error).message : undefined}
+      errorMessage={save.isError ? errorText(save.error, t) : undefined}
       saveLabel={existing ? t("common.save") : t("common.create")}
       canSave={Boolean(name.trim() && thresholdOk && windowValid)}
       saving={save.isPending}

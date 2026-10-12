@@ -16,7 +16,14 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 
-export const Default: Story = {};
+export const Default: Story = {
+  play: async ({ canvasElement }) => {
+    // bites if the role goes: Field announces its error, so this one must too (#2734)
+    await expect(within(canvasElement).getByRole("alert")).toHaveTextContent(
+      "Alias must be unique within the project.",
+    );
+  },
+};
 
 /** No error, no node: a valid field is not a field with an empty red line. */
 export const NoError: Story = {

@@ -1364,7 +1364,7 @@ export const TestThatCouldNotRunShowsOnItsCard: Story = {
 
     const card = within(canvas.getByRole("group", { name: "signoz" }));
     await expect(await card.findByRole("alert")).toHaveTextContent(
-      "Test did not run: probe worker unavailable",
+      "Test did not run: The control plane hit an error. Try again, and check its logs if it persists.",
     );
     // the only message on the screen, and it is on the card it belongs to
     await expect(canvas.getAllByRole("alert")).toHaveLength(1);
@@ -1397,7 +1397,7 @@ export const FailedDeleteShowsOnItsCard: Story = {
     await cancelConfirmation();
     const card = within(canvas.getByRole("group", { name: "signoz" }));
     await expect(await card.findByRole("alert")).toHaveTextContent(
-      "Could not delete this connector: connector is referenced by a pipeline",
+      "Could not delete this connector: The server rejected this request. connector is referenced by a pipeline",
     );
     await expect(
       within(canvas.getByRole("group", { name: "honeycomb" })).queryByRole("alert"),

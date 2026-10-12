@@ -142,7 +142,9 @@ export const FullSampleRateShowsNoWarning: Story = {
     await expect(await canvas.findByLabelText("Sample rate percent")).toHaveValue("100");
     await expect(canvas.queryByText(/The log keeps/)).toBeNull();
     await expect(
-      canvas.getByText(/Dashboard, LLM Logs, Business Units and Customers read this log/),
+      canvas.getByText(
+        /Dashboard, LLM Logs, Business Units, Customers, Account usage and alert rules read this log/,
+      ),
     ).toBeVisible();
     await expect(
       canvas.getByText(/Budgets, rate limits and \/metrics still count every request/),
@@ -192,7 +194,7 @@ export const CaptureDisabled: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByLabelText("Max bytes per payload")).toBeDisabled());
-    await expect(canvas.getByLabelText("Redacted Fields")).toBeDisabled();
+    await expect(canvas.getByLabelText("Redacted fields")).toBeDisabled();
     // retention is not capture-scoped, so it stays editable
     await expect(canvas.getByLabelText("Retention days")).toBeEnabled();
   },
@@ -368,13 +370,13 @@ export const SwitchesDashboardUsageEventsOff: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const toggle = await canvas.findByRole("switch", { name: "Dashboard Usage Events" });
+    const toggle = await canvas.findByRole("switch", { name: "Dashboard usage events" });
     await expect(toggle).toBeChecked();
     await userEvent.click(toggle);
     await expect(toggle).not.toBeChecked();
     await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
     await expectToast(canvasElement, /logs settings updated/i);
-    await expect(canvas.getByRole("switch", { name: "Dashboard Usage Events" })).not.toBeChecked();
+    await expect(canvas.getByRole("switch", { name: "Dashboard usage events" })).not.toBeChecked();
   },
 };
 

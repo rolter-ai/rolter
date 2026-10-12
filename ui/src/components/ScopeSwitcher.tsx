@@ -39,9 +39,10 @@ import {
   fetchProjectSettings,
   updateProjectSettings,
 } from "@/lib/api";
+import { errorText } from "@/lib/error-copy";
 import { useCreateProjectOpener, useScope } from "@/lib/scope";
 import { slugify } from "@/lib/slug";
-import { errorDetail, useToast } from "@/lib/toast";
+import { useToast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 
 type Level = "org" | "team" | "project";
@@ -591,7 +592,7 @@ function ProjectSettingsDialog({
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: target?.name ?? "" }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       });
     },
   });
@@ -675,7 +676,7 @@ function CreateScopeDialog({
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: name }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       });
     },
   });
@@ -707,7 +708,7 @@ function CreateScopeDialog({
         </Field>
         {create.isError && (
           <p className="text-xs text-[color:var(--status-danger-text)]">
-            {(create.error as Error).message}
+            {errorText(create.error, t)}
           </p>
         )}
       </div>
@@ -753,7 +754,7 @@ function DeleteScopeDialog({
       toast.push({
         tone: "error",
         title: t("toast.deleteFailed", { what: target?.name ?? "" }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       });
     },
   });

@@ -63,7 +63,11 @@ export function describeError(error: unknown, t: TFunction): ErrorCopy {
   }
   if (!(error instanceof ApiError)) return { message: t("errors.api.unreachable") };
   if (error.code && known.has(error.code)) {
-    const message = t(`errors.api.codes.${error.code}`);
+    // the field the refusal is about, when the control plane named one (#2735)
+    const message =
+      error.code === "invalid_field" && error.field
+        ? t("errors.api.invalidFieldNamed", { field: error.field })
+        : t(`errors.api.codes.${error.code}`);
     if (keepsDetail.has(error.code)) return { message, detail: error.message || undefined };
     return { message };
   }
@@ -72,4 +76,14 @@ export function describeError(error: unknown, t: TFunction): ErrorCopy {
   if (error.status === 429) return { message: t("errors.api.rateLimited") };
   if (error.status >= 500) return { message: t("errors.api.server") };
   return { message: t("errors.api.generic"), detail: error.message || undefined };
+}
+
+/**
+ * `describeError` as one line, for a toast's detail or a banner: the translated
+ * sentence, followed by the server's own words wherever they say something the
+ * sentence cannot (which field, which rule).
+ */
+export function errorText(error: unknown, t: TFunction): string {
+  const { message, detail } = describeError(error, t);
+  return detail ? `${message} ${detail}` : message;
 }

@@ -46,6 +46,7 @@ import {
   type UpdateBudgetInput,
   type UpdateRateLimitInput,
 } from "@/lib/api";
+import { errorText } from "@/lib/error-copy";
 import { PERIOD_KINDS, periodKind } from "@/lib/budget-period";
 import { spendFigures, type SpendTone } from "@/lib/budget-spend";
 import { useCurrencyCode } from "@/lib/currency";
@@ -54,7 +55,7 @@ import { useScope } from "@/lib/scope";
 import { RowCapabilityScope, type RowScope } from "@/lib/can";
 import { capGateScope } from "@/lib/limit-scope";
 import { useOrgScope } from "@/components/OrgScopePicker";
-import { errorDetail, useToast } from "@/lib/toast";
+import { useToast } from "@/lib/toast";
 import { useScreenReady } from "@/lib/ux-react";
 
 // the picker's placeholder per scope type, as catalog keys
@@ -154,7 +155,7 @@ export default function Limits() {
       toast.push({
         tone: "error",
         title: t("toast.deleteFailed", { what: t("pages.limits.budgetNoun") }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       });
     },
   });
@@ -169,7 +170,7 @@ export default function Limits() {
       toast.push({
         tone: "error",
         title: t("toast.deleteFailed", { what: t("pages.limits.rateLimitNoun") }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       });
     },
   });
@@ -951,7 +952,7 @@ function BudgetSheet({
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: t("pages.limits.budgetNoun") }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       });
     },
   });
@@ -964,7 +965,7 @@ function BudgetSheet({
       title={t(budget ? "pages.limits.budgetEditTitle" : "pages.limits.budgetSheetTitle")}
       subtitle={t("pages.limits.budgetSheetSubtitle", { scope: scopeName })}
       dirty={dirty}
-      errorMessage={save.isError ? (save.error as Error).message : undefined}
+      errorMessage={save.isError ? errorText(save.error, t) : undefined}
       saveLabel={t(budget ? "common.save" : "common.create")}
       canSave={Boolean(limitUsd.trim() && periodKind(period)) && (!budget || dirty)}
       saving={save.isPending}
@@ -1108,7 +1109,7 @@ function RateLimitSheet({
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: t("pages.limits.rateLimitNoun") }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       });
     },
   });
@@ -1121,7 +1122,7 @@ function RateLimitSheet({
       title={t(limit ? "pages.limits.rateLimitEditTitle" : "pages.limits.rateLimitSheetTitle")}
       subtitle={t("pages.limits.rateLimitSheetSubtitle", { scope: scopeName })}
       dirty={dirty}
-      errorMessage={save.isError ? (save.error as Error).message : undefined}
+      errorMessage={save.isError ? errorText(save.error, t) : undefined}
       saveLabel={t(limit ? "common.save" : "common.create")}
       canSave={Boolean(rpm.trim() || tpm.trim()) && (!limit || dirty)}
       saving={save.isPending}

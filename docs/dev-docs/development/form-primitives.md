@@ -152,7 +152,7 @@ const shown = (field) => (visibility.shows(field) ? found[field] : "");
   what asks for them. It is disabled while the form is loading or saving.
 - Each problem is said once, under its own field, with `FieldError` and the
   control's `aria-describedby`. The footer carries at most one more line, a
-  count under `role="alert"` that does not repeat the messages. Sections that
+  count under `role="status"` that does not repeat the messages (the fields announce themselves). Sections that
   hold a problem are opened by the refused save, so the field it names is on
   screen.
 
@@ -185,6 +185,62 @@ needs a shorter header shortens the sentence, not the line. Stories:
 `LongDescriptionWraps` and `UnbrokenDescriptionStaysInThePanel` under
 **Overlays/Sheet**, and `CreateSubtitleIsWholeAt1024` and
 `InviteSubtitleIsWholeAt1024` (each also in Russian) on Virtual Keys and Users.
+
+## Inline errors on a settings screen
+
+A settings screen saves its fields as one request, and shows what is wrong under the field it is
+wrong in. `useFieldErrors` (`ui/src/lib/use-field-errors.ts`) owns the part every such screen used
+to copy (#2734): the field order, the wire-name table, focus on the first invalid field, the count
+for the footer, and a 400 from the control plane pinned to the field it names.
+
+```tsx
+const fields = useFieldErrors<FieldKey>({
+  order: FIELD_ORDER, // the order the fields sit in
+  wire: WIRE_FIELDS, // `retention_days` -> "retentionDays"
+  idOf: (key) => ids[key], // the DOM id focus moves to
+  local: form ? translateErrors(validate(form), t) : {}, // the screen's own checks, translated
+});
+// onError: if (fields.refuse(error)) return; toast.push(...)
+// an input: {...fields.inputProps("retentionDays")}  +  <FieldError id={fields.errorId(...)} error={fields.errorOf(...)} />
+// an edit:  fields.edit("retentionDays")      after a save: fields.clear()
+// footer:   <SaveBar invalid={fields.invalid.length} pending={save.isPending}
+//             onSave={() => fields.submit(() => save.mutate(form))} />
+```
+
+- Call the hook before the screen's early returns, so `local` is `{}` until the form has loaded.
+- `local` holds translated messages; `validate()` returns catalog keys and `translateErrors` renders
+  them. A local error wins over a server one for the same field.
+- `refuse(error)` maps a rejected save through `serverFieldError` (`ui/src/lib/field-errors.ts`): the
+  exact `error.field` path first (`forwarded_headers[2]`), then its root, then the wire name the
+  message opens with. It returns false when the refusal names none of the screen's fields, and that
+  refusal belongs in a toast. `place` handles what the table cannot, such as one row of a list
+  (`injected_headers.x-team` on Client Settings). `names(error)` asks the same without placing it.
+- `skip(key)` drops a field that cannot be edited right now (a control disabled by its own switch), so
+  no complaint about it holds Save. `shows(key)` hides a local error until the first refused save
+  (`useErrorVisibility`), while still stopping the save.
+- `submit(run)` is Save's press. With a field at fault it focuses the first one that can take focus
+  and does not run; otherwise it runs the save. Save therefore stays pressable on an invalid form and
+  is `aria-disabled`, not `disabled`.
+- `SaveBar` (`ui/src/components/ui/save-bar.tsx`) is the footer: the "N fields need attention" status,
+  the `aria-disabled` Save, a `leading` slot and secondary buttons as children.
+- Both error renderers announce the same way: `Field`'s built-in `error` and `FieldError` are
+  `role="alert"`, and the control's `aria-describedby` points at it. The footer count is a
+  `role="status"`, which is polite. A story that needs one specific message picks it by its text, not
+  by a bare `getByRole("alert")`. Use `Field` for a screen row and `FieldError` where the input is not wrapped.
+
+Used by Performance Tuning, Model Settings, Compatibility, Client Settings, Logs Settings, Adaptive
+Routing settings, the Plugins dialog and Pricing (which takes only the server mapping).
+
+### Showing a failed call
+
+A toast or an inline banner never prints `error.message`. `errorText(error, t)`
+(`ui/src/lib/error-copy.ts`) is `describeError` as one line: the translated sentence for the
+control plane's stable `code`, then its status, and the server's own words only where nothing
+translated explains them. An `invalid_field` refusal names its field from `error.field`
+(`errors.api.invalidFieldNamed`). A field-bound message under an input stays the server's text, since
+it states the rule that was broken. `bun run check:raw-errors` fails on `(x as Error).message`,
+`x.error.message` and `errorDetail(` in `pages/` and `components/`; a display that is not a server
+answer carries `// raw-error-allow: <reason>` on the line above it.
 
 ## Copy
 
@@ -323,9 +379,8 @@ const { draft, saved, changed, dirty, set, reset, commit } = useDraft(source, EQ
   Discard.
 
 The reducer and `changedKeys` are plain functions with unit tests beside them, since the tree has no
-React test renderer. The Security screen is the first consumer. The leave guard, the shared field
-errors and the saved-at line that #2214 asks every settings screen to carry are not here yet; they
-belong beside this hook rather than in each screen.
+React test renderer. The Security screen is the first consumer. The shared field errors are `useFieldErrors` above. The saved-at line that #2214 asks every settings
+screen to carry is not here yet; it belongs beside this hook rather than in each screen.
 
 ## Still to do
 

@@ -34,10 +34,11 @@ import {
   type OmittedEntry,
   type VirtualKeyDto,
 } from "@/lib/api";
+import { errorText } from "@/lib/error-copy";
 import { useCan } from "@/lib/can";
 import { gatewayPickup, type Pickup } from "@/lib/gateway-pickup";
 import { providerKindName } from "@/lib/provider-kinds";
-import { errorDetail, useToast } from "@/lib/toast";
+import { useToast } from "@/lib/toast";
 import type { ReadState } from "@/lib/read-state";
 import { useScreenReady } from "@/lib/ux-react";
 
@@ -505,7 +506,7 @@ function ExportButton() {
       toast.push({
         tone: "error",
         title: t("toast.exportFailed", { what: t("errors.resources.configExport") }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       });
     },
   });

@@ -532,8 +532,9 @@ export const OrgWideGroupRefusedAScopedMember: Story = {
   },
   play: async () => {
     await userEvent.click(await screen().findByRole("button", { name: "Save group" }));
-    await expect(await screen().findByRole("alert")).toHaveTextContent(
-      /would expose it to every project/,
+    // the field names the member it is about, and the sheet's own line says it too
+    await expect(await screen().findAllByText(/would expose it to every project/)).not.toHaveLength(
+      0,
     );
   },
 };

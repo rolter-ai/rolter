@@ -334,7 +334,7 @@ export const TrafficReadFails: Story = {
     const canvas = within(canvasElement);
     const note = await canvas.findByTestId("traffic-unavailable");
     await expect(note).toHaveTextContent(/Request counts are unavailable/);
-    await expect(note).toHaveTextContent(/clickhouse: timeout/);
+    await expect(note).toHaveTextContent(/The control plane hit an error/);
     await expect(canvas.queryAllByTestId("route-traffic")).toHaveLength(0);
   },
 };
@@ -813,7 +813,7 @@ export const TargetHealthUnavailable: Story = {
     const canvas = within(canvasElement);
     const note = await canvas.findByTestId("health-unavailable");
     await expect(note).toHaveTextContent(/Target health is unavailable/);
-    await expect(note).toHaveTextContent(/analytics store not configured/);
+    await expect(note).toHaveTextContent(/The control plane hit an error/);
     await expect(canvas.getAllByTestId("health-unavailable")).toHaveLength(1);
     const targets = within(await canvas.findByRole("list", { name: "Targets of gpt-4o" }));
     await expect(targets.getByText("80%")).toBeInTheDocument();

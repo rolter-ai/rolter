@@ -13,8 +13,9 @@ import {
   type AccessProfileAssignmentRow,
   type AccessProfileRow,
 } from "@/lib/api";
+import { errorText } from "@/lib/error-copy";
 import { useOptionalAuth } from "@/lib/auth";
-import { errorDetail, useToast } from "@/lib/toast";
+import { useToast } from "@/lib/toast";
 
 type Kind = "user" | "team";
 
@@ -99,7 +100,7 @@ export function AssignProfileSheet({
       subtitle={t("pages.accessProfiles.assign.subtitle")}
       dirty={subject !== ""}
       errorMessage={assign.error ? t("pages.accessProfiles.assign.failed") : undefined}
-      errorDetail={assign.error ? errorDetail(assign.error) : undefined}
+      errorDetail={assign.error ? errorText(assign.error, t) : undefined}
       saveLabel={t("pages.accessProfiles.assign.save")}
       canSave={subject !== ""}
       saving={assign.isPending}

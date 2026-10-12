@@ -474,7 +474,7 @@ When a hop is broken it names the hop. A `500` from the endpoint prints the
 (the response body is deliberately generic, see below), which is why the compose
 stack keeps `query_log` when it switches the other `system.*_log` tables off
 (#2795). A `202` with no row in ClickHouse checks `GET /api/v1/logging-settings`
-and says so when **Dashboard Usage Events** is off, the one case the endpoint
+and says so when **Dashboard usage events** is off, the one case the endpoint
 reports as success. Both are best effort: a role that cannot read the logging
 settings just gets the generic line.
 
@@ -523,7 +523,7 @@ resumes by itself once the store is back. The logic lives in
 
 The last row is the only deliberate one. In a Postgres-backed deployment it is
 the `ui_events` column on the `logging_settings` singleton (migration `0073`,
-#1748): the **Dashboard Usage Events** switch on **Logs Settings**, or
+#1748): the **Dashboard usage events** switch on **Logs Settings**, or
 `ui_events` in the `PUT /api/v1/logging-settings` body. `PostgresConfigStore`
 projects it into `logging.ui_events`, which is what the handler reads, so the
 switch takes effect on the next batch with no restart. `rolter-seed --import`

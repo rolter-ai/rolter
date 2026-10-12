@@ -21,10 +21,11 @@ import {
   preferencesDocument,
   type UserPreferences,
 } from "@/lib/api";
+import { errorText } from "@/lib/error-copy";
 import { LOCALES, LOCALE_NAMES, type Locale } from "@/lib/i18n";
 import { validTimeZone } from "@/lib/i18n/format";
 import { PREFERENCES_QUERY_KEY, refusedField, savePreferences } from "@/lib/preferences";
-import { errorDetail, useToast } from "@/lib/toast";
+import { useToast } from "@/lib/toast";
 import { useDraft } from "@/lib/use-draft";
 import { useScreenReady } from "@/lib/ux-react";
 
@@ -128,7 +129,7 @@ export default function Preferences() {
   // a 400 names the field it refused; one that names none is said once, by the
   // save button, so it is never lost
   const refused = save.error ? refusedField(save.error) : null;
-  const refusal = save.error ? errorDetail(save.error) : undefined;
+  const refusal = save.error ? errorText(save.error, t) : undefined;
   const fieldError = (field: PreferenceKey): string | undefined =>
     refused === field ? refusal : undefined;
   const formError = save.error && !refused ? refusal : undefined;

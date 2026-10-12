@@ -152,7 +152,7 @@ Two things stop capture, and only one of them is meant to:
   logs a rate-limited warning and counts each one in
   `rolter_control_ingest_failures` (`reason=unconfigured`). Use the switch
   below to turn capture off on purpose.
-- **The Dashboard Usage Events switch** on **Observability → Logs Settings** — a
+- **The Dashboard usage events switch** on **Observability → Logs Settings** — a
   deployment-level opt-out, also settable as `ui_events` through
   [`PUT /api/v1/logging-settings`](/observability/log-settings#api). The
   endpoint still answers `202`, and stores nothing. It takes effect on the next

@@ -235,6 +235,7 @@ export function ParamsEditor(props: EditProps | CreateProps) {
 
   const describe = React.useCallback(
     (e: unknown) => {
+      // raw-error-allow: a plain validation error thrown by this editor, not a server answer
       if (!(e instanceof ParamRowError)) return (e as Error).message;
       const messages = {
         duplicate: t("paramsEditor.errors.duplicate", { key: e.key }),

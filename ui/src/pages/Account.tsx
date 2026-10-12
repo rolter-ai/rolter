@@ -55,8 +55,8 @@ import {
 import { useCan } from "@/lib/can";
 import { useFormat } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
-import { describeError } from "@/lib/error-copy";
-import { errorDetail, useToast } from "@/lib/toast";
+import { describeError, errorText } from "@/lib/error-copy";
+import { useToast } from "@/lib/toast";
 import { useScreenReady } from "@/lib/ux-react";
 
 // end-user self-service panel (ROL-224): view/rotate/delete the virtual keys you
@@ -294,7 +294,7 @@ export default function Account() {
               toast.push({
                 tone: "error",
                 title: t("toast.deleteFailed", { what }),
-                detail: errorDetail(error),
+                detail: errorText(error, t),
               }),
           });
         }}

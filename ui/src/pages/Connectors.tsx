@@ -46,10 +46,11 @@ import {
   updateConnector,
   type ConnectorRow,
 } from "@/lib/api";
+import { errorText } from "@/lib/error-copy";
 import { useFormat } from "@/lib/i18n/format";
 import { movesOrigin } from "@/lib/origin";
 import { parseSamplingPercent, samplingPercentText } from "@/lib/sampling";
-import { errorDetail, useToast } from "@/lib/toast";
+import { useToast } from "@/lib/toast";
 import { useScreenReady } from "@/lib/ux-react";
 
 // the /15 wash of a status fill hue that a pill sits on (DESIGN.md, Status)
@@ -249,7 +250,7 @@ function ConnectorsScreen() {
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: c.name }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       });
     },
   });
@@ -304,10 +305,10 @@ function ConnectorsScreen() {
         : t("pages.connectors.testFailed", { message: reason });
     }
     if (probed && test.isError) {
-      return t("pages.connectors.testError", { message: errorDetail(test.error) ?? "" });
+      return t("pages.connectors.testError", { message: errorText(test.error, t) ?? "" });
     }
     if (remove.isError && remove.variables === c.id && !deleteTarget) {
-      return t("pages.connectors.deleteError", { message: errorDetail(remove.error) ?? "" });
+      return t("pages.connectors.deleteError", { message: errorText(remove.error, t) ?? "" });
     }
     return null;
   };
@@ -528,7 +529,7 @@ function ConnectorsScreen() {
               toast.push({
                 tone: "error",
                 title: t("toast.deleteFailed", { what }),
-                detail: errorDetail(error),
+                detail: errorText(error, t),
               });
             },
           });
@@ -664,7 +665,7 @@ function ConnectorSheet({
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: name }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       });
     },
   });
@@ -718,7 +719,7 @@ function ConnectorSheet({
       }
       subtitle={t("pages.connectors.sheetSubtitle")}
       dirty={dirty}
-      errorMessage={save.isError ? (save.error as Error).message : undefined}
+      errorMessage={save.isError ? errorText(save.error, t) : undefined}
       saveLabel={existing ? t("common.save") : t("common.create")}
       canSave={!!name.trim() && !!endpoint.trim() && parsed.ok}
       saving={save.isPending}

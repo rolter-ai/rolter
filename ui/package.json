@@ -23,6 +23,7 @@
     "check:focus": "bun scripts/check-story-focus.ts",
     "check:waits": "bun scripts/check-story-waits.ts",
     "check:load-error-targets": "bun scripts/check-load-error-targets.ts",
+    "check:raw-errors": "bun scripts/check-raw-errors.ts",
     "check:playwright-pin": "bun scripts/check-playwright-pin.ts",
     "gen:rbac": "bun scripts/gen-rbac-capabilities.ts",
     "gen:audit": "bun scripts/gen-audit-vocabulary.ts"

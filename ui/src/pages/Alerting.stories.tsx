@@ -1071,7 +1071,7 @@ export const EvaluateFailureRefreshesTheRuleCard: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await clickWhenEnabled(canvasElement, "Evaluate rule high error rate now");
-    await expectToast(canvasElement, /could not connect to ClickHouse/, "error");
+    await expectToast(canvasElement, /The control plane hit an error/, "error");
     // on the card as well as in the toast, without a reload
     await waitFor(() =>
       expect(

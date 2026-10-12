@@ -18,8 +18,9 @@ import {
   setClusterNodeDrain,
   type ClusterNodeRow,
 } from "@/lib/api";
+import { errorText } from "@/lib/error-copy";
 import { useFormat } from "@/lib/i18n/format";
-import { errorDetail, useToast } from "@/lib/toast";
+import { useToast } from "@/lib/toast";
 import { useNow } from "@/lib/use-now";
 import { useScreenReady } from "@/lib/ux-react";
 
@@ -86,7 +87,7 @@ function ClusterScreen() {
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: v.id }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       });
     },
   });
@@ -253,7 +254,7 @@ function ClusterScreen() {
               toast.push({
                 tone: "error",
                 title: t("toast.deleteFailed", { what }),
-                detail: errorDetail(error),
+                detail: errorText(error, t),
               });
             },
           });

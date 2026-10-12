@@ -10,6 +10,7 @@ import { Combobox } from "@/components/ui/combobox";
 import { Badge } from "@/components/ui/badge";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import { SaveBar } from "@/components/ui/save-bar";
 import { SettingsPanel } from "@/components/ui/settings-panel";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -19,8 +20,9 @@ import {
   type BackpressurePolicy,
   type RuntimePolicyDto,
 } from "@/lib/api";
-import { serverFieldError } from "@/lib/field-errors";
-import { errorDetail, useToast } from "@/lib/toast";
+import { errorText } from "@/lib/error-copy";
+import { useToast } from "@/lib/toast";
+import { translateErrors, useFieldErrors } from "@/lib/use-field-errors";
 import { useLeaveGuard } from "@/lib/use-leave-guard";
 import { useScreenReady } from "@/lib/ux-react";
 
@@ -164,7 +166,6 @@ function PerformanceScreen() {
   useScreenReady(!policy.isLoading);
 
   const [form, setForm] = React.useState<FormState | null>(null);
-  const [serverErrors, setServerErrors] = React.useState<FieldErrors>({});
   const base = React.useId();
   const idOf = (key: FieldKey) => `${base}-${key}`;
   React.useEffect(() => {
@@ -183,6 +184,15 @@ function PerformanceScreen() {
   }, [form, policy.data]);
   const dirty = changed.length > 0;
   const leavePrompt = useLeaveGuard(dirty);
+
+  const fields = useFieldErrors<FieldKey>({
+    order: FIELD_ORDER,
+    wire: WIRE_FIELDS,
+    idOf,
+    // a disabled field cannot be fixed, so no complaint about it holds Save
+    skip: (key) => form !== null && fieldDisabled(form, key),
+    local: form ? translateErrors(validate(form), t) : {},
+  });
 
   const save = useMutation({
     mutationFn: (f: FormState) => {
@@ -215,7 +225,7 @@ function PerformanceScreen() {
       // value it already had; the refetch is what makes the save stick (#1197)
       void queryClient.invalidateQueries({ queryKey: ["runtime-policy"] });
       setForm(fromDto(dto));
-      setServerErrors({});
+      fields.clear();
       toast.push({
         tone: "success",
         title: t("toast.saved"),
@@ -223,16 +233,11 @@ function PerformanceScreen() {
       });
     },
     onError: (error) => {
-      const named = serverFieldError(error, WIRE_FIELDS);
-      if (named) {
-        setServerErrors({ [named.field]: named.message });
-        document.getElementById(idOf(named.field))?.focus();
-        return;
-      }
+      if (fields.refuse(error)) return;
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: t("errors.resources.performanceSettings") }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       });
     },
   });
@@ -261,38 +266,15 @@ function PerformanceScreen() {
   const set = (patch: Partial<FormState>) => {
     setForm((f) => (f ? { ...f, ...patch } : f));
   };
-  const local = validate(form);
-  const errors = Object.fromEntries(
-    FIELD_ORDER.map((key) => {
-      const localKey = local[key];
-      // a disabled field cannot be fixed, so no complaint about it holds Save
-      const error = fieldDisabled(form, key)
-        ? undefined
-        : localKey
-          ? t(localKey)
-          : serverErrors[key];
-      return [key, error];
-    }),
-  ) as Record<FieldKey, string | undefined>;
-  const invalid = FIELD_ORDER.filter((key) => errors[key]);
-  // Save stays pressable while the form is invalid so a press can say why: it
-  // moves focus to the first field at fault rather than doing nothing (#2651)
-  const submit = () => {
-    if (invalid.length > 0) {
-      document.getElementById(idOf(invalid[0]))?.focus();
-      return;
-    }
-    save.mutate(form);
-  };
   // the props every number field shares: its id, its value, its error, and an
   // edit that answers the server's complaint about that field
   const numberField = (key: FieldKey) => ({
     id: idOf(key),
     value: form[key],
-    error: errors[key],
+    error: fields.errorOf(key),
     onChange: (v: string) => {
       set({ [key]: v });
-      setServerErrors((e) => ({ ...e, [key]: undefined }));
+      fields.edit(key);
     },
   });
   const queue = form.queueEnabled;
@@ -303,16 +285,10 @@ function PerformanceScreen() {
     ) : undefined;
   const discard = () => {
     if (policy.data) setForm(fromDto(policy.data));
-    setServerErrors({});
+    fields.clear();
     save.reset();
   };
-  const statusId = `${base}-status`;
-  let status: string | null = null;
-  if (invalid.length > 0) {
-    status = t("common.fieldsNeedAttention", { count: invalid.length });
-  } else if (dirty) {
-    status = t("pages.performance.status.changed", { count: changed.length });
-  }
+  const status = dirty ? t("pages.performance.status.changed", { count: changed.length }) : null;
 
   return (
     <div className="mx-auto flex max-w-[840px] flex-col gap-3.5 p-[22px]">
@@ -402,33 +378,17 @@ function PerformanceScreen() {
         />
       </SettingsPanel>
 
-      <div className="sticky bottom-0 flex flex-wrap items-center justify-end gap-3 border-t border-[color:var(--border-subtle)] bg-background py-3">
-        {status && (
-          <p
-            id={statusId}
-            role="status"
-            className={`min-w-0 text-xs sm:mr-auto ${
-              invalid.length > 0
-                ? "text-[color:var(--status-danger-text)]"
-                : "text-[color:var(--text-subtle)]"
-            }`}
-          >
-            {status}
-          </p>
-        )}
+      <SaveBar
+        invalid={fields.invalid.length}
+        pending={save.isPending}
+        disabled={!dirty}
+        status={status}
+        onSave={() => fields.submit(() => save.mutate(form))}
+      >
         <Button variant="outline" disabled={!dirty || save.isPending} onClick={discard}>
           {t("pages.performance.discard")}
         </Button>
-        <Button
-          disabled={!dirty || save.isPending}
-          aria-disabled={invalid.length > 0 || undefined}
-          aria-describedby={status ? statusId : undefined}
-          className={invalid.length > 0 ? "opacity-50" : undefined}
-          onClick={submit}
-        >
-          {save.isPending ? t("common.saving") : t("common.saveChanges")}
-        </Button>
-      </div>
+      </SaveBar>
       {leavePrompt}
     </div>
   );

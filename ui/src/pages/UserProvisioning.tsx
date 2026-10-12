@@ -31,6 +31,7 @@ import {
   type CreatedScimToken,
   type ScimTokenRow,
 } from "@/lib/api";
+import { errorText } from "@/lib/error-copy";
 import { useFormat, type Formatters } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
 import { useToast } from "@/lib/toast";
@@ -301,7 +302,7 @@ export default function UserProvisioning() {
       )}
       {revoke.isError && (
         <p className="text-sm text-[color:var(--status-danger-text)]">
-          {(revoke.error as Error).message}
+          {errorText(revoke.error, t)}
         </p>
       )}
 
@@ -462,7 +463,7 @@ function IssueTokenSheet({
             </p>
             {create.isError && (
               <p className="text-sm text-[color:var(--status-danger-text)]">
-                {(create.error as Error).message}
+                {errorText(create.error, t)}
               </p>
             )}
           </>

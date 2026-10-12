@@ -44,12 +44,13 @@ import {
   type ProviderGroupRow,
   type ProviderRow,
 } from "@/lib/api";
+import { errorText } from "@/lib/error-copy";
 import { providerKindName } from "@/lib/provider-kinds";
 import { providerUsage, type UsageEntry } from "@/lib/provider-usage";
 import { RowCapabilityScope } from "@/lib/can";
 import { rowGateScope } from "@/lib/provider-scope";
 import { useScope } from "@/lib/scope";
-import { errorDetail, useToast } from "@/lib/toast";
+import { useToast } from "@/lib/toast";
 import { useScreenReady } from "@/lib/ux-react";
 
 const PROVIDERS_QUERY_KEY = ["providers"];
@@ -539,7 +540,7 @@ export default function Providers() {
               toast.push({
                 tone: "error",
                 title: t("toast.deleteFailed", { what: name }),
-                detail: errorDetail(error),
+                detail: errorText(error, t),
               }),
           });
         }}

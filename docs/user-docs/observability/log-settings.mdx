@@ -100,7 +100,7 @@ Re-applying an unchanged policy is a no-op, so the startup pass is safe on every
 
 ## Dashboard usage events
 
-The **Dashboard Usage Events** switch (`ui_events`) decides whether the control plane accepts the dashboard's own [UX events](/api/ui-events) — screen views, load times, abandoned forms, error states. It is **on by default**, unlike payload capture, because those events carry structure only: a screen, an action, a duration and ids, never a form value or prompt.
+The **Dashboard usage events** switch (`ui_events`) decides whether the control plane accepts the dashboard's own [UX events](/api/ui-events) — screen views, load times, abandoned forms, error states. It is **on by default**, unlike payload capture, because those events carry structure only: a screen, an action, a duration and ids, never a form value or prompt.
 
 Switching it off makes the ingest endpoint answer `202` and store nothing, from the next batch onward. Events already recorded are not deleted; they expire with the table's own TTL. The stream is inert anyway when ClickHouse is not configured.
 

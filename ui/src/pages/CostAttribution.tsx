@@ -36,11 +36,12 @@ import {
   type BusinessUnitRow,
   type CustomerRow,
 } from "@/lib/api";
+import { errorText } from "@/lib/error-copy";
 import type { Capability } from "@/lib/can";
 import { useCurrencyCode } from "@/lib/currency";
 import { useFormat } from "@/lib/i18n/format";
 import { isAwaiting, type ReadState } from "@/lib/read-state";
-import { errorDetail, useToast } from "@/lib/toast";
+import { useToast } from "@/lib/toast";
 import { useScope } from "@/lib/scope";
 import { slugify } from "@/lib/slug";
 import {
@@ -833,7 +834,7 @@ export function BusinessUnits() {
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: f.name.trim() }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       });
     },
   });
@@ -856,7 +857,7 @@ export function BusinessUnits() {
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: form.name.trim() }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       });
     },
   });
@@ -875,7 +876,7 @@ export function BusinessUnits() {
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: row.name }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       });
     },
   });
@@ -889,7 +890,7 @@ export function BusinessUnits() {
       toast.push({
         tone: "error",
         title: t("toast.deleteFailed", { what: row.name }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       });
     },
   });
@@ -972,7 +973,7 @@ export function Customers() {
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: f.name.trim() }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       });
     },
   });
@@ -998,7 +999,7 @@ export function Customers() {
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: form.name.trim() }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       });
     },
   });
@@ -1017,7 +1018,7 @@ export function Customers() {
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: row.name }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       });
     },
   });
@@ -1031,7 +1032,7 @@ export function Customers() {
       toast.push({
         tone: "error",
         title: t("toast.deleteFailed", { what: row.name }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       });
     },
   });

@@ -74,10 +74,3 @@ const NOOP: ToastApi = { toasts: [], push: () => 0, dismiss: () => {} };
 export function useToast(): ToastApi {
   return React.useContext(ToastContext) ?? NOOP;
 }
-
-/** the message an `ApiError` or a thrown value carries, for a toast's detail */
-export function errorDetail(error: unknown): string | undefined {
-  if (error instanceof Error) return error.message;
-  if (typeof error === "string") return error;
-  return undefined;
-}

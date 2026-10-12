@@ -1597,7 +1597,7 @@ export const InviteRefusedAtTheScopePicked: Story = {
         form.getByText("Inviting into the Platform team takes Admin there or on a scope above it."),
       ).toBeVisible(),
     );
-    await expect(form.getByText("insufficient role for this resource")).toBeVisible();
+    await expect(form.getByText("Your role does not permit this.")).toBeVisible();
     await expect(form.getByLabelText("Email")).toHaveValue("newcomer@example.com");
   },
 };

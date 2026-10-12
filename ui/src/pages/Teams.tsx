@@ -19,11 +19,12 @@ import {
   UnassignSubjectProfileDialog,
   type UnassignTarget,
 } from "@/components/SubjectProfiles";
+import { errorText } from "@/lib/error-copy";
 import { createTeam, fetchBudgets, fetchMemberships, fetchTeams } from "@/lib/api";
 import { useCurrencyCode } from "@/lib/currency";
 import { useFormat } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
-import { errorDetail, useToast } from "@/lib/toast";
+import { useToast } from "@/lib/toast";
 import { useScreenReady } from "@/lib/ux-react";
 
 // teams: card per team with member count, the
@@ -81,7 +82,7 @@ export default function Teams() {
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: name }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       });
     },
   });
@@ -217,7 +218,7 @@ export default function Teams() {
         title={t("pages.teams.emptyAction")}
         subtitle={t("pages.teams.addSubtitle")}
         dirty={name.trim() !== ""}
-        errorMessage={create.isError ? (create.error as Error).message : undefined}
+        errorMessage={create.isError ? errorText(create.error, t) : undefined}
         saveLabel={t("common.create")}
         canSave={!!name.trim()}
         saving={create.isPending}

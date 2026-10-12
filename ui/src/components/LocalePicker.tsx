@@ -11,9 +11,10 @@ import {
   setLocale,
   type Locale,
 } from "@/lib/i18n";
+import { errorText } from "@/lib/error-copy";
 import { useOptionalAuth } from "@/lib/auth";
 import { useOptionalPreferences } from "@/lib/preferences";
-import { errorDetail, useToast } from "@/lib/toast";
+import { useToast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 
 // language switcher pinned to the sidebar footer next to the version, so it is
@@ -47,7 +48,7 @@ export function LocalePicker({ collapsed = false }: { collapsed?: boolean }) {
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: t("screens.preferences.title") }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       });
     });
   };

@@ -341,7 +341,7 @@ export const TouchedNameShowsItsError: Story = {
     await expect(dialog.getAllByText(/Enter the name clients will send/)).toHaveLength(1);
     // the untouched provider line and the footer stay as they were
     await expect(dialog.getByLabelText("Target 1 provider")).not.toHaveAttribute("aria-invalid");
-    await expect(dialog.queryByRole("alert")).not.toBeInTheDocument();
+    await expect(dialog.queryByRole("status")).not.toBeInTheDocument();
     await expect(dialog.getByRole("button", { name: "Add route" })).toBeEnabled();
   },
 };
@@ -371,7 +371,7 @@ export const RefusedSaveStatesEachProblemOnce: Story = {
     await expect(name).toHaveAccessibleDescription(/Enter the name clients will send/);
     await expect(provider).toHaveAccessibleDescription(/Pick a provider for every target/);
     // and one summary, which counts the problems instead of repeating them
-    await expect(dialog.getByRole("alert")).toHaveTextContent(
+    await expect(dialog.getByRole("status")).toHaveTextContent(
       "2 fields need attention before this route can be saved.",
     );
     // focus is on the first problem, so the operator is not left in the footer
@@ -395,16 +395,16 @@ export const FixingTheProblemsLetsTheSaveThrough: Story = {
     await userEvent.click(save);
     const name = dialog.getByLabelText("Route name");
     const provider = dialog.getByLabelText("Target 1 provider");
-    await expect(await dialog.findByRole("alert")).toHaveTextContent("2 fields need attention");
+    await expect(await dialog.findByRole("status")).toHaveTextContent("2 fields need attention");
 
     await userEvent.type(name, "llama-3.1-8b");
     await waitFor(() => expect(name).not.toHaveAttribute("aria-invalid"));
     // one problem left, and the count follows it
-    await expect(dialog.getByRole("alert")).toHaveTextContent(
+    await expect(dialog.getByRole("status")).toHaveTextContent(
       "1 field needs attention before this route can be saved.",
     );
     await pickOption(provider, "vllm-cluster");
-    await waitFor(() => expect(dialog.queryByRole("alert")).not.toBeInTheDocument());
+    await waitFor(() => expect(dialog.queryByRole("status")).not.toBeInTheDocument());
     await expect(provider).not.toHaveAttribute("aria-invalid");
     await expect(dialog.queryByText(/Pick a provider for every target/)).not.toBeInTheDocument();
 
@@ -429,7 +429,7 @@ export const RemovingTheLastTargetSaysATargetIsNeeded: Story = {
     await expect(dialog.getAllByText(/at least one target/)).toHaveLength(1);
     // the provider error was about the line that is gone
     await expect(dialog.queryByText(/Pick a provider for every target/)).not.toBeInTheDocument();
-    await expect(dialog.queryByRole("alert")).not.toBeInTheDocument();
+    await expect(dialog.getAllByRole("alert")).toHaveLength(1);
     // adding one back clears it, and the new line starts on no provider too
     await userEvent.click(addTarget);
     await expect(await dialog.findByLabelText("Target 1 provider")).toHaveValue("");
@@ -543,7 +543,7 @@ export const AddOnAPhoneInRussian: Story = {
     await expect(save).toBeEnabled();
     await userEvent.click(save);
     // two problems, in the plural form `ru` gives two
-    const summary = await dialog.findByRole("alert");
+    const summary = await dialog.findByRole("status");
     await expect(summary).toHaveTextContent(
       ru.modelSheet.errors.summary_few.replace("{{count}}", "2"),
     );
@@ -683,7 +683,7 @@ export const NameConflict: Story = {
     await expect(dialog.getAllByText(/already exists/)).toHaveLength(1);
 
     await userEvent.click(dialog.getByRole("button", { name: "Add route" }));
-    await expect(await dialog.findByRole("alert")).toHaveTextContent(
+    await expect(await dialog.findByRole("status")).toHaveTextContent(
       "1 field needs attention before this route can be saved.",
     );
     await waitFor(() => expect(name).toHaveFocus());
@@ -1715,7 +1715,7 @@ export const RefusesAnInvalidCacheWriteRate: Story = {
     await waitFor(() => expect(field).toHaveAttribute("aria-invalid", "true"));
     await waitFor(() => expect(field).toHaveFocus());
     await expect(field).toHaveAccessibleDescription(/Enter a cache-write rate of 0 or more/);
-    await expect(dialog.getByRole("alert")).toHaveTextContent(
+    await expect(dialog.getByRole("status")).toHaveTextContent(
       "1 field needs attention before this route can be saved.",
     );
     calls.expectNotSent("PUT", "/api/v1/model-prices");
@@ -1842,7 +1842,7 @@ export const RefusesAnInvalidOneHourCacheWriteRate: Story = {
     await waitFor(() => expect(field).toHaveFocus());
     await expect(field).toHaveAccessibleDescription(/Enter a 1 hour cache-write rate of 0 or more/);
     await expect(dialog.getByLabelText(WRITE_LABEL)).not.toHaveAttribute("aria-invalid");
-    await expect(dialog.getByRole("alert")).toHaveTextContent(
+    await expect(dialog.getByRole("status")).toHaveTextContent(
       "1 field needs attention before this route can be saved.",
     );
     calls.expectNotSent("PUT", "/api/v1/model-prices");

@@ -77,8 +77,8 @@ import {
 } from "@/lib/api";
 import { useFormat } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
-import { describeError } from "@/lib/error-copy";
-import { errorDetail, useToast } from "@/lib/toast";
+import { describeError, errorText } from "@/lib/error-copy";
+import { useToast } from "@/lib/toast";
 import { useScreenReady } from "@/lib/ux-react";
 
 const KEYS_QUERY_KEY = ["virtual-keys"];
@@ -131,7 +131,7 @@ export default function Keys() {
     toast.push({
       tone: "error",
       title: t("toast.saveFailed", { what: t("errors.resources.virtualKeys") }),
-      detail: errorDetail(error),
+      detail: errorText(error, t),
     });
 
   const toggleDisabled = useMutation({
@@ -483,7 +483,7 @@ export default function Keys() {
               toast.push({
                 tone: "error",
                 title: t("toast.deleteFailed", { what: name }),
-                detail: errorDetail(error),
+                detail: errorText(error, t),
               }),
           });
         }}
@@ -701,7 +701,7 @@ function EditKeyDialog({
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: name }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       });
     },
   });

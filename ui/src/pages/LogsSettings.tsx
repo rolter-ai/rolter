@@ -6,18 +6,19 @@ import { useTranslation } from "react-i18next";
 import { superadminOnly } from "@/components/ForbiddenScreen";
 import { LoadError } from "@/components/LoadError";
 import { PanelSkeleton } from "@/components/LoadingState";
-import { Button } from "@/components/ui/button";
-import { describedBy, FieldError } from "@/components/ui/field-error";
+import { FieldError } from "@/components/ui/field-error";
 import { Input } from "@/components/ui/input";
+import { SaveBar } from "@/components/ui/save-bar";
 import { SettingsPanel } from "@/components/ui/settings-panel";
 import { Switch } from "@/components/ui/switch";
 import { SwitchRow } from "@/components/ui/switch-row";
 import { Textarea } from "@/components/ui/textarea";
 import { fetchLoggingSettings, updateLoggingSettings, type LoggingSettingsDto } from "@/lib/api";
 import { useFormat } from "@/lib/i18n/format";
-import { serverFieldError } from "@/lib/field-errors";
+import { errorText } from "@/lib/error-copy";
 import { parseSamplingPercent, sampleShare, samplingPercentText } from "@/lib/sampling";
-import { errorDetail, useToast } from "@/lib/toast";
+import { useToast } from "@/lib/toast";
+import { translateErrors, useFieldErrors } from "@/lib/use-field-errors";
 import { useScreenReady } from "@/lib/ux-react";
 
 interface FormState {
@@ -134,7 +135,6 @@ function LogsSettingsScreen() {
   const sampleHintId = React.useId();
   const sampleWarningId = React.useId();
   const base = React.useId();
-  const [serverErrors, setServerErrors] = React.useState<FieldErrors>({});
   const ids: Record<FieldKey, string> = {
     samplePercent: `${base}-sample`,
     maxBytes: "logs-max-bytes",
@@ -146,6 +146,13 @@ function LogsSettingsScreen() {
       setForm(fromDto(settings.data));
     }
   }, [settings.data, form]);
+
+  const fields = useFieldErrors<FieldKey>({
+    order: FIELD_ORDER,
+    wire: WIRE_FIELDS,
+    idOf: (key) => ids[key],
+    local: form ? translateErrors(validate(form), t) : {},
+  });
 
   const save = useMutation({
     mutationFn: (f: FormState) =>
@@ -170,7 +177,7 @@ function LogsSettingsScreen() {
       // value it already had; the refetch is what makes the save stick (#1197)
       void queryClient.invalidateQueries({ queryKey: ["logging-settings"] });
       setForm(fromDto(dto));
-      setServerErrors({});
+      fields.clear();
       toast.push({
         tone: "success",
         title: t("toast.saved"),
@@ -178,16 +185,11 @@ function LogsSettingsScreen() {
       });
     },
     onError: (error) => {
-      const named = serverFieldError(error, WIRE_FIELDS);
-      if (named) {
-        setServerErrors({ [named.field]: named.message });
-        document.getElementById(ids[named.field])?.focus();
-        return;
-      }
+      if (fields.refuse(error)) return;
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: t("errors.resources.logsSettings") }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       });
     },
   });
@@ -219,36 +221,8 @@ function LogsSettingsScreen() {
   // an edit answers the server's complaint about that field
   const edit = (key: FieldKey, value: string) => {
     set({ [key]: value });
-    setServerErrors((e) => ({ ...e, [key]: undefined }));
+    fields.edit(key);
   };
-  const local = validate(form);
-  const errors: Record<FieldKey, string | undefined> = {
-    samplePercent: local.samplePercent ? t(local.samplePercent) : serverErrors.samplePercent,
-    maxBytes: local.maxBytes ? t(local.maxBytes) : serverErrors.maxBytes,
-    retentionDays: local.retentionDays ? t(local.retentionDays) : serverErrors.retentionDays,
-    payloadRetentionHours: local.payloadRetentionHours
-      ? t(local.payloadRetentionHours)
-      : serverErrors.payloadRetentionHours,
-  };
-  const invalid = FIELD_ORDER.filter((key) => errors[key]);
-  // Save stays pressable while the form is invalid so a press can say why: it
-  // moves focus to the first field at fault rather than doing nothing (#2096)
-  const submit = () => {
-    const first = invalid.find((key) => {
-      const node = document.getElementById(ids[key]);
-      return node !== null && !(node as HTMLInputElement).disabled;
-    });
-    if (invalid.length > 0) {
-      if (first) document.getElementById(ids[first])?.focus();
-      return;
-    }
-    save.mutate(form);
-  };
-  const errorId = (key: FieldKey) => `${ids[key]}-error`;
-  const invalidProps = (key: FieldKey) => ({
-    "aria-invalid": errors[key] ? (true as const) : undefined,
-    "aria-describedby": describedBy(!!errors[key] && errorId(key)),
-  });
   const capture = form.captureEnabled;
 
   return (
@@ -261,14 +235,8 @@ function LogsSettingsScreen() {
           <Input
             className="max-w-[120px]"
             inputMode="decimal"
-            id={ids.samplePercent}
             aria-label={t("pages.logsSettings.sampleRatePercent")}
-            aria-invalid={errors.samplePercent ? true : undefined}
-            aria-describedby={describedBy(
-              sampleHintId,
-              sampleWarningId,
-              !!errors.samplePercent && errorId("samplePercent"),
-            )}
+            {...fields.inputProps("samplePercent", sampleHintId, sampleWarningId)}
             value={form.samplePercent}
             onChange={(e) => edit("samplePercent", e.target.value)}
           />
@@ -276,7 +244,7 @@ function LogsSettingsScreen() {
             {t("pages.logsSettings.percentOfRequests")}
           </span>
         </div>
-        <FieldError id={errorId("samplePercent")} error={errors.samplePercent} />
+        <FieldError id={fields.errorId("samplePercent")} error={fields.errorOf("samplePercent")} />
         <SampledLogWarning id={sampleWarningId} rate={sampleRateOf(form.samplePercent)} />
       </SettingsPanel>
 
@@ -318,16 +286,15 @@ function LogsSettingsScreen() {
             {t("pages.logsSettings.maxBytes")}
           </label>
           <Input
-            id="logs-max-bytes"
             className="max-w-[180px]"
             inputMode="numeric"
             disabled={!capture}
             aria-label={t("pages.logsSettings.maxBytes")}
-            {...invalidProps("maxBytes")}
+            {...fields.inputProps("maxBytes")}
             value={form.maxBytes}
             onChange={(e) => edit("maxBytes", e.target.value)}
           />
-          <FieldError id={errorId("maxBytes")} error={errors.maxBytes} />
+          <FieldError id={fields.errorId("maxBytes")} error={fields.errorOf("maxBytes")} />
           <span className="text-[0.6875rem] text-[color:var(--text-subtle)]">
             {t("pages.logsSettings.maxBytesHint")}
           </span>
@@ -372,15 +339,17 @@ function LogsSettingsScreen() {
               {t("pages.logsSettings.retentionDays")}
             </label>
             <Input
-              id="logs-retention-days"
               className="max-w-[140px]"
               inputMode="numeric"
               aria-label={t("pages.logsSettings.retentionDaysAria")}
-              {...invalidProps("retentionDays")}
+              {...fields.inputProps("retentionDays")}
               value={form.retentionDays}
               onChange={(e) => edit("retentionDays", e.target.value)}
             />
-            <FieldError id={errorId("retentionDays")} error={errors.retentionDays} />
+            <FieldError
+              id={fields.errorId("retentionDays")}
+              error={fields.errorOf("retentionDays")}
+            />
           </div>
           <div className="flex flex-col gap-1.5">
             <label
@@ -390,17 +359,16 @@ function LogsSettingsScreen() {
               {t("pages.logsSettings.payloadRetentionHours")}
             </label>
             <Input
-              id="logs-payload-retention-hours"
               className="max-w-[140px]"
               inputMode="numeric"
               aria-label={t("pages.logsSettings.payloadRetentionHoursAria")}
-              {...invalidProps("payloadRetentionHours")}
+              {...fields.inputProps("payloadRetentionHours")}
               value={form.payloadRetentionHours}
               onChange={(e) => edit("payloadRetentionHours", e.target.value)}
             />
             <FieldError
-              id={errorId("payloadRetentionHours")}
-              error={errors.payloadRetentionHours}
+              id={fields.errorId("payloadRetentionHours")}
+              error={fields.errorOf("payloadRetentionHours")}
             />
           </div>
         </div>
@@ -415,21 +383,11 @@ function LogsSettingsScreen() {
         onChange={(v) => set({ uiEvents: v })}
       />
 
-      <div className="sticky bottom-0 flex items-center justify-end gap-3 border-t border-[color:var(--border-subtle)] bg-background py-3">
-        {invalid.length > 0 && (
-          <span role="status" className="text-xs text-[color:var(--status-danger-text)]">
-            {t("common.fieldsNeedAttention", { count: invalid.length })}
-          </span>
-        )}
-        <Button
-          disabled={save.isPending}
-          aria-disabled={invalid.length > 0 || undefined}
-          className={invalid.length > 0 ? "opacity-50" : undefined}
-          onClick={submit}
-        >
-          {save.isPending ? t("common.saving") : t("common.saveChanges")}
-        </Button>
-      </div>
+      <SaveBar
+        invalid={fields.invalid.length}
+        pending={save.isPending}
+        onSave={() => fields.submit(() => save.mutate(form))}
+      />
     </div>
   );
 }

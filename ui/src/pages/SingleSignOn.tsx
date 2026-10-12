@@ -50,6 +50,7 @@ import {
   type PublicUrl,
   type SsoProviderRow,
 } from "@/lib/api";
+import { errorText } from "@/lib/error-copy";
 import { useFormat } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
 import {
@@ -61,7 +62,7 @@ import {
 } from "@/lib/sso-lockout";
 import { SSO_SLUG_MAX, ssoSlugProblem, suggestSsoSlug } from "@/lib/sso-slug";
 import { roleLabel } from "@/lib/roles";
-import { errorDetail, useToast } from "@/lib/toast";
+import { useToast } from "@/lib/toast";
 import { usePublicUrl } from "@/lib/use-public-url";
 import { useScreenReady } from "@/lib/ux-react";
 
@@ -437,7 +438,7 @@ function SignInPolicyCard({
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: t("errors.resources.signInPolicy") }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       });
     },
   });
@@ -538,7 +539,7 @@ function SignInPolicyCard({
         {/* the control plane's own words, never a gloss on them */}
         {save.isError && (
           <p role="alert" className="text-xs text-[color:var(--status-danger-text)]">
-            {(save.error as Error).message}
+            {errorText(save.error, t)}
           </p>
         )}
         <GatedButton
@@ -961,7 +962,7 @@ function ProviderSheet({
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: draft.name.trim() }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       });
     },
   });
@@ -1021,7 +1022,7 @@ function ProviderSheet({
       title={editing ? t("pages.sso.edit.title") : t("pages.sso.create.title")}
       subtitle={editing ? t("pages.sso.edit.subtitle") : t("pages.sso.create.subtitle")}
       dirty={dirty}
-      errorMessage={save.isError ? (save.error as Error).message : undefined}
+      errorMessage={save.isError ? errorText(save.error, t) : undefined}
       saveLabel={editing ? t("pages.sso.edit.save") : t("pages.sso.create.save")}
       canSave={canSave}
       saving={save.isPending}
@@ -1188,7 +1189,7 @@ export default function SingleSignOn() {
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: provider.name }),
-        detail: errorDetail(refusal(error, t)),
+        detail: errorText(refusal(error, t), t),
       });
     },
   });
@@ -1385,7 +1386,7 @@ export default function SingleSignOn() {
               toast.push({
                 tone: "error",
                 title: t("toast.saveFailed", { what: name }),
-                detail: errorDetail(error),
+                detail: errorText(error, t),
               });
             },
           });
@@ -1438,7 +1439,7 @@ export default function SingleSignOn() {
               toast.push({
                 tone: "error",
                 title: t("toast.deleteFailed", { what }),
-                detail: errorDetail(refusal(error, t)),
+                detail: errorText(refusal(error, t), t),
               });
             },
           });

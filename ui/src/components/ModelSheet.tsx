@@ -55,12 +55,13 @@ import {
   type RouteRow,
   type RouteTargetRow,
 } from "@/lib/api";
+import { errorText } from "@/lib/error-copy";
 import { cacheWrite1hPatch, cacheWritePatch } from "@/lib/cache-write-rate";
 import { useErrorVisibility } from "@/lib/error-visibility";
 import { providersUsableFrom } from "@/lib/provider-scope";
 import type { RouteTargetView } from "@/lib/route-targets";
 import { usesWeights } from "@/lib/strategies";
-import { errorDetail, useToast } from "@/lib/toast";
+import { useToast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { useFormTelemetry } from "@/lib/ux-react";
 
@@ -1370,7 +1371,7 @@ export function ModelSheet({
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: publicName }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       });
     },
   });
@@ -2220,9 +2221,10 @@ export function ModelSheet({
           // one line, and the only place the count lives: each problem is
           // already said at its own field, so this does not say it again. the
           // primary action stays enabled — it is the press that brings the
-          // errors up, and focus has gone to the first of them (#2810)
+          // errors up, and focus has gone to the first of them (#2810). a
+          // status, not an alert: the fields announce themselves (#2734)
           <p
-            role="alert"
+            role="status"
             className="px-[22px] pt-2.5 text-xs leading-snug text-[color:var(--status-danger-text)]"
           >
             {t("modelSheet.errors.summary", { count: problems.length })}
@@ -2232,8 +2234,8 @@ export function ModelSheet({
           message={
             save.isError && !refusal
               ? advancedRejected
-                ? t("modelSheet.advancedRejected", { message: (save.error as Error).message })
-                : (save.error as Error).message
+                ? t("modelSheet.advancedRejected", { message: errorText(save.error, t) })
+                : errorText(save.error, t)
               : undefined
           }
         />

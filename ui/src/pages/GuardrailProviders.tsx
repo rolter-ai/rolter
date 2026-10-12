@@ -51,8 +51,9 @@ import {
   type Enforcement,
   type ProviderStatus,
 } from "@/lib/guardrail-enforcement";
+import { errorText } from "@/lib/error-copy";
 import { useFormat } from "@/lib/i18n/format";
-import { errorDetail, useToast } from "@/lib/toast";
+import { useToast } from "@/lib/toast";
 import { useScreenReady } from "@/lib/ux-react";
 
 // the shape of an evaluation URL, shown as a placeholder and never as a value:
@@ -124,7 +125,7 @@ function GuardrailProvidersScreen() {
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: body.name }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       });
     },
   });
@@ -337,7 +338,7 @@ function GuardrailProvidersScreen() {
               toast.push({
                 tone: "error",
                 title: t("toast.deleteFailed", { what }),
-                detail: errorDetail(error),
+                detail: errorText(error, t),
               });
             },
           });
@@ -350,7 +351,7 @@ function GuardrailProvidersScreen() {
         initial={editing ?? null}
         active={active}
         pending={save.isPending}
-        error={save.isError ? (save.error as Error).message : null}
+        error={save.isError ? errorText(save.error, t) : null}
         onClose={() => setEditing(undefined)}
         onSave={requestSave}
       />

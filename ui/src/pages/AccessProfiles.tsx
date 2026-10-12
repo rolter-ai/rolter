@@ -41,9 +41,10 @@ import {
   type AccessProfileRow,
   type CustomRoleRow,
 } from "@/lib/api";
+import { errorText } from "@/lib/error-copy";
 import { useOptionalAuth } from "@/lib/auth";
 import { useScope } from "@/lib/scope";
-import { errorDetail, useToast } from "@/lib/toast";
+import { useToast } from "@/lib/toast";
 import { useScreenReady } from "@/lib/ux-react";
 
 /// One profile card, with everything the profile actually carries.
@@ -402,7 +403,7 @@ export default function AccessProfiles() {
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: draft.name.trim() }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       }),
   });
 
@@ -417,7 +418,7 @@ export default function AccessProfiles() {
       toast.push({
         tone: "error",
         title: t("toast.deleteFailed", { what: profile.name }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       }),
   });
 
@@ -461,7 +462,7 @@ export default function AccessProfiles() {
       toast.push({
         tone: "error",
         title: t("pages.accessProfiles.assign.removeFailed", { name: unassignTarget?.name }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       }),
   });
 
@@ -602,7 +603,7 @@ export default function AccessProfiles() {
           orgId={orgId}
           roles={roles.data ?? []}
           saving={save.isPending}
-          errorMessage={save.error ? errorDetail(save.error) : undefined}
+          errorMessage={save.error ? errorText(save.error, t) : undefined}
           onChange={setDraft}
           onClose={() => setDraft(null)}
           onSave={() => save.mutate(draft)}

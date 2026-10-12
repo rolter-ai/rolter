@@ -24,7 +24,8 @@ import {
   type SavedViewSurface,
   type SavedViewUnavailable,
 } from "@/lib/api";
-import { errorDetail, useToast } from "@/lib/toast";
+import { errorText } from "@/lib/error-copy";
+import { useToast } from "@/lib/toast";
 
 // private filter presets for one screen (#1825, #2452). the control plane keeps
 // them per account, so this is the same list on any browser the account signs
@@ -116,7 +117,7 @@ export function SavedViews({ surface, current, onApply }: SavedViewsProps) {
       ? t("savedViews.errors.conflict")
       : t("savedViews.errors.failed");
   const refusalDetail = (error: unknown) =>
-    error instanceof ApiError && error.status === 409 ? undefined : errorDetail(error);
+    error instanceof ApiError && error.status === 409 ? undefined : errorText(error, t);
 
   const droppedText = dropped
     .map(([filter, count]) => t(`savedViews.dropped.${filter}`, { count }))

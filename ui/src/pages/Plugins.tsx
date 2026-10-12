@@ -33,9 +33,10 @@ import {
   type PluginInstanceRow,
 } from "@/lib/api";
 import { useErrorVisibility } from "@/lib/error-visibility";
-import { serverFieldError } from "@/lib/field-errors";
+import { errorText } from "@/lib/error-copy";
 import { useScope } from "@/lib/scope";
-import { errorDetail, useToast } from "@/lib/toast";
+import { useToast } from "@/lib/toast";
+import { useFieldErrors } from "@/lib/use-field-errors";
 import { useScreenReady } from "@/lib/ux-react";
 
 type Stage = PluginInstanceRow["stage"];
@@ -128,7 +129,7 @@ export default function Plugins() {
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: plugin.name }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       });
     },
   });
@@ -246,7 +247,7 @@ export default function Plugins() {
               toast.push({
                 tone: "error",
                 title: t("toast.deleteFailed", { what }),
-                detail: errorDetail(error),
+                detail: errorText(error, t),
               });
             },
           });
@@ -470,7 +471,26 @@ function PluginDialog({
   // the rules are checked from the first press on Save onwards, so a fresh
   // install is not opened already shouting about the name it has not been given
   const visibility = useErrorVisibility<PluginField>();
-  const [serverErrors, setServerErrors] = React.useState<Partial<Record<PluginField, string>>>({});
+  // every failing field is reported at once, each under its own control
+  const local: Partial<Record<PluginField, string>> = {};
+  if (!form.name.trim()) local.name = t("pages.plugins.errorName");
+  if (!/^https?:\/\//.test(form.endpoint)) local.endpoint = t("pages.plugins.errorEndpoint");
+  let config: unknown;
+  try {
+    config = JSON.parse(form.config);
+    if (!config || Array.isArray(config) || typeof config !== "object") {
+      local.config = t("pages.plugins.errorConfigObject");
+    }
+  } catch {
+    local.config = t("pages.plugins.errorConfigJson");
+  }
+  const fields = useFieldErrors<PluginField>({
+    order: PLUGIN_FIELD_ORDER,
+    wire: PLUGIN_WIRE_FIELDS,
+    idOf: pluginFieldId,
+    local,
+    shows: visibility.shows,
+  });
   // shown before saving, and read out with both pickers it depends on
   const streamingNoteId = React.useId();
   const streaming = form.stage === "post_response" ? form.failure_mode : undefined;
@@ -492,16 +512,11 @@ function PluginDialog({
       onDone();
     },
     onError: (error, body) => {
-      const named = serverFieldError(error, PLUGIN_WIRE_FIELDS);
-      if (named) {
-        setServerErrors({ [named.field]: named.message });
-        document.getElementById(pluginFieldId(named.field))?.focus();
-        return;
-      }
+      if (fields.refuse(error)) return;
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: body.name }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       });
     },
   });
@@ -514,50 +529,28 @@ function PluginDialog({
     setForm((value) => ({ ...value, ...patch }));
     // the config is checked as it is typed rather than only on Install
     if ("config" in patch) visibility.touch("config");
-    // an edit answers the server's complaint about that field
-    setServerErrors((errors) => {
-      const next = { ...errors };
-      for (const key of Object.keys(patch)) delete next[key as PluginField];
-      return next;
-    });
+    fields.edit(...(Object.keys(patch) as PluginField[]));
   };
-  // every failing field is reported at once, each under its own control
-  const local: Partial<Record<PluginField, string>> = {};
-  if (!form.name.trim()) local.name = t("pages.plugins.errorName");
-  if (!/^https?:\/\//.test(form.endpoint)) local.endpoint = t("pages.plugins.errorEndpoint");
-  let config: unknown;
-  try {
-    config = JSON.parse(form.config);
-    if (!config || Array.isArray(config) || typeof config !== "object") {
-      local.config = t("pages.plugins.errorConfigObject");
-    }
-  } catch {
-    local.config = t("pages.plugins.errorConfigJson");
-  }
-  const errorOf = (field: PluginField) =>
-    (visibility.shows(field) ? local[field] : undefined) ?? serverErrors[field];
   const save = () => {
     visibility.attempt();
-    const first = PLUGIN_FIELD_ORDER.find((field) => local[field]);
-    if (first) {
-      // moved to the first field at fault, so the press says why it did nothing
-      document.getElementById(pluginFieldId(first))?.focus();
-      return;
-    }
-    mutation.mutate({
-      project_id: form.project_id || null,
-      name: form.name,
-      ...(initial ? { slug: initial.slug } : form.slug ? { slug: form.slug } : {}),
-      description: form.description,
-      kind: "webhook",
-      stage: form.stage,
-      enabled: form.enabled,
-      position: Number(position),
-      failure_mode: form.failure_mode,
-      endpoint: form.endpoint,
-      secret_env: form.secret_env || null,
-      config: config as Record<string, unknown>,
-    });
+    // a press on an invalid form moves focus to the first field at fault, so
+    // it says why it did nothing
+    fields.submit(() =>
+      mutation.mutate({
+        project_id: form.project_id || null,
+        name: form.name,
+        ...(initial ? { slug: initial.slug } : form.slug ? { slug: form.slug } : {}),
+        description: form.description,
+        kind: "webhook",
+        stage: form.stage,
+        enabled: form.enabled,
+        position: Number(position),
+        failure_mode: form.failure_mode,
+        endpoint: form.endpoint,
+        secret_env: form.secret_env || null,
+        config: config as Record<string, unknown>,
+      }),
+    );
   };
   return (
     <Dialog open={open} onOpenChange={(value) => !value && onClose()}>
@@ -569,7 +562,11 @@ function PluginDialog({
       </DialogHeader>
       <DialogBody className="space-y-4">
         <div className="grid gap-3 sm:grid-cols-2">
-          <Field label={t("pages.plugins.fieldName")} htmlFor="plugin-name" error={errorOf("name")}>
+          <Field
+            label={t("pages.plugins.fieldName")}
+            htmlFor="plugin-name"
+            error={fields.errorOf("name")}
+          >
             <Input
               id="plugin-name"
               value={form.name}
@@ -579,7 +576,7 @@ function PluginDialog({
           <Field
             label={t("pages.plugins.fieldSlug")}
             htmlFor="plugin-slug"
-            error={errorOf("slug")}
+            error={fields.errorOf("slug")}
             hint={initial ? t("pages.plugins.hintSlugLocked") : t("pages.plugins.hintSlugDerived")}
           >
             <Input
@@ -622,7 +619,7 @@ function PluginDialog({
         <Field
           label={t("pages.plugins.fieldEndpoint")}
           htmlFor="plugin-endpoint"
-          error={errorOf("endpoint")}
+          error={fields.errorOf("endpoint")}
         >
           <Input
             id="plugin-endpoint"
@@ -636,7 +633,7 @@ function PluginDialog({
           <Field
             label={t("pages.plugins.fieldPosition")}
             htmlFor="plugin-position"
-            error={errorOf("position")}
+            error={fields.errorOf("position")}
             hint={t("pages.plugins.hintPosition")}
           >
             <Input
@@ -664,7 +661,7 @@ function PluginDialog({
         <Field
           label={t("pages.plugins.fieldSecret")}
           htmlFor="plugin-secret"
-          error={errorOf("secret_env")}
+          error={fields.errorOf("secret_env")}
           hint={t("pages.plugins.hintSecret")}
         >
           <Input
@@ -678,7 +675,7 @@ function PluginDialog({
         <Field
           label={t("pages.plugins.fieldConfig")}
           htmlFor="plugin-config"
-          error={errorOf("config")}
+          error={fields.errorOf("config")}
           hint={t("pages.plugins.hintConfig")}
         >
           <Textarea
@@ -696,9 +693,9 @@ function PluginDialog({
           onChange={(enabled) => set({ enabled })}
         />
         {/* a refusal that names no field still needs saying in the dialog */}
-        {mutation.isError && !serverFieldError(mutation.error, PLUGIN_WIRE_FIELDS) && (
+        {mutation.isError && !fields.names(mutation.error) && (
           <p role="alert" className="text-xs text-[color:var(--status-danger-text)]">
-            {(mutation.error as Error).message}
+            {errorText(mutation.error, t)}
           </p>
         )}
       </DialogBody>

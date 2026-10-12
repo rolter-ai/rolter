@@ -73,6 +73,7 @@ import {
   type McpToolRef,
   type McpTransportOverridesPatch,
 } from "@/lib/api";
+import { errorText } from "@/lib/error-copy";
 import { useOptionalAuth } from "@/lib/auth";
 import { useCan } from "@/lib/can";
 import { useFormat } from "@/lib/i18n/format";
@@ -115,7 +116,7 @@ import {
 import { useScope } from "@/lib/scope";
 import { slugify } from "@/lib/slug";
 import { useMcpConnect } from "@/lib/use-mcp-connect";
-import { errorDetail, useToast } from "@/lib/toast";
+import { useToast } from "@/lib/toast";
 import { useScreenReady } from "@/lib/ux-react";
 
 const TRANSPORTS = ["streamable_http", "sse", "websocket"];
@@ -656,7 +657,7 @@ export function McpCatalog() {
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: draft.input.name }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       }),
   });
   const remove = useMutation({
@@ -670,7 +671,7 @@ export function McpCatalog() {
       toast.push({
         tone: "error",
         title: t("toast.deleteFailed", { what: server.name }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       }),
   });
   const toggle = useMutation({
@@ -691,7 +692,7 @@ export function McpCatalog() {
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: server.name }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       }),
   });
   // only the card whose request is in flight locks; the others stay live
@@ -1221,7 +1222,7 @@ function ServerSheet({
         subtitle={t("pages.mcpCatalog.dialog.lead")}
         dirty={dirty}
         errorMessage={
-          error ? (kek ? t("pages.mcpCatalog.auth.kekTitle") : error.message) : undefined
+          error ? (kek ? t("pages.mcpCatalog.auth.kekTitle") : errorText(error, t)) : undefined
         }
         errorHint={kek ? t("pages.mcpCatalog.auth.kekBody") : undefined}
         errorDetail={kek ? error?.message : undefined}
@@ -1426,7 +1427,7 @@ export function McpLibrary() {
       toast.push({
         tone: "error",
         title: t("pages.mcpLibrary.installFailed", { name: item.name }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       }),
   });
   if (!orgId)
@@ -1822,7 +1823,7 @@ function ToolGroupDialog({
         </fieldset>
         {error && (
           <p role="alert" className="text-sm text-[color:var(--danger-text)]">
-            {error.message}
+            {errorText(error, t)}
           </p>
         )}
       </DialogBody>
@@ -1928,7 +1929,7 @@ function McpSettingsForm({
       toast.push({
         tone: "error",
         title: t("pages.mcpSettings.saveFailed"),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       }),
   });
   return (
@@ -2021,7 +2022,7 @@ function McpSettingsForm({
       </div>
       {save.error && (
         <p role="alert" className="text-sm text-[color:var(--danger-text)]">
-          {save.error.message}
+          {errorText(save.error, t)}
         </p>
       )}
       <div className="flex justify-end">
