@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Gavel, History, Loader2, Megaphone, Pencil, Play, Plus } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
@@ -53,8 +53,10 @@ import {
   type AlertChannelRow,
   type AlertComparison,
   type AlertNoDataPolicy,
+  type AlertNotificationRow,
   type AlertRuleRow,
 } from "@/lib/api";
+import { deliveryDetail, evaluateErrorText, isNoDataRow, ruleErrorText } from "@/lib/alert-codes";
 import {
   defaultThresholdInput,
   formatSignalValue,
@@ -518,20 +520,34 @@ function AlertRulesScreen() {
       // alert nobody received, which a green "evaluated" toast would hide
       const n = result.notification;
       // the state reads mid-sentence, so it is lowercased in the locale's own rules
+      const rule = rules.data?.find((r) => r.id === id);
       const vars = {
         state: n ? stateLabel(n.state, t).toLocaleLowerCase(fmt.locale) : undefined,
-        detail: n?.detail ?? "—",
+        detail: (n && deliveryDetail(n, t)) ?? "—",
       };
+      // what the rule read against what it was set to, in the signal's unit
+      const measured =
+        n && rule && n.value != null && n.threshold != null
+          ? t("pages.alerting.rules.reportedReading", {
+              value: reading(rule, n.value),
+              threshold: reading(rule, n.threshold),
+            })
+          : "";
       toast.push({
         tone: n?.delivery_status === "failed" ? "error" : "success",
         title: t("pages.alerting.rules.evaluated", { name: ruleName(id) }),
         detail: !n
           ? undefined
-          : n.delivery_status === "delivered"
-            ? t("pages.alerting.rules.reportedDelivered", vars)
-            : n.delivery_status === "failed"
-              ? t("pages.alerting.rules.reportedFailed", vars)
-              : t("pages.alerting.rules.reportedSkipped", vars),
+          : [
+              n.delivery_status === "delivered"
+                ? t("pages.alerting.rules.reportedDelivered", vars)
+                : n.delivery_status === "failed"
+                  ? t("pages.alerting.rules.reportedFailed", vars)
+                  : t("pages.alerting.rules.reportedSkipped", vars),
+              measured,
+            ]
+              .filter(Boolean)
+              .join(" "),
       });
     },
     onError: (error, id) => {
@@ -542,7 +558,7 @@ function AlertRulesScreen() {
       toast.push({
         tone: "error",
         title: t("pages.alerting.rules.evaluateFailed", { name: ruleName(id) }),
-        detail: errorDetail(error),
+        detail: evaluateErrorText(error, t, errorDetail),
       });
     },
   });
@@ -695,7 +711,7 @@ function AlertRulesScreen() {
               </dl>
               {r.last_error && (
                 <p className="text-xs" style={{ color: STATE_TONE.error.text }}>
-                  {r.last_error}
+                  {ruleErrorText(r, t)}
                 </p>
               )}
               <div className="flex items-center gap-2 border-t border-[color:var(--border-subtle)] pt-3">
@@ -1102,29 +1118,39 @@ function RuleSheet({
 // ---------------------------------------------------------------------------
 // history: every state change a rule recorded, with what became of its delivery
 
-// how many of the newest rows the screen asks for. the endpoint clamps to 500
-// and has no cursor, so this is also the most the screen can ever show: when a
-// read comes back this full, older rows exist that nothing here reaches
-const HISTORY_LIMIT = 200;
+// rows per page. the endpoint clamps to 500 and pages by keyset: a page this
+// full may be followed by older rows, a shorter one is the end (#3049)
+const HISTORY_PAGE = 100;
 
 // state and delivery lead because they are what the table is for, and because
 // the list scrolls sideways on a phone: a later column sits off the right edge
 // at 375px, so these two are the ones that have to fit in the first screenful
-const HISTORY_GRID = "100px 130px 150px 1.4fr 2fr";
+const HISTORY_GRID = "100px 130px 150px 1.4fr 150px 2fr";
 
 function AlertHistoryScreen() {
   const { t } = useTranslation();
   const fmt = useFormat();
-  // the rule filter is sent to the API, so it reaches that rule's own newest
-  // rows instead of filtering what the newest 200 of every rule happen to hold.
-  // the endpoint has no state or delivery filter, so those two narrow the rows
-  // already read
+  // `spend_velocity` is spend in the settlement currency, not in dollars
+  const currency = useCurrencyCode();
+  // all three filters are sent to the API, so each reaches its own newest rows
+  // instead of narrowing whatever page happens to be loaded
   const [ruleId, setRuleId] = React.useState("");
   const [state, setState] = React.useState("");
   const [delivery, setDelivery] = React.useState("");
-  const history = useQuery({
-    queryKey: ["alert-history", ruleId],
-    queryFn: () => fetchAlertHistory(HISTORY_LIMIT, ruleId || undefined),
+  const history = useInfiniteQuery({
+    queryKey: ["alert-history", ruleId, state, delivery],
+    initialPageParam: undefined as string | undefined,
+    queryFn: ({ pageParam }) =>
+      fetchAlertHistory(HISTORY_PAGE, ruleId || undefined, {
+        state,
+        delivery_status: delivery,
+        before: pageParam,
+      }),
+    // the cursor is the last row's `<sent_at>,<id>`
+    getNextPageParam: (page) => {
+      const last = page[page.length - 1];
+      return page.length >= HISTORY_PAGE && last ? `${last.sent_at},${last.id}` : undefined;
+    },
     retry: false,
   });
 
@@ -1133,12 +1159,30 @@ function AlertHistoryScreen() {
   const rules = useQuery({ queryKey: ["alert-rules"], queryFn: fetchAlertRules, retry: false });
   const ruleName = (id: string) => rules.data?.find((r) => r.id === id)?.name ?? id.slice(0, 8);
 
-  const rows = (history.data ?? []).filter(
-    (n) =>
-      (state === "" || n.state === state) && (delivery === "" || n.delivery_status === delivery),
-  );
+  const rows = history.data?.pages.flat() ?? [];
   const filtering = ruleId !== "" || state !== "" || delivery !== "";
-  const capped = history.data !== undefined && history.data.length >= HISTORY_LIMIT;
+  // the reading is in the signal's unit, so it needs the rule it was taken for;
+  // a rule that is not loaded yet has no unit to print it in
+  const readingCell = (n: AlertNotificationRow) => {
+    const rule = rules.data?.find((r) => r.id === n.rule_id);
+    if (n.value == null || !rule) {
+      return isNoDataRow(n) ? t("pages.alerting.rules.noDataReading") : "—";
+    }
+    const show = (value: number) =>
+      formatSignalValue(rule.signal, value, { fmt, t, currency, windowSecs: rule.window_secs });
+    return (
+      <>
+        <span>{show(n.value)}</span>
+        {n.threshold != null && (
+          <span className="text-muted-foreground">
+            {t(`pages.alerting.rules.reading.${rule.comparison === "below" ? "below" : "above"}`, {
+              value: show(n.threshold),
+            })}
+          </span>
+        )}
+      </>
+    );
+  };
   const clearFilters = () => {
     setRuleId("");
     setState("");
@@ -1149,7 +1193,14 @@ function AlertHistoryScreen() {
     <PageBody>
       <Toolbar>
         <ListSummary data={history.data}>
-          {() => t("pages.alerting.historySummary", { count: rows.length })}
+          {() =>
+            t(
+              history.hasNextPage
+                ? "pages.alerting.historySummaryMore"
+                : "pages.alerting.historySummary",
+              { count: rows.length },
+            )
+          }
         </ListSummary>
         {/* half a row each on a phone, so the two short pickers share a line
             under the rule picker instead of each taking its own */}
@@ -1192,16 +1243,11 @@ function AlertHistoryScreen() {
         <LoadError
           error={history.error}
           resource={t("errors.resources.alertHistory")}
-          onRetry={() => void history.refetch()}
+          onRetry={() =>
+            void (history.isFetchNextPageError ? history.fetchNextPage() : history.refetch())
+          }
           target="alert-history"
         />
-      )}
-      {capped && (
-        <p className="text-xs text-muted-foreground">
-          {ruleId === ""
-            ? t("pages.alerting.history.cappedAll", { limit: fmt.number(HISTORY_LIMIT) })
-            : t("pages.alerting.history.cappedRule", { limit: fmt.number(HISTORY_LIMIT) })}
-        </p>
       )}
       <ListTable label={t("screens.alerting-history.title")}>
         <ListHeader grid={HISTORY_GRID}>
@@ -1209,6 +1255,7 @@ function AlertHistoryScreen() {
           <ListHeaderCell>{t("pages.alerting.history.colDelivery")}</ListHeaderCell>
           <ListHeaderCell>{t("pages.alerting.history.colSent")}</ListHeaderCell>
           <ListHeaderCell>{t("pages.alerting.history.colRule")}</ListHeaderCell>
+          <ListHeaderCell>{t("pages.alerting.history.colReading")}</ListHeaderCell>
           <ListHeaderCell>{t("pages.alerting.history.colDetail")}</ListHeaderCell>
         </ListHeader>
         <ListLoadingRow read={history}>
@@ -1236,6 +1283,10 @@ function AlertHistoryScreen() {
               <ListCell className="min-w-0 break-words font-mono text-xs">
                 {ruleName(n.rule_id)}
               </ListCell>
+              {/* what the rule read, and the threshold it was held against */}
+              <ListCell className="flex min-w-0 flex-col break-words font-mono text-xs">
+                {readingCell(n)}
+              </ListCell>
               {/* the diagnosis of a failed delivery wraps rather than truncates:
                   `channel secret could not be unsealed; check ROLTER_KEK` cut to
                   `channel secret could not be…` names the fault and hides what to
@@ -1243,7 +1294,7 @@ function AlertHistoryScreen() {
                   reaches. `min-w-0` lets a long unbroken token break inside its
                   column instead of widening it (#2335) */}
               <ListCell className="min-w-0 break-words text-xs text-muted-foreground">
-                {n.detail ?? "—"}
+                {deliveryDetail(n, t) ?? "—"}
               </ListCell>
             </ListRow>
           );
@@ -1276,6 +1327,18 @@ function AlertHistoryScreen() {
           />
         </ListEmptyRow>
       </ListTable>
+      {history.hasNextPage && (
+        <div className="flex justify-center">
+          <Button
+            variant="outline"
+            disabled={history.isFetchingNextPage}
+            onClick={() => void history.fetchNextPage()}
+          >
+            {history.isFetchingNextPage && <Loader2 className="h-4 w-4 motion-safe:animate-spin" />}
+            {t("pages.alerting.history.loadOlder")}
+          </Button>
+        </div>
+      )}
     </PageBody>
   );
 }
