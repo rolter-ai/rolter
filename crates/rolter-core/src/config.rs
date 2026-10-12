@@ -2772,8 +2772,12 @@ pub fn request_id_header_problem(name: &str) -> Option<String> {
 /// Settings screen sends exactly the headers it sent before this existed.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct ClientConfig {
-    /// base URL shown to clients; `None` means "the origin serving the
-    /// dashboard". Advisory only — the gateway never reads it
+    /// base URL shown to clients; `None` means none is saved, and the
+    /// dashboard then shows no connection snippet rather than falling back to
+    /// its own `/gw` proxy, which needs a dashboard session. Advisory only: the
+    /// gateway never reads it. Every signed-in caller can read it through
+    /// `gateway_base_url` on `GET /api/v1/auth/me`, though the rest of client
+    /// settings stays superadmin-only
     #[serde(default)]
     pub public_base_url: Option<String>,
     /// inbound client headers forwarded verbatim to the upstream provider,

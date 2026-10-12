@@ -769,7 +769,9 @@ fn operations() -> Vec<Op> {
                 "/api/v1/auth/me",
                 "authMe",
                 "The account behind the current session, with `has_local_password` \
-                 (false for an account that signs in through single sign-on only)",
+                 (false for an account that signs in through single sign-on only) and \
+                 `gateway_base_url`, the saved public base URL of the gateway (null when \
+                 none is saved), readable by every signed-in caller",
             ),
             Op::post(
                 "/api/v1/auth/password",
