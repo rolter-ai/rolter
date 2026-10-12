@@ -23,8 +23,17 @@ import {
   type Recorder,
   expectEmptyState,
   expectForbidden,
+  expectAnalyticsUnavailable,
+  expectNoFalseEmpty,
+  openOptions,
+  stubClipboard,
 } from "./story-harness";
+import { atMobile } from "@/lib/story-viewport";
+import en from "@/lib/i18n/locales/en.json";
+import ru from "@/lib/i18n/locales/ru.json";
 import type {
+  AnalyticsByModelRow,
+  ClusterNodeRow,
   LabelRow,
   ProviderRow,
   RouteRow,
@@ -74,7 +83,7 @@ const ROUTES: RouteRow[] = [
     id: "route-2",
     project_id: "project-1",
     model: "claude-sonnet",
-    strategy: "least_load",
+    strategy: "fastest",
     enabled: false,
     params: {},
     param_policy: {},
@@ -136,10 +145,40 @@ const CACHE_AWARE: RouteRow = {
   created_at: "2026-05-03T00:00:00Z",
 };
 
+const trafficRow = (model: string, requests: number, errors: number): AnalyticsByModelRow => ({
+  model,
+  requests,
+  tokens: requests * 900,
+  cost_usd: requests * 0.004,
+  unpriced_requests: 0,
+  errors,
+  p50_latency_ms: 420,
+  p95_latency_ms: 1900,
+});
+
+// gpt-4o took traffic over the last day; claude-sonnet and qwen-coder took none
+const TRAFFIC: AnalyticsByModelRow[] = [trafficRow("gpt-4o", 1240, 31)];
+
+const node = (id: string, over: Partial<ClusterNodeRow> = {}): ClusterNodeRow => ({
+  id,
+  role: "gateway",
+  build_version: "0.9.0",
+  config_version: 42,
+  desired_state: "active",
+  state_changed_at: "2026-10-01T00:00:00Z",
+  first_seen_at: "2026-09-01T00:00:00Z",
+  last_seen_at: "2026-10-01T00:00:00Z",
+  live: true,
+  converged: true,
+  ...over,
+});
+
 const answer = (routes: RouteRow[], status = 200, labels: LabelRow[] = []): FetchStub =>
   scoped(async (input) => {
     const url = String(input);
     if (url.includes("/providers")) return json(PROVIDERS);
+    if (url.includes("/analytics/by-model")) return json({ data: TRAFFIC });
+    if (url.includes("/cluster/nodes")) return json([node("gw-1"), node("gw-2")]);
     // the label list is its own endpoint; without this branch it would be
     // answered with the route list and the chips would be nonsense (#1329)
     if (url.includes("/labels")) {
@@ -178,6 +217,258 @@ export const Loaded: Story = {
     await expect(canvas.getByText("disabled")).toBeInTheDocument();
     // the count arrives with the list it counts
     await expect(canvas.getByText(/^2 routes/)).toBeInTheDocument();
+    // a route is named verbatim and never in capitals (#2139)
+    await expect(canvas.getByText("weighted")).toBeVisible();
+    await expect(canvas.queryByText("WEIGHTED")).toBeNull();
+    // the target bars take the categorical tokens, not the ornament red
+    const fills = within(
+      await canvas.findByRole("list", { name: "Targets of gpt-4o" }),
+    ).getAllByTestId("target-share");
+    await expect(fills[0].firstElementChild?.getAttribute("style")).toContain("var(--chart-1)");
+    await expect(fills[1].firstElementChild?.getAttribute("style")).toContain("var(--chart-2)");
+  },
+};
+
+// ------------------------------------------- traffic, playground link, config (#2138)
+
+const card = async (canvas: ReturnType<typeof within>, model: string) =>
+  within((await canvas.findByText(model)).closest("div.flex-col") as HTMLElement);
+
+/**
+ * A route with traffic says how many requests it served over the last day and
+ * what share failed; one that took none says so in words, since the rollup
+ * answered. Each enabled route links the Playground with its model selected.
+ */
+export const RouteTraffic: Story = {
+  render: () => (
+    <Harness fetchStub={answer(ROUTES)}>
+      <RoutingRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const gpt = await card(canvas, "gpt-4o");
+    await expect(await gpt.findByTestId("route-traffic")).toHaveTextContent(
+      "1,240 requests in the last 24 h · 2.5% errors",
+    );
+    const claude = await card(canvas, "claude-sonnet");
+    await expect(await claude.findByTestId("route-traffic")).toHaveTextContent(
+      "No requests in the last 24 h",
+    );
+    const tryIt = gpt.getByRole("link", { name: "Try gpt-4o in the Playground" });
+    await expect(tryIt).toHaveAttribute("href", "/playground?model=gpt-4o");
+    // a disabled route is not served, so there is nothing to try
+    await expect(claude.queryByRole("link", { name: /Try claude-sonnet/ })).toBeNull();
+  },
+};
+
+/** The rollup still out: each card holds a skeleton, not a zero. */
+export const TrafficLoading: Story = {
+  render: () => (
+    <Harness
+      fetchStub={scoped(async (input, init) =>
+        String(input).includes("/analytics/by-model")
+          ? new Promise<Response>(() => {})
+          : answer(ROUTES)(input, init),
+      )}
+    >
+      <RoutingRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("gpt-4o")).toBeInTheDocument();
+    await expect((await canvas.findAllByTestId("route-traffic-loading")).length).toBe(2);
+    await expect(canvas.queryByTestId("route-traffic")).toBeNull();
+    await expect(canvas.queryByText(/No requests in the last/)).toBeNull();
+  },
+};
+
+/**
+ * A deployment without ClickHouse answers the rollup with a 503: the screen
+ * says so once, calmly, and no card claims "no requests" about traffic nobody
+ * could count.
+ */
+export const TrafficNeedsClickHouse: Story = {
+  render: () => (
+    <Harness
+      fetchStub={scoped(async (input, init) =>
+        String(input).includes("/analytics/by-model")
+          ? json({ error: { message: "analytics store not configured" } }, 503)
+          : answer(ROUTES)(input, init),
+      )}
+    >
+      <RoutingRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectAnalyticsUnavailable(
+      canvasElement,
+      en.pages.routing.noAnalytics.title,
+      "analytics store not configured",
+    );
+    await expect(canvas.queryAllByTestId("route-traffic")).toHaveLength(0);
+    await expect(canvas.queryByText(/No requests in the last/)).toBeNull();
+    // the cards still render, and the playground link does not need analytics
+    await expect(
+      canvas.getByRole("link", { name: "Try gpt-4o in the Playground" }),
+    ).toBeInTheDocument();
+  },
+};
+
+/** Any other failure of the rollup is stated once, in the control plane's words. */
+export const TrafficReadFails: Story = {
+  render: () => (
+    <Harness
+      fetchStub={scoped(async (input, init) =>
+        String(input).includes("/analytics/by-model")
+          ? json({ error: { message: "clickhouse: timeout" } }, 500)
+          : answer(ROUTES)(input, init),
+      )}
+    >
+      <RoutingRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const note = await canvas.findByTestId("traffic-unavailable");
+    await expect(note).toHaveTextContent(/Request counts are unavailable/);
+    await expect(note).toHaveTextContent(/clickhouse: timeout/);
+    await expect(canvas.queryAllByTestId("route-traffic")).toHaveLength(0);
+  },
+};
+
+/** Every live gateway on the latest config: the screen says so and links Cluster. */
+export const GatewaysCurrent: Story = {
+  render: () => (
+    <Harness fetchStub={answer(ROUTES)}>
+      <RoutingRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const note = await within(canvasElement).findByTestId("gateway-config");
+    await expect(note).toHaveTextContent("All 2 live gateways run the latest config.");
+    await expect(within(note).getByRole("link", { name: "Open Cluster" })).toHaveAttribute(
+      "href",
+      "/cluster",
+    );
+  },
+};
+
+/** A gateway that has not reached the latest config is counted, not hidden. */
+export const GatewayBehind: Story = {
+  render: () => (
+    <Harness
+      fetchStub={scoped(async (input, init) =>
+        String(input).includes("/cluster/nodes")
+          ? json([
+              node("gw-1"),
+              node("gw-2", { converged: false, config_version: 41 }),
+              // a drained, a dead and a control-plane node are not gateways to wait for
+              node("gw-3", { converged: false, desired_state: "draining" }),
+              node("gw-4", { converged: false, live: false }),
+              node("cp-1", { role: "control", converged: false }),
+            ])
+          : answer(ROUTES)(input, init),
+      )}
+    >
+      <RoutingRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const note = await within(canvasElement).findByTestId("gateway-config");
+    await expect(note).toHaveTextContent(
+      "1 of 2 live gateways has not picked up the latest config yet.",
+    );
+  },
+};
+
+/** No live gateway, or an inventory that cannot be read, says nothing. */
+export const NoGatewayNote: Story = {
+  render: () => (
+    <Harness
+      fetchStub={scoped(async (input, init) =>
+        String(input).includes("/cluster/nodes")
+          ? json({ error: { message: "forbidden" } }, 403)
+          : answer(ROUTES)(input, init),
+      )}
+    >
+      <RoutingRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("gpt-4o")).toBeInTheDocument();
+    await expect((await canvas.findAllByTestId("route-traffic")).length).toBeGreaterThan(0);
+    await expect(canvas.queryByTestId("gateway-config")).toBeNull();
+  },
+};
+
+/** The public model name copies in one click. */
+export const CopiesTheModelName: Story = {
+  beforeEach: () => {
+    copied = [];
+    return stubClipboard(async (value) => {
+      copied.push(value);
+    })();
+  },
+  render: () => (
+    <Harness fetchStub={answer(ROUTES)}>
+      <RoutingRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: /Copy model name.*gpt-4o/ }));
+    await waitFor(() => expect(copied).toEqual(["gpt-4o"]));
+  },
+};
+let copied: string[] = [];
+
+/**
+ * At 375 px in Russian the strategy and the labels wrap under the route name
+ * instead of squeezing it to an ellipsis (#2139).
+ */
+export const NarrowRussianKeepsTheNameWhole: Story = {
+  ...atMobile,
+  globals: { locale: "ru" },
+  render: () => (
+    <Harness fetchStub={answer(ROUTES)}>
+      <RoutingRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const name = await canvas.findByText("claude-sonnet");
+    await waitFor(() => expect(canvas.getByText(ru.pages.routing.disabledBadge)).toBeVisible());
+    await expect(name.scrollWidth).toBeLessThanOrEqual(name.clientWidth);
+    await expect(canvas.getByRole("button", { name: ru.pages.routing.add })).toBeInTheDocument();
+  },
+};
+
+/** The route sheet's picker offers adaptive, with descriptions, from a route. */
+export const EditSheetOffersAdaptive: Story = {
+  render: () => (
+    <Harness fetchStub={answer(ROUTES)} role="admin">
+      <RoutingRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectAllowed(canvasElement, "Edit route gpt-4o");
+    await userEvent.click(await canvas.findByRole("button", { name: "Edit route gpt-4o" }));
+    const dialog = within(await within(document.body).findByRole("dialog"));
+    const picker = await dialog.findByLabelText("Strategy");
+    const listbox = within(await openOptions(picker));
+    await expect(listbox.getByRole("option", { name: /^adaptive\b/ })).toHaveTextContent(
+      en.strategies.descriptions.adaptive,
+    );
+    await userEvent.click(listbox.getByRole("option", { name: /^adaptive\b/ }));
+    await waitFor(() => expect(picker).toHaveValue("adaptive"));
+    await expect(
+      await dialog.findByRole("link", { name: "Adaptive Routing settings" }),
+    ).toHaveAttribute("href", "/adaptive-settings");
   },
 };
 
@@ -222,7 +513,7 @@ export const AddRouteOpensTheRouteSheet: Story = {
     await expect(await dialog.findByLabelText("Target 1 provider")).toHaveValue("");
     await userEvent.type(dialog.getByLabelText("Route name"), "llama-70b");
     await pickOption(dialog.getByLabelText("Target 1 provider"), "azure-west");
-    await pickOption(dialog.getByLabelText("Strategy"), "power_of_two");
+    await pickOption(dialog.getByLabelText("Strategy"), /^power_of_two\b/);
     await userEvent.click(dialog.getByRole("button", { name: "Add route" }));
     await expect(await creates.expectSentBody("POST", `/projects/${PROJECT.id}/routes`)).toEqual({
       model: "llama-70b",
@@ -271,6 +562,40 @@ export const Forbidden: Story = {
     const canvas = within(canvasElement);
     await expect(canvas.queryByText(/routes? ·/)).toBeNull();
     await expect(canvas.queryByText(/No routes yet/)).toBeNull();
+  },
+};
+
+/**
+ * A failing route list says so with the control plane's own words and a retry
+ * that works; no zero count and no "No routes yet" stands in for it (#2139).
+ */
+let routesDown = true;
+export const ServerError: Story = {
+  render: () => {
+    routesDown = true;
+    return (
+      <Harness
+        fetchStub={scoped(async (input, init) => {
+          const url = String(input);
+          if (routesDown && /\/projects\/[^/]+\/routes/.test(url)) {
+            return json({ error: { message: "routes: connection refused" } }, 500);
+          }
+          return answer(ROUTES)(input, init);
+        })}
+      >
+        <RoutingRules />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectLoadError(canvasElement, /routes/);
+    await expect(canvas.getByText(/connection refused/)).toBeInTheDocument();
+    await expectNoFalseEmpty(canvasElement, /No routes yet/);
+    routesDown = false;
+    await userEvent.click(canvas.getByRole("button", { name: /Try again/ }));
+    await expect(await canvas.findByText("gpt-4o")).toBeInTheDocument();
+    await waitFor(() => expect(canvas.queryByRole("alert")).toBeNull());
   },
 };
 
@@ -674,7 +999,7 @@ export const EditsATwoTargetRoute: Story = {
     );
     await expect(dialog.getByLabelText("Target 2 weight")).toHaveValue(20);
     await expect(dialog.getByLabelText("Strategy")).toHaveValue("weighted");
-    await pickOption(dialog.getByLabelText("Strategy"), "round_robin");
+    await pickOption(dialog.getByLabelText("Strategy"), /^round_robin\b/);
     const weight = dialog.getByLabelText("Target 2 weight");
     await userEvent.clear(weight);
     await userEvent.type(weight, "30");

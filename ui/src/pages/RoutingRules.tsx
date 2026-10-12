@@ -1,14 +1,23 @@
-import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Pencil, Route, Tag } from "lucide-react";
+import {
+  useMutation,
+  useQueries,
+  useQuery,
+  useQueryClient,
+  type UseQueryResult,
+} from "@tanstack/react-query";
+import { Pencil, Play, Route, Tag } from "lucide-react";
 import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
+import { Link } from "react-router";
 
+import { AnalyticsUnavailable } from "@/components/AnalyticsUnavailable";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { CopyButton } from "@/components/CopyButton";
 import { GatedButton } from "@/components/GatedButton";
 import { ModelSheet } from "@/components/ModelSheet";
 import { RouteSheet } from "@/components/RouteSheet";
 import { DeleteIconButton } from "@/components/ui/delete-icon-button";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { LoadError } from "@/components/LoadError";
 import { CardGridSkeleton, LoadingRegion } from "@/components/LoadingState";
 import { PageBody, StatusDot, Toolbar } from "@/components/screen";
@@ -17,13 +26,18 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { LabelChips, LabelFilterSelect, LabelSheet, useSubjectLabels } from "@/components/Labels";
 import {
+  AnalyticsUnavailableError,
   deleteRoute,
+  fetchAnalyticsByModel,
+  fetchClusterNodes,
   fetchHealthTimeline,
   fetchModels,
   fetchProviders,
   fetchRoutes,
   fetchRouteTargets,
   fetchUptime,
+  type AnalyticsByModelRow,
+  type ClusterNodeRow,
   type RouteRow,
   type RouteTargetRow,
 } from "@/lib/api";
@@ -33,14 +47,37 @@ import { useScope } from "@/lib/scope";
 import { StrategyBadge } from "@/components/StrategyBadge";
 import { usesWeights } from "@/lib/strategies";
 import { errorDetail, useToast } from "@/lib/toast";
+import { cn } from "@/lib/utils";
 import { useScreenReady } from "@/lib/ux-react";
 
-const TARGET_BARS = [
-  "var(--red-folk)",
-  "var(--zinc-400)",
-  "var(--status-info)",
-  "var(--status-success)",
-];
+// the nth of several targets takes the nth categorical token, so no card is
+// red by default and every fill clears the shape floor (#2139)
+const TARGET_BARS = [1, 2, 3, 4, 5, 6].map((n) => `var(--chart-${n})`);
+
+/** how far back a card counts requests, in hours */
+const TRAFFIC_WINDOW_HOURS = 24;
+/** how often the gateway list is asked again while one has not caught up */
+const NODES_POLL_MS = 10_000;
+
+/** one route's requests and errors over the window, from the by-model rollup */
+interface RouteTraffic {
+  requests: number;
+  errors: number;
+}
+
+/** the rollup keys on the public model name; a route nothing called has no row */
+function trafficFor(rows: AnalyticsByModelRow[], model: string): RouteTraffic {
+  const row = rows.find((r) => r.model === model);
+  return { requests: Number(row?.requests ?? 0), errors: Number(row?.errors ?? 0) };
+}
+
+/** the live gateways, and how many of them have not reached the latest config */
+function gatewayConvergence(nodes: ClusterNodeRow[]): { live: number; lagging: number } {
+  const live = nodes.filter(
+    (n) => n.role === "gateway" && n.live && n.desired_state !== "draining",
+  );
+  return { live: live.length, lagging: live.filter((n) => !n.converged).length };
+}
 
 /**
  * What is known about one route's targets.
@@ -95,6 +132,32 @@ export default function RoutingRules() {
     retry: false,
   });
 
+  // requests and errors per public model over the last day. it needs
+  // ClickHouse, which a deployment may run without: that is an answer the
+  // screen states, never a zero on every card
+  const traffic = useQuery({
+    queryKey: ["route-traffic", TRAFFIC_WINDOW_HOURS],
+    queryFn: async () => {
+      const since = new Date(Date.now() - TRAFFIC_WINDOW_HOURS * 3_600_000).toISOString();
+      const rows = await fetchAnalyticsByModel({ since });
+      return Array.isArray(rows) ? rows : [];
+    },
+    enabled: (routes.data?.length ?? 0) > 0,
+    retry: false,
+  });
+  // whether the gateways have picked the change up: the cluster inventory
+  // Cluster reads, under its key. only a gateway that is behind is polled
+  const nodes = useQuery({
+    queryKey: ["cluster-nodes"],
+    queryFn: fetchClusterNodes,
+    enabled: (routes.data?.length ?? 0) > 0,
+    retry: false,
+    refetchInterval: (query) =>
+      Array.isArray(query.state.data) && gatewayConvergence(query.state.data).lagging > 0
+        ? NODES_POLL_MS
+        : false,
+  });
+
   const targetQueries = useQueries({
     queries: (routes.data ?? []).map((r) => ({
       queryKey: ["route-targets", r.id],
@@ -144,6 +207,7 @@ export default function RoutingRules() {
     queryClient.invalidateQueries({ queryKey: ["routes", scope.projectId] });
     queryClient.invalidateQueries({ queryKey: ["models"] });
     queryClient.invalidateQueries({ queryKey: ["config"] });
+    queryClient.invalidateQueries({ queryKey: ["cluster-nodes"] });
   };
 
   const remove = useMutation({
@@ -193,7 +257,7 @@ export default function RoutingRules() {
           onClick={() => setAddOpen(true)}
           disabled={!scope.projectId}
         >
-          + {t("pages.routing.emptyAction")}
+          {t("pages.routing.add")}
         </GatedButton>
       </Toolbar>
 
@@ -202,6 +266,24 @@ export default function RoutingRules() {
           where the query never runs */}
       {routes.isPending && !!scope.projectId && (
         <CardGridSkeleton cards={3} height={196} min={360} />
+      )}
+      {nodes.isSuccess && Array.isArray(nodes.data) && <GatewayConfigNote nodes={nodes.data} />}
+      {traffic.error instanceof AnalyticsUnavailableError && (
+        <AnalyticsUnavailable error={traffic.error} i18nKey="pages.routing.noAnalytics" />
+      )}
+      {traffic.isError && !(traffic.error instanceof AnalyticsUnavailableError) && (
+        <p
+          role="status"
+          className="max-w-[72ch] text-xs leading-snug text-muted-foreground"
+          data-testid="traffic-unavailable"
+        >
+          {t("pages.routing.trafficUnavailable")}
+          {traffic.error instanceof Error && traffic.error.message && (
+            <span className="ml-1 font-mono text-[color:var(--text-subtle)]">
+              {traffic.error.message}
+            </span>
+          )}
+        </p>
       )}
       {uptime.isError && (
         // one note for the whole screen, not "no health data" on every row; the
@@ -262,8 +344,19 @@ export default function RoutingRules() {
               key={r.id}
               className="flex flex-col gap-3.5 rounded-[10px] border border-[color:var(--border-default)] bg-card p-4"
             >
-              <div className="flex items-center gap-2.5">
-                <span className="min-w-0 truncate font-mono text-sm font-semibold">{r.model}</span>
+              <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
+                {/* the name engineers paste into clients; the badges wrap under
+                    it instead of squeezing it to an ellipsis at 375px (#2139) */}
+                <span className="flex min-w-0 max-w-full items-center gap-0.5">
+                  <span className="min-w-0 truncate font-mono text-sm font-semibold">
+                    {r.model}
+                  </span>
+                  <CopyButton
+                    value={r.model}
+                    label={t("pages.routing.copyModel")}
+                    className="h-6 px-1"
+                  />
+                </span>
                 <StrategyBadge strategy={r.strategy} />
                 <LabelChips labels={labels.bySubject(r.id)} />
                 {!r.enabled && (
@@ -278,13 +371,29 @@ export default function RoutingRules() {
                 providerName={providerName}
                 healthFor={healthFor}
               />
-              <div className="flex items-center gap-2 border-t border-[color:var(--border-subtle)] pt-3">
+              <RouteTrafficLine traffic={traffic} model={r.model} />
+              <div className="flex flex-wrap items-center gap-2 border-t border-[color:var(--border-subtle)] pt-3">
                 {/* the count needs an answer too: a pending or failed read is
                     not a route with no targets */}
                 {targets.kind === "loaded" && (
                   <span className="text-xs text-[color:var(--text-subtle)]">
                     {t("pages.routing.targetCount", { count: targets.targets.length })}
                   </span>
+                )}
+                {/* the Playground opens on this route's model. a disabled route
+                    is not served, so a request to it would only fail */}
+                {r.enabled && (
+                  <Link
+                    to={`/playground?model=${encodeURIComponent(r.model)}`}
+                    aria-label={t("pages.routing.tryRoute", { model: r.model })}
+                    className={cn(
+                      buttonVariants({ variant: "outline", size: "sm" }),
+                      "ml-auto h-[30px] gap-1.5",
+                    )}
+                  >
+                    <Play className="h-3.5 w-3.5" />
+                    {t("pages.routing.tryIt")}
+                  </Link>
                 )}
                 {/* the label names the route, so a grid of cards does not
                     expose N buttons a screen reader cannot tell apart (#1214) */}
@@ -293,7 +402,7 @@ export default function RoutingRules() {
                   control="route-edit"
                   size="sm"
                   variant="outline"
-                  className="ml-auto h-[30px]"
+                  className={cn("h-[30px]", !r.enabled && "ml-auto")}
                   aria-label={t("pages.routing.editRoute", { model: r.model })}
                   onClick={() => setEditing(r)}
                 >
@@ -386,6 +495,72 @@ export default function RoutingRules() {
         onDone={invalidate}
       />
     </PageBody>
+  );
+}
+
+/**
+ * Whether the gateways have the config the control plane holds, from the
+ * cluster inventory (PRODUCT.md principle 5: say what was saved and when it
+ * reached the gateway). A lagging gateway links Cluster, which names it; no
+ * live gateway says nothing, since there is nothing to have caught up.
+ */
+function GatewayConfigNote({ nodes }: { nodes: ClusterNodeRow[] }) {
+  const { t } = useTranslation();
+  const { live, lagging } = gatewayConvergence(nodes);
+  if (live === 0) return null;
+  return (
+    <p
+      role="status"
+      data-testid="gateway-config"
+      className={cn(
+        "max-w-[72ch] text-xs leading-snug",
+        lagging > 0 ? "text-[color:var(--status-warning-text)]" : "text-muted-foreground",
+      )}
+    >
+      {lagging > 0
+        ? t("pages.routing.gatewaysBehind", { count: lagging, live })
+        : t("pages.routing.gatewaysCurrent", { count: live })}{" "}
+      <Link to="/cluster" className="underline underline-offset-2">
+        {t("pages.routing.gatewaysLink")}
+      </Link>
+    </p>
+  );
+}
+
+/**
+ * A route's requests and error share over the last day. Absent while the
+ * rollup is out or where it could not be read; a route nobody called says so
+ * in words, since that is an answer the rollup gave.
+ */
+function RouteTrafficLine({
+  traffic,
+  model,
+}: {
+  traffic: UseQueryResult<AnalyticsByModelRow[]>;
+  model: string;
+}) {
+  const { t } = useTranslation();
+  const fmt = useFormat();
+  if (traffic.isPending) {
+    return (
+      <LoadingRegion testId="route-traffic-loading">
+        <Skeleton width="60%" height={14} radius={4} />
+      </LoadingRegion>
+    );
+  }
+  if (!traffic.isSuccess || !traffic.data) return null;
+  const { requests, errors } = trafficFor(traffic.data, model);
+  return (
+    <p data-testid="route-traffic" className="text-xs text-[color:var(--text-secondary)]">
+      {requests === 0
+        ? t("pages.routing.noTraffic", { hours: TRAFFIC_WINDOW_HOURS })
+        : t("pages.routing.traffic", {
+            requests: fmt.number(requests),
+            count: requests,
+            errors: fmt.percent(errors / requests, 1),
+            hours: TRAFFIC_WINDOW_HOURS,
+          })}
+    </p>
   );
 }
 

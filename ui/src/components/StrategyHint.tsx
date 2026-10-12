@@ -1,7 +1,8 @@
 import { useTranslation } from "react-i18next";
+import { Link } from "react-router";
 
 import { DocsLink } from "@/components/DocsLink";
-import { strategyDocsPage, strategyHintKey } from "@/lib/strategies";
+import { strategyDocsPage, strategyHintKey, strategyPolicyPath } from "@/lib/strategies";
 
 /**
  * The caveat attached to a balancing strategy, or nothing (#897).
@@ -22,9 +23,18 @@ export function StrategyHint({ strategy }: { strategy: string }) {
   const key = strategyHintKey(strategy);
   if (!key) return null;
   const docs = strategyDocsPage(strategy);
+  const policy = strategyPolicyPath(strategy);
   return (
     <p className="mt-1.5 text-xs text-[color:var(--status-warning-text)]" role="note">
       {t(key)}
+      {policy && (
+        <>
+          {" "}
+          <Link to={policy} className="underline underline-offset-2">
+            {t("pages.routing.strategyHints.policyLink")}
+          </Link>
+        </>
+      )}
       {docs && (
         <>
           {" "}

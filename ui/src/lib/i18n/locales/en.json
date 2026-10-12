@@ -817,7 +817,8 @@
     "routing": {
       "strategyHints": {
         "needsTelemetry": "Needs a cache-telemetry source (KV events or an LMCache controller) on the target providers. Set it in each provider's sheet, or in rolter.toml. Without one, this strategy quietly falls back to least-load.",
-        "deploymentWide": "Controlled by the deployment-wide adaptive-routing policy, not from here. Kept so this route is not changed by saving."
+        "deploymentWide": "The deployment-wide adaptive-routing policy sets the blend and the kill switch for every route on this strategy. The route only opts in.",
+        "policyLink": "Adaptive Routing settings"
       },
       "confirm": {
         "title": "Delete route {{model}}?",
@@ -838,7 +839,24 @@
       "noTargets": "No targets yet.",
       "disabledBadge": "disabled",
       "edit": "Edit",
-      "editRoute": "Edit route {{model}}"
+      "editRoute": "Edit route {{model}}",
+      "add": "+ Add route",
+      "copyModel": "Copy model name",
+      "tryIt": "Try it",
+      "tryRoute": "Try {{model}} in the Playground",
+      "traffic_one": "{{requests}} request in the last {{hours}} h · {{errors}} errors",
+      "traffic_other": "{{requests}} requests in the last {{hours}} h · {{errors}} errors",
+      "noTraffic": "No requests in the last {{hours}} h",
+      "trafficUnavailable": "Request counts are unavailable here, so the cards show none.",
+      "noAnalytics": {
+        "title": "Route traffic needs ClickHouse",
+        "body": "This control plane runs without <0>CLICKHOUSE_URL</0>, or is older than the endpoint this screen reads, so it has no requests to count. The routes below work as usual. Set <0>CLICKHOUSE_URL</0> and restart the control plane: every request served from then on is counted on its route's card."
+      },
+      "gatewaysBehind_one": "{{count}} of {{live}} live gateways has not picked up the latest config yet.",
+      "gatewaysBehind_other": "{{count}} of {{live}} live gateways have not picked up the latest config yet.",
+      "gatewaysCurrent_one": "The live gateway runs the latest config.",
+      "gatewaysCurrent_other": "All {{count}} live gateways run the latest config.",
+      "gatewaysLink": "Open Cluster"
     },
     "pricing": {
       "unconvertible": "Priced in {{code}}, which has no conversion rate — this model's spend is missing from {{base}} totals and budgets.",
@@ -4587,8 +4605,7 @@
       "slugHintLocked": "immutable identity for group-slug/model addressing — enable the switch to change it",
       "copyPrefix": "Copy address prefix",
       "allowSlugChange": "Allow slug change",
-      "strategy": "Strategy",
-      "strategyHint": "how requests are balanced across member providers"
+      "strategy": "Strategy"
     },
     "members": {
       "title": "Members",
@@ -4700,5 +4717,29 @@
     "unavailable": "The list could not be loaded",
     "assigned": "{{profile}} assigned to {{name}}",
     "failed": "Could not assign the profile"
+  },
+  "strategies": {
+    "groups": {
+      "simple": "Simple",
+      "cacheAware": "Cache-aware",
+      "latencyCost": "Latency and cost",
+      "weighted": "Weighted"
+    },
+    "descriptions": {
+      "roundRobin": "Sequential rotation through targets. For homogeneous pools and stateless workloads.",
+      "random": "Uniform random pick. For simple pools where every target is equivalent.",
+      "powerOfTwo": "The less loaded of two random targets. For requests that vary in duration.",
+      "consistentHash": "Hash ring keyed by session or prompt. For multi-turn chat, sticky sessions and KV cache reuse.",
+      "cacheAware": "Approximate prefix affinity to warm targets. For shared system prompts, few-shot examples and RAG.",
+      "weighted": "Smooth weighted round-robin by target weight. For A/B splits and capacity-based routing.",
+      "pipeline": "Filter, score, then pick the best. For blending weight, load and cache signals.",
+      "cheapest": "Lowest catalog price for the upstream model. For cost-sensitive routing across mixed-price providers.",
+      "fastest": "Lowest observed request latency. For heterogeneous pools where speed matters most.",
+      "preciseCacheAware": "Exact resident-prefix score from vLLM KV events. For vLLM fleets that publish KV events.",
+      "lmcacheAware": "Cache availability and free capacity from the LMCache controller. For LMCache-backed fleets.",
+      "adaptive": "Blend of latency, cost and load, tuned by the gateway. For pools mixed in both price and latency.",
+      "loraAware": "Prefers a target that already holds the requested LoRA adapter. For fleets serving many adapters over shared base weights.",
+      "predictedLatency": "Ranks targets by the modelled cost of this request, from queue depth and prompt size. For variable prompt sizes and deep queues."
+    }
   }
 }

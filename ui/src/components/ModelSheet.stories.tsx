@@ -765,7 +765,7 @@ export const AddsACacheAwareFleet: Story = {
     const dialog = within(sheet());
     await seededBlank(dialog);
     await userEvent.type(dialog.getByLabelText("Route name"), "qwen-72b");
-    await pickOption(dialog.getByLabelText("Strategy"), "cache_aware");
+    await pickOption(dialog.getByLabelText("Strategy"), /^cache_aware\b/);
     await pickOption(dialog.getByLabelText("Target 1 provider"), "vllm-cluster");
     await userEvent.type(
       dialog.getByLabelText("Target 1 upstream model"),
@@ -1154,7 +1154,7 @@ export const ChangesTheStrategy: Story = {
   play: async () => {
     const dialog = within(sheet());
     await seeded(dialog);
-    await pickOption(dialog.getByLabelText("Strategy"), "weighted");
+    await pickOption(dialog.getByLabelText("Strategy"), /^weighted\b/);
     await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
     await expect(await routeUpdate("route-1")).toEqual({
       strategy: "weighted",

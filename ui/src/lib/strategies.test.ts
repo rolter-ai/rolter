@@ -1,16 +1,28 @@
 import { describe, expect, it } from "bun:test";
 
 import { STRATEGIES } from "@/lib/api";
-import { strategyDocsPage, strategyHintKey, strategyOptions, usesWeights } from "@/lib/strategies";
+import en from "@/lib/i18n/locales/en.json";
+import {
+  strategyDescriptionKey,
+  strategyDocsPage,
+  strategyGroup,
+  strategyHintKey,
+  strategyOptions,
+  strategyPolicyPath,
+  usesWeights,
+} from "@/lib/strategies";
 
 describe("strategyOptions", () => {
-  it("offers every strategy the backend accepts except the deployment-wide one", () => {
+  it("offers every strategy the backend accepts, adaptive included", () => {
     const options = strategyOptions();
-    for (const s of STRATEGIES) {
-      if (s === "adaptive") continue;
-      expect(options).toContain(s);
-    }
-    expect(options).not.toContain("adaptive");
+    for (const s of STRATEGIES) expect(options).toContain(s);
+    expect(options).toContain("adaptive");
+  });
+
+  it("lists each strategy once, the simple group first", () => {
+    const options = strategyOptions();
+    expect(new Set(options).size).toBe(options.length);
+    expect(options[0]).toBe("round_robin");
   });
 
   // the five #897 named: they work over the API and in rolter.toml, so a
@@ -24,11 +36,6 @@ describe("strategyOptions", () => {
 
   // the load-bearing guarantee: a picker that cannot show a value must not be
   // able to destroy it either
-  it("keeps a current value it would not otherwise offer", () => {
-    const options = strategyOptions("adaptive");
-    expect(options[0]).toBe("adaptive");
-  });
-
   it("keeps a current value it has never heard of", () => {
     const options = strategyOptions("strategy_from_the_future");
     expect(options[0]).toBe("strategy_from_the_future");
@@ -83,5 +90,31 @@ describe("usesWeights", () => {
 
   it("does not claim a weighted split for a strategy it has never heard of", () => {
     expect(usesWeights("strategy_from_the_future")).toBe(false);
+  });
+});
+
+describe("strategy descriptions (#2136)", () => {
+  const catalog = en as unknown as {
+    strategies: { descriptions: Record<string, string>; groups: Record<string, string> };
+  };
+
+  it("places every strategy in a group and gives it a one-line description", () => {
+    for (const s of STRATEGIES) {
+      const group = strategyGroup(s);
+      expect(group).not.toBeNull();
+      expect(catalog.strategies.groups[group as string]).toBeTruthy();
+      const key = strategyDescriptionKey(s) as string;
+      expect(catalog.strategies.descriptions[key.split(".").pop() as string]).toBeTruthy();
+    }
+  });
+
+  it("has no description for a value it does not know", () => {
+    expect(strategyGroup("strategy_from_the_future")).toBeNull();
+    expect(strategyDescriptionKey("strategy_from_the_future")).toBeNull();
+  });
+
+  it("sends adaptive to its settings and nothing else", () => {
+    expect(strategyPolicyPath("adaptive")).toBe("/adaptive-settings");
+    expect(strategyPolicyPath("round_robin")).toBeNull();
   });
 });

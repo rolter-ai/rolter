@@ -28,9 +28,8 @@ import {
   type ProviderGroupRow,
   type ProviderRow,
 } from "@/lib/api";
-import { StrategyHint } from "@/components/StrategyHint";
+import { StrategyPicker } from "@/components/StrategyPicker";
 import { providersUsableFrom, usableFrom } from "@/lib/provider-scope";
-import { strategyOptions } from "@/lib/strategies";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useFormTelemetry } from "@/lib/ux-react";
 
@@ -440,18 +439,14 @@ export function ProviderGroupSheet({
 
         <Field
           label={t("providerGroupSheet.fields.strategy")}
-          hint={t("providerGroupSheet.fields.strategyHint")}
-          // two children, so Field cannot tell which one the label means — the
-          // hint below the select is the other one
+          // several children, so Field cannot tell which one the label means
           htmlFor="provider-group-strategy"
         >
-          <Combobox
+          <StrategyPicker
             id="provider-group-strategy"
             value={draft.strategy}
             onChange={(strategy) => set({ strategy })}
-            options={strategyOptions(draft.strategy).map((s) => ({ value: s, label: s }))}
           />
-          <StrategyHint strategy={draft.strategy} />
         </Field>
 
         <ProjectScopeField
