@@ -449,6 +449,7 @@ pub fn router() -> Router<crate::ControlState> {
         .route("/api/v1/analytics/by-attribution", get(by_attribution))
         .route("/api/v1/analytics/invocations", get(invocations))
         .route("/api/v1/analytics/guardrails", get(guardrails))
+        .route("/api/v1/analytics/plugins", get(plugins))
 }
 
 /// Map a cost-attribution dimension name to its whitelisted column. Anything
@@ -799,8 +800,42 @@ async fn by_attribution(
 /// matches yet".
 async fn guardrails(
     access: AnalyticsAccess,
+    state: State<crate::ControlState>,
+    q: Query<WindowQuery>,
+) -> Response {
+    events_rollup(access, state, q, "guardrail_events", guardrails_sql()).await
+}
+
+/// What each plugin did to requests in the window (#2243): one row per plugin
+/// with its calls, verdicts and failures.
+///
+/// `calls` is every consultation, and `blocked`, `transformed`, `annotated` and
+/// `errors` are the parts of it that ended that way; the rest were `allowed`.
+/// An `errors` call gave no verdict, so a fail-closed plugin that refused
+/// traffic because its endpoint was down counts there and not under `blocked`.
+/// `last_error_at` and `last_error_kind` name the newest failure (`refused`,
+/// `timeout`, `connect`, `status_<code>` or `body`), and are empty when
+/// `errors` is `0`. Counts are scaled by the sampling weight like every other
+/// count here, and `last_error_at` can only be a sampled row's. A table without
+/// `clickhouse/019_plugin_events.sql` answers `recorded: false` with no rows,
+/// so the dashboard can say the outcomes are not being kept instead of "no
+/// calls yet".
+async fn plugins(
+    access: AnalyticsAccess,
+    state: State<crate::ControlState>,
+    q: Query<WindowQuery>,
+) -> Response {
+    events_rollup(access, state, q, "plugin_events", plugins_sql()).await
+}
+
+/// Run an event-array rollup over `column`, answering `recorded: false` while
+/// the table lacks the column.
+async fn events_rollup(
+    access: AnalyticsAccess,
     State(state): State<crate::ControlState>,
     Query(q): Query<WindowQuery>,
+    column: &str,
+    sql: String,
 ) -> Response {
     let ch = match client_or_503(&state) {
         Ok(ch) => ch,
@@ -810,11 +845,11 @@ async fn guardrails(
         Ok(columns) => columns,
         Err(error) => return query_failed("analytics query failed", &error),
     };
-    if !columns.has("guardrail_events") {
+    if !columns.has(column) {
         return Json(json!({"data": [], "recorded": false})).into_response();
     }
     match ch
-        .query(&guardrails_sql(), &with_access(window_params(&q), &access))
+        .query(&sql, &with_access(window_params(&q), &access))
         .await
     {
         Ok(data) => Json(json!({"data": data, "recorded": true})).into_response(),
@@ -823,6 +858,28 @@ async fn guardrails(
             query_failed("analytics query failed", &error)
         }
     }
+}
+
+/// The rollup behind [`plugins`]. An entry is `<outcome>:<slug>`, or
+/// `error:<slug>:<kind>`; a slug is `[a-z0-9-]`, so splitting on `:` is exact.
+fn plugins_sql() -> String {
+    format!(
+        "select plugin, \
+            round(sum(weight)) as calls, \
+            round(sumIf(weight, outcome = 'blocked')) as blocked, \
+            round(sumIf(weight, outcome = 'transformed')) as transformed, \
+            round(sumIf(weight, outcome = 'annotated')) as annotated, \
+            round(sumIf(weight, outcome = 'error')) as errors, \
+            if(errors = 0, '', toString(maxIf(ts, outcome = 'error'))) as last_error_at, \
+            argMaxIf(kind, ts, outcome = 'error') as last_error_kind \
+         from (\
+            select ts, sample_weight as weight, \
+                splitByChar(':', event) as parts, \
+                parts[1] as outcome, parts[2] as plugin, parts[3] as kind \
+            from request_logs array join plugin_events as event \
+            where {WHERE_WINDOW} and {ROW_VISIBLE}) \
+         group by plugin order by calls desc, plugin format JSON"
+    )
 }
 
 /// The rollup behind [`guardrails`]. An entry is `<action>:<rule>`, or just the
@@ -970,6 +1027,7 @@ fn invocations_sql(status_expr: &str, columns: &Columns) -> String {
     let attempts = columns.select("attempts");
     let lifecycle_operation = columns.select("lifecycle_operation");
     let guardrail_events = columns.select("guardrail_events");
+    let plugin_events = columns.select("plugin_events");
     // the filter reads the column, which an older table lacks: it then matches
     // nothing, which is true, since no event was ever recorded there
     let guardrail_filter = columns.expr("guardrail_events");
@@ -979,7 +1037,7 @@ fn invocations_sql(status_expr: &str, columns: &Columns) -> String {
                 model, provider, target, variant, status, stream, cache_hit, cache_read_tokens, cache_write_tokens, \
                 {cache_write_1h_tokens}, \
                 prompt_tokens, completion_tokens, total_tokens, cost_usd, unpriced, latency_ms, ttft_ms, error, \
-                {upstream_status}, {attempts}, {lifecycle_operation}, {guardrail_events}, \
+                {upstream_status}, {attempts}, {lifecycle_operation}, {guardrail_events}, {plugin_events}, \
                 if({PAYLOAD_VISIBLE}, payload.request_payload, '') as request_payload, \
                 if({PAYLOAD_VISIBLE}, payload.response_payload, '') as response_payload, \
                 toUInt8(not {PAYLOAD_VISIBLE} \
@@ -2257,6 +2315,57 @@ mod optional_column_tests {
         let app = app_over(ClickHouseClient::new(&stub.url));
 
         let (status, body) = rollup(&app).await;
+
+        // not a 502: the file is not a condition of upgrading the control plane
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["recorded"], false, "{body}");
+        assert_eq!(body["data"], json!([]), "{body}");
+    }
+
+    async fn plugin_rollup(app: &Router) -> (StatusCode, Value) {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/analytics/plugins")
+                    .body(Body::empty())
+                    .expect("a valid request"),
+            )
+            .await
+            .expect("the router answers");
+        let status = response.status();
+        let body = to_bytes(response.into_body(), 1 << 20)
+            .await
+            .expect("a readable body");
+        (status, serde_json::from_slice(&body).unwrap_or(Value::Null))
+    }
+
+    #[tokio::test]
+    async fn the_plugin_rollup_splits_events_and_is_scoped_to_the_callers_rows() {
+        let mut columns = REQUIRED.to_vec();
+        columns.extend(every_optional());
+        let stub = Stub::start(&columns).await;
+        let app = app_over(ClickHouseClient::new(&stub.url));
+
+        let (status, body) = plugin_rollup(&app).await;
+
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["recorded"], true, "{body}");
+        let sql = stub.list_sql();
+        assert!(sql.contains("array join plugin_events as event"), "{sql}");
+        assert!(sql.contains(&format!("and {ROW_VISIBLE}")), "{sql}");
+        assert!(sql.contains("sample_weight as weight"), "{sql}");
+        assert!(
+            sql.contains("argMaxIf(kind, ts, outcome = 'error')"),
+            "{sql}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_plugin_rollup_says_so_when_the_table_does_not_record_events() {
+        let stub = Stub::start(REQUIRED).await;
+        let app = app_over(ClickHouseClient::new(&stub.url));
+
+        let (status, body) = plugin_rollup(&app).await;
 
         // not a 502: the file is not a condition of upgrading the control plane
         assert_eq!(status, StatusCode::OK, "{body}");

@@ -254,6 +254,15 @@ pub struct RequestLog {
     /// every row that has none
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub guardrail_events: Vec<String>,
+    /// What each plugin did on this request, one `<outcome>:<slug>` entry per
+    /// call (`allowed`, `blocked`, `transformed`, `annotated`) or
+    /// `error:<slug>:<kind>` when the call failed (#2243). Slugs and a fixed
+    /// failure vocabulary only: nothing a plugin said reaches a row. Skipped
+    /// when empty, for the reason `guardrail_events` is, so a ClickHouse
+    /// without `clickhouse/019_plugin_events.sql` keeps accepting the rows of
+    /// every request no plugin saw
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub plugin_events: Vec<String>,
     /// raw bodies are persisted in the short-retention `request_payloads`
     /// table, never in the primary metadata table
     #[serde(skip)]
@@ -319,6 +328,7 @@ impl Default for RequestLog {
             attempts: 0,
             lifecycle_operation: String::new(),
             guardrail_events: Vec::new(),
+            plugin_events: Vec::new(),
             request_payload: String::new(),
             response_payload: String::new(),
             capture_payloads: false,

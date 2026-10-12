@@ -252,6 +252,9 @@ impl ContentPolicy {
                 &self.route,
                 &self.trace_id,
                 &self.tenant,
+                // a session is not a request row, so its plugin calls are
+                // counted on `/metrics` only (#2243)
+                &mut Vec::new(),
                 &event,
             )
             .await

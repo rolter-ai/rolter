@@ -72,6 +72,11 @@ pub(crate) const OPTIONAL_COLUMNS: &[OptionalColumn] = &[
         name: "guardrail_events",
         default: "emptyArrayString()",
     },
+    // 019_plugin_events.sql
+    OptionalColumn {
+        name: "plugin_events",
+        default: "emptyArrayString()",
+    },
 ];
 
 /// The probe: every column `request_logs` has in the database the client reads
@@ -303,6 +308,7 @@ mod tests {
             "attempts",
             "lifecycle_operation",
             "guardrail_events",
+            "plugin_events",
         ]))
         .expect("the table is visible");
         assert_eq!(columns.missing(), ["cache_write_1h_tokens"]);

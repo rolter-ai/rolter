@@ -35,11 +35,54 @@ pub enum DispatchOutcome {
     Block(Option<String>),
 }
 
+/// What one plugin call came to, as the `<outcome>:<slug>` entry the request
+/// log keeps in `plugin_events` (#2243). An `error` entry carries a third part,
+/// the failure kind (see [`CallFailure::kind`]), because a transport failure
+/// has no verdict to name and the kind is what tells an operator whether the
+/// endpoint is down, slow or refused. Slugs are `[a-z0-9-]`, so neither `:`
+/// splitting nor the entry can carry request content.
+fn event(outcome: &str, slug: &str) -> String {
+    format!("{outcome}:{slug}")
+}
+
+/// Why a plugin call produced no verdict.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CallFailure {
+    /// the egress policy refused the endpoint, so nothing was sent
+    Refused,
+    /// the request timed out
+    Timeout,
+    /// the connection or the exchange failed before a status came back
+    Connect,
+    /// the endpoint answered with a non-2xx status
+    Status(u16),
+    /// the response body could not be read
+    Body,
+}
+
+impl CallFailure {
+    /// A short, fixed-vocabulary label: never the upstream's own text.
+    fn kind(&self) -> String {
+        match self {
+            Self::Refused => "refused".to_string(),
+            Self::Timeout => "timeout".to_string(),
+            Self::Connect => "connect".to_string(),
+            Self::Status(code) => format!("status_{code}"),
+            Self::Body => "body".to_string(),
+        }
+    }
+}
+
 /// Run every plugin in `plugins` (already the caller's org/project matched at
 /// `stage`, in dispatch order — see [`rolter_core::PluginsConfig::for_stage`])
 /// against `content`, threading each plugin's output into the next. Never
 /// returns an error: a transport failure resolves per that plugin's own
 /// `failure_mode`, exactly like the guardrail webhook.
+///
+/// Every call leaves one entry in `events` (`allowed`, `blocked`,
+/// `transformed`, `annotated` or `error`, each `:<slug>`), so the request log
+/// can say per plugin what it did. A fail-closed plugin that could not be
+/// reached counts as an `error`, not a `blocked`: it gave no verdict.
 #[allow(clippy::too_many_arguments)]
 pub async fn dispatch(
     plugins: &[&PluginInstanceConfig],
@@ -50,15 +93,25 @@ pub async fn dispatch(
     route: &str,
     trace_id: &str,
     tenant: &WebhookTenant,
+    events: &mut Vec<String>,
     content: &Value,
 ) -> DispatchOutcome {
     let mut current = content.clone();
     for plugin in plugins {
-        match consult_one(
+        let (decision, failure) = consult_one(
             plugin, stage, metrics, egress, model, route, trace_id, tenant, &current,
         )
-        .await
-        {
+        .await;
+        // a call that gave no verdict is an `error` whatever its failure mode
+        // then did with the request
+        events.push(match (&failure, &decision) {
+            (Some(failure), _) => format!("{}:{}", event("error", &plugin.slug), failure.kind()),
+            (None, WebhookDecision::Allow) => event("allowed", &plugin.slug),
+            (None, WebhookDecision::Annotate { .. }) => event("annotated", &plugin.slug),
+            (None, WebhookDecision::Block { .. }) => event("blocked", &plugin.slug),
+            (None, WebhookDecision::Transform { .. }) => event("transformed", &plugin.slug),
+        });
+        match decision {
             WebhookDecision::Allow | WebhookDecision::Annotate { .. } => {}
             WebhookDecision::Block { reason } => {
                 metrics.plugin_blocks_total.fetch_add(1, Relaxed);
@@ -74,7 +127,8 @@ pub async fn dispatch(
 }
 
 /// Consult a single plugin instance, resolving a transport failure to its own
-/// `failure_mode` (fail-open forwards unchanged, fail-closed blocks).
+/// `failure_mode` (fail-open forwards unchanged, fail-closed blocks). The
+/// second half says why the call failed, when it did.
 #[allow(clippy::too_many_arguments)]
 async fn consult_one(
     plugin: &PluginInstanceConfig,
@@ -86,7 +140,7 @@ async fn consult_one(
     trace_id: &str,
     tenant: &WebhookTenant,
     content: &Value,
-) -> WebhookDecision {
+) -> (WebhookDecision, Option<CallFailure>) {
     let serialized = serde_json::to_vec(content).unwrap_or_default();
     let (payload, truncated) = if serialized.len() > MAX_BODY_BYTES {
         let preview: String = content.to_string().chars().take(MAX_BODY_BYTES).collect();
@@ -107,15 +161,16 @@ async fn consult_one(
     };
 
     match call_once(egress, plugin, &envelope).await {
-        Some(decision) => decision,
-        None => {
+        Ok(decision) => (decision, None),
+        Err(failure) => {
             metrics.plugin_errors_total.fetch_add(1, Relaxed);
-            match plugin.failure_mode {
+            let decision = match plugin.failure_mode {
                 FailureMode::FailOpen => WebhookDecision::Allow,
                 FailureMode::FailClosed => WebhookDecision::Block {
                     reason: Some(format!("plugin '{}' is unavailable", plugin.slug)),
                 },
-            }
+            };
+            (decision, Some(failure))
         }
     }
 }
@@ -150,8 +205,11 @@ pub enum PostResponseOutcome {
 /// Run the `post_response` plugin chain over a non-streaming response body.
 /// Bodies that are not valid JSON pass through unexamined: every plugin's
 /// contract is JSON in, JSON out, so there is nothing to send.
+///
+/// Each plugin call leaves an entry in `events`, as for [`dispatch`].
 pub async fn apply_post_response(
     ctx: &PostResponsePlugins<'_>,
+    events: &mut Vec<String>,
     bytes: &[u8],
 ) -> PostResponseOutcome {
     if ctx.plugins.is_empty() {
@@ -169,6 +227,7 @@ pub async fn apply_post_response(
         &ctx.route,
         &ctx.trace_id,
         &ctx.tenant,
+        events,
         &content,
     )
     .await
@@ -180,19 +239,20 @@ pub async fn apply_post_response(
     }
 }
 
-/// A single call to `plugin.endpoint`. `None` signals a transport failure
-/// (connect, timeout, non-2xx, or unreadable body); the caller applies the
+/// A single call to `plugin.endpoint`. `Err` signals a transport failure
+/// (refused, connect, timeout, non-2xx, or unreadable body); the caller applies the
 /// plugin's `failure_mode`. No retries: the registry has no per-instance
 /// retry count, and the guardrail webhook's default is zero anyway.
 async fn call_once(
     egress: &EgressClient,
     plugin: &PluginInstanceConfig,
     envelope: &PluginRequest<'_>,
-) -> Option<WebhookDecision> {
+) -> Result<WebhookDecision, CallFailure> {
     // refused again here, not only at save: the policy may have been tightened
     // since, and a stored row is not a standing permission to egress
     let mut req = egress
-        .post(plugin.endpoint.trim())?
+        .post(plugin.endpoint.trim())
+        .ok_or(CallFailure::Refused)?
         .timeout(std::time::Duration::from_millis(TIMEOUT_MS))
         .header("X-Rolter-Trace-Id", envelope.trace_id)
         .json(envelope);
@@ -203,12 +263,18 @@ async fn call_once(
         }
     }
 
-    let resp = req.send().await.ok()?;
+    let resp = req.send().await.map_err(|error| {
+        if error.is_timeout() {
+            CallFailure::Timeout
+        } else {
+            CallFailure::Connect
+        }
+    })?;
     if !resp.status().is_success() {
-        return None;
+        return Err(CallFailure::Status(resp.status().as_u16()));
     }
-    let body = resp.bytes().await.ok()?;
-    Some(WebhookDecision::parse(&body))
+    let body = resp.bytes().await.map_err(|_| CallFailure::Body)?;
+    Ok(WebhookDecision::parse(&body))
 }
 
 #[cfg(test)]
@@ -241,6 +307,7 @@ mod tests {
             "route",
             "trace",
             &WebhookTenant::default(),
+            &mut Vec::new(),
             &content,
         )
         .await;
@@ -265,6 +332,7 @@ mod tests {
             "route",
             "trace",
             &WebhookTenant::default(),
+            &mut Vec::new(),
             &content,
         )
         .await;
@@ -289,6 +357,7 @@ mod tests {
             "route",
             "trace",
             &WebhookTenant::default(),
+            &mut Vec::new(),
             &serde_json::json!({"messages": []}),
         )
         .await;
@@ -325,6 +394,7 @@ mod tests {
             "route",
             "trace",
             &WebhookTenant::default(),
+            &mut Vec::new(),
             &serde_json::json!({"messages": []}),
         )
         .await;
@@ -356,6 +426,7 @@ mod tests {
             "route",
             "trace",
             &WebhookTenant::default(),
+            &mut Vec::new(),
             &serde_json::json!({"messages": []}),
         )
         .await;
@@ -386,6 +457,7 @@ mod tests {
             "route",
             "trace",
             &WebhookTenant::default(),
+            &mut Vec::new(),
             &serde_json::json!({"messages": []}),
         )
         .await;
@@ -411,7 +483,7 @@ mod tests {
             tenant: WebhookTenant::default(),
         };
         let body = b"not json";
-        let out = apply_post_response(&ctx, body).await;
+        let out = apply_post_response(&ctx, &mut Vec::new(), body).await;
         assert_eq!(out, PostResponseOutcome::Bytes(body.to_vec()));
         // never dispatched, so no error is recorded even though fail_closed
         assert_eq!(metrics.plugin_errors_total.load(Relaxed), 0);
@@ -435,7 +507,7 @@ mod tests {
             trace_id: "trace".to_string(),
             tenant: WebhookTenant::default(),
         };
-        let out = apply_post_response(&ctx, br#"{"choices": ["raw"]}"#).await;
+        let out = apply_post_response(&ctx, &mut Vec::new(), br#"{"choices": ["raw"]}"#).await;
         assert_eq!(
             out,
             PostResponseOutcome::Bytes(
@@ -458,7 +530,7 @@ mod tests {
             trace_id: "trace".to_string(),
             tenant: WebhookTenant::default(),
         };
-        let out = apply_post_response(&ctx, br#"{"choices": []}"#).await;
+        let out = apply_post_response(&ctx, &mut Vec::new(), br#"{"choices": []}"#).await;
         assert_eq!(
             out,
             PostResponseOutcome::Block(Some("leaked pii".to_string()))
@@ -503,6 +575,7 @@ mod tests {
             "route",
             "trace",
             &WebhookTenant::default(),
+            &mut Vec::new(),
             &serde_json::json!({"messages": []}),
         )
         .await;
@@ -540,6 +613,7 @@ mod tests {
                 "route",
                 "trace",
                 &WebhookTenant::default(),
+                &mut Vec::new(),
                 &content,
             )
             .await;
@@ -567,9 +641,72 @@ mod tests {
             "route",
             "trace",
             &WebhookTenant::default(),
+            &mut Vec::new(),
             &content,
         )
         .await;
         assert_eq!(out, DispatchOutcome::Allow(content));
+    }
+
+    #[tokio::test]
+    async fn every_call_leaves_one_event_per_plugin_in_order() {
+        let allow = serve(serde_json::json!({"action": "allow"})).await;
+        let annotate = serve(serde_json::json!({"action": "annotate", "annotations": {}})).await;
+        let transform = serve(serde_json::json!({"action": "transform", "content": {}})).await;
+        let first = plugin("first", allow, FailureMode::FailOpen);
+        let second = plugin("second", annotate, FailureMode::FailOpen);
+        let third = plugin("third", transform, FailureMode::FailOpen);
+        let mut events = Vec::new();
+        dispatch(
+            &[&first, &second, &third],
+            PluginStage::PreUpstream,
+            &Metrics::default(),
+            &crate::egress_client::testing::permissive(),
+            "gpt-4",
+            "route",
+            "trace",
+            &WebhookTenant::default(),
+            &mut events,
+            &serde_json::json!({"messages": []}),
+        )
+        .await;
+        assert_eq!(
+            events,
+            ["allowed:first", "annotated:second", "transformed:third"]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failing_call_names_why_in_a_fixed_vocabulary() {
+        use axum::routing::post;
+        use axum::Router;
+        let app = Router::new().route(
+            "/hook",
+            post(|| async { axum::http::StatusCode::SERVICE_UNAVAILABLE }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let down = plugin("down", format!("http://{addr}/hook"), FailureMode::FailOpen);
+        let refused = plugin(
+            "refused",
+            "https://169.254.169.254/hook".to_string(),
+            FailureMode::FailOpen,
+        );
+        let mut events = Vec::new();
+        dispatch(
+            &[&down, &refused],
+            PluginStage::PreUpstream,
+            &Metrics::default(),
+            &crate::egress_client::testing::permissive(),
+            "gpt-4",
+            "route",
+            "trace",
+            &WebhookTenant::default(),
+            &mut events,
+            &serde_json::json!({"messages": []}),
+        )
+        .await;
+        assert_eq!(events, ["error:down:status_503", "error:refused:refused"]);
     }
 }
