@@ -13,7 +13,7 @@ The dashboard shows the current report from every gateway balancing an
 `adaptive` route: whether the blend is active, how decisions split between the
 blend, exploration, and fallback modes, and the latency, cost, and in-flight
 signals behind each target score. Reports are current state rather than a time
-series. A gateway reports every 15 seconds, and the control plane hides samples
+series. The decision bar has a key with each mode's swatch and count, and on a gateway that is blending, the target with the highest score (higher is preferred) carries a **Preferred** badge. A gateway reports every 15 seconds, and the control plane hides samples
 older than 60 seconds so a stopped node cannot look healthy.
 
 ---
@@ -36,7 +36,7 @@ An **all-zero blend is rejected**. It would not stop adaptive routing — it wou
 
 ## Exploration
 
-`exploration_ratio` is the share of traffic sent off the current best target so its rivals' scores stay fresh. Without it, a target that had one bad minute is never measured again. It is capped at **0.5** — the gateway clamps above that, so the API refuses the value instead of quietly reinterpreting it.
+`exploration_ratio` is the share of traffic sent off the current best target so its rivals' scores stay fresh. Without it, a target that had one bad minute is never measured again. It is capped at **0.5** — the gateway clamps above that, so the API refuses the value instead of quietly reinterpreting it. The settings screen takes it as a percent (5 for `0.05`, capped at 50) and sends the fraction.
 
 `min_samples` is the warm-up: how many requests a **route** must have served, across all its targets, before the blend engages. While `latency_weight` is above zero, the blend also needs latency samples for at least two targets. Until then the route is served by the `pipeline` fallback stack, which keeps learning meanwhile.
 

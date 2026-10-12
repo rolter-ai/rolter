@@ -8,6 +8,7 @@ import {
   expectToast,
   Harness as ScreenHarness,
   json,
+  recording,
   Toasted,
   type FetchStub,
   type StoryRole,
@@ -59,6 +60,13 @@ export const Loaded: Story = {
     // the blast radius of the kill switch is visible before it is flipped
     await waitFor(() => expect(canvas.getByText("gpt-4o")).toBeVisible());
     await expect(canvas.getByText("claude-sonnet")).toBeVisible();
+    // the exploration share is typed as the percent it means, not as 0.05
+    await expect(await canvas.findByLabelText("Exploration ratio")).toHaveValue("5");
+    // a save shows nothing on this screen, so the live view is one link away
+    await expect(
+      canvas.getByRole("link", { name: "See live routing on the dashboard" }),
+    ).toHaveAttribute("href", "/adaptive-dashboard");
+    await expect(canvas.getByText("Blend weights")).toBeVisible();
   },
 };
 
@@ -110,7 +118,7 @@ export const RejectsAnAllZeroBlend: Story = {
   },
 };
 
-// the gateway clamps above 0.5, so the value is refused rather than quietly
+// the gateway clamps above 50%, so the value is refused rather than quietly
 // reinterpreted
 export const RejectsAnOutOfRangeExplorationRatio: Story = {
   render: () => <Harness fetchStub={async () => json(BASE)} />,
@@ -118,9 +126,9 @@ export const RejectsAnOutOfRangeExplorationRatio: Story = {
     const canvas = within(canvasElement);
     const ratio = await canvas.findByLabelText("Exploration ratio");
     await userEvent.clear(ratio);
-    await userEvent.type(ratio, "0.9");
+    await userEvent.type(ratio, "90");
     await waitFor(() => expect(ratio).toHaveAttribute("aria-invalid", "true"));
-    await expect(ratio).toHaveAccessibleDescription("Exploration ratio must be between 0 and 0.5.");
+    await expect(ratio).toHaveAccessibleDescription("Exploration ratio must be between 0 and 50%.");
   },
 };
 
@@ -166,7 +174,7 @@ export const ServerRejectionLandsOnTheField: Story = {
     const canvas = within(canvasElement);
     const ratio = await canvas.findByLabelText("Exploration ratio");
     await userEvent.clear(ratio);
-    await userEvent.type(ratio, "0.1");
+    await userEvent.type(ratio, "10");
     await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
     await waitFor(() => expect(ratio).toHaveAttribute("aria-invalid", "true"));
     await expect(ratio).toHaveAccessibleDescription("exploration_ratio must be between 0 and 0.5");
@@ -175,23 +183,28 @@ export const ServerRejectionLandsOnTheField: Story = {
 };
 
 // interaction: a valid edit round-trips and confirms
+let rec = recording(async () => json(BASE));
+
 export const SavesChanges: Story = {
   render: () => {
-    const stub: FetchStub = async (_input, init) => {
-      if (init?.method === "PUT") {
-        return json({ ...BASE, ...JSON.parse(String(init.body)) });
-      }
-      return json(BASE);
-    };
-    return <Harness fetchStub={stub} />;
+    rec = recording(async (_input, init) =>
+      init?.method === "PUT" ? json({ ...BASE, ...JSON.parse(String(init.body)) }) : json(BASE),
+    );
+    return <Harness fetchStub={rec.stub} />;
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const cost = await canvas.findByLabelText("Cost weight");
     await userEvent.clear(cost);
     await userEvent.type(cost, "2");
+    const ratio = canvas.getByLabelText("Exploration ratio");
+    await userEvent.clear(ratio);
+    await userEvent.type(ratio, "7");
     await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
     await expectToast(canvasElement, /adaptive routing settings updated/i);
+    // the percent typed travels as the fraction the API takes
+    const body = await rec.expectSentBody<{ exploration_ratio: number }>("PUT", "adaptive-routing");
+    await expect(body.exploration_ratio).toBeCloseTo(0.07, 6);
     await expect(canvas.getByLabelText("Cost weight")).toHaveValue("2");
   },
 };

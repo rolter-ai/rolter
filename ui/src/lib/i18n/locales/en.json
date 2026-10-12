@@ -2235,7 +2235,8 @@
         "latency": "Latency",
         "cost": "Cost / Mtok",
         "inFlight": "In flight",
-        "samples": "Samples"
+        "samples": "Samples",
+        "blendScoreHint": "higher is preferred"
       },
       "noSamples": "No samples",
       "latencyMs": "{{value}} ms",
@@ -2248,7 +2249,19 @@
         "withWarmUp_one": "{{details}} · {{value}} warm-up sample",
         "withWarmUp_other": "{{details}} · {{value}} warm-up samples",
         "disabled": "disabled · {{summary}}"
-      }
+      },
+      "routeState": {
+        "blend": "Blend active",
+        "disabled": "Disabled",
+        "warming": "Fallback or warming up"
+      },
+      "nodeState": {
+        "disabled": "Disabled",
+        "routing": "Routing",
+        "warming": "Warming up"
+      },
+      "targetFallback": "Target {{n}}",
+      "preferred": "Preferred"
     },
     "govTeams": {
       "created": "created {{date}}"
@@ -2595,19 +2608,16 @@
       "emptyBody": "A complexity policy hangs off a route, so create a route first — its input-size tiers are set from here afterwards.",
       "emptyAction": "Open routing rules",
       "noPolicyYet": "No policy yet",
-      "tierRouteAria": "Route for this tier",
+      "tierRouteAria": "Route for tier {{n}}",
       "editPolicyAria": "Edit the complexity policy for {{model}}",
       "addPolicyAria": "Add a complexity policy for {{model}}",
       "removeTierAria": "Remove tier {{name}}",
       "summary_one": "{{configured}} of {{count}} route has a complexity policy · requests are measured by input bytes and routed to the matching tier",
       "summary_other": "{{configured}} of {{count}} routes have a complexity policy · requests are measured by input bytes and routed to the matching tier",
-      "tierCount_one": "{{count}} tier",
-      "tierCount_other": "{{count}} tiers",
       "editPolicy": "Edit policy",
       "catchAll": "catch-all",
       "policyTitle": "Complexity policy",
       "policySubtitle": "{{model}} · tiers checked in order by input size",
-      "tierNamePlaceholder": "tier name",
       "addTier": "Add tier",
       "policyLoadFailed": "Policy could not be read",
       "policyUnknownHint": "This route's complexity policy could not be read, so it is shown neither as configured nor as empty.",
@@ -2615,7 +2625,23 @@
       "checkingPolicies_one": "Still reading the policy for {{count}} route",
       "checkingPolicies_other": "Still reading the policy for {{count}} routes",
       "unreadPolicies_one": "{{count}} route's policy could not be read",
-      "unreadPolicies_other": "{{count}} routes' policies could not be read"
+      "unreadPolicies_other": "{{count}} routes' policies could not be read",
+      "tierNameAria": "Name of tier {{n}}",
+      "tierCeilingAria": "Maximum input size of tier {{n}}, in bytes",
+      "columns": {
+        "name": "Tier name",
+        "ceiling": "Max input size (bytes)",
+        "route": "Route"
+      },
+      "noCeiling": "no ceiling: takes the rest",
+      "aboveLast": "Requests larger than {{size}} match no tier and stay on {{model}}.",
+      "validation": {
+        "nameRequired": "Give the tier a name.",
+        "nameDuplicate": "Another tier already has this name.",
+        "catchAllNotLast": "Only the last tier can have no ceiling. Give this one a size or move it to the end.",
+        "ceilingPositive": "The ceiling must be a whole number of bytes above 0.",
+        "ceilingAscending": "The ceiling must be larger than the tier before it."
+      }
     },
     "health": {
       "emptyAction": "Open the playground",
@@ -3443,12 +3469,12 @@
     },
     "adaptiveSettings": {
       "title": "Adaptive Routing",
-      "killSwitch": "The kill switch. Turning it off leaves every route on the <0>adaptive</0> strategy serving from its static target weights instead.",
+      "killSwitch": "Turning the switch off leaves every route on the <0>adaptive</0> strategy serving from its static target weights instead.",
       "noAffectedRoutes": "No route currently uses the adaptive strategy.",
       "governsRoutes_one": "Governs {{count}} route:",
       "governsRoutes_other": "Governs {{count}} routes:",
       "toggleAria": "Adaptive routing enabled",
-      "weightsTitle": "Blend Weights",
+      "weightsTitle": "Blend weights",
       "weightsDesc": "Each signal is scored in <0>[0, 1]</0> and combined as a weighted sum, so only the ratio between these matters — doubling all three changes nothing.",
       "weights": {
         "latency": {
@@ -3466,15 +3492,16 @@
       },
       "weightAria": "{{label}} weight",
       "explorationTitle": "Exploration",
-      "explorationDesc": "The share of traffic sent off the current best target to keep its score fresh, and how many samples a target needs before its score is trusted at all. Ratio is capped at {{maxRatio}}.",
+      "explorationDesc": "The share of traffic, in percent, sent off the current best target to keep its score fresh, and how many samples a target needs before its score is trusted at all. The share is capped at {{maxPercent}}%.",
       "explorationRatio": "Exploration ratio",
       "warmUpSamples": "Warm-up samples",
       "validation": {
         "weightRange": "Each weight must be between 0 and {{maxWeight}}.",
         "weightPositive": "At least one weight must be positive. Use the kill switch to stop adaptive routing.",
-        "ratioRange": "Exploration ratio must be between 0 and {{maxRatio}}.",
+        "ratioRange": "Exploration ratio must be between 0 and {{maxPercent}}%.",
         "samplesRange": "Warm-up samples must be a whole number between 0 and {{maxSamples}}."
-      }
+      },
+      "viewDashboard": "See live routing on the dashboard"
     },
     "modelSettings": {
       "applyDefaults": "Apply defaults",

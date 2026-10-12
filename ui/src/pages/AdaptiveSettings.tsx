@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
+import { Link } from "react-router";
 
 import { superadminOnly } from "@/components/ForbiddenScreen";
 import { LoadError } from "@/components/LoadError";
@@ -32,12 +33,16 @@ interface FormState {
   minSamples: string;
 }
 
+// the ratio travels as a fraction (0.05) and is typed as the percent it means
+// (5); rounding off the binary noise keeps 0.07 from reading as 7.000000000000001
+const toPercent = (ratio: number): string => String(Number((ratio * 100).toFixed(4)));
+
 const fromDto = (dto: AdaptiveRoutingPolicyDto): FormState => ({
   enabled: dto.enabled,
   latencyWeight: String(dto.latency_weight),
   costWeight: String(dto.cost_weight),
   loadWeight: String(dto.load_weight),
-  explorationRatio: String(dto.exploration_ratio),
+  explorationRatio: toPercent(dto.exploration_ratio),
   minSamples: String(dto.min_samples),
 });
 
@@ -90,8 +95,13 @@ function validate(form: FormState): FieldErrors {
   if (weightsOk && WEIGHTS.every(([key]) => Number(form[key]) <= 0)) {
     errors.latencyWeight = "pages.adaptiveSettings.validation.weightPositive";
   }
-  const ratio = Number(form.explorationRatio);
-  if (!Number.isFinite(ratio) || ratio < 0 || ratio > MAX_EXPLORATION_RATIO) {
+  const percent = Number(form.explorationRatio);
+  if (
+    form.explorationRatio.trim() === "" ||
+    !Number.isFinite(percent) ||
+    percent < 0 ||
+    percent > MAX_EXPLORATION_PERCENT
+  ) {
     errors.explorationRatio = "pages.adaptiveSettings.validation.ratioRange";
   }
   const samples = Number(form.minSamples);
@@ -100,6 +110,8 @@ function validate(form: FormState): FieldErrors {
   }
   return errors;
 }
+
+const MAX_EXPLORATION_PERCENT = Number((MAX_EXPLORATION_RATIO * 100).toFixed(4));
 
 // global adaptive-routing policy, persisted via /api/v1/adaptive-routing-policy
 // (superadmin only). only the ratio between the weights matters — the blend is
@@ -141,7 +153,7 @@ function AdaptiveSettingsScreen() {
         latency_weight: Number(f.latencyWeight),
         cost_weight: Number(f.costWeight),
         load_weight: Number(f.loadWeight),
-        exploration_ratio: Number(f.explorationRatio),
+        exploration_ratio: Number(f.explorationRatio) / 100,
         min_samples: Number(f.minSamples),
       }),
     onSuccess: (dto) => {
@@ -204,7 +216,7 @@ function AdaptiveSettingsScreen() {
   const local = validate(form);
   const limits = {
     maxWeight: MAX_ADAPTIVE_WEIGHT,
-    maxRatio: MAX_EXPLORATION_RATIO,
+    maxPercent: MAX_EXPLORATION_PERCENT,
     maxSamples: MAX_ADAPTIVE_MIN_SAMPLES,
   };
   const errorFor = (key: FieldKey) => {
@@ -266,7 +278,7 @@ function AdaptiveSettingsScreen() {
                 })}
               </span>
               {affected.map((model) => (
-                <Badge key={model} tone="outline" className="font-mono">
+                <Badge key={model} tone="outline" className="font-mono text-xs">
                   {model}
                 </Badge>
               ))}
@@ -319,7 +331,7 @@ function AdaptiveSettingsScreen() {
       <SettingsPanel
         title={t("pages.adaptiveSettings.explorationTitle")}
         description={t("pages.adaptiveSettings.explorationDesc", {
-          maxRatio: MAX_EXPLORATION_RATIO,
+          maxPercent: MAX_EXPLORATION_PERCENT,
         })}
       >
         <div className="flex w-full flex-col gap-3">
@@ -334,6 +346,9 @@ function AdaptiveSettingsScreen() {
                 value={form.explorationRatio}
                 onChange={(e) => edit("explorationRatio", e.target.value)}
               />
+              <span aria-hidden="true" className="w-4 font-mono text-xs text-muted-foreground">
+                %
+              </span>
             </div>
             <FieldError id={errorId("explorationRatio")} error={errors.explorationRatio} />
           </div>
@@ -354,7 +369,15 @@ function AdaptiveSettingsScreen() {
         </div>
       </SettingsPanel>
 
-      <div className="sticky bottom-0 flex items-center justify-end gap-3 border-t border-[color:var(--border-subtle)] bg-background py-3">
+      <div className="sticky bottom-0 flex flex-wrap items-center justify-end gap-3 border-t border-[color:var(--border-subtle)] bg-background py-3">
+        {/* a save has no visible effect here, so the way to the live view sits
+            beside it; the dashboard links back */}
+        <Link
+          to="/adaptive-dashboard"
+          className="mr-auto rounded-sm text-sm font-medium text-foreground underline decoration-[color:var(--border-strong)] underline-offset-4 transition-colors hover:decoration-current focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          {t("pages.adaptiveSettings.viewDashboard")}
+        </Link>
         {invalid.length > 0 && (
           <span role="status" className="text-xs text-[color:var(--status-danger-text)]">
             {t("common.fieldsNeedAttention", { count: invalid.length })}

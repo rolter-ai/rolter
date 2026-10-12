@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import type { TFunction } from "i18next";
-import { Activity, Network, PowerOff } from "lucide-react";
+import { Activity, ChevronRight, Network, PowerOff } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { superadminOnly } from "@/components/ForbiddenScreen";
@@ -42,9 +42,10 @@ function formatLatency(t: TFunction, fmt: Formatters, value?: number): string {
   return t("pages.adaptiveDashboard.latencyMs", { value: fmt.number(value, DECIMAL) });
 }
 
+// money per million tokens; the column header carries the "/ Mtok"
 function formatCost(t: TFunction, fmt: Formatters, value?: number): string {
   if (!value || value <= 0) return t("pages.adaptiveDashboard.unknownCost");
-  return fmt.number(value, DECIMAL);
+  return fmt.currency(value);
 }
 
 function policySummary(t: TFunction, fmt: Formatters, node: AdaptiveNodeTelemetryDto): string {
@@ -80,13 +81,43 @@ function routeIsDisabled(route: AdaptiveRouteTelemetryDto): boolean {
   return route.nodes.length > 0 && route.nodes.every((node) => node.policy.enabled === false);
 }
 
-function nodeState(node: AdaptiveNodeTelemetryDto): "DISABLED" | "ROUTING" | "WARMING" {
-  if (node.policy.enabled === false) return "DISABLED";
-  return node.engaged ? "ROUTING" : "WARMING";
+function nodeState(t: TFunction, node: AdaptiveNodeTelemetryDto): string {
+  if (node.policy.enabled === false) return t("pages.adaptiveDashboard.nodeState.disabled");
+  return node.engaged
+    ? t("pages.adaptiveDashboard.nodeState.routing")
+    : t("pages.adaptiveDashboard.nodeState.warming");
 }
 
-function targetName(target: AdaptiveTargetTelemetryDto): string {
-  const provider = target.provider?.trim() || `target ${target.target + 1}`;
+function routeState(t: TFunction, route: AdaptiveRouteTelemetryDto): string {
+  if (route.engaged) return t("pages.adaptiveDashboard.routeState.blend");
+  return routeIsDisabled(route)
+    ? t("pages.adaptiveDashboard.routeState.disabled")
+    : t("pages.adaptiveDashboard.routeState.warming");
+}
+
+// the target the blend currently prefers: the one alone on the highest score.
+// the balancer takes the argmax of the blend and breaks a tie at random, so a
+// shared top score prefers nobody, and a node still warming up is not blending
+function preferredTarget(node: AdaptiveNodeTelemetryDto): number | null {
+  if (!node.engaged) return null;
+  const scored = node.targets.filter((target) => target.score != null);
+  if (scored.length < 2) return null;
+  const best = Math.max(...scored.map((target) => target.score as number));
+  const leaders = scored.filter((target) => target.score === best);
+  return leaders.length === 1 ? leaders[0].target : null;
+}
+
+// swatch colours of the decision bar, shared with its legend
+const MODE_SWATCH = {
+  blend: "bg-[color:var(--status-success)]",
+  exploration: "bg-[color:var(--status-info)]",
+  fallback: "bg-[color:var(--text-subtle)]",
+} as const;
+
+function targetName(t: TFunction, target: AdaptiveTargetTelemetryDto): string {
+  const provider =
+    target.provider?.trim() ||
+    t("pages.adaptiveDashboard.targetFallback", { n: target.target + 1 });
   const model = target.upstream_model?.trim();
   return model ? `${provider} / ${model}` : provider;
 }
@@ -263,25 +294,21 @@ function AdaptiveDashboardScreen() {
                     }
                     dot={!routeIsDisabled(route)}
                   >
-                    {route.engaged
-                      ? "BLEND ACTIVE"
-                      : routeIsDisabled(route)
-                        ? "DISABLED"
-                        : "FALLBACK / WARMING"}
+                    {routeState(t, route)}
                   </Badge>
                 </div>
 
-                <div className="flex flex-col gap-3 p-3">
+                <div className="flex flex-col divide-y divide-[color:var(--border-subtle)]">
                   {route.nodes.map((node, nodeIndex) => {
                     const decisionTotal = totalDecisions(node.decisions);
                     return (
-                      <details
-                        key={node.node_id}
-                        open={nodeIndex === 0}
-                        className="group rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-card)]"
-                      >
-                        <summary className="flex cursor-pointer list-none flex-wrap items-center justify-between gap-3 rounded-lg px-4 py-3 transition-colors hover:bg-[color:var(--surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
+                      <details key={node.node_id} open={nodeIndex === 0} className="group">
+                        <summary className="flex cursor-pointer list-none flex-wrap items-center justify-between gap-3 px-4 py-3 transition-colors hover:bg-[color:var(--surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
                           <span className="flex min-w-0 items-center gap-2">
+                            <ChevronRight
+                              className="h-4 w-4 flex-none text-muted-foreground transition-transform group-open:rotate-90 motion-reduce:transition-none"
+                              aria-hidden="true"
+                            />
                             <Network
                               className="h-4 w-4 flex-none text-muted-foreground"
                               aria-hidden="true"
@@ -292,7 +319,7 @@ function AdaptiveDashboardScreen() {
                           </span>
                           <span className="flex flex-wrap items-center justify-end gap-2">
                             <Badge tone={node.engaged ? "success" : "outline"}>
-                              {nodeState(node)}
+                              {nodeState(t, node)}
                             </Badge>
                             <span className="text-xs tabular-nums text-muted-foreground">
                               {t("pages.adaptiveDashboard.decisions", {
@@ -330,41 +357,35 @@ function AdaptiveDashboardScreen() {
                               aria-hidden="true"
                             >
                               <span
-                                className="bg-[color:var(--status-success)]"
+                                className={MODE_SWATCH.blend}
                                 style={{ width: barWidth(node.decisions.blend, decisionTotal) }}
                               />
                               <span
-                                className="bg-[color:var(--status-info)]"
+                                className={MODE_SWATCH.exploration}
                                 style={{
                                   width: barWidth(node.decisions.exploration, decisionTotal),
                                 }}
                               />
                               <span
-                                className="bg-[color:var(--text-subtle)]"
+                                className={MODE_SWATCH.fallback}
                                 style={{ width: barWidth(node.decisions.fallback, decisionTotal) }}
                               />
                             </div>
-                            <dl className="mt-2 grid grid-cols-1 gap-2 text-xs sm:grid-cols-3">
-                              {(
-                                [
-                                  [t("pages.adaptiveDashboard.modes.blend"), node.decisions.blend],
-                                  [
-                                    t("pages.adaptiveDashboard.modes.exploration"),
-                                    node.decisions.exploration,
-                                  ],
-                                  [
-                                    t("pages.adaptiveDashboard.modes.fallback"),
-                                    node.decisions.fallback,
-                                  ],
-                                ] as const
-                              ).map(([label, value]) => (
-                                <div
-                                  key={label}
-                                  className="flex items-baseline justify-between gap-2"
-                                >
-                                  <dt className="text-muted-foreground">{label}</dt>
+                            {/* the key to the bar: swatch, name and count sit together so
+                                a value is never read against its neighbour's label */}
+                            <dl className="mt-2 flex flex-wrap gap-x-6 gap-y-1.5 text-xs">
+                              {(["blend", "exploration", "fallback"] as const).map((mode) => (
+                                <div key={mode} className="flex items-center gap-2">
+                                  <span
+                                    aria-hidden="true"
+                                    className={`h-2.5 w-2.5 flex-none rounded-full ${MODE_SWATCH[mode]}`}
+                                  />
+                                  <dt className="text-muted-foreground">
+                                    {t(`pages.adaptiveDashboard.modes.${mode}`)}
+                                  </dt>
                                   <dd className="font-mono tabular-nums text-foreground">
-                                    {fmt.number(value)} · {share(fmt, value, decisionTotal)}
+                                    {fmt.number(node.decisions[mode])} ·{" "}
+                                    {share(fmt, node.decisions[mode], decisionTotal)}
                                   </dd>
                                 </div>
                               ))}
@@ -393,6 +414,9 @@ function AdaptiveDashboardScreen() {
                                     </th>
                                     <th scope="col" className="px-3 py-2 text-right font-medium">
                                       {t("pages.adaptiveDashboard.columns.blendScore")}
+                                      <span className="block font-normal normal-case tracking-normal">
+                                        {t("pages.adaptiveDashboard.columns.blendScoreHint")}
+                                      </span>
                                     </th>
                                     <th scope="col" className="px-3 py-2 text-right font-medium">
                                       {t("pages.adaptiveDashboard.columns.latency")}
@@ -418,7 +442,12 @@ function AdaptiveDashboardScreen() {
                                         scope="row"
                                         className="break-words px-3 py-2.5 text-left font-mono text-xs font-medium"
                                       >
-                                        {targetName(target)}
+                                        {targetName(t, target)}
+                                        {target.target === preferredTarget(node) && (
+                                          <Badge tone="success" className="ml-2 align-middle">
+                                            {t("pages.adaptiveDashboard.preferred")}
+                                          </Badge>
+                                        )}
                                       </th>
                                       <td className="px-3 py-2.5 text-right font-mono text-xs tabular-nums">
                                         {target.score == null

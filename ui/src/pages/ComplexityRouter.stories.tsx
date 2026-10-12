@@ -12,13 +12,14 @@ import {
   expectSkeleton,
   json,
   pending,
+  recording,
   routes,
   scoped,
   scopeResponse,
 } from "./story-harness";
 import type { FetchStub } from "./story-harness";
 import en from "@/lib/i18n/locales/en.json";
-import type { RouteRow } from "@/lib/api";
+import type { ComplexityTier, RouteRow } from "@/lib/api";
 
 const route = (over: Partial<RouteRow> = {}): RouteRow => ({
   id: "r-1",
@@ -67,6 +68,23 @@ export const Loaded: Story = {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getAllByText("gpt-4o").length).toBeGreaterThan(0));
     await waitFor(() => expect(canvas.getAllByText("small").length).toBeGreaterThan(0));
+    // a policy with no catch-all says where the larger requests go
+    await expect(
+      canvas.getAllByText("Requests larger than 4 KiB match no tier and stay on gpt-4o.").length,
+    ).toBeGreaterThan(0);
+  },
+};
+
+// the group labels are headings, so a screen reader can jump between them
+export const GroupsAreHeadings: Story = {
+  render: () => (
+    <Harness fetchStub={unconfigured}>
+      <ComplexityRouter />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByRole("heading", { name: "No policy yet" })).toBeVisible();
   },
 };
 
@@ -109,6 +127,8 @@ export const Error_: Story = {
   play: async ({ canvasElement }) => {
     await expectLoadError(canvasElement, /failed to return routes/i);
     await expectNoFalseEmpty(canvasElement, /No routes to give a policy/);
+    // no "0 of 0 routes" while the list failed to arrive
+    await expect(within(canvasElement).queryByText(/of 0 routes/)).not.toBeInTheDocument();
   },
 };
 
@@ -338,5 +358,117 @@ export const EditorPolicyReadFails: Story = {
     // contents the read never returned
     await expect(dialog.queryByDisplayValue("small")).not.toBeInTheDocument();
     await expect(dialog.getByRole("button", { name: "Save" })).toBeDisabled();
+  },
+};
+
+// ── the editor on a loaded policy (#2144) ─────────────────────────────────────
+
+const openEditor = async (canvasElement: HTMLElement) => {
+  const canvas = within(canvasElement);
+  await userEvent.click(
+    await canvas.findByRole("button", { name: "Edit the complexity policy for gpt-4o" }),
+  );
+  return within(await within(document.body).findByRole("dialog"));
+};
+
+/** A saved two-tier policy the editor opens on; `PUT` is recorded. */
+const policyRecorder = (tiers: ComplexityTier[]) =>
+  recording(async (input, init) => {
+    const url = String(input);
+    const scope = scopeResponse(url);
+    if (scope) return scope;
+    if (url.includes("/complexity")) {
+      return init?.method === "PUT" ? json(route()) : json({ tiers });
+    }
+    if (url.includes("/routes")) return json(ROUTES);
+    return json([]);
+  });
+
+const TWO_TIERS: ComplexityTier[] = [
+  { name: "small", max_input_bytes: 4096, route: "gpt-4o-mini" },
+  { name: "large", max_input_bytes: null, route: "gpt-4o" },
+];
+
+let saved = policyRecorder(TWO_TIERS);
+
+// every tier row is named: visible column headers, a name per input that says
+// which tier it belongs to, and the byte ceiling read back in KiB
+export const EditorLabelsTheTierFields: Story = {
+  render: () => {
+    saved = policyRecorder(TWO_TIERS);
+    return (
+      <Harness fetchStub={saved.stub}>
+        <ComplexityRouter />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const dialog = await openEditor(canvasElement);
+    await expect(await dialog.findByText("Max input size (bytes)")).toBeVisible();
+    await expect(dialog.getByText("Tier name")).toBeVisible();
+    await expect(dialog.getByLabelText("Name of tier 1")).toHaveValue("small");
+    const ceiling = dialog.getByLabelText("Maximum input size of tier 1, in bytes");
+    await expect(ceiling).toHaveValue(4096);
+    await expect(dialog.getByText("= 4 KiB")).toBeVisible();
+    await expect(dialog.getByLabelText("Maximum input size of tier 2, in bytes")).toHaveValue(null);
+    await expect(dialog.getByText("no ceiling: takes the rest")).toBeVisible();
+    await expect(dialog.getByRole("button", { name: "Remove tier small" })).toBeVisible();
+  },
+};
+
+// edit a ceiling and save: the PUT carries the new number
+export const EditsACeilingAndSaves: Story = {
+  render: () => {
+    saved = policyRecorder(TWO_TIERS);
+    return (
+      <Harness fetchStub={saved.stub}>
+        <ComplexityRouter />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const dialog = await openEditor(canvasElement);
+    const ceiling = await dialog.findByLabelText("Maximum input size of tier 1, in bytes");
+    await userEvent.clear(ceiling);
+    await userEvent.type(ceiling, "8192");
+    await expect(dialog.getByText("= 8 KiB")).toBeVisible();
+    await userEvent.click(dialog.getByRole("button", { name: "Save" }));
+    const body = await saved.expectSentBody<{ tiers: ComplexityTier[] }>("PUT", "/complexity");
+    await expect(body.tiers[0].max_input_bytes).toBe(8192);
+    await expect(body.tiers[1].max_input_bytes).toBeNull();
+  },
+};
+
+// descending ceilings and a catch-all that is not last are refused on the row,
+// before the round trip
+export const OutOfOrderPolicyIsRefusedOnTheRow: Story = {
+  render: () => {
+    saved = policyRecorder([
+      { name: "small", max_input_bytes: 8192, route: "gpt-4o-mini" },
+      { name: "medium", max_input_bytes: 4096, route: "gpt-4o" },
+      { name: "rest", max_input_bytes: null, route: "gpt-4o" },
+    ]);
+    return (
+      <Harness fetchStub={saved.stub}>
+        <ComplexityRouter />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const dialog = await openEditor(canvasElement);
+    const second = await dialog.findByLabelText("Maximum input size of tier 2, in bytes");
+    await waitFor(() => expect(second).toHaveAttribute("aria-invalid", "true"));
+    await expect(second).toHaveAccessibleDescription(
+      "The ceiling must be larger than the tier before it.",
+    );
+    await expect(dialog.getByRole("button", { name: "Save" })).toBeDisabled();
+    // clearing the middle ceiling makes it a catch-all that is not last
+    await userEvent.clear(second);
+    const third = dialog.getByLabelText("Maximum input size of tier 3, in bytes");
+    await userEvent.clear(third);
+    await userEvent.type(third, "100");
+    await waitFor(() => expect(second).toHaveAttribute("aria-invalid", "true"));
+    await expect(second).toHaveAccessibleDescription(/Only the last tier can have no ceiling/);
+    saved.expectNotSent("PUT", "/complexity");
   },
 };
