@@ -176,7 +176,7 @@ export const SavesChanges: Story = {
     const origins = await canvas.findByDisplayValue("https://app.example.com");
     await userEvent.clear(origins);
     await userEvent.type(origins, "https://console.example.com");
-    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
+    await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
     await expectToast(canvasElement, /security settings updated/i);
   },
 };
@@ -208,7 +208,7 @@ export const SaveRejectedByTheServer: Story = {
     const origins = await canvas.findByDisplayValue("https://app.example.com");
     await userEvent.clear(origins);
     await userEvent.type(origins, "https://console.example.com");
-    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
+    await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
     await expectToast(canvasElement, /is not a valid origin/, "error");
     await waitFor(() => expect(origins).toHaveValue("https://console.example.com"));
   },
@@ -270,7 +270,7 @@ export const FreshDeployment: Story = {
       "https://app.example.com\nhttps://console.example.com",
     );
     await expect(canvas.getByLabelText("Required Headers")).toHaveValue("");
-    await expect(canvas.getByRole("button", { name: "Save Changes" })).toBeDisabled();
+    await expect(canvas.getByRole("button", { name: "Save changes" })).toBeDisabled();
     fresh.expectNotSent("PUT", SETTINGS);
   },
 };
@@ -291,7 +291,7 @@ export const SaveWaitsForAnEditAndDiscardRestores: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const origins = await canvas.findByLabelText("Allowed Origins");
-    const save = canvas.getByRole("button", { name: "Save Changes" });
+    const save = canvas.getByRole("button", { name: "Save changes" });
     const discard = canvas.getByRole("button", { name: "Discard changes" });
     await expect(save).toBeDisabled();
     await expect(discard).toBeDisabled();
@@ -355,13 +355,13 @@ export const MalformedHeaderStaysAndBlocksSave: Story = {
     await expect(headers).toBeInvalid();
     await expect(headers).toHaveAccessibleDescription(new RegExp(message.replace(".", "\\.")));
     await expect(canvas.getByText("Fix 1 entry to save.")).toBeVisible();
-    await expect(canvas.getByRole("button", { name: "Save Changes" })).toBeDisabled();
+    await expect(canvas.getByRole("button", { name: "Save changes" })).toBeDisabled();
     malformed.expectNotSent("PUT", SETTINGS);
 
     await enter(headers, "x-tenant: globex");
     await waitFor(() => expect(canvas.queryByText(message)).toBeNull());
     await expect(headers).toBeValid();
-    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
+    await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
     await expect(await malformed.expectSentBody("PUT", SETTINGS)).toEqual({
       ...BASE_BODY,
       required_headers: { "x-tenant": "globex" },
@@ -418,7 +418,7 @@ export const EveryListNamesItsProblems: Story = {
       ),
     ).toBeVisible();
     await expect(canvas.getByText("Fix 4 entries to save.")).toBeVisible();
-    await expect(canvas.getByRole("button", { name: "Save Changes" })).toBeDisabled();
+    await expect(canvas.getByRole("button", { name: "Save changes" })).toBeDisabled();
 
     // a fifth and sixth problem in one list are counted, not listed
     await enter(
@@ -467,10 +467,10 @@ export const ValuesWithCommasRoundTrip: Story = {
       "x-request-id\nX-Stainless-Timeout",
     );
     await expect(canvas.getByLabelText("Auth Bypass Routes")).toHaveValue("/v1/models\n/v1/ping");
-    await expect(canvas.getByRole("button", { name: "Save Changes" })).toBeDisabled();
+    await expect(canvas.getByRole("button", { name: "Save changes" })).toBeDisabled();
 
     await userEvent.type(required, "{Enter}x-ids: 1,2,3");
-    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
+    await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
     await expect(await roundTrip.expectSentBody("PUT", SETTINGS)).toEqual({
       ...BASE_BODY,
       allowed_origins: ["https://app.example.com", "https://console.example.com"],
@@ -506,7 +506,7 @@ export const StoredProblemIsShownFromTheStart: Story = {
     ).toBeVisible();
     await expect(routes).toBeInvalid();
     await expect(canvas.getByText("Fix 1 entry to save.")).toBeVisible();
-    await expect(canvas.getByRole("button", { name: "Save Changes" })).toBeDisabled();
+    await expect(canvas.getByRole("button", { name: "Save changes" })).toBeDisabled();
   },
 };
 
@@ -532,7 +532,7 @@ export const LooseningIsConfirmedBeforeItIsSent: Story = {
       await canvas.findByLabelText("Auth Bypass Routes"),
       "{Enter}/v1/ping{Enter}/v1/embeddings",
     );
-    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
+    await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
 
     const dialogElement = await confirmation();
     await waitFor(() => expect(dialogElement).toBeVisible());
@@ -584,7 +584,7 @@ export const CancelledLooseningSendsNothing: Story = {
     const canvas = within(canvasElement);
     const routes = await canvas.findByLabelText("Auth Bypass Routes");
     await userEvent.type(routes, "{Enter}/v1/ping");
-    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
+    await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
     await expect(await confirmation()).toBeInTheDocument();
 
     await cancelConfirmation();
@@ -593,7 +593,7 @@ export const CancelledLooseningSendsNothing: Story = {
     await expectUxEvent("form_abandon", "security-loosen");
     await expect(routes).toHaveValue("/v1/models\n/v1/ping");
     await expect(canvas.getAllByText("Edited")).toHaveLength(1);
-    await expect(canvas.getByRole("button", { name: "Save Changes" })).toBeEnabled();
+    await expect(canvas.getByRole("button", { name: "Save changes" })).toBeEnabled();
   },
 };
 
@@ -617,7 +617,7 @@ export const RefusedLooseningKeepsTheDialogOpen: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.type(await canvas.findByLabelText("Auth Bypass Routes"), "{Enter}/v1/ping");
-    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
+    await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
     const dialogElement = await confirmation();
     await userEvent.click(within(dialogElement).getByRole("button", { name: "Save changes" }));
 
@@ -651,7 +651,7 @@ export const TighteningSavesWithoutAsking: Story = {
     const canvas = within(canvasElement);
     await userEvent.clear(await canvas.findByLabelText("Auth Bypass Routes"));
     await userEvent.type(canvas.getByLabelText("Required Headers"), "{Enter}x-mesh-id: edge");
-    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
+    await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
 
     await expect(await tightening.expectSentBody("PUT", SETTINGS)).toEqual({
       ...BASE_BODY,
@@ -681,12 +681,12 @@ export const SavedLineSaysEveryGatewayRunsIt: Story = {
     const canvas = within(canvasElement);
     const origins = await canvas.findByLabelText("Allowed Origins");
     await enter(origins, "https://console.example.com");
-    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
+    await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
     await expect(
       await canvas.findByText(/^Saved at .+\. All 2 live gateways are running it\.$/),
     ).toBeVisible();
     await pickedUp.expectSent("GET", "/api/v1/cluster/nodes");
-    await expect(canvas.getByRole("button", { name: "Save Changes" })).toBeDisabled();
+    await expect(canvas.getByRole("button", { name: "Save changes" })).toBeDisabled();
   },
 };
 
@@ -709,7 +709,7 @@ export const SavedLineCountsAGatewayThatLags: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await enter(await canvas.findByLabelText("Allowed Origins"), "https://console.example.com");
-    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
+    await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
     await expect(
       await canvas.findByText(
         /^Saved at .+\. 1 of 2 live gateways are running it; the rest pick it up on their next config poll\.$/,
@@ -733,7 +733,7 @@ export const SavedLineAdmitsWhenNoGatewayHasReported: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await enter(await canvas.findByLabelText("Allowed Origins"), "https://console.example.com");
-    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
+    await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
     await expect(
       await canvas.findByText(
         /^Saved at .+\. No live gateway has reported to this control plane, so pickup cannot be confirmed\. A gateway applies it on its next config poll, 5 s by default\.$/,
@@ -754,7 +754,7 @@ export const SavedLineAdmitsWhenTheGatewaysCannotBeRead: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await enter(await canvas.findByLabelText("Allowed Origins"), "https://console.example.com");
-    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
+    await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
     await expect(
       await canvas.findByText(
         /^Saved at .+\. The live gateways could not be read, so pickup cannot be confirmed\./,

@@ -1,9 +1,14 @@
 import type { Meta, StoryObj } from "@storybook/react";
+import type * as React from "react";
+import { Link, useLocation } from "react-router";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import Performance from "./Performance";
 import {
   expectForbidden,
+  expectLoadError,
+  expectNoFalseEmpty,
+  openOptions,
   expectSkeleton,
   expectToast,
   Harness as ScreenHarness,
@@ -15,6 +20,7 @@ import {
   type StoryRole,
 } from "./story-harness";
 import type { RuntimePolicyDto } from "@/lib/api";
+import en from "@/lib/i18n/locales/en.json";
 
 const BASE: RuntimePolicyDto = {
   retry_max_retries: 2,
@@ -38,11 +44,20 @@ const BASE: RuntimePolicyDto = {
  * never blocks, and a story can only reach the 403 by stubbing one — which
  * tests the screen's own error path rather than the gate (#1606).
  */
-function Harness({ fetchStub, role }: { fetchStub: FetchStub; role?: StoryRole }) {
+function Harness({
+  fetchStub,
+  role,
+  children,
+}: {
+  fetchStub: FetchStub;
+  role?: StoryRole;
+  children?: React.ReactNode;
+}) {
   return (
     <ScreenHarness fetchStub={fetchStub} role={role}>
       <Toasted>
         <Performance />
+        {children}
       </Toasted>
     </ScreenHarness>
   );
@@ -98,13 +113,13 @@ export const BlockNeedsATimeout: Story = {
     const mode = await canvas.findByLabelText("When the queue is full");
     // the block timeout only applies to block mode, so it starts disabled
     await expect(canvas.getByLabelText("Block timeout (ms)")).toBeDisabled();
-    await pickOption(mode, "block");
+    await pickOption(mode, "Block");
     const block = canvas.getByLabelText("Block timeout (ms)");
     await waitFor(() => expect(block).toHaveAttribute("aria-invalid", "true"));
     await expect(block).toHaveAccessibleDescription(
       "Block backpressure needs a non-zero block timeout.",
     );
-    await expect(canvas.getByRole("button", { name: "Save Changes" })).toHaveAttribute(
+    await expect(canvas.getByRole("button", { name: "Save changes" })).toHaveAttribute(
       "aria-disabled",
       "true",
     );
@@ -112,7 +127,7 @@ export const BlockNeedsATimeout: Story = {
     await userEvent.clear(canvas.getByLabelText("Block timeout (ms)"));
     await userEvent.type(canvas.getByLabelText("Block timeout (ms)"), "500");
     await waitFor(() =>
-      expect(canvas.getByRole("button", { name: "Save Changes" })).not.toHaveAttribute(
+      expect(canvas.getByRole("button", { name: "Save changes" })).not.toHaveAttribute(
         "aria-disabled",
       ),
     );
@@ -131,12 +146,12 @@ export const QueueOffIgnoresAnOutOfRangeCapacity: Story = {
     await waitFor(() => expect(canvas.getByLabelText("Capacity")).toBeDisabled());
     await expect(canvas.queryByText(/Queue capacity must be/)).toBeNull();
     await expect(canvas.getByLabelText("Capacity")).not.toHaveAttribute("aria-invalid");
-    await expect(canvas.getByRole("button", { name: "Save Changes" })).not.toHaveAttribute(
+    await expect(canvas.getByRole("button", { name: "Save changes" })).not.toHaveAttribute(
       "aria-disabled",
     );
     await userEvent.click(canvas.getByRole("switch", { name: "Admission queue" }));
     await waitFor(() =>
-      expect(canvas.getByRole("button", { name: "Save Changes" })).toHaveAttribute(
+      expect(canvas.getByRole("button", { name: "Save changes" })).toHaveAttribute(
         "aria-disabled",
         "true",
       ),
@@ -156,16 +171,16 @@ export const BlockTimeoutIgnoredOutsideBlockMode: Story = {
     const mode = await canvas.findByLabelText("When the queue is full");
     await expect(canvas.getByLabelText("Block timeout (ms)")).toBeDisabled();
     await expect(canvas.queryByText(/Block timeout must be/)).toBeNull();
-    await expect(canvas.getByRole("button", { name: "Save Changes" })).not.toHaveAttribute(
+    await expect(canvas.getByRole("button", { name: "Save changes" })).not.toHaveAttribute(
       "aria-disabled",
     );
-    await pickOption(mode, "block");
+    await pickOption(mode, "Block");
     await waitFor(() =>
       expect(canvas.getByLabelText("Block timeout (ms)")).toHaveAccessibleDescription(
         /Block timeout must be/,
       ),
     );
-    await expect(canvas.getByRole("button", { name: "Save Changes" })).toHaveAttribute(
+    await expect(canvas.getByRole("button", { name: "Save changes" })).toHaveAttribute(
       "aria-disabled",
       "true",
     );
@@ -186,7 +201,7 @@ export const SwitchingTheQueueOffKeepsTheStoredValue: Story = {
     await userEvent.clear(capacity);
     await userEvent.type(capacity, "0");
     await userEvent.click(canvas.getByRole("switch", { name: "Admission queue" }));
-    const save = canvas.getByRole("button", { name: "Save Changes" });
+    const save = canvas.getByRole("button", { name: "Save changes" });
     await expect(save).not.toHaveAttribute("aria-disabled");
     await userEvent.click(save);
     const body = await switchingOff.expectSentBody<RuntimePolicyDto>("PUT", "runtime-policy");
@@ -205,7 +220,7 @@ export const RetryCapCannotBeBelowBase: Story = {
     await userEvent.type(cap, "10");
     await waitFor(() => expect(cap).toHaveAttribute("aria-invalid", "true"));
     await expect(cap).toHaveAccessibleDescription("Retry cap cannot be lower than the retry base.");
-    await expect(canvas.getByRole("button", { name: "Save Changes" })).toHaveAttribute(
+    await expect(canvas.getByRole("button", { name: "Save changes" })).toHaveAttribute(
       "aria-disabled",
       "true",
     );
@@ -231,7 +246,7 @@ export const MarksEveryInvalidField: Story = {
     await expect(retries).toHaveAccessibleDescription("Max retries must be between 0 and 10.");
     await expect(workers).toHaveAccessibleDescription("Queue workers must be between 1 and 2048.");
     await expect(canvas.getByText("2 fields need attention")).toBeVisible();
-    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
+    await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
     await expect(retries).toHaveFocus();
   },
 };
@@ -252,7 +267,7 @@ export const ServerRejectionLandsOnTheField: Story = {
     const request = await canvas.findByLabelText("Request (s)");
     await userEvent.clear(request);
     await userEvent.type(request, "60");
-    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
+    await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
     await waitFor(() => expect(request).toHaveAttribute("aria-invalid", "true"));
     await expect(request).toHaveAccessibleDescription(
       "timeout_request_s must be between 0 and 3600",
@@ -277,7 +292,7 @@ export const SavesChanges: Story = {
     const retries = await canvas.findByLabelText("Max retries");
     await userEvent.clear(retries);
     await userEvent.type(retries, "4");
-    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
+    await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
     await expectToast(canvasElement, /performance settings updated/i);
     await expect(canvas.getByLabelText("Max retries")).toHaveValue("4");
   },
@@ -306,7 +321,7 @@ export const SaveRejectedByTheServer: Story = {
     const field = await canvas.findByLabelText("Max retries");
     await userEvent.clear(field);
     await userEvent.type(field, "4");
-    await userEvent.click(canvas.getByRole("button", { name: "Save Changes" }));
+    await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
     await expectToast(canvasElement, /exceeds the configured budget/, "error");
     await waitFor(() => expect(canvas.getByLabelText("Max retries")).toHaveValue("4"));
   },
@@ -331,5 +346,173 @@ export const RefusedToAViewer: Story = {
   render: () => <Harness fetchStub={async () => json(BASE)} role="viewer" />,
   play: async ({ canvasElement }) => {
     await expectForbidden(canvasElement);
+  },
+};
+
+// a read that failed for a reason a retry can mend (a 5xx, an unreachable
+// control plane) says so and offers the retry; the form appears once it works
+export const LoadFailedThenRetried: Story = {
+  render: () => {
+    let reads = 0;
+    return (
+      <Harness
+        fetchStub={async () => {
+          reads += 1;
+          return reads === 1
+            ? json({ error: { message: "the policy store is unavailable" } }, 503)
+            : json(BASE);
+        }}
+      />
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectLoadError(canvasElement, /performance settings/i);
+    await expectNoFalseEmpty(canvasElement, /max retries/i);
+    await userEvent.click(canvas.getByRole("button", { name: en.errors.load.retry }));
+    await expect(await canvas.findByLabelText("Max retries")).toHaveValue("2");
+    await expect(canvas.queryByText("the policy store is unavailable")).toBeNull();
+  },
+};
+
+/**
+ * Save waits for an edit (#2123). A panel says it was edited, the footer counts
+ * the settings, and Discard puts every field back to what was loaded. An edit
+ * typed back to the stored value is no edit.
+ */
+export const SaveWaitsForAnEditAndDiscardRestores: Story = {
+  render: () => <Harness fetchStub={async () => json(BASE)} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const retries = await canvas.findByLabelText("Max retries");
+    const save = canvas.getByRole("button", { name: "Save changes" });
+    const discard = canvas.getByRole("button", { name: "Discard changes" });
+    await expect(save).toBeDisabled();
+    await expect(discard).toBeDisabled();
+    await expect(canvas.queryAllByText("Edited")).toHaveLength(0);
+
+    await userEvent.clear(retries);
+    await userEvent.type(retries, "4");
+    await expect(save).toBeEnabled();
+    await expect(discard).toBeEnabled();
+    await expect(canvas.getAllByText("Edited")).toHaveLength(1);
+    await expect(canvas.getByText("1 setting changed, not saved yet.")).toBeVisible();
+
+    await userEvent.clear(retries);
+    await userEvent.type(retries, "2");
+    await expect(save).toBeDisabled();
+    await expect(canvas.queryAllByText("Edited")).toHaveLength(0);
+
+    await userEvent.type(retries, "{Backspace}5");
+    await userEvent.clear(canvas.getByLabelText("Connect (s)"));
+    await userEvent.type(canvas.getByLabelText("Connect (s)"), "30");
+    await expect(canvas.getAllByText("Edited")).toHaveLength(2);
+    await expect(canvas.getByText("2 settings changed, not saved yet.")).toBeVisible();
+
+    await userEvent.click(discard);
+    await expect(retries).toHaveValue("2");
+    await expect(canvas.getByLabelText("Connect (s)")).toHaveValue("10");
+    await expect(canvas.queryAllByText("Edited")).toHaveLength(0);
+    await expect(canvas.queryByText(/not saved yet/)).toBeNull();
+    await expect(save).toBeDisabled();
+  },
+};
+
+// the dropdown offers translated labels over the same wire values
+export const BackpressureOptionsAreTranslated: Story = {
+  render: () => <Harness fetchStub={async () => json(BASE)} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const mode = await canvas.findByLabelText("When the queue is full");
+    await expect(mode).toHaveValue("Error");
+    const listbox = await openOptions(mode);
+    await expect(
+      within(listbox)
+        .getAllByRole("option")
+        .map((o) => o.textContent),
+    ).toEqual(["Drop", "Block", "Error"]);
+  },
+};
+
+// the store keeps what was written, as the real one does, so the refetch after a
+// save does not hand the old policy back
+let stored: RuntimePolicyDto = BASE;
+const saves = recording(async (_input, init) => {
+  if (init?.method === "PUT") stored = { ...BASE, ...JSON.parse(String(init.body)) };
+  return json(stored);
+});
+
+// a saved draft is no longer dirty: Save and Discard wait again
+export const SavingClearsTheDirtyState: Story = {
+  render: () => <Harness fetchStub={saves.stub} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const retries = await canvas.findByLabelText("Max retries");
+    await userEvent.clear(retries);
+    await userEvent.type(retries, "4");
+    await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
+    await saves.expectSentBody<RuntimePolicyDto>("PUT", "runtime-policy");
+    await waitFor(() =>
+      expect(canvas.getByRole("button", { name: "Save changes" })).toBeDisabled(),
+    );
+    await expect(canvas.queryAllByText("Edited")).toHaveLength(0);
+  },
+};
+
+// stands in for the nav: a link away from the screen and a readout of where
+// the router ended up
+function Elsewhere() {
+  const { pathname } = useLocation();
+  return (
+    <>
+      <Link to="/elsewhere">Go elsewhere</Link>
+      <output data-testid="pathname">{pathname}</output>
+    </>
+  );
+}
+
+const dialog = () => within(document.body).findByRole("dialog");
+
+/**
+ * Leaving with an unsaved edit asks first (#2123, #2584): cancelling keeps the
+ * screen and the draft, confirming lets the navigation through.
+ */
+export const LeavingDirtyAsksFirst: Story = {
+  render: () => (
+    <Harness fetchStub={async () => json(BASE)}>
+      <Elsewhere />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const retries = await canvas.findByLabelText("Max retries");
+    await userEvent.clear(retries);
+    await userEvent.type(retries, "4");
+    await userEvent.click(canvas.getByRole("link", { name: "Go elsewhere" }));
+    const d = within(await dialog());
+    await expect(d.getByText("Discard unsaved changes?")).toBeVisible();
+    await expect(canvas.getByTestId("pathname")).toHaveTextContent("/");
+    await userEvent.click(d.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(within(document.body).queryByRole("dialog")).toBeNull());
+    await expect(retries).toHaveValue("4");
+    await userEvent.click(canvas.getByRole("link", { name: "Go elsewhere" }));
+    await userEvent.click(within(await dialog()).getByRole("button", { name: "Discard" }));
+    await waitFor(() => expect(canvas.getByTestId("pathname")).toHaveTextContent("/elsewhere"));
+  },
+};
+
+// nothing was touched, so there is nothing to lose and no prompt
+export const LeavingCleanDoesNotAsk: Story = {
+  render: () => (
+    <Harness fetchStub={async () => json(BASE)}>
+      <Elsewhere />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByLabelText("Max retries");
+    await userEvent.click(canvas.getByRole("link", { name: "Go elsewhere" }));
+    await waitFor(() => expect(canvas.getByTestId("pathname")).toHaveTextContent("/elsewhere"));
+    await expect(within(document.body).queryByRole("dialog")).toBeNull();
   },
 };

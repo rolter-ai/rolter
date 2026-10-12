@@ -114,7 +114,7 @@
     "rowActions": "Row actions",
     "remove": "Remove",
     "save": "Save",
-    "saveChanges": "Save Changes",
+    "saveChanges": "Save changes",
     "fieldsNeedAttention_one": "{{count}} field needs attention",
     "fieldsNeedAttention_other": "{{count}} fields need attention",
     "saving": "Saving…",
@@ -3441,13 +3441,24 @@
         "request": "Request (s)"
       },
       "queue": {
-        "title": "Admission Queue",
+        "title": "Admission queue",
         "desc": "Each provider gets its own bounded queue and worker set, so a slow provider cannot consume the admission capacity of healthy ones.",
         "toggleAria": "Admission queue",
         "capacity": "Capacity",
         "workers": "Workers",
         "whenFull": "When the queue is full",
         "blockTimeout": "Block timeout (ms)"
+      },
+      "backpressureLabel": {
+        "drop": "Drop",
+        "block": "Block",
+        "error": "Error"
+      },
+      "edited": "Edited",
+      "discard": "Discard changes",
+      "status": {
+        "changed_one": "{{count}} setting changed, not saved yet.",
+        "changed_other": "{{count}} settings changed, not saved yet."
       },
       "backpressure": {
         "drop": "Drop — shed the request immediately with an overload response.",
