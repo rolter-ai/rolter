@@ -1779,6 +1779,7 @@ impl ConfigStore for PostgresConfigStore {
         let plugins = self.load_plugins().await?;
         let mut config = GatewayConfig {
             providers,
+            left_out_providers: left_out,
             routes,
             provider_groups,
             model_prices,

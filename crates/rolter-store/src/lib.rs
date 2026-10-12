@@ -240,6 +240,10 @@ impl ConfigStore for MergedConfigStore {
                 .into_iter()
                 .filter(|p| !self.bootstrap.providers.iter().any(|c| c.name == p.name)),
         );
+        // a provider the store left out stays out for the file's references too
+        merged
+            .left_out_providers
+            .extend(db.left_out_providers.iter().cloned());
         merged.routes.extend(
             db.routes
                 .into_iter()

@@ -22,6 +22,17 @@ pub struct GatewayConfig {
     /// version the file on disk carried.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schema_version: Option<u32>,
+    /// Providers the store loader left out because their stored row could not
+    /// be read (#2950).
+    ///
+    /// A bootstrap-file route, group or key may name a database provider, and
+    /// to [`sanitize_for_snapshot`](Self::sanitize_for_snapshot) a provider
+    /// the loader never returned is just an unknown name, which is refused as
+    /// a typo. This set lets that pass tell the two apart and prune the
+    /// reference like any other omitted provider. Never read from or written
+    /// to a file or the wire: it only travels from the store to the sanitizer.
+    #[serde(skip)]
+    pub left_out_providers: std::collections::HashSet<String>,
     #[serde(default)]
     pub server: ServerConfig,
     /// outbound TLS trust configuration shared by upstream providers
@@ -3673,6 +3684,14 @@ impl GatewayConfig {
         for provider in &self.providers {
             omitted.remove(provider.name.as_str());
         }
+        // a provider the store loader left out never reached `providers`, so
+        // the passes above could not see it (#2950); it is omitted all the same
+        omitted.extend(
+            self.left_out_providers
+                .iter()
+                .filter(|name| !self.providers.iter().any(|p| &p.name == *name))
+                .cloned(),
+        );
 
         self.report_denied_operator_urls(&mut warnings);
         // the omission above leaves every reference to that provider dangling,
@@ -7695,6 +7714,69 @@ mod tests {
             "{:?}",
             cfg.validate_snapshot()
         );
+    }
+
+    /// #2950: the loader left the provider out before the sanitizer ever saw
+    /// it, so the file's reference to it was an unknown name and refused.
+    #[test]
+    fn sanitize_prunes_references_to_a_provider_the_store_loader_left_out() {
+        let mut cfg: GatewayConfig = toml::from_str(
+            r#"
+            [[providers]]
+            name = "openai"
+            kind = "openai"
+            api_base = "https://api.openai.com/v1"
+
+            [[routes]]
+            model = "m"
+            [[routes.targets]]
+            provider = "openai"
+            [[routes.targets]]
+            provider = "stored"
+
+            [[virtual_keys]]
+            key = "k"
+            providers = ["openai", "stored"]
+            "#,
+        )
+        .unwrap();
+        assert!(
+            cfg.validate_snapshot().is_err(),
+            "precondition: an unknown name is refused"
+        );
+        cfg.left_out_providers.insert("stored".to_string());
+
+        let warnings = cfg.sanitize_for_snapshot();
+
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("route 'm' target 'stored' omitted")),
+            "{warnings:?}"
+        );
+        assert_eq!(cfg.routes[0].targets.len(), 1);
+        assert_eq!(cfg.virtual_keys[0].providers, ["openai"]);
+        assert!(
+            cfg.validate_snapshot().is_ok(),
+            "{:?}",
+            cfg.validate_snapshot()
+        );
+    }
+
+    /// A left-out name that a file provider also carries is that provider.
+    #[test]
+    fn a_left_out_name_a_file_provider_carries_is_not_pruned() {
+        let mut cfg = fleet_with_an_omitted_provider(
+            r#"
+            [[routes]]
+            model = "m"
+            [[routes.targets]]
+            provider = "openai"
+            "#,
+        );
+        cfg.left_out_providers.insert("openai".to_string());
+        let warnings = cfg.sanitize_for_snapshot();
+        assert_eq!(cfg.routes[0].targets.len(), 1, "{warnings:?}");
     }
 
     #[test]

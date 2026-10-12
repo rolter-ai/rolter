@@ -169,6 +169,66 @@ pub struct PluginInstance {
     pub updated_at: DateTime<Utc>,
 }
 
+/// `providers.egress_proxies` as the dashboard and the repo see it: the string
+/// entries of the stored array.
+///
+/// The column only has to be a `jsonb` array (migration 0018), so a row written
+/// by SQL, a seed or an import can hold a non-string. Decoding it as a typed
+/// `Vec<String>` failed the whole row, which 500ed the provider listing and the
+/// create/update `returning`, leaving the row impossible to repair through the
+/// API that owns the column (#2946). This decode keeps the strings and drops the
+/// rest (and reads a non-array as empty), so the row can still be listed and
+/// rewritten. The snapshot loader reads the raw value on its own and leaves such
+/// a provider out of the snapshot (#2943); that is what keeps traffic from
+/// reaching an upstream around a pool this view cannot show in full.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct EgressProxies(pub Vec<String>);
+
+impl EgressProxies {
+    /// Keep the string entries of `value`, returning how many entries (or `1`
+    /// for a value that is not an array) were dropped.
+    fn from_value(value: &serde_json::Value) -> (Self, usize) {
+        match value.as_array() {
+            Some(entries) => {
+                let kept: Vec<String> = entries
+                    .iter()
+                    .filter_map(|e| e.as_str().map(str::to_string))
+                    .collect();
+                let dropped = entries.len() - kept.len();
+                (Self(kept), dropped)
+            }
+            None => (Self::default(), 1),
+        }
+    }
+}
+
+impl sqlx::Type<sqlx::Postgres> for EgressProxies {
+    fn type_info() -> sqlx::postgres::PgTypeInfo {
+        <sqlx::types::Json<serde_json::Value> as sqlx::Type<sqlx::Postgres>>::type_info()
+    }
+
+    fn compatible(ty: &sqlx::postgres::PgTypeInfo) -> bool {
+        <sqlx::types::Json<serde_json::Value> as sqlx::Type<sqlx::Postgres>>::compatible(ty)
+    }
+}
+
+impl<'r> sqlx::Decode<'r, sqlx::Postgres> for EgressProxies {
+    fn decode(value: sqlx::postgres::PgValueRef<'r>) -> Result<Self, sqlx::error::BoxDynError> {
+        let sqlx::types::Json(raw) =
+            <sqlx::types::Json<serde_json::Value> as sqlx::Decode<sqlx::Postgres>>::decode(value)?;
+        let (pool, dropped) = Self::from_value(&raw);
+        if dropped > 0 {
+            tracing::warn!(
+                dropped,
+                "a provider's egress_proxies holds entries that are not strings; \
+                 they are not shown, and GET /api/v1/config/problems names the provider"
+            );
+        }
+        Ok(pool)
+    }
+}
+
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct Provider {
     pub id: Uuid,
@@ -182,7 +242,7 @@ pub struct Provider {
     pub api_base: String,
     pub api_key_env: Option<String>,
     pub egress_proxy: Option<String>,
-    pub egress_proxies: sqlx::types::Json<Vec<String>>,
+    pub egress_proxies: EgressProxies,
     /// vLLM kv-event stream for `precise_cache_aware`, as the json object the
     /// file config's `kv_events` table carries; `None` has no stream. Kept as
     /// raw json so one unreadable row cannot fail a whole listing (#2236)

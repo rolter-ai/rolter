@@ -50,7 +50,7 @@ Set it with `project_id` on `POST /api/v1/orgs/{org_id}/providers` and `/provide
 </Note>
 
 <Note>
-  A provider whose stored `egress_proxies` is not a list of proxy URLs, which only a row written around the API with SQL can cause, is left out of the snapshot, with every route target and group member that named it, rather than served on a direct connection around the proxy pool you configured. `GET /api/v1/config/problems` names the provider; set the pool again or delete the provider. See [Upgrading](/deployment/upgrading#security-and-egress-settings).
+  A provider whose stored `egress_proxies` is not a list of proxy URLs, which only a row written around the API with SQL can cause, is left out of the snapshot, with every route target and group member that named it, rather than served on a direct connection around the proxy pool you configured. `GET /api/v1/config/problems` names the provider; set the pool again or delete the provider. A route in your `rolter.toml` that names such a stored provider loses that target the same way, and the Providers screen still lists the provider so you can fix its pool. See [Upgrading](/deployment/upgrading#security-and-egress-settings).
 </Note>
 
 <Note>

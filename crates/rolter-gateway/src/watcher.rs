@@ -272,7 +272,9 @@ async fn poll_once(
         return Ok(None);
     }
     if !resp.status().is_success() {
-        anyhow::bail!("snapshot endpoint returned {}", resp.status());
+        let status = resp.status();
+        let detail = refusal_detail(resp).await;
+        anyhow::bail!("snapshot endpoint returned {status}{detail}");
     }
 
     let body: SnapshotResponse = resp.json().await?;
@@ -299,6 +301,50 @@ async fn poll_once(
         );
     }
     Ok(Some(body.version))
+}
+
+/// Most of a refusal's body the gateway reads (#2947). The control plane's
+/// explanation is a handful of short lines; the cap keeps a misbehaving or
+/// unrelated endpoint from making every poll buffer an arbitrary body.
+const REFUSAL_BODY_LIMIT: usize = 8 * 1024;
+
+/// What a non-success snapshot answer says about itself, formatted to follow
+/// "snapshot endpoint returned <status>", or empty when it says nothing.
+///
+/// The control plane puts `error.message` and, when it knows which entry or
+/// setting held the snapshot back, `error.problems` in the body. Without them
+/// the log line reads like a bare 500 and an operator tailing a gateway cannot
+/// tell why a change never took effect. Only the log reads this: nothing from a
+/// refused response is ever applied.
+async fn refusal_detail(mut resp: reqwest::Response) -> String {
+    let mut body: Vec<u8> = Vec::new();
+    while body.len() < REFUSAL_BODY_LIMIT {
+        match resp.chunk().await {
+            Ok(Some(chunk)) => {
+                let room = REFUSAL_BODY_LIMIT - body.len();
+                body.extend_from_slice(&chunk[..chunk.len().min(room)]);
+            }
+            _ => break,
+        }
+    }
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&body) else {
+        return String::new();
+    };
+    let error = &value["error"];
+    let mut detail = String::new();
+    if let Some(message) = error["message"].as_str() {
+        detail.push_str(": ");
+        detail.push_str(message);
+    }
+    if let Some(problems) = error["problems"].as_array() {
+        let lines: Vec<&str> = problems.iter().filter_map(|p| p.as_str()).collect();
+        if !lines.is_empty() {
+            detail.push_str(" (");
+            detail.push_str(&lines.join("; "));
+            detail.push(')');
+        }
+    }
+    detail
 }
 
 /// Apply the operator-requested node state carried on the snapshot response.
@@ -446,7 +492,10 @@ mod tests {
                         return (
                             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                             axum::Json(serde_json::json!({
-                                "error": {"message": "failed to load config snapshot"}
+                                "error": {
+                                    "message": "failed to load config snapshot",
+                                    "problems": ["required_headers cannot be read"]
+                                }
                             })),
                         )
                             .into_response();
@@ -488,12 +537,69 @@ mod tests {
         state.metrics.config_version.store(4, Relaxed);
         let err = poll_once(&client, &state, &url, None).await.unwrap_err();
         assert!(err.to_string().contains("500"), "{err}");
+        // the log line says which setting held the snapshot back (#2947)
+        assert!(
+            err.to_string().contains("failed to load config snapshot")
+                && err.to_string().contains("required_headers cannot be read"),
+            "{err}"
+        );
         assert_eq!(
             held(&state).as_deref(),
             Some("edge"),
             "the gate was dropped"
         );
         assert_eq!(state.metrics.config_reloads_total.load(Relaxed), 1);
+    }
+
+    /// #2947: only a bounded prefix of a refusal is read, a body that is not
+    /// the control plane's shape adds nothing, and nothing in it is applied.
+    #[tokio::test]
+    async fn a_refusal_body_is_read_only_for_its_explanation() {
+        use axum::routing::get;
+        use axum::Router;
+
+        async fn huge() -> axum::response::Response {
+            use axum::response::IntoResponse;
+            (
+                axum::http::StatusCode::BAD_GATEWAY,
+                "x".repeat(10 * REFUSAL_BODY_LIMIT),
+            )
+                .into_response()
+        }
+        async fn config_shaped() -> axum::response::Response {
+            use axum::response::IntoResponse;
+            (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(serde_json::json!({
+                    "version": 9,
+                    "config": {"security": {"required_headers": {"x-mesh-id": "edge"}}}
+                })),
+            )
+                .into_response()
+        }
+        let app = Router::new()
+            .route("/huge", get(huge))
+            .route("/shaped", get(config_shaped));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let state = AppState::new(&GatewayConfig::default());
+        let client = Client::new();
+        for path in ["huge", "shaped"] {
+            let url = format!("http://{addr}/{path}");
+            let err = poll_once(&client, &state, &url, None).await.unwrap_err();
+            let message = err.to_string();
+            assert!(
+                message.starts_with("snapshot endpoint returned "),
+                "{message}"
+            );
+            assert!(message.len() < 200, "{message}");
+        }
+        assert_eq!(state.metrics.config_reloads_total.load(Relaxed), 0);
+        assert!(state.snapshot.load().security.required_headers.is_empty());
     }
 
     /// #926: a snapshot that carries `problems` is a *partial* config, not a
