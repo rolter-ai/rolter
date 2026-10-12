@@ -6,6 +6,7 @@ import { Trans, useTranslation } from "react-i18next";
 import { CopyButton } from "@/components/CopyButton";
 import { useDiscardGuard } from "@/components/DiscardGuard";
 import { ProjectScopeField, useMayWiden } from "@/components/ProjectScopeField";
+import { ProviderLogo } from "@/components/ui/provider-logo";
 import { Button } from "@/components/ui/button";
 import { Combobox } from "@/components/ui/combobox";
 import { Field } from "@/components/ui/field";
@@ -188,6 +189,7 @@ function MemberEditor({
                 options={(outside && current ? [...providers, current] : providers).map((p) => ({
                   value: p.id,
                   label: p.name,
+                  icon: <ProviderLogo kind={p.kind} name={p.name} />,
                 }))}
               />
               <Input

@@ -6,6 +6,7 @@
 // over the scorer can prove "rr" reaches "Routing Rules" ahead of "Providers"
 // for every future wording of either label.
 
+import { fuzzyScore } from "@/lib/fuzzy";
 import { parseLogLookup, type LogLookup } from "@/lib/log-lookup";
 
 /** an entry the palette can open: a nav leaf, or a record on one of them */
@@ -24,41 +25,7 @@ export interface PaletteEntry {
   wrap?: boolean;
 }
 
-/**
- * How well `query` matches `label`, or `null` when it does not match at all.
- *
- * A subsequence match rather than a substring one, so "rr" finds "Routing
- * Rules" and "audlog" finds "Audit Logs" — the point of a palette is that a
- * half-remembered name still lands. Higher is better:
- *
- * - a match that starts at the head of the label beats one in the middle
- * - a match on word boundaries ("rr" over "Routing Rules") beats one inside a
- *   word, which is what keeps initialisms at the top
- * - a run of adjacent characters beats the same characters scattered
- * - a shorter label wins the tie, so "Logs" outranks "Logs Settings"
- */
-export function fuzzyScore(label: string, query: string): number | null {
-  const q = query.trim().toLowerCase();
-  if (q === "") return 0;
-  const l = label.toLowerCase();
-  let score = 0;
-  let at = 0;
-  let previous = -2;
-  for (const ch of q) {
-    // a space in the query is a word separator the label need not carry
-    if (ch === " ") continue;
-    const hit = l.indexOf(ch, at);
-    if (hit === -1) return null;
-    if (hit === previous + 1) score += 8;
-    if (hit === 0) score += 16;
-    else if (l[hit - 1] === " " || l[hit - 1] === "-") score += 12;
-    // the further into the label the match drifts, the weaker it is
-    score -= Math.min(hit, 12);
-    previous = hit;
-    at = hit + 1;
-  }
-  return score - label.length / 100;
-}
+export { fuzzyScore } from "@/lib/fuzzy";
 
 /**
  * `entries` that match `query`, best first.

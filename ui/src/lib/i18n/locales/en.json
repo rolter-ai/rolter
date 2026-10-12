@@ -150,6 +150,11 @@
       "rows": "This list shows only the sampled requests. A request missing from it was still served.",
       "noneTitle": "The request log keeps no requests.",
       "noneBody": "Nothing new is recorded, so these figures stop growing."
+    },
+    "menu": {
+      "filter": "Filter {{menu}}",
+      "filterPlaceholder": "Filter…",
+      "noMatches": "No entries match your filter"
     }
   },
   "docs": {

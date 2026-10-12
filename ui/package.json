@@ -58,6 +58,7 @@
     "react-i18next": "^17.0.16",
     "react-router": "^8.4.0",
     "refractor": "^5.0.0",
+    "simple-icons": "16.35.0",
     "tailwind-merge": "^3.7.0"
   },
   "devDependencies": {

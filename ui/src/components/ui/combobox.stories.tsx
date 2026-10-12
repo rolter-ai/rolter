@@ -4,6 +4,7 @@ import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import { Combobox, type ComboboxOption } from "./combobox";
 import { Field } from "./field";
+import { ProviderLogo } from "./provider-logo";
 import { Sheet, SheetBody, SheetHeader } from "./sheet";
 
 const meta = {
@@ -289,7 +290,9 @@ export const FiltersAsYouType: Story = {
     await userEvent.keyboard("claude");
     const options = within(canvas.getByRole("listbox")).getAllByRole("option");
     await expect(options).toHaveLength(2);
-    await expect(options[0]).toHaveTextContent("anthropic/claude-sonnet");
+    // equal matches: the shorter label is listed first
+    await expect(options[0]).toHaveTextContent("anthropic/claude-haiku");
+    await expect(options[1]).toHaveTextContent("anthropic/claude-sonnet");
   },
 };
 
@@ -620,5 +623,108 @@ export const EscapeInsideASheetKeepsTheSheet: Story = {
     // a second Escape, with the popup already closed, is the Sheet's again
     await userEvent.keyboard("{Escape}");
     await expect(body.queryByRole("dialog")).toBeNull();
+  },
+};
+
+// the points of #3058: typed text is a subsequence match ranked best-first by
+// the command palette's scorer, not a substring filter that keeps list order
+const PROVIDERS: ComboboxOption[] = [
+  { value: "anthropic", label: "Anthropic", description: "claude models" },
+  { value: "openai_compatible", label: "OpenAI-compatible" },
+  { value: "openai", label: "OpenAI" },
+  { value: "ollama", label: "Ollama" },
+  { value: "openrouter", label: "OpenRouter" },
+];
+
+export const FuzzyRanksBestFirst: Story = {
+  render: () => <Controlled options={PROVIDERS} label="Provider" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const combobox = canvas.getByRole("combobox", { name: "Provider" });
+    await userEvent.click(combobox);
+    // "oai" is not a substring of anything, but a subsequence of both openai
+    // rows; the shorter label wins, though it sits later in the list
+    await userEvent.keyboard("oai");
+    const rows = within(canvas.getByRole("listbox")).getAllByRole("option");
+    await expect(rows.map((r) => r.textContent)).toEqual(["OpenAI", "OpenAI-compatible"]);
+    // the characters that matched are marked
+    await expect(rows[0].querySelectorAll("[data-match]").length).toBeGreaterThan(0);
+    // Enter takes the best match
+    await userEvent.keyboard("{Enter}");
+    await expect(combobox).toHaveValue("OpenAI");
+  },
+};
+
+export const FuzzyFindsByValueAndDescription: Story = {
+  render: () => <Controlled options={PROVIDERS} label="Provider" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole("combobox", { name: "Provider" }));
+    // the description is searched too, at a discount to the label
+    await userEvent.keyboard("claude");
+    const rows = within(canvas.getByRole("listbox")).getAllByRole("option");
+    await expect(rows).toHaveLength(1);
+    await expect(rows[0]).toHaveTextContent("Anthropic");
+  },
+};
+
+export const FuzzyKeepsGroupsTogether: Story = {
+  render: () => <Controlled options={GROUPED} label="Model" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole("combobox", { name: "Model" }));
+    await userEvent.keyboard("o");
+    // each header is printed once however the rows were reordered
+    const groups = within(canvas.getByRole("listbox")).getAllByRole("group");
+    const names = groups.map((g) => g.getAttribute("aria-label"));
+    await expect(new Set(names).size).toBe(names.length);
+  },
+};
+
+export const FuzzyNoMatch: Story = {
+  render: () => <Controlled options={PROVIDERS} label="Provider" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole("combobox", { name: "Provider" }));
+    await userEvent.keyboard("zzz");
+    await expect(within(canvas.getByRole("listbox")).queryAllByRole("option")).toHaveLength(0);
+    await expect(canvas.getByText("No options match your filter")).toBeVisible();
+  },
+};
+
+// the option's leading icon slot (#3059): the mark is in the row and, once an
+// option is chosen, in the closed control. a kind without a mark shows a
+// monogram in the same box so the labels still line up
+const WITH_LOGOS: ComboboxOption[] = [
+  "anthropic",
+  "ollama",
+  "gemini",
+  "groq",
+  "a_kind_the_set_has_never_heard_of",
+].map((kind) => ({
+  value: kind,
+  label: kind,
+  icon: <ProviderLogo kind={kind} />,
+}));
+
+export const WithLeadingIcons: Story = {
+  render: () => <Controlled options={WITH_LOGOS} initial="anthropic" label="Provider" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const combobox = canvas.getByRole("combobox", { name: "Provider" });
+    // the closed control carries the selection's mark
+    await expect(canvasElement.querySelector('[data-provider-logo="anthropic"]')).not.toBeNull();
+    await userEvent.click(combobox);
+    const rows = within(canvas.getByRole("listbox")).getAllByRole("option");
+    await expect(rows).toHaveLength(5);
+    for (const row of rows) await expect(row.querySelector("[data-provider-logo]")).not.toBeNull();
+    // a drawn mark follows the text colour, so it follows the theme
+    const mark = rows[0].querySelector("[data-provider-logo]")!;
+    await expect(mark.getAttribute("fill")).toBe("currentColor");
+    // the unknown kind falls back to a monogram, not an empty box
+    await expect(rows[4].querySelector("[data-monogram]")).toHaveAttribute("data-monogram", "A");
+    await expect(rows[4]).toHaveTextContent(/^a_kind_the_set_has_never_heard_of$/);
+    // and the icon does not leak into the option's accessible name
+    await expect(rows[0]).toHaveAccessibleName("anthropic");
   },
 };

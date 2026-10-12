@@ -2,13 +2,18 @@ import { Check, ChevronDown, X } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
+import { HighlightedText } from "@/components/ui/highlighted-text";
+import { rankSearchable } from "@/lib/fuzzy";
 import { cn } from "@/lib/utils";
 
-// type-to-filter combobox, the styled replacement for the native <select> the
+// fuzzy type-to-filter combobox (#3058), the styled replacement for the native <select> the
 // dashboard shipped until #968. A native select draws its open list in the
 // operating system, so the design tokens stop at the closed control and there
 // is no filtering beyond first-letter jumping — unusable once a list is a
-// fleet of `provider/model` addresses.
+// fleet of `provider/model` addresses. what is typed is matched as a
+// subsequence by the same scorer the command palette uses (`lib/fuzzy.ts`), so
+// "oai" finds "openai", the best match is listed first and the characters that
+// matched are marked.
 //
 // The pattern is the APG "editable combobox with list autocomplete": the input
 // *is* the combobox, DOM focus never leaves it, and the active option is named
@@ -24,6 +29,12 @@ export interface ComboboxOption {
   description?: string;
   /** optional group header this option sits under, in first-seen order */
   group?: string;
+  /**
+   * a mark drawn before the label, in the row and in the closed control: the
+   * provider pickers put the provider's logo here (#3059). Decorative, so give
+   * it `aria-hidden`; the label names the option
+   */
+  icon?: React.ReactNode;
   disabled?: boolean;
 }
 
@@ -73,17 +84,6 @@ export interface ComboboxProps {
   "aria-label"?: string;
   "aria-describedby"?: string;
   "aria-invalid"?: boolean | "true" | "false";
-}
-
-/** substring match, case- and diacritic-insensitive, over label + description */
-function matches(option: ComboboxOption, query: string): boolean {
-  if (!query) return true;
-  const needle = fold(query);
-  return (
-    fold(option.label).includes(needle) ||
-    fold(option.value).includes(needle) ||
-    fold(option.description ?? "").includes(needle)
-  );
 }
 
 function fold(text: string): string {
@@ -200,6 +200,33 @@ function rowAt(rows: Row[], offset: number): number {
   return lo;
 }
 
+/**
+ * `options` for the typed query: those it matches as a subsequence of the
+ * label, else of the value or description, best first, each with the label
+ * positions to mark.
+ *
+ * A grouped list stays grouped while ranked: the groups are ordered by their
+ * best row and the rows inside each by their own score, so a group's header is
+ * printed once rather than once per run of neighbours.
+ */
+function rank(
+  options: ComboboxOption[],
+  query: string,
+): { options: ComboboxOption[]; hits: number[][] } {
+  if (!query.trim()) return { options, hits: options.map(() => []) };
+  const ranked = rankSearchable(options, query, (o) => ({
+    label: o.label,
+    also: [o.value, o.description],
+  }));
+  if (ranked.some((r) => r.item.group)) {
+    const order: (string | undefined)[] = [];
+    for (const r of ranked) if (!order.includes(r.item.group)) order.push(r.item.group);
+    // Array.prototype.sort is stable, so rows keep their rank inside a group
+    ranked.sort((a, b) => order.indexOf(a.item.group) - order.indexOf(b.item.group));
+  }
+  return { options: ranked.map((r) => r.item), hits: ranked.map((r) => r.indices) };
+}
+
 function layout(options: ComboboxOption[]): Section[] {
   const sections: Section[] = [];
   options.forEach((option, index) => {
@@ -259,11 +286,19 @@ export const Combobox = React.forwardRef<HTMLInputElement, ComboboxProps>(functi
   const selected =
     options.find((o) => o.value === value) ??
     (allowCustom && value ? { value, label: value } : undefined);
-  const filtered = React.useMemo(() => {
-    const found = query ? options.filter((o) => matches(o, query)) : options;
+  const { filtered, hits } = React.useMemo(() => {
+    const found = rank(options, query ?? "");
     const typed = query?.trim();
-    if (!allowCustom || !typed || options.some((o) => fold(o.value) === fold(typed))) return found;
-    return [...found, { value: typed, label: t("common.combobox.use", { value: typed }) }];
+    if (!allowCustom || !typed || options.some((o) => fold(o.value) === fold(typed))) {
+      return { filtered: found.options, hits: found.hits };
+    }
+    return {
+      filtered: [
+        ...found.options,
+        { value: typed, label: t("common.combobox.use", { value: typed }) },
+      ],
+      hits: [...found.hits, []],
+    };
   }, [options, query, allowCustom, t]);
   const sections = React.useMemo(() => layout(filtered), [filtered]);
   const enabled = React.useMemo(
@@ -470,8 +505,15 @@ export const Combobox = React.forwardRef<HTMLInputElement, ComboboxProps>(functi
           option.value === value ? "opacity-100" : "opacity-0",
         )}
       />
+      {option.icon && (
+        <span aria-hidden className="mt-0.5 flex h-4 w-4 flex-none items-center justify-center">
+          {option.icon}
+        </span>
+      )}
       <span className="min-w-0 flex-1">
-        <span className="block truncate">{option.label}</span>
+        <span className="block truncate">
+          <HighlightedText text={option.label} indices={hits[index] ?? []} />
+        </span>
         {option.description && (
           <span className="block truncate text-xs text-muted-foreground">{option.description}</span>
         )}
@@ -501,6 +543,10 @@ export const Combobox = React.forwardRef<HTMLInputElement, ComboboxProps>(functi
       </div>
     );
   };
+
+  // the selection's mark sits in the closed control too, until a keystroke
+  // starts a filter and the field stops showing the selection
+  const leading = query === null ? selected?.icon : undefined;
 
   return (
     <div
@@ -551,8 +597,17 @@ export const Combobox = React.forwardRef<HTMLInputElement, ComboboxProps>(functi
           "disabled:cursor-not-allowed disabled:opacity-50",
           size === "sm" ? "h-8 text-xs" : "h-9 text-sm",
           clearable && value ? "pr-14" : "pr-8",
+          leading && "pl-9",
         )}
       />
+      {leading && (
+        <span
+          aria-hidden
+          className="pointer-events-none absolute left-3 top-1/2 flex h-4 w-4 -translate-y-1/2 items-center justify-center"
+        >
+          {leading}
+        </span>
+      )}
       {clearable && value && !disabled && (
         <button
           type="button"
