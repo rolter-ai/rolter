@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
+import * as React from "react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import AccessProfiles from "./AccessProfiles";
@@ -41,6 +42,7 @@ import type {
   CustomRoleRow,
   UserRow,
 } from "@/lib/api";
+import { AuthProvider } from "@/lib/auth";
 import { UxScreenProvider } from "@/lib/ux-react";
 
 const ORG = "org-1";
@@ -1033,5 +1035,69 @@ export const AssignmentRefusedToAProjectAdmin: Story = {
     await expectRefused(canvasElement, "Assign Support engineers");
     await expectRefused(canvasElement, "Assign On-call");
     await expectRefused(canvasElement, "Remove Ada Lovelace from Support engineers");
+  },
+};
+
+// ---------------------------------------------------------------------------
+// #3010: a superadmin's unassigned accounts in the picker
+
+const SEEDED_ADMIN: UserRow = {
+  id: "u-root",
+  email: "root@example.com",
+  is_superadmin: true,
+  deactivated_at: null,
+  created_at: "2026-01-01T00:00:00Z",
+};
+
+function SignedInAsSuperadmin({ children }: { children: React.ReactNode }) {
+  React.useState(() => {
+    localStorage.setItem("rolter.session.email", SEEDED_ADMIN.email);
+    localStorage.setItem("rolter.session.user", JSON.stringify(SEEDED_ADMIN));
+    localStorage.removeItem("rolter.session.token");
+  });
+  React.useEffect(
+    () => () => {
+      localStorage.removeItem("rolter.session.email");
+      localStorage.removeItem("rolter.session.user");
+    },
+    [],
+  );
+  return <AuthProvider>{children}</AuthProvider>;
+}
+
+// the accounts with no membership anywhere are in no org's list, so only the
+// request that asks for them can offer them
+const unassignedPicker = recording(
+  scoped(async (input) => {
+    const url = String(input);
+    const detail = /\/access-profiles\/([^/?]+)$/.exec(url);
+    if (detail) return json(DETAILS[detail[1]] ?? {});
+    if (url.includes("/access-profiles")) return json(PROFILES);
+    if (/\/orgs\/[^/]+\/users/.test(url)) {
+      return json(url.includes("include_unassigned=true") ? [SEEDED_ADMIN, ...USERS] : USERS);
+    }
+    return json([]);
+  }),
+);
+
+export const SuperadminPicksAnUnassignedAccount: Story = {
+  render: () => (
+    <Harness fetchStub={unassignedPicker.stub} role="superadmin">
+      <SignedInAsSuperadmin>
+        <AccessProfiles />
+      </SignedInAsSuperadmin>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectAllowed(canvasElement, "Assign On-call");
+    await userEvent.click(canvas.getByRole("button", { name: "Assign On-call" }));
+
+    const form = within(sheet());
+    const listbox = await openOptions(await form.findByRole("combobox", { name: "User" }));
+    await waitFor(() =>
+      expect(within(listbox).getByRole("option", { name: /root@example.com/ })).toBeVisible(),
+    );
+    await unassignedPicker.expectSent("GET", "/orgs/org-1/users?include_unassigned=true");
   },
 };

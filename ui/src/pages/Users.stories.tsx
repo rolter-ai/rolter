@@ -41,7 +41,13 @@ import {
   type FetchStub,
   type Recorder,
 } from "./story-harness";
-import type { Invitation, MembershipRow, UpdateUserInput, UserRow } from "@/lib/api";
+import type {
+  AccessProfileRow,
+  Invitation,
+  MembershipRow,
+  UpdateUserInput,
+  UserRow,
+} from "@/lib/api";
 import { AuthProvider } from "@/lib/auth";
 import en from "@/lib/i18n/locales/en.json";
 import ru from "@/lib/i18n/locales/ru.json";
@@ -3139,5 +3145,245 @@ export const OrgAdminDoesNotAskForAccountsWithNoRole: Story = {
         (c) => c.method === "GET" && c.url.endsWith("/orgs/org-1/users"),
       ),
     ).toBe(true);
+  },
+};
+
+// ---------------------------------------------------------------------------
+// #3010: the access profiles a person holds, and handing one out from here
+//
+// The Access Profiles cards answer "who does this profile reach"; this column
+// answers the other half, "what can this person do and why", through the same
+// assignment endpoints.
+
+const SUPPORT: AccessProfileRow = {
+  id: "p-1",
+  org_id: "org-1",
+  slug: "support",
+  name: "Support engineers",
+  description: "Read-only on production routes",
+  created_at: "",
+  updated_at: "",
+};
+const ONCALL: AccessProfileRow = {
+  ...SUPPORT,
+  id: "p-2",
+  slug: "on-call",
+  name: "On-call",
+  description: null,
+};
+const profileDetail = (
+  profile: AccessProfileRow,
+  assignments: { id: string; user_id: string | null }[],
+) => ({
+  ...profile,
+  roles: [],
+  policy: null,
+  assignments: assignments.map((a) => ({
+    ...a,
+    profile_id: profile.id,
+    team_id: null,
+    created_at: "",
+  })),
+});
+
+/** the profile reads over the users fixture, holding what posts and deletes changed */
+function profileStub(initial: Record<string, string[]> = { "p-1": ["user-2"], "p-2": [] }) {
+  const held = new Map(Object.entries(initial).map(([id, users]) => [id, [...users]]));
+  return recording(async (input, init) => {
+    const url = String(input);
+    const post = /\/access-profiles\/([^/]+)\/assignments$/.exec(url);
+    if (init?.method === "POST" && post) {
+      const body = JSON.parse(String(init.body)) as { user_id: string };
+      held.set(post[1], [...(held.get(post[1]) ?? []), body.user_id]);
+      return json({ id: "a-new", profile_id: post[1], created_at: "", ...body, team_id: null });
+    }
+    const del = /\/access-profile-assignments\/a-(p-\d)-(user-\d)$/.exec(url);
+    if (init?.method === "DELETE" && del) {
+      held.set(
+        del[1],
+        (held.get(del[1]) ?? []).filter((u) => u !== del[2]),
+      );
+      return json({}, 204);
+    }
+    const detail = /\/access-profiles\/(p-\d)$/.exec(url);
+    if (detail) {
+      const profile = detail[1] === "p-1" ? SUPPORT : ONCALL;
+      return json(
+        profileDetail(
+          profile,
+          (held.get(detail[1]) ?? []).map((user_id) => ({
+            id: `a-${detail[1]}-${user_id}`,
+            user_id,
+          })),
+        ),
+      );
+    }
+    if (/\/access-profiles$/.test(url)) return json([SUPPORT, ONCALL]);
+    if (url.includes("/memberships")) return json(MEMBERSHIPS);
+    if (url.includes("/users")) return json(USERS);
+    return json([]);
+  });
+}
+const withProfiles = (rec: Recorder): FetchStub => scoped(rec.stub);
+
+const userRow = (canvas: ReturnType<typeof within>, email: string) =>
+  within(canvas.getByText(email).closest('[role="row"]') as HTMLElement);
+
+export const ListsTheProfilesAPersonHolds: Story = {
+  render: () => {
+    const rec = profileStub();
+    return (
+      <Harness fetchStub={withProfiles(rec)} role="admin">
+        <Users />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText("grace@example.com");
+    const grace = userRow(canvas, "grace@example.com");
+    const list = await grace.findByRole("list", {
+      name: "Access profiles held by grace@example.com",
+    });
+    await expect(within(list).getByText("Support engineers")).toBeVisible();
+    // a person who holds none reads as such, never as a blank cell
+    await waitFor(() =>
+      expect(userRow(canvas, "ada@example.com").getByText("no access profile")).toBeVisible(),
+    );
+  },
+};
+
+export const ProfilesFailedToLoad: Story = {
+  render: () => (
+    <Harness
+      role="admin"
+      fetchStub={scoped(async (input) =>
+        String(input).includes("/access-profiles")
+          ? json({ error: { message: "boom" } }, 500)
+          : String(input).includes("/memberships")
+            ? json(MEMBERSHIPS)
+            : json(USERS),
+      )}
+    >
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText("grace@example.com");
+    // an unread list is not "holds nothing"
+    await waitFor(() =>
+      expect(userRow(canvas, "grace@example.com").getByText("profiles not loaded")).toBeVisible(),
+    );
+    await expect(canvas.queryByText("no access profile")).toBeNull();
+  },
+};
+
+export const ProfilesStillLoading: Story = {
+  render: () => (
+    <Harness
+      role="admin"
+      fetchStub={scoped((input) =>
+        String(input).includes("/access-profiles")
+          ? new Promise<Response>(() => {})
+          : Promise.resolve(
+              String(input).includes("/memberships") ? json(MEMBERSHIPS) : json(USERS),
+            ),
+      )}
+    >
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText("grace@example.com");
+    await expect(canvas.queryByText("no access profile")).toBeNull();
+    await expect(canvas.queryByText("profiles not loaded")).toBeNull();
+  },
+};
+
+const assignsFromUsers = profileStub();
+export const AssignsAProfileToAPerson: Story = {
+  render: () => (
+    <Harness fetchStub={withProfiles(assignsFromUsers)} role="admin">
+      <Toasted>
+        <Users />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText("grace@example.com");
+    await expectAllowed(canvasElement, "Assign an access profile to grace@example.com");
+    await userEvent.click(
+      canvas.getByRole("button", { name: "Assign an access profile to grace@example.com" }),
+    );
+
+    const form = within(sheet());
+    const listbox = await openOptions(
+      await form.findByRole("combobox", { name: "Access profile" }),
+    );
+    // what she holds already is not offered twice
+    await waitFor(() =>
+      expect(within(listbox).getByRole("option", { name: /On-call/ })).toBeVisible(),
+    );
+    await expect(within(listbox).queryByRole("option", { name: /Support engineers/ })).toBeNull();
+    await userEvent.click(within(listbox).getByRole("option", { name: /On-call/ }));
+    await userEvent.click(form.getByRole("button", { name: "Assign profile" }));
+
+    const body = await assignsFromUsers.expectSentBody("POST", "/access-profiles/p-2/assignments");
+    expect(body).toEqual({ user_id: "user-2" });
+    await expectSheetClosed();
+    await expectToast(canvasElement, /On-call assigned to grace@example.com/);
+    // the outcome is on her row, read back from the profile
+    const list = await userRow(canvas, "grace@example.com").findByRole("list", {
+      name: "Access profiles held by grace@example.com",
+    });
+    await waitFor(() => expect(within(list).getByText("On-call")).toBeVisible());
+  },
+};
+
+const removesFromUsers = profileStub();
+export const RemovesAProfileFromAPerson: Story = {
+  render: () => (
+    <Harness fetchStub={withProfiles(removesFromUsers)} role="admin">
+      <Toasted>
+        <Users />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText("grace@example.com");
+    await expectAllowed(canvasElement, "Remove Support engineers from grace@example.com");
+    await userEvent.click(
+      canvas.getByRole("button", { name: "Remove Support engineers from grace@example.com" }),
+    );
+    await confirmDestructive(
+      /Remove grace@example.com from Support engineers/,
+      "Remove assignment",
+    );
+
+    await removesFromUsers.expectSent("DELETE", "/access-profile-assignments/a-p-1-user-2");
+    await expectSheetClosed();
+    await waitFor(() =>
+      expect(userRow(canvas, "grace@example.com").getByText("no access profile")).toBeVisible(),
+    );
+  },
+};
+
+// both controls are `access_profile_assignment` writes at the org, which a
+// viewer reads and may not change
+export const ProfileAssignmentRefusedToAViewer: Story = {
+  render: () => (
+    <Harness fetchStub={withProfiles(profileStub())} role="viewer">
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText("grace@example.com");
+    await expectRefused(canvasElement, "Assign an access profile to grace@example.com");
+    await expectRefused(canvasElement, "Remove Support engineers from grace@example.com");
   },
 };

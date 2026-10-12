@@ -4,6 +4,11 @@ import { expect, userEvent, waitFor, within } from "storybook/test";
 import Teams from "./Teams";
 import {
   clickWhenEnabled,
+  confirmDestructive,
+  expectAllowed,
+  expectSheetClosed,
+  openOptions,
+  recording,
   expectEmptyState,
   expectLoadError,
   expectNoFalseEmpty,
@@ -174,5 +179,173 @@ export const RefusedToAMember: Story = {
   ),
   play: async ({ canvasElement }) => {
     await expectRefused(canvasElement, /new team/i);
+  },
+};
+
+// ---------------------------------------------------------------------------
+// #3010: the access profiles a team holds, and handing one out from here
+
+const PROFILE = (id: string, name: string) => ({
+  id,
+  org_id: "org-1",
+  slug: name.toLowerCase().replace(/\s+/g, "-"),
+  name,
+  description: null,
+  created_at: "",
+  updated_at: "",
+});
+const SUPPORT = PROFILE("p-1", "Support engineers");
+const ONCALL = PROFILE("p-2", "On-call");
+
+/** the org's teams and profiles, holding what posts and deletes changed */
+function teamProfiles(initial: Record<string, string[]> = { "p-1": ["team-1"], "p-2": [] }) {
+  const held = new Map(Object.entries(initial).map(([id, teams]) => [id, [...teams]]));
+  return recording(async (input, init) => {
+    const url = String(input);
+    const path = new URL(url, "http://localhost").pathname;
+    if (path === "/api/v1/orgs") return json([ORG]);
+    if (/\/teams$/.test(path)) return json(TEAMS);
+    const post = /\/access-profiles\/([^/]+)\/assignments$/.exec(path);
+    if (init?.method === "POST" && post) {
+      const body = JSON.parse(String(init.body)) as { team_id: string };
+      held.set(post[1], [...(held.get(post[1]) ?? []), body.team_id]);
+      return json({ id: "a-new", profile_id: post[1], created_at: "", user_id: null, ...body });
+    }
+    const del = /\/access-profile-assignments\/a-(p-\d)-(team-\d)$/.exec(path);
+    if (init?.method === "DELETE" && del) {
+      held.set(
+        del[1],
+        (held.get(del[1]) ?? []).filter((x) => x !== del[2]),
+      );
+      return json({}, 204);
+    }
+    const detail = /\/access-profiles\/(p-\d)$/.exec(path);
+    if (detail) {
+      return json({
+        ...(detail[1] === "p-1" ? SUPPORT : ONCALL),
+        roles: [],
+        policy: null,
+        assignments: (held.get(detail[1]) ?? []).map((team_id) => ({
+          id: `a-${detail[1]}-${team_id}`,
+          profile_id: detail[1],
+          user_id: null,
+          team_id,
+          created_at: "",
+        })),
+      });
+    }
+    if (/\/access-profiles$/.test(path)) return json([SUPPORT, ONCALL]);
+    return json([]);
+  });
+}
+
+export const ListsTheProfilesATeamHolds: Story = {
+  render: () => (
+    <Harness fetchStub={teamProfiles().stub} role="admin">
+      <Teams />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const list = await canvas.findByRole("list", { name: "Access profiles held by Platform" });
+    await expect(within(list).getByText("Support engineers")).toBeVisible();
+    // a team that holds none reads as such
+    await waitFor(() => expect(canvas.getByText("no access profile")).toBeVisible());
+  },
+};
+
+export const ProfilesFailedToLoad: Story = {
+  render: () => (
+    <Harness
+      role="admin"
+      fetchStub={async (input) => {
+        const path = new URL(String(input), "http://localhost").pathname;
+        if (path === "/api/v1/orgs") return json([ORG]);
+        if (/\/teams$/.test(path)) return json(TEAMS);
+        if (path.includes("/access-profiles")) return json({ error: { message: "boom" } }, 500);
+        return json([]);
+      }}
+    >
+      <Teams />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getAllByText("profiles not loaded")).toHaveLength(2));
+    await expect(canvas.queryByText("no access profile")).toBeNull();
+  },
+};
+
+const teamAssign = teamProfiles();
+export const AssignsAProfileToATeam: Story = {
+  render: () => (
+    <Harness fetchStub={teamAssign.stub} role="admin">
+      <Toasted>
+        <Teams />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText("Research");
+    await expectAllowed(canvasElement, "Assign an access profile to Research");
+    await userEvent.click(
+      canvas.getByRole("button", { name: "Assign an access profile to Research" }),
+    );
+
+    const form = within(sheet());
+    const listbox = await openOptions(
+      await form.findByRole("combobox", { name: "Access profile" }),
+    );
+    await waitFor(() =>
+      expect(within(listbox).getByRole("option", { name: /On-call/ })).toBeVisible(),
+    );
+    await userEvent.click(within(listbox).getByRole("option", { name: /On-call/ }));
+    await userEvent.click(form.getByRole("button", { name: "Assign profile" }));
+
+    const body = await teamAssign.expectSentBody("POST", "/access-profiles/p-2/assignments");
+    expect(body).toEqual({ team_id: "team-2" });
+    await expectSheetClosed();
+    await expectToast(canvasElement, /On-call assigned to Research/);
+    const list = await canvas.findByRole("list", { name: "Access profiles held by Research" });
+    await waitFor(() => expect(within(list).getByText("On-call")).toBeVisible());
+  },
+};
+
+const teamRemove = teamProfiles();
+export const RemovesAProfileFromATeam: Story = {
+  render: () => (
+    <Harness fetchStub={teamRemove.stub} role="admin">
+      <Toasted>
+        <Teams />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText("Platform");
+    await expectAllowed(canvasElement, "Remove Support engineers from Platform");
+    await userEvent.click(
+      canvas.getByRole("button", { name: "Remove Support engineers from Platform" }),
+    );
+    await confirmDestructive(/Remove Platform from Support engineers/, "Remove assignment");
+
+    await teamRemove.expectSent("DELETE", "/access-profile-assignments/a-p-1-team-1");
+    await expectSheetClosed();
+    await waitFor(() => expect(canvas.getAllByText("no access profile")).toHaveLength(2));
+  },
+};
+
+export const ProfileAssignmentRefusedToAViewer: Story = {
+  render: () => (
+    <Harness fetchStub={teamProfiles().stub} role="viewer">
+      <Teams />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText("Platform");
+    await expectRefused(canvasElement, "Assign an access profile to Platform");
+    await expectRefused(canvasElement, "Remove Support engineers from Platform");
   },
 };
