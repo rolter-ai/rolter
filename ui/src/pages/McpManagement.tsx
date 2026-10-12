@@ -56,7 +56,6 @@ import {
   MCP_OAUTH_DISCOVERY_MODES,
   setMcpOAuthClient,
   setMcpServerAuth,
-  startMcpOAuth,
   updateMcpServer,
   updateMcpSettings,
   updateMcpToolGroup,
@@ -108,7 +107,7 @@ import {
 } from "@/lib/mcp-oauth-client";
 import { useScope } from "@/lib/scope";
 import { slugify } from "@/lib/slug";
-import { errorDetail, useToast } from "@/lib/toast";
+import { useMcpConnect } from "@/lib/use-mcp-connect";
 import { useScreenReady } from "@/lib/ux-react";
 
 const TRANSPORTS = ["streamable_http", "sse", "websocket"];
@@ -480,38 +479,11 @@ function OAuthClientSection({
   );
 }
 
-// starts consent and hands the browser the url the control plane minted. the
-// dashboard never navigates itself there: the consent screen belongs to a third
-// party, and the operator should come back to a page that kept its place
+// the request and the pop-up handling are shared with Reconnect on Auth Sessions
 function ConnectButton({ server }: { server: McpServerRow }) {
   const { t } = useTranslation();
-  const toast = useToast();
   const ready = oauthConnectable(server);
-  const connect = useMutation({
-    mutationFn: () => startMcpOAuth(server.id),
-    onSuccess: (started) => {
-      const opened = window.open(started.authorization_url, "_blank", "noopener,noreferrer");
-      // a blocked pop-up is silent otherwise: the request succeeded, a login
-      // state row exists upstream, and nothing at all appeared on screen
-      if (!opened)
-        return void toast.push({
-          tone: "error",
-          title: t("pages.mcpCatalog.connect.blocked"),
-          detail: t("pages.mcpCatalog.connect.blockedDetail"),
-        });
-      toast.push({
-        tone: "info",
-        title: t("pages.mcpCatalog.connect.started", { name: server.name }),
-        detail: t("pages.mcpCatalog.connect.startedDetail"),
-      });
-    },
-    onError: (error) =>
-      toast.push({
-        tone: "error",
-        title: t("pages.mcpCatalog.connect.failed", { name: server.name }),
-        detail: errorDetail(error),
-      }),
-  });
+  const connect = useMcpConnect(server);
   return (
     <Button
       variant="outline"

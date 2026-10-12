@@ -5,16 +5,19 @@ import {
   CircleAlert,
   CircleCheck,
   KeyRound,
+  Link2,
   Loader2,
   RefreshCw,
   Shield,
   ShieldOff,
 } from "lucide-react";
 import * as React from "react";
+import type { TFunction } from "i18next";
 import { Trans, useTranslation } from "react-i18next";
 import { Link, useLocation } from "react-router";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { GatedButton } from "@/components/GatedButton";
 import { LoadError } from "@/components/LoadError";
 import { TableSkeleton } from "@/components/LoadingState";
 import {
@@ -31,13 +34,7 @@ import {
 } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { Combobox } from "@/components/ui/combobox";
 import { EmptyState } from "@/components/ui/empty-state";
 import {
   fetchMcpGrants,
@@ -52,10 +49,13 @@ import {
   type McpServerRow,
   type UserRow,
 } from "@/lib/api";
+import { useOptionalAuth } from "@/lib/auth";
 import { useFormat } from "@/lib/i18n/format";
 import { announceConsent, readConsentResult, type ConsentResult } from "@/lib/mcp-consent";
+import { oauthConnectable } from "@/lib/mcp-oauth-client";
 import { useScope } from "@/lib/scope";
 import { errorDetail, useToast } from "@/lib/toast";
+import { useMcpConnect } from "@/lib/use-mcp-connect";
 import { cn } from "@/lib/utils";
 import { useScreenReady } from "@/lib/ux-react";
 
@@ -64,8 +64,10 @@ import { useScreenReady } from "@/lib/ux-react";
 // grant is the unit of consent (revoking it cascades to its sessions), and a
 // listing only ever carries rows the caller is allowed to see (#561)
 
-const GRANT_GRID = `${primaryColumn(1.2)} 1.3fr 1.6fr 150px 130px 96px 44px`;
-const SESSION_GRID = `${primaryColumn(1.1)} 1.2fr 1.4fr 140px 130px 150px 44px 44px`;
+// the date columns hold a mono date and time on one line (#2177): 130px broke
+// the expiry in two at 1440px
+const GRANT_GRID = `${primaryColumn(1.2)} 1.3fr 1.6fr 172px 130px 96px 44px`;
+const SESSION_GRID = `${primaryColumn(1.1)} 1.2fr 1.4fr 140px 172px 150px 44px 44px 44px`;
 
 // the org's grants, sessions and the lookup tables that give them names. The
 // users listing is best-effort: a member may not be allowed to read it, and
@@ -108,19 +110,18 @@ function ownerLabel(users: UserRow[] | undefined, id: string): string {
 
 // stated on both screens because it is the one thing a reader cannot check for
 // themselves: the tokens exist, they are just never serialised out of the
-// control plane
-function TokenNotice({ children }: { children: React.ReactNode }) {
+// control plane. `notes` are the other things the screen says about the table
+// (who sees which rows, what a revoke leaves standing), kept in the same box so
+// the table is not ringed with four separate paragraphs (#2177)
+function TokenNotice({ children, notes }: { children: React.ReactNode; notes: string[] }) {
   return (
-    <p className="rounded-[10px] border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] px-3.5 py-2.5 text-xs leading-relaxed text-muted-foreground">
-      {children}
-    </p>
+    <div className="space-y-1.5 rounded-[10px] border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] px-3.5 py-2.5 text-xs leading-relaxed text-muted-foreground">
+      <p>{children}</p>
+      {notes.map((note) => (
+        <p key={note}>{note}</p>
+      ))}
+    </div>
   );
-}
-
-// what a listing contains depends on who asked for it, so the screens say so
-// instead of implying the table is the whole org
-function ScopeNote({ note }: { note: string }) {
-  return <p className="text-xs text-[color:var(--text-subtle)]">{note}</p>;
 }
 
 function Scopes({ scopes }: { scopes: string[] }) {
@@ -141,22 +142,6 @@ function Scopes({ scopes }: { scopes: string[] }) {
       ))}
     </div>
   );
-}
-
-// both screens are org-scoped reads of the same shape, so the three states are
-// shared. `resource` is the already-translated noun LoadError interpolates
-function ForbiddenNote({
-  resource,
-  error,
-  onRetry,
-  target,
-}: {
-  resource: string;
-  error: unknown;
-  onRetry: () => void;
-  target: string;
-}) {
-  return <LoadError error={error} resource={resource} onRetry={onRetry} target={target} />;
 }
 
 // `lead` is what a screen says above its body whatever state the body is in —
@@ -186,12 +171,98 @@ function NoOrgNote({ resource, lead }: { resource: string; lead?: React.ReactNod
 }
 
 // ---------------------------------------------------------------------------
+// filters and the bulk revoke both screens share (#2176)
+
+interface OAuthFilterState {
+  server: string;
+  owner: string;
+  liveOnly: boolean;
+}
+
+const NO_FILTER: OAuthFilterState = { server: "", owner: "", liveOnly: false };
+const filtersActive = (f: OAuthFilterState) => !!f.server || !!f.owner || f.liveOnly;
+
+// server and owner options are what the listing actually holds, not every
+// server or user in the org: a filter that can only empty the table is noise
+function OAuthFilters({
+  filter,
+  onChange,
+  servers,
+  owners,
+  action,
+}: {
+  filter: OAuthFilterState;
+  onChange: (next: OAuthFilterState) => void;
+  servers: { value: string; label: string }[];
+  owners: { value: string; label: string }[];
+  action?: React.ReactNode;
+}) {
+  const { t } = useTranslation();
+  return (
+    <div className="flex flex-wrap items-center gap-2.5">
+      <Combobox
+        className="w-[180px]"
+        aria-label={t("pages.mcpOAuth.filters.serverAria")}
+        value={filter.server}
+        onChange={(server) => onChange({ ...filter, server })}
+        options={[{ value: "", label: t("pages.mcpOAuth.filters.allServers") }, ...servers]}
+      />
+      <Combobox
+        className="w-[220px]"
+        aria-label={t("pages.mcpOAuth.filters.ownerAria")}
+        value={filter.owner}
+        onChange={(owner) => onChange({ ...filter, owner })}
+        options={[{ value: "", label: t("pages.mcpOAuth.filters.allOwners") }, ...owners]}
+      />
+      <Button
+        size="sm"
+        variant={filter.liveOnly ? "default" : "outline"}
+        aria-pressed={filter.liveOnly}
+        onClick={() => onChange({ ...filter, liveOnly: !filter.liveOnly })}
+      >
+        {t("pages.mcpOAuth.filters.liveOnly")}
+      </Button>
+      {filtersActive(filter) && (
+        <Button size="sm" variant="ghost" onClick={() => onChange(NO_FILTER)}>
+          {t("common.clearFilters")}
+        </Button>
+      )}
+      {action && <div className="ml-auto">{action}</div>}
+    </div>
+  );
+}
+
+// who or what a bulk revoke is about, for its title: the owner, the server, or
+// both when both filters are set
+function bulkTargetLabel(t: TFunction, owner: string, server: string): string {
+  if (owner && server) return t("pages.mcpOAuth.bulk.ownerOnServer", { owner, server });
+  return owner || server;
+}
+
+// there is no bulk endpoint, so a bulk revoke is one revoke per row. every row
+// is attempted and the listing refreshed whatever happens: a row that failed
+// stays on screen, still revocable, and a retry only has it left to do
+async function revokeEach(
+  ids: string[],
+  revokeOne: (id: string) => Promise<unknown>,
+  failedMessage: (failed: number, total: number) => string,
+): Promise<void> {
+  const settled = await Promise.allSettled(ids.map((id) => revokeOne(id)));
+  const failures = settled.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+  if (failures.length === 0) return;
+  throw new Error(
+    `${failedMessage(failures.length, ids.length)} ${(failures[0].reason as Error).message}`,
+  );
+}
+
+// ---------------------------------------------------------------------------
 // grants: the consent record a user signed for one MCP server
 
 export function OAuthGrants() {
   const { t } = useTranslation();
   const fmt = useFormat();
   const scope = useScope();
+  const toast = useToast();
   const queryClient = useQueryClient();
   const { servers, grants, sessions, users } = useOrgOAuth(scope.orgId);
 
@@ -200,15 +271,47 @@ export function OAuthGrants() {
   // renders without it, so waiting on it would overstate time-to-interactive
   useScreenReady(!grants.isLoading);
   const [confirming, setConfirming] = React.useState<McpOAuthGrantRow | null>(null);
+  const [bulkOpen, setBulkOpen] = React.useState(false);
+  const [filter, setFilter] = React.useState(NO_FILTER);
   const now = Date.now();
 
+  // the cascade also killed sessions, so both listings are stale
+  const refreshListings = () => {
+    void queryClient.invalidateQueries({ queryKey: ["mcp-grants", scope.orgId] });
+    void queryClient.invalidateQueries({ queryKey: ["mcp-sessions", scope.orgId] });
+  };
+
   const revoke = useMutation({
-    mutationFn: (id: string) => revokeMcpGrant(id),
-    onSuccess: () => {
+    mutationFn: (g: McpOAuthGrantRow) => revokeMcpGrant(g.id),
+    onSuccess: (_done, g) => {
       setConfirming(null);
-      // the cascade also killed sessions, so both listings are stale
-      void queryClient.invalidateQueries({ queryKey: ["mcp-grants", scope.orgId] });
-      void queryClient.invalidateQueries({ queryKey: ["mcp-sessions", scope.orgId] });
+      refreshListings();
+      toast.push({
+        tone: "success",
+        title: t("pages.mcpOAuth.confirm.grantDone", {
+          owner: ownerLabel(users.data, g.user_id),
+          server: serverLabel(servers.data, g.server_id),
+        }),
+      });
+    },
+    onError: (error) =>
+      toast.push({
+        tone: "error",
+        title: t("pages.mcpOAuth.confirm.grantFailed"),
+        detail: errorDetail(error),
+      }),
+  });
+  const revokeAll = useMutation({
+    mutationFn: (ids: string[]) =>
+      revokeEach(ids, revokeMcpGrant, (failed, total) =>
+        t("pages.mcpOAuth.bulk.partial", { failed, total }),
+      ).finally(refreshListings),
+    onSuccess: (_done, ids) => {
+      setBulkOpen(false);
+      toast.push({
+        tone: "success",
+        title: t("pages.mcpOAuth.bulk.grantsDone", { count: ids.length }),
+      });
     },
   });
 
@@ -227,36 +330,82 @@ export function OAuthGrants() {
     return <NoOrgNote resource={t("errors.resources.oauthGrants")} />;
   if (grants.isLoading || scope.isLoading) return <LoadingBody />;
 
-  const rows = grants.data ?? [];
+  const all = grants.data ?? [];
+  const rows = all.filter(
+    (g) =>
+      (!filter.server || g.server_id === filter.server) &&
+      (!filter.owner || g.user_id === filter.owner) &&
+      (!filter.liveOnly || g.active),
+  );
   const active = rows.filter((g) => g.active).length;
   const sessionsKnown = sessions.isSuccess;
+  const serverOptions = [...new Set(all.map((g) => g.server_id))].map((id) => ({
+    value: id,
+    label: serverLabel(servers.data, id),
+  }));
+  const ownerOptions = [...new Set(all.map((g) => g.user_id))].map((id) => ({
+    value: id,
+    label: ownerLabel(users.data, id),
+  }));
+  // one click must not be able to take the whole org's consent: the bulk action
+  // waits for a server or an owner to be named, which is also what its
+  // confirmation names
+  const targets = rows.filter((g) => g.active);
+  const bulkTarget = bulkTargetLabel(
+    t,
+    filter.owner ? ownerLabel(users.data, filter.owner) : "",
+    filter.server ? serverLabel(servers.data, filter.server) : "",
+  );
+  const bulkSessions = targets.reduce((n, g) => n + (liveByGrant.get(g.id) ?? 0), 0);
 
   return (
     <PageBody>
-      <TokenNotice>{t("pages.mcpOAuth.grantsTokenNotice")}</TokenNotice>
+      <TokenNotice notes={[t("pages.mcpOAuth.scopeNoteGrants")]}>
+        {t("pages.mcpOAuth.grantsTokenNotice")}
+      </TokenNotice>
 
       {grants.isError ? (
-        <ForbiddenNote
-          resource={t("errors.resources.oauthGrants")}
-          target="oauth-grants"
+        <LoadError
           error={grants.error}
+          resource={t("errors.resources.oauthGrants")}
           onRetry={() => void grants.refetch()}
+          target="oauth-grants"
         />
       ) : (
         <>
-          <div className="flex flex-wrap items-center gap-3">
-            <span className="text-sm text-muted-foreground">
-              {t("pages.mcpOAuth.grantsCount", { count: rows.length, active })}
-            </span>
-            {revoke.isError && (
-              <span className="text-xs text-[color:var(--status-danger-text)]">
-                {(revoke.error as Error).message}
-              </span>
-            )}
-          </div>
-          <ScopeNote note={t("pages.mcpOAuth.scopeNoteGrants")} />
+          {all.length > 0 && (
+            <OAuthFilters
+              filter={filter}
+              onChange={setFilter}
+              servers={serverOptions}
+              owners={ownerOptions}
+              action={
+                (filter.server || filter.owner) && (
+                  <GatedButton
+                    gate="mcp_oauth_grant:delete"
+                    control="oauth-grants-revoke-all"
+                    size="sm"
+                    variant="outline"
+                    disabled={targets.length === 0 || revokeAll.isPending}
+                    onClick={() => {
+                      revokeAll.reset();
+                      setBulkOpen(true);
+                    }}
+                  >
+                    <ShieldOff className="h-3.5 w-3.5" aria-hidden />
+                    {t("pages.mcpOAuth.bulk.action")}
+                  </GatedButton>
+                )
+              }
+            />
+          )}
+          <span className="text-sm text-muted-foreground">
+            {filtersActive(filter)
+              ? t("pages.mcpOAuth.grantsCountShown", { shown: rows.length, total: all.length })
+              : t("pages.mcpOAuth.grantsCount", { count: rows.length, active })}
+          </span>
 
-          {rows.length === 0 ? (
+          {all.length === 0 ? (
             // deliberately actionless: consent is only ever given by the user
             // from a client, so there is no button here that could produce one
             <EmptyState
@@ -265,8 +414,20 @@ export function OAuthGrants() {
               title={t("pages.mcpOAuth.grantsEmptyTitle")}
               description={t("pages.mcpOAuth.grantsEmptyBody")}
             />
+          ) : rows.length === 0 ? (
+            <EmptyState
+              uxTarget="oauth-grants"
+              icon={<Shield />}
+              title={t("pages.mcpOAuth.noMatchTitle")}
+              description={t("pages.mcpOAuth.noMatchBody")}
+              actions={
+                <Button variant="outline" onClick={() => setFilter(NO_FILTER)}>
+                  {t("common.clearFilters")}
+                </Button>
+              }
+            />
           ) : (
-            <ListTable label={t("screens.oauth-grants.title")} minWidth={980}>
+            <ListTable label={t("screens.oauth-grants.title")} minWidth={1020}>
               <ListHeader grid={GRANT_GRID}>
                 <ListHeaderCell>{t("pages.mcpOAuth.server")}</ListHeaderCell>
                 <ListHeaderCell>{t("pages.mcpOAuth.owner")}</ListHeaderCell>
@@ -287,13 +448,13 @@ export function OAuthGrants() {
                       {serverLabel(servers.data, g.server_id)}
                     </ListCell>
                     <ListCell className="truncate text-xs text-[color:var(--text-secondary)]">
-                      {ownerLabel(users.data, g.user_id)}
+                      {owner}
                     </ListCell>
                     <ListCell className="grid">
                       <Scopes scopes={g.scopes} />
                     </ListCell>
                     <ListCell
-                      className="font-mono text-xs text-[color:var(--text-secondary)]"
+                      className="whitespace-nowrap font-mono text-xs text-[color:var(--text-secondary)]"
                       title={g.granted_at}
                     >
                       {fmt.dateTime(g.granted_at)}
@@ -321,7 +482,10 @@ export function OAuthGrants() {
                           server: serverLabel(servers.data, g.server_id),
                         })}
                         disabled={!g.active || revoke.isPending}
-                        onClick={() => setConfirming(g)}
+                        onClick={() => {
+                          revoke.reset();
+                          setConfirming(g);
+                        }}
                       >
                         <ShieldOff className="h-3.5 w-3.5" />
                       </RowIconButton>
@@ -334,40 +498,62 @@ export function OAuthGrants() {
         </>
       )}
 
-      <Dialog open={confirming !== null} onOpenChange={(open) => !open && setConfirming(null)}>
-        {confirming && (
-          <>
-            <DialogHeader>
-              <DialogTitle>{t("pages.mcpOAuth.confirm.grantTitle")}</DialogTitle>
-              <DialogDescription>
-                {/* the cascade is stated before the click, not discovered after
-                    it: the server revokes the grant and its sessions in one
-                    transaction */}
-                <Trans
-                  i18nKey="pages.mcpOAuth.confirm.grantBody"
-                  values={{
-                    server: serverLabel(servers.data, confirming.server_id),
-                    sessions: sessionsKnown
-                      ? t("pages.mcpOAuth.liveSessions", {
-                          count: liveByGrant.get(confirming.id) ?? 0,
-                        })
-                      : t("pages.mcpOAuth.everySession"),
-                  }}
-                  components={[<span key="server" className="font-mono" />]}
-                />
-              </DialogDescription>
-            </DialogHeader>
-            <DialogFooter>
-              <Button variant="outline" onClick={() => setConfirming(null)}>
-                {t("common.cancel")}
-              </Button>
-              <Button disabled={revoke.isPending} onClick={() => revoke.mutate(confirming.id)}>
-                {t("pages.mcpOAuth.confirm.grantConfirm")}
-              </Button>
-            </DialogFooter>
-          </>
-        )}
-      </Dialog>
+      <ConfirmDialog
+        name="mcp-oauth-grant-revoke"
+        open={confirming !== null}
+        onOpenChange={(open) => {
+          if (open) return;
+          setConfirming(null);
+          revoke.reset();
+        }}
+        title={t("pages.mcpOAuth.confirm.grantTitle", {
+          owner: confirming ? ownerLabel(users.data, confirming.user_id) : "",
+          server: confirming ? serverLabel(servers.data, confirming.server_id) : "",
+        })}
+        description={
+          // the cascade is stated before the click, not discovered after it:
+          // the server revokes the grant and its sessions in one transaction
+          <Trans
+            i18nKey="pages.mcpOAuth.confirm.grantBody"
+            values={{
+              server: confirming ? serverLabel(servers.data, confirming.server_id) : "",
+              sessions: sessionsKnown
+                ? t("pages.mcpOAuth.liveSessions", {
+                    count: confirming ? (liveByGrant.get(confirming.id) ?? 0) : 0,
+                  })
+                : t("pages.mcpOAuth.everySession"),
+            }}
+            components={[<span key="server" className="font-mono" />]}
+          />
+        }
+        confirmLabel={t("pages.mcpOAuth.confirm.grantConfirm")}
+        pending={revoke.isPending}
+        error={revoke.error}
+        onConfirm={() => confirming && revoke.mutate(confirming)}
+      />
+
+      <ConfirmDialog
+        name="mcp-oauth-grants-revoke-all"
+        open={bulkOpen}
+        onOpenChange={(open) => {
+          if (open) return;
+          setBulkOpen(false);
+          revokeAll.reset();
+        }}
+        title={t("pages.mcpOAuth.bulk.grantsTitle", {
+          count: targets.length,
+          target: bulkTarget,
+        })}
+        description={t("pages.mcpOAuth.bulk.grantsBody", {
+          sessions: sessionsKnown
+            ? t("pages.mcpOAuth.liveSessions", { count: bulkSessions })
+            : t("pages.mcpOAuth.everySession"),
+        })}
+        confirmLabel={t("pages.mcpOAuth.bulk.grantsConfirm", { count: targets.length })}
+        pending={revokeAll.isPending}
+        error={revokeAll.error}
+        onConfirm={() => revokeAll.mutate(targets.map((g) => g.id))}
+      />
     </PageBody>
   );
 }
@@ -458,6 +644,33 @@ function sessionState(s: McpOAuthSessionRow, now: number): SessionState {
   return Date.parse(s.expires_at) <= now ? "expired" : "active";
 }
 
+// Reconnect is the MCP Catalog's Connect, reached from the row that shows the
+// session is gone (#2175): the same consent request and pop-up handling
+function ReconnectButton({ server, label }: { server: McpServerRow; label: string }) {
+  const { t } = useTranslation();
+  const connect = useMcpConnect(server);
+  const ready = oauthConnectable(server);
+  return (
+    <RowIconButton
+      control="oauth-session-reconnect"
+      title={
+        ready
+          ? t("pages.mcpOAuth.reconnect.action", { server: label })
+          : t("pages.mcpCatalog.connect.unconfigured")
+      }
+      aria-label={t("pages.mcpOAuth.reconnect.action", { server: label })}
+      disabled={!ready || connect.isPending}
+      onClick={() => connect.mutate()}
+    >
+      {connect.isPending ? (
+        <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" />
+      ) : (
+        <Link2 className="h-3.5 w-3.5" />
+      )}
+    </RowIconButton>
+  );
+}
+
 export function AuthSessions() {
   const { t } = useTranslation();
   const fmt = useFormat();
@@ -490,16 +703,34 @@ export function AuthSessions() {
     return () => clearInterval(t);
   }, []);
 
+  const toast = useToast();
   const revoke = useMutation({
     mutationFn: (id: string) => revokeMcpSession(id),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["mcp-sessions", scope.orgId] }),
   });
+  const revokeAll = useMutation({
+    mutationFn: (ids: string[]) =>
+      revokeEach(ids, revokeMcpSession, (failed, total) =>
+        t("pages.mcpOAuth.bulk.partial", { failed, total }),
+      ).finally(() => queryClient.invalidateQueries({ queryKey: ["mcp-sessions", scope.orgId] })),
+    onSuccess: (_done, ids) => {
+      setBulkOpen(false);
+      toast.push({
+        tone: "success",
+        title: t("pages.mcpOAuth.bulk.sessionsDone", { count: ids.length }),
+      });
+    },
+  });
+  const [bulkOpen, setBulkOpen] = React.useState(false);
+  const [filter, setFilter] = React.useState(NO_FILTER);
+  // an expired or revoked session has no way back but a new consent, and a
+  // consent is only ever the caller's own to give (#2175)
+  const me = useOptionalAuth()?.user?.id;
 
   // renewing on demand, next to the background sweeper that renews about five
   // minutes before expiry. a refusal from the authorization server revokes the
   // session rather than being retried, so a failure here is worth reading:
   // it usually means the consent behind it is gone (#707)
-  const toast = useToast();
   const refresh = useMutation({
     mutationFn: (id: string) => refreshMcpSession(id),
     onSuccess: () => {
@@ -536,26 +767,88 @@ export function AuthSessions() {
     return <NoOrgNote resource={t("errors.resources.authSessions")} lead={outcome} />;
   if (sessions.isLoading || scope.isLoading) return <LoadingBody lead={outcome} />;
 
-  const rows = sessions.data ?? [];
+  const all = sessions.data ?? [];
+  const info = (s: McpOAuthSessionRow) => {
+    const grant = grantById.get(s.grant_id);
+    return {
+      grant,
+      state: sessionState(s, now),
+      server: grant ? serverLabel(servers.data, grant.server_id) : s.grant_id.slice(0, 8),
+      owner: grant ? ownerLabel(users.data, grant.user_id) : "—",
+    };
+  };
+  const rows = all.filter((s) => {
+    const { grant, state } = info(s);
+    return (
+      (!filter.server || grant?.server_id === filter.server) &&
+      (!filter.owner || grant?.user_id === filter.owner) &&
+      (!filter.liveOnly || state === "active")
+    );
+  });
   const live = rows.filter((s) => sessionState(s, now) === "active").length;
+  const serverOptions = [
+    ...new Set(all.flatMap((s) => grantById.get(s.grant_id)?.server_id ?? [])),
+  ].map((id) => ({ value: id, label: serverLabel(servers.data, id) }));
+  const ownerOptions = [
+    ...new Set(all.flatMap((s) => grantById.get(s.grant_id)?.user_id ?? [])),
+  ].map((id) => ({ value: id, label: ownerLabel(users.data, id) }));
+  // as on OAuth Grants, the bulk action waits for a server or an owner
+  const targets = rows.filter((s) => sessionState(s, now) !== "revoked");
+  const bulkTarget = bulkTargetLabel(
+    t,
+    filter.owner ? ownerLabel(users.data, filter.owner) : "",
+    filter.server ? serverLabel(servers.data, filter.server) : "",
+  );
 
   return (
     <PageBody>
       {outcome}
-      <TokenNotice>{t("pages.mcpOAuth.sessionsTokenNotice")}</TokenNotice>
+      <TokenNotice
+        notes={[t("pages.mcpOAuth.scopeNoteSessions"), t("pages.mcpOAuth.sessionsFootnote")]}
+      >
+        {t("pages.mcpOAuth.sessionsTokenNotice")}
+      </TokenNotice>
 
       {sessions.isError ? (
-        <ForbiddenNote
-          resource={t("errors.resources.authSessions")}
-          target="auth-sessions"
+        <LoadError
           error={sessions.error}
+          resource={t("errors.resources.authSessions")}
           onRetry={() => void sessions.refetch()}
+          target="auth-sessions"
         />
       ) : (
         <>
+          {all.length > 0 && (
+            <OAuthFilters
+              filter={filter}
+              onChange={setFilter}
+              servers={serverOptions}
+              owners={ownerOptions}
+              action={
+                (filter.server || filter.owner) && (
+                  <GatedButton
+                    gate="mcp_oauth_session:delete"
+                    control="auth-sessions-revoke-all"
+                    size="sm"
+                    variant="outline"
+                    disabled={targets.length === 0 || revokeAll.isPending}
+                    onClick={() => {
+                      revokeAll.reset();
+                      setBulkOpen(true);
+                    }}
+                  >
+                    <ShieldOff className="h-3.5 w-3.5" aria-hidden />
+                    {t("pages.mcpOAuth.bulk.action")}
+                  </GatedButton>
+                )
+              }
+            />
+          )}
           <div className="flex flex-wrap items-center gap-3">
             <span className="text-sm text-muted-foreground">
-              {t("pages.mcpOAuth.sessionsCount", { count: rows.length, live })}
+              {filtersActive(filter)
+                ? t("pages.mcpOAuth.sessionsCountShown", { shown: rows.length, total: all.length })
+                : t("pages.mcpOAuth.sessionsCount", { count: rows.length, live })}
             </span>
             {revoke.isError && !confirming && (
               <span className="text-xs text-[color:var(--status-danger-text)]">
@@ -563,17 +856,39 @@ export function AuthSessions() {
               </span>
             )}
           </div>
-          <ScopeNote note={t("pages.mcpOAuth.scopeNoteSessions")} />
 
-          {rows.length === 0 ? (
+          {all.length === 0 ? (
             <EmptyState
               uxTarget="auth-sessions"
               icon={<KeyRound />}
               title={t("pages.mcpOAuth.sessionsEmptyTitle")}
-              description={t("pages.mcpOAuth.sessionsEmptyBody")}
+              description={
+                <Trans
+                  i18nKey="pages.mcpOAuth.sessionsEmptyBody"
+                  components={[
+                    <Link
+                      key="catalog"
+                      to="/mcp-catalog"
+                      className="rounded-sm font-medium text-foreground underline decoration-[color:var(--border-strong)] underline-offset-4 transition-colors hover:decoration-current focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    />,
+                  ]}
+                />
+              }
+            />
+          ) : rows.length === 0 ? (
+            <EmptyState
+              uxTarget="auth-sessions"
+              icon={<KeyRound />}
+              title={t("pages.mcpOAuth.noMatchTitle")}
+              description={t("pages.mcpOAuth.noMatchBody")}
+              actions={
+                <Button variant="outline" onClick={() => setFilter(NO_FILTER)}>
+                  {t("common.clearFilters")}
+                </Button>
+              }
             />
           ) : (
-            <ListTable label={t("screens.auth-sessions.title")} minWidth={1024}>
+            <ListTable label={t("screens.auth-sessions.title")} minWidth={1120}>
               <ListHeader grid={SESSION_GRID}>
                 <ListHeaderCell>{t("pages.mcpOAuth.server")}</ListHeaderCell>
                 <ListHeaderCell>{t("pages.mcpOAuth.owner")}</ListHeaderCell>
@@ -581,19 +896,21 @@ export function AuthSessions() {
                 <ListHeaderCell>{t("pages.mcpOAuth.lastUsed")}</ListHeaderCell>
                 <ListHeaderCell>{t("pages.mcpOAuth.expires")}</ListHeaderCell>
                 <ListHeaderCell>{t("pages.mcpOAuth.state")}</ListHeaderCell>
-                {/* renew and revoke are a column each, so each gets a name */}
+                {/* renew, reconnect and revoke are a column each, so each gets a name */}
                 <ListActionsHeader label={t("pages.mcpOAuth.sessions.colRenew")} />
+                <ListActionsHeader label={t("pages.mcpOAuth.sessions.colReconnect")} />
                 <ListActionsHeader label={t("pages.mcpOAuth.sessions.colRevoke")} />
               </ListHeader>
               {rows.map((s) => {
-                const grant = grantById.get(s.grant_id);
-                const state = sessionState(s, now);
-                const server = grant
-                  ? serverLabel(servers.data, grant.server_id)
-                  : s.grant_id.slice(0, 8);
-                const owner = grant ? ownerLabel(users.data, grant.user_id) : "—";
+                const { grant, state, server, owner } = info(s);
+                const serverRow = grant && servers.data?.find((v) => v.id === grant.server_id);
                 // the session the consent that brought the reader here minted
                 const fresh = s.id === completed?.session;
+                const reconnects =
+                  !!me &&
+                  grant?.user_id === me &&
+                  !!serverRow &&
+                  (state !== "active" || !s.has_refresh_token);
                 return (
                   <ListRow
                     key={s.id}
@@ -605,7 +922,7 @@ export function AuthSessions() {
                       {server}
                     </ListCell>
                     <ListCell className="truncate text-xs text-[color:var(--text-secondary)]">
-                      {grant ? ownerLabel(users.data, grant.user_id) : "—"}
+                      {owner}
                     </ListCell>
                     <ListCell className="grid">
                       <Scopes scopes={s.scopes} />
@@ -616,7 +933,7 @@ export function AuthSessions() {
                         : t("pages.mcpOAuth.never")}
                     </ListCell>
                     <ListCell
-                      className="font-mono text-xs text-[color:var(--text-secondary)]"
+                      className="whitespace-nowrap font-mono text-xs text-[color:var(--text-secondary)]"
                       title={s.expires_at}
                     >
                       {fmt.dateTime(s.expires_at)}
@@ -665,6 +982,11 @@ export function AuthSessions() {
                           <RefreshCw className="h-3.5 w-3.5" />
                         )}
                       </RowIconButton>
+                    </ListCell>
+                    <ListCell className="grid">
+                      {reconnects && serverRow && (
+                        <ReconnectButton server={serverRow} label={server} />
+                      )}
                     </ListCell>
                     <ListCell className="grid">
                       <RowIconButton
@@ -716,9 +1038,24 @@ export function AuthSessions() {
             }
           />
 
-          <p className="text-xs text-[color:var(--text-subtle)]">
-            {t("pages.mcpOAuth.sessionsFootnote")}
-          </p>
+          <ConfirmDialog
+            name="mcp-oauth-sessions-revoke-all"
+            open={bulkOpen}
+            onOpenChange={(open) => {
+              if (open) return;
+              setBulkOpen(false);
+              revokeAll.reset();
+            }}
+            title={t("pages.mcpOAuth.bulk.sessionsTitle", {
+              count: targets.length,
+              target: bulkTarget,
+            })}
+            description={t("pages.mcpOAuth.bulk.sessionsBody")}
+            confirmLabel={t("pages.mcpOAuth.bulk.sessionsConfirm", { count: targets.length })}
+            pending={revokeAll.isPending}
+            error={revokeAll.error}
+            onConfirm={() => revokeAll.mutate(targets.map((s) => s.id))}
+          />
         </>
       )}
     </PageBody>
