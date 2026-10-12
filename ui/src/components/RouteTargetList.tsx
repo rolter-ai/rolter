@@ -70,9 +70,11 @@ export function RouteTargetList({
                 color={
                   !tg.health
                     ? "var(--zinc-500)"
-                    : tg.health.breached
+                    : tg.health.state === "breaching"
                       ? "var(--status-danger)"
-                      : "var(--status-success)"
+                      : tg.health.state === "atRisk"
+                        ? "var(--status-warning)"
+                        : "var(--status-success)"
                 }
               />
             )}
@@ -94,16 +96,25 @@ export function RouteTargetList({
                   "whitespace-nowrap text-right",
                   !tg.health
                     ? "text-[color:var(--text-subtle)]"
-                    : tg.health.breached
+                    : tg.health.state === "breaching"
                       ? "text-[color:var(--status-danger-text)]"
-                      : "text-[color:var(--text-secondary)]",
+                      : tg.health.state === "atRisk"
+                        ? "text-[color:var(--status-warning-text)]"
+                        : "text-[color:var(--text-secondary)]",
                 )}
               >
                 {!tg.health
                   ? t("routeTargets.noHealth")
-                  : t(tg.health.breached ? "routeTargets.belowSla" : "routeTargets.uptime", {
-                      uptime: fmt.percent(tg.health.uptime, 2),
-                    })}
+                  : t(
+                      tg.health.state === "breaching"
+                        ? "routeTargets.belowSla"
+                        : tg.health.state === "atRisk"
+                          ? "routeTargets.slaAtRisk"
+                          : "routeTargets.uptime",
+                      {
+                        uptime: fmt.percent(tg.health.uptime, 2),
+                      },
+                    )}
               </span>
             )}
           </li>

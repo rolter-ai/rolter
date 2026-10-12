@@ -1,13 +1,87 @@
 // how a route's targets are read for display (#1979): the effective config
 // names each target's provider and upstream model, and the health rollups key
 // their rows on the same two strings
-import type { RouteDto, UptimeRow } from "@/lib/api";
+import type { RouteDto, TimelineRow, UptimeRow } from "@/lib/api";
 
 /**
  * The SLA the uptime rollup is judged against. The Health screen asks for the
  * same one, so the two screens share a cached answer and agree on "breached".
  */
 export const HEALTH_SLA = 0.99;
+
+/**
+ * How far back "recently" reaches: the newest hourly bucket the timeline holds
+ * and the one before it, so a state never hangs on the few minutes an hour has
+ * had so far.
+ */
+export const RECENT_MS = 60 * 60 * 1000;
+
+/**
+ * Where a provider or target stands against the SLA. Every input comes from
+ * `provider_health_events`, not from the gateway's circuit breakers, so the
+ * states are named after the SLA, never after a breaker (#2113). The Health and
+ * Models screens share this one definition.
+ *
+ * - `breaching`: over the window, more requests failed than the SLA allows
+ * - `atRisk`: the window still meets the SLA, but the recent buckets failed
+ *   faster than it allows, so the error budget is burning at more than 1x
+ * - `within`: the window meets the SLA and the recent buckets do too
+ */
+export type SlaState = "breaching" | "atRisk" | "within";
+
+export function slaState(breached: boolean, recentBurn: number | undefined): SlaState {
+  if (breached) return "breaching";
+  return recentBurn !== undefined && recentBurn > 1 ? "atRisk" : "within";
+}
+
+const SLA_RANK: Record<SlaState, number> = { within: 0, atRisk: 1, breaching: 2 };
+
+/** the worst of several states, for a card rolled up from its targets */
+export function worstState(states: SlaState[]): SlaState {
+  return states.reduce<SlaState>((a, b) => (SLA_RANK[b] > SLA_RANK[a] ? b : a), "within");
+}
+
+/**
+ * A bucket's start in milliseconds. The control plane asks ClickHouse for ISO
+ * output, so a bucket carries its zone (`2026-08-06T10:00:00Z`) and is read as
+ * is. A zone-less `2026-08-06 10:00:00`, from a control plane that predates
+ * that (#2255), is read as UTC: every bucket shares the server's zone, so the
+ * gaps between them stay right, which is all `recentBurn` compares.
+ */
+export function bucketStart(bucket: string): number {
+  const iso = bucket.replace(" ", "T");
+  return Date.parse(/(Z|[+-]\d{2}:?\d{2})$/i.test(iso) ? iso : `${iso}Z`);
+}
+
+/**
+ * Where "recently" starts: counted back from the newest bucket the timeline
+ * holds, not from the browser's clock, which cannot know the zone the buckets
+ * were written in. While probes or traffic flow, that bucket is the current hour.
+ */
+export function recentSince(timeline: TimelineRow[]): number {
+  const newest = timeline.reduce((max, row) => {
+    const start = bucketStart(row.bucket);
+    return start > max ? start : max;
+  }, -Infinity);
+  return newest - RECENT_MS;
+}
+
+/**
+ * Failures over the buckets that start at or after `since`, as a multiple of
+ * what the SLA allows — the same formula as the rollup's `error_budget_burn`,
+ * over a shorter span. Undefined when nothing was observed in that span.
+ */
+export function recentBurn(buckets: TimelineRow[], since: number): number | undefined {
+  let events = 0;
+  let failures = 0;
+  for (const b of buckets) {
+    // `!(>=)` rather than `<`, so an unparsable bucket is skipped too
+    if (!(bucketStart(b.bucket) >= since)) continue;
+    events += b.events;
+    failures += b.errors + b.timeouts;
+  }
+  return events === 0 ? undefined : failures / events / (1 - HEALTH_SLA);
+}
 
 /**
  * Uptime of one target against the SLA, over the health rollup's window.
@@ -19,6 +93,7 @@ export const HEALTH_SLA = 0.99;
 export interface TargetHealth {
   uptime: number;
   breached: boolean;
+  state: SlaState;
 }
 
 /** One route target as a person reads it: names, never ids. */
@@ -48,13 +123,23 @@ export function targetHealth(
   rows: UptimeRow[] | undefined,
   provider: string,
   upstream: string,
+  timeline?: TimelineRow[],
 ): TargetHealth | null {
   if (!Array.isArray(rows)) return null;
   const own = rows.find(
     (r) => r.provider === provider && grainOf(r) === "target" && r.target_id === upstream,
   );
   const row = own ?? rows.find((r) => r.provider === provider && grainOf(r) === "provider");
-  return row ? { uptime: row.uptime, breached: row.sla_breached === 1 } : null;
+  if (!row) return null;
+  const breached = row.sla_breached === 1;
+  // without the timeline there is no recent window, so only the rollup speaks
+  const burn = Array.isArray(timeline)
+    ? recentBurn(
+        timeline.filter((b) => b.provider === row.provider && b.target_id === row.target_id),
+        recentSince(timeline),
+      )
+    : undefined;
+  return { uptime: row.uptime, breached, state: slaState(breached, burn) };
 }
 
 /**
@@ -63,14 +148,18 @@ export function targetHealth(
  * `health` is left off when the uptime rollup was not read, so a screen can
  * tell "no health data for this target" from "health was never asked for".
  */
-export function targetViews(route: RouteDto, uptime?: UptimeRow[]): RouteTargetView[] {
+export function targetViews(
+  route: RouteDto,
+  uptime?: UptimeRow[],
+  timeline?: TimelineRow[],
+): RouteTargetView[] {
   return (route.targets ?? []).map((tg) => {
     const upstream = tg.model || route.model;
     return {
       provider: tg.provider,
       upstream,
       weight: tg.weight,
-      ...(uptime ? { health: targetHealth(uptime, tg.provider, upstream) } : {}),
+      ...(uptime ? { health: targetHealth(uptime, tg.provider, upstream, timeline) } : {}),
     };
   });
 }

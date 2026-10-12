@@ -43,6 +43,7 @@ import {
   fetchModels,
   fetchProviders,
   fetchRoutes,
+  fetchHealthTimeline,
   fetchUptime,
   type EffectiveModelDto,
   type RouteDto,
@@ -165,6 +166,14 @@ export default function Models() {
     retry: false,
   });
   const healthKnown = uptime.isSuccess && Array.isArray(uptime.data);
+  // the hourly timeline tells "within SLA" from "SLA at risk" (#2256). It is
+  // optional: where it cannot be read a target is judged on the rollup alone
+  const timeline = useQuery({
+    queryKey: ["health-timeline"],
+    queryFn: async () => (await fetchHealthTimeline("hour").catch(() => [])) ?? [],
+    enabled: hasModels && healthKnown,
+    retry: false,
+  });
   const [expanded, setExpanded] = React.useState<ReadonlySet<string>>(() => new Set());
   const toggleTargets = (model: string) =>
     setExpanded((open) => {
@@ -214,7 +223,7 @@ export default function Models() {
     const route = routeByModel.get(entry.model) ?? null;
     const effective = effectiveRoute.get(entry.model);
     const targets = effective
-      ? targetViews(effective, healthKnown ? uptime.data : undefined)
+      ? targetViews(effective, healthKnown ? uptime.data : undefined, timeline.data)
       : null;
     // the first provider names the column; a route spread over several says so
     // instead of pretending it lives on one
@@ -435,7 +444,8 @@ export default function Models() {
           const detailId = `${detailPrefix}-${r.name}`;
           const hintKey = strategyHintKey(r.strategy);
           const withHealth = (r.targets ?? []).filter((tg) => tg.health);
-          const failing = withHealth.filter((tg) => tg.health?.breached).length;
+          const failing = withHealth.filter((tg) => tg.health?.state === "breaching").length;
+          const atRisk = withHealth.filter((tg) => tg.health?.state === "atRisk").length;
           return (
             <React.Fragment key={r.name}>
               <ListRow grid={GRID} className={open ? "border-b-0" : undefined}>
@@ -519,6 +529,11 @@ export default function Models() {
                     <span className="inline-flex items-center gap-1 text-[11px] text-[color:var(--status-danger-text)]">
                       <StatusDot color="var(--status-danger)" className="h-1.5 w-1.5" />
                       {t("pages.models.targets.failing", { count: failing })}
+                    </span>
+                  ) : atRisk > 0 ? (
+                    <span className="inline-flex items-center gap-1 text-[11px] text-[color:var(--status-warning-text)]">
+                      <StatusDot color="var(--status-warning)" className="h-1.5 w-1.5" />
+                      {t("pages.models.targets.atRisk", { count: atRisk })}
                     </span>
                   ) : (
                     withHealth.length > 0 && (

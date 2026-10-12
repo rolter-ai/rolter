@@ -17,29 +17,17 @@ import {
   type UptimeRow,
 } from "@/lib/api";
 import { useFormat, type Formatters } from "@/lib/i18n/format";
-import { HEALTH_SLA as SLA } from "@/lib/route-targets";
+import {
+  HEALTH_SLA as SLA,
+  bucketStart,
+  recentBurn,
+  recentSince,
+  slaState,
+  worstState,
+  type SlaState,
+} from "@/lib/route-targets";
 import { cn } from "@/lib/utils";
 import { useScreenReady } from "@/lib/ux-react";
-
-/**
- * How far back "recently" reaches: the newest hourly bucket the timeline holds
- * and the one before it, so a state never hangs on the few minutes an hour has
- * had so far.
- */
-const RECENT_MS = 60 * 60 * 1000;
-
-/**
- * Where a provider or target stands against the SLA. Every input comes from
- * `provider_health_events`, not from the gateway's circuit breakers, which this
- * screen never reads — so the states are named after the SLA, never after a
- * breaker (#2113).
- *
- * - `breaching`: over the window, more requests failed than the SLA allows
- * - `atRisk`: the window still meets the SLA, but the recent buckets failed
- *   faster than it allows, so the error budget is burning at more than 1x
- * - `within`: the window meets the SLA and the recent buckets do too
- */
-type SlaState = "breaching" | "atRisk" | "within";
 
 /** the status fill for a state's dots and border */
 const SLA_FILL: Record<SlaState, string> = {
@@ -50,18 +38,6 @@ const SLA_FILL: Record<SlaState, string> = {
 
 const SLA_TONE = { breaching: "danger", atRisk: "warning", within: "success" } as const;
 
-function slaState(breached: boolean, recentBurn: number | undefined): SlaState {
-  if (breached) return "breaching";
-  return recentBurn !== undefined && recentBurn > 1 ? "atRisk" : "within";
-}
-
-const SLA_RANK: Record<SlaState, number> = { within: 0, atRisk: 1, breaching: 2 };
-
-/** the worst of several states, for a card rolled up from its targets */
-function worstState(states: SlaState[]): SlaState {
-  return states.reduce<SlaState>((a, b) => (SLA_RANK[b] > SLA_RANK[a] ? b : a), "within");
-}
-
 function useSlaLabel(): (state: SlaState) => string {
   const { t } = useTranslation();
   return (state) =>
@@ -70,35 +46,6 @@ function useSlaLabel(): (state: SlaState) => string {
       : state === "atRisk"
         ? t("pages.health.slaAtRisk")
         : t("pages.health.slaWithin");
-}
-
-/**
- * A bucket's start in milliseconds. The control plane asks ClickHouse for ISO
- * output, so a bucket carries its zone (`2026-08-06T10:00:00Z`) and is read as
- * is. A zone-less `2026-08-06 10:00:00`, from a control plane that predates
- * that (#2255), is read as UTC: every bucket shares the server's zone, so the
- * gaps between them stay right, which is all `recentBurn` compares.
- */
-function bucketStart(bucket: string): number {
-  const iso = bucket.replace(" ", "T");
-  return Date.parse(/(Z|[+-]\d{2}:?\d{2})$/i.test(iso) ? iso : `${iso}Z`);
-}
-
-/**
- * Failures over the buckets that start at or after `since`, as a multiple of
- * what the SLA allows — the same formula as the rollup's `error_budget_burn`,
- * over a shorter span. Undefined when nothing was observed in that span.
- */
-function recentBurn(buckets: TimelineRow[], since: number): number | undefined {
-  let events = 0;
-  let failures = 0;
-  for (const b of buckets) {
-    // `!(>=)` rather than `<`, so an unparsable bucket is skipped too
-    if (!(bucketStart(b.bucket) >= since)) continue;
-    events += b.events;
-    failures += b.errors + b.timeouts;
-  }
-  return events === 0 ? undefined : failures / events / (1 - SLA);
 }
 
 function pct(fmt: Formatters, v: number): string {
@@ -442,14 +389,7 @@ export default function Health() {
     timelineByTarget.set(k, list);
   }
   const groups = groupByProvider(uptime.data ?? []);
-  // "recently" counts back from the newest bucket the timeline holds, not from
-  // the browser's clock, which cannot know the zone the buckets were written
-  // in. while probes or traffic flow, that bucket is the current hour
-  const newest = (timeline.data ?? []).reduce((max, row) => {
-    const start = bucketStart(row.bucket);
-    return start > max ? start : max;
-  }, -Infinity);
-  const since = newest - RECENT_MS;
+  const since = recentSince(timeline.data ?? []);
 
   return (
     <PageBody className="gap-[18px]">

@@ -60,8 +60,8 @@ export const WithHealth: Story = {
     strategy: "cache_aware",
     health: true,
     targets: [
-      { ...FLEET[0], health: { uptime: 0.9995, breached: false } },
-      { ...FLEET[1], health: { uptime: 0.97, breached: true } },
+      { ...FLEET[0], health: { uptime: 0.9995, breached: false, state: "within" } },
+      { ...FLEET[1], health: { uptime: 0.97, breached: true, state: "breaching" } },
       { ...FLEET[2], health: null },
     ],
   },

@@ -487,6 +487,7 @@
     "share": "{{share}} of traffic",
     "uptime": "{{uptime}} uptime",
     "belowSla": "{{uptime}} uptime, below SLA",
+    "slaAtRisk": "{{uptime}} uptime, SLA at risk",
     "noHealth": "no health data",
     "healthWindow": "Uptime over the last 7 days, against a {{sla}} SLA."
   },
@@ -683,6 +684,8 @@
         "none": "no targets",
         "failing_one": "{{count}} below SLA",
         "failing_other": "{{count}} below SLA",
+        "atRisk_one": "{{count}} SLA at risk",
+        "atRisk_other": "{{count}} SLA at risk",
         "healthy": "every target within SLA"
       },
       "readOnlyPill": "read-only",
