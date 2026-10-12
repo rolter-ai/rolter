@@ -204,6 +204,16 @@ export const Loaded: Story = {
       canvas.queryByRole("region", { name: /switched off|Could not confirm/ }),
     ).toBeNull();
     await expect(canvas.queryByRole("heading", { name: "Config-file rules" })).toBeNull();
+    // one ordered column states the run order (#2161)
+    const order = within(canvas.getByRole("list", { name: "Rules in the order they run" }));
+    await expect(order.getAllByRole("listitem").map((item) => item.textContent)).toEqual([
+      expect.stringContaining("10 · Redact customer email"),
+      expect.stringContaining("20 · Block override attempts"),
+    ]);
+    // a pattern is copyable config: mono, and not clamped to two lines
+    const pattern = canvas.getByText("(?i)ignore previous instructions");
+    await expect(pattern).toHaveClass("font-mono");
+    await expect(pattern).not.toHaveClass("line-clamp-2");
     // the shell's ScreenHeader owns the page's only h1 (#2241)
     await expect(within(canvasElement).queryAllByRole("heading", { level: 1 })).toHaveLength(0);
     // no route overrides a rule, so no card names one
@@ -337,6 +347,8 @@ export const CreatesAPhoneRedactionAndABlockRule: Story = {
     await userEvent.click(dialog.getByRole("button", { name: "Publish rule" }));
     await expect(await postedBody(1)).toMatchObject({
       name: "Mask phone numbers",
+      // after the last rule (20), not tied at 0 (#2161)
+      position: 30,
       source_type: "builtin",
       builtin: "phone",
       pattern: null,

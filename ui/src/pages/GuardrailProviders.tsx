@@ -5,7 +5,12 @@ import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
-import { GuardrailEmpty, GuardrailLoading, PolicyCard } from "@/components/GuardrailPanel";
+import {
+  GuardrailBanner,
+  GuardrailEmpty,
+  GuardrailLoading,
+  PolicyCard,
+} from "@/components/GuardrailPanel";
 import {
   GuardrailOutcomesNotice,
   OutcomeCounts,
@@ -46,8 +51,8 @@ import {
   type Enforcement,
   type ProviderStatus,
 } from "@/lib/guardrail-enforcement";
+import { useFormat } from "@/lib/i18n/format";
 import { errorDetail, useToast } from "@/lib/toast";
-import { cn } from "@/lib/utils";
 import { useScreenReady } from "@/lib/ux-react";
 
 // the shape of an evaluation URL, shown as a placeholder and never as a value:
@@ -74,6 +79,7 @@ function GuardrailProvidersScreen() {
   const { t } = useTranslation();
   const client = useQueryClient();
   const toast = useToast();
+  const { number } = useFormat();
   // the registry and the effective webhook are read together, so the banner
   // never pairs a fresh list with a stale webhook between two refetches. an
   // unreadable config is `null`: the list still renders and the banner says it
@@ -234,25 +240,30 @@ function GuardrailProvidersScreen() {
               key={provider.id}
               title={provider.name}
               description={provider.url}
+              descriptionMono
               enabled={provider.enabled}
               status={
                 enforcement ? cardStatus(providerStatus(provider, enforcement), t) : undefined
               }
               badges={
                 <>
-                  <Badge tone={provider.failure_mode === "fail_closed" ? "danger" : "warning"}>
+                  {/* the safe default is neutral; only fail-open is worth a colour */}
+                  <Badge tone={provider.failure_mode === "fail_closed" ? "neutral" : "warning"}>
                     {provider.failure_mode.replace("_", "-")}
                   </Badge>
                   <Badge tone="outline">{provider.stage.replace("_", "-")}</Badge>
-                  <Badge tone="info">{provider.auth_kind.replace("_", " ")}</Badge>
+                  {/* colour says a credential is attached; no auth says nothing */}
+                  <Badge tone={provider.auth_kind === "none" ? "outline" : "info"}>
+                    {provider.auth_kind.replace("_", " ")}
+                  </Badge>
                 </>
               }
               details={
                 <>
                   {t("pages.guardrailProviders.detailLine", {
-                    timeout: provider.timeout_ms,
-                    retries: provider.max_retries,
-                    kib: Math.round(provider.max_body_bytes / 1024),
+                    timeout: number(provider.timeout_ms),
+                    count: provider.max_retries,
+                    kib: number(Math.round(provider.max_body_bytes / 1024)),
                   })}
                   {/* said on a paused row too: activating it is how a working
                       provider gets replaced by one that checks nothing */}
@@ -465,12 +476,6 @@ function cardStatus(
   }
 }
 
-const BANNER_TONE = {
-  success: "border-[color:var(--status-success)]/30 bg-[color:var(--status-success)]/5",
-  warning: "border-[color:var(--status-warning)]/30 bg-[color:var(--status-warning)]/5",
-  neutral: "border-[color:var(--border-subtle)] bg-[color:var(--surface-raised)]",
-};
-
 /**
  * What the gateway enforces, read from the effective webhook rather than from
  * the registry's switch. Green only when requests are really sent to a
@@ -484,8 +489,7 @@ function EnforcementBanner({
   onRetry: () => void;
 }) {
   const { t } = useTranslation();
-  const titleId = React.useId();
-  let tone: keyof typeof BANNER_TONE = "neutral";
+  let tone: "success" | "warning" | "neutral" = "neutral";
   let icon: React.ReactNode;
   let title: string;
   const lines: React.ReactNode[] = [];
@@ -543,28 +547,22 @@ function EnforcementBanner({
   }
 
   return (
-    // named by its title, so the status is a region a screen reader can jump to
-    <section
-      aria-labelledby={titleId}
-      className={cn("flex items-start gap-3 rounded-[10px] border p-4", BANNER_TONE[tone])}
+    <GuardrailBanner
+      tone={tone}
+      icon={icon}
+      title={title}
+      action={
+        enforcement.state === "unknown" ? (
+          <Button variant="outline" size="sm" onClick={onRetry}>
+            {t("errors.load.retry")}
+          </Button>
+        ) : undefined
+      }
     >
-      <span className="mt-0.5 flex-none">{icon}</span>
-      <div className="min-w-0 flex-1 space-y-0.5">
-        <p id={titleId} className="text-sm font-medium">
-          {title}
-        </p>
-        {lines.map((line, index) => (
-          <p key={index} className="break-words text-xs text-muted-foreground">
-            {line}
-          </p>
-        ))}
-      </div>
-      {enforcement.state === "unknown" && (
-        <Button variant="outline" size="sm" className="flex-none" onClick={onRetry}>
-          {t("errors.load.retry")}
-        </Button>
-      )}
-    </section>
+      {lines.map((line, index) => (
+        <p key={index}>{line}</p>
+      ))}
+    </GuardrailBanner>
   );
 }
 
@@ -680,6 +678,9 @@ function ProviderDialog({
           <Field label={t("pages.guardrailProviders.fieldFailure")} htmlFor="provider-failure">
             <Combobox
               id="provider-failure"
+              aria-describedby={
+                form.failure_mode === "fail_open" ? "provider-failure-note" : undefined
+              }
               value={form.failure_mode}
               onChange={(picked) =>
                 set({
@@ -693,6 +694,15 @@ function ProviderDialog({
             />
           </Field>
         </div>
+        {/* beside the failure policy it explains, not under the switch */}
+        {form.failure_mode === "fail_open" && (
+          <p
+            id="provider-failure-note"
+            className="rounded-lg bg-[color:var(--status-warning)]/10 p-3 text-xs text-[color:var(--status-warning-text)]"
+          >
+            {t("pages.guardrailProviders.failOpenWarning")}
+          </p>
+        )}
         {/* a row can still carry the stage: the API accepts it, and rows saved
             from this dialog before it was disabled keep it */}
         {postCall && (
@@ -771,11 +781,6 @@ function ProviderDialog({
           checked={form.enabled}
           onChange={(enabled) => set({ enabled })}
         />
-        {form.failure_mode === "fail_open" && (
-          <p className="rounded-lg bg-[color:var(--status-warning)]/10 p-3 text-xs text-[color:var(--status-warning-text)]">
-            {t("pages.guardrailProviders.failOpenWarning")}
-          </p>
-        )}
         {error && (
           <p role="alert" className="text-xs text-[color:var(--status-danger-text)]">
             {error}

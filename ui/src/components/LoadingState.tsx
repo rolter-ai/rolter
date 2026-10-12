@@ -70,6 +70,7 @@ export function CardGridSkeleton({
   cards = 4,
   height = 148,
   min = 360,
+  columns,
   className,
   testId,
 }: {
@@ -78,6 +79,8 @@ export function CardGridSkeleton({
   height?: number;
   /** the `minmax()` floor of the grid this stands in for */
   min?: number;
+  /** a fixed column count, for a screen whose loaded list is one ordered column */
+  columns?: number;
   className?: string;
   testId?: string;
 }) {
@@ -87,7 +90,12 @@ export function CardGridSkeleton({
           tailwind cannot generate an arbitrary value from a runtime number */}
       <div
         className="grid gap-3.5"
-        style={{ gridTemplateColumns: `repeat(auto-fill,minmax(${min}px,1fr))` }}
+        style={{
+          gridTemplateColumns:
+            columns === undefined
+              ? `repeat(auto-fill,minmax(${min}px,1fr))`
+              : `repeat(${columns},minmax(0,1fr))`,
+        }}
       >
         {Array.from({ length: cards }, (_, i) => (
           <Skeleton key={i} height={height} radius={10} />

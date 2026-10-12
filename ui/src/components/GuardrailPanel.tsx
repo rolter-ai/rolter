@@ -16,8 +16,9 @@ import { cn } from "@/lib/utils";
  * heard a different word for the same state, and the div carried no `aria-busy`
  * (#1605). `CardGridSkeleton` is that region, once.
  */
-export function GuardrailLoading() {
-  return <CardGridSkeleton cards={3} height={172} min={320} />;
+export function GuardrailLoading({ columns }: { columns?: number }) {
+  // the floor matches the two-column grid the cards load into (#2161)
+  return <CardGridSkeleton cards={3} height={172} min={360} columns={columns} />;
 }
 
 export function GuardrailEmpty({
@@ -46,6 +47,7 @@ export function GuardrailEmpty({
 export function PolicyCard({
   title,
   description,
+  descriptionMono = false,
   enabled,
   status,
   badges,
@@ -55,6 +57,11 @@ export function PolicyCard({
 }: {
   title: string;
   description: string;
+  /**
+   * The description is copyable config, a URL or a pattern: drawn in the mono
+   * face and wrapped in full rather than clamped (#2161).
+   */
+  descriptionMono?: boolean;
   enabled: boolean;
   /**
    * The status badge, when `enabled` alone would overstate it. A guardrail
@@ -83,7 +90,14 @@ export function PolicyCard({
               {badge.label}
             </Badge>
           </div>
-          <p className="mt-1 line-clamp-2 text-sm text-muted-foreground">{description}</p>
+          <p
+            className={cn(
+              "mt-1 text-sm text-muted-foreground",
+              descriptionMono ? "break-all font-mono text-xs" : "line-clamp-2",
+            )}
+          >
+            {description}
+          </p>
         </div>
       </div>
       <div className="mt-3 flex flex-wrap gap-1.5">{badges}</div>
@@ -94,6 +108,7 @@ export function PolicyCard({
 }
 
 const BANNER_TONE = {
+  success: "border-[color:var(--status-success)]/30 bg-[color:var(--status-success)]/5",
   warning: "border-[color:var(--status-warning)]/30 bg-[color:var(--status-warning)]/5",
   neutral: "border-[color:var(--border-subtle)] bg-[color:var(--surface-raised)]",
 };
