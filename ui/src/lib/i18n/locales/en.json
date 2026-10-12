@@ -267,7 +267,8 @@
       "playgroundKey": "the playground key",
       "projectSettings": "project settings",
       "preferences": "your preferences",
-      "yourProfile": "your profile"
+      "yourProfile": "your profile",
+      "auditLogExport": "the audit log export"
     },
     "requestFailed": "request failed: {{status}}",
     "gateway": {
@@ -2601,7 +2602,28 @@
         "deployment": "Whole deployment"
       },
       "noOrg": "No org",
-      "unknownAddress": "Unknown address"
+      "unknownAddress": "Unknown address",
+      "actorNotInOrg": "Not in this org",
+      "actorUnknown": "Unknown account",
+      "systemActor": "system",
+      "entry": {
+        "at": "Time (UTC)",
+        "actor": "Actor",
+        "entryId": "Entry id",
+        "actorId": "Actor id",
+        "targetId": "Target id",
+        "orgId": "Org id",
+        "copy": "Copy {{what}}"
+      },
+      "export": {
+        "csv": "Export CSV",
+        "json": "Export JSON",
+        "pending": "Exporting…",
+        "done_one": "Exported {{count}} entry",
+        "done_other": "Exported {{count}} entries",
+        "truncated_one": "Exported the newest {{count}} entry. Narrow the filters to export the rest.",
+        "truncated_other": "Exported the newest {{count}} entries. Narrow the filters to export the rest."
+      }
     },
     "complexityRouter": {
       "emptyTitle": "No routes to give a policy",

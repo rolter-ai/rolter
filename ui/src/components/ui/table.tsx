@@ -19,6 +19,12 @@ interface TableBaseProps<T> extends React.HTMLAttributes<HTMLDivElement> {
   data: T[];
   hover?: boolean;
   rowKey?: keyof T;
+  /**
+   * What opens under a row, in a full-width row of its own, or null for a row
+   * with nothing open. The detail sits beside the row it describes, not after
+   * the table, so a reader never has to work out which row it belongs to.
+   */
+  detailRow?: (row: T, index: number) => React.ReactNode;
 }
 
 // `empty` comes with the read it describes, or not at all: the type is what
@@ -60,6 +66,7 @@ export function Table<T extends Record<string, unknown>>({
   data = [],
   hover = true,
   rowKey,
+  detailRow,
   empty,
   read,
   className,
@@ -114,28 +121,45 @@ export function Table<T extends Record<string, unknown>>({
               </td>
             </tr>
           )}
-          {data.map((row, i) => (
-            <tr
-              key={rowKey ? String(row[rowKey]) : i}
-              className={cn(
-                "transition-colors [&:last-child>td]:border-b-0",
-                hover && "hover:bg-muted",
-              )}
-            >
-              {columns.map((c) => (
-                <td
-                  key={c.key}
+          {data.map((row, i) => {
+            const detail = detailRow?.(row, i);
+            return (
+              <React.Fragment key={rowKey ? String(row[rowKey]) : i}>
+                <tr
                   className={cn(
-                    "border-b border-[color:var(--border-subtle)] px-4 py-2 align-middle text-[color:var(--text-secondary)]",
-                    c.mono && "font-mono text-xs text-foreground",
-                    c.align ? ALIGN[c.align] : undefined,
+                    "transition-colors",
+                    !detail && "[&:last-child>td]:border-b-0",
+                    hover && "hover:bg-muted",
                   )}
                 >
-                  {c.render ? c.render(row[c.key], row, i) : (row[c.key] as React.ReactNode)}
-                </td>
-              ))}
-            </tr>
-          ))}
+                  {columns.map((c) => (
+                    <td
+                      key={c.key}
+                      className={cn(
+                        "border-b border-[color:var(--border-subtle)] px-4 py-2 align-middle text-[color:var(--text-secondary)]",
+                        c.mono && "font-mono text-xs text-foreground",
+                        c.align ? ALIGN[c.align] : undefined,
+                      )}
+                    >
+                      {c.render ? c.render(row[c.key], row, i) : (row[c.key] as React.ReactNode)}
+                    </td>
+                  ))}
+                </tr>
+                {detail && (
+                  <tr className="[&:last-child>td]:border-b-0">
+                    <td
+                      colSpan={columns.length}
+                      className="border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] p-0"
+                    >
+                      {/* held to the frame's width, like the empty placeholder, so
+                          the detail is read without scrolling the columns */}
+                      <div className="sticky left-0 w-[100cqw] max-w-full px-4 py-3">{detail}</div>
+                    </td>
+                  </tr>
+                )}
+              </React.Fragment>
+            );
+          })}
         </tbody>
       </table>
     </div>

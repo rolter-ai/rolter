@@ -1,5 +1,5 @@
-import { useQuery } from "@tanstack/react-query";
-import { Building2, ScrollText } from "lucide-react";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { Building2, Download, ScrollText } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router";
@@ -11,6 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { CodeBlock } from "@/components/ui/code-block";
 import { Combobox } from "@/components/ui/combobox";
+import { CopyableText } from "@/components/ui/copyable-value";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Input } from "@/components/ui/input";
 import { Segmented } from "@/components/ui/segmented";
@@ -22,11 +23,21 @@ import {
   fetchUsers,
   type AuditLogEntry,
 } from "@/lib/api";
+import {
+  auditCsv,
+  auditExportName,
+  auditExportRow,
+  auditJson,
+  collectAuditLog,
+  downloadText,
+  type AuditExportFormat,
+} from "@/lib/audit-export";
 import { AUDIT_TARGET_TYPES, auditGroup, groupedActions } from "@/lib/audit-vocabulary";
 import { useOptionalAuth } from "@/lib/auth";
 import { useCan } from "@/lib/can";
 import { useFormat } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
+import { errorDetail, useToast } from "@/lib/toast";
 import { useScreenReady } from "@/lib/ux-react";
 
 const PAGE_SIZE = 25;
@@ -202,6 +213,56 @@ export default function AuditLog() {
     if (page.data?.total !== undefined) setTotal(page.data.total);
   }, [page.data]);
 
+  // the active filters, read again from the control plane a page at a time, so
+  // the file holds the whole filtered log and not the 25 rows on screen (#2130).
+  // the window is anchored at the moment of the press, like the screen's own
+  const toast = useToast();
+  const orgLabel = deployment
+    ? "deployment"
+    : (scope.orgs.find((o) => o.id === scope.orgId)?.slug ?? scope.orgId ?? "org");
+  const exportLog = useMutation({
+    mutationFn: async (format: AuditExportFormat) => {
+      const hours = RANGES[rangeIdx].hours;
+      const exportFrom =
+        hours != null ? new Date(Date.now() - hours * 3_600_000).toISOString() : undefined;
+      const filters = {
+        action: action || undefined,
+        target_type: target || undefined,
+        actor: actorParam,
+        from: exportFrom,
+      };
+      const { entries, truncated } = await collectAuditLog(
+        (query) =>
+          deployment
+            ? fetchDeploymentAuditLogPage(query)
+            : fetchAuditLogPage(scope.orgId as string, query),
+        filters,
+      );
+      const out = entries.map((e) => auditExportRow(e, emailOf));
+      downloadText(
+        auditExportName({ org: orgLabel, from: exportFrom, format }),
+        format === "csv" ? auditCsv(out) : auditJson(out),
+        format === "csv" ? "text/csv" : "application/json",
+      );
+      return { count: out.length, truncated };
+    },
+    onSuccess: ({ count, truncated }) => {
+      toast.push({
+        tone: truncated ? "info" : "success",
+        title: t(truncated ? "pages.auditLog.export.truncated" : "pages.auditLog.export.done", {
+          count,
+        }),
+      });
+    },
+    onError: (error) => {
+      toast.push({
+        tone: "error",
+        title: t("toast.exportFailed", { what: t("errors.resources.auditLogExport") }),
+        detail: errorDetail(error),
+      });
+    },
+  });
+
   const columns: TableColumn<AuditLogEntry>[] = [
     {
       key: "at",
@@ -215,12 +276,22 @@ export default function AuditLog() {
       mono: true,
       render: (v, row) =>
         v ? (
-          <span title={String(v)}>{emailOf(String(v)) ?? String(v).slice(0, 8)}</span>
+          emailOf(String(v)) ? (
+            <span title={String(v)}>{emailOf(String(v))}</span>
+          ) : Array.isArray(people) ? (
+            // the list answered and the account is not on it, so a prefix of its
+            // id would only look like a name. the whole id is in the open entry
+            <Badge tone="outline" title={String(v)}>
+              {t(deployment ? "pages.auditLog.actorUnknown" : "pages.auditLog.actorNotInOrg")}
+            </Badge>
+          ) : (
+            <span title={String(v)}>{String(v).slice(0, 8)}</span>
+          )
         ) : deployment && row.action.startsWith("auth.") ? (
           // a sign-in attempt against an address nobody registered has no actor
           <Badge tone="outline">{t("pages.auditLog.unknownAddress")}</Badge>
         ) : (
-          "system"
+          t("pages.auditLog.systemActor")
         ),
     },
     ...(deployment
@@ -250,7 +321,10 @@ export default function AuditLog() {
         if (!v) return "—";
         const path = TARGET_PATH[v as string];
         const label = (
-          <span className="font-mono text-xs">
+          <span
+            className="font-mono text-xs"
+            title={row.target_id ? String(row.target_id) : undefined}
+          >
             {v as string}
             {row.target_id ? `/${String(row.target_id).slice(0, 8)}` : ""}
           </span>
@@ -270,27 +344,22 @@ export default function AuditLog() {
     {
       key: "detail",
       header: t("pages.auditLog.columns.detail"),
-      render: (v, row) =>
-        v ? (
-          <button
-            type="button"
-            className="rounded-sm text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-            aria-expanded={expanded === row.id}
-            aria-label={t(
-              expanded === row.id
-                ? "pages.auditLog.hideDetailsAria"
-                : "pages.auditLog.showDetailsAria",
-              { action: row.action, target: row.target_type || t("pages.auditLog.unknownTarget") },
-            )}
-            onClick={() => setExpanded(expanded === row.id ? null : row.id)}
-          >
-            {expanded === row.id
-              ? t("pages.auditLog.hideDetails")
-              : t("pages.auditLog.showDetails")}
-          </button>
-        ) : (
-          "—"
-        ),
+      render: (_v, row) => (
+        <button
+          type="button"
+          className="rounded-sm text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          aria-expanded={expanded === row.id}
+          aria-label={t(
+            expanded === row.id
+              ? "pages.auditLog.hideDetailsAria"
+              : "pages.auditLog.showDetailsAria",
+            { action: row.action, target: row.target_type || t("pages.auditLog.unknownTarget") },
+          )}
+          onClick={() => setExpanded(expanded === row.id ? null : row.id)}
+        >
+          {expanded === row.id ? t("pages.auditLog.hideDetails") : t("pages.auditLog.showDetails")}
+        </button>
+      ),
     },
   ];
 
@@ -386,6 +455,22 @@ export default function AuditLog() {
               }}
               ariaLabel={t("pages.auditLog.timeRangeAria")}
             />
+            <div className="ml-auto flex gap-1">
+              {(["csv", "json"] as const).map((format) => (
+                <Button
+                  key={format}
+                  size="sm"
+                  variant="outline"
+                  disabled={exportLog.isPending || page.isLoading || !!page.error}
+                  onClick={() => exportLog.mutate(format)}
+                >
+                  <Download className="h-3.5 w-3.5" />
+                  {exportLog.isPending && exportLog.variables === format
+                    ? t("pages.auditLog.export.pending")
+                    : t(`pages.auditLog.export.${format}`)}
+                </Button>
+              ))}
+            </div>
           </div>
 
           {/* the placeholder lives in the table so the columns stay on screen
@@ -397,6 +482,11 @@ export default function AuditLog() {
               columns={columns as unknown as TableColumn<Record<string, unknown>>[]}
               data={rows as unknown as Record<string, unknown>[]}
               rowKey="id"
+              detailRow={(row) =>
+                expanded === (row as unknown as AuditLogEntry).id ? (
+                  <EntryDetail entry={row as unknown as AuditLogEntry} actorEmail={emailOf} />
+                ) : null
+              }
               read={page}
               empty={
                 <EmptyState
@@ -453,20 +543,74 @@ export default function AuditLog() {
               </div>
             </div>
           )}
-
-          {expanded && (
-            /* the entry's recorded detail, through the shared code block so a
-               changed field is picked out rather than buried in monospace
-               (#949) */
-            <CodeBlock
-              value={JSON.stringify(rows.find((e) => e.id === expanded)?.detail, null, 2)}
-              language="json"
-              label={t("pages.auditLog.detail")}
-              maxHeight={256}
-            />
-          )}
         </>
       )}
     </PageBody>
+  );
+}
+
+// the open entry: labelled with what it is, with every id whole and copyable,
+// so it stands as evidence on its own once it is copied or photographed (#2129)
+function EntryDetail({
+  entry,
+  actorEmail,
+}: {
+  entry: AuditLogEntry;
+  actorEmail: (id: string) => string | undefined;
+}) {
+  const { t } = useTranslation();
+  const fmt = useFormat();
+  const target = entry.target_type || t("pages.auditLog.unknownTarget");
+  const heading = `${entry.action} · ${target} · ${fmt.dateTime(entry.at)}`;
+  const email = entry.actor_user_id ? actorEmail(entry.actor_user_id) : undefined;
+  const ids: [string, string, string | null | undefined][] = [
+    ["entryId", t("pages.auditLog.entry.entryId"), entry.id],
+    ["actorId", t("pages.auditLog.entry.actorId"), entry.actor_user_id],
+    ["targetId", t("pages.auditLog.entry.targetId"), entry.target_id],
+    ["orgId", t("pages.auditLog.entry.orgId"), entry.org_id],
+  ];
+  return (
+    <section aria-label={heading} className="flex min-w-0 flex-col gap-3 text-xs">
+      <h3 className="text-sm font-medium text-foreground">{heading}</h3>
+      <dl className="grid grid-cols-[max-content_1fr] items-start gap-x-4 gap-y-1.5">
+        <dt className="text-muted-foreground">{t("pages.auditLog.entry.at")}</dt>
+        <dd className="font-mono text-foreground">{entry.at}</dd>
+        {email && (
+          <>
+            <dt className="text-muted-foreground">{t("pages.auditLog.entry.actor")}</dt>
+            <dd className="text-foreground">{email}</dd>
+          </>
+        )}
+        {ids.map(([key, label, value]) => (
+          <React.Fragment key={key}>
+            <dt className="text-muted-foreground">{label}</dt>
+            <dd className="min-w-0">
+              {value ? (
+                <CopyableText
+                  variant="inline"
+                  value={value}
+                  copyLabel={t("pages.auditLog.entry.copy", { what: label })}
+                  testId={`audit-${key}`}
+                />
+              ) : (
+                <span className="text-muted-foreground">
+                  {key === "actorId" ? t("pages.auditLog.systemActor") : "—"}
+                </span>
+              )}
+            </dd>
+          </React.Fragment>
+        ))}
+      </dl>
+      {entry.detail != null && (
+        /* the entry's recorded detail, through the shared code block so a
+           changed field is picked out rather than buried in monospace (#949) */
+        <CodeBlock
+          value={JSON.stringify(entry.detail, null, 2)}
+          language="json"
+          label={t("pages.auditLog.detail")}
+          maxHeight={256}
+        />
+      )}
+    </section>
   );
 }
