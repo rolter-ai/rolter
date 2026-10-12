@@ -28,7 +28,7 @@ const options: ComboboxOption[] = [
 
 | Prop                 | What it is for                                                                                                   |
 | -------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `options`            | `{ value, label, description?, group?, disabled? }[]`                                                            |
+| `options`            | `{ value, label, description?, group?, icon?, disabled? }[]`                                                     |
 | `value` / `onChange` | controlled; `""` means nothing selected                                                                          |
 | `placeholder`        | shown while nothing is selected; defaults to `common.combobox.placeholder`                                       |
 | `allowCustom`        | accepts a value outside `options`: a typed string with no exact match gets a "Use …" row (`common.combobox.use`) |
@@ -44,6 +44,11 @@ const options: ComboboxOption[] = [
 `description` is the secondary line under the label. The Playground's model
 picker uses it for what `owned_by` says, which the native control could not
 render at all.
+
+`icon` is a leading mark drawn before the label, in the row and in the closed
+control once the option is chosen (#3059). It is decorative (give it
+`aria-hidden`; the label names the option). The provider pickers put
+`<ProviderLogo kind={…} />` there; see "Provider logos" below.
 
 `group` puts the option under a header. Options are laid out in the order they
 arrive, so sort them into their buckets before passing them in — the primitive
@@ -162,3 +167,49 @@ announced under the right name.
 
 Below the threshold nothing windows: filtering narrows a list to a handful in
 two keystrokes, and the plain path is the one every other story exercises.
+
+## Fuzzy filtering
+
+What is typed is matched as a subsequence, not a substring, and the matches are
+ranked best first (#3058). The scorer is `fuzzyMatch` in `ui/src/lib/fuzzy.ts`,
+the same one the command palette uses, so `oai` finds `openai` and `rr` finds
+`Routing Rules`:
+
+- a hit at the head of the label, or on a word boundary (`-`, `_`, `/`, `.`,
+  space), beats one inside a word
+- adjacent characters beat scattered ones
+- a shorter label wins a tie
+- the value and the description are searched too, at a discount, so they never
+  outrank a hit on the label
+- case and diacritics do not matter
+
+The characters that matched are drawn with `HighlightedText`
+(`ui/src/components/ui/highlighted-text.tsx`). A grouped list stays grouped
+while ranked: groups are ordered by their best row, so a header is printed once.
+With no query the options keep the order they were passed in.
+
+Menus filter the same way: `Menu` (`ui/src/components/ui/menu.tsx`) has a search
+field above its entries. Typing while an entry has focus moves to the field,
+ArrowDown returns to the entries, and Enter takes the best match. Entries rank
+themselves with a CSS `order`, so a menu's children stay arbitrary nodes; a
+`MenuItem` whose children are not plain text passes `searchLabel`. Nothing else
+in the dashboard is a dropdown: `bun run check:primitives` fails a bare
+`<select>` and a hand-written `role="listbox"`, `option` or `combobox`
+(`hand-rolled-listbox`). The command palette is waived, with its reason in the
+source, because it opens routes and records rather than choosing a value.
+
+## Provider logos
+
+`ProviderLogo` (`ui/src/components/ui/provider-logo.tsx`) draws a provider
+kind's mark in the picker's `icon` slot: the provider sheet's kind picker, the
+provider pickers in the model and provider group sheets. The marks are the
+single-colour paths of [`simple-icons`](https://simpleicons.org) (CC0-1.0), a
+pinned dependency imported icon by icon in `ui/src/lib/provider-logos.ts`, so
+the bundle carries only the ones named there and nothing is fetched at runtime.
+They are painted in `currentColor` from the secondary text token. A kind the set
+has no mark for gets a monogram (its first letter in a quiet frame) rather than
+a gap. The dashboard theme is dark-only, so there is no light variant to keep.
+
+When a provider kind is added, add its mark to `PROVIDER_LOGOS` or name it in
+the monogram list of `ui/src/lib/provider-logos.test.ts`; the test fails until
+one of the two is done.

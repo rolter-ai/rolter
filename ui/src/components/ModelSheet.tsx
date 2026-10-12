@@ -7,6 +7,7 @@ import { FormSkeleton } from "@/components/LoadingState";
 import { RouteTargetList } from "@/components/RouteTargetList";
 import { StrategyPicker } from "@/components/StrategyPicker";
 import { useDiscardGuard } from "@/components/DiscardGuard";
+import { ProviderLogo } from "@/components/ui/provider-logo";
 import { Button } from "@/components/ui/button";
 import { ChipGroup } from "@/components/ui/chip-group";
 import { CodeBlock } from "@/components/ui/code-block";
@@ -858,7 +859,11 @@ function TargetRow({
           setAsked(true);
         }}
         onBlur={() => onTouch("provider")}
-        options={providers.map((p) => ({ value: p.id, label: p.name }))}
+        options={providers.map((p) => ({
+          value: p.id,
+          label: p.name,
+          icon: <ProviderLogo kind={p.kind} name={p.name} />,
+        }))}
       />
       <Combobox
         allowCustom

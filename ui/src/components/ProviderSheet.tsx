@@ -8,6 +8,7 @@ import { CopyButton } from "@/components/CopyButton";
 import { useDiscardGuard } from "@/components/DiscardGuard";
 import { DocsLink } from "@/components/DocsLink";
 import { ProjectScopeField, useMayWiden } from "@/components/ProjectScopeField";
+import { ProviderLogo } from "@/components/ui/provider-logo";
 import { Button } from "@/components/ui/button";
 import { Combobox } from "@/components/ui/combobox";
 import { Field } from "@/components/ui/field";
@@ -511,6 +512,7 @@ export function ProviderSheet({
             options={kindOptions.map((k) => ({
               value: k,
               label: kindName(k),
+              icon: <ProviderLogo kind={k} name={kindName(k)} />,
               description: kindDescription(k) || undefined,
             }))}
           />

@@ -109,6 +109,7 @@ const WAIVER = /ui-primitives-allow:\s*(.*)$/;
 
 export type RuleId =
   | "select"
+  | "hand-rolled-listbox"
   | "pre"
   | "native-dialog"
   | "hand-rolled-confirmation"
@@ -147,6 +148,14 @@ const ADVICE: Record<RuleId, string> = {
     "a bare `<select>` cannot be styled to the design system and has no search, " +
     "no secondary line and no empty state. Use `Combobox` from " +
     "`@/components/ui/combobox`.",
+  "hand-rolled-listbox":
+    'a hand-written `role="listbox"`, `role="option"` or `role="combobox"` is a ' +
+    "dropdown with its own filtering, ranking and keyboard (#3058): it will not " +
+    "match what the rest of the dashboard does when someone types. Use " +
+    "`Combobox` from `@/components/ui/combobox`, or `Menu` from " +
+    "`@/components/ui/menu` for a list of verbs; both filter fuzzily with " +
+    "`@/lib/fuzzy`. A surface that really is its own widget (the command " +
+    "palette) says why with a `ui-primitives-allow:` comment above the line.",
   pre:
     "a raw `<pre>` is a payload without a copy button, without a focusable " +
     "scroll region and without highlighting. Render JSON, YAML, TOML, CSV or " +
@@ -417,6 +426,8 @@ export function checkSource(
     // `<select` and `<pre` as JSX tags — `<select>` and `<select\n` both, but
     // not `<presence>` or a word ending in "pre"
     if (/<select[\s/>]/.test(line) || /<select$/.test(line)) record(index, "select", "<select>");
+    const listbox = /\brole=(?:\{[^}]*)?["'](listbox|option|combobox)["']/.exec(line);
+    if (listbox) record(index, "hand-rolled-listbox", `role="${listbox[1]}"`);
     if (/<pre[\s/>]/.test(line) || /<pre$/.test(line)) record(index, "pre", "<pre>");
     const native = /\bwindow\.(confirm|alert|prompt)\s*\(/.exec(line);
     if (native) record(index, "native-dialog", `window.${native[1]}()`);

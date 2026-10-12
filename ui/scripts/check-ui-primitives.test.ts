@@ -73,6 +73,22 @@ describe("the element rules", () => {
     expect(describeViolation(violation!)).toContain("Combobox");
   });
 
+  it("fails a hand-written listbox, option or combobox and names Combobox", () => {
+    const source = `<div role="listbox">\n<li role='option' />\n<input role={open ? "combobox" : undefined} />`;
+    const found = checkSource(source, SCREEN).violations.map((v) => v.found);
+    expect(found).toEqual(['role="listbox"', 'role="option"', 'role="combobox"']);
+    const [violation] = checkSource(source, SCREEN).violations;
+    expect(describeViolation(violation!)).toContain("Combobox");
+  });
+
+  it("lets a listbox through with a stated reason, and not inside the primitives", () => {
+    const waived = `// ui-primitives-allow: the palette ranks records, not options\n<div role="listbox" />`;
+    expect(checkSource(waived, SCREEN).violations).toEqual([]);
+    expect(
+      checkSource(`<div role="listbox" />`, "src/components/ui/combobox.tsx").violations,
+    ).toEqual([]);
+  });
+
   it("fails a raw pre and names CodeBlock", () => {
     const source = `export function Panel() {\n  return <pre>{json}</pre>;\n}`;
     const [violation] = checkSource(source, SCREEN).violations;

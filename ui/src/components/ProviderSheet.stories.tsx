@@ -723,6 +723,25 @@ export const EgressProxyHintSaysWhatItTakes: Story = {
   },
 };
 
+// ------------------------------------------------ logos and fuzzy filter in the kind picker (#3058, #3059)
+
+/** every kind wears its logo or a monogram, and the picker finds a kind by a subsequence */
+export const KindPickerShowsLogosAndFiltersFuzzily: Story = {
+  render: () => <Harness fetchStub={stub(async () => json(result()))} provider={PROVIDER} />,
+  play: async () => {
+    const canvas = screen();
+    const kind = await canvas.findByRole("combobox", { name: "Kind" });
+    await userEvent.click(kind);
+    const rows = within(canvas.getByRole("listbox")).getAllByRole("option");
+    for (const row of rows) await expect(row.querySelector("[data-provider-logo]")).not.toBeNull();
+    // "oai" is a subsequence of OpenAI, not a substring of anything
+    await userEvent.keyboard("oai");
+    const found = within(canvas.getByRole("listbox")).getAllByRole("option");
+    await expect(found[0]).toHaveTextContent(/^OpenAI/);
+    await expect(found[0].querySelector("[data-provider-logo]")).not.toBeNull();
+  },
+};
+
 // ------------------------------------------------ the sheet follows the kind (#2811)
 
 /** a saved provider of `kind`, so the sheet opens on it with the base filled in */

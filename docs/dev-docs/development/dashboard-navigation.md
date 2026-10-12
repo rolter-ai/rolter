@@ -47,7 +47,9 @@ have written a third and fourth copy. They are one now:
   `role="menu"` of `menuitem`s (or `menuitemradio`s for an exclusive choice, which
   read `aria-checked` and carry a tick), focus on the checked entry or else the
   first one that can be chosen, Up and Down wrapping, Home and End, Tab closing the
-  menu and carrying on to the control after its anchor, Escape handing focus back.
+  menu and carrying on to the control after its anchor, Escape handing focus back. Every menu also has a filter field above its entries
+  (#3058): typing narrows and ranks them with `lib/fuzzy`, see
+  [combobox.md](combobox.md#fuzzy-filtering).
   `header` renders above the `menu` element rather than inside it, since a menu
   may own entries, groups and separators and an identity block is none of those.
 - `GroupFlyout` stays a disclosure of navigation buttons, not a menu, and keeps

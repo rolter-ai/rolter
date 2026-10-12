@@ -289,6 +289,7 @@ export function CommandPalette({
           under it */}
       <div className="relative">
         <input
+          // ui-primitives-allow: the palette is its own surface: it ranks screens and records with lib/fuzzy, and a Combobox cannot open a route
           role="combobox"
           aria-expanded={expanded}
           aria-controls={listId}
@@ -320,6 +321,7 @@ export function CommandPalette({
             field's aria-activedescendant, but not a plain box around one */}
         <div
           id={listId}
+          // ui-primitives-allow: the palette's results are routes and records, listed by CommandPalette itself
           role={expanded ? "listbox" : undefined}
           aria-label={expanded ? t("shell.palette.label") : undefined}
           className="max-h-[min(60vh,360px)] overflow-y-auto"
@@ -333,6 +335,7 @@ export function CommandPalette({
                   <div
                     key={entry.id}
                     id={optionId(entry)}
+                    // ui-primitives-allow: a palette result row (see the listbox above)
                     role="option"
                     aria-selected={selected}
                     onMouseEnter={() => setActive(flat.findIndex((e) => e.id === entry.id))}
