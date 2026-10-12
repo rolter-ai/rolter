@@ -14,6 +14,7 @@ import {
   Harness,
   KEK_REFUSAL,
   SERVERS,
+  Toasts,
   routed,
   urlOf,
   type FetchStub,
@@ -43,18 +44,12 @@ import { AuthProvider } from "@/lib/auth";
 import { CONSENT_CHANNEL, type ConsentAnnouncement } from "@/lib/mcp-consent";
 import { ToastProvider } from "@/lib/toast";
 import { UxScreenProvider } from "@/lib/ux-react";
-import { phoneFits } from "@/lib/story-viewport";
-
-// the toast region is what outlives a closed dialog, so the stories that assert
-// an outcome mount it
-function Toasts({ children }: { children: React.ReactNode }) {
-  return (
-    <ToastProvider>
-      {children}
-      <Toaster />
-    </ToastProvider>
-  );
-}
+import {
+  animationsSettled,
+  atMobile,
+  expectNoHorizontalOverflow,
+  phoneFits,
+} from "@/lib/story-viewport";
 
 const meta = {
   title: "Screens/McpCatalog",
@@ -1402,3 +1397,63 @@ const catalogFits = phoneFits({
 });
 export const Mobile: Story = catalogFits("mobile", "en");
 export const MobileInRussian: Story = catalogFits("mobile", "ru");
+
+// registering a server is a sheet of four sections rather than a wall of twenty
+// controls (#2170): the transport overrides, which most servers never set,
+// start folded, and the OAuth fields exist only under the OAuth method
+export const RegisterSheetIsSectioned: Story = {
+  render: () => (
+    <Harness fetchStub={routed()}>
+      <McpCatalog />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await userEvent.click(
+      await within(canvasElement).findByRole("button", { name: "Register server" }),
+    );
+    const sheet = within(await within(document.body).findByRole("dialog"));
+    for (const title of ["Endpoint", "Tools", "Authentication"])
+      await expect(sheet.getByRole("button", { name: title })).toHaveAttribute(
+        "aria-expanded",
+        "true",
+      );
+    const overrides = sheet.getByRole("button", { name: "Transport overrides" });
+    await expect(overrides).toHaveAttribute("aria-expanded", "false");
+    await expect(sheet.queryByLabelText("Connect timeout (ms)")).not.toBeInTheDocument();
+    await userEvent.click(overrides);
+    await waitFor(() => expect(sheet.getByLabelText("Connect timeout (ms)")).toBeVisible());
+    // the tool names are typed from memory, and the field says so
+    await expect(sheet.getByText(/declared here, not discovered/)).toBeVisible();
+    await expect(sheet.queryByLabelText("Client ID")).not.toBeInTheDocument();
+    // the chosen method is marked with the selection tokens, not the brand red
+    const picked = sheet.getByRole("radio", { name: /^None — unauthenticated/ });
+    await expect(picked.closest("label")).toHaveClass("bg-[color:var(--red-tint)]");
+    await userEvent.click(sheet.getByRole("radio", { name: /^OAuth consent/ }));
+    await expect(await sheet.findByLabelText("Client ID")).toBeVisible();
+  },
+};
+
+// the sheet is the whole screen below `sm`; its sections and footer stay inside it
+const sheetFits = (locale: "en" | "ru") => ({
+  parameters: atMobile.parameters,
+  globals: { ...atMobile.globals, locale },
+  render: () => (
+    <Harness fetchStub={routed()}>
+      <McpCatalog />
+    </Harness>
+  ),
+  play: async ({ canvasElement }: { canvasElement: HTMLElement }) => {
+    const buttons = await within(canvasElement).findAllByRole("button", {
+      name: /Register server|Зарегистрировать сервер/,
+    });
+    await userEvent.click(buttons[0]);
+    const panel = await within(document.body).findByRole("dialog");
+    await animationsSettled();
+    await expect(panel.getBoundingClientRect().width).toBeLessThanOrEqual(window.innerWidth);
+    await userEvent.click(within(panel).getAllByRole("radio")[3]);
+    await expect(panel.scrollWidth).toBeLessThanOrEqual(panel.clientWidth);
+    await expectNoHorizontalOverflow();
+  },
+});
+export const RegisterSheetOnAPhone: Story = sheetFits("en");
+export const RegisterSheetOnAPhoneInRussian: Story = sheetFits("ru");

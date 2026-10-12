@@ -1229,13 +1229,16 @@
     "tool-groups": {
       "confirm": {
         "title": "Delete tool group {{name}}?",
-        "body": "The bundle is removed and any client relying on it loses access to the tools it governed."
+        "body": "The bundle is removed. Groups are not an access boundary yet, so no client gains or loses access to a tool by this."
       },
       "emptyTitle": "No tool groups",
       "lead": "Bundle exact server/tool pairs into reusable policy manifests. Groups define intended access; project assignment and gateway enforcement remain separate policy work.",
       "create": "Create group",
       "emptyBody": "Create a governed bundle from registered server tools.",
       "emptyNoServers": "Register MCP servers and declare their tools before creating a group.",
+      "emptyServersFailed": "The server list could not be read, so there is nothing to pick tools from yet. Retry above.",
+      "noOrgTitle": "Choose an organization",
+      "noOrgBody": "Tool groups are organization scoped.",
       "enabled": "enabled",
       "paused": "paused",
       "enabledLabel": "Enabled",
@@ -1716,6 +1719,10 @@
         "lead": "Declare the endpoint and exact tool names exposed through the organization registry.",
         "saveServer": "Save server"
       },
+      "sections": {
+        "endpoint": "Endpoint",
+        "tools": "Tools"
+      },
       "fields": {
         "name": "Name",
         "slug": "Slug",
@@ -1726,7 +1733,7 @@
         "enabledInGateway": "Enabled in gateway",
         "description": "Description",
         "tools": "Tools",
-        "toolsHint": "One tool name per line.",
+        "toolsHint": "One tool name per line. The names are declared here, not discovered: Rolter does not check them against the server.",
         "scopes": "Required OAuth scopes",
         "scopesHint": "One scope per line."
       },
@@ -3218,6 +3225,8 @@
       "defaultTransport": "Default transport",
       "noOrgTitle": "Choose an organization",
       "noOrgBody": "MCP defaults are organization scoped.",
+      "savedToast": "MCP settings saved",
+      "saveFailed": "Could not save the MCP settings",
       "lead": "Defaults apply when registering new MCP servers. Runtime authorization still comes from server scopes and each user’s OAuth session.",
       "transportDefaults": "Transport defaults",
       "failureMode": "Default failure policy",
@@ -3378,7 +3387,16 @@
       "scopesCount_other": "{{count}} OAuth scopes",
       "noScopes": "No OAuth scopes",
       "install": "Install",
-      "installed": "Installed"
+      "installAria": "Install {{name}}",
+      "installed": "Installed",
+      "configureLink": "Configure",
+      "installedToast": "{{name}} installed",
+      "nextStep": "Open it on MCP Catalog and choose Configure to set up how Rolter authenticates to it.",
+      "installFailed": "Could not install {{name}}",
+      "emptyTitle": "The library is empty",
+      "emptyBody": "This control plane ships no reviewed server definitions. Register a server by hand on MCP Catalog.",
+      "noOrgTitle": "Choose an organization",
+      "noOrgBody": "Installed servers belong to an organization."
     },
     "performance": {
       "retries": {
