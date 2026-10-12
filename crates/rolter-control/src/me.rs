@@ -24,7 +24,9 @@ use rolter_store::postgres::repo::{
     VirtualKeyRepo,
 };
 
-use crate::analytics::{client_or_503, run, window_params, WindowQuery, WHERE_WINDOW};
+use crate::analytics::{
+    client_or_503, run, window_params, WindowQuery, COST, ERRORS, REQUESTS, TOKENS, WHERE_WINDOW,
+};
 use crate::auth::CurrentUser;
 use crate::crud::{
     generate_virtual_key, key_pepper, pool, publish_config_change, ApiError, ApiResult, SafeJson,
@@ -778,22 +780,42 @@ async fn my_usage(
         let _ = write!(acc, "\'{}\'", k.id);
         acc
     });
-    let sql = format!(
+    let sql = usage_sql(&in_list);
+    run(ch.query(&sql, &window_params(&q)).await)
+}
+
+/// The per-key usage query. Counts and sums go through the same weighted
+/// expressions as `/api/v1/analytics/*`, so a sampled request log reads as the
+/// real traffic and spend rather than the logged share (#2278).
+fn usage_sql(in_list: &str) -> String {
+    format!(
         "select toString(virtual_key_id) as virtual_key_id, \
-                count() as requests, \
-                sum(total_tokens) as tokens, \
-                round(sum(cost_usd), 6) as cost_usd, \
-                countIf(status >= 400) as errors \
+                {REQUESTS} as requests, \
+                {TOKENS} as tokens, \
+                {COST} as cost_usd, \
+                {ERRORS} as errors \
          from request_logs \
          where {WHERE_WINDOW} and virtual_key_id in ({in_list}) \
          group by virtual_key_id format JSON"
-    );
-    run(ch.query(&sql, &window_params(&q)).await)
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn usage_scales_every_count_and_sum_by_the_sample_weight() {
+        let sql = usage_sql("'k'");
+        for expr in [REQUESTS, TOKENS, COST, ERRORS] {
+            assert!(sql.contains(expr), "{sql}");
+            assert!(expr.contains("sample_weight"), "{expr}");
+        }
+        assert!(
+            !sql.contains("count()") && !sql.contains("countIf"),
+            "{sql}"
+        );
+    }
 
     #[test]
     fn time_zone_shape_accepts_iana_names_and_nothing_else() {
