@@ -376,9 +376,11 @@ export const DialogNoteTracksStageAndFailurePolicy: Story = {
 
     await pickOption(failure, "Fail closed");
     await waitFor(() => expect(dialog.getByRole("note")).toHaveTextContent(REFUSED_NOTE));
-    await expect(
-      within(dialog.getByRole("note")).getByText("400 plugin_streaming_unsupported"),
-    ).toBeVisible();
+    await waitFor(() =>
+      expect(
+        within(dialog.getByRole("note")).getByText("400 plugin_streaming_unsupported"),
+      ).toBeVisible(),
+    );
 
     await pickOption(stage, "Pre-upstream");
     await waitFor(() => expect(dialog.queryByRole("note")).not.toBeInTheDocument());

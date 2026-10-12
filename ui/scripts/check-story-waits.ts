@@ -34,6 +34,17 @@
 // reason — a sheet's fields are in its first paint; a field whose *label* comes
 // from data is rare and reads as a query, not a field.
 //
+// **A one-shot `toBeVisible()` on an overlay that just opened** (#2291). A
+// drawer, sheet or dialog animates in, and its first frame is at opacity 0:
+// `findByRole("dialog")` resolves on existence, so `toBeVisible()` read once
+// right after can land on that frame and fail only on a loaded runner. The
+// rule follows the overlay through the play: a name bound from `sheet()`,
+// `confirmation()` or `findByRole("dialog" | "complementary")` is unsettled
+// until a `waitFor(… toBeVisible())` mentions it, and a bare `toBeVisible()`
+// that reads the name (or `within(name)`) before that is the violation. A
+// waiter that sits between (a focus `waitFor`) settles nothing — only a wait on
+// visibility does.
+//
 // The waiver is `check-ui-primitives.ts`'s, for the same reason: the genuine
 // cases are a minority, they are local, and a reason written at the point of
 // use cannot outlive the code the way a central baseline file can. Every
@@ -77,7 +88,23 @@ const DATA_ROLES = ["checkbox", "radio", "row", "cell", "option", "listitem", "t
 /** an inline `story-wait-allow: <reason>` on the line above */
 const WAIVER = /story-wait-allow:\s*(.*)$/;
 
-export type RuleId = "gate" | "gate-allowed" | "sheet-row";
+/**
+ * An overlay lookup: the sync `sheet()`, the async `confirmation()`, or a
+ * `findByRole` for a dialog or a drawer (`complementary`).
+ */
+const OVERLAY_OPENERS =
+  /\bsheet\(\)|\bconfirmation\(\)|findByRole\(\s*(["'])(dialog|complementary)\1/;
+
+/** the async lookups, which mean "an overlay was just opened" */
+const OPENING_LOOKUPS = /\bconfirmation\(\)|findByRole\(\s*(["'])(dialog|complementary)\1/;
+
+/** `const dialog = await …` — the name an overlay is bound to */
+const BINDING = /^\s*(?:const|let)\s+(\w+)\s*=/;
+
+/** stands for the overlay a statement reaches without binding it to a name */
+const ANONYMOUS = "*";
+
+export type RuleId = "gate" | "gate-allowed" | "sheet-row" | "overlay-visible";
 
 export interface Violation {
   file: string;
@@ -150,6 +177,90 @@ export function queriedRole(line: string): string | null {
   return match ? match[2] : null;
 }
 
+/** a statement and the line it starts on (0-based) */
+interface Statement {
+  at: number;
+  text: string;
+}
+
+/**
+ * The lines grouped into statements, closed when their parentheses balance.
+ *
+ * String literals are blanked first so a `(` in a name does not hold one open.
+ */
+export function statements(lines: string[]): Statement[] {
+  const found: Statement[] = [];
+  let open: Statement | null = null;
+  let depth = 0;
+  for (let i = 0; i < lines.length; i += 1) {
+    const bare = lines[i].replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`/g, '""');
+    if (!open) {
+      if (bare.trim() === "") continue;
+      open = { at: i, text: "" };
+    }
+    open.text += `${lines[i]}\n`;
+    for (const ch of bare) {
+      if (ch === "(") depth += 1;
+      else if (ch === ")") depth -= 1;
+    }
+    if (depth <= 0) {
+      found.push(open);
+      open = null;
+      depth = 0;
+    }
+  }
+  if (open) found.push(open);
+  return found;
+}
+
+/**
+ * Lines (0-based) holding a `toBeVisible()` that reads an overlay which has not
+ * been waited on yet. See the third rule in the header.
+ */
+export function unsettledOverlayReads(lines: string[]): number[] {
+  const hits: number[] = [];
+  let unsettled = new Set<string>();
+  // sheet() is a sync re-read, so it arms the anonymous overlay only once
+  let anonymousSeen = false;
+  const mentions = (text: string, name: string) =>
+    name === ANONYMOUS ? OVERLAY_OPENERS.test(text) : new RegExp(`\\b${name}\\b`).test(text);
+
+  for (const { at, text } of statements(lines)) {
+    if (STORY_START.test(lines[at])) {
+      unsettled = new Set();
+      anonymousSeen = false;
+    }
+    const visible = /toBeVisible\(\)/.test(text) && !/\.not\.toBeVisible/.test(text);
+
+    if (text.includes("waitFor(")) {
+      if (visible)
+        for (const name of [...unsettled]) if (mentions(text, name)) unsettled.delete(name);
+      continue;
+    }
+
+    if (visible) {
+      const read = [...unsettled].filter((name) => mentions(text, name));
+      // a read written straight onto an async lookup is the same shape
+      if (read.length > 0 || OPENING_LOOKUPS.test(text)) hits.push(at);
+      // the first read is the risk: once it has passed the overlay is opaque,
+      // and the reads after it in the same play cannot land on the first frame
+      for (const name of read) unsettled.delete(name);
+      continue;
+    }
+
+    const binding = BINDING.exec(text);
+    if (binding && OVERLAY_OPENERS.test(text)) {
+      unsettled.add(binding[1]);
+      continue;
+    }
+    if (OPENING_LOOKUPS.test(text) || (!anonymousSeen && OVERLAY_OPENERS.test(text))) {
+      unsettled.add(ANONYMOUS);
+      anonymousSeen = true;
+    }
+  }
+  return hits;
+}
+
 /** every zero-latency assertion, and every honoured waiver, in one file */
 export function checkSource(source: string, file: string): Result {
   const lines = blankComments(source).split("\n");
@@ -196,6 +307,11 @@ export function checkSource(source: string, file: string): Result {
       if (!waive(i)) violations.push({ file, line: i + 1, rule: "sheet-row", text: raw[i].trim() });
     }
   }
+
+  for (const at of unsettledOverlayReads(lines)) {
+    if (!waive(at))
+      violations.push({ file, line: at + 1, rule: "overlay-visible", text: raw[at].trim() });
+  }
   return { violations, waivers };
 }
 
@@ -231,6 +347,10 @@ const ADVICE: Record<RuleId, string> = {
   "sheet-row":
     "a sheet fires its own query as it opens, so a row it renders out of that\n" +
     "answer is not there the instant the dialog is. Use `await …findByRole(…)`.",
+  "overlay-visible":
+    "a drawer, sheet or dialog animates in and its first frame is at opacity 0,\n" +
+    "so a one-shot `toBeVisible()` right after it opens can fail on a loaded\n" +
+    "runner. Wait for it first: `await waitFor(() => expect(dialog).toBeVisible())`.",
 };
 
 if (import.meta.main) {

@@ -1082,11 +1082,13 @@ export const RevokeRefusedByTheServer: Story = {
     await waitFor(() =>
       expect(dialog.getByRole("alert")).toHaveTextContent("requires admin at this scope"),
     );
-    await expect(
-      dialog.getByText(
-        "Revoking a role on the whole organization takes Admin there or on a scope above it.",
-      ),
-    ).toBeVisible();
+    await waitFor(() =>
+      expect(
+        dialog.getByText(
+          "Revoking a role on the whole organization takes Admin there or on a scope above it.",
+        ),
+      ).toBeVisible(),
+    );
     await waitFor(() =>
       expect(
         uxEvents()
@@ -1376,9 +1378,11 @@ export const AGrantAlreadyHeldIsRefusedBeforeSending: Story = {
     await clickWhenEnabled(canvasElement, "Grant a role to grace@example.com");
     const form = within(sheet());
     await pickOption(await form.findByLabelText("Scope"), "Platform");
-    await expect(
-      form.getByText("grace@example.com already holds Member on the Platform team."),
-    ).toBeVisible();
+    await waitFor(() =>
+      expect(
+        form.getByText("grace@example.com already holds Member on the Platform team."),
+      ).toBeVisible(),
+    );
     // story-wait-allow: disabled by the sheet's own canSave, which the held grant sets
     await expect(form.getByRole("button", { name: "Grant" })).toBeDisabled();
   },
@@ -1538,11 +1542,13 @@ export const APasswordAccountTakesItsRoleOnTheOrg: Story = {
     await pickOption(await form.findByLabelText("Scope"), "Platform");
     await pickOption(form.getByLabelText("Method"), "Set a password now");
 
-    await expect(
-      form.getByText(
-        "An account created with a password takes its role on the whole organization. Invite by link to choose a team or a project.",
-      ),
-    ).toBeVisible();
+    await waitFor(() =>
+      expect(
+        form.getByText(
+          "An account created with a password takes its role on the whole organization. Invite by link to choose a team or a project.",
+        ),
+      ).toBeVisible(),
+    );
     // story-wait-allow: disabled by the sheet's own method, which the pick above set
     await expect(form.getByLabelText("Scope")).toBeDisabled();
     await expect(form.getByLabelText("Scope")).toHaveValue("Whole organization");
@@ -2976,11 +2982,13 @@ export const InvitingAPendingAddressSaysItReplacesTheOldLink: Story = {
     await expect(form.queryByText(/already has a pending invitation/)).toBeNull();
     await userEvent.clear(email);
     await userEvent.type(email, "Newcomer@Example.com");
-    await expect(
-      await form.findByText(
-        "Newcomer@Example.com already has a pending invitation. Sending another replaces it, and the old link stops working.",
-      ),
-    ).toBeVisible();
+    await waitFor(() =>
+      expect(
+        form.getByText(
+          "Newcomer@Example.com already has a pending invitation. Sending another replaces it, and the old link stops working.",
+        ),
+      ).toBeVisible(),
+    );
   },
 };
 

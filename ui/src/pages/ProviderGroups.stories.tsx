@@ -374,7 +374,7 @@ export const LabelPanel: Story = {
     await waitFor(() => expect(canvas.getAllByText("frontier").length).toBeGreaterThan(0));
     await userEvent.click(canvas.getByRole("button", { name: "Labels on frontier" }));
     const panel = within(await within(document.body).findByRole("dialog"));
-    await expect(await panel.findByText(/every member priced/)).toBeVisible();
+    await waitFor(() => expect(panel.getByText(/every member priced/)).toBeVisible());
     await expect(panel.getByRole("button", { name: "Remove tier=frontier" })).toBeVisible();
     await expect(panel.queryByRole("button", { name: "Remove tier=observed-frontier" })).toBeNull();
   },

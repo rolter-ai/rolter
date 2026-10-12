@@ -385,7 +385,7 @@ export const IssueRevealsTheSecretOnce: Story = {
     await waitFor(() =>
       expect(sheet.getByTestId("scim-token-secret")).toHaveTextContent("rolter_scim_deadbeef"),
     );
-    await expect(sheet.getByText(/only time this token is shown/)).toBeVisible();
+    await waitFor(() => expect(sheet.getByText(/only time this token is shown/)).toBeVisible());
     // and it is copyable, because it can never be read back
     await expect(sheet.getByRole("button", { name: /Copy provisioning token/ })).toBeVisible();
 
@@ -678,7 +678,9 @@ export const RevokeExplainsWhatItDoesNotDo: Story = {
       }),
     );
     const modal = within(await within(document.body).findByRole("dialog"));
-    await expect(modal.getByText(/nobody is deactivated or logged out/)).toBeVisible();
+    await waitFor(() =>
+      expect(modal.getByText(/nobody is deactivated or logged out/)).toBeVisible(),
+    );
     await userEvent.click(modal.getByRole("button", { name: "Revoke" }));
     // the DELETE itself, not just the badge: the row re-renders off a fixture
     // this story controls, so "Revoked" on screen would pass a screen that
@@ -924,7 +926,7 @@ export const AdminGrantAsksFirst: Story = {
     await userEvent.click(canvas.getByRole("button", { name: "Map group" }));
 
     const dialog = within(await confirmation());
-    await expect(dialog.getByText("Map sre-oncall to Admin?")).toBeVisible();
+    await waitFor(() => expect(dialog.getByText("Map sre-oncall to Admin?")).toBeVisible());
     await expect(dialog.getByText(/gets Admin on core\./)).toBeVisible();
     await expect(dialog.getByText(/applies straight away/)).toBeVisible();
     // admin is the only reason: the scope is one team, so nothing says "whole organization"
@@ -965,7 +967,7 @@ export const WholeOrgGrantAsksFirst: Story = {
     await userEvent.click(canvas.getByRole("button", { name: "Map group" }));
 
     const dialog = within(await confirmation());
-    await expect(dialog.getByText("Map ops-readers to Viewer?")).toBeVisible();
+    await waitFor(() => expect(dialog.getByText("Map ops-readers to Viewer?")).toBeVisible());
     await expect(dialog.getByText(/gets Viewer on the whole organization\./)).toBeVisible();
     await expect(dialog.getByText(reasonOrg)).toBeVisible();
     await expect(dialog.queryByText(reasonAdmin)).toBeNull();
@@ -994,7 +996,9 @@ export const AdminOnTheWholeOrgNamesBothReasons: Story = {
     await userEvent.click(canvas.getByRole("button", { name: "Map group" }));
 
     const dialog = within(await confirmation());
-    await expect(dialog.getByText(/gets Admin on the whole organization\./)).toBeVisible();
+    await waitFor(() =>
+      expect(dialog.getByText(/gets Admin on the whole organization\./)).toBeVisible(),
+    );
     await expect(dialog.getByText(reasonAdmin)).toBeVisible();
     await expect(dialog.getByText(reasonOrg)).toBeVisible();
 
@@ -1173,7 +1177,7 @@ export const RemoveMappingConfirmsFirst: Story = {
       }),
     );
     const modal = within(await within(document.body).findByRole("dialog"));
-    await expect(modal.getByText(/loses Member straight away/)).toBeVisible();
+    await waitFor(() => expect(modal.getByText(/loses Member straight away/)).toBeVisible());
     await userEvent.click(modal.getByRole("button", { name: "Remove mapping" }));
     await waitFor(() => expect(deletedMappings).toHaveLength(1));
     await waitFor(() => expect(canvas.queryByText("platform-engineering")).toBeNull());

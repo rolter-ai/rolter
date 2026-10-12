@@ -1446,7 +1446,7 @@ export const DetailDrawerNamesTheAttribution: Story = {
       await canvas.findByRole("button", { name: /Open request details for gpt-4o/i }),
     );
     const drawer = within(await canvas.findByRole("complementary", { name: "Details" }));
-    await expect(drawer.getByText("Platform Engineering")).toBeVisible();
+    await waitFor(() => expect(drawer.getByText("Platform Engineering")).toBeVisible());
     await expect(drawer.getByText("Acme Corp")).toBeVisible();
     // no key in the project's list carries this id, so the id itself stands in
     await expect(drawer.getByText("vk-1")).toBeVisible();
@@ -2258,7 +2258,9 @@ export const AnAbsentPayloadSaysWhy: Story = {
     // the two bodies are missing for the same reason, so it is said once, under
     // a heading that names both (#2131)
     await expect(drawer.getAllByText(/retention window has already passed/i)).toHaveLength(1);
-    await expect(drawer.getByRole("heading", { name: "Request and response" })).toBeVisible();
+    await waitFor(() =>
+      expect(drawer.getByRole("heading", { name: "Request and response" })).toBeVisible(),
+    );
     await expect(drawer.queryByRole("heading", { name: "Request" })).toBeNull();
     await expect(drawer.queryByRole("heading", { name: "Response" })).toBeNull();
     // and it is not the old claim, which asserted a reason it could not know
@@ -2347,7 +2349,9 @@ export const AWithheldPayloadSaysItIsTheRole: Story = {
     );
     const drawer = within(await canvas.findByRole("complementary", { name: "Details" }));
     await expect(drawer.getAllByText(/hidden for your role/i)).toHaveLength(1);
-    await expect(drawer.getByRole("heading", { name: "Request and response" })).toBeVisible();
+    await waitFor(() =>
+      expect(drawer.getByRole("heading", { name: "Request and response" })).toBeVisible(),
+    );
     await expect(drawer.queryByText(/retention window/i)).not.toBeInTheDocument();
     await expect(drawer.queryByRole("link", { name: "Open log settings" })).not.toBeInTheDocument();
   },
@@ -2403,7 +2407,7 @@ export const ARequestWithOneBodyExplainsTheMissingOneOnly: Story = {
     );
     const drawer = within(await canvas.findByRole("complementary", { name: "Details" }));
     await expect(drawer.getByRole("region", { name: /^Request — / })).toHaveTextContent("ping");
-    await expect(drawer.getByRole("heading", { name: "Response" })).toBeVisible();
+    await waitFor(() => expect(drawer.getByRole("heading", { name: "Response" })).toBeVisible());
     await expect(drawer.getAllByText(/No response body was stored/)).toHaveLength(1);
     await expect(drawer.queryByText(/No request body was stored/)).toBeNull();
     await expect(drawer.queryByRole("heading", { name: "Request and response" })).toBeNull();
@@ -2427,7 +2431,7 @@ export const AResponseWithNoRequestBodyExplainsTheRequestOnly: Story = {
     );
     const drawer = within(await canvas.findByRole("complementary", { name: "Details" }));
     await expect(drawer.getByRole("region", { name: /^Response — / })).toHaveTextContent("pong");
-    await expect(drawer.getByRole("heading", { name: "Request" })).toBeVisible();
+    await waitFor(() => expect(drawer.getByRole("heading", { name: "Request" })).toBeVisible());
     await expect(drawer.getAllByText(/No request body was stored/)).toHaveLength(1);
     await expect(drawer.queryByText(/No response body was stored/)).toBeNull();
     await expect(drawer.queryByRole("link", { name: "Open log settings" })).toBeNull();

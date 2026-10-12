@@ -209,7 +209,7 @@ export const Loading: Story = {
     const popover = await canvas.findByRole("dialog", { name: en.shell.scope });
     // the popover holds a skeleton of its three rows rather than pickers with
     // nothing in them
-    await expect(await within(popover).findByRole("status")).toBeVisible();
+    await waitFor(() => expect(within(popover).getByRole("status")).toBeVisible());
     await expect(within(popover).queryByRole("combobox")).toBeNull();
   },
 };
@@ -493,7 +493,7 @@ export const CreatesATeam: Story = {
     const { popover } = await openScope(canvasElement);
     await chooseAction(popover, ACTIONS.team, en.scope.newTeam);
     const dialog = within(await confirmation());
-    await expect(dialog.getByText(en.scope.newTeam)).toBeVisible();
+    await waitFor(() => expect(dialog.getByText(en.scope.newTeam)).toBeVisible());
     // the picker went with the pick: the dialog is the only thing open
     await expect(canvas.queryByRole("dialog", { name: en.shell.scope })).toBeNull();
     await userEvent.type(dialog.getByLabelText("Name"), "Research");
@@ -529,7 +529,7 @@ export const OpensCreateProjectFromElsewhere: Story = {
     await calls.expectSent("GET", `/teams/${TEAM.id}/projects`);
     await userEvent.click(canvas.getByRole("button", { name: "Open from another screen" }));
     const dialog = within(await confirmation());
-    await expect(dialog.getByText("New project")).toBeVisible();
+    await waitFor(() => expect(dialog.getByText("New project")).toBeVisible());
     await userEvent.type(dialog.getByLabelText("Name"), "Search");
     await userEvent.click(dialog.getByRole("button", { name: "Create" }));
     const body = await calls.expectSentBody("POST", `/teams/${TEAM.id}/projects`);
@@ -556,11 +556,13 @@ export const DeleteNamesWhatItTakes: Story = {
   play: async ({ canvasElement }) => {
     const { popover } = await openScope(canvasElement);
     await chooseAction(popover, ACTIONS.org, en.scope.menu.deleteOrg);
-    await expect(
-      await within(await confirmation()).findByRole("heading", {
-        name: `Delete organization ${ORG.name}?`,
-      }),
-    ).toBeVisible();
+    await waitFor(async () =>
+      expect(
+        await within(await confirmation()).findByRole("heading", {
+          name: `Delete organization ${ORG.name}?`,
+        }),
+      ).toBeVisible(),
+    );
     await confirmDestructive(/everything under it/i, en.scope.deleteOrg);
     await calls.expectSent("DELETE", `/orgs/${ORG.id}`);
     await expectSheetClosed();
@@ -594,11 +596,13 @@ export const DeleteCanBeCancelled: Story = {
   play: async ({ canvasElement }) => {
     const { trigger, popover } = await openScope(canvasElement);
     await chooseAction(popover, ACTIONS.team, en.scope.menu.deleteTeam);
-    await expect(
-      await within(await confirmation()).findByRole("heading", {
-        name: `Delete team ${TEAM.name}?`,
-      }),
-    ).toBeVisible();
+    await waitFor(async () =>
+      expect(
+        await within(await confirmation()).findByRole("heading", {
+          name: `Delete team ${TEAM.name}?`,
+        }),
+      ).toBeVisible(),
+    );
     await cancelConfirmation();
     calls.expectNotSent("DELETE", `/teams/${TEAM.id}`);
     await waitFor(() => expect(trigger).toHaveFocus());
@@ -771,7 +775,7 @@ export const DeleteProjectRefusedWhileItOwnsScopedRows: Story = {
     await expect(alert).toHaveTextContent(/make them org-wide first/);
     await calls.expectSent("DELETE", `/projects/${PROJECT.id}`);
     // still there to be cancelled, not closed over the refusal
-    await expect(await confirmation()).toBeVisible();
+    await waitFor(async () => expect(await confirmation()).toBeVisible());
   },
 };
 

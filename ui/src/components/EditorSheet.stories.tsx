@@ -102,7 +102,7 @@ export const Default: Story = {
   render: () => <Editor />,
   play: async () => {
     const dialog = within(sheet());
-    await expect(dialog.getByText("Edit provider")).toBeVisible();
+    await waitFor(() => expect(dialog.getByText("Edit provider")).toBeVisible());
     await expect(dialog.getByRole("button", { name: "Save provider" })).toBeEnabled();
   },
 };
@@ -132,7 +132,7 @@ export const SaveFailed: Story = {
   ),
   play: async () => {
     const dialog = within(sheet());
-    await expect(dialog.getByText(/already exists in this org/)).toBeVisible();
+    await waitFor(() => expect(dialog.getByText(/already exists in this org/)).toBeVisible());
     // the form is still there to correct, not replaced by the error
     await expect(dialog.getByLabelText("Name")).toBeVisible();
   },
@@ -179,7 +179,7 @@ export const DiscardGuardKeepsTheDraft: Story = {
     ).toBeVisible();
 
     await answerDiscardPrompt(false);
-    await expect(screen().getByRole("dialog")).toBeVisible();
+    await waitFor(() => expect(screen().getByRole("dialog")).toBeVisible());
     await expect(dialog.getByLabelText("Name")).toHaveValue("openai-prod-eu");
     // and the keyboard is back where it left off, not on the body
     await waitFor(() => expect(cancel).toHaveFocus());

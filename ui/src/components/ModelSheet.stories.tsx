@@ -291,7 +291,7 @@ export const Add: Story = {
   render: () => <Stage mode="add" />,
   play: async () => {
     const dialog = within(sheet());
-    await expect(dialog.getByRole("heading", { name: "Add route" })).toBeVisible();
+    await waitFor(() => expect(dialog.getByRole("heading", { name: "Add route" })).toBeVisible());
     await expect(dialog.getByText("Name the route clients call", { exact: false })).toBeVisible();
     // the draft has no target line until the seed effect adds one; asserting
     // before the seed raced it (#1500)
@@ -507,9 +507,11 @@ export const TheOnlyUsableProviderIsTheDefault: Story = {
     await waitFor(() =>
       expect(dialog.getByLabelText("Target 1 provider")).toHaveValue("openai-prod"),
     );
-    await expect(
-      dialog.getByText("1 provider scoped to another project is not offered here."),
-    ).toBeVisible();
+    await waitFor(() =>
+      expect(
+        dialog.getByText("1 provider scoped to another project is not offered here."),
+      ).toBeVisible(),
+    );
   },
 };
 
@@ -528,9 +530,9 @@ export const AddOnAPhoneInRussian: Story = {
   render: () => <Stage mode="add" />,
   play: async () => {
     const dialog = within(sheet());
-    await expect(
-      await dialog.findByRole("heading", { name: ru.modelSheet.titleAdd }),
-    ).toBeVisible();
+    await waitFor(() =>
+      expect(dialog.getByRole("heading", { name: ru.modelSheet.titleAdd })).toBeVisible(),
+    );
     await expect(
       await dialog.findByLabelText(ru.modelSheet.targets.providerAria.replace("{{n}}", "1")),
     ).toHaveValue("");
@@ -568,9 +570,9 @@ export const EditOnAPhoneInRussian: Story = {
   render: () => <Stage mode="edit" route={ROUTE} />,
   play: async () => {
     const dialog = within(sheet());
-    await expect(
-      await dialog.findByRole("heading", { name: ru.modelSheet.titleEdit }),
-    ).toBeVisible();
+    await waitFor(() =>
+      expect(dialog.getByRole("heading", { name: ru.modelSheet.titleEdit })).toBeVisible(),
+    );
     // the target line stacks below `sm`: the provider on a line of its own,
     // the upstream model, weight and remove beneath it, all inside the sheet
     const upstream = await dialog.findByLabelText(
@@ -645,7 +647,7 @@ export const ViewConfigModel: Story = {
   ),
   play: async () => {
     const dialog = within(sheet());
-    await expect(dialog.getByText("Route details")).toBeVisible();
+    await waitFor(() => expect(dialog.getByText("Route details")).toBeVisible());
     await expect(dialog.getByText(/Read-only config route/)).toBeVisible();
     await expect(dialog.queryByRole("button", { name: "Save route" })).not.toBeInTheDocument();
     await waitFor(() => expect(dialog.getByLabelText("Strategy")).toHaveValue("weighted"));
@@ -1199,7 +1201,7 @@ export const MapsARefusedSaveToItsRow: Story = {
     await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
     await waitFor(() => expect(dialog.getByLabelText("Target 2 weight")).toBeInvalid());
     await expect(dialog.getByLabelText("Target 1 weight")).toBeValid();
-    await expect(dialog.getByText(/refused the weight of target 2/)).toBeVisible();
+    await waitFor(() => expect(dialog.getByText(/refused the weight of target 2/)).toBeVisible());
     await expect(sheet()).toBeVisible();
   },
 };
@@ -1290,7 +1292,7 @@ export const OffersNoAdditionalFieldsSwitch: Story = {
     await userEvent.click(dialog.getByRole("button", { name: "Limits & network" }));
     // the section did open, so this is an absent control and not an unopened
     // section standing in for one
-    await expect(dialog.getByLabelText("Max retries")).toBeVisible();
+    await waitFor(() => expect(dialog.getByLabelText("Max retries")).toBeVisible());
     await expect(dialog.queryByText("Allow additional fields")).not.toBeInTheDocument();
   },
 };
@@ -1378,7 +1380,7 @@ export const PricesTokensOnly: Story = {
     await seededBlank(dialog);
     await pickOption(dialog.getByLabelText("Model type"), "image");
     await userEvent.click(dialog.getByRole("button", { name: "Pricing override" }));
-    await expect(await dialog.findByText(/Rolter prices by tokens/)).toBeVisible();
+    await waitFor(() => expect(dialog.getByText(/Rolter prices by tokens/)).toBeVisible());
     await expect(dialog.queryByLabelText(/Flat price per/)).not.toBeInTheDocument();
     await expect(dialog.queryByLabelText("Currency")).not.toBeInTheDocument();
     // and a chat model still gets its rates
@@ -1962,9 +1964,11 @@ export const OffersOnlyTheProjectsOwnAndOrgWideProviders: Story = {
       .map((o) => o.textContent);
     await expect(names).toEqual(["openai-prod", "vllm-cluster", "gateway-private"]);
     await userEvent.keyboard("{Escape}");
-    await expect(
-      dialog.getByText("1 provider scoped to another project is not offered here."),
-    ).toBeVisible();
+    await waitFor(() =>
+      expect(
+        dialog.getByText("1 provider scoped to another project is not offered here."),
+      ).toBeVisible(),
+    );
   },
 };
 

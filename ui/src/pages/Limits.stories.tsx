@@ -347,7 +347,9 @@ export const ThePeriodIsPickedFromTheWindowsTheGatewayHas: Story = {
     const form = sheet();
     const picker = await within(form).findByRole("combobox", { name: "Period" });
     // the old hint offered `7d` as an example; this one says there is no such window
-    await expect(within(form).getByText(/There are no rolling windows/)).toBeVisible();
+    await waitFor(() =>
+      expect(within(form).getByText(/There are no rolling windows/)).toBeVisible(),
+    );
     await expect(within(form).queryByText(/e\.g\./)).toBeNull();
 
     const listbox = await openOptions(picker);
@@ -444,9 +446,11 @@ export const AnUnrecognisedPeriodIsFlaggedAndHasToBeReplaced: Story = {
     const picker = await within(form).findByRole("combobox", { name: "Period" });
     await expect(picker).toHaveValue("");
     await expect(picker).toHaveAttribute("placeholder", "Pick a period");
-    await expect(
-      within(form).getByText(/does not recognise “7d” and enforces this budget as monthly/),
-    ).toBeVisible();
+    await waitFor(() =>
+      expect(
+        within(form).getByText(/does not recognise “7d” and enforces this budget as monthly/),
+      ).toBeVisible(),
+    );
     // the stored text is not offered back as a window of its own
     const listbox = await openOptions(picker);
     await expect(
@@ -542,7 +546,9 @@ export const EditsABudgetInPlace: Story = {
   play: async ({ canvasElement }) => {
     await clickWhenEnabled(canvasElement, /Edit the monthly budget/);
     const form = sheet();
-    await expect(within(form).getByRole("heading", { name: "Edit budget" })).toBeVisible();
+    await waitFor(() =>
+      expect(within(form).getByRole("heading", { name: "Edit budget" })).toBeVisible(),
+    );
     // the form opens on the row as it stands, not on the create defaults: the
     // stored `30d` is the monthly window, and since nobody picked it again the
     // body below carries no period at all
@@ -627,7 +633,9 @@ export const EditsARateLimitInPlace: Story = {
   play: async ({ canvasElement }) => {
     await clickWhenEnabled(canvasElement, /Edit the 600 rpm · 150,000 tpm rate limit/);
     const form = sheet();
-    await expect(within(form).getByRole("heading", { name: "Edit rate limit" })).toBeVisible();
+    await waitFor(() =>
+      expect(within(form).getByRole("heading", { name: "Edit rate limit" })).toBeVisible(),
+    );
     const rpm = within(form).getByLabelText("Requests per minute (optional)");
     await expect(rpm).toHaveValue(600);
     await userEvent.clear(rpm);

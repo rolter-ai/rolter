@@ -734,16 +734,18 @@ export const TheRevealIsInRussian: Story = {
     const dialog = await within(document.body).findByRole("dialog", {
       name: ru.account.keys.revealed.title,
     });
-    await expect(
-      await within(dialog).findByRole("heading", { name: ru.common.secret.nextStep.title }),
-    ).toBeVisible();
+    await waitFor(() =>
+      expect(
+        within(dialog).getByRole("heading", { name: ru.common.secret.nextStep.title }),
+      ).toBeVisible(),
+    );
     await userEvent.click(
       within(dialog).getByRole("button", { name: ru.account.keys.revealed.done }),
     );
     const prompt = await within(document.body).findByRole("dialog", {
       name: ru.common.secret.closeTitle,
     });
-    await expect(within(prompt).getByText(ru.common.secret.closeBody)).toBeVisible();
+    await waitFor(() => expect(within(prompt).getByText(ru.common.secret.closeBody)).toBeVisible());
   },
 };
 

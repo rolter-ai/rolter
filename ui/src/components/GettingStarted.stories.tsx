@@ -317,7 +317,7 @@ export const CreateProjectOpensTheDialog: Story = {
 
     await userEvent.click(open);
     let dialog = within(await confirmation());
-    await expect(dialog.getByText(en.scope.newProject)).toBeVisible();
+    await waitFor(() => expect(dialog.getByText(en.scope.newProject)).toBeVisible());
     await userEvent.click(dialog.getByRole("button", { name: en.common.cancel }));
     await waitFor(() => expect(within(document.body).queryByRole("dialog")).toBeNull());
     await waitFor(() => expect(canvas.getByRole("button", { name })).toHaveFocus());

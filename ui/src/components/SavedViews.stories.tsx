@@ -342,9 +342,11 @@ export const DeletingAsksFirst: Story = {
       await sheet.findByRole("button", { name: "Delete view Errors on gpt-4o this week" }),
     );
     const dialog = await screen().findByRole("dialog", { name: /Delete the view/ });
-    await expect(
-      within(dialog).getByText(/Delete the view Errors on gpt-4o this week\?/),
-    ).toBeVisible();
+    await waitFor(() =>
+      expect(
+        within(dialog).getByText(/Delete the view Errors on gpt-4o this week\?/),
+      ).toBeVisible(),
+    );
     deleting.expectNotSent("DELETE", "/api/v1/me/saved-views");
     await userEvent.click(within(dialog).getByRole("button", { name: "Delete view" }));
     await deleting.expectSent("DELETE", `/api/v1/me/saved-views/${ERRORS_ON_GPT.id}`);
