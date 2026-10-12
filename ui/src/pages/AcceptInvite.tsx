@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { useNavigate } from "react-router";
 
+import { AuthCard } from "@/components/ui/auth-card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -84,141 +85,118 @@ export default function AcceptInvite({ token }: { token: string }) {
   const ready = invite?.has_account ? !pending : pw.length >= 8 && !mismatch && !pending;
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-[color:var(--surface-app)] p-4">
-      <div className="w-[400px] max-w-full overflow-hidden rounded-xl border bg-background shadow-2xl">
-        <div className="vyshivka-rule" />
-        <div className="flex flex-col gap-6 p-8">
-          <div className="flex items-center gap-3">
-            <img src="/logo-mark.svg" alt="" className="h-10 w-10" />
-            <span className="font-mono text-[22px] font-semibold tracking-tight">
-              rolter<span className="text-[color:var(--red-folk-text)]">.</span>
-            </span>
-          </div>
-
-          {invite == null ? (
-            <p className="text-sm text-muted-foreground">
-              {error?.message ?? t("pages.acceptInvite.checking")}
-            </p>
-          ) : (
-            <>
-              <div className="flex flex-col gap-1">
-                <h1 className="text-xl font-semibold">
-                  {t("pages.acceptInvite.title", { org: invite.org_name })}
-                </h1>
-                {signInReason != null ? (
-                  <p role="status" className="text-sm text-muted-foreground">
-                    {t(
-                      signInReason === "existing_account"
-                        ? "pages.acceptInvite.doneExisting"
-                        : "pages.acceptInvite.doneSecondFactor",
-                      { role, org: invite.org_name },
-                    )}
-                  </p>
-                ) : (
-                  <p className="text-sm text-muted-foreground">
-                    <Trans
-                      i18nKey={
-                        invite.has_account
-                          ? "pages.acceptInvite.existingIntro"
-                          : "pages.acceptInvite.intro"
-                      }
-                      values={{ email: invite.email, role }}
-                      components={{ strong: <strong /> }}
-                    />
-                  </p>
+    <AuthCard
+      title={
+        invite == null
+          ? t("pages.acceptInvite.fallbackTitle")
+          : t("pages.acceptInvite.title", { org: invite.org_name })
+      }
+      description={
+        invite == null ? (
+          (error?.message ?? t("pages.acceptInvite.checking"))
+        ) : signInReason != null ? (
+          t(
+            signInReason === "existing_account"
+              ? "pages.acceptInvite.doneExisting"
+              : "pages.acceptInvite.doneSecondFactor",
+            { role, org: invite.org_name },
+          )
+        ) : (
+          <Trans
+            i18nKey={
+              invite.has_account ? "pages.acceptInvite.existingIntro" : "pages.acceptInvite.intro"
+            }
+            values={{ email: invite.email, role }}
+            components={{ strong: <strong /> }}
+          />
+        )
+      }
+      descriptionRole={signInReason != null ? "status" : undefined}
+    >
+      {invite != null &&
+        (signInReason != null ? (
+          // the invitation is spent; what is left is the ordinary sign-in,
+          // which the shell shows at any path once there is no session
+          <Button
+            type="button"
+            onClick={() => navigate("/", { replace: true })}
+            className="w-full bg-brand-folk text-white hover:bg-brand-press"
+          >
+            {t("pages.acceptInvite.toSignIn")} <ArrowRight className="h-4 w-4" />
+          </Button>
+        ) : (
+          <form
+            className="flex flex-col gap-4"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void submit();
+            }}
+          >
+            {!invite.has_account && (
+              <>
+                <label className="flex flex-col gap-1.5 text-sm">
+                  <span className="text-muted-foreground">{t("pages.acceptInvite.password")}</span>
+                  <Input
+                    type="password"
+                    name="new-password"
+                    required
+                    minLength={8}
+                    value={pw}
+                    onChange={(e) => setPw(e.target.value)}
+                    autoComplete="new-password"
+                  />
+                </label>
+                <label className="flex flex-col gap-1.5 text-sm">
+                  <span className="text-muted-foreground">{t("pages.acceptInvite.confirm")}</span>
+                  <Input
+                    type="password"
+                    name="confirm-password"
+                    required
+                    aria-invalid={mismatch || undefined}
+                    value={confirm}
+                    onChange={(e) => setConfirm(e.target.value)}
+                    autoComplete="new-password"
+                  />
+                </label>
+              </>
+            )}
+            {mismatch && (
+              <p role="alert" className="text-xs text-[color:var(--status-danger-text)]">
+                {t("pages.acceptInvite.mismatch")}
+              </p>
+            )}
+            {error != null && (
+              <p role="alert" className="text-xs text-[color:var(--status-danger-text)]">
+                {error.message}
+                {error.detail && (
+                  <span className="mt-1 block break-words font-mono text-[color:var(--text-subtle)]">
+                    {error.detail}
+                  </span>
                 )}
-              </div>
-              {signInReason != null ? (
-                // the invitation is spent; what is left is the ordinary sign-in,
-                // which the shell shows at any path once there is no session
-                <Button
-                  type="button"
-                  onClick={() => navigate("/", { replace: true })}
-                  className="w-full bg-brand-folk text-white hover:bg-brand-press"
-                >
-                  {t("pages.acceptInvite.toSignIn")} <ArrowRight className="h-4 w-4" />
-                </Button>
+              </p>
+            )}
+            <Button
+              type="submit"
+              disabled={!ready}
+              className="w-full bg-brand-folk text-white hover:bg-brand-press"
+            >
+              {pending ? (
+                <>
+                  {t(
+                    invite.has_account
+                      ? "pages.acceptInvite.accepting"
+                      : "pages.acceptInvite.creating",
+                  )}{" "}
+                  <Loader2 className="h-4 w-4 motion-safe:animate-spin" />
+                </>
               ) : (
-                <form
-                  className="flex flex-col gap-4"
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    void submit();
-                  }}
-                >
-                  {!invite.has_account && (
-                    <>
-                      <label className="flex flex-col gap-1.5 text-sm">
-                        <span className="text-muted-foreground">
-                          {t("pages.acceptInvite.password")}
-                        </span>
-                        <Input
-                          type="password"
-                          name="new-password"
-                          required
-                          minLength={8}
-                          value={pw}
-                          onChange={(e) => setPw(e.target.value)}
-                          autoComplete="new-password"
-                        />
-                      </label>
-                      <label className="flex flex-col gap-1.5 text-sm">
-                        <span className="text-muted-foreground">
-                          {t("pages.acceptInvite.confirm")}
-                        </span>
-                        <Input
-                          type="password"
-                          name="confirm-password"
-                          required
-                          aria-invalid={mismatch || undefined}
-                          value={confirm}
-                          onChange={(e) => setConfirm(e.target.value)}
-                          autoComplete="new-password"
-                        />
-                      </label>
-                    </>
-                  )}
-                  {mismatch && (
-                    <p role="alert" className="text-xs text-[color:var(--status-danger-text)]">
-                      {t("pages.acceptInvite.mismatch")}
-                    </p>
-                  )}
-                  {error != null && (
-                    <p role="alert" className="text-xs text-[color:var(--status-danger-text)]">
-                      {error.message}
-                      {error.detail && (
-                        <span className="mt-1 block break-words font-mono text-[color:var(--text-subtle)]">
-                          {error.detail}
-                        </span>
-                      )}
-                    </p>
-                  )}
-                  <Button
-                    type="submit"
-                    disabled={!ready}
-                    className="w-full bg-brand-folk text-white hover:bg-brand-press"
-                  >
-                    {pending ? (
-                      <>
-                        {t(
-                          invite.has_account
-                            ? "pages.acceptInvite.accepting"
-                            : "pages.acceptInvite.creating",
-                        )}{" "}
-                        <Loader2 className="h-4 w-4 motion-safe:animate-spin" />
-                      </>
-                    ) : (
-                      <>
-                        {t("pages.acceptInvite.accept")} <ArrowRight className="h-4 w-4" />
-                      </>
-                    )}
-                  </Button>
-                </form>
+                <>
+                  {t("pages.acceptInvite.accept")} <ArrowRight className="h-4 w-4" />
+                </>
               )}
-            </>
-          )}
-        </div>
-      </div>
-    </div>
+            </Button>
+          </form>
+        ))}
+    </AuthCard>
   );
 }

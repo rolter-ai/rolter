@@ -1328,6 +1328,7 @@
     "acceptInvite": {
       "invalidLink": "This invitation link is not valid. It may have been used, revoked, or expired — ask whoever invited you for a new one.",
       "checking": "Checking your invitation…",
+      "fallbackTitle": "Invitation",
       "title": "Join {{org}}",
       "genericTitle": "Invitation",
       "intro": "You were invited as <strong>{{email}}</strong> with the <strong>{{role}}</strong> role. Choose a password — only you will know it.",

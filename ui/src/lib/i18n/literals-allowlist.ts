@@ -32,15 +32,12 @@ export const NOT_COPY: AllowList = {
     "useAuth must be used within AuthProvider":
       "a developer invariant thrown when a component renders outside the provider; no operator path reaches it",
   },
-  "src/pages/AcceptInvite.tsx": {
+  "src/components/ui/auth-card.tsx": {
     rolter: "the product's name in the wordmark, spelled the same in every locale",
   },
   "src/pages/Connectors.tsx": {
     datadog:
       "an example connector name in the name field's placeholder: the vendor's own name, spelled the same in every locale",
-  },
-  "src/pages/Login.tsx": {
-    rolter: "the product's name in the wordmark, spelled the same in every locale",
   },
   "src/pages/Playground.tsx": {
     nova: "a voice id the speech endpoint takes verbatim (OpenAI's own names), spliced into the translated `voiceOption` label",

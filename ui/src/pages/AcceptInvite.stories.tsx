@@ -87,7 +87,9 @@ export const Loaded: Story = {
   beforeEach: blankTitle,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(await canvas.findByRole("heading", { name: "Join Acme" })).toBeVisible();
+    await expect(await canvas.findByRole("heading", { level: 1, name: "Join Acme" })).toBeVisible();
+    // the card owns the landmark, as sign-in's does (#2069, #2228)
+    await expect(canvas.getByRole("main")).toBeVisible();
     // outside the shell, so the page names the tab itself (#2002)
     await waitFor(() => expect(document.title).toBe("Join Acme · rolter"));
     // the address and the role are stated before a password is chosen: an

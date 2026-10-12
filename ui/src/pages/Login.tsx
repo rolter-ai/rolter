@@ -3,6 +3,7 @@ import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react"
 import { useTranslation } from "react-i18next";
 
 import { LocalePicker } from "@/components/LocalePicker";
+import { AuthCard } from "@/components/ui/auth-card";
 import { FormSkeleton } from "@/components/LoadingState";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -303,222 +304,203 @@ export default function Login() {
   };
 
   return (
-    // a <main>, not a <div>: signed out there is no shell around this, so the
-    // card is the whole page and everything on it has to sit inside a landmark
-    // — the two rules the story gate now holds this screen to (#1353)
-    <main className="flex min-h-screen items-center justify-center bg-[color:var(--surface-app)] p-4">
-      <div className="w-[400px] max-w-full overflow-hidden rounded-xl border bg-background shadow-2xl">
-        <div className="vyshivka-rule" />
-        <div className="flex flex-col gap-6 p-8">
-          <div className="flex items-center gap-3">
-            <img src="/logo-mark.svg" alt="" className="h-10 w-10" />
-            <span className="font-mono text-[22px] font-semibold tracking-tight">
-              rolter<span className="text-[color:var(--red-folk-text)]">.</span>
-            </span>
-          </div>
-          <div className="flex flex-col gap-1">
-            <h1 className="text-xl font-semibold">{t("auth.title")}</h1>
-            <p className="text-sm text-muted-foreground">{t("auth.subtitle")}</p>
-          </div>
-          {/* the session that was here a moment ago was rejected by the
+    // AuthCard owns the <main> landmark and the h1: signed out there is no
+    // shell around this, so the card is the whole page (#1353, #2228)
+    <AuthCard title={t("auth.title")} description={t("auth.subtitle")}>
+      {/* the session that was here a moment ago was rejected by the
               control plane (#1196). said once, above the form, so the screen
               explains why it is asking again instead of looking like a
               spontaneous sign-out */}
-          {expired && !error && (
-            <p
-              role="status"
-              className="rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-hover)] px-3 py-2 text-sm text-muted-foreground"
-            >
-              {t("auth.sessionExpired")}
-            </p>
-          )}
-          {ssoNotice && (
-            <div
-              role="alert"
-              className="flex flex-col gap-1 rounded-md border border-[color:var(--status-danger)]/40 bg-destructive/10 px-3 py-2 text-sm text-[color:var(--status-danger-text)]"
-            >
-              <p>{t(ssoNotice.key)}</p>
-              {ssoProviderName && <p>{t("auth.sso.provider", { name: ssoProviderName })}</p>}
-            </div>
-          )}
-          {!resolved && (
-            <>
-              <FormSkeleton fields={2} />
-              <Skeleton height={36} radius={8} />
-            </>
-          )}
-          {/* one step at a time: the password form and the identity providers
+      {expired && !error && (
+        <p
+          role="status"
+          className="rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-hover)] px-3 py-2 text-sm text-muted-foreground"
+        >
+          {t("auth.sessionExpired")}
+        </p>
+      )}
+      {ssoNotice && (
+        <div
+          role="alert"
+          className="flex flex-col gap-1 rounded-md border border-[color:var(--status-danger)]/40 bg-destructive/10 px-3 py-2 text-sm text-[color:var(--status-danger-text)]"
+        >
+          <p>{t(ssoNotice.key)}</p>
+          {ssoProviderName && <p>{t("auth.sso.provider", { name: ssoProviderName })}</p>}
+        </div>
+      )}
+      {!resolved && (
+        <>
+          <FormSkeleton fields={2} />
+          <Skeleton height={36} radius={8} />
+        </>
+      )}
+      {/* one step at a time: the password form and the identity providers
               are gone while a challenge is in flight, because going back is a
               deliberate act (the button below) rather than something to do by
               typing in the field left on screen */}
-          {challenge && (
-            <form
-              className="flex flex-col gap-4"
-              onSubmit={(e) => {
-                e.preventDefault();
-                void verify();
-              }}
-            >
-              <div className="flex flex-col gap-1">
-                <h2 className="text-sm font-medium text-foreground">{t("auth.mfa.title")}</h2>
-                <p className="text-sm text-muted-foreground">{t("auth.mfa.subtitle")}</p>
-              </div>
-              <Field
-                label={t("auth.mfa.codeLabel")}
-                hint={t("auth.mfa.codeHint")}
-                error={error ?? undefined}
-              >
-                <Input
-                  name="one-time-code"
-                  autoComplete="one-time-code"
-                  autoFocus
-                  required
-                  value={code}
-                  onChange={(e) => setCode(e.target.value)}
-                />
-              </Field>
-              <Button
-                type="submit"
-                disabled={pending || code.trim().length === 0}
-                className="w-full bg-brand-folk text-white hover:bg-brand-press"
-              >
-                {pending ? (
-                  <>
-                    {t("auth.mfa.verifying")}{" "}
-                    <Loader2 className="h-4 w-4 motion-safe:animate-spin" />
-                  </>
-                ) : (
-                  <>
-                    {t("auth.mfa.verify")} <ArrowRight className="h-4 w-4" />
-                  </>
-                )}
-              </Button>
+      {challenge && (
+        <form
+          className="flex flex-col gap-4"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void verify();
+          }}
+        >
+          <div className="flex flex-col gap-1">
+            <h2 className="text-sm font-medium text-foreground">{t("auth.mfa.title")}</h2>
+            <p className="text-sm text-muted-foreground">{t("auth.mfa.subtitle")}</p>
+          </div>
+          <Field
+            label={t("auth.mfa.codeLabel")}
+            hint={t("auth.mfa.codeHint")}
+            error={error ?? undefined}
+          >
+            <Input
+              name="one-time-code"
+              autoComplete="one-time-code"
+              autoFocus
+              required
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+            />
+          </Field>
+          <Button
+            type="submit"
+            disabled={pending || code.trim().length === 0}
+            className="w-full bg-brand-folk text-white hover:bg-brand-press"
+          >
+            {pending ? (
+              <>
+                {t("auth.mfa.verifying")} <Loader2 className="h-4 w-4 motion-safe:animate-spin" />
+              </>
+            ) : (
+              <>
+                {t("auth.mfa.verify")} <ArrowRight className="h-4 w-4" />
+              </>
+            )}
+          </Button>
+          <button
+            type="button"
+            onClick={() => {
+              setChallenge(null);
+              setError(null);
+              setCode("");
+            }}
+            className="text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring rounded-sm"
+          >
+            {t("auth.mfa.back")}
+          </button>
+        </form>
+      )}
+      {enrolment && (
+        <Suspense fallback={<FormSkeleton fields={2} />}>
+          <SignInEnrolment
+            challenge={enrolment}
+            receivedAt={enrolmentReceivedAt}
+            onSignedIn={finishSignIn}
+            onRestart={leaveEnrolment}
+          />
+        </Suspense>
+      )}
+      {resolved && !challenge && !enrolment && showPassword && (
+        <form
+          className="flex flex-col gap-4"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void submit();
+          }}
+        >
+          <label className="flex flex-col gap-1.5 text-sm">
+            <span className="text-muted-foreground">{t("auth.email")}</span>
+            <Input
+              type="email"
+              name="email"
+              autoComplete="email"
+              autoFocus
+              required
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+            />
+          </label>
+          <label className="flex flex-col gap-1.5 text-sm">
+            <span className="text-muted-foreground">{t("auth.password")}</span>
+            <span className="relative block">
+              <Input
+                type={show ? "text" : "password"}
+                name="password"
+                autoComplete="current-password"
+                required
+                value={pw}
+                onChange={(e) => setPw(e.target.value)}
+                className="pr-10"
+              />
               <button
                 type="button"
-                onClick={() => {
-                  setChallenge(null);
-                  setError(null);
-                  setCode("");
-                }}
-                className="text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring rounded-sm"
+                onClick={() => setShow((s) => !s)}
+                aria-label={show ? t("auth.hidePassword") : t("auth.showPassword")}
+                className="absolute right-1.5 top-1/2 inline-flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-sm text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               >
-                {t("auth.mfa.back")}
+                {show ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
               </button>
-            </form>
-          )}
-          {enrolment && (
-            <Suspense fallback={<FormSkeleton fields={2} />}>
-              <SignInEnrolment
-                challenge={enrolment}
-                receivedAt={enrolmentReceivedAt}
-                onSignedIn={finishSignIn}
-                onRestart={leaveEnrolment}
-              />
-            </Suspense>
-          )}
-          {resolved && !challenge && !enrolment && showPassword && (
-            <form
-              className="flex flex-col gap-4"
-              onSubmit={(e) => {
-                e.preventDefault();
-                void submit();
-              }}
+            </span>
+          </label>
+          {error && (
+            <p
+              role="alert"
+              className="rounded-md border border-[color:var(--status-danger)]/40 bg-destructive/10 px-3 py-2 text-sm text-[color:var(--status-danger-text)]"
             >
-              <label className="flex flex-col gap-1.5 text-sm">
-                <span className="text-muted-foreground">{t("auth.email")}</span>
-                <Input
-                  type="email"
-                  name="email"
-                  autoComplete="email"
-                  autoFocus
-                  required
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                />
-              </label>
-              <label className="flex flex-col gap-1.5 text-sm">
-                <span className="text-muted-foreground">{t("auth.password")}</span>
-                <span className="relative block">
-                  <Input
-                    type={show ? "text" : "password"}
-                    name="password"
-                    autoComplete="current-password"
-                    required
-                    value={pw}
-                    onChange={(e) => setPw(e.target.value)}
-                    className="pr-10"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShow((s) => !s)}
-                    aria-label={show ? t("auth.hidePassword") : t("auth.showPassword")}
-                    className="absolute right-1.5 top-1/2 inline-flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-sm text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                  >
-                    {show ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                  </button>
-                </span>
-              </label>
-              {error && (
-                <p
-                  role="alert"
-                  className="rounded-md border border-[color:var(--status-danger)]/40 bg-destructive/10 px-3 py-2 text-sm text-[color:var(--status-danger-text)]"
-                >
-                  {error}
-                </p>
-              )}
-              <Button
-                type="submit"
-                disabled={pending}
-                className="w-full bg-brand-folk text-white hover:bg-brand-press"
-              >
-                {pending ? (
-                  <>
-                    {t("auth.signingIn")} <Loader2 className="h-4 w-4 motion-safe:animate-spin" />
-                  </>
-                ) : (
-                  <>
-                    {t("auth.signIn")} <ArrowRight className="h-4 w-4" />
-                  </>
-                )}
-              </Button>
-            </form>
+              {error}
+            </p>
           )}
-          {resolved && !challenge && !enrolment && (
-            <div
-              className={
-                showPassword
-                  ? "flex flex-col gap-3 border-t border-[color:var(--border-subtle)] pt-5"
-                  : "flex flex-col gap-3"
-              }
-            >
-              {/* one button per configured identity provider. a deployment with
+          <Button
+            type="submit"
+            disabled={pending}
+            className="w-full bg-brand-folk text-white hover:bg-brand-press"
+          >
+            {pending ? (
+              <>
+                {t("auth.signingIn")} <Loader2 className="h-4 w-4 motion-safe:animate-spin" />
+              </>
+            ) : (
+              <>
+                {t("auth.signIn")} <ArrowRight className="h-4 w-4" />
+              </>
+            )}
+          </Button>
+        </form>
+      )}
+      {resolved && !challenge && !enrolment && (
+        <div
+          className={
+            showPassword
+              ? "flex flex-col gap-3 border-t border-[color:var(--border-subtle)] pt-5"
+              : "flex flex-col gap-3"
+          }
+        >
+          {/* one button per configured identity provider. a deployment with
                 no IdP registered gets none, and never learns sso exists */}
-              {providers.map((p) => (
-                <a
-                  key={p.slug}
-                  href={p.start_url}
-                  className="inline-flex h-9 items-center justify-center rounded-md border text-sm text-muted-foreground transition-colors hover:text-foreground"
-                >
-                  {t("auth.continueWith", { provider: p.name })}
-                </a>
-              ))}
-              {!showPassword && providers.length === 0 && (
-                <span className="text-center text-sm text-muted-foreground">
-                  {t("auth.noMethod")}
-                </span>
-              )}
-              <span className="flex items-center justify-center gap-2 text-center text-xs text-[color:var(--text-subtle)]">
-                {t("auth.selfHosted")}
-                {/* the only language switch lives in the shell's nav, which a
+          {providers.map((p) => (
+            <a
+              key={p.slug}
+              href={p.start_url}
+              className="inline-flex h-9 items-center justify-center rounded-md border text-sm text-muted-foreground transition-colors hover:text-foreground"
+            >
+              {t("auth.continueWith", { provider: p.name })}
+            </a>
+          ))}
+          {!showPassword && providers.length === 0 && (
+            <span className="text-center text-sm text-muted-foreground">{t("auth.noMethod")}</span>
+          )}
+          <span className="flex items-center justify-center gap-2 text-center text-xs text-[color:var(--text-subtle)]">
+            {t("auth.selfHosted")}
+            {/* the only language switch lives in the shell's nav, which a
                   signed-out visitor never sees; the menu opens upward, so it
                   sits on the card's last line rather than above the form */}
-                <LocalePicker />
-              </span>
-            </div>
-          )}
+            <LocalePicker />
+          </span>
         </div>
-      </div>
-    </main>
+      )}
+    </AuthCard>
   );
 }
 

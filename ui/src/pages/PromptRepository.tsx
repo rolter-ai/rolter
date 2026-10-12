@@ -19,6 +19,7 @@ import { Trans, useTranslation } from "react-i18next";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { GatedButton } from "@/components/GatedButton";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { CodeBlock } from "@/components/ui/code-block";
@@ -1099,9 +1100,8 @@ function ScopeEditor({
             key={`${option.scope_type}:${option.scope_id}`}
             className="flex cursor-pointer items-start gap-2.5 rounded-lg border border-[color:var(--border-subtle)] p-3 hover:bg-[color:var(--surface-hover)]"
           >
-            <input
-              type="checkbox"
-              className="mt-0.5 h-4 w-4 accent-[color:var(--red-folk)]"
+            <Checkbox
+              className="mt-0.5"
               checked={checked(option)}
               onChange={() => toggle(option)}
             />

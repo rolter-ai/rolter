@@ -89,6 +89,22 @@ describe("the element rules", () => {
     ).toEqual([]);
   });
 
+  it("fails a native checkbox, on one line or many, and names Checkbox", () => {
+    const one = checkSource(`const f = () => <input type="checkbox" checked />;`, SCREEN);
+    expect(one.violations).toMatchObject([{ rule: "checkbox", line: 1 }]);
+    const many = `<div>\n  <input\n    className="x"\n    type="checkbox"\n    onChange={() => go()}\n  />\n</div>`;
+    const [violation] = checkSource(many, SCREEN).violations;
+    expect(violation).toMatchObject({ rule: "checkbox", line: 2 });
+    expect(describeViolation(violation!)).toContain("Checkbox");
+  });
+
+  it("leaves other inputs, the Checkbox primitive and its own file alone", () => {
+    const source = `<input type="text" />\n<Checkbox checked />\n<input type="radio" />`;
+    expect(checkSource(source, SCREEN).violations).toEqual([]);
+    const own = `<input type="checkbox" />`;
+    expect(checkSource(own, "src/components/ui/checkbox.tsx").violations).toEqual([]);
+  });
+
   it("fails a raw pre and names CodeBlock", () => {
     const source = `export function Panel() {\n  return <pre>{json}</pre>;\n}`;
     const [violation] = checkSource(source, SCREEN).violations;

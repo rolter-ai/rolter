@@ -10,18 +10,20 @@ themselves are components.
 They live in `ui/src/components/ui/` beside the other primitives, and their
 stories are grouped under **Forms/** in Storybook.
 
-| Primitive       | File                 | What it is                                                                            |
-| --------------- | -------------------- | ------------------------------------------------------------------------------------- |
-| `FieldLabel`    | `field-label.tsx`    | the compact label a sheet row carries, with the optional required marker and (i) note |
-| `FieldError`    | `field-error.tsx`    | the message under a control, carrying the id the control points at                    |
-| `describedBy`   | `field-error.tsx`    | joins the ids a control actually has into one `aria-describedby`                      |
-| `FormSection`   | `form-section.tsx`   | one collapsible group of fields, open state owned by the caller                       |
-| `Segmented`     | `segmented.tsx`      | a two-to-four way choice rendered inline as a `radiogroup`                            |
-| `LockButton`    | `lock-button.tsx`    | the padlock toggle beside a parameter or header                                       |
-| `ChipGroup`     | `chip-group.tsx`     | a multi-select over a short, fully visible list                                       |
-| `SwitchRow`     | `switch-row.tsx`     | a boolean as a full-width row: title, hint, switch                                    |
-| `SettingsPanel` | `settings-panel.tsx` | a titled group of settings controls that can be switched off as a block               |
-| `CopyableValue` | `copyable-value.tsx` | a labelled value to copy again: mono, `select-all`, wrapping, with hint and note      |
+| Primitive       | File                 | What it is                                                                              |
+| --------------- | -------------------- | --------------------------------------------------------------------------------------- |
+| `FieldLabel`    | `field-label.tsx`    | the compact label a sheet row carries, with the optional required marker and (i) note   |
+| `FieldError`    | `field-error.tsx`    | the message under a control, carrying the id the control points at                      |
+| `describedBy`   | `field-error.tsx`    | joins the ids a control actually has into one `aria-describedby`                        |
+| `FormSection`   | `form-section.tsx`   | one collapsible group of fields, open state owned by the caller                         |
+| `Segmented`     | `segmented.tsx`      | a two-to-four way choice rendered inline as a `radiogroup`                              |
+| `LockButton`    | `lock-button.tsx`    | the padlock toggle beside a parameter or header                                         |
+| `ChipGroup`     | `chip-group.tsx`     | a multi-select over a short, fully visible list                                         |
+| `SwitchRow`     | `switch-row.tsx`     | a boolean as a full-width row: title, hint, switch                                      |
+| `SettingsPanel` | `settings-panel.tsx` | a titled group of settings controls that can be switched off as a block                 |
+| `CopyableValue` | `copyable-value.tsx` | a labelled value to copy again: mono, `select-all`, wrapping, with hint and note        |
+| `Checkbox`      | `checkbox.tsx`       | a native checkbox drawn by the tokens: neutral when ticked, with an indeterminate state |
+| `AuthCard`      | `auth-card.tsx`      | the signed-out card: `<main>`, wordmark, вышивка rule, `h1`, description, then the form |
 
 ## Which one to reach for
 
@@ -52,6 +54,21 @@ stories are grouped under **Forms/** in Storybook.
   control plane's public base is `PublicUrlValue`
   (`ui/src/components/PublicUrlValue.tsx`), which says the pending, failed and
   unset-`ROLTER_PUBLIC_URL` states once for every screen (#2366).
+
+- A tick box is `Checkbox`, never `<input type="checkbox">` with an `accent-`
+  tint (#2223). It is still a real input, so the row keeps its own wrapping
+  `<label>` (or the box takes an `aria-label`) and the label click, Space and the
+  form value all work as before. It fills with `--foreground` when ticked, not
+  red: a selection is not a brand moment, and a red box on every ticked row
+  spends the red budget in `DESIGN.md`. `indeterminate` draws the mixed state
+  for a parent over partly selected children. A boolean that takes effect at
+  once is a `SwitchRow`, not a checkbox.
+- A screen shown before sign-in (sign-in, accepting an invitation) is an
+  `AuthCard`: it owns the `<main>` landmark, the `h1` (`title`), the line under
+  it (`description`, `descriptionRole="status"` for an outcome) and the layout,
+  and the screen passes its form as `children`. Do not copy the card's markup
+  into a new signed-out screen; AcceptInvite lost its landmark and heading that
+  way (#2069, #2228).
 
 ## What they already guarantee
 
@@ -179,7 +196,9 @@ screen's wording stays in the screen's namespace and arrives as a prop.
 
 `bun run check:primitives` (`ui/scripts/check-ui-primitives.ts`) is what keeps
 this page from being advice. It runs in the `ui, storybook, docs` job and fails on
-eight things: a bare `<select>`, a raw `<pre>`, a `window.confirm`/`alert`/
+ten things: a bare `<select>`, a hand-written `role="listbox"` / `"option"` /
+`"combobox"` (#3058), a native `<input type="checkbox">` outside
+`checkbox.tsx` (#2223), a raw `<pre>`, a `window.confirm`/`alert`/
 `prompt`, a component re-declared under a name `src/components/ui/` already
 exports, the same element markup hand-written in three or more files, and a
 `DialogFooter` holding a `"destructive"` button, which is a confirmation

@@ -20,6 +20,7 @@ import { GatedButton } from "@/components/GatedButton";
 import { LoadError } from "@/components/LoadError";
 import { CardGridSkeleton } from "@/components/LoadingState";
 import { ListSummary, PageBody, Pill, Toolbar } from "@/components/screen";
+import { Checkbox } from "@/components/ui/checkbox";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
@@ -736,9 +737,8 @@ function ProfileSheet({
                   className="flex flex-col gap-2 rounded-lg border border-[color:var(--border-subtle)] p-2.5"
                 >
                   <label className="flex cursor-pointer items-start gap-2 text-sm">
-                    <input
-                      type="checkbox"
-                      className="mt-0.5 h-4 w-4 accent-[color:var(--red-folk)]"
+                    <Checkbox
+                      className="mt-0.5"
                       checked={draft.roleIds.includes(role.id)}
                       onChange={() => toggleRole(role.id)}
                     />

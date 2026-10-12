@@ -11,6 +11,7 @@ import { LoadError } from "@/components/LoadError";
 import { LoadingRegion, TableSkeleton } from "@/components/LoadingState";
 import { SampledLogNotice } from "@/components/SampledLogNotice";
 import { PageBody } from "@/components/screen";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Combobox } from "@/components/ui/combobox";
@@ -210,8 +211,7 @@ function Editor({
         </Field>
         {original && effectiveSlug !== original && (
           <label className="flex items-center gap-2 text-xs text-muted-foreground">
-            <input
-              type="checkbox"
+            <Checkbox
               aria-label={t("pages.costAttribution.editor.allowSlugChange")}
               checked={form.allowSlugChange}
               onChange={(e) => setForm({ ...form, allowSlugChange: e.target.checked })}
