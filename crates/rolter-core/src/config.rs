@@ -7906,6 +7906,55 @@ mod tests {
         );
     }
 
+    /// #1876: what the left-out prune takes from the file is recorded like any
+    /// other omission, so a client sees the route and key that stopped being
+    /// served. The left-out provider itself is a store row the config read does
+    /// not list, so it has no position to point at and stays a line only.
+    #[test]
+    fn rows_dropped_for_a_left_out_provider_are_recorded() {
+        let mut cfg = fleet_with_an_omitted_provider(
+            r#"
+            [[routes]]
+            model = "kept"
+            [[routes.targets]]
+            provider = "openai"
+
+            [[routes]]
+            model = "stranded"
+            [[routes.targets]]
+            provider = "stored"
+
+            [[virtual_keys]]
+            key = "k-served"
+            name = "served"
+
+            [[virtual_keys]]
+            key = "k-stranded"
+            name = "stranded-key"
+            providers = ["stored"]
+            "#,
+        );
+        cfg.left_out_providers.insert("stored".to_string());
+
+        let report = cfg.sanitize_for_snapshot_report();
+
+        let at: Vec<_> = report
+            .omitted
+            .iter()
+            .filter(|o| o.kind != OmittedKind::Provider)
+            .map(|o| (o.kind, o.name.as_str(), o.index))
+            .collect();
+        assert_eq!(
+            at,
+            [
+                (OmittedKind::Route, "stranded", 1),
+                (OmittedKind::VirtualKey, "stranded-key", 1),
+            ],
+            "{:?}",
+            report.problems
+        );
+    }
+
     /// A left-out name that a file provider also carries is that provider.
     #[test]
     fn a_left_out_name_a_file_provider_carries_is_not_pruned() {
