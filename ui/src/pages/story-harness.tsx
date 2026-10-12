@@ -824,6 +824,32 @@ export function sheet(): HTMLElement {
 }
 
 /**
+ * `inner`, with the deployment's logging settings answering at `rate`, the
+ * request-log sample rate the analytics screens note when it is below 1
+ * (#2231). Mount the screen as `superadmin`: the settings are readable by no
+ * other role, so a screen asks nobody else.
+ */
+export function withSampleRate(inner: FetchStub, rate: number): FetchStub {
+  return async (input, init) => {
+    if (new URL(String(input), "http://localhost").pathname === "/api/v1/logging-settings") {
+      return json({
+        sample_rate: rate,
+        payload_capture_enabled: false,
+        payload_capture_max_bytes: 65536,
+        payload_capture_redact_fields: [],
+        payload_capture_models: [],
+        payload_capture_virtual_key_ids: [],
+        retention_days: 30,
+        payload_retention_hours: 24,
+        ui_events: true,
+        updated_at: "2026-10-01T00:00:00Z",
+      });
+    }
+    return inner(input, init);
+  };
+}
+
+/**
  * Every request the stub was given, so a story can assert the DELETE actually
  * left rather than that a row vanished from a fixture it controls (#1179).
  */

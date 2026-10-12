@@ -22,6 +22,7 @@ import {
   Toasted,
   type Recorder,
   type StoryRole,
+  withSampleRate,
 } from "./story-harness";
 import type { AttributionSpendRow, BusinessUnitRow, CustomerRow } from "@/lib/api";
 import { formattersFor } from "@/lib/i18n/format";
@@ -1020,5 +1021,40 @@ export const TheWindowCarriesToTheOtherScreen: Story = {
     await expect(customerReads).toHaveLength(1);
     await expect(customerReads[0].get("since")).toBe(monthStart(0).toISOString());
     await waitFor(() => expect(addressOf(canvasElement).get("window")).toBe("mtd"));
+  },
+};
+
+/**
+ * #2231: the spend on a card is scaled up from a sampled log (#2239), so below
+ * 100 % the screen says the figures are estimates and how much of the traffic
+ * the log keeps.
+ */
+export const ASampledLogSaysSpendIsAnEstimate: Story = {
+  render: () => (
+    <Harness fetchStub={withSampleRate(router({}), 0.5)} role="superadmin">
+      <BusinessUnits />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const notice = await canvas.findByTestId("sampled-log-notice");
+    await expect(notice).toHaveTextContent("The request log keeps about 1 in 2 requests.");
+    await expect(notice).toHaveTextContent(/estimates scaled up from that sample/);
+    await waitFor(() => expect(canvas.getByText(fmt.currency(190, "USD"))).toBeVisible());
+  },
+};
+
+// the customers screen reads the same log, so it carries the same note
+export const CustomersCarryTheSamplingNoteInRussian: Story = {
+  render: () => (
+    <Harness fetchStub={withSampleRate(router({}), 0.25)} role="superadmin">
+      <Customers />
+    </Harness>
+  ),
+  globals: { locale: "ru" },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const notice = await canvas.findByTestId("sampled-log-notice");
+    await expect(notice).toHaveTextContent("Лог запросов сохраняет примерно 1 из 4 запросов.");
   },
 };

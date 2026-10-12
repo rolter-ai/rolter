@@ -22,6 +22,7 @@ import {
   uxEvents,
   type FetchStub,
   type Recorder,
+  withSampleRate,
 } from "./story-harness";
 import type { BusinessUnitRow, CustomerRow, InvocationRow, VirtualKeyRow } from "@/lib/api";
 import { formattersFor } from "@/lib/i18n/format";
@@ -3482,3 +3483,22 @@ const logsFit = phoneFits({
 // the feed's pager sat 47px past the edge at 320px, in English
 export const SmallPhone: Story = logsFit("small", "en");
 export const SmallPhoneInRussian: Story = logsFit("small", "ru");
+
+/**
+ * #2231: the list is the sampled rows themselves, so below 100 % it says that a
+ * request missing from it was still served.
+ */
+export const ASampledLogSaysTheListIsPartial: Story = {
+  render: () => (
+    <Harness fetchStub={withSampleRate(withLogs(ROWS), 0.1)} role="superadmin">
+      <Logs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const notice = await canvas.findByTestId("sampled-log-notice");
+    await expect(notice).toHaveTextContent("The request log keeps about 1 in 10 requests.");
+    await expect(notice).toHaveTextContent(/A request missing from it was still served/);
+    await expect(await canvas.findAllByText(fmt.timeMs(ROWS[0].ts))).toHaveLength(1);
+  },
+};

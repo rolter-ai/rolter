@@ -9,6 +9,7 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { GatedButton } from "@/components/GatedButton";
 import { LoadError } from "@/components/LoadError";
 import { LoadingRegion, TableSkeleton } from "@/components/LoadingState";
+import { SampledLogNotice } from "@/components/SampledLogNotice";
 import { PageBody } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -626,6 +627,8 @@ function AttributionScreen<T extends BusinessUnitRow | CustomerRow>({
           </GatedButton>
         </div>
       </div>
+
+      <SampledLogNotice kind="figures" />
 
       <SpendStrip
         window={spendWindow}
