@@ -287,7 +287,7 @@ export const SecurityAsSuperadmin: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await waitFor(() => expect(canvas.getByText("Allowed Origins")).toBeVisible());
+    await waitFor(() => expect(canvas.getByText("Allowed origins")).toBeVisible());
   },
 };
 

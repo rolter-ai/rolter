@@ -10,6 +10,7 @@ import { PanelSkeleton } from "@/components/LoadingState";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { FieldError, describedBy } from "@/components/ui/field-error";
+import { SettingsPanel } from "@/components/ui/settings-panel";
 import { Textarea } from "@/components/ui/textarea";
 import {
   fetchClusterNodes,
@@ -400,21 +401,16 @@ function ListCard({
     errorId(i),
   );
   return (
-    <section className="flex flex-col gap-2.5 rounded-[10px] border border-[color:var(--border-subtle)] p-4">
-      <div>
-        <div className="flex items-center gap-2">
-          <label htmlFor={id} className="text-sm font-medium">
-            {title}
-          </label>
-          {changed && <ChangedBadge />}
-        </div>
-        <p id={hintId} className="mt-1 text-sm text-muted-foreground">
-          {desc}
-        </p>
-      </div>
+    <SettingsPanel
+      title={title}
+      description={<span id={hintId}>{desc}</span>}
+      badge={changed && <ChangedBadge />}
+      className="gap-2.5"
+    >
       <Textarea
         id={id}
-        className="min-h-[76px] font-mono text-xs"
+        aria-label={title}
+        className="min-h-[76px] w-full font-mono text-xs"
         // one entry per line, so the field grows with its list instead of
         // scrolling the third entry out of sight
         rows={Math.min(8, Math.max(3, value.split("\n").length + 1))}
@@ -444,7 +440,7 @@ function ListCard({
           error={t("pages.security.errors.more", { count: hidden })}
         />
       )}
-    </section>
+    </SettingsPanel>
   );
 }
 

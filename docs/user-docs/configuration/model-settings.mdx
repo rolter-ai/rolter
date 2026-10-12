@@ -16,6 +16,8 @@ A parameter the client sent is never overwritten. That includes an explicit `nul
 
 This is what makes the feature safe to turn on mid-flight: enabling it cannot change the meaning of a request that was already explicit. It can only change requests that said nothing.
 
+Model settings are applied last. A route's own params, with their override policy, are resolved first, so when a route and these defaults both set `temperature` the route's value is the one sent; a default here only fills a parameter that is still unset after that.
+
 The whole feature is off by default. With `enabled` false — or with every field empty — request bodies reach the provider untouched.
 
 On the dashboard the fields are disabled while the switch is off, and they are not validated then: an out-of-range value already stored never blocks **Save**, and saving keeps it unchanged. Turning the switch back on checks every field again.

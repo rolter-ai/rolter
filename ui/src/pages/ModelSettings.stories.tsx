@@ -100,6 +100,13 @@ export const Configured: Story = {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByText("active")).toBeVisible());
     await expect(canvas.getByLabelText("Default model")).toHaveValue("gpt-4o-mini");
+    // the pointer to Performance Tuning is a link, and the screen says which
+    // value wins when a route sets the same parameter
+    await expect(canvas.getByRole("link", { name: /Performance Tuning/ })).toHaveAttribute(
+      "href",
+      "/performance",
+    );
+    await expect(canvas.getByText(/a route's own params/)).toBeVisible();
   },
 };
 

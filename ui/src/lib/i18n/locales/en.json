@@ -3446,16 +3446,16 @@
       "injectedValuePlaceholder": "value"
     },
     "security": {
-      "allowedOrigins": "Allowed Origins",
+      "allowedOrigins": "Allowed origins",
       "allowedOriginsHint": "One exact http(s) origin per line, allowed for CORS and WebSocket connections. Wildcards are rejected — list each origin explicitly.",
       "allowedOriginsPlaceholder": "https://app.example.com\nhttps://console.example.com",
-      "allowedHeaders": "Allowed Headers",
+      "allowedHeaders": "Allowed headers",
       "allowedHeadersHint": "One header name per line, allowed for CORS.",
       "allowedHeadersPlaceholder": "X-Stainless-Timeout",
-      "requiredHeaders": "Required Headers",
+      "requiredHeaders": "Required headers",
       "requiredHeadersHint": "One name: value pair per line that must be present on every request. Requests missing any of them are rejected. A value may contain commas.",
       "requiredHeadersPlaceholder": "X-Tenant-ID: acme\nX-Custom-Header: value",
-      "bypassRoutes": "Auth Bypass Routes",
+      "bypassRoutes": "Auth bypass routes",
       "bypassRoutesHint": "One exact /v1 path per line that skips the auth middleware. System routes like /health and the login endpoints are always open.",
       "bypassRoutesPlaceholder": "/v1/models\n/v1/ping",
       "edited": "Edited",
@@ -3634,6 +3634,7 @@
         "modelsUnavailable": "Couldn’t load the list of models. You can still type an address."
       },
       "timeoutsNote": "Upstream timeouts and the retry budget are deployment-wide and live under <0>Settings › Performance Tuning</0>.",
+      "precedenceNote": "These defaults are applied last and only fill a parameter that is still unset. A value the client sent wins, and so does a route's own params (including its override policy); a default here never replaces either.",
       "providerDefault": "provider default",
       "validation": {
         "defaultModel": "Default model must be at most 256 characters.",
