@@ -674,8 +674,9 @@ fn operations() -> Vec<Op> {
             Op::get(
                 "/api/v1/config/problems",
                 "getConfigProblems",
-                "Configuration problems detected in the assembled config",
-            ),
+                "Configuration problems detected in the assembled config, and the providers, routes and file keys the gateway snapshot leaves out",
+            )
+            .ok(Payload::Ref("ConfigProblems")),
             Op::get(
                 "/api/v1/config/export",
                 "exportConfig",
@@ -2474,6 +2475,7 @@ fn schemas() -> Value {
         governance_schemas(&p),
         stability_schemas(&p),
         alerting_schemas(&p),
+        config_problem_schemas(&p),
     ] {
         if let Value::Object(entries) = group {
             out.extend(entries);
@@ -2533,6 +2535,49 @@ fn alerting_schemas(p: &Prim) -> Value {
                     "description": "stable code of last_error, which is its English fallback"
                 },
                 "last_error_params": nullable_object
+            }
+        }
+    })
+}
+
+/// What `GET /api/v1/config/problems` answers (#1876).
+fn config_problem_schemas(p: &Prim) -> Value {
+    let string = &p.string;
+    json!({
+        "ConfigProblems": {
+            "type": "object",
+            "required": ["problems", "omitted"],
+            "properties": {
+                "problems": {
+                    "type": "array",
+                    "items": string,
+                    "description": "one English sentence per finding, including ones that drop nothing; for a person to read, not a client to parse"
+                },
+                "omitted": {
+                    "type": "array",
+                    "items": {"$ref": "#/components/schemas/OmittedEntry"},
+                    "description": "the providers, routes and config-file virtual keys the snapshot leaves out whole, so they are not served"
+                }
+            }
+        },
+        "OmittedEntry": {
+            "type": "object",
+            "required": ["kind", "name", "reason", "index"],
+            "properties": {
+                "kind": {
+                    "type": "string",
+                    "enum": ["provider", "route", "virtual_key", "public_example_key"]
+                },
+                "name": {
+                    "type": "string",
+                    "description": "a provider name, a route model or a key's name (<unnamed> without one)"
+                },
+                "reason": string,
+                "index": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "the row's position in the matching list of GET /api/v1/config (providers, routes or virtual_keys); a name alone can match several rows, as tenancy is not in that response"
+                }
             }
         }
     })

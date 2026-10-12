@@ -584,6 +584,37 @@ export function fetchConfig(): Promise<GatewayConfigDto> {
   return getJson<GatewayConfigDto>("/api/v1/config");
 }
 
+/** What kind of entry `/api/v1/config/problems` reports as left out of the snapshot whole. */
+export type OmittedKind = "provider" | "route" | "virtual_key" | "public_example_key";
+
+/**
+ * One provider, route or config-file key the gateway's snapshot leaves out, so
+ * it is not served (#1876).
+ *
+ * `index` is the row's position in the matching list of `GET /api/v1/config`
+ * (`providers`, `routes` or `virtual_keys`). That response carries no tenancy,
+ * so two scopes can own a route for one model and two file keys can share a
+ * name; a name alone would mark both.
+ */
+export interface OmittedEntry {
+  kind: OmittedKind;
+  /** a provider name, a route model or a key's `name` (UNNAMED_KEY without one) */
+  name: string;
+  /** why, in English whatever the dashboard's language */
+  reason: string;
+  index: number;
+}
+
+/** What a file key without a `name` is called in an omitted entry. */
+// escaped so check:literals does not read the angle brackets as markup text
+export const UNNAMED_KEY = "\u003cunnamed>";
+
+export interface ConfigProblems {
+  /** one English sentence per finding, for a person to read and never to parse */
+  problems: string[];
+  omitted: OmittedEntry[];
+}
+
 /**
  * Config entries the control plane is not serving to gateways, and why (#926).
  *
@@ -592,80 +623,61 @@ export function fetchConfig(): Promise<GatewayConfigDto> {
  * served — every gateway keeps running its last good config and the change
  * simply never takes effect.
  */
-export function fetchConfigProblems(): Promise<string[]> {
-  return getJson<{ problems: string[] }>("/api/v1/config/problems").then((r) => r.problems);
-}
-
-// the lines `RolterConfig::sanitize_for_snapshot` (crates/rolter-core/src/
-// config.rs) writes for a provider or a route it prunes whole. the name is
-// greedy, so one that itself contains a quote still comes out whole; the
-// reason is everything after the colon. a line about one part of a route
-// (`route 'm' target 'p' omitted …`) reads as a name no route carries, so it
-// marks nothing
-const OMITTED_PROVIDER = /^provider '(.+)' omitted from the snapshot: (.*)$/s;
-const OMITTED_ROUTE = /^route '(.+)' omitted from the snapshot: (.*)$/s;
-// a file key is dropped whole in two cases. the first names the key by `name`
-// (`<unnamed>` without one); the allow-list line for a key that keeps its other
-// providers has a different reason and marks nothing. the second names the
-// public example key by its value, which `GET /api/v1/config` redacts, so the
-// control plane tells that row apart by what it redacts the value to (#2954)
-const OMITTED_KEY = /^virtual key '(.+)' omitted from the snapshot: (it allows only omitted .*)$/s;
-const OMITTED_EXAMPLE_KEY =
-  /^virtual key '[^']+' omitted from the snapshot: (it is the public example key.*)$/s;
-/** What the config endpoint redacts the public example key's value to. */
-export const REDACTED_PUBLIC_EXAMPLE_KEY = "[redacted: public example key]";
-/** What a file key without a `name` is called in a problem line. */
-export const UNNAMED_KEY = "<unnamed>";
-
-/** Providers, routes and file keys left out of the gateway's snapshot whole, each with its reason. */
-export interface SnapshotOmissions {
-  /** provider name → why it is not served */
-  providers: Map<string, string>;
-  /** route model → why it is not served */
-  routes: Map<string, string>;
-  /** file key name (`<unnamed>` without one) → why it is not served */
-  keys: Map<string, string>;
-  /** why the public example key is not served, when it is in the file */
-  exampleKey?: string;
+export function fetchConfigProblems(): Promise<ConfigProblems> {
+  return getJson<Partial<ConfigProblems>>("/api/v1/config/problems").then((r) => ({
+    problems: r.problems ?? [],
+    // an older control plane answers sentences only
+    omitted: r.omitted ?? [],
+  }));
 }
 
 /**
- * The providers and routes `/api/v1/config/problems` reports as left out of
- * the gateway's snapshot, and so not served (#2085).
+ * The omitted entries of `kinds`, keyed by the row they point at, for a table
+ * that lists `GET /api/v1/config`'s rows in order.
  *
- * The endpoint reports sentences rather than records (#1876 would add the
- * records), so this reads the two shapes written for a pruned provider, route
- * and file key and ignores every other line: a target, a header or a price
- * dropped from an entry that is still served is not the entry going missing.
+ * `rows` are those names in list order: an entry marks the row at its `index`
+ * only while that row still carries its `name`, so a write between the two
+ * reads marks nothing rather than a neighbour.
  */
-export function snapshotOmissions(problems: readonly string[] | undefined): SnapshotOmissions {
-  const providers = new Map<string, string>();
-  const routes = new Map<string, string>();
-  const keys = new Map<string, string>();
-  let exampleKey: string | undefined;
-  for (const problem of problems ?? []) {
-    const provider = OMITTED_PROVIDER.exec(problem);
-    if (provider) providers.set(provider[1], provider[2]);
-    const route = OMITTED_ROUTE.exec(problem);
-    if (route) routes.set(route[1], route[2]);
-    const key = OMITTED_KEY.exec(problem);
-    if (key) keys.set(key[1], key[2]);
-    const example = OMITTED_EXAMPLE_KEY.exec(problem);
-    if (example) exampleKey = example[1];
+export function omittedRows(
+  omitted: readonly OmittedEntry[] | undefined,
+  kinds: readonly OmittedKind[],
+  rows: readonly string[],
+): Map<number, OmittedEntry> {
+  const out = new Map<number, OmittedEntry>();
+  for (const entry of omitted ?? []) {
+    if (kinds.includes(entry.kind) && rows[entry.index] === entry.name) {
+      out.set(entry.index, entry);
+    }
   }
-  return { providers, routes, keys, exampleKey };
+  return out;
 }
 
 /**
- * The routes `/api/v1/config/problems` reports as left out of the gateway's
- * snapshot, and so not served (#1853).
+ * The route models the gateway is not given at all (#1853).
  *
- * A provider dropped for its own defect needs no line of its own here: a route
- * left with no target on a known provider is pruned after it, and reported as
- * such.
+ * `models` is one name per route row, from `GET /api/v1/models`, which neither
+ * carries tenancy nor lists every row. A name is unserved only while the
+ * omitted routes bearing it cover every row listed, so a twin another scope
+ * still serves keeps the model selectable. A provider dropped for its own
+ * defect needs no entry of its own: a route left with no target on a known
+ * provider is omitted after it, and reported as such.
  */
-export function unservedRoutes(problems: readonly string[] | undefined): Set<string> {
-  return new Set(snapshotOmissions(problems).routes.keys());
+export function unservedModels(
+  omitted: readonly OmittedEntry[] | undefined,
+  models: readonly string[],
+): Set<string> {
+  const dropped = new Map<string, number>();
+  for (const entry of omitted ?? []) {
+    if (entry.kind === "route") dropped.set(entry.name, (dropped.get(entry.name) ?? 0) + 1);
+  }
+  const listed = new Map<string, number>();
+  for (const model of models) listed.set(model, (listed.get(model) ?? 0) + 1);
+  const out = new Set<string>();
+  for (const [name, count] of dropped) {
+    if (count >= (listed.get(name) ?? 0)) out.add(name);
+  }
+  return out;
 }
 
 /**

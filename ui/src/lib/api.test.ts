@@ -17,10 +17,21 @@ import {
   apiBaseDoublesV1,
   resolveUpstreamUrl,
   isConvertible,
-  snapshotOmissions,
-  unservedRoutes,
+  omittedRows,
+  unservedModels,
+  UNNAMED_KEY,
+  fetchConfigProblems,
+  type OmittedEntry,
   type CurrencySettings,
 } from "./api";
+
+const ROUTE_REASON = "it has no target that references a known provider with a positive weight";
+const route = (name: string, index: number): OmittedEntry => ({
+  kind: "route",
+  name,
+  reason: ROUTE_REASON,
+  index,
+});
 
 // We need to mock global fetch and localStorage
 describe("api client", () => {
@@ -48,6 +59,24 @@ describe("api client", () => {
 
   afterEach(() => {
     mock.restore();
+  });
+
+  describe("fetchConfigProblems", () => {
+    it("returns the sentences and the structured entries", async () => {
+      const omitted = [route("gpt-4o-mini", 2)];
+      fetchMock.mockResolvedValueOnce(
+        new Response(JSON.stringify({ problems: ["a line"], omitted }), { status: 200 }),
+      );
+      await expect(fetchConfigProblems()).resolves.toEqual({ problems: ["a line"], omitted });
+    });
+
+    // a control plane from before the field answers sentences only
+    it("treats an answer without `omitted` as nothing left out", async () => {
+      fetchMock.mockResolvedValueOnce(
+        new Response(JSON.stringify({ problems: ["a line"] }), { status: 200 }),
+      );
+      await expect(fetchConfigProblems()).resolves.toEqual({ problems: ["a line"], omitted: [] });
+    });
   });
 
   describe("getJson (via fetchConfig)", () => {
@@ -710,90 +739,69 @@ describe("session revalidation", () => {
 });
 
 /**
- * The Playground's fallback list leaves out what the snapshot prunes (#1853),
- * and the only place that is said is `/api/v1/config/problems`, in sentences.
- * The fixtures are the exact strings `sanitize_for_snapshot` and
- * `provider_problems` write.
+ * The Effective config screen marks each provider, route and file key the
+ * snapshot leaves out (#2085), by the row the entry points at (#1876).
  */
-describe("unservedRoutes", () => {
-  it("reads the model out of a pruned route's line", () => {
-    const routes = unservedRoutes([
-      "route 'claude-sonnet-4' omitted from the snapshot: it has no target that references a known provider with a positive weight",
-    ]);
-    expect([...routes]).toEqual(["claude-sonnet-4"]);
+describe("omittedRows", () => {
+  const omitted: OmittedEntry[] = [
+    { kind: "provider", name: "edge", reason: "bad", index: 1 },
+    route("twin", 1),
+    { kind: "virtual_key", name: "twin", reason: "bad", index: 1 },
+    { kind: "public_example_key", name: UNNAMED_KEY, reason: "public", index: 2 },
+  ];
+
+  it("marks only the row an entry points at when two rows share a name", () => {
+    const rows = omittedRows(omitted, ["route"], ["twin", "twin"]);
+    expect([...rows.keys()]).toEqual([1]);
   });
 
-  // a provider's own line names the provider, not a route: the routes it
-  // strands are reported separately, and those are the ones that matter here
-  it("ignores every line that is not about a pruned route", () => {
-    const routes = unservedRoutes([
-      "provider 'openrouter-edge' omitted from the snapshot: openrouter provider 'openrouter-edge' requires api_key_env",
-      "duplicate route model 'gpt-4o'",
-      "route 'gpt-4o-mini' omitted from the snapshot: it has no target that references a known provider with a positive weight",
-    ]);
-    expect([...routes]).toEqual(["gpt-4o-mini"]);
+  it("collects several kinds into one table", () => {
+    const rows = omittedRows(
+      omitted,
+      ["virtual_key", "public_example_key"],
+      ["kept", "twin", UNNAMED_KEY],
+    );
+    expect([...rows.keys()]).toEqual([1, 2]);
   });
 
-  it("keeps a model name with a slash or a quote in it whole", () => {
-    const routes = unservedRoutes([
-      "route 'meta-llama/Llama-3.1-8B' omitted from the snapshot: it has no target that references a known provider with a positive weight",
-      "route 'o'brien' omitted from the snapshot: it has no target that references a known provider with a positive weight",
-    ]);
-    expect([...routes]).toEqual(["meta-llama/Llama-3.1-8B", "o'brien"]);
+  // the two reads can straddle a write: a neighbour must not inherit the mark
+  it("marks nothing when the row at the index is no longer the named one", () => {
+    expect(omittedRows(omitted, ["provider"], ["edge", "other"]).size).toBe(0);
+    expect(omittedRows(omitted, ["provider"], ["edge"]).size).toBe(0);
   });
 
   it("is empty before the problems are known", () => {
-    expect(unservedRoutes(undefined).size).toBe(0);
-    expect(unservedRoutes([]).size).toBe(0);
+    expect(omittedRows(undefined, ["route"], ["a"]).size).toBe(0);
   });
 });
 
-/**
- * The Effective config screen marks each provider and route the snapshot
- * leaves out, with the reason (#2085). The fixtures are the exact strings
- * `sanitize_for_snapshot` and `provider_problems` write.
- */
-describe("snapshotOmissions", () => {
-  it("reads the name and the reason of a pruned provider and a pruned route", () => {
-    const { providers, routes } = snapshotOmissions([
-      "provider 'openrouter-edge' omitted from the snapshot: openrouter provider 'openrouter-edge' requires api_key_env",
-      "route 'gpt-4o-mini' omitted from the snapshot: it has no target that references a known provider with a positive weight",
-    ]);
-    expect([...providers]).toEqual([
-      ["openrouter-edge", "openrouter provider 'openrouter-edge' requires api_key_env"],
-    ]);
-    expect([...routes]).toEqual([
-      ["gpt-4o-mini", "it has no target that references a known provider with a positive weight"],
+/** The Playground's fallback list leaves out what the snapshot prunes (#1853). */
+describe("unservedModels", () => {
+  it("names a model whose every row is omitted", () => {
+    const models = unservedModels([route("claude-sonnet-4", 0)], ["claude-sonnet-4", "gpt-4o"]);
+    expect([...models]).toEqual(["claude-sonnet-4"]);
+  });
+
+  it("keeps a model another scope still serves", () => {
+    expect(unservedModels([route("twin", 1)], ["twin", "twin"]).size).toBe(0);
+    expect([...unservedModels([route("twin", 0), route("twin", 1)], ["twin", "twin"])]).toEqual([
+      "twin",
     ]);
   });
 
-  // a part of an entry going missing leaves the entry served: the screen must
-  // not mark the whole row for it
-  it("ignores a line about a target, a header or another kind of entry", () => {
-    const { providers, routes } = snapshotOmissions([
-      "route 'gpt-4o' target 'openrouter-edge' omitted from the snapshot: the provider is itself omitted from the snapshot",
-      "route 'gpt-4o': header 'host' names the request's framing; it is omitted from the snapshot and the route serves without it",
-      "provider group 'edge' member 'openrouter-edge' omitted from the snapshot: the provider is itself omitted from the snapshot",
-      "budget 'team-cap' on team 'research' has period '7d', which the gateway does not recognise, so it is enforced as a monthly cap; set it to one of daily, weekly, monthly",
-    ]);
-    expect(providers.size).toBe(0);
-    expect(routes.has("gpt-4o")).toBe(false);
-  });
-
-  it("reads a file key dropped for its allow-list and the public example key", () => {
-    const { keys, exampleKey } = snapshotOmissions([
-      "virtual key 'ci-bot' omitted from the snapshot: it allows only omitted providers ('edge'), and an empty allow-list would let it reach every provider",
-      "virtual key '<unnamed>' omitted from the snapshot: it allows only omitted providers ('edge'), and an empty allow-list would let it reach every provider",
-      "virtual key 'sk-rolter-dev' omitted from the snapshot: it is the public example key from the bundled rolter.example.toml and allows every model",
-      "virtual key 'mixed' allow-list entries 'edge' omitted from the snapshot: the providers are themselves omitted, and the key stays limited to its other providers",
-    ]);
-    expect([...keys.keys()]).toEqual(["ci-bot", "<unnamed>"]);
-    expect(exampleKey).toMatch(/^it is the public example key/);
+  it("ignores other kinds and keeps a model with a slash or quote whole", () => {
+    const models = unservedModels(
+      [
+        { kind: "provider", name: "edge", reason: "bad", index: 0 },
+        route("meta-llama/Llama-3.1-8B", 0),
+        route("o'brien", 1),
+      ],
+      ["meta-llama/Llama-3.1-8B", "o'brien"],
+    );
+    expect([...models]).toEqual(["meta-llama/Llama-3.1-8B", "o'brien"]);
   });
 
   it("is empty before the problems are known", () => {
-    const { providers, routes, keys, exampleKey } = snapshotOmissions(undefined);
-    expect(providers.size + routes.size + keys.size).toBe(0);
-    expect(exampleKey).toBeUndefined();
+    expect(unservedModels(undefined, ["a"]).size).toBe(0);
   });
 });

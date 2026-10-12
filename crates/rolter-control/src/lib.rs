@@ -136,7 +136,7 @@ use tower::ServiceExt as _;
 use tower_http::services::ServeDir;
 
 use rolter_auth::Role;
-use rolter_core::GatewayConfig;
+use rolter_core::{GatewayConfig, SnapshotReport};
 #[cfg(feature = "postgres")]
 use rolter_store::MergedConfigStore;
 use rolter_store::{ConfigStore, InMemoryConfigStore};
@@ -1972,7 +1972,6 @@ async fn get_config(
 /// reads the token-guarded `/internal/snapshot` instead.
 fn redact_config_for_dashboard(config: &mut GatewayConfig) {
     const REDACTED: &str = "[redacted]";
-    const REDACTED_PUBLIC_EXAMPLE_KEY: &str = "[redacted: public example key]";
     for provider in &mut config.providers {
         provider.api_key = None;
         for key in &mut provider.api_keys {
@@ -1993,16 +1992,7 @@ fn redact_config_for_dashboard(config: &mut GatewayConfig) {
         }
     }
     for key in &mut config.virtual_keys {
-        // the public example key is the one file key whose omission line names
-        // its value rather than its name, so the dashboard could not match that
-        // line to a row. its value is published in every checkout, so naming it
-        // discloses nothing, and it lets the row say it is left out (#2954)
-        key.key = if key.is_public_example_key() {
-            REDACTED_PUBLIC_EXAMPLE_KEY
-        } else {
-            REDACTED
-        }
-        .to_string();
+        key.key = REDACTED.to_string();
     }
     // the dashboard never reads these; the gateway takes them from the snapshot.
     // a database key record names its org, team, project and creator, so even
@@ -2156,7 +2146,11 @@ async fn get_config_problems(
         Ok(config) => config,
         Err(error) => return Ok(Json(unloadable_config_problems(&state, &error).await?)),
     };
-    let mut problems = sanitize_snapshot(&state, &mut config);
+    let SnapshotReport {
+        mut problems,
+        omitted,
+        ..
+    } = sanitize_snapshot(&state, &mut config);
     // structural problems never reach a gateway at all — the snapshot refuses
     // outright — so an operator needs to see those here too, not just in a log
     if let Err(fatal) = config.validate_snapshot() {
@@ -2169,7 +2163,7 @@ async fn get_config_problems(
         Ok(guessed) => problems.extend(guessed),
         Err(error) => tracing::warn!(%error, "could not list rows the config loader misread"),
     }
-    Ok(Json(json!({ "problems": problems })))
+    Ok(Json(json!({ "problems": problems, "omitted": omitted })))
 }
 
 /// The answer of [`get_config_problems`] when the config cannot be loaded at all.
@@ -2200,7 +2194,7 @@ async fn unloadable_config_problems(
                  keep serving the config they last received; the control plane log has the cause"
                     .to_string(),
             );
-            Ok(json!({ "problems": explained }))
+            Ok(json!({ "problems": explained, "omitted": [] }))
         }
         _ => Err(StoreReadError),
     }
@@ -2215,15 +2209,16 @@ async fn unloadable_config_problems(
 /// it because that is `easy-up`'s whole point; anything that has turned auth on
 /// does not. Gateways polling a snapshot fail closed on an empty key set, so
 /// dropping the only key locks the data plane rather than opening it.
-fn sanitize_snapshot(state: &ControlState, config: &mut rolter_core::GatewayConfig) -> Vec<String> {
-    let mut problems = config.sanitize_for_snapshot();
+fn sanitize_snapshot(
+    state: &ControlState,
+    config: &mut rolter_core::GatewayConfig,
+) -> SnapshotReport {
+    let mut report = config.sanitize_for_snapshot_report();
     let auth_enforced = state.admin_token.is_some() || config.server.require_auth == Some(true);
     if auth_enforced {
-        if let Some(problem) = config.prune_public_example_key() {
-            problems.push(problem);
-        }
+        config.prune_public_example_key(&mut report);
     }
-    problems
+    report
 }
 
 #[derive(Debug, Deserialize)]
@@ -2362,7 +2357,7 @@ async fn build_snapshot(
             let sanitize = rolter_core::stage_span!("snapshot.sanitize");
             let omitted = {
                 let _entered = sanitize.enter();
-                sanitize_snapshot(&state, &mut config)
+                sanitize_snapshot(&state, &mut config).problems
             };
             if !omitted.is_empty() {
                 tracing::warn!(
@@ -2731,25 +2726,6 @@ mod tests {
         assert!(!args.allow_open_mode);
         #[cfg(feature = "postgres")]
         assert!(args.database_url.is_none());
-    }
-
-    // the one key whose value is published is told apart, so the dashboard can
-    // mark its row as left out of the snapshot (#2954)
-    #[test]
-    fn dashboard_config_marks_the_public_example_key() {
-        use rolter_core::config::{VirtualKeyConfig, PUBLIC_EXAMPLE_KEY};
-        let mut config = GatewayConfig::default();
-        config.virtual_keys.push(VirtualKeyConfig {
-            key: PUBLIC_EXAMPLE_KEY.into(),
-            ..Default::default()
-        });
-        config.virtual_keys.push(VirtualKeyConfig {
-            key: "sk-rolter-private".into(),
-            ..Default::default()
-        });
-        redact_config_for_dashboard(&mut config);
-        assert_eq!(config.virtual_keys[0].key, "[redacted: public example key]");
-        assert_eq!(config.virtual_keys[1].key, "[redacted]");
     }
 
     // the dashboard config view answers without a session: nothing in it may
@@ -3478,6 +3454,77 @@ mod tests {
             problems[0].as_str().unwrap().contains("openrouter-edge"),
             "{body}"
         );
+        // the same finding as a record, so a client never reads the sentence
+        let omitted = body["omitted"].as_array().unwrap();
+        assert_eq!(omitted.len(), 1, "{body}");
+        assert_eq!(omitted[0]["kind"], "provider", "{body}");
+        assert_eq!(omitted[0]["name"], "openrouter-edge", "{body}");
+        assert_eq!(omitted[0]["index"], 1, "{body}");
+        assert!(!omitted[0]["reason"].as_str().unwrap().is_empty(), "{body}");
+    }
+
+    /// #1876: the record points at one row even where a name is shared, and an
+    /// auth-enforced control plane reports the example key it withholds.
+    #[tokio::test]
+    async fn omitted_entries_point_at_one_row_each() {
+        let config: GatewayConfig = serde_json::from_value(json!({
+            "providers": [
+                {"name": "openai", "kind": "openai", "api_base": "https://api.openai.com/v1"},
+                {
+                    "name": "edge",
+                    "kind": "openrouter",
+                    "api_base": "https://openrouter.example.com/v1",
+                    "api_key_env": "OPENROUTER_API_KEY",
+                },
+            ],
+            "routes": [
+                {"model": "twin", "targets": [{"provider": "openai"}]},
+                {"model": "twin", "targets": [{"provider": "edge"}]},
+            ],
+            "virtual_keys": [
+                {"key": "sk-only-edge", "name": "ci", "providers": ["edge"]},
+                {"key": "sk-served", "name": "ci"},
+                {"key": rolter_core::config::PUBLIC_EXAMPLE_KEY},
+            ],
+        }))
+        .expect("fixture config parses");
+        let mut state = state_with_token(Some("admin-token"));
+        state.store = Arc::new(InMemoryConfigStore::new(config));
+
+        let addr = serve(build_app_with_internal(state)).await;
+        let body: Value = reqwest::Client::new()
+            .get(format!("http://{addr}/api/v1/config/problems"))
+            .bearer_auth("admin-token")
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+
+        let at: Vec<(String, String, u64)> = body["omitted"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|o| {
+                (
+                    o["kind"].as_str().unwrap().to_string(),
+                    o["name"].as_str().unwrap().to_string(),
+                    o["index"].as_u64().unwrap(),
+                )
+            })
+            .collect();
+        let row = |kind: &str, name: &str, index: u64| (kind.to_string(), name.to_string(), index);
+        assert_eq!(
+            at,
+            [
+                row("provider", "edge", 1),
+                row("route", "twin", 1),
+                row("virtual_key", "ci", 0),
+                row("public_example_key", "<unnamed>", 2),
+            ],
+            "{body}"
+        );
     }
 
     #[tokio::test]
@@ -3492,6 +3539,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(body["problems"].as_array().unwrap().len(), 0, "{body}");
+        assert_eq!(body["omitted"], json!([]), "{body}");
     }
 
     /// A store whose rows the loader could only map by guessing, or which

@@ -26,13 +26,12 @@ import {
   fetchClusterNodes,
   fetchConfig,
   fetchConfigProblems,
-  snapshotOmissions,
-  REDACTED_PUBLIC_EXAMPLE_KEY,
+  omittedRows,
   UNNAMED_KEY,
   type GatewayConfigDto,
   type ProviderDto,
   type RouteDto,
-  type SnapshotOmissions,
+  type OmittedEntry,
   type VirtualKeyDto,
 } from "@/lib/api";
 import { useCan } from "@/lib/can";
@@ -69,7 +68,7 @@ export default function Config() {
   useScreenReady(!config.isLoading);
 
   const cfg = config.data;
-  const omissions = snapshotOmissions(problems.data);
+  const omitted = problems.data?.omitted;
   const summary = cfg
     ? t("pages.config.summary.line", {
         providers: t("pages.config.summary.providers", { count: cfg.providers.length }),
@@ -124,20 +123,15 @@ export default function Config() {
             target="config-problems"
           />
         )}
-        <UnservedConfigNotice problems={problems.data ?? []} />
+        <UnservedConfigNotice problems={problems.data?.problems ?? []} />
         {config.isLoading && <TableSkeleton rows={6} />}
 
         {cfg && (
           <>
-            <ProvidersTable read={config} providers={cfg.providers} omissions={omissions} />
-            <RoutesTable
-              read={config}
-              routes={cfg.routes}
-              providers={cfg.providers}
-              omissions={omissions}
-            />
+            <ProvidersTable read={config} providers={cfg.providers} omitted={omitted} />
+            <RoutesTable read={config} routes={cfg.routes} omitted={omitted} />
             {cfg.virtual_keys.length > 0 && (
-              <VirtualKeysTable keys={cfg.virtual_keys} omissions={omissions} />
+              <VirtualKeysTable keys={cfg.virtual_keys} omitted={omitted} />
             )}
           </>
         )}
@@ -246,38 +240,6 @@ function gatewayLine(t: TFunction, pickup: Pickup): string {
   }
 }
 
-/**
- * Why each route row is not served, or `undefined` for one that is.
- *
- * A problem line names a route by its model, and `GET /api/v1/config` strips
- * tenancy, so two scopes' routes can share one name. Where they do, the row
- * that was pruned is the one with nothing left to serve: no weighted target on
- * a provider the snapshot keeps, and no variant with a target. Where that
- * cannot tell them apart neither row is marked, and the notice above the
- * tables still carries the line.
- */
-function routeOmissions(
-  routes: RouteDto[],
-  providers: ProviderDto[],
-  omissions: SnapshotOmissions,
-): (string | undefined)[] {
-  const kept = new Set(
-    providers.map((p) => p.name).filter((name) => !omissions.providers.has(name)),
-  );
-  const shared = new Map<string, number>();
-  for (const route of routes) shared.set(route.model, (shared.get(route.model) ?? 0) + 1);
-  return routes.map((route) => {
-    const reason = omissions.routes.get(route.model);
-    if (reason === undefined || shared.get(route.model) === 1) return reason;
-    const servable =
-      route.targets.some((target) => target.weight > 0 && kept.has(target.provider)) ||
-      (route.variants ?? []).some((variant) =>
-        variant.targets.some((target) => kept.has(target.provider)),
-      );
-    return servable ? undefined : reason;
-  });
-}
-
 /** The badge on a row the snapshot leaves out. */
 function NotServed() {
   const { t } = useTranslation();
@@ -318,15 +280,20 @@ function TableSection({ title, children }: { title: string; children: React.Reac
 function ProvidersTable({
   read,
   providers,
-  omissions,
+  omitted,
 }: {
   read: ReadState;
   providers: ProviderDto[];
-  omissions: SnapshotOmissions;
+  omitted: readonly OmittedEntry[] | undefined;
 }) {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const title = t("pages.config.tables.providers");
+  const notServed = omittedRows(
+    omitted,
+    ["provider"],
+    providers.map((p) => p.name),
+  );
   return (
     <TableSection title={title}>
       <ListTable label={title} minWidth={560}>
@@ -336,25 +303,23 @@ function ProvidersTable({
           <ListHeaderCell>{t("pages.config.tables.apiBase")}</ListHeaderCell>
         </ListHeader>
         {providers.map((p, i) => {
-          // a provider name the snapshot leaves out is carried by no row it
-          // keeps (`sanitize_for_snapshot`), so the name alone is the row
-          const omitted = omissions.providers.get(p.name);
+          const omission = notServed.get(i)?.reason;
           return (
             <ListRow
               key={`${p.name}-${i}`}
               grid={PROVIDER_GRID}
-              className={omitted === undefined ? undefined : "items-start"}
+              className={omission === undefined ? undefined : "items-start"}
             >
               <ListCell className={`${VALUE} flex flex-col items-start gap-1`}>
                 <span>{p.name}</span>
-                {omitted !== undefined && <NotServed />}
+                {omission !== undefined && <NotServed />}
               </ListCell>
               <ListCell className="min-w-0 text-xs text-[color:var(--text-secondary)]">
                 {providerKindName(p.kind, t)}
               </ListCell>
               <ListCell className={`${VALUE} flex flex-col gap-1 text-muted-foreground`}>
                 <span>{p.api_base}</span>
-                {omitted !== undefined && <OmissionReason reason={omitted} />}
+                {omission !== undefined && <OmissionReason reason={omission} />}
               </ListCell>
             </ListRow>
           );
@@ -383,18 +348,20 @@ function ProvidersTable({
 function RoutesTable({
   read,
   routes,
-  providers,
-  omissions,
+  omitted,
 }: {
   read: ReadState;
   routes: RouteDto[];
-  providers: ProviderDto[];
-  omissions: SnapshotOmissions;
+  omitted: readonly OmittedEntry[] | undefined;
 }) {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const title = t("pages.config.tables.routes");
-  const omitted = routeOmissions(routes, providers, omissions);
+  const notServed = omittedRows(
+    omitted,
+    ["route"],
+    routes.map((r) => r.model),
+  );
   return (
     <TableSection title={title}>
       <ListTable label={title} minWidth={600}>
@@ -406,7 +373,7 @@ function RoutesTable({
         {/* the endpoint strips tenancy, so two orgs' routes can share a public
             name: the position keeps the keys apart */}
         {routes.map((r, i) => {
-          const reason = omitted[i];
+          const reason = notServed.get(i)?.reason;
           return (
             <ListRow key={`${r.model}-${i}`} grid={ROUTE_GRID} className="items-start">
               <ListCell className={`${VALUE} flex flex-col items-start gap-1`}>
@@ -459,13 +426,18 @@ function RoutesTable({
 // the secret could land in
 function VirtualKeysTable({
   keys,
-  omissions,
+  omitted,
 }: {
   keys: VirtualKeyDto[];
-  omissions: SnapshotOmissions;
+  omitted: readonly OmittedEntry[] | undefined;
 }) {
   const { t } = useTranslation();
   const title = t("pages.config.tables.virtualKeys");
+  const notServed = omittedRows(
+    omitted,
+    ["virtual_key", "public_example_key"],
+    keys.map((k) => k.name || UNNAMED_KEY),
+  );
   return (
     <TableSection title={title}>
       <ListTable label={title} minWidth={480}>
@@ -474,27 +446,22 @@ function VirtualKeysTable({
           <ListHeaderCell>{t("pages.config.tables.allowedModels")}</ListHeaderCell>
         </ListHeader>
         {keys.map((k, i) => {
-          // the public example key is told apart by its redacted value; any
-          // other key by its name, which the problem line carries
-          const omitted =
-            k.key === REDACTED_PUBLIC_EXAMPLE_KEY
-              ? omissions.exampleKey
-              : omissions.keys.get(k.name || UNNAMED_KEY);
+          const omission = notServed.get(i)?.reason;
           return (
             <ListRow
               key={`${k.name ?? ""}-${i}`}
               grid={KEY_GRID}
-              className={omitted === undefined ? undefined : "items-start"}
+              className={omission === undefined ? undefined : "items-start"}
             >
               <ListCell className={`${VALUE} flex flex-col items-start gap-1`}>
                 <span>{k.name || "—"}</span>
-                {omitted !== undefined && <NotServed />}
+                {omission !== undefined && <NotServed />}
               </ListCell>
               <ListCell className={`${VALUE} flex flex-col gap-1 text-muted-foreground`}>
                 <span>
                   {k.models.length > 0 ? k.models.join(" · ") : t("pages.config.tables.allModels")}
                 </span>
-                {omitted !== undefined && <OmissionReason reason={omitted} />}
+                {omission !== undefined && <OmissionReason reason={omission} />}
               </ListCell>
             </ListRow>
           );

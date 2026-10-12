@@ -261,7 +261,7 @@ export default function Providers() {
 
   return (
     <PageBody>
-      <UnservedConfigNotice problems={problems.data ?? []} />
+      <UnservedConfigNotice problems={problems.data?.problems ?? []} />
 
       <Toolbar>
         <SearchInput

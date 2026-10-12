@@ -50,6 +50,7 @@ pub use config::{
     MAX_EXPLORATION_RATIO, MAX_ROUTE_RETRIES, MCP_TRANSPORTS, PUBLIC_EXAMPLE_KEY, RESERVED_PATHS,
     RESERVED_ROUTE_HEADERS,
 };
+pub use config::{OmittedEntry, OmittedKind, SnapshotReport};
 pub use config_lint::{unknown_keys, UnknownKey};
 pub use config_migrate::{
     migrate as migrate_config, plan as plan_config_migration, Change as ConfigChange,

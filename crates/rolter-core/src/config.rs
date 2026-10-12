@@ -1845,6 +1845,68 @@ impl VirtualKeyConfig {
     }
 }
 
+/// What kind of entry [`GatewayConfig::sanitize_for_snapshot`] left out of the
+/// snapshot whole.
+///
+/// Only entries that stop being served are records. A target, header, cache or
+/// price dropped from an entry that is still served stays a line in the
+/// problems list and nothing more: the entry has not gone missing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OmittedKind {
+    /// a provider with a defect of its own
+    Provider,
+    /// a route with nothing left to serve
+    Route,
+    /// a key from the config file whose allow-list named only omitted providers
+    VirtualKey,
+    /// the example key every checkout publishes, dropped from a deployment that
+    /// enforces auth
+    PublicExampleKey,
+}
+
+/// One entry left out of the snapshot, as a record.
+///
+/// The structured twin of a line in the problems list: it is produced where the
+/// entry is dropped, so a client never reads the sentence to learn what went
+/// missing.
+///
+/// `index` is how a client points at exactly one row. The dashboard's
+/// `GET /api/v1/config` strips tenancy, so two scopes' routes can share a
+/// model and two file keys a name; a name alone would mark both. The index is
+/// the position the row has in the list the store loaded, before anything was
+/// dropped, which is the position it has in the matching list of that
+/// endpoint (`providers`, `routes` or `virtual_keys`). A client that must be
+/// safe against the two reads straddling a write checks that the row at
+/// `index` still carries `name`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct OmittedEntry {
+    pub kind: OmittedKind,
+    /// a provider name, a route model or a key's `name` (`<unnamed>` without one)
+    pub name: String,
+    /// why, in the words the problem line uses
+    pub reason: String,
+    /// position of the row in its list, see above
+    pub index: usize,
+}
+
+/// What [`GatewayConfig::sanitize_for_snapshot_report`] found: the sentences
+/// and, for every entry it dropped whole, the record.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SnapshotReport {
+    /// one English line per finding, including ones that drop nothing (a denied
+    /// operator url, a request id header that was replaced)
+    pub problems: Vec<String>,
+    /// one record per entry dropped whole
+    pub omitted: Vec<OmittedEntry>,
+    /// the loaded position of each file key still in the config, so a later
+    /// drop reports the index the dashboard's list has rather than a shifted one
+    file_key_origin: Vec<usize>,
+}
+
+/// What a file key without a `name` is called in a problem line and a record.
+const UNNAMED_KEY: &str = "<unnamed>";
+
 /// A database-defined virtual key as seen by the gateway: the peppered digest
 /// (never the plaintext) plus the scope identity used for log attribution,
 /// budgets and rate limits.
@@ -3598,19 +3660,46 @@ impl GatewayConfig {
 
     /// Drop the public example key from a file config. Callers decide *when*:
     /// only a deployment that is not in open mode has any business refusing it,
-    /// since `easy-up` serves it on purpose. Returns a problem line when a key
-    /// was dropped.
-    pub fn prune_public_example_key(&mut self) -> Option<String> {
-        let before = self.virtual_keys.len();
-        self.virtual_keys.retain(|k| !k.is_public_example_key());
-        (self.virtual_keys.len() != before).then(|| {
-            format!(
-                "virtual key '{PUBLIC_EXAMPLE_KEY}' omitted from the snapshot: it is the public \
-                 example key from the bundled rolter.example.toml and allows every model, so a \
-                 deployment with auth enforced must not hand it to gateways. Remove the \
-                 [[virtual_keys]] entry from the control plane's config file"
-            )
-        })
+    /// since `easy-up` serves it on purpose. Adds the problem line and the
+    /// record to `report` for each key dropped; `report` is the one
+    /// [`sanitize_for_snapshot_report`](Self::sanitize_for_snapshot_report)
+    /// returned, whose key positions keep the record's index true to the
+    /// loaded list.
+    pub fn prune_public_example_key(&mut self, report: &mut SnapshotReport) {
+        let origin = std::mem::take(&mut report.file_key_origin);
+        let mut kept = Vec::with_capacity(self.virtual_keys.len());
+        let mut position = 0;
+        let mut dropped = Vec::new();
+        self.virtual_keys.retain(|k| {
+            let at = origin.get(position).copied().unwrap_or(position);
+            position += 1;
+            if k.is_public_example_key() {
+                dropped.push((
+                    at,
+                    k.name.clone().unwrap_or_else(|| UNNAMED_KEY.to_string()),
+                ));
+                false
+            } else {
+                kept.push(at);
+                true
+            }
+        });
+        report.file_key_origin = kept;
+        for (index, name) in dropped {
+            let reason = "it is the public example key from the bundled rolter.example.toml and \
+                          allows every model, so a deployment with auth enforced must not hand it \
+                          to gateways. Remove the [[virtual_keys]] entry from the control plane's \
+                          config file";
+            report.problems.push(format!(
+                "virtual key '{PUBLIC_EXAMPLE_KEY}' omitted from the snapshot: {reason}"
+            ));
+            report.omitted.push(OmittedEntry {
+                kind: OmittedKind::PublicExampleKey,
+                name,
+                reason: reason.to_string(),
+                index,
+            });
+        }
     }
 
     /// Validate internal consistency and surface every problem at once so an
@@ -3636,7 +3725,15 @@ impl GatewayConfig {
     /// — are deliberately left for `validate` to reject, since silently
     /// dropping one of two colliding rows would be worse than refusing.
     pub fn sanitize_for_snapshot(&mut self) -> Vec<String> {
+        self.sanitize_for_snapshot_report().problems
+    }
+
+    /// [`sanitize_for_snapshot`](Self::sanitize_for_snapshot) with a record for
+    /// every provider, route and file key it dropped whole, so a client does
+    /// not have to read the sentences to learn which.
+    pub fn sanitize_for_snapshot_report(&mut self) -> SnapshotReport {
         let mut warnings = Vec::new();
+        let mut omitted_entries = Vec::new();
         self.prune_invalid_prompt_templates(&mut warnings);
         self.prune_invalid_model_prices(&mut warnings);
 
@@ -3669,11 +3766,17 @@ impl GatewayConfig {
                 idx += 1;
                 keep
             });
-            for (_, name, problems) in invalid {
+            for (index, name, problems) in invalid {
+                let reason = problems.join("; ");
                 warnings.push(format!(
-                    "provider '{name}' omitted from the snapshot: {}",
-                    problems.join("; ")
+                    "provider '{name}' omitted from the snapshot: {reason}"
                 ));
+                omitted_entries.push(OmittedEntry {
+                    kind: OmittedKind::Provider,
+                    name: name.clone(),
+                    reason,
+                    index,
+                });
                 omitted.insert(name);
             }
         }
@@ -3737,18 +3840,26 @@ impl GatewayConfig {
                 idx += 1;
                 keep
             });
-            for (_, model) in drops {
+            for (index, model) in drops {
+                let reason = "it has no target that references a known provider with a \
+                              positive weight";
                 warnings.push(format!(
-                    "route '{model}' omitted from the snapshot: it has no target that \
-                     references a known provider with a positive weight"
+                    "route '{model}' omitted from the snapshot: {reason}"
                 ));
+                omitted_entries.push(OmittedEntry {
+                    kind: OmittedKind::Route,
+                    name: model,
+                    reason: reason.to_string(),
+                    index,
+                });
             }
         }
 
         // what is left to repair names an omitted provider from outside a
         // route's targets, and is settled after the route pass so a route
         // that was dropped does not also report a cache it no longer has
-        self.prune_omitted_provider_settings(&omitted, &mut warnings);
+        let file_key_origin =
+            self.prune_omitted_provider_settings(&omitted, &mut warnings, &mut omitted_entries);
 
         // a route override naming a guardrail rule the effective set lacks is
         // pruned here, not refused: the store loads only enabled rows, so a
@@ -3817,7 +3928,11 @@ impl GatewayConfig {
             ));
             self.client.request_id_header = default_request_id_header();
         }
-        warnings
+        SnapshotReport {
+            problems: warnings,
+            omitted: omitted_entries,
+            file_key_origin,
+        }
     }
 
     /// Clear a provider's `status_page_url`, `kv_events` or `lmcache` setting when the egress
@@ -4048,13 +4163,16 @@ impl GatewayConfig {
     ///   edit; that key is left out of the snapshot instead, which denies it.
     ///   This covers the file's keys and the store's, since neither is checked
     ///   by the other's rules.
+    ///
+    /// Returns the loaded position of each file key that remains.
     fn prune_omitted_provider_settings(
         &mut self,
         omitted: &std::collections::HashSet<String>,
         warnings: &mut Vec<String>,
-    ) {
+        records: &mut Vec<OmittedEntry>,
+    ) -> Vec<usize> {
         if omitted.is_empty() {
-            return;
+            return (0..self.virtual_keys.len()).collect();
         }
         for route in &mut self.routes {
             let Some(cache) = route.cache.as_mut() else {
@@ -4073,12 +4191,34 @@ impl GatewayConfig {
                 cache.semantic = None;
             }
         }
+        let mut origin = Vec::with_capacity(self.virtual_keys.len());
+        let mut index = 0;
         self.virtual_keys.retain_mut(|vk| {
-            let label = vk.name.clone().unwrap_or_else(|| "<unnamed>".to_string());
-            prune_key_allow_list(&mut vk.providers, &label, omitted, warnings)
+            let at = index;
+            index += 1;
+            let label = vk.name.clone().unwrap_or_else(|| UNNAMED_KEY.to_string());
+            match prune_key_allow_list(&mut vk.providers, &label, omitted, warnings) {
+                Some(reason) => {
+                    records.push(OmittedEntry {
+                        kind: OmittedKind::VirtualKey,
+                        name: label,
+                        reason,
+                        index: at,
+                    });
+                    false
+                }
+                None => {
+                    origin.push(at);
+                    true
+                }
+            }
         });
-        self.db_virtual_keys
-            .retain_mut(|vk| prune_key_allow_list(&mut vk.providers, &vk.id, omitted, warnings));
+        // a store key is not in the dashboard's config read, so it has no row
+        // to point at and stays a line only
+        self.db_virtual_keys.retain_mut(|vk| {
+            prune_key_allow_list(&mut vk.providers, &vk.id, omitted, warnings).is_none()
+        });
+        origin
     }
 
     /// Drop each prompt template that fails validation on its own, saying why
@@ -4689,7 +4829,7 @@ impl GatewayConfig {
 }
 
 /// Take the omitted providers out of one virtual key's allow-list, returning
-/// whether the key stays in the snapshot (#2945).
+/// why the key must leave the snapshot, or `None` while it stays (#2945).
 ///
 /// `label` names the key in the problem line and must never be the secret.
 /// The list is edited only while it keeps an entry: emptying it would let the
@@ -4700,30 +4840,33 @@ fn prune_key_allow_list(
     label: &str,
     omitted: &std::collections::HashSet<String>,
     warnings: &mut Vec<String>,
-) -> bool {
+) -> Option<String> {
     let named: Vec<String> = providers
         .iter()
         .filter(|name| omitted.contains(name.as_str()))
         .cloned()
         .collect();
     if named.is_empty() {
-        return true;
+        return None;
     }
     let every_entry = named.len() == providers.len();
     let named = named.join("', '");
     if every_entry {
+        let reason = format!(
+            "it allows only omitted providers ('{named}'), and an empty allow-list would let \
+             it reach every provider"
+        );
         warnings.push(format!(
-            "virtual key '{label}' omitted from the snapshot: it allows only omitted \
-             providers ('{named}'), and an empty allow-list would let it reach every provider"
+            "virtual key '{label}' omitted from the snapshot: {reason}"
         ));
-        return false;
+        return Some(reason);
     }
     providers.retain(|name| !omitted.contains(name.as_str()));
     warnings.push(format!(
         "virtual key '{label}' allow-list entries '{named}' omitted from the snapshot: the \
          providers are themselves omitted, and the key stays limited to its other providers"
     ));
-    true
+    None
 }
 
 fn validate_ca_bundle(path: &Path) -> std::result::Result<(), String> {
@@ -7763,6 +7906,55 @@ mod tests {
         );
     }
 
+    /// #1876: what the left-out prune takes from the file is recorded like any
+    /// other omission, so a client sees the route and key that stopped being
+    /// served. The left-out provider itself is a store row the config read does
+    /// not list, so it has no position to point at and stays a line only.
+    #[test]
+    fn rows_dropped_for_a_left_out_provider_are_recorded() {
+        let mut cfg = fleet_with_an_omitted_provider(
+            r#"
+            [[routes]]
+            model = "kept"
+            [[routes.targets]]
+            provider = "openai"
+
+            [[routes]]
+            model = "stranded"
+            [[routes.targets]]
+            provider = "stored"
+
+            [[virtual_keys]]
+            key = "k-served"
+            name = "served"
+
+            [[virtual_keys]]
+            key = "k-stranded"
+            name = "stranded-key"
+            providers = ["stored"]
+            "#,
+        );
+        cfg.left_out_providers.insert("stored".to_string());
+
+        let report = cfg.sanitize_for_snapshot_report();
+
+        let at: Vec<_> = report
+            .omitted
+            .iter()
+            .filter(|o| o.kind != OmittedKind::Provider)
+            .map(|o| (o.kind, o.name.as_str(), o.index))
+            .collect();
+        assert_eq!(
+            at,
+            [
+                (OmittedKind::Route, "stranded", 1),
+                (OmittedKind::VirtualKey, "stranded-key", 1),
+            ],
+            "{:?}",
+            report.problems
+        );
+    }
+
     /// A left-out name that a file provider also carries is that provider.
     #[test]
     fn a_left_out_name_a_file_provider_carries_is_not_pruned() {
@@ -8023,6 +8215,103 @@ mod tests {
         assert_eq!(cfg.virtual_keys.len(), 1);
         assert_eq!(cfg.virtual_keys[0].providers, ["opennai"]);
         assert!(cfg.validate_snapshot().is_err());
+    }
+
+    /// #1876: a client points at a row by its loaded position, so two routes
+    /// sharing a model, or two keys sharing a name, are told apart.
+    #[test]
+    fn the_report_points_at_the_exact_row_dropped() {
+        let mut cfg = fleet_with_an_omitted_provider(
+            r#"
+            [[routes]]
+            model = "twin"
+            [[routes.targets]]
+            provider = "openai"
+
+            [[routes]]
+            model = "twin"
+            [[routes.targets]]
+            provider = "bad"
+
+            [[virtual_keys]]
+            key = "sk-first-secret"
+            name = "twin"
+            providers = ["openai"]
+
+            [[virtual_keys]]
+            key = "sk-second-secret"
+            name = "twin"
+            providers = ["bad"]
+            "#,
+        );
+
+        let report = cfg.sanitize_for_snapshot_report();
+
+        let at = |kind: OmittedKind| -> Vec<(&str, usize)> {
+            report
+                .omitted
+                .iter()
+                .filter(|o| o.kind == kind)
+                .map(|o| (o.name.as_str(), o.index))
+                .collect()
+        };
+        assert_eq!(at(OmittedKind::Provider), [("bad", 1)]);
+        assert_eq!(
+            at(OmittedKind::Route),
+            [("twin", 1)],
+            "the second twin only"
+        );
+        assert_eq!(
+            at(OmittedKind::VirtualKey),
+            [("twin", 1)],
+            "the second twin only"
+        );
+        assert!(report.omitted.iter().all(|o| !o.reason.is_empty()));
+        // a part dropped from an entry that is still served is a line, not a record
+        assert!(report.problems.len() >= report.omitted.len());
+    }
+
+    /// #1876: a key dropped by the example-key prune keeps the index it had in
+    /// the loaded list even when an earlier key was already dropped.
+    #[test]
+    fn the_example_key_record_keeps_its_loaded_index() {
+        let mut cfg = fleet_with_an_omitted_provider(&format!(
+            r#"
+            [[virtual_keys]]
+            key = "sk-only-bad-secret"
+            name = "only-bad"
+            providers = ["bad"]
+
+            [[virtual_keys]]
+            key = "sk-served-secret"
+            name = "served"
+
+            [[virtual_keys]]
+            key = "{PUBLIC_EXAMPLE_KEY}"
+            "#
+        ));
+
+        let mut report = cfg.sanitize_for_snapshot_report();
+        cfg.prune_public_example_key(&mut report);
+
+        let keys: Vec<_> = report
+            .omitted
+            .iter()
+            .filter(|o| o.kind != OmittedKind::Provider)
+            .map(|o| (o.kind, o.name.as_str(), o.index))
+            .collect();
+        assert_eq!(
+            keys,
+            [
+                (OmittedKind::VirtualKey, "only-bad", 0),
+                (OmittedKind::PublicExampleKey, "<unnamed>", 2),
+            ]
+        );
+        assert_eq!(cfg.virtual_keys.len(), 1);
+        assert!(report
+            .problems
+            .iter()
+            .any(|p| p.contains("it is the public example key")));
     }
 
     #[test]

@@ -1,0 +1,80 @@
+---
+title: "Config Problems in the Rolter Control Plane"
+sidebarTitle: "Config problems"
+description: "GET /api/v1/config/problems lists what the control plane could not hand to gateways as written, as sentences and as structured omitted entries that point at exactly one provider, route or file key."
+---
+
+When the control plane builds the snapshot gateways poll, one malformed row does not
+withhold everyone's configuration. A provider with an invalid `api_base`, a route left with
+nothing to serve, or a file virtual key that allowed only omitted providers is left out, and
+the rest is served. `GET /api/v1/config/problems` says what was left out and why, using the
+same computation as the snapshot, so the two cannot disagree.
+
+## Request
+
+```bash
+curl -H "Authorization: Bearer $ROLTER_SESSION_TOKEN" \
+  http://localhost:4001/api/v1/config/problems
+```
+
+Any signed-in caller may read it, and so may the admin token. The names and reasons are the
+deployment's topology and carry no credentials.
+
+## Response
+
+```json
+{
+  "problems": [
+    "provider 'edge' omitted from the snapshot: openrouter provider 'edge' requires api_key_env",
+    "route 'gpt-4o' omitted from the snapshot: it has no target that references a known provider with a positive weight"
+  ],
+  "omitted": [
+    {
+      "kind": "provider",
+      "name": "edge",
+      "reason": "openrouter provider 'edge' requires api_key_env",
+      "index": 1
+    },
+    {
+      "kind": "route",
+      "name": "gpt-4o",
+      "reason": "it has no target that references a known provider with a positive weight",
+      "index": 0
+    }
+  ]
+}
+```
+
+`problems` is one English sentence per finding, including findings that drop nothing: a target
+removed from a route that is still served, a denied operator URL, a budget period the gateway
+reads as monthly. It is for a person to read. Do not parse it.
+
+`omitted` has one entry for each provider, route or config-file virtual key that is not served
+at all, so a client never has to read a sentence to learn that. It is additive: a client
+written against `problems` alone keeps working. A part dropped from an entry that is still
+served has no entry here, only a line in `problems`. An answer with nothing left out carries
+`"omitted": []`.
+
+| Field    | Meaning                                                                                                                                 |
+| -------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `kind`   | `provider`, `route`, `virtual_key` (a key from the config file that allowed only omitted providers) or `public_example_key` (see below) |
+| `name`   | the provider name, the route model, or the key's `name` (`<unnamed>` without one). Never a key's secret                                 |
+| `reason` | why, in the words the matching line in `problems` uses                                                                                  |
+| `index`  | the row's position in the matching list of `GET /api/v1/config`: `providers`, `routes` or `virtual_keys`, counted from `0`              |
+
+Use `index` rather than `name` to find the row. `GET /api/v1/config` does not carry tenancy, so
+two scopes can each own a route for the same model, and two file keys can share a name; the
+name alone would match both when only one was dropped. A client that must be safe against
+the two reads straddling a write can check that the row at `index` still carries `name`.
+
+The `public_example_key` entry appears when the control plane enforces authentication (an
+admin token or `require_auth`) and the config file still lists the `sk-rolter-dev` example key
+that ships in every checkout. It is dropped from the snapshot so no gateway receives it.
+
+Keys stored in the database are not entries here: the config read does not list them. A
+database key that allowed only omitted providers is still dropped, and still named in
+`problems`.
+
+The operation appears as `getConfigProblems` in the
+[control-plane OpenAPI document](/api/control-plane-openapi), with `ConfigProblems` and
+`OmittedEntry` schemas.

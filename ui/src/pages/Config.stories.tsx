@@ -298,7 +298,7 @@ const OMITTED_CONFIG = {
   virtual_keys: [
     ...CONFIG.virtual_keys,
     { key: "[redacted]", name: "edge-bot", models: [] },
-    { key: "[redacted: public example key]", name: null, models: [] },
+    { key: "[redacted]", name: null, models: [] },
   ],
   routes: [
     ...CONFIG.routes,
@@ -316,13 +316,22 @@ const KEY_REASON =
   "it allows only omitted providers ('openrouter-edge'), and an empty allow-list would let it reach every provider";
 const EXAMPLE_KEY_REASON =
   "it is the public example key from the bundled rolter.example.toml and allows every model, so a deployment with auth enforced must not hand it to gateways";
-const OMITTED = [
+// the lines the snapshot writes, and the same findings as records: each
+// points at its row by position in the config read above (#1876)
+const OMITTED_LINES = [
   `virtual key 'edge-bot' omitted from the snapshot: ${KEY_REASON}`,
   `virtual key 'sk-rolter-dev' omitted from the snapshot: ${EXAMPLE_KEY_REASON}`,
   `provider 'openrouter-edge' omitted from the snapshot: ${PROVIDER_REASON}`,
   "route 'claude-sonnet-4' target 'openrouter-edge' omitted from the snapshot: the provider is itself omitted from the snapshot",
   `route 'claude-sonnet-4' omitted from the snapshot: ${ROUTE_REASON}`,
   `route 'gpt-4o' omitted from the snapshot: ${ROUTE_REASON}`,
+];
+const OMITTED = [
+  { kind: "virtual_key", name: "edge-bot", reason: KEY_REASON, index: 1 },
+  { kind: "public_example_key", name: "<unnamed>", reason: EXAMPLE_KEY_REASON, index: 2 },
+  { kind: "provider", name: "openrouter-edge", reason: PROVIDER_REASON, index: 3 },
+  { kind: "route", name: "claude-sonnet-4", reason: ROUTE_REASON, index: 2 },
+  { kind: "route", name: "gpt-4o", reason: ROUTE_REASON, index: 1 },
 ];
 
 /** The row of `table` whose first cell reads `name`, the `index`th of them. */
@@ -340,7 +349,7 @@ export const OmittedEntriesAreMarked: Story = {
     <Stage
       fetchStub={api({
         config: () => json(OMITTED_CONFIG),
-        problems: () => json({ problems: OMITTED }),
+        problems: () => json({ problems: OMITTED_LINES, omitted: OMITTED }),
       })}
     />
   ),
@@ -369,8 +378,8 @@ export const OmittedEntriesAreMarked: Story = {
     await expectListTable(canvasElement, "Providers");
     await expectListTable(canvasElement, "Routes");
 
-    // a named file key is matched by name, the public example key by its
-    // redacted value; the served key keeps no mark
+    // a key is marked by the row the record points at, named or not; the
+    // served key keeps no mark
     const keys = canvas.getByRole("table", { name: "Virtual keys (from the config file)" });
     const bot = rowNamed(keys, "edge-bot");
     await expect(within(bot).getByText("not served")).toBeVisible();
