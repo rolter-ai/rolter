@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
+import { Link } from "react-router";
 
 import { superadminOnly } from "@/components/ForbiddenScreen";
 import { LoadError } from "@/components/LoadError";
@@ -249,7 +250,7 @@ function ModelSettingsScreen() {
         title={t("pages.modelSettings.applyDefaults")}
         description={t("pages.modelSettings.applyDefaultsDesc")}
         badge={
-          <Badge tone={active ? "success" : "neutral"} className="font-mono text-[10px] uppercase">
+          <Badge tone={active ? "success" : "neutral"}>
             {active ? t("pages.modelSettings.active") : t("pages.modelSettings.inactive")}
           </Badge>
         }
@@ -344,9 +345,16 @@ function ModelSettingsScreen() {
       <p className="text-xs text-muted-foreground">
         <Trans
           i18nKey="pages.modelSettings.timeoutsNote"
-          components={[<span key="where" className="text-[color:var(--text-secondary)]" />]}
+          components={[
+            <Link
+              key="where"
+              to="/performance"
+              className="rounded-sm text-[color:var(--text-secondary)] underline decoration-[color:var(--border-strong)] underline-offset-4 transition-colors hover:decoration-current focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            />,
+          ]}
         />
       </p>
+      <p className="text-xs text-muted-foreground">{t("pages.modelSettings.precedenceNote")}</p>
 
       <div className="sticky bottom-0 flex items-center justify-end gap-3 border-t border-[color:var(--border-subtle)] bg-background py-3">
         {invalid.length > 0 && (

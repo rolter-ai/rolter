@@ -97,7 +97,7 @@ export const Loaded: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(await canvas.findByLabelText("Allowed Origins")).toBeVisible();
+    await expect(await canvas.findByLabelText("Allowed origins")).toBeVisible();
     // the "enforce virtual keys" switch is gone (#2357): it only reached
     // managed gateways, which refuse a keyless request whatever it said
     await expect(canvas.queryByRole("switch")).toBeNull();
@@ -224,7 +224,7 @@ export const Mobile: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(await canvas.findByLabelText("Allowed Origins")).toBeVisible();
+    await expect(await canvas.findByLabelText("Allowed origins")).toBeVisible();
     await expectNoHorizontalOverflow();
   },
 };
@@ -238,7 +238,7 @@ export const Tablet: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(await canvas.findByLabelText("Allowed Origins")).toBeVisible();
+    await expect(await canvas.findByLabelText("Allowed origins")).toBeVisible();
     await expectNoHorizontalOverflow();
   },
 };
@@ -263,13 +263,13 @@ export const FreshDeployment: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const origins = await canvas.findByLabelText("Allowed Origins");
+    const origins = await canvas.findByLabelText("Allowed origins");
     await expect(origins).toHaveValue("");
     await expect(origins).toHaveAttribute(
       "placeholder",
       "https://app.example.com\nhttps://console.example.com",
     );
-    await expect(canvas.getByLabelText("Required Headers")).toHaveValue("");
+    await expect(canvas.getByLabelText("Required headers")).toHaveValue("");
     await expect(canvas.getByRole("button", { name: "Save changes" })).toBeDisabled();
     fresh.expectNotSent("PUT", SETTINGS);
   },
@@ -290,7 +290,7 @@ export const SaveWaitsForAnEditAndDiscardRestores: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const origins = await canvas.findByLabelText("Allowed Origins");
+    const origins = await canvas.findByLabelText("Allowed origins");
     const save = canvas.getByRole("button", { name: "Save changes" });
     const discard = canvas.getByRole("button", { name: "Discard changes" });
     await expect(save).toBeDisabled();
@@ -308,7 +308,7 @@ export const SaveWaitsForAnEditAndDiscardRestores: Story = {
     await expect(canvas.getAllByText("Edited")).toHaveLength(1);
     await expect(canvas.getByText("1 setting changed, not saved yet.")).toBeVisible();
 
-    const names = canvas.getByLabelText("Allowed Headers");
+    const names = canvas.getByLabelText("Allowed headers");
     await userEvent.type(names, "{Enter}x-trace");
     await expect(canvas.getAllByText("Edited")).toHaveLength(2);
     await expect(canvas.getByText("2 settings changed, not saved yet.")).toBeVisible();
@@ -341,7 +341,7 @@ export const MalformedHeaderStaysAndBlocksSave: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const headers = await canvas.findByLabelText("Required Headers");
+    const headers = await canvas.findByLabelText("Required headers");
     await expect(headers).toHaveValue("x-tenant: acme");
 
     await enter(headers, "x-tenant=acme");
@@ -386,16 +386,16 @@ export const EveryListNamesItsProblems: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const origins = await canvas.findByLabelText("Allowed Origins");
+    const origins = await canvas.findByLabelText("Allowed origins");
     await enter(origins, "https://*.example.com{Enter}https://ok.example.com");
-    const names = canvas.getByLabelText("Allowed Headers");
+    const names = canvas.getByLabelText("Allowed headers");
     await enter(names, "x-request-id{Enter}x tenant");
-    const required = canvas.getByLabelText("Required Headers");
+    const required = canvas.getByLabelText("Required headers");
     await enter(required, "x-tenant: a{Enter}X-Tenant: b");
-    const routes = canvas.getByLabelText("Auth Bypass Routes");
+    const routes = canvas.getByLabelText("Auth bypass routes");
     await enter(routes, "/v1/models, /v1/ping");
     await userEvent.tab();
-    await userEvent.click(canvas.getByText("Required Headers"));
+    await userEvent.click(canvas.getByText("Required headers"));
 
     await expect(
       await canvas.findByText(
@@ -458,15 +458,15 @@ export const ValuesWithCommasRoundTrip: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const required = await canvas.findByLabelText("Required Headers");
+    const required = await canvas.findByLabelText("Required headers");
     await expect(required).toHaveValue("x-trace: a,b\nx-tenant: acme");
-    await expect(canvas.getByLabelText("Allowed Origins")).toHaveValue(
+    await expect(canvas.getByLabelText("Allowed origins")).toHaveValue(
       "https://app.example.com\nhttps://console.example.com",
     );
-    await expect(canvas.getByLabelText("Allowed Headers")).toHaveValue(
+    await expect(canvas.getByLabelText("Allowed headers")).toHaveValue(
       "x-request-id\nX-Stainless-Timeout",
     );
-    await expect(canvas.getByLabelText("Auth Bypass Routes")).toHaveValue("/v1/models\n/v1/ping");
+    await expect(canvas.getByLabelText("Auth bypass routes")).toHaveValue("/v1/models\n/v1/ping");
     await expect(canvas.getByRole("button", { name: "Save changes" })).toBeDisabled();
 
     await userEvent.type(required, "{Enter}x-ids: 1,2,3");
@@ -499,7 +499,7 @@ export const StoredProblemIsShownFromTheStart: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const routes = await canvas.findByLabelText("Auth Bypass Routes");
+    const routes = await canvas.findByLabelText("Auth bypass routes");
     await expect(routes).toHaveValue("/healthz\n/v1/models");
     await expect(
       await canvas.findByText("Line 1: /healthz must be an exact path under /v1/."),
@@ -529,7 +529,7 @@ export const LooseningIsConfirmedBeforeItIsSent: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.type(
-      await canvas.findByLabelText("Auth Bypass Routes"),
+      await canvas.findByLabelText("Auth bypass routes"),
       "{Enter}/v1/ping{Enter}/v1/embeddings",
     );
     await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
@@ -582,7 +582,7 @@ export const CancelledLooseningSendsNothing: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const routes = await canvas.findByLabelText("Auth Bypass Routes");
+    const routes = await canvas.findByLabelText("Auth bypass routes");
     await userEvent.type(routes, "{Enter}/v1/ping");
     await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
     await expect(await confirmation()).toBeInTheDocument();
@@ -616,7 +616,7 @@ export const RefusedLooseningKeepsTheDialogOpen: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await userEvent.type(await canvas.findByLabelText("Auth Bypass Routes"), "{Enter}/v1/ping");
+    await userEvent.type(await canvas.findByLabelText("Auth bypass routes"), "{Enter}/v1/ping");
     await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
     const dialogElement = await confirmation();
     await userEvent.click(within(dialogElement).getByRole("button", { name: "Save changes" }));
@@ -649,8 +649,8 @@ export const TighteningSavesWithoutAsking: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await userEvent.clear(await canvas.findByLabelText("Auth Bypass Routes"));
-    await userEvent.type(canvas.getByLabelText("Required Headers"), "{Enter}x-mesh-id: edge");
+    await userEvent.clear(await canvas.findByLabelText("Auth bypass routes"));
+    await userEvent.type(canvas.getByLabelText("Required headers"), "{Enter}x-mesh-id: edge");
     await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
 
     await expect(await tightening.expectSentBody("PUT", SETTINGS)).toEqual({
@@ -679,7 +679,7 @@ export const SavedLineSaysEveryGatewayRunsIt: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const origins = await canvas.findByLabelText("Allowed Origins");
+    const origins = await canvas.findByLabelText("Allowed origins");
     await enter(origins, "https://console.example.com");
     await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
     await expect(
@@ -708,7 +708,7 @@ export const SavedLineCountsAGatewayThatLags: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await enter(await canvas.findByLabelText("Allowed Origins"), "https://console.example.com");
+    await enter(await canvas.findByLabelText("Allowed origins"), "https://console.example.com");
     await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
     await expect(
       await canvas.findByText(
@@ -732,7 +732,7 @@ export const SavedLineAdmitsWhenNoGatewayHasReported: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await enter(await canvas.findByLabelText("Allowed Origins"), "https://console.example.com");
+    await enter(await canvas.findByLabelText("Allowed origins"), "https://console.example.com");
     await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
     await expect(
       await canvas.findByText(
@@ -753,7 +753,7 @@ export const SavedLineAdmitsWhenTheGatewaysCannotBeRead: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await enter(await canvas.findByLabelText("Allowed Origins"), "https://console.example.com");
+    await enter(await canvas.findByLabelText("Allowed origins"), "https://console.example.com");
     await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
     await expect(
       await canvas.findByText(
@@ -804,7 +804,7 @@ export const MobileKeepsErrorsAndFooterInView: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const headers = await canvas.findByLabelText("Required Headers");
+    const headers = await canvas.findByLabelText("Required headers");
     await enter(
       headers,
       "x-tenant=acme-with-a-rather-long-value-that-should-wrap-somewhere-sensible",
