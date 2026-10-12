@@ -1675,11 +1675,18 @@
         "ready": "Start the consent flow for {{name}}",
         "unconfigured": "Register an OAuth client on this server before connecting.",
         "started": "Consent started for {{name}}",
-        "startedDetail": "Finish the approval in the new tab. It ends on Auth Sessions, and this card shows Connected once it completes.",
-        "connected": "Connected",
+        "startedDetail": "Finish the approval in the new tab. It ends on Auth Sessions, and this card shows the new session once it completes.",
+        "reconnect": "Reconnect",
+        "none": "Not connected. Connect to use this server with your own account.",
+        "activeUntil": "Connected until {{when}}",
+        "expiredAt": "Session expired {{when}}",
         "blocked": "The consent tab was blocked",
         "blockedDetail": "Allow pop-ups for this dashboard, then start the flow again.",
         "failed": "Could not start consent for {{name}}"
+      },
+      "toggle": {
+        "enabled": "{{name}} enabled",
+        "disabled": "{{name}} disabled"
       },
       "servers": {
         "toggleAria": "Enable {{name}}",
@@ -1746,7 +1753,8 @@
           "oauth": {
             "label": "OAuth consent",
             "hint": "Each user connects once; calls carry that user's own token.",
-            "badge": "oauth"
+            "badge": "oauth",
+            "badgeNoClient": "oauth, no client"
           }
         },
         "credentialStored": "Credential stored",

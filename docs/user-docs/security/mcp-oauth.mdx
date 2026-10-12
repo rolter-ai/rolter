@@ -112,7 +112,8 @@ presents to the server's authorization server. The dashboard does this on
     **Connect** on the server card starts consent and opens the authorization
     server in a new tab. Finish the approval there. That tab then lands on
     **Auth Sessions**, which says whether the connection worked, and the card
-    you started from shows **Connected** without a reload. The action stays
+    you started from shows **Connected until** the session's expiry without a
+    reload. Only servers set to **OAuth consent** offer the action. The action stays
     disabled until a client ID is registered — and, for a server set to manual
     discovery, until both endpoints are too — because until then there is
     nowhere to send the user.
@@ -152,10 +153,14 @@ rest is summarised rather than echoed onto the page.
 The control plane logs every failure with the full detail and the server it
 concerns, so the reason on screen is a starting point rather than all there is.
 
-**Connected** on a catalog card means you hold a live session on that server:
-an active grant of yours with a session under it that is neither revoked nor
-expired. An org admin sees the mark for their own sessions only, even though
-Auth Sessions lists everyone's.
+An OAuth consent server's card states where you stand: **Not connected**,
+**Connected until** a time, or **Session expired** (the action then reads
+**Reconnect**). That is a live session of yours, meaning an active grant of
+yours with a session under it that is neither revoked nor expired. An org admin
+sees their own sessions only, even though Auth Sessions lists everyone's. A card
+says nothing when your role may not read the session listings. A server set to
+OAuth consent with no client registered shows an `oauth, no client` badge and
+the reason Connect is unavailable.
 
 The same registration over the API, for a server whose authorization server is
 discoverable:

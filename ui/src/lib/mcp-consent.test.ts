@@ -4,7 +4,12 @@ import { fileURLToPath, URL } from "node:url";
 
 import type { McpOAuthGrantRow, McpOAuthSessionRow } from "@/lib/api";
 import en from "@/lib/i18n/locales/en.json";
-import { CONSENT_FAILURES, connectedServers, readConsentResult } from "@/lib/mcp-consent";
+import {
+  CONSENT_FAILURES,
+  connectedServers,
+  readConsentResult,
+  serverConnections,
+} from "@/lib/mcp-consent";
 
 const FLOW = fileURLToPath(
   new URL("../../../crates/rolter-control/src/mcp_oauth_flow.rs", import.meta.url),
@@ -112,5 +117,24 @@ describe("connectedServers", () => {
   it("knows nothing without an account or before the listings answer", () => {
     expect(connectedServers([grant({})], [session({})], undefined, NOW).size).toBe(0);
     expect(connectedServers(undefined, [session({})], "me", NOW).size).toBe(0);
+  });
+
+  it("reports the furthest live expiry, else the latest expired one", () => {
+    const later = session({ id: "s-2", expires_at: "2026-09-30T18:00:00Z" });
+    const live = serverConnections([grant({})], [session({}), later], "me", NOW);
+    expect(live.get("srv-1")).toEqual({ state: "active", until: "2026-09-30T18:00:00Z" });
+    const old = session({ id: "s-3", expires_at: "2026-09-30T09:00:00Z" });
+    const gone = session({ id: "s-4", expires_at: "2026-09-30T11:00:00Z" });
+    const lapsed = serverConnections([grant({})], [old, gone], "me", NOW);
+    expect(lapsed.get("srv-1")).toEqual({ state: "expired", since: "2026-09-30T11:00:00Z" });
+    // a live session beats an expired one whichever comes first
+    expect(serverConnections([grant({})], [gone, session({})], "me", NOW).get("srv-1")?.state).toBe(
+      "active",
+    );
+  });
+
+  it("leaves a revoked session out of the connection", () => {
+    const revoked = [session({ revoked_at: "2026-09-30T11:00:00Z" })];
+    expect(serverConnections([grant({})], revoked, "me", NOW).size).toBe(0);
   });
 });
