@@ -3739,6 +3739,9 @@ export interface AlertRuleRow {
   last_value: number | null;
   last_evaluated_at: string | null;
   last_error: string | null;
+  /** stable code of `last_error`; `last_error` stays the English fallback */
+  last_error_code?: string | null;
+  last_error_params?: Record<string, unknown> | null;
   created_at: string;
   updated_at: string;
 }
@@ -3763,6 +3766,12 @@ export interface AlertNotificationRow {
   state: string;
   delivery_status: string;
   detail: string | null;
+  /** stable code of `detail`; null on rows written before codes existed */
+  detail_code?: string | null;
+  detail_params?: Record<string, unknown> | null;
+  /** the reading the row was written for, in the signal's API unit; null for a no-data transition */
+  value?: number | null;
+  threshold?: number | null;
   sent_at: string;
 }
 
@@ -3811,9 +3820,15 @@ export function evaluateAlertRule(id: string): Promise<AlertEvaluation> {
   return sendJson<AlertEvaluation>("POST", `/api/v1/alert-rules/${id}/evaluate`);
 }
 
-export function fetchAlertHistory(limit = 100, ruleId?: string): Promise<AlertNotificationRow[]> {
+export function fetchAlertHistory(
+  limit = 100,
+  ruleId?: string,
+  filters: { state?: string; delivery_status?: string; before?: string } = {},
+): Promise<AlertNotificationRow[]> {
   const params = new URLSearchParams({ limit: String(limit) });
   if (ruleId) params.set("rule_id", ruleId);
+  // `before` is `<sent_at>,<id>` of the last row of the previous page
+  for (const [key, value] of Object.entries(filters)) if (value) params.set(key, value);
   return getJson<AlertNotificationRow[]>(`/api/v1/alert-notifications?${params}`);
 }
 

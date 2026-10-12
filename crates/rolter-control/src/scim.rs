@@ -883,7 +883,7 @@ impl From<ApiError> for ScimError {
                 Self::new(StatusCode::FORBIDDEN, None, message)
             }
             ApiError::Core(err) => err.into(),
-            ApiError::Curated(message) => {
+            ApiError::Curated(message) | ApiError::CodedInternal { message, .. } => {
                 Self::new(StatusCode::INTERNAL_SERVER_ERROR, None, message)
             }
             ApiError::BadGateway { message, .. } => {

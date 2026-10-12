@@ -60,6 +60,52 @@ const MAX_ERROR_LEN: usize = 512;
 /// to count the failed attempts behind the longest [`retry_delay`].
 const HISTORY_WINDOW: i64 = 16;
 
+/// Stable codes for `alert_notification_history.detail_code`. Part of the API:
+/// a code is never renamed or reused.
+mod detail_code {
+    pub const HTTP_OK: &str = "http_ok";
+    pub const HTTP_ERROR: &str = "http_error";
+    pub const TIMEOUT: &str = "timeout";
+    pub const CONNECT_FAILED: &str = "connect_failed";
+    pub const DELIVERY_FAILED: &str = "delivery_failed";
+    pub const EGRESS_DENIED: &str = "egress_denied";
+    pub const SECRET_UNSEALABLE: &str = "secret_unsealable";
+    pub const SECRET_INVALID: &str = "secret_invalid";
+    pub const CLIENT_UNAVAILABLE: &str = "client_unavailable";
+    pub const NO_CHANNEL: &str = "no_channel";
+    pub const CHANNEL_DISABLED: &str = "channel_disabled";
+}
+
+/// Stable codes for `alert_rules.last_error_code`. Part of the API.
+mod error_code {
+    pub const CLICKHOUSE_NOT_CONFIGURED: &str = "clickhouse_not_configured";
+    pub const UNKNOWN_SIGNAL: &str = "unknown_signal";
+    pub const QUERY_TIMEOUT: &str = "query_timeout";
+    pub const CLICKHOUSE_TIMEOUT: &str = "clickhouse_timeout";
+    pub const CLICKHOUSE_UNREACHABLE: &str = "clickhouse_unreachable";
+    pub const CLICKHOUSE_BAD_RESPONSE: &str = "clickhouse_bad_response";
+    pub const QUERY_FAILED: &str = "query_failed";
+    pub const CLICKHOUSE_ERROR: &str = "clickhouse_error";
+}
+
+/// Why a rule's signal could not be read: a stable code, the numbers it
+/// interpolates, and the English text stored beside it.
+struct SignalError {
+    code: &'static str,
+    params: Option<serde_json::Value>,
+    message: String,
+}
+
+impl SignalError {
+    fn new(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            params: None,
+            message: message.into(),
+        }
+    }
+}
+
 const COMPARISONS: &[&str] = &["above", "below"];
 const NO_DATA_POLICIES: &[&str] = &["ignore", "fire", "ok"];
 
@@ -139,6 +185,11 @@ struct Rule {
     last_value: Option<f64>,
     last_evaluated_at: Option<DateTime<Utc>>,
     last_error: Option<String>,
+    /// Stable code of `last_error` (see [`error_code`]); `last_error` is its
+    /// English fallback. Null when the last evaluation succeeded
+    last_error_code: Option<String>,
+    /// The numbers `last_error_code` interpolates, such as the timeout
+    last_error_params: Option<serde_json::Value>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
@@ -151,6 +202,16 @@ struct Notification {
     state: String,
     delivery_status: String,
     detail: Option<String>,
+    /// Stable code of `detail` (see [`detail_code`]), which is its English
+    /// fallback. Null on rows written before codes existed
+    detail_code: Option<String>,
+    /// The numbers `detail_code` interpolates, such as the HTTP status
+    detail_params: Option<serde_json::Value>,
+    /// The reading the transition was written for, in the signal's API unit.
+    /// Null for a window with no data and on older rows
+    value: Option<f64>,
+    /// The rule's threshold when the row was written
+    threshold: Option<f64>,
     sent_at: DateTime<Utc>,
 }
 
@@ -318,7 +379,7 @@ fn channel_columns() -> &'static str {
 }
 
 fn rule_columns() -> &'static str {
-    "id, name, signal, threshold, comparison, no_data, window_secs, channel_id, enabled, state, last_value, last_evaluated_at, last_error, created_at, updated_at"
+    "id, name, signal, threshold, comparison, no_data, window_secs, channel_id, enabled, state, last_value, last_evaluated_at, last_error, last_error_code, last_error_params, created_at, updated_at"
 }
 
 async fn list_channels(
@@ -551,7 +612,53 @@ async fn delete_rule(
 struct HistoryQuery {
     limit: Option<i64>,
     rule_id: Option<Uuid>,
+    /// `firing` or `resolved`
+    state: Option<String>,
+    /// `delivered`, `failed` or `skipped`
+    delivery_status: Option<String>,
+    /// Keyset cursor `<sent_at>,<id>` of the last row of the previous page;
+    /// the page returned is the rows strictly older than it
+    before: Option<String>,
 }
+
+const HISTORY_STATES: &[&str] = &["firing", "resolved"];
+const DELIVERY_STATUSES: &[&str] = &["delivered", "failed", "skipped"];
+
+fn bad_param(field: &str, message: String) -> ApiError {
+    ApiError::InvalidField {
+        field: field.into(),
+        message,
+    }
+}
+
+/// A filter value, checked against the values the column can hold.
+fn one_of(field: &str, value: Option<String>, allowed: &[&str]) -> ApiResult<Option<String>> {
+    match value {
+        Some(value) if !allowed.contains(&value.as_str()) => Err(bad_param(
+            field,
+            format!("{field} must be one of: {}", allowed.join(", ")),
+        )),
+        other => Ok(other),
+    }
+}
+
+/// Parse `before=<sent_at>,<id>`. `sent_at` alone can tie, so the id breaks it.
+fn parse_cursor(raw: &str) -> ApiResult<(DateTime<Utc>, Uuid)> {
+    raw.split_once(',')
+        .and_then(|(at, id)| {
+            Some((
+                DateTime::parse_from_rfc3339(at).ok()?.with_timezone(&Utc),
+                Uuid::parse_str(id).ok()?,
+            ))
+        })
+        .ok_or_else(|| {
+            bad_param(
+                "before",
+                "before must be `<sent_at>,<id>` of the last row of the previous page".into(),
+            )
+        })
+}
+
 async fn list_history(
     principal: Principal,
     State(state): State<ControlState>,
@@ -559,31 +666,28 @@ async fn list_history(
 ) -> ApiResult<Json<Vec<Notification>>> {
     authorize_superadmin(&principal, superadmin_cap!("alert_history", Read))?;
     let limit = query.limit.unwrap_or(100).clamp(1, 500);
-    let history = if let Some(rule_id) = query.rule_id {
-        sqlx::query_as(
-            "select id, rule_id, channel_id, state, delivery_status, detail, sent_at \
-             from alert_notification_history \
-             where rule_id=$1 \
-             order by sent_at desc \
-             limit $2",
-        )
-        .bind(rule_id)
-        .bind(limit)
-        .fetch_all(pool(&state))
-        .await
-        .map_err(|e| Error::Store(e.to_string()))?
-    } else {
-        sqlx::query_as(
-            "select id, rule_id, channel_id, state, delivery_status, detail, sent_at \
-             from alert_notification_history \
-             order by sent_at desc \
-             limit $1",
-        )
-        .bind(limit)
-        .fetch_all(pool(&state))
-        .await
-        .map_err(|e| Error::Store(e.to_string()))?
-    };
+    let status = one_of("state", query.state, HISTORY_STATES)?;
+    let delivery = one_of("delivery_status", query.delivery_status, DELIVERY_STATUSES)?;
+    let cursor = query.before.as_deref().map(parse_cursor).transpose()?;
+    let history = sqlx::query_as(
+        "select id, rule_id, channel_id, state, delivery_status, detail, detail_code, detail_params, value, threshold, sent_at \
+         from alert_notification_history \
+         where ($1::uuid is null or rule_id=$1) \
+           and ($2::text is null or state=$2) \
+           and ($3::text is null or delivery_status=$3) \
+           and ($4::timestamptz is null or (sent_at, id) < ($4, $5)) \
+         order by sent_at desc, id desc \
+         limit $6",
+    )
+    .bind(query.rule_id)
+    .bind(status)
+    .bind(delivery)
+    .bind(cursor.map(|(at, _)| at))
+    .bind(cursor.map(|(_, id)| id))
+    .bind(limit)
+    .fetch_all(pool(&state))
+    .await
+    .map_err(|e| Error::Store(e.to_string()))?;
     Ok(Json(history))
 }
 
@@ -752,17 +856,22 @@ async fn evaluate_one(
             // last_value and last_evaluated_at stay as the last successful
             // reading left them, so the card still says what was last known
             sqlx::query(
-                "update alert_rules set state='error', last_error=$2, updated_at=now() where id=$1",
+                "update alert_rules set state='error', last_error=$2, last_error_code=$3, last_error_params=$4, updated_at=now() where id=$1",
             )
             .bind(id)
-            .bind(&reason)
+            .bind(&reason.message)
+            .bind(reason.code)
+            .bind(&reason.params)
             .execute(&mut *tx)
             .await
             .map_err(store_error)?;
             tx.commit().await.map_err(store_error)?;
             // `read_signal` words the reason for the rule card, and never with
             // the ClickHouse endpoint in it, so the caller may read it too
-            return Err(ApiError::Curated(reason));
+            return Err(ApiError::CodedInternal {
+                code: reason.code,
+                message: reason.message,
+            });
         }
     };
     let history: Vec<Reported> = sqlx::query_as(
@@ -778,7 +887,7 @@ async fn evaluate_one(
     // the time the reading was taken rather than now(), so a later reading
     // can tell this one is older
     let rule: Rule = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "update alert_rules set state=$2, last_value=$3, last_evaluated_at=$4, last_error=null, updated_at=now() where id=$1 returning {}",
+        "update alert_rules set state=$2, last_value=$3, last_evaluated_at=$4, last_error=null, last_error_code=null, last_error_params=null, updated_at=now() where id=$1 returning {}",
         rule_columns()
     )))
     .bind(id)
@@ -796,12 +905,14 @@ async fn evaluate_one(
     let notification = match transition(&history, next_state, redeliver) {
         Some(change) => {
             let no_data = value.is_none() && rule.no_data != "ignore";
+            let currency = state.currency.base_code();
             let report = report(
                 &state.egress,
                 &mut tx,
                 &rule,
                 channel.as_ref(),
                 (change, no_data),
+                &currency,
                 kek,
             );
             Some(report.await?)
@@ -939,11 +1050,18 @@ async fn read_signal(
     state: &ControlState,
     signal: &str,
     window_secs: i32,
-) -> Result<Option<f64>, String> {
+) -> Result<Option<f64>, SignalError> {
     let Some(ch) = state.clickhouse.as_ref() else {
-        return Err("alert evaluation requires CLICKHOUSE_URL".to_string());
+        return Err(SignalError::new(
+            error_code::CLICKHOUSE_NOT_CONFIGURED,
+            "alert evaluation requires CLICKHOUSE_URL",
+        ));
     };
-    let sql = metric_sql(signal, window_secs).map_err(|_| format!("unknown signal '{signal}'"))?;
+    let sql = metric_sql(signal, window_secs).map_err(|_| SignalError {
+        code: error_code::UNKNOWN_SIGNAL,
+        params: Some(serde_json::json!({ "signal": signal })),
+        message: format!("unknown signal '{signal}'"),
+    })?;
     let rows = match tokio::time::timeout(QUERY_TIMEOUT, ch.query(&sql, &[])).await {
         Ok(Ok(rows)) => rows,
         Ok(Err(error)) => {
@@ -951,10 +1069,14 @@ async fn read_signal(
             return Err(describe_query_error(&error));
         }
         Err(_) => {
-            return Err(format!(
-                "analytics query timed out after {}s",
-                QUERY_TIMEOUT.as_secs()
-            ))
+            return Err(SignalError {
+                code: error_code::QUERY_TIMEOUT,
+                params: Some(serde_json::json!({ "seconds": QUERY_TIMEOUT.as_secs() })),
+                message: format!(
+                    "analytics query timed out after {}s",
+                    QUERY_TIMEOUT.as_secs()
+                ),
+            })
         }
     };
     let row = rows.first();
@@ -982,20 +1104,29 @@ fn reading(signal: &str, value: Option<f64>, samples: Option<f64>) -> Option<f64
 /// may hold a password, so those are reduced to their class. A ClickHouse error
 /// response is kept, truncated: its status and exception text are what an
 /// operator needs to fix the query, and neither names the endpoint.
-fn describe_query_error(error: &anyhow::Error) -> String {
+fn describe_query_error(error: &anyhow::Error) -> SignalError {
     if let Some(error) = error.downcast_ref::<reqwest::Error>() {
-        let class = if error.is_timeout() {
-            "analytics query timed out"
+        let (code, class) = if error.is_timeout() {
+            (error_code::CLICKHOUSE_TIMEOUT, "analytics query timed out")
         } else if error.is_connect() {
-            "could not connect to ClickHouse"
+            (
+                error_code::CLICKHOUSE_UNREACHABLE,
+                "could not connect to ClickHouse",
+            )
         } else if error.is_decode() {
-            "ClickHouse returned a response that is not JSON"
+            (
+                error_code::CLICKHOUSE_BAD_RESPONSE,
+                "ClickHouse returned a response that is not JSON",
+            )
         } else {
-            "analytics query failed"
+            (error_code::QUERY_FAILED, "analytics query failed")
         };
-        return class.to_string();
+        return SignalError::new(code, class);
     }
-    truncate(&error.to_string(), MAX_ERROR_LEN)
+    SignalError::new(
+        error_code::CLICKHOUSE_ERROR,
+        truncate(&error.to_string(), MAX_ERROR_LEN),
+    )
 }
 
 fn truncate(text: &str, max: usize) -> String {
@@ -1038,32 +1169,50 @@ struct ChannelTarget {
     secret_nonce: Option<Vec<u8>>,
 }
 
-/// One history row's `delivery_status` and `detail`.
+/// One history row's `delivery_status`, `detail` and its stable code.
 struct Outcome {
     status: &'static str,
+    code: &'static str,
+    params: Option<serde_json::Value>,
     detail: String,
 }
 
 impl Outcome {
-    fn delivered(detail: impl Into<String>) -> Self {
+    fn new(status: &'static str, code: &'static str, detail: impl Into<String>) -> Self {
         Self {
-            status: "delivered",
+            status,
+            code,
+            params: None,
             detail: detail.into(),
         }
     }
 
-    fn failed(detail: impl Into<String>) -> Self {
-        Self {
-            status: "failed",
-            detail: detail.into(),
-        }
+    fn delivered(code: &'static str, detail: impl Into<String>) -> Self {
+        Self::new("delivered", code, detail)
     }
 
-    fn skipped(detail: impl Into<String>) -> Self {
-        Self {
-            status: "skipped",
-            detail: detail.into(),
-        }
+    fn failed(code: &'static str, detail: impl Into<String>) -> Self {
+        Self::new("failed", code, detail)
+    }
+
+    fn skipped(code: &'static str, detail: impl Into<String>) -> Self {
+        Self::new("skipped", code, detail)
+    }
+
+    /// The numbers the code interpolates
+    fn with(mut self, params: serde_json::Value) -> Self {
+        self.params = Some(params);
+        self
+    }
+
+    /// An HTTP outcome: the status is both in the text and a parameter
+    fn http(status: u16, ok: bool) -> Self {
+        let outcome = if ok {
+            Self::delivered(detail_code::HTTP_OK, format!("HTTP {status}"))
+        } else {
+            Self::failed(detail_code::HTTP_ERROR, format!("HTTP {status}"))
+        };
+        outcome.with(serde_json::json!({ "status": status }))
     }
 }
 
@@ -1075,19 +1224,31 @@ async fn report(
     rule: &Rule,
     channel: Option<&ChannelTarget>,
     (change, no_data): (&'static str, bool),
+    currency: &str,
     kek: Option<&Kek>,
 ) -> ApiResult<Notification> {
     let id = Uuid::new_v4();
     let outcome = match channel {
-        None => Outcome::skipped("no channel configured"),
-        Some(channel) if !channel.enabled => Outcome::skipped("channel disabled"),
-        Some(channel) => deliver(egress, channel, &payload(id, rule, change, no_data), kek).await,
+        None => Outcome::skipped(detail_code::NO_CHANNEL, "no channel configured"),
+        Some(channel) if !channel.enabled => {
+            Outcome::skipped(detail_code::CHANNEL_DISABLED, "channel disabled")
+        }
+        Some(channel) => {
+            let body = payload(id, rule, change, no_data, currency);
+            deliver(egress, channel, &body, kek).await
+        }
     };
     // the history row is the record of why a rule fired, and an empty window
     // is not evident from the reading
     let outcome = if no_data {
+        let mut params = match outcome.params {
+            Some(serde_json::Value::Object(params)) => params,
+            _ => serde_json::Map::new(),
+        };
+        params.insert("no_data".into(), true.into());
         Outcome {
             detail: format!("{}; {NO_DATA_DETAIL}", outcome.detail),
+            params: Some(serde_json::Value::Object(params)),
             ..outcome
         }
     } else {
@@ -1100,9 +1261,9 @@ async fn report(
     // transaction began, and a transaction that waited for the row lock began
     // before the one it waited for, which would order the history backwards
     let notification: Notification = sqlx::query_as(
-        "insert into alert_notification_history (id, rule_id, channel_id, state, delivery_status, detail, sent_at) \
-         values ($1, $2, $3, $4, $5, $6, clock_timestamp()) \
-         returning id, rule_id, channel_id, state, delivery_status, detail, sent_at",
+        "insert into alert_notification_history (id, rule_id, channel_id, state, delivery_status, detail, detail_code, detail_params, value, threshold, sent_at) \
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, clock_timestamp()) \
+         returning id, rule_id, channel_id, state, delivery_status, detail, detail_code, detail_params, value, threshold, sent_at",
     )
     .bind(id)
     .bind(rule.id)
@@ -1110,31 +1271,100 @@ async fn report(
     .bind(change)
     .bind(outcome.status)
     .bind(&outcome.detail)
+    .bind(outcome.code)
+    .bind(&outcome.params)
+    .bind(reading_of(rule, no_data))
+    .bind(rule.threshold)
     .fetch_one(&mut **tx)
     .await
     .map_err(store_error)?;
     Ok(notification)
 }
 
+/// The reading a transition reports: the rule's last value, or `None` for a
+/// window with no data, where a made-up `0` would mislead.
+fn reading_of(rule: &Rule, no_data: bool) -> Option<f64> {
+    if no_data {
+        None
+    } else {
+        Some(rule.last_value.unwrap_or_default())
+    }
+}
+
+/// The machine-readable unit of a signal's `value` and `threshold`: `fraction`
+/// (0-1), `ms`, `currency_per_hour` (in the payload's `currency`) or `count`
+/// (over the rule's window).
+fn signal_unit(signal: &str) -> &'static str {
+    match signal {
+        "error_rate" => "fraction",
+        "p95_latency_ms" => "ms",
+        "spend_velocity" => "currency_per_hour",
+        _ => "count",
+    }
+}
+
+/// A number with at most `decimals` places and no trailing zeros.
+fn plain(value: f64, decimals: usize) -> String {
+    let text = format!("{value:.decimals$}");
+    if text.contains('.') {
+        text.trim_end_matches('0').trim_end_matches('.').to_string()
+    } else {
+        text
+    }
+}
+
+/// A reading or threshold in its signal's unit, for a person to read.
+fn with_unit(signal: &str, value: f64, currency: &str) -> String {
+    match signal {
+        "error_rate" => format!("{}%", plain(value * 100.0, 1)),
+        "p95_latency_ms" => format!("{} ms", plain(value, if value < 10.0 { 1 } else { 0 })),
+        "spend_velocity" => format!("{currency} {} per hour", plain(value, 2)),
+        "provider_health_flaps" => format!("{} failed health checks", plain(value, 0)),
+        _ => format!("{} requests", plain(value, 0)),
+    }
+}
+
+/// A window as a duration rather than a bare second count.
+fn window_text(secs: i32) -> String {
+    let (n, unit) = if secs >= 3600 && secs % 3600 == 0 {
+        (secs / 3600, "hour")
+    } else if secs >= 60 && secs % 60 == 0 {
+        (secs / 60, "minute")
+    } else {
+        (secs, "second")
+    };
+    if n == 1 {
+        unit.to_string()
+    } else {
+        format!("{n} {unit}s")
+    }
+}
+
 /// The JSON body a channel receives.
 ///
 /// `id` is the history row's id, so a receiver can match a request to the row
 /// the **History** screen shows. `text` is a one-line summary for a relay or a
-/// chat tool to display as-is.
+/// chat tool to display as-is, with the reading and the threshold in the
+/// signal's unit. `value` and `threshold` stay in the API's unit, which `unit`
+/// names (and `currency` completes for `currency_per_hour`), so a relay can
+/// format them without its own copy of the signal table.
 ///
 /// `no_data` marks a transition caused by a window with no data: `value` is
 /// then `null` and `text` says so, rather than reporting a made-up `0`.
-fn payload(id: Uuid, rule: &Rule, change: &str, no_data: bool) -> serde_json::Value {
-    let value = if no_data {
-        None
-    } else {
-        Some(rule.last_value.unwrap_or_default())
-    };
+fn payload(
+    id: Uuid,
+    rule: &Rule,
+    change: &str,
+    no_data: bool,
+    currency: &str,
+) -> serde_json::Value {
+    let value = reading_of(rule, no_data);
     let verb = if change == "firing" {
         "is firing"
     } else {
         "resolved"
     };
+    let window = window_text(rule.window_secs);
     let text = match value {
         Some(value) => {
             // an above rule reads as it always has
@@ -1144,15 +1374,19 @@ fn payload(id: Uuid, rule: &Rule, change: &str, no_data: bool) -> serde_json::Va
                 ""
             };
             format!(
-                "{} {verb}: {} is {value}, threshold {}{below}, {}s window",
-                rule.name, rule.signal, rule.threshold, rule.window_secs
+                "{} {verb}: {} is {}, threshold {}{below}, over the last {window}",
+                rule.name,
+                rule.signal,
+                with_unit(&rule.signal, value, currency),
+                with_unit(&rule.signal, rule.threshold, currency),
             )
         }
         None => format!(
-            "{} {verb}: {NO_DATA_DETAIL} for {}, {}s window",
-            rule.name, rule.signal, rule.window_secs
+            "{} {verb}: {NO_DATA_DETAIL} for {}, over the last {window}",
+            rule.name, rule.signal
         ),
     };
+    let unit = signal_unit(&rule.signal);
     serde_json::json!({
         "id": id,
         "state": change,
@@ -1162,6 +1396,8 @@ fn payload(id: Uuid, rule: &Rule, change: &str, no_data: bool) -> serde_json::Va
         "no_data": no_data,
         "comparison": rule.comparison,
         "threshold": rule.threshold,
+        "unit": unit,
+        "currency": (unit == "currency_per_hour").then_some(currency),
         "window_secs": rule.window_secs,
         "evaluated_at": rule.last_evaluated_at,
         "text": text,
@@ -1185,7 +1421,10 @@ async fn deliver(
     // string can carry a token
     if let Some(reason) = egress.url_deny_reason(&channel.endpoint) {
         tracing::warn!(channel = %channel.id, reason, "alert delivery refused by the egress policy");
-        return Outcome::failed("endpoint denied by the egress policy");
+        return Outcome::failed(
+            detail_code::EGRESS_DENIED,
+            "endpoint denied by the egress policy",
+        );
     }
     let authorization = match (&channel.secret_ciphertext, &channel.secret_nonce) {
         (Some(ciphertext), Some(nonce)) => {
@@ -1194,21 +1433,30 @@ async fn deliver(
                     Some(value) => Some(value),
                     // refused at save time; a secret stored before that check
                     // existed would otherwise fail as a bare "delivery failed"
-                    None => return Outcome::failed("channel secret is not a valid header value"),
+                    None => {
+                        return Outcome::failed(
+                            detail_code::SECRET_INVALID,
+                            "channel secret is not a valid header value",
+                        )
+                    }
                 },
                 // sending without the credential would hand an unauthenticated
                 // alert to a receiver that may well accept it
                 None => {
-                    return Outcome::failed(format!(
-                        "channel secret could not be unsealed; check {KEK_ENV}"
-                    ))
+                    return Outcome::failed(
+                        detail_code::SECRET_UNSEALABLE,
+                        format!("channel secret could not be unsealed; check {KEK_ENV}"),
+                    )
                 }
             }
         }
         _ => None,
     };
     let Some(client) = delivery_client(egress) else {
-        return Outcome::failed("webhook client unavailable");
+        return Outcome::failed(
+            detail_code::CLIENT_UNAVAILABLE,
+            "webhook client unavailable",
+        );
     };
     let mut request = client.post(&channel.endpoint).json(payload);
     if let Some(value) = authorization {
@@ -1216,16 +1464,21 @@ async fn deliver(
     }
     match request.send().await {
         Ok(response) if response.status().is_success() => {
-            Outcome::delivered(format!("HTTP {}", response.status().as_u16()))
+            Outcome::http(response.status().as_u16(), true)
         }
         // the status alone, never the body: a receiver's error body can echo
         // the credential it just rejected
-        Ok(response) => Outcome::failed(format!("HTTP {}", response.status().as_u16())),
-        Err(error) if error.is_timeout() => {
-            Outcome::failed(format!("timed out after {}s", DELIVERY_TIMEOUT.as_secs()))
-        }
-        Err(error) if error.is_connect() => Outcome::failed("could not connect to the endpoint"),
-        Err(_) => Outcome::failed("delivery failed"),
+        Ok(response) => Outcome::http(response.status().as_u16(), false),
+        Err(error) if error.is_timeout() => Outcome::failed(
+            detail_code::TIMEOUT,
+            format!("timed out after {}s", DELIVERY_TIMEOUT.as_secs()),
+        )
+        .with(serde_json::json!({ "seconds": DELIVERY_TIMEOUT.as_secs() })),
+        Err(error) if error.is_connect() => Outcome::failed(
+            detail_code::CONNECT_FAILED,
+            "could not connect to the endpoint",
+        ),
+        Err(_) => Outcome::failed(detail_code::DELIVERY_FAILED, "delivery failed"),
     }
 }
 
@@ -1301,6 +1554,8 @@ mod tests {
             last_value: None,
             last_evaluated_at: None,
             last_error: None,
+            last_error_code: None,
+            last_error_params: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }
@@ -1396,18 +1651,70 @@ mod tests {
     fn a_no_data_payload_says_so_and_carries_no_made_up_value() {
         let mut rule = stored("above", "fire");
         rule.state = "firing".into();
-        let body = payload(Uuid::nil(), &rule, "firing", true);
+        let body = payload(Uuid::nil(), &rule, "firing", true, "USD");
         assert_eq!(body["no_data"], true);
         assert!(body["value"].is_null());
         assert_eq!(
             body["text"],
-            "r is firing: no data in window for error_rate, 300s window"
+            "r is firing: no data in window for error_rate, over the last 5 minutes"
         );
         rule.last_value = Some(0.7);
-        let body = payload(Uuid::nil(), &rule, "firing", false);
+        let body = payload(Uuid::nil(), &rule, "firing", false, "USD");
         assert_eq!(body["no_data"], false);
         assert_eq!(body["value"], 0.7);
         assert_eq!(body["comparison"], "above");
+    }
+
+    #[test]
+    fn readings_are_worded_in_their_signals_unit() {
+        assert_eq!(with_unit("error_rate", 0.073, "EUR"), "7.3%");
+        assert_eq!(with_unit("p95_latency_ms", 840.0, "EUR"), "840 ms");
+        assert_eq!(with_unit("p95_latency_ms", 2.5, "EUR"), "2.5 ms");
+        assert_eq!(
+            with_unit("spend_velocity", 12.5, "EUR"),
+            "EUR 12.5 per hour"
+        );
+        assert_eq!(with_unit("request_volume", 340.0, "EUR"), "340 requests");
+        assert_eq!(
+            with_unit("provider_health_flaps", 3.0, "EUR"),
+            "3 failed health checks"
+        );
+        assert_eq!(window_text(300), "5 minutes");
+        assert_eq!(window_text(60), "minute");
+        assert_eq!(window_text(7200), "2 hours");
+        assert_eq!(window_text(90), "90 seconds");
+    }
+
+    #[test]
+    fn a_spend_payload_names_its_unit_and_currency() {
+        let mut rule = stored("above", "ignore");
+        rule.signal = "spend_velocity".into();
+        rule.threshold = 10.0;
+        rule.last_value = Some(12.5);
+        let body = payload(Uuid::nil(), &rule, "firing", false, "EUR");
+        assert_eq!(body["unit"], "currency_per_hour");
+        assert_eq!(body["currency"], "EUR");
+        assert_eq!(
+            body["text"],
+            "r is firing: spend_velocity is EUR 12.5 per hour, threshold EUR 10 per hour, over the last 5 minutes"
+        );
+    }
+
+    #[test]
+    fn a_history_cursor_round_trips_and_a_bad_one_is_refused() {
+        let id = Uuid::new_v4();
+        let at = Utc::now();
+        let raw = format!(
+            "{},{id}",
+            at.to_rfc3339_opts(chrono::SecondsFormat::Micros, true)
+        );
+        let (parsed_at, parsed_id) = parse_cursor(&raw).expect("a cursor parses");
+        assert_eq!(parsed_id, id);
+        assert_eq!(parsed_at.timestamp_micros(), at.timestamp_micros());
+        assert!(parse_cursor("nonsense").is_err());
+        assert!(parse_cursor(&format!("yesterday,{id}")).is_err());
+        assert!(one_of("state", Some("paused".into()), HISTORY_STATES).is_err());
+        assert!(one_of("state", Some("firing".into()), HISTORY_STATES).is_ok());
     }
 
     fn channel(endpoint: &str, managed_secret: Option<String>) -> ChannelInput {
@@ -1686,10 +1993,12 @@ mod tests {
             last_value: Some(0.07),
             last_evaluated_at: None,
             last_error: None,
+            last_error_code: None,
+            last_error_params: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };
-        let body = payload(Uuid::nil(), &rule, "firing", false);
+        let body = payload(Uuid::nil(), &rule, "firing", false, "USD");
         assert_eq!(body["state"], "firing");
         assert_eq!(body["rule"]["name"], "high error rate");
         assert_eq!(body["signal"], "error_rate");
@@ -1698,9 +2007,11 @@ mod tests {
         assert_eq!(body["window_secs"], 300);
         assert_eq!(
             body["text"],
-            "high error rate is firing: error_rate is 0.07, threshold 0.05, 300s window"
+            "high error rate is firing: error_rate is 7%, threshold 5%, over the last 5 minutes"
         );
-        let resolved = payload(Uuid::nil(), &rule, "resolved", false);
+        assert_eq!(body["unit"], "fraction");
+        assert!(body["currency"].is_null());
+        let resolved = payload(Uuid::nil(), &rule, "resolved", false, "USD");
         assert!(resolved["text"]
             .as_str()
             .is_some_and(|t| t.starts_with("high error rate resolved")));
@@ -1951,6 +2262,10 @@ mod tests {
             assert_eq!(notification.delivery_status, "delivered");
             assert_eq!(notification.detail.as_deref(), Some("HTTP 200"));
             assert_eq!(notification.channel_id, Some(channel));
+            assert_eq!(notification.detail_code.as_deref(), Some("http_ok"));
+            assert_eq!(notification.detail_params, Some(json!({"status": 200})));
+            assert_eq!(notification.value, Some(0.9));
+            assert_eq!(notification.threshold, Some(0.5));
 
             let hooks = stub.hooks();
             assert_eq!(hooks.len(), 1);
@@ -2579,6 +2894,7 @@ mod tests {
             assert!(last_error.contains("500"), "{last_error}");
             assert!(last_error.contains("DB::Exception"), "{last_error}");
             assert!(!last_error.contains(&stub.url), "{last_error}");
+            assert_eq!(errored.last_error_code.as_deref(), Some("clickhouse_error"));
 
             // no clickhouse configured at all
             state.clickhouse = None;
@@ -2588,6 +2904,10 @@ mod tests {
                 errored.last_error.as_deref(),
                 Some("alert evaluation requires CLICKHOUSE_URL")
             );
+            assert_eq!(
+                errored.last_error_code.as_deref(),
+                Some("clickhouse_not_configured")
+            );
 
             // back, and still high: the alert was already reported
             state.clickhouse = Some(crate::analytics::ClickHouseClient::new(&stub.url));
@@ -2595,6 +2915,7 @@ mod tests {
             let recovered = run(&state, id, None).await;
             assert_eq!(recovered.rule.state, "firing");
             assert_eq!(recovered.rule.last_error, None);
+            assert_eq!(recovered.rule.last_error_code, None);
             assert!(recovered.notification.is_none());
             assert_eq!(stub.hooks().len(), 1);
 
@@ -2701,7 +3022,106 @@ mod tests {
             assert!(body["error"]["message"]
                 .as_str()
                 .is_some_and(|m| m.contains("CLICKHOUSE_URL")));
+            assert_eq!(body["error"]["code"], "clickhouse_not_configured");
             assert_eq!(rule_row(&db, id).await.state, "error");
+        }
+
+        async fn get(state: &ControlState, uri: &str) -> (StatusCode, Value) {
+            let response = router()
+                .with_state(state.clone())
+                .oneshot(Request::get(uri).body(Body::empty()).expect("a request"))
+                .await
+                .expect("the router answers");
+            let status = response.status();
+            let body = to_bytes(response.into_body(), 1 << 20)
+                .await
+                .expect("a body");
+            (status, serde_json::from_slice(&body).unwrap_or(Value::Null))
+        }
+
+        fn ids(page: &Value) -> Vec<String> {
+            page.as_array()
+                .expect("an array")
+                .iter()
+                .map(|row| row["id"].as_str().expect("an id").to_string())
+                .collect()
+        }
+
+        #[tokio::test]
+        async fn the_history_pages_by_keyset_and_filters_by_state_and_delivery() {
+            let Some(db) = scratch().await else { return };
+            let stub = Stub::start().await;
+            let state = state_with(&db, &stub);
+            let rule = add_rule(&db, None).await;
+            let other = add_rule(&db, None).await;
+            // five rows share one sent_at, so the cursor has to tie-break on id
+            let mut all = Vec::new();
+            for (n, (rule_id, change, status)) in [
+                (rule, "firing", "failed"),
+                (rule, "firing", "delivered"),
+                (rule, "resolved", "delivered"),
+                (other, "firing", "failed"),
+                (rule, "firing", "skipped"),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let id: Uuid = sqlx::query_scalar(
+                    "insert into alert_notification_history (rule_id, state, delivery_status, sent_at) \
+                     values ($1, $2, $3, '2026-01-01T00:00:00Z'::timestamptz + ($4::int / 3) * interval '1 minute') \
+                     returning id",
+                )
+                .bind(rule_id)
+                .bind(change)
+                .bind(status)
+                .bind(n as i32)
+                .fetch_one(db.pool())
+                .await
+                .expect("insert a row");
+                all.push(id.to_string());
+            }
+
+            let (status, full) = get(&state, "/api/v1/alert-notifications").await;
+            assert_eq!(status, StatusCode::OK);
+            let newest_first = ids(&full);
+            assert_eq!(newest_first.len(), 5);
+
+            // walk it two at a time: every row exactly once, in the same order
+            let mut walked = Vec::new();
+            let mut uri = "/api/v1/alert-notifications?limit=2".to_string();
+            loop {
+                let (_, page) = get(&state, &uri).await;
+                let rows = page.as_array().expect("an array");
+                walked.extend(ids(&page));
+                let Some(last) = rows.last().filter(|_| rows.len() == 2) else {
+                    break;
+                };
+                uri = format!(
+                    "/api/v1/alert-notifications?limit=2&before={},{}",
+                    last["sent_at"].as_str().expect("sent_at"),
+                    last["id"].as_str().expect("id"),
+                );
+            }
+            assert_eq!(walked, newest_first);
+
+            let (_, failed) =
+                get(&state, "/api/v1/alert-notifications?delivery_status=failed").await;
+            assert_eq!(ids(&failed).len(), 2);
+            let (_, resolved) = get(&state, "/api/v1/alert-notifications?state=resolved").await;
+            assert_eq!(ids(&resolved).len(), 1);
+            let (_, both) = get(
+                &state,
+                &format!("/api/v1/alert-notifications?rule_id={rule}&state=firing&delivery_status=failed"),
+            )
+            .await;
+            assert_eq!(ids(&both).len(), 1);
+
+            for bad in ["state=paused", "delivery_status=lost", "before=yesterday"] {
+                let (status, body) =
+                    get(&state, &format!("/api/v1/alert-notifications?{bad}")).await;
+                assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}");
+                assert_eq!(body["error"]["code"], "invalid_field", "{bad}");
+            }
         }
     }
 }

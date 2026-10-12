@@ -165,6 +165,23 @@ says why:
 | `clickhouse query failed (<status>): <exception>` | ClickHouse answered with an error, for example a missing `request_logs` table. Cut at 512 bytes. |
 | `ClickHouse returned a response that is not JSON` | Something other than ClickHouse answered at `CLICKHOUSE_URL`.                                    |
 
+Beside `last_error` the rule carries `last_error_code`, a stable code a client
+can translate, and `last_error_params`, the numbers the text interpolates.
+`last_error` stays as the English fallback. Both are `null` while the last
+evaluation succeeded. A failed **Evaluate now** returns the same code as
+`error.code`.
+
+| `last_error_code`           | `last_error_params` | Cause                                                    |
+| --------------------------- | ------------------- | -------------------------------------------------------- |
+| `clickhouse_not_configured` |                     | The control plane has no ClickHouse configured.          |
+| `clickhouse_unreachable`    |                     | ClickHouse did not accept the connection.                |
+| `clickhouse_timeout`        |                     | The request to ClickHouse timed out.                     |
+| `query_timeout`             | `seconds`           | The query ran past the bound.                            |
+| `clickhouse_error`          |                     | ClickHouse answered with an error.                       |
+| `clickhouse_bad_response`   |                     | Something other than ClickHouse answered.                |
+| `query_failed`              |                     | The query failed for another transport reason.           |
+| `unknown_signal`            | `signal`            | The stored rule names a signal this build does not know. |
+
 An error never carries the ClickHouse URL, which can hold a password; the full
 error is in the control-plane log under `alert signal query failed`.
 `last_value` and `last_evaluated_at` keep the last successful reading, and an
@@ -208,6 +225,10 @@ like this, with `rule` left out:
     "state": "firing",
     "delivery_status": "failed",
     "detail": "HTTP 401",
+    "detail_code": "http_error",
+    "detail_params": { "status": 401 },
+    "value": 0.07,
+    "threshold": 0.05,
     "sent_at": "2026-09-27T10:15:02.184Z"
   }
 }
@@ -256,30 +277,36 @@ one `POST` to the endpoint with a JSON body:
   "no_data": false,
   "comparison": "above",
   "threshold": 0.05,
+  "unit": "fraction",
+  "currency": null,
   "window_secs": 300,
   "evaluated_at": "2026-09-27T10:15:02.113Z",
-  "text": "high error rate is firing: error_rate is 0.07, threshold 0.05, 300s window"
+  "text": "high error rate is firing: error_rate is 7%, threshold 5%, over the last 5 minutes"
 }
 ```
 
-| Field          | Meaning                                                                                          |
-| -------------- | ------------------------------------------------------------------------------------------------ |
-| `id`           | The history row this delivery is recorded as, so a request can be matched to the History screen. |
-| `state`        | `firing` or `resolved`.                                                                          |
-| `rule`         | The rule's `id` and `name`.                                                                      |
-| `signal`       | The [signal](#signals) the rule reads.                                                           |
-| `value`        | The reading that caused the change, in the signal's unit. `null` when `no_data` is `true`.       |
-| `no_data`      | `true` when the change came from a window with no data, under the rule's `no_data` policy.       |
-| `comparison`   | The rule's `comparison`, `above` or `below`.                                                     |
-| `threshold`    | The rule's threshold. `firing` means `value >= threshold`, or `<=` for a `below` rule.           |
-| `window_secs`  | The trailing window the value was read over.                                                     |
-| `evaluated_at` | When the evaluation that took the reading ran, RFC 3339 in UTC.                                  |
-| `text`         | The same facts as one line, for a relay or a chat tool to display as-is.                         |
+| Field          | Meaning                                                                                                        |
+| -------------- | -------------------------------------------------------------------------------------------------------------- |
+| `id`           | The history row this delivery is recorded as, so a request can be matched to the History screen.               |
+| `state`        | `firing` or `resolved`.                                                                                        |
+| `rule`         | The rule's `id` and `name`.                                                                                    |
+| `signal`       | The [signal](#signals) the rule reads.                                                                         |
+| `value`        | The reading that caused the change, in the signal's unit. `null` when `no_data` is `true`.                     |
+| `no_data`      | `true` when the change came from a window with no data, under the rule's `no_data` policy.                     |
+| `comparison`   | The rule's `comparison`, `above` or `below`.                                                                   |
+| `threshold`    | The rule's threshold. `firing` means `value >= threshold`, or `<=` for a `below` rule.                         |
+| `unit`         | The unit of `value` and `threshold`: `fraction` (0-1), `ms`, `currency_per_hour` or `count` (over the window). |
+| `currency`     | The settlement currency code when `unit` is `currency_per_hour`, otherwise `null`.                             |
+| `window_secs`  | The trailing window the value was read over.                                                                   |
+| `evaluated_at` | When the evaluation that took the reading ran, RFC 3339 in UTC.                                                |
+| `text`         | The same facts as one line, for a relay or a chat tool to display as-is.                                       |
 
-`value` and `threshold` are in the signal's API unit, so an `error_rate` of 7%
-arrives as `0.07`, and `text` repeats them the same way, with the window in
-seconds. Units in `text`, and a unit field beside `value`, are tracked in
-[#2301](https://github.com/rolter-ai/rolter/issues/2301).
+`value` and `threshold` are in the signal's API unit, which `unit` names, so an
+`error_rate` of 7% arrives as `0.07`. `text` words them for a person: a
+percentage for `error_rate`, `ms` for `p95_latency_ms`, the settlement currency
+per hour for `spend_velocity` (`EUR 12.5 per hour`), and a count with its noun
+for `request_volume` and `provider_health_flaps`. The window is a duration
+(`over the last 5 minutes`), not a second count.
 
 The request carries `Content-Type: application/json`, a `User-Agent` of
 `rolter/<version>`, and, when the channel stores a secret,
@@ -483,10 +510,10 @@ not reach, and a note above the list says so. The toolbar narrows the list:
 - **Rule** is sent to the API as `rule_id`, so it lists that rule's own newest
   200 rows, which can reach further back than the same rule's rows in the
   all-rules list.
-- **State** and **Delivery** filter the rows already loaded, because the API has
-  no filter for either. When the list is capped they search those rows only.
+- **State** and **Delivery** filter the rows already loaded. The API now filters
+  and pages by both (see below); the screen has not been changed to send them.
 
-The `detail` text comes from the control plane as it is stored, in English, in
+The `detail` text, and each code below, come from the control plane as stored, in English, in
 every language. A long detail wraps onto further lines inside its column rather
 than being cut, so a diagnosis such as `channel secret could not be unsealed;
 check ROLTER_KEK` reads in full. On a phone the detail is the last column, so
@@ -505,15 +532,52 @@ delivery attempt finished. A [retried](#retries) state has one row per attempt.
 The history is append-only: the API has no update or delete for it. Deleting a
 rule deletes that rule's rows along with it.
 
-The API takes two optional query parameters:
+Each row also carries `detail_code`, a stable code for the outcome, and
+`detail_params`, the numbers the text interpolates. `detail` stays as the English
+fallback. A row written before codes existed has `null` for both.
+
+| `detail_code`        | `detail_params` | Outcome                                                      |
+| -------------------- | --------------- | ------------------------------------------------------------ |
+| `http_ok`            | `status`        | `delivered`: the endpoint answered `2xx`.                    |
+| `http_error`         | `status`        | `failed`: the endpoint answered outside `2xx`.               |
+| `timeout`            | `seconds`       | `failed`: the delivery ran past the bound.                   |
+| `connect_failed`     |                 | `failed`: the endpoint did not accept the connection.        |
+| `delivery_failed`    |                 | `failed`: another transport failure.                         |
+| `egress_denied`      |                 | `failed`: the egress policy refuses the endpoint.            |
+| `secret_unsealable`  |                 | `failed`: the secret cannot be unsealed; check `ROLTER_KEK`. |
+| `secret_invalid`     |                 | `failed`: the secret is not a valid header value.            |
+| `client_unavailable` |                 | `failed`: the webhook client could not be built.             |
+| `no_channel`         |                 | `skipped`: the rule has no channel.                          |
+| `channel_disabled`   |                 | `skipped`: the channel is disabled.                          |
+
+A row written for a window with no data adds `"no_data": true` to its
+`detail_params`.
+
+`value` and `threshold` record the reading the row was written for and the rule's
+threshold at that moment, in the signal's API unit (see [Delivery](#delivery)).
+`value` is `null` for a no-data transition and on older rows. The **Evaluate
+now** response carries the same fields on its `notification`.
+
+The API takes these optional query parameters:
+
+| Parameter         | Meaning                                                         |
+| ----------------- | --------------------------------------------------------------- |
+| `rule_id`         | One rule's rows. Leave out for every rule.                      |
+| `state`           | `firing` or `resolved`.                                         |
+| `delivery_status` | `delivered`, `failed` or `skipped`.                             |
+| `limit`           | Page size, default `100`, clamped to `1`–`500`.                 |
+| `before`          | Cursor `<sent_at>,<id>`: the rows strictly older than that row. |
+
+The filters combine. The list is newest first, ordered by `sent_at` then `id`, so
+rows written in the same instant keep a stable order. To read the next page, pass
+the last row's `sent_at` and `id` as `before`; an empty page, or one shorter than
+`limit`, is the end. A value outside the lists above, or a malformed `before`,
+answers `400` with code `invalid_field`.
 
 ```bash
-curl -s "https://control.example.com/api/v1/alert-notifications?rule_id=$RULE_ID&limit=50" \
+curl -s "https://control.example.com/api/v1/alert-notifications?delivery_status=failed&limit=50&before=2026-09-27T10:15:02.184Z,0d9c7a52-5f1e-4a8b-9d0e-3c2b1a0f9e8d" \
   -H "Authorization: Bearer $ROLTER_TOKEN"
 ```
-
-`limit` defaults to `100` and is clamped to `1`–`500`. Leave out `rule_id` for
-every rule.
 
 ## Permissions and audit
 
