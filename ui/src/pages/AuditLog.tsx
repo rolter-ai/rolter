@@ -32,12 +32,13 @@ import {
   downloadText,
   type AuditExportFormat,
 } from "@/lib/audit-export";
+import { errorText } from "@/lib/error-copy";
 import { AUDIT_TARGET_TYPES, auditGroup, groupedActions } from "@/lib/audit-vocabulary";
 import { useOptionalAuth } from "@/lib/auth";
 import { useCan } from "@/lib/can";
 import { useFormat } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
-import { errorDetail, useToast } from "@/lib/toast";
+import { useToast } from "@/lib/toast";
 import { useScreenReady } from "@/lib/ux-react";
 
 const PAGE_SIZE = 25;
@@ -258,7 +259,7 @@ export default function AuditLog() {
       toast.push({
         tone: "error",
         title: t("toast.exportFailed", { what: t("errors.resources.auditLogExport") }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       });
     },
   });

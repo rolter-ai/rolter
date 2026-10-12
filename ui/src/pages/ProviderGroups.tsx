@@ -38,10 +38,11 @@ import {
   fetchProviders,
   type ProviderGroupRow,
 } from "@/lib/api";
+import { errorText } from "@/lib/error-copy";
 import { RowCapabilityScope } from "@/lib/can";
 import { rowGateScope } from "@/lib/provider-scope";
 import { useScope } from "@/lib/scope";
-import { errorDetail, useToast } from "@/lib/toast";
+import { useToast } from "@/lib/toast";
 import { usesWeights } from "@/lib/strategies";
 import { useScreenReady } from "@/lib/ux-react";
 
@@ -362,7 +363,7 @@ export default function ProviderGroups() {
               toast.push({
                 tone: "error",
                 title: t("toast.deleteFailed", { what }),
-                detail: errorDetail(error),
+                detail: errorText(error, t),
               }),
           });
         }}

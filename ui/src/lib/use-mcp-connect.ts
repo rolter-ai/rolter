@@ -1,8 +1,9 @@
 import { useMutation } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 
+import { errorText } from "@/lib/error-copy";
 import { startMcpOAuth, type McpServerRow } from "@/lib/api";
-import { errorDetail, useToast } from "@/lib/toast";
+import { useToast } from "@/lib/toast";
 
 // starts consent and hands the browser the url the control plane minted. the
 // dashboard never navigates itself there: the consent screen belongs to a third
@@ -34,7 +35,7 @@ export function useMcpConnect(server: Pick<McpServerRow, "id" | "name">) {
       toast.push({
         tone: "error",
         title: t("pages.mcpCatalog.connect.failed", { name: server.name }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       }),
   });
 }

@@ -828,7 +828,7 @@ export const CreateRejectedByTheServer: Story = {
     await userEvent.type(panel.getByLabelText("Client secret"), "s3cr3t");
     await userEvent.click(panel.getByRole("button", { name: "Add provider" }));
 
-    await expectToast(canvasElement, /discovery document/, "error");
+    await expectToast(canvasElement, /The control plane hit an error/, "error");
     await waitFor(() => expect(within(document.body).getByRole("dialog")).toBeInTheDocument());
     await expect(panel.getByLabelText("Client secret")).toHaveValue("s3cr3t");
     await expect(panel.getByLabelText("Issuer URL")).toHaveValue("https://acme.okta.com");

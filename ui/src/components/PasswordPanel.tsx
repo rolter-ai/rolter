@@ -249,11 +249,7 @@ export function PasswordPanel() {
             onChange={edit(setConfirm, "confirm")}
           />
         </Field>
-        {problems.form && (
-          <div role="alert">
-            <FieldError id="password-form-error" error={problems.form} />
-          </div>
-        )}
+        <FieldError id="password-form-error" error={problems.form} />
         {revoked !== null && (
           <p
             role="status"

@@ -19,6 +19,7 @@ import {
   type SecuritySettingsDto,
   type UpdateSecuritySettingsInput,
 } from "@/lib/api";
+import { errorText } from "@/lib/error-copy";
 import { useErrorVisibility } from "@/lib/error-visibility";
 import { gatewayPickup, type Pickup } from "@/lib/gateway-pickup";
 import { useFormat } from "@/lib/i18n/format";
@@ -33,7 +34,7 @@ import {
   type EntryProblem,
 } from "@/lib/security-lists";
 import { loosenings, type Loosening, type SecurityPolicy } from "@/lib/security-loosening";
-import { errorDetail, useToast } from "@/lib/toast";
+import { useToast } from "@/lib/toast";
 import { useDraft, type FieldEquality } from "@/lib/use-draft";
 import { useScreenReady } from "@/lib/ux-react";
 
@@ -155,7 +156,7 @@ function SecurityScreen() {
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: t("errors.resources.securitySettings") }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       });
     },
   });

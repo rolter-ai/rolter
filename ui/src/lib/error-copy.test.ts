@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 
 import { ApiError } from "@/lib/api";
-import { describeError, KNOWN_ERROR_CODES } from "@/lib/error-copy";
+import { describeError, errorText, KNOWN_ERROR_CODES } from "@/lib/error-copy";
 import { GatewayError } from "@/lib/gateway";
 import { flatten } from "@/lib/i18n/parity";
 import en from "@/lib/i18n/locales/en.json";
@@ -88,5 +88,36 @@ describe("error catalog", () => {
         expect([...keys.keys()]).toContain(`errors.api.codes.${code}`);
       }
     }
+  });
+});
+
+describe("invalid_field naming", () => {
+  it("names the field in the translated line when the control plane sent one", () => {
+    const copy = describeError(
+      new ApiError(
+        "'x y' is not a valid header name",
+        400,
+        "invalid_field",
+        undefined,
+        "forwarded_headers[2]",
+      ),
+      t,
+    );
+    expect(copy).toEqual({
+      message: "errors.api.invalidFieldNamed",
+      detail: "'x y' is not a valid header name",
+    });
+  });
+});
+
+describe("errorText", () => {
+  it("is the translated line alone for a coded refusal", () => {
+    expect(errorText(new ApiError("taken", 409, "name_taken"), t)).toBe(
+      "errors.api.codes.name_taken",
+    );
+  });
+
+  it("appends the server's words where they are kept as detail", () => {
+    expect(errorText(new ApiError("slug is bad", 400), t)).toBe("errors.api.generic slug is bad");
   });
 });

@@ -25,9 +25,10 @@ import {
   type LabelFilter,
   type LabelRow,
 } from "@/lib/api";
+import { errorText } from "@/lib/error-copy";
 import { type Capability } from "@/lib/can";
 import { useFormat } from "@/lib/i18n/format";
-import { errorDetail, useToast } from "@/lib/toast";
+import { useToast } from "@/lib/toast";
 
 // Labels on providers, provider groups and routes (#1329; the API is #985).
 //
@@ -179,7 +180,7 @@ export function LabelSheet({
       toast.push({
         tone: "error",
         title: t("labels.addFailed"),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       }),
   });
 
@@ -193,7 +194,7 @@ export function LabelSheet({
       toast.push({
         tone: "error",
         title: t("labels.removeFailed"),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       }),
   });
 
@@ -205,7 +206,7 @@ export function LabelSheet({
       toast.push({
         tone: "error",
         title: t("labels.saveFailed"),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       }),
   });
 

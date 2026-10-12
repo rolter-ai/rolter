@@ -62,10 +62,11 @@ import {
   type PromptTemplateVariable,
   type PromptTemplateVersionRow,
 } from "@/lib/api";
+import { errorText } from "@/lib/error-copy";
 import { useFormat } from "@/lib/i18n/format";
 import { addedScopes, publishImpact, scopeKey, templateVarsExample } from "@/lib/prompt-templates";
 import { useScope } from "@/lib/scope";
-import { errorDetail, useToast } from "@/lib/toast";
+import { useToast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { useScreenReady } from "@/lib/ux-react";
 
@@ -247,7 +248,7 @@ export default function PromptRepository() {
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: input.name }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       });
     },
   });
@@ -297,7 +298,7 @@ export default function PromptRepository() {
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: selected?.name ?? "" }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       });
     },
   });
@@ -317,7 +318,7 @@ export default function PromptRepository() {
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: selected?.name ?? "" }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       });
     },
   });
@@ -343,7 +344,7 @@ export default function PromptRepository() {
       toast.push({
         tone: "error",
         title: t("toast.deleteFailed", { what: selected?.name ?? "" }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       });
     },
   });
@@ -374,7 +375,7 @@ export default function PromptRepository() {
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: selected?.name ?? "" }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       });
     },
   });
@@ -762,7 +763,7 @@ function PromptWorkbench({
           )}
           {error && (
             <span role="alert" className="text-[color:var(--status-danger-text)]">
-              {error.message}
+              {errorText(error, t)}
             </span>
           )}
         </div>
@@ -1468,7 +1469,7 @@ function CreateTemplateDialog({
           </label>
           {error && (
             <p role="alert" className="text-xs text-[color:var(--status-danger-text)]">
-              {error.message}
+              {errorText(error, t)}
             </p>
           )}
         </DialogBody>
@@ -1552,7 +1553,7 @@ function RenameTemplateDialog({
           </label>
           {error && (
             <p role="alert" className="text-xs text-[color:var(--status-danger-text)]">
-              {error.message}
+              {errorText(error, t)}
             </p>
           )}
         </DialogBody>

@@ -36,9 +36,10 @@ import {
   type RouteTargetInput,
   type UpdateRouteInput,
 } from "@/lib/api";
+import { errorText } from "@/lib/error-copy";
 import { useErrorVisibility } from "@/lib/error-visibility";
 import { providersUsableFrom } from "@/lib/provider-scope";
-import { errorDetail, useToast } from "@/lib/toast";
+import { useToast } from "@/lib/toast";
 import { useFormTelemetry } from "@/lib/ux-react";
 
 interface Draft {
@@ -206,7 +207,7 @@ export function RouteSheet({
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: route?.model }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       });
     },
   });
@@ -339,9 +340,7 @@ export function RouteSheet({
             {t("routeSheet.errors.summary", { count: problems.length })}
           </p>
         )}
-        <SheetError
-          message={save.isError && !refusal ? (save.error as Error).message : undefined}
-        />
+        <SheetError message={save.isError && !refusal ? errorText(save.error, t) : undefined} />
         <SheetActions>
           <Button variant="ghost" disabled={locked} onClick={close}>
             {t("common.cancel")}

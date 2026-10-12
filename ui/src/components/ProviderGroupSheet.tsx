@@ -30,9 +30,10 @@ import {
   type ProviderRow,
 } from "@/lib/api";
 import { StrategyPicker } from "@/components/StrategyPicker";
+import { errorText } from "@/lib/error-copy";
 import { providersUsableFrom, usableFrom } from "@/lib/provider-scope";
 import { usesWeights } from "@/lib/strategies";
-import { errorDetail, useToast } from "@/lib/toast";
+import { useToast } from "@/lib/toast";
 import { useFormTelemetry } from "@/lib/ux-react";
 
 export type ProviderGroupSheetMode = "add" | "edit";
@@ -370,7 +371,7 @@ export function ProviderGroupSheet({
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: draft.name }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       });
     },
   });
@@ -505,7 +506,7 @@ export function ProviderGroupSheet({
       </SheetBody>
 
       <SheetFooter>
-        <SheetError message={save.isError ? (save.error as Error).message : undefined} />
+        <SheetError message={save.isError ? errorText(save.error, t) : undefined} />
         <SheetActions>
           <Button variant="ghost" disabled={locked} onClick={close}>
             {t("common.cancel")}

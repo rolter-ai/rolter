@@ -41,12 +41,13 @@ import {
   type RouteRow,
   type RouteTargetRow,
 } from "@/lib/api";
+import { errorText } from "@/lib/error-copy";
 import { useFormat } from "@/lib/i18n/format";
 import { HEALTH_SLA, targetHealth, type TargetHealth } from "@/lib/route-targets";
 import { useScope } from "@/lib/scope";
 import { StrategyBadge } from "@/components/StrategyBadge";
 import { usesWeights } from "@/lib/strategies";
-import { errorDetail, useToast } from "@/lib/toast";
+import { useToast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { useScreenReady } from "@/lib/ux-react";
 
@@ -278,9 +279,9 @@ export default function RoutingRules() {
           data-testid="traffic-unavailable"
         >
           {t("pages.routing.trafficUnavailable")}
-          {traffic.error instanceof Error && traffic.error.message && (
+          {traffic.error && (
             <span className="ml-1 font-mono text-[color:var(--text-subtle)]">
-              {traffic.error.message}
+              {errorText(traffic.error, t)}
             </span>
           )}
         </p>
@@ -294,9 +295,9 @@ export default function RoutingRules() {
           data-testid="health-unavailable"
         >
           {t("pages.routing.healthUnavailable")}
-          {uptime.error instanceof Error && uptime.error.message && (
+          {uptime.error && (
             <span className="ml-1 font-mono text-[color:var(--text-subtle)]">
-              {uptime.error.message}
+              {errorText(uptime.error, t)}
             </span>
           )}
         </p>
@@ -432,7 +433,7 @@ export default function RoutingRules() {
       </div>
       {remove.isError && !deleteTarget && (
         <p className="text-xs text-[color:var(--status-danger-text)]">
-          {(remove.error as Error).message}
+          {errorText(remove.error, t)}
         </p>
       )}
 
@@ -468,7 +469,7 @@ export default function RoutingRules() {
               toast.push({
                 tone: "error",
                 title: t("toast.deleteFailed", { what }),
-                detail: errorDetail(error),
+                detail: errorText(error, t),
               });
             },
           });

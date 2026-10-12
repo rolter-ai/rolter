@@ -6,17 +6,18 @@ import { superadminOnly } from "@/components/ForbiddenScreen";
 import { LoadError } from "@/components/LoadError";
 import { PanelSkeleton } from "@/components/LoadingState";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { describedBy, FieldError } from "@/components/ui/field-error";
+import { FieldError } from "@/components/ui/field-error";
 import { Input } from "@/components/ui/input";
+import { SaveBar } from "@/components/ui/save-bar";
 import { SettingsPanel } from "@/components/ui/settings-panel";
 import {
   fetchCompatibilityPolicy,
   updateCompatibilityPolicy,
   type CompatibilityPolicyDto,
 } from "@/lib/api";
-import { serverFieldError } from "@/lib/field-errors";
-import { errorDetail, useToast } from "@/lib/toast";
+import { errorText } from "@/lib/error-copy";
+import { translateErrors, useFieldErrors } from "@/lib/use-field-errors";
+import { useToast } from "@/lib/toast";
 import { useScreenReady } from "@/lib/ux-react";
 
 interface FormState {
@@ -86,13 +87,19 @@ function CompatibilityScreen() {
     }
   }, [policy.data, form]);
 
-  const [serverErrors, setServerErrors] = React.useState<FieldErrors>({});
   const versionId = React.useId();
   const tokensId = React.useId();
   const ids: Record<keyof FormState, string> = {
     anthropicVersion: versionId,
     defaultMaxTokens: tokensId,
   };
+
+  const fields = useFieldErrors<keyof FormState>({
+    order: FIELD_ORDER,
+    wire: WIRE_FIELDS,
+    idOf: (key) => ids[key],
+    local: form ? translateErrors(validate(form), t) : {},
+  });
 
   const save = useMutation({
     mutationFn: (f: FormState) =>
@@ -106,7 +113,7 @@ function CompatibilityScreen() {
       // value it already had; the refetch is what makes the save stick (#1197)
       void queryClient.invalidateQueries({ queryKey: ["compatibility-policy"] });
       setForm(fromDto(dto));
-      setServerErrors({});
+      fields.clear();
       toast.push({
         tone: "success",
         title: t("toast.saved"),
@@ -114,16 +121,11 @@ function CompatibilityScreen() {
       });
     },
     onError: (error) => {
-      const named = serverFieldError(error, WIRE_FIELDS);
-      if (named) {
-        setServerErrors({ [named.field]: named.message });
-        document.getElementById(ids[named.field])?.focus();
-        return;
-      }
+      if (fields.refuse(error)) return;
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: t("errors.resources.compatibilitySettings") }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       });
     },
   });
@@ -151,31 +153,7 @@ function CompatibilityScreen() {
 
   const set = (patch: Partial<FormState>) => {
     setForm((f) => (f ? { ...f, ...patch } : f));
-    // an edit answers the server's complaint about that field
-    setServerErrors((e) => {
-      const next = { ...e };
-      for (const key of Object.keys(patch) as (keyof FormState)[]) delete next[key];
-      return next;
-    });
-  };
-  const local = validate(form);
-  const errors: Record<keyof FormState, string | undefined> = {
-    anthropicVersion: local.anthropicVersion
-      ? t(local.anthropicVersion)
-      : serverErrors.anthropicVersion,
-    defaultMaxTokens: local.defaultMaxTokens
-      ? t(local.defaultMaxTokens)
-      : serverErrors.defaultMaxTokens,
-  };
-  const invalid = FIELD_ORDER.filter((key) => errors[key]);
-  // Save stays pressable while the form is invalid so a press can say why: it
-  // moves focus to the first field at fault rather than doing nothing (#2096)
-  const submit = () => {
-    if (invalid.length > 0) {
-      document.getElementById(ids[invalid[0]])?.focus();
-      return;
-    }
-    save.mutate(form);
+    fields.edit(...(Object.keys(patch) as (keyof FormState)[]));
   };
   // the server owns this list, so the screen warns without knowing which
   // fields need a restart
@@ -194,15 +172,16 @@ function CompatibilityScreen() {
       >
         <Input
           className="max-w-[200px] font-mono text-xs"
-          id={versionId}
           aria-label={t("pages.compatibility.version.aria")}
-          aria-invalid={errors.anthropicVersion ? true : undefined}
-          aria-describedby={describedBy(!!errors.anthropicVersion && `${versionId}-error`)}
+          {...fields.inputProps("anthropicVersion")}
           placeholder="2023-06-01"
           value={form.anthropicVersion}
           onChange={(e) => set({ anthropicVersion: e.target.value })}
         />
-        <FieldError id={`${versionId}-error`} error={errors.anthropicVersion} />
+        <FieldError
+          id={fields.errorId("anthropicVersion")}
+          error={fields.errorOf("anthropicVersion")}
+        />
       </SettingsPanel>
 
       <SettingsPanel
@@ -217,14 +196,15 @@ function CompatibilityScreen() {
         <Input
           className="max-w-[200px]"
           inputMode="numeric"
-          id={tokensId}
           aria-label={t("pages.compatibility.maxTokens.aria")}
-          aria-invalid={errors.defaultMaxTokens ? true : undefined}
-          aria-describedby={describedBy(!!errors.defaultMaxTokens && `${tokensId}-error`)}
+          {...fields.inputProps("defaultMaxTokens")}
           value={form.defaultMaxTokens}
           onChange={(e) => set({ defaultMaxTokens: e.target.value })}
         />
-        <FieldError id={`${tokensId}-error`} error={errors.defaultMaxTokens} />
+        <FieldError
+          id={fields.errorId("defaultMaxTokens")}
+          error={fields.errorOf("defaultMaxTokens")}
+        />
       </SettingsPanel>
 
       {restartRequired.length > 0 && (
@@ -240,21 +220,11 @@ function CompatibilityScreen() {
         </section>
       )}
 
-      <div className="sticky bottom-0 flex items-center justify-end gap-3 border-t border-[color:var(--border-subtle)] bg-background py-3">
-        {invalid.length > 0 && (
-          <span role="status" className="text-xs text-[color:var(--status-danger-text)]">
-            {t("common.fieldsNeedAttention", { count: invalid.length })}
-          </span>
-        )}
-        <Button
-          disabled={save.isPending}
-          aria-disabled={invalid.length > 0 || undefined}
-          className={invalid.length > 0 ? "opacity-50" : undefined}
-          onClick={submit}
-        >
-          {save.isPending ? t("common.saving") : t("common.saveChanges")}
-        </Button>
-      </div>
+      <SaveBar
+        invalid={fields.invalid.length}
+        pending={save.isPending}
+        onSave={() => fields.submit(() => save.mutate(form))}
+      />
     </div>
   );
 }

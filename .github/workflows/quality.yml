@@ -1378,6 +1378,13 @@ jobs:
         id: load-error-targets
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: bun run check:load-error-targets
+      # a failed call is shown through describeError / errorText, never as the
+      # server's raw English message; a display that is not a server answer
+      # carries a `raw-error-allow:` waiver with its reason (#2728)
+      - name: failed calls are shown through describeError
+        id: raw-errors
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: bun run check:raw-errors
       # the e2e journeys and the story tests both launch a browser, each the
       # revision its playwright wants. a second playwright in bun.lock is a
       # revision `playwright install` never downloaded, and the run that uses it
@@ -1446,6 +1453,7 @@ jobs:
           OUTCOME_FOCUS: ${{ steps.focus.outcome }}
           OUTCOME_WAITS: ${{ steps.waits.outcome }}
           OUTCOME_LOAD_ERROR_TARGETS: ${{ steps.load-error-targets.outcome }}
+          OUTCOME_RAW_ERRORS: ${{ steps.raw-errors.outcome }}
           OUTCOME_PLAYWRIGHT_PIN: ${{ steps.playwright-pin.outcome }}
           OUTCOME_UNIT: ${{ steps.unit.outcome }}
           OUTCOME_BUILD: ${{ steps.build.outcome }}
@@ -1498,6 +1506,7 @@ jobs:
           row "${ui}" "story focus assertions wait for the handover" "${OUTCOME_FOCUS}" "cd ui && bun run check:focus"
           row "${ui}" "story assertions do not depend on zero latency" "${OUTCOME_WAITS}" "cd ui && bun run check:waits"
           row "${ui}" "load error targets pair with an empty state" "${OUTCOME_LOAD_ERROR_TARGETS}" "cd ui && bun run check:load-error-targets"
+          row "${ui}" "failed calls are shown through describeError" "${OUTCOME_RAW_ERRORS}" "cd ui && bun run check:raw-errors"
           row "${ui}" "one playwright, the version @playwright/test names" "${OUTCOME_PLAYWRIGHT_PIN}" "cd ui && bun run check:playwright-pin"
           row "${ui}" "unit tests (bun test)" "${OUTCOME_UNIT}" "cd ui && bun run test"
           row "${ui}" "build" "${OUTCOME_BUILD}" "cd ui && bun run build"

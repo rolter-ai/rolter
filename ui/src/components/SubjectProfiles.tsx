@@ -18,7 +18,8 @@ import {
   type AccessProfileAssignmentRow,
   type AccessProfileRow,
 } from "@/lib/api";
-import { errorDetail, useToast } from "@/lib/toast";
+import { errorText } from "@/lib/error-copy";
+import { useToast } from "@/lib/toast";
 
 /** who holds a profile: exactly one of the two, the way the assignment API takes it */
 export type ProfileSubject = { user_id: string } | { team_id: string };
@@ -204,7 +205,7 @@ export function AssignSubjectProfileSheet({
       }
       dirty={profileId !== ""}
       errorMessage={assign.error ? t("subjectProfiles.failed") : undefined}
-      errorDetail={assign.error ? errorDetail(assign.error) : undefined}
+      errorDetail={assign.error ? errorText(assign.error, t) : undefined}
       saveLabel={t("pages.accessProfiles.assign.save")}
       canSave={profileId !== ""}
       saving={assign.isPending}
@@ -258,7 +259,7 @@ export function UnassignSubjectProfileDialog({
       toast.push({
         tone: "error",
         title: t("pages.accessProfiles.assign.removeFailed", { name: failed.name }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       }),
   });
 

@@ -81,6 +81,7 @@ import {
   type Role,
   type UserRow,
 } from "@/lib/api";
+import { errorText } from "@/lib/error-copy";
 import { avatarColor } from "@/lib/avatar";
 import { useOptionalAuth } from "@/lib/auth";
 import { useCan, useCapabilities } from "@/lib/can";
@@ -97,7 +98,7 @@ import {
 } from "@/lib/role-grants";
 import { roleLabel } from "@/lib/roles";
 import { useScope } from "@/lib/scope";
-import { errorDetail, useToast } from "@/lib/toast";
+import { useToast } from "@/lib/toast";
 import { useScreenReady } from "@/lib/ux-react";
 
 // admin surface for the user/team lifecycle (ROL-223): invite people into the
@@ -201,7 +202,7 @@ export default function Users() {
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: user.email }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       });
     },
   });
@@ -644,7 +645,7 @@ function InviteUserDialog({
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: email.trim() }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       });
     },
   });
@@ -702,7 +703,7 @@ function InviteUserDialog({
         method !== "link" ||
         target !== ORG_TARGET
       }
-      errorMessage={create.isError ? (create.error as Error).message : undefined}
+      errorMessage={create.isError ? errorText(create.error, t) : undefined}
       saveLabel={t("pages.users.inviteSave")}
       canSave={Boolean(email.trim())}
       saving={create.isPending}
@@ -890,7 +891,7 @@ function EditUserDialog({
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: user.email }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       });
       // deleted elsewhere: the list is stale, so it is read again
       if (error instanceof ApiError && error.status === 404) onDone();
@@ -921,7 +922,7 @@ function EditUserDialog({
           saving={save.isPending}
           errorMessage={
             save.isError
-              ? [(save.error as Error).message, lastSuperadminHint(t, save.error)]
+              ? [errorText(save.error, t), lastSuperadminHint(t, save.error)]
                   .filter(Boolean)
                   .join(" ")
               : undefined
@@ -1221,7 +1222,7 @@ function AddRoleDialog({
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: user.email }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       });
     },
   });
@@ -1234,7 +1235,7 @@ function AddRoleDialog({
       title={t("pages.users.grantTitle")}
       subtitle={t("pages.users.grantSubtitle", { email: user.email })}
       dirty={target !== ORG_TARGET || role !== "member"}
-      errorMessage={create.isError ? (create.error as Error).message : undefined}
+      errorMessage={create.isError ? errorText(create.error, t) : undefined}
       saveLabel={t("pages.users.grantSave")}
       canSave={!held}
       saving={create.isPending}

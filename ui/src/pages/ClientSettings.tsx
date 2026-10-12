@@ -11,13 +11,16 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { CodeBlock } from "@/components/ui/code-block";
 import { DeleteIconButton } from "@/components/ui/delete-icon-button";
-import { describedBy, FieldError } from "@/components/ui/field-error";
+import { FieldError } from "@/components/ui/field-error";
 import { Input } from "@/components/ui/input";
+import { SaveBar } from "@/components/ui/save-bar";
 import { SettingsPanel } from "@/components/ui/settings-panel";
 import { fetchClientSettings, updateClientSettings, type ClientSettingsDto } from "@/lib/api";
-import { serverFieldError, serverFieldPath } from "@/lib/field-errors";
+import { errorText } from "@/lib/error-copy";
+import { serverFieldPath } from "@/lib/field-errors";
 import { gatewayBase } from "@/lib/gateway";
-import { errorDetail, useToast } from "@/lib/toast";
+import { useToast } from "@/lib/toast";
+import { useFieldErrors } from "@/lib/use-field-errors";
 import { CLIENT_SETTINGS_QUERY_KEY } from "@/lib/use-gateway-base";
 import { KEY_ENV } from "@/lib/snippets";
 import { useScreenReady } from "@/lib/ux-react";
@@ -182,7 +185,6 @@ function ClientSettingsScreen() {
   useScreenReady(!settings.isLoading);
 
   const [form, setForm] = React.useState<FormState | null>(null);
-  const [serverErrors, setServerErrors] = React.useState<Record<FieldKey, string>>({});
   const base = React.useId();
   const idOf = (key: FieldKey) => {
     if (key === "publicBaseUrl") return "client-public-base-url";
@@ -194,6 +196,28 @@ function ClientSettingsScreen() {
       setForm(fromDto(settings.data));
     }
   }, [settings.data, form]);
+
+  const fields = useFieldErrors<FieldKey>({
+    order: form ? fieldOrder(form) : [],
+    wire: WIRE_FIELDS,
+    idOf,
+    local:
+      form && settings.data
+        ? Object.fromEntries(
+            Object.entries(
+              validate(form, settings.data.reserved, settings.data.request_id_refused ?? []),
+            ).map(([key, found]) => [key, t(found.key, found.values)]),
+          )
+        : {},
+    // an injected header is refused by row: `injected_headers.<name>`
+    place: (error) => {
+      const path = serverFieldPath(error);
+      if (!path?.path.startsWith("injected_headers.") || !(error instanceof Error)) return null;
+      const name = path.path.slice("injected_headers.".length);
+      const row = form?.injected.find((r) => r.name.trim().toLowerCase() === name);
+      return row ? { field: nameKey(row), message: error.message } : null;
+    },
+  });
 
   const save = useMutation({
     mutationFn: (f: FormState) =>
@@ -213,7 +237,7 @@ function ClientSettingsScreen() {
       // value it already had; the refetch is what makes the save stick (#1197)
       void queryClient.invalidateQueries({ queryKey: CLIENT_SETTINGS_QUERY_KEY });
       setForm(fromDto(dto));
-      setServerErrors({});
+      fields.clear();
       toast.push({
         tone: "success",
         title: t("toast.saved"),
@@ -221,30 +245,11 @@ function ClientSettingsScreen() {
       });
     },
     onError: (error) => {
-      // an injected header is refused by row: `injected_headers.<name>`
-      const path = serverFieldPath(error);
-      const injectedName = path?.path.startsWith("injected_headers.")
-        ? path.path.slice("injected_headers.".length)
-        : null;
-      const row =
-        injectedName === null
-          ? undefined
-          : form?.injected.find((r) => r.name.trim().toLowerCase() === injectedName);
-      if (row && error instanceof Error) {
-        setServerErrors({ [nameKey(row)]: error.message });
-        document.getElementById(idOf(nameKey(row)))?.focus();
-        return;
-      }
-      const named = serverFieldError(error, WIRE_FIELDS);
-      if (named) {
-        setServerErrors({ [named.field]: named.message });
-        document.getElementById(idOf(named.field))?.focus();
-        return;
-      }
+      if (fields.refuse(error)) return;
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: t("errors.resources.clientSettings") }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       });
     },
   });
@@ -277,33 +282,8 @@ function ClientSettingsScreen() {
   // an edit answers the server's complaint about that field
   const edit = (key: FieldKey, patch: Partial<FormState>) => {
     set(patch);
-    setServerErrors((e) => {
-      const next = { ...e };
-      delete next[key];
-      return next;
-    });
+    fields.edit(key);
   };
-  const local = validate(form, dto.reserved, dto.request_id_refused ?? []);
-  const errorOf = (key: FieldKey): string | undefined => {
-    const found = local[key];
-    return found ? t(found.key, found.values) : serverErrors[key];
-  };
-  const invalid = fieldOrder(form).filter((key) => errorOf(key));
-  // Save stays pressable while the form is invalid so a press can say why: it
-  // moves focus to the first field at fault rather than doing nothing (#2651)
-  const submit = () => {
-    if (invalid.length > 0) {
-      document.getElementById(idOf(invalid[0]))?.focus();
-      return;
-    }
-    save.mutate(form);
-  };
-  const errorId = (key: FieldKey) => `${idOf(key)}-error`;
-  const invalidProps = (key: FieldKey) => ({
-    id: idOf(key),
-    "aria-invalid": errorOf(key) ? (true as const) : undefined,
-    "aria-describedby": describedBy(!!errorOf(key) && errorId(key)),
-  });
   // what a client would actually type, following the field as it is edited.
   // an empty field has no example: the /gw proxy needs a dashboard session, so
   // it is no address for a client (#2486)
@@ -326,12 +306,15 @@ function ClientSettingsScreen() {
             <Input
               className="sm:min-w-[320px] font-mono text-xs"
               aria-label={t("pages.clientSettings.publicBaseUrl")}
-              {...invalidProps("publicBaseUrl")}
+              {...fields.inputProps("publicBaseUrl")}
               placeholder={BASE_URL_PLACEHOLDER}
               value={form.publicBaseUrl}
               onChange={(e) => edit("publicBaseUrl", { publicBaseUrl: e.target.value })}
             />
-            <FieldError id={errorId("publicBaseUrl")} error={errorOf("publicBaseUrl")} />
+            <FieldError
+              id={fields.errorId("publicBaseUrl")}
+              error={fields.errorOf("publicBaseUrl")}
+            />
           </div>
           {exampleBase ? <Snippet base={exampleBase} /> : <GatewayBasePrompt />}
         </div>
@@ -345,13 +328,13 @@ function ClientSettingsScreen() {
           <div className="flex flex-col gap-1.5">
             <textarea
               aria-label={t("pages.clientSettings.forwarded")}
-              {...invalidProps("forwarded")}
+              {...fields.inputProps("forwarded")}
               className="min-h-[72px] w-full rounded-md border border-[color:var(--border-default)] bg-transparent px-3 py-2 font-mono text-xs outline-none focus-visible:border-[color:var(--red-folk)]"
               placeholder={t("pages.clientSettings.forwardedPlaceholder")}
               value={form.forwarded}
               onChange={(e) => edit("forwarded", { forwarded: e.target.value })}
             />
-            <FieldError id={errorId("forwarded")} error={errorOf("forwarded")} />
+            <FieldError id={fields.errorId("forwarded")} error={fields.errorOf("forwarded")} />
           </div>
           <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
             <span>{t("pages.clientSettings.alwaysPropagated")}</span>
@@ -389,7 +372,7 @@ function ClientSettingsScreen() {
                   <Input
                     className="max-w-[220px] font-mono text-xs"
                     aria-label={t("pages.clientSettings.injectedName", { index: i + 1 })}
-                    {...invalidProps(nameKey(row))}
+                    {...fields.inputProps(nameKey(row))}
                     placeholder="x-partner-id"
                     value={row.name}
                     onChange={(e) =>
@@ -403,7 +386,7 @@ function ClientSettingsScreen() {
                   <Input
                     className="flex-1 font-mono text-xs"
                     aria-label={t("pages.clientSettings.injectedValue", { index: i + 1 })}
-                    {...invalidProps(valueKey(row))}
+                    {...fields.inputProps(valueKey(row))}
                     placeholder={t("pages.clientSettings.injectedValuePlaceholder")}
                     value={row.value}
                     onChange={(e) =>
@@ -419,8 +402,14 @@ function ClientSettingsScreen() {
                     onClick={() => set({ injected: form.injected.filter((r) => r.id !== row.id) })}
                   />
                 </div>
-                <FieldError id={errorId(nameKey(row))} error={errorOf(nameKey(row))} />
-                <FieldError id={errorId(valueKey(row))} error={errorOf(valueKey(row))} />
+                <FieldError
+                  id={fields.errorId(nameKey(row))}
+                  error={fields.errorOf(nameKey(row))}
+                />
+                <FieldError
+                  id={fields.errorId(valueKey(row))}
+                  error={fields.errorOf(valueKey(row))}
+                />
               </div>
             ))}
           </div>
@@ -448,30 +437,23 @@ function ClientSettingsScreen() {
             <Input
               className="max-w-[240px] font-mono text-xs"
               aria-label={t("pages.clientSettings.requestIdHeader")}
-              {...invalidProps("requestIdHeader")}
+              {...fields.inputProps("requestIdHeader")}
               value={form.requestIdHeader}
               onChange={(e) => edit("requestIdHeader", { requestIdHeader: e.target.value })}
             />
-            <FieldError id={errorId("requestIdHeader")} error={errorOf("requestIdHeader")} />
+            <FieldError
+              id={fields.errorId("requestIdHeader")}
+              error={fields.errorOf("requestIdHeader")}
+            />
           </div>
         </div>
       </SettingsPanel>
 
-      <div className="sticky bottom-0 flex items-center justify-end gap-3 border-t border-[color:var(--border-subtle)] bg-background py-3">
-        {invalid.length > 0 && (
-          <span role="status" className="text-xs text-[color:var(--status-danger-text)]">
-            {t("common.fieldsNeedAttention", { count: invalid.length })}
-          </span>
-        )}
-        <Button
-          disabled={save.isPending}
-          aria-disabled={invalid.length > 0 || undefined}
-          className={invalid.length > 0 ? "opacity-50" : undefined}
-          onClick={submit}
-        >
-          {save.isPending ? t("common.saving") : t("common.saveChanges")}
-        </Button>
-      </div>
+      <SaveBar
+        invalid={fields.invalid.length}
+        pending={save.isPending}
+        onSave={() => fields.submit(() => save.mutate(form))}
+      />
     </div>
   );
 }

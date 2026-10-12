@@ -449,7 +449,7 @@ export const RegisterRejectedByTheServer: Story = {
     );
     await userEvent.click(within(dialog).getByRole("button", { name: "Save provider" }));
 
-    await expectToast(canvasElement, /health probe/, "error");
+    await expectToast(canvasElement, /The control plane hit an error/, "error");
     await waitFor(() => expect(within(document.body).getByRole("dialog")).toBeInTheDocument());
     await expect(within(dialog).getByLabelText("Provider name")).toHaveValue("Policy service");
   },

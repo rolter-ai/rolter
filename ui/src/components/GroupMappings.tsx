@@ -23,6 +23,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
+import { errorText } from "@/lib/error-copy";
 import { ROLES } from "@/lib/api";
 import type { Capability } from "@/lib/can";
 import { roleLabel } from "@/lib/roles";
@@ -315,7 +316,7 @@ export function GroupMappings({
           dialog is up it carries the refusal itself */}
       {create.isError && !confirming && (
         <p role="alert" className="text-sm text-[color:var(--status-danger-text)]">
-          {(create.error as Error).message}
+          {errorText(create.error, t)}
         </p>
       )}
 

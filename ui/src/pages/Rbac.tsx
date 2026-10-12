@@ -34,8 +34,9 @@ import {
   type RbacResourceView,
   type Role,
 } from "@/lib/api";
+import { errorText } from "@/lib/error-copy";
 import { useScope } from "@/lib/scope";
-import { errorDetail, useToast } from "@/lib/toast";
+import { useToast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { useScreenReady } from "@/lib/ux-react";
 
@@ -601,7 +602,7 @@ function CustomRolesTab({ matrix, orgId }: { matrix: RbacMatrix; orgId?: string 
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: input.name.trim() }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       }),
   });
 
@@ -616,7 +617,7 @@ function CustomRolesTab({ matrix, orgId }: { matrix: RbacMatrix; orgId?: string 
       toast.push({
         tone: "error",
         title: t("toast.deleteFailed", { what: role.name }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       }),
   });
 
@@ -757,7 +758,7 @@ function CustomRolesTab({ matrix, orgId }: { matrix: RbacMatrix; orgId?: string 
           dirty={JSON.stringify(draft) !== seed}
           resources={matrix.resources}
           saving={save.isPending}
-          errorMessage={save.error ? errorDetail(save.error) : undefined}
+          errorMessage={save.error ? errorText(save.error, t) : undefined}
           onChange={setDraft}
           onClose={() => setDraft(null)}
           onSave={() => save.mutate(draft)}

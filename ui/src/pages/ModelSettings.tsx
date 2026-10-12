@@ -7,10 +7,10 @@ import { superadminOnly } from "@/components/ForbiddenScreen";
 import { LoadError } from "@/components/LoadError";
 import { PanelSkeleton } from "@/components/LoadingState";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { Field } from "@/components/ui/field";
 import { Combobox } from "@/components/ui/combobox";
 import { Input } from "@/components/ui/input";
+import { SaveBar } from "@/components/ui/save-bar";
 import { SettingsPanel } from "@/components/ui/settings-panel";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -19,8 +19,9 @@ import {
   updateModelDefaults,
   type ModelDefaultsDto,
 } from "@/lib/api";
-import { serverFieldError } from "@/lib/field-errors";
-import { errorDetail, useToast } from "@/lib/toast";
+import { errorText } from "@/lib/error-copy";
+import { useToast } from "@/lib/toast";
+import { translateErrors, useFieldErrors } from "@/lib/use-field-errors";
 import { useScreenReady } from "@/lib/ux-react";
 
 // every field is optional, so the form keeps raw strings and an empty string
@@ -129,7 +130,6 @@ function ModelSettingsScreen() {
   useScreenReady(!defaults.isLoading);
 
   const [form, setForm] = React.useState<FormState | null>(null);
-  const [serverErrors, setServerErrors] = React.useState<FieldErrors>({});
   const base = React.useId();
   const ids: Record<FieldKey, string> = {
     temperature: `${base}-temperature`,
@@ -142,6 +142,15 @@ function ModelSettingsScreen() {
       setForm(fromDto(defaults.data));
     }
   }, [defaults.data, form]);
+
+  const fields = useFieldErrors<FieldKey>({
+    order: FIELD_ORDER,
+    wire: WIRE_FIELDS,
+    idOf: (key) => ids[key],
+    // every field is disabled while the defaults are off, so none can be fixed
+    skip: () => form !== null && !form.enabled,
+    local: form ? translateErrors(validate(form), t) : {},
+  });
 
   const save = useMutation({
     mutationFn: (f: FormState) => {
@@ -170,7 +179,7 @@ function ModelSettingsScreen() {
       // value it already had; the refetch is what makes the save stick (#1197)
       void queryClient.invalidateQueries({ queryKey: ["model-defaults"] });
       setForm(fromDto(dto));
-      setServerErrors({});
+      fields.clear();
       toast.push({
         tone: "success",
         title: t("toast.saved"),
@@ -178,16 +187,11 @@ function ModelSettingsScreen() {
       });
     },
     onError: (error) => {
-      const named = serverFieldError(error, WIRE_FIELDS);
-      if (named) {
-        setServerErrors({ [named.field]: named.message });
-        document.getElementById(ids[named.field])?.focus();
-        return;
-      }
+      if (fields.refuse(error)) return;
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: t("errors.resources.modelSettings") }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       });
     },
   });
@@ -219,28 +223,7 @@ function ModelSettingsScreen() {
   // an edit answers the server's complaint about that field
   const edit = (key: FieldKey, value: string) => {
     set({ [key]: value });
-    setServerErrors((e) => ({ ...e, [key]: undefined }));
-  };
-  const local = validate(form);
-  const errorFor = (key: FieldKey) => {
-    // a disabled field cannot be fixed, so no complaint about it holds Save
-    if (!form.enabled) return undefined;
-    const localKey = local[key];
-    return localKey ? t(localKey) : serverErrors[key];
-  };
-  const errors = Object.fromEntries(FIELD_ORDER.map((key) => [key, errorFor(key)])) as Record<
-    FieldKey,
-    string | undefined
-  >;
-  const invalid = FIELD_ORDER.filter((key) => errors[key]);
-  // Save stays pressable while the form is invalid so a press can say why: it
-  // moves focus to the first field at fault rather than doing nothing (#2651)
-  const submit = () => {
-    if (invalid.length > 0) {
-      document.getElementById(ids[invalid[0]])?.focus();
-      return;
-    }
-    save.mutate(form);
+    fields.edit(key);
   };
   const active = form.enabled && hasAnyDefault(form);
 
@@ -277,7 +260,7 @@ function ModelSettingsScreen() {
         <Field
           label={t("pages.modelSettings.sampling.temperature")}
           hint="0 – 2"
-          error={errors.temperature}
+          error={fields.errorOf("temperature")}
         >
           <Input
             id={ids.temperature}
@@ -288,7 +271,11 @@ function ModelSettingsScreen() {
             onChange={(e) => edit("temperature", e.target.value)}
           />
         </Field>
-        <Field label={t("pages.modelSettings.sampling.topP")} hint="0 – 1" error={errors.topP}>
+        <Field
+          label={t("pages.modelSettings.sampling.topP")}
+          hint="0 – 1"
+          error={fields.errorOf("topP")}
+        >
           <Input
             id={ids.topP}
             className="max-w-[160px]"
@@ -301,7 +288,7 @@ function ModelSettingsScreen() {
         <Field
           label={t("pages.modelSettings.sampling.maxTokens")}
           hint={t("pages.modelSettings.sampling.maxTokensHint")}
-          error={errors.maxTokens}
+          error={fields.errorOf("maxTokens")}
         >
           <Input
             id={ids.maxTokens}
@@ -326,7 +313,7 @@ function ModelSettingsScreen() {
               ? t("pages.modelSettings.model.modelsUnavailable")
               : t("pages.modelSettings.model.defaultModelHint")
           }
-          error={errors.defaultModel}
+          error={fields.errorOf("defaultModel")}
         >
           <Combobox
             id={ids.defaultModel}
@@ -356,21 +343,11 @@ function ModelSettingsScreen() {
       </p>
       <p className="text-xs text-muted-foreground">{t("pages.modelSettings.precedenceNote")}</p>
 
-      <div className="sticky bottom-0 flex items-center justify-end gap-3 border-t border-[color:var(--border-subtle)] bg-background py-3">
-        {invalid.length > 0 && (
-          <span role="status" className="text-xs text-[color:var(--status-danger-text)]">
-            {t("common.fieldsNeedAttention", { count: invalid.length })}
-          </span>
-        )}
-        <Button
-          disabled={save.isPending}
-          aria-disabled={invalid.length > 0 || undefined}
-          className={invalid.length > 0 ? "opacity-50" : undefined}
-          onClick={submit}
-        >
-          {save.isPending ? t("common.saving") : t("common.saveChanges")}
-        </Button>
-      </div>
+      <SaveBar
+        invalid={fields.invalid.length}
+        pending={save.isPending}
+        onSave={() => fields.submit(() => save.mutate(form))}
+      />
     </div>
   );
 }

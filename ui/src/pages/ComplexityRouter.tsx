@@ -24,9 +24,10 @@ import {
   type ComplexityTier,
   type RouteRow,
 } from "@/lib/api";
+import { errorText } from "@/lib/error-copy";
 import { useFormat, type Formatters } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
-import { errorDetail, useToast } from "@/lib/toast";
+import { useToast } from "@/lib/toast";
 import { useScreenReady } from "@/lib/ux-react";
 
 /**
@@ -386,7 +387,7 @@ function PolicyDialog({
       toast.push({
         tone: "error",
         title: translate("toast.saveFailed", { what: route.model }),
-        detail: errorDetail(error),
+        detail: errorText(error, translate),
       });
     },
   });
@@ -412,7 +413,7 @@ function PolicyDialog({
         invalidRows > 0
           ? translate("common.fieldsNeedAttention", { count: invalidRows })
           : save.isError
-            ? (save.error as Error).message
+            ? errorText(save.error, translate)
             : undefined
       }
       saveLabel={translate("common.save")}

@@ -1,5 +1,7 @@
 // the error carries an id so its control can point at it: a screen reader then
-// hears the reason when it reaches the field, not only in the footer (#1527)
+// hears the reason when it reaches the field, not only in the footer (#1527).
+// it is announced as it appears, the same `role="alert"` as `Field`'s own error
+// (#2734), so the two renderers do not differ for a screen reader
 export interface FieldErrorProps {
   /** the id the control names in its `aria-describedby` */
   id: string;
@@ -9,7 +11,7 @@ export interface FieldErrorProps {
 export function FieldError({ id, error }: FieldErrorProps) {
   if (!error) return null;
   return (
-    <p id={id} className="text-xs leading-snug text-[color:var(--status-danger-text)]">
+    <p id={id} role="alert" className="text-xs leading-snug text-[color:var(--status-danger-text)]">
       {error}
     </p>
   );

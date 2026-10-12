@@ -53,9 +53,10 @@ import {
   type TeamRow,
   type UpdateSkillInput,
 } from "@/lib/api";
+import { errorText } from "@/lib/error-copy";
 import { useFormat } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
-import { errorDetail, useToast } from "@/lib/toast";
+import { useToast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { useScreenReady } from "@/lib/ux-react";
 
@@ -205,7 +206,7 @@ export default function SkillsRepository() {
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: input.name }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       });
     },
   });
@@ -232,7 +233,7 @@ export default function SkillsRepository() {
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: selected?.name ?? "" }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       });
     },
   });
@@ -250,7 +251,7 @@ export default function SkillsRepository() {
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: selected?.name ?? "" }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       });
     },
   });
@@ -269,7 +270,7 @@ export default function SkillsRepository() {
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: selected?.name ?? "" }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       });
     },
   });
@@ -294,7 +295,7 @@ export default function SkillsRepository() {
       toast.push({
         tone: "error",
         title: t("toast.deleteFailed", { what: selected?.name ?? "" }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       });
     },
   });
@@ -315,7 +316,7 @@ export default function SkillsRepository() {
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: selected?.name ?? "" }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       });
     },
   });
@@ -745,7 +746,7 @@ function SkillWorkbench({
           )}
           {error && (
             <span role="alert" className="text-[color:var(--status-danger-text)]">
-              {error.message}
+              {errorText(error, t)}
             </span>
           )}
         </div>
@@ -1157,7 +1158,7 @@ function CreateSkillDialog({
           <AccessFields value={value} teams={teams} includeSlug onChange={setValue} />
           {error && (
             <p role="alert" className="mt-3 text-xs text-[color:var(--status-danger-text)]">
-              {error.message}
+              {errorText(error, t)}
             </p>
           )}
         </DialogBody>
@@ -1229,7 +1230,7 @@ function SkillSettingsDialog({
           <AccessFields value={value} teams={teams} includeRetired onChange={setValue} />
           {error && (
             <p role="alert" className="mt-3 text-xs text-[color:var(--status-danger-text)]">
-              {error.message}
+              {errorText(error, t)}
             </p>
           )}
         </DialogBody>
@@ -1272,7 +1273,7 @@ function RollbackDialog({
       </DialogHeader>
       {error && (
         <p role="alert" className="text-xs text-[color:var(--status-danger-text)]">
-          {error.message}
+          {errorText(error, t)}
         </p>
       )}
       <DialogFooter>

@@ -468,7 +468,9 @@ export const SaveRejectedByTheServer: Story = {
     await userEvent.click(await screen().findByRole("button", { name: "Save provider" }));
     const canvas = within(canvasElement);
     const alert = await waitFor(() => canvas.getByRole("alert"));
-    await waitFor(() => expect(within(alert).getByText(/rejected upstream/)).toBeVisible());
+    await waitFor(() =>
+      expect(within(alert).getByText(/The control plane hit an error/)).toBeVisible(),
+    );
     // never asked to close, and the draft is still in the fields
     await expect(closeRequests).toEqual([]);
     await expect(screen().getByLabelText("Name")).toHaveValue("openai-primary");

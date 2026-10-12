@@ -61,9 +61,10 @@ import {
   type EffectiveRule,
   type RowState,
 } from "@/lib/guardrail-policy";
+import { errorText } from "@/lib/error-copy";
 import { defaultToken, replacementToken, ruleBody, withSource } from "@/lib/guardrail-replacement";
 import { useFormat } from "@/lib/i18n/format";
-import { errorDetail, useToast } from "@/lib/toast";
+import { useToast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { useScreenReady } from "@/lib/ux-react";
 
@@ -210,7 +211,7 @@ function GuardrailRulesScreen() {
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: body.name }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       });
     },
   });
@@ -517,7 +518,7 @@ function GuardrailRulesScreen() {
               toast.push({
                 tone: "error",
                 title: t("toast.deleteFailed", { what }),
-                detail: errorDetail(error),
+                detail: errorText(error, t),
               });
             },
           });
@@ -532,7 +533,7 @@ function GuardrailRulesScreen() {
         streaming={streaming}
         fileNames={fileRules.map((rule) => rule.name)}
         pending={save.isPending}
-        error={save.isError ? (save.error as Error).message : null}
+        error={save.isError ? errorText(save.error, t) : null}
         onClose={() => setEditing(undefined)}
         onSave={(body) => save.mutate(body)}
       />

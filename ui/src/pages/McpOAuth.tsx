@@ -49,12 +49,13 @@ import {
   type McpServerRow,
   type UserRow,
 } from "@/lib/api";
+import { errorText } from "@/lib/error-copy";
 import { useOptionalAuth } from "@/lib/auth";
 import { useFormat } from "@/lib/i18n/format";
 import { announceConsent, readConsentResult, type ConsentResult } from "@/lib/mcp-consent";
 import { oauthConnectable } from "@/lib/mcp-oauth-client";
 import { useScope } from "@/lib/scope";
-import { errorDetail, useToast } from "@/lib/toast";
+import { useToast } from "@/lib/toast";
 import { useMcpConnect } from "@/lib/use-mcp-connect";
 import { cn } from "@/lib/utils";
 import { useScreenReady } from "@/lib/ux-react";
@@ -251,6 +252,7 @@ async function revokeEach(
   const failures = settled.filter((r): r is PromiseRejectedResult => r.status === "rejected");
   if (failures.length === 0) return;
   throw new Error(
+    // raw-error-allow: a helper with no `t`; the screen shows this error through its own copy
     `${failedMessage(failures.length, ids.length)} ${(failures[0].reason as Error).message}`,
   );
 }
@@ -298,7 +300,7 @@ export function OAuthGrants() {
       toast.push({
         tone: "error",
         title: t("pages.mcpOAuth.confirm.grantFailed"),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       }),
   });
   const revokeAll = useMutation({
@@ -741,7 +743,7 @@ export function AuthSessions() {
       toast.push({
         tone: "error",
         title: t("pages.mcpOAuth.refresh.failed"),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       }),
   });
 
@@ -852,7 +854,7 @@ export function AuthSessions() {
             </span>
             {revoke.isError && !confirming && (
               <span className="text-xs text-[color:var(--status-danger-text)]">
-                {(revoke.error as Error).message}
+                {errorText(revoke.error, t)}
               </span>
             )}
           </div>

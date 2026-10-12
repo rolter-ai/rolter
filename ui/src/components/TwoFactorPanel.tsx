@@ -29,6 +29,7 @@ import {
   regenerateRecoveryCodes,
   type MfaStatus,
 } from "@/lib/api";
+import { errorText } from "@/lib/error-copy";
 import { useFormat } from "@/lib/i18n/format";
 import { useToast } from "@/lib/toast";
 
@@ -311,7 +312,7 @@ function EnrolDialog({
         )}
         {confirm.isError && (
           <p role="alert" className="mt-3 text-xs text-[color:var(--status-danger-text)]">
-            {(confirm.error as Error).message}
+            {errorText(confirm.error, t)}
           </p>
         )}
       </DialogBody>

@@ -32,8 +32,9 @@ import {
   type TelemetryDraft,
   type TelemetryField,
 } from "@/lib/provider-telemetry";
+import { errorText } from "@/lib/error-copy";
 import { slugify } from "@/lib/slug";
-import { errorDetail, useToast } from "@/lib/toast";
+import { useToast } from "@/lib/toast";
 import { providerKindDescription, providerKindName } from "@/lib/provider-kinds";
 import { useFormTelemetry } from "@/lib/ux-react";
 import {
@@ -362,7 +363,7 @@ export function ProviderSheet({
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: draft.name }),
-        detail: errorDetail(error),
+        detail: errorText(error, t),
       });
     },
   });
@@ -398,7 +399,7 @@ export function ProviderSheet({
 
   // a 400 that names a telemetry key is shown on that field, not only in the
   // footer, and the field's section opens so it can be seen (#2996)
-  const refusal = save.isError ? (save.error as Error).message : undefined;
+  const refusal = save.isError ? errorText(save.error, t) : undefined;
   const refusedField = refusal ? telemetryFieldOf(refusal) : null;
   const fieldError = (field: TelemetryField) =>
     refusedField === field && refusal ? refusal : undefined;
@@ -747,7 +748,7 @@ export function ProviderSheet({
         <SheetError message={refusedField ? undefined : refusal} />
         {created && test.isIdle && <CreatedNote name={created.name} />}
         {test.data && <TestOutcome result={test.data} />}
-        <SheetError message={test.isError ? (test.error as Error).message : undefined} />
+        <SheetError message={test.isError ? errorText(test.error, t) : undefined} />
         {/* the probe reads the stored row, so with edits sitting in the form its
             answer would speak for the old values: the button is off and this
             says why, where a disabled button cannot */}
