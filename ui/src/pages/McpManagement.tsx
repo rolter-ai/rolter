@@ -10,15 +10,14 @@ import {
   Radar,
   Server,
   Settings2,
-  ShieldAlert,
-  ShieldCheck,
-  Timer,
   Wrench,
 } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
+import { Link } from "react-router";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { EditorSheet } from "@/components/EditorSheet";
 import { GatedButton } from "@/components/GatedButton";
 import { GatedSwitch } from "@/components/GatedSwitch";
 import { LoadError } from "@/components/LoadError";
@@ -26,6 +25,7 @@ import { CardGridSkeleton } from "@/components/LoadingState";
 import { PageBody } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { ChipGroup } from "@/components/ui/chip-group";
 import { Combobox } from "@/components/ui/combobox";
 import {
   Dialog as BaseDialog,
@@ -37,7 +37,9 @@ import {
 } from "@/components/ui/dialog";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
+import { FormSection } from "@/components/ui/form-section";
 import { Input } from "@/components/ui/input";
+import { SettingsPanel } from "@/components/ui/settings-panel";
 import { SwitchRow } from "@/components/ui/switch-row";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -72,6 +74,7 @@ import {
   type McpTransportOverridesPatch,
 } from "@/lib/api";
 import { useOptionalAuth } from "@/lib/auth";
+import { useCan } from "@/lib/can";
 import { useFormat } from "@/lib/i18n/format";
 import {
   serverConnections,
@@ -193,7 +196,7 @@ function DiscoveryPicker({
           return (
             <label
               key={mode}
-              className={`flex cursor-pointer items-start gap-2.5 rounded-[10px] border p-3 transition-colors focus-within:ring-1 focus-within:ring-ring ${selected ? "border-[color:var(--red-folk)] bg-card" : "border-[color:var(--border-default)] hover:bg-card/60"}`}
+              className={`flex cursor-pointer items-start gap-2.5 rounded-[10px] border p-3 transition-colors focus-within:ring-1 focus-within:ring-ring ${selected ? "border-[color:var(--red-500)] bg-[color:var(--red-tint)]" : "border-[color:var(--border-default)] hover:bg-card/60"}`}
             >
               <input
                 type="radio"
@@ -201,7 +204,7 @@ function DiscoveryPicker({
                 value={mode}
                 checked={selected}
                 onChange={() => onChange(mode)}
-                className="mt-0.5 accent-[color:var(--red-folk)]"
+                className="mt-0.5 accent-[color:var(--red-500)]"
                 aria-describedby={`mcp-oauth-discovery-${mode}-hint`}
               />
               <span className="min-w-0">
@@ -837,7 +840,7 @@ export function McpCatalog() {
         </div>
       )}
       {editing !== undefined && (
-        <ServerDialog
+        <ServerSheet
           initial={editing}
           pending={save.isPending}
           error={save.error}
@@ -885,6 +888,8 @@ const serverInput = (server: McpServerRow): McpServerInput => ({
   required_scopes: server.required_scopes,
 });
 
+type SectionKey = "endpoint" | "tools" | "auth" | "overrides";
+
 interface ServerSave {
   input: McpServerInput;
   overrides: McpTransportOverridesPatch;
@@ -914,35 +919,6 @@ function AuthBadge({ server }: { server: McpServerRow }) {
   );
 }
 
-// the refusal a deployment without ROLTER_KEK gives. it is a deployment
-// problem rather than anything in the form, so it says what to change and
-// where; the control plane's own message stays underneath it
-function SaveError({ error }: { error: Error }) {
-  const { t } = useTranslation();
-  if (!isKekMissing(error))
-    return (
-      <p role="alert" className="text-sm text-[color:var(--danger-text)]">
-        {error.message}
-      </p>
-    );
-  return (
-    <div
-      role="alert"
-      className="flex items-start gap-2.5 rounded-[10px] border border-[color:var(--status-danger-text)]/40 bg-[color:var(--surface-subtle)] p-3"
-    >
-      <ShieldAlert
-        className="mt-0.5 h-4 w-4 shrink-0 text-[color:var(--status-danger-text)]"
-        aria-hidden
-      />
-      <div className="min-w-0 text-xs leading-relaxed">
-        <p className="font-semibold text-foreground">{t("pages.mcpCatalog.auth.kekTitle")}</p>
-        <p className="mt-1 text-muted-foreground">{t("pages.mcpCatalog.auth.kekBody")}</p>
-        <p className="mt-1 font-mono text-[color:var(--text-subtle)]">{error.message}</p>
-      </div>
-    </div>
-  );
-}
-
 // one card per kind, each saying what Rolter will actually send. `none` is
 // spelled out as unauthenticated so it cannot be read as "not configured yet"
 function AuthKindPicker({
@@ -962,7 +938,7 @@ function AuthKindPicker({
           return (
             <label
               key={kind}
-              className={`flex cursor-pointer items-start gap-2.5 rounded-[10px] border p-3 transition-colors focus-within:ring-1 focus-within:ring-ring ${selected ? "border-[color:var(--red-folk)] bg-[color:var(--surface-subtle)]" : "border-[color:var(--border-default)] hover:bg-[color:var(--surface-subtle)]/60"}`}
+              className={`flex cursor-pointer items-start gap-2.5 rounded-[10px] border p-3 transition-colors focus-within:ring-1 focus-within:ring-ring ${selected ? "border-[color:var(--red-500)] bg-[color:var(--red-tint)]" : "border-[color:var(--border-default)] hover:bg-[color:var(--surface-subtle)]/60"}`}
             >
               <input
                 type="radio"
@@ -970,7 +946,7 @@ function AuthKindPicker({
                 value={kind}
                 checked={selected}
                 onChange={() => onChange(kind)}
-                className="mt-0.5 accent-[color:var(--red-folk)]"
+                className="mt-0.5 accent-[color:var(--red-500)]"
                 aria-describedby={`mcp-auth-kind-${kind}-hint`}
               />
               <span className="min-w-0">
@@ -1100,15 +1076,11 @@ function OverridesSection({
     max_retries: t("pages.mcpCatalog.overrides.maxRetries"),
   };
   return (
-    <section className="rounded-[10px] border border-[color:var(--border-subtle)] p-4">
-      <div className="flex items-center gap-2">
-        <Timer className="h-4 w-4 text-[color:var(--red-folk-text)]" aria-hidden />
-        <h3 className="text-sm font-semibold">{t("pages.mcpCatalog.overrides.title")}</h3>
-      </div>
-      <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+    <div className="grid gap-3">
+      <p className="text-xs leading-relaxed text-muted-foreground">
         {t("pages.mcpCatalog.overrides.lead")}
       </p>
-      <div className="mt-4 grid gap-3 sm:grid-cols-3">
+      <div className="grid gap-3 sm:grid-cols-3">
         {OVERRIDE_KEYS.map((key) => {
           const { min, max } = OVERRIDE_BOUNDS[key];
           const range = { min: fmt.number(min), max: fmt.number(max) };
@@ -1133,11 +1105,11 @@ function OverridesSection({
           );
         })}
       </div>
-    </section>
+    </div>
   );
 }
 
-function ServerDialog({
+function ServerSheet({
   initial,
   pending,
   error,
@@ -1178,6 +1150,13 @@ function ServerDialog({
   const [auth, setAuth] = React.useState<AuthDraft>(() => authDraft(initial));
   const [overrides, setOverrides] = React.useState<OverrideDraft>(() => overrideDraft(initial));
   const [confirming, setConfirming] = React.useState<"save" | "clear" | null>(null);
+  // the sections fold by hand; a section the operator never touched opens when
+  // it holds something already (an override) or something wrong (a bad one)
+  const [folded, setFolded] = React.useState<Partial<Record<SectionKey, boolean>>>({});
+  const overridesSet = Object.values(overrideDraft(initial)).some(Boolean);
+  const snapshot = JSON.stringify({ form, tools, scopes, oauth, auth, overrides });
+  const baseline = React.useRef(snapshot);
+  const dirty = snapshot !== baseline.current;
 
   // clearing is its own immediate action rather than a draft flag: the schema
   // lets a bearer or header server exist only with a credential, so "clear" is
@@ -1221,18 +1200,43 @@ function ServerDialog({
   // only on screen for an oauth server under auto discovery
   const urlResets = urlResetsDiscovery(form.url, initial);
 
+  const kek = !!error && isKekMissing(error);
+  const section = (key: SectionKey, fallback: boolean) => ({
+    open: folded[key] ?? fallback,
+    onToggle: () => setFolded((current) => ({ ...current, [key]: !(current[key] ?? fallback) })),
+    className: "grid gap-3.5",
+  });
+
   return (
     <>
-      <BaseDialog open={!confirming} onOpenChange={(open) => !open && onClose()}>
-        <DialogHeader>
-          <DialogTitle>
-            {initial
-              ? t("pages.mcpCatalog.dialog.titleEdit")
-              : t("pages.mcpCatalog.dialog.titleAdd")}
-          </DialogTitle>
-          <DialogDescription>{t("pages.mcpCatalog.dialog.lead")}</DialogDescription>
-        </DialogHeader>
-        <DialogBody className="grid gap-4 py-4">
+      {/* hidden, not unmounted, while a confirmation is up: the drafts live in
+          this component, so a cancelled confirmation lands back on the same form */}
+      <EditorSheet
+        name="mcp-server"
+        open={!confirming}
+        onOpenChange={(open) => !open && onClose()}
+        title={
+          initial ? t("pages.mcpCatalog.dialog.titleEdit") : t("pages.mcpCatalog.dialog.titleAdd")
+        }
+        subtitle={t("pages.mcpCatalog.dialog.lead")}
+        dirty={dirty}
+        errorMessage={
+          error ? (kek ? t("pages.mcpCatalog.auth.kekTitle") : error.message) : undefined
+        }
+        errorHint={kek ? t("pages.mcpCatalog.auth.kekBody") : undefined}
+        errorDetail={kek ? error?.message : undefined}
+        saveLabel={
+          pending
+            ? t("common.saving")
+            : initial
+              ? t("pages.mcpCatalog.dialog.saveServer")
+              : t("pages.mcpCatalog.registerServer")
+        }
+        canSave={!!valid}
+        saving={pending}
+        onSave={submit}
+      >
+        <FormSection title={t("pages.mcpCatalog.sections.endpoint")} {...section("endpoint", true)}>
           <div className="grid gap-3 sm:grid-cols-2">
             <Field label={t("pages.mcpCatalog.fields.name")} htmlFor="mcp-name">
               <Input
@@ -1295,91 +1299,76 @@ function ServerDialog({
               onChange={(event) => setForm({ ...form, description: event.target.value })}
             />
           </Field>
-          <div className="grid gap-3 sm:grid-cols-2">
-            <Field
-              label={t("pages.mcpCatalog.fields.tools")}
-              htmlFor="mcp-tools"
-              hint={t("pages.mcpCatalog.fields.toolsHint")}
-            >
-              <Textarea
-                id="mcp-tools"
-                rows={5}
-                value={tools}
-                onChange={(event) => setTools(event.target.value)}
-              />
-            </Field>
-            <Field
-              label={t("pages.mcpCatalog.fields.scopes")}
-              htmlFor="mcp-scopes"
-              hint={t("pages.mcpCatalog.fields.scopesHint")}
-            >
-              <Textarea
-                id="mcp-scopes"
-                rows={5}
-                value={scopes}
-                onChange={(event) => setScopes(event.target.value)}
-              />
-            </Field>
-          </div>
-          <section className="grid gap-4 rounded-[10px] border border-[color:var(--border-subtle)] p-4">
-            <div>
-              <div className="flex items-center gap-2">
-                <KeyRound className="h-4 w-4 text-[color:var(--red-folk-text)]" aria-hidden />
-                <h3 className="text-sm font-semibold">{t("pages.mcpCatalog.auth.title")}</h3>
-              </div>
-              <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
-                {t("pages.mcpCatalog.auth.lead")}
-              </p>
-            </div>
-            <AuthKindPicker
-              value={auth.kind}
-              onChange={(kind) => setAuth((current) => ({ ...current, kind }))}
+        </FormSection>
+        <FormSection title={t("pages.mcpCatalog.sections.tools")} {...section("tools", true)}>
+          <Field
+            label={t("pages.mcpCatalog.fields.tools")}
+            htmlFor="mcp-tools"
+            hint={t("pages.mcpCatalog.fields.toolsHint")}
+          >
+            <Textarea
+              id="mcp-tools"
+              rows={5}
+              value={tools}
+              onChange={(event) => setTools(event.target.value)}
             />
-            {carriesCredential(auth.kind) && (
-              <CredentialSection
-                server={row}
-                draft={auth}
-                onChange={(patch) => setAuth((current) => ({ ...current, ...patch }))}
-                onClear={() => {
-                  clear.reset();
-                  setConfirming("clear");
-                }}
-              />
-            )}
-            {auth.kind === "oauth" && (
-              <OAuthClientSection
-                server={initial}
-                url={form.url}
-                draft={oauth}
-                onChange={(patch) => setOAuth((current) => ({ ...current, ...patch }))}
-              />
-            )}
-            {dropsCredential(auth, row) && (
-              <p className="text-xs leading-relaxed text-[color:var(--status-warning-text)]">
-                {t("pages.mcpCatalog.auth.dropsOnSave")}
-              </p>
-            )}
-          </section>
+          </Field>
+        </FormSection>
+        <FormSection title={t("pages.mcpCatalog.auth.title")} {...section("auth", true)}>
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            {t("pages.mcpCatalog.auth.lead")}
+          </p>
+          <AuthKindPicker
+            value={auth.kind}
+            onChange={(kind) => setAuth((current) => ({ ...current, kind }))}
+          />
+          {carriesCredential(auth.kind) && (
+            <CredentialSection
+              server={row}
+              draft={auth}
+              onChange={(patch) => setAuth((current) => ({ ...current, ...patch }))}
+              onClear={() => {
+                clear.reset();
+                setConfirming("clear");
+              }}
+            />
+          )}
+          {auth.kind === "oauth" && (
+            <OAuthClientSection
+              server={initial}
+              url={form.url}
+              draft={oauth}
+              onChange={(patch) => setOAuth((current) => ({ ...current, ...patch }))}
+            />
+          )}
+          {dropsCredential(auth, row) && (
+            <p className="text-xs leading-relaxed text-[color:var(--status-warning-text)]">
+              {t("pages.mcpCatalog.auth.dropsOnSave")}
+            </p>
+          )}
+          <Field
+            label={t("pages.mcpCatalog.fields.scopes")}
+            htmlFor="mcp-scopes"
+            hint={t("pages.mcpCatalog.fields.scopesHint")}
+          >
+            <Textarea
+              id="mcp-scopes"
+              rows={3}
+              value={scopes}
+              onChange={(event) => setScopes(event.target.value)}
+            />
+          </Field>
+        </FormSection>
+        <FormSection
+          title={t("pages.mcpCatalog.overrides.title")}
+          {...section("overrides", overridesSet || !overridesValid(overrides))}
+        >
           <OverridesSection
             draft={overrides}
             onChange={(patch) => setOverrides((current) => ({ ...current, ...patch }))}
           />
-          {error && <SaveError error={error} />}
-        </DialogBody>
-        <DialogFooter>
-          <Button variant="ghost" onClick={onClose}>
-            {t("common.cancel")}
-          </Button>
-          <Button disabled={!valid || pending} onClick={submit}>
-            {pending && <Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" aria-hidden />}
-            {pending
-              ? t("common.saving")
-              : initial
-                ? t("pages.mcpCatalog.dialog.saveServer")
-                : t("pages.mcpCatalog.registerServer")}
-          </Button>
-        </DialogFooter>
-      </BaseDialog>
+        </FormSection>
+      </EditorSheet>
       <ConfirmDialog
         name="mcp-credential-clear"
         open={confirming !== null}
@@ -1408,6 +1397,7 @@ export function McpLibrary() {
   const { t } = useTranslation();
   const { orgId } = useScope();
   const client = useQueryClient();
+  const toast = useToast();
   const query = useQuery({
     queryKey: ["mcp-library", orgId],
     queryFn: () => fetchMcpLibrary(orgId as string),
@@ -1420,11 +1410,36 @@ export function McpLibrary() {
   const install = useMutation({
     mutationFn: (item: McpLibraryItem) =>
       createMcpServer(orgId as string, { ...item, enabled: true, source: "library" }),
-    onSuccess: () => {
+    onSuccess: (_server, item) => {
       void client.invalidateQueries({ queryKey: ["mcp-library", orgId] });
       void client.invalidateQueries({ queryKey: ["mcp-servers", orgId] });
+      // an install registers the definition and nothing else: the next step is
+      // Configure on the catalog, so the toast says where
+      toast.push({
+        tone: "success",
+        title: t("pages.mcpLibrary.installedToast", { name: item.name }),
+        detail: t("pages.mcpLibrary.nextStep"),
+      });
     },
+    // a refused install used to leave the button as it was and say nothing
+    onError: (error, item) =>
+      toast.push({
+        tone: "error",
+        title: t("pages.mcpLibrary.installFailed", { name: item.name }),
+        detail: errorDetail(error),
+      }),
   });
+  if (!orgId)
+    return (
+      <PageBody>
+        <EmptyState
+          uxTarget="mcp-library-no-org"
+          icon={<Boxes />}
+          title={t("pages.mcpLibrary.noOrgTitle")}
+          description={t("pages.mcpLibrary.noOrgBody")}
+        />
+      </PageBody>
+    );
   return (
     <PageBody>
       <PageLead>{t("pages.mcpLibrary.lead")}</PageLead>
@@ -1438,16 +1453,24 @@ export function McpLibrary() {
       {query.isLoading ? (
         <CardGridSkeleton cards={4} height={190} min={300} />
       ) : query.error ? (
-        // load-error-allow: the curated catalog ships with the control plane and is never empty
         <LoadError
           error={query.error}
           resource={t("errors.resources.mcpLibrary")}
           onRetry={() => void query.refetch()}
           target="mcp-library"
         />
+      ) : !query.data?.length ? (
+        // the curated list ships with the control plane, so an empty answer is
+        // a build that carries none; there is nothing to create from here
+        <EmptyState
+          uxTarget="mcp-library"
+          icon={<Boxes />}
+          title={t("pages.mcpLibrary.emptyTitle")}
+          description={t("pages.mcpLibrary.emptyBody")}
+        />
       ) : (
         <div className="grid gap-3 md:grid-cols-2">
-          {query.data?.map((item) => (
+          {query.data.map((item) => (
             <article
               key={item.slug}
               className="rounded-[10px] border border-[color:var(--border-default)] bg-card p-5"
@@ -1469,23 +1492,40 @@ export function McpLibrary() {
                   <ToolBadges tools={item.tools} />
                 </div>
               )}
-              <div className="mt-5 flex items-center border-t border-[color:var(--border-subtle)] pt-4">
+              <div className="mt-5 flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-[color:var(--border-subtle)] pt-4">
                 <span className="text-xs text-muted-foreground">
                   {item.required_scopes.length
                     ? t("pages.mcpLibrary.scopesCount", { count: item.required_scopes.length })
                     : t("pages.mcpLibrary.noScopes")}
                 </span>
-                <Button
-                  className="ml-auto"
-                  variant={item.installed ? "outline" : "default"}
-                  disabled={item.installed || install.isPending}
-                  onClick={() => install.mutate(item)}
-                >
-                  {install.isPending && install.variables?.slug === item.slug && (
-                    <Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" aria-hidden />
-                  )}
-                  {item.installed ? t("pages.mcpLibrary.installed") : t("pages.mcpLibrary.install")}
-                </Button>
+                {item.installed ? (
+                  // a status, not a control: a disabled button read 2.7:1
+                  <span className="ml-auto flex flex-wrap items-center justify-end gap-x-3 gap-y-1">
+                    <Badge tone="success" dot>
+                      {t("pages.mcpLibrary.installed")}
+                    </Badge>
+                    <Link
+                      to="/mcp-catalog"
+                      className="text-xs text-[color:var(--red-folk-text)] underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    >
+                      {t("pages.mcpLibrary.configureLink")}
+                    </Link>
+                  </span>
+                ) : (
+                  <GatedButton
+                    gate="mcp_server:create"
+                    control="mcp-library-install"
+                    className="ml-auto"
+                    aria-label={t("pages.mcpLibrary.installAria", { name: item.name })}
+                    disabled={install.isPending}
+                    onClick={() => install.mutate(item)}
+                  >
+                    {install.isPending && install.variables?.slug === item.slug && (
+                      <Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" aria-hidden />
+                    )}
+                    {t("pages.mcpLibrary.install")}
+                  </GatedButton>
+                )}
               </div>
             </article>
           ))}
@@ -1499,6 +1539,7 @@ export function ToolGroups() {
   const { t } = useTranslation();
   const { orgId } = useScope();
   const client = useQueryClient();
+  const toast = useToast();
   const groups = useQuery({
     queryKey: ["mcp-tool-groups", orgId],
     queryFn: () => fetchMcpToolGroups(orgId as string),
@@ -1524,9 +1565,18 @@ export function ToolGroups() {
       input: Omit<McpToolGroupRow, "id" | "org_id" | "created_at" | "updated_at">;
     }) =>
       initial ? updateMcpToolGroup(initial.id, input) : createMcpToolGroup(orgId as string, input),
-    onSuccess: () => {
+    onSuccess: (group, { initial }) => {
       void client.invalidateQueries({ queryKey: ["mcp-tool-groups", orgId] });
       setEditing(undefined);
+      toast.push(
+        initial
+          ? {
+              tone: "success",
+              title: t("toast.saved"),
+              detail: t("toast.savedDetail", { what: group.name }),
+            }
+          : { tone: "success", title: t("toast.created", { what: group.name }) },
+      );
     },
   });
   const remove = useMutation({
@@ -1541,18 +1591,47 @@ export function ToolGroups() {
     remove.reset();
     setDeleteTarget(group);
   };
+  if (!orgId)
+    return (
+      <PageBody>
+        <EmptyState
+          uxTarget="tool-groups-no-org"
+          icon={<Puzzle />}
+          title={t("pages.tool-groups.noOrgTitle")}
+          description={t("pages.tool-groups.noOrgBody")}
+        />
+      </PageBody>
+    );
+  // a failed server read is not "no servers": the picker has nothing to offer
+  // either way, but only one of them is fixed by registering a server
+  const serversFailed = !!servers.error;
+  const canPick = !!servers.data?.length;
   return (
     <PageBody>
       <PageLead
         action={
-          <Button disabled={!servers.data?.length} onClick={() => setEditing(null)}>
+          <GatedButton
+            gate="mcp_tool_group:create"
+            control="tool-group-new"
+            disabled={!canPick}
+            onClick={() => setEditing(null)}
+          >
             <Plus className="h-4 w-4" aria-hidden />
             {t("pages.tool-groups.create")}
-          </Button>
+          </GatedButton>
         }
       >
         {t("pages.tool-groups.lead")}
       </PageLead>
+      {serversFailed && !servers.isLoading && (
+        // load-error-allow: the server list only names the picker's rows and each card's tools
+        <LoadError
+          error={servers.error}
+          resource={t("errors.resources.mcpServers")}
+          onRetry={() => void servers.refetch()}
+          target="tool-groups-servers"
+        />
+      )}
       {groups.isLoading || servers.isLoading ? (
         <CardGridSkeleton cards={3} height={190} min={300} />
       ) : groups.error ? (
@@ -1568,13 +1647,21 @@ export function ToolGroups() {
           icon={<Puzzle />}
           title={t("pages.tool-groups.emptyTitle")}
           description={
-            servers.data?.length
-              ? t("pages.tool-groups.emptyBody")
-              : t("pages.tool-groups.emptyNoServers")
+            serversFailed
+              ? t("pages.tool-groups.emptyServersFailed")
+              : canPick
+                ? t("pages.tool-groups.emptyBody")
+                : t("pages.tool-groups.emptyNoServers")
           }
           actions={
-            servers.data?.length ? (
-              <Button onClick={() => setEditing(null)}>{t("pages.tool-groups.create")}</Button>
+            canPick ? (
+              <GatedButton
+                gate="mcp_tool_group:create"
+                control="tool-group-new-empty"
+                onClick={() => setEditing(null)}
+              >
+                {t("pages.tool-groups.create")}
+              </GatedButton>
             ) : undefined
           }
         />
@@ -1636,7 +1723,16 @@ export function ToolGroups() {
         pending={remove.isPending}
         error={remove.error}
         onConfirm={() =>
-          deleteTarget && remove.mutate(deleteTarget.id, { onSuccess: () => setDeleteTarget(null) })
+          deleteTarget &&
+          remove.mutate(deleteTarget.id, {
+            onSuccess: () => {
+              toast.push({
+                tone: "success",
+                title: t("toast.deleted", { what: deleteTarget.name }),
+              });
+              setDeleteTarget(null);
+            },
+          })
         }
       />
       {editing !== undefined && (
@@ -1712,27 +1808,15 @@ function ToolGroupDialog({
           <legend className="text-sm font-medium">{t("pages.mcpCatalog.fields.tools")}</legend>
           <div className="mt-2 max-h-64 space-y-3 overflow-y-auto rounded-[10px] border border-[color:var(--border-default)] p-3">
             {servers.map((server) => (
-              <div key={server.id}>
-                <p className="mb-2 font-mono text-xs text-muted-foreground">{server.name}</p>
-                <div className="flex flex-wrap gap-2">
-                  {server.tools.map((tool) => {
-                    const active = selected.some(
-                      (item) => item.server_id === server.id && item.tool === tool,
-                    );
-                    return (
-                      <Button
-                        key={tool}
-                        type="button"
-                        variant={active ? "default" : "outline"}
-                        aria-pressed={active}
-                        onClick={() => toggle({ server_id: server.id, tool })}
-                      >
-                        {tool}
-                      </Button>
-                    );
-                  })}
-                </div>
-              </div>
+              <ChipGroup
+                key={server.id}
+                label={server.name}
+                options={server.tools.map((tool) => ({ id: tool, name: tool }))}
+                selected={selected
+                  .filter((item) => item.server_id === server.id)
+                  .map((i) => i.tool)}
+                onToggle={(tool) => toggle({ server_id: server.id, tool })}
+              />
             ))}
           </div>
         </fieldset>
@@ -1825,26 +1909,38 @@ function McpSettingsForm({
 }) {
   const { t } = useTranslation();
   const { orgId } = useScope();
+  const toast = useToast();
   const [form, setForm] = React.useState(initial);
   const set = (patch: Partial<McpGatewaySettingsRow>) =>
     setForm((current) => ({ ...current, ...patch }));
+  // the fields go read-only for a caller the table refuses; the Save beside
+  // them says which role it takes. an unanswered gate leaves them editable,
+  // like every other control (docs/dev-docs/development/rbac-gating.md)
+  const readOnly = useCan()("mcp_settings", "update") === false;
   const save = useMutation({
     mutationFn: () => updateMcpSettings(orgId as string, form),
     onSuccess: (next) => {
       setForm(next);
       onSaved();
+      toast.push({ tone: "success", title: t("pages.mcpSettings.savedToast") });
     },
+    onError: (error) =>
+      toast.push({
+        tone: "error",
+        title: t("pages.mcpSettings.saveFailed"),
+        detail: errorDetail(error),
+      }),
   });
   return (
     <PageBody>
       <PageLead>{t("pages.mcpSettings.lead")}</PageLead>
       <div className="grid gap-4 lg:grid-cols-2">
-        <section className="rounded-[10px] border border-[color:var(--border-default)] bg-card p-5">
-          <div className="flex items-center gap-2">
-            <Settings2 className="h-4 w-4 text-[color:var(--red-folk-text)]" aria-hidden />
-            <h2 className="font-semibold">{t("pages.mcpSettings.transportDefaults")}</h2>
-          </div>
-          <div className="mt-5 grid gap-4">
+        <SettingsPanel
+          title={t("pages.mcpSettings.transportDefaults")}
+          dimmed={readOnly}
+          className="bg-card"
+        >
+          <div className="grid w-full gap-4">
             <Field label={t("pages.mcpSettings.defaultTransport")} htmlFor="default-transport">
               <Combobox
                 id="default-transport"
@@ -1879,13 +1975,13 @@ function McpSettingsForm({
               onChange={(value) => set({ allow_unlisted_tools: value })}
             />
           </div>
-        </section>
-        <section className="rounded-[10px] border border-[color:var(--border-default)] bg-card p-5">
-          <div className="flex items-center gap-2">
-            <ShieldCheck className="h-4 w-4 text-[color:var(--red-folk-text)]" aria-hidden />
-            <h2 className="font-semibold">{t("pages.mcpSettings.requestControls")}</h2>
-          </div>
-          <div className="mt-5 grid gap-4 sm:grid-cols-2">
+        </SettingsPanel>
+        <SettingsPanel
+          title={t("pages.mcpSettings.requestControls")}
+          dimmed={readOnly}
+          className="bg-card"
+        >
+          <div className="grid w-full gap-4 sm:grid-cols-2">
             <Field label={t("pages.mcpSettings.connectTimeout")} htmlFor="connect-timeout">
               <Input
                 id="connect-timeout"
@@ -1917,11 +2013,11 @@ function McpSettingsForm({
               />
             </Field>
           </div>
-          <p className="mt-5 flex items-start gap-2 rounded-[10px] border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] p-3 text-xs leading-relaxed text-muted-foreground">
+          <p className="flex w-full items-start gap-2 rounded-[10px] border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] p-3 text-xs leading-relaxed text-muted-foreground">
             <Wrench className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
             {t("pages.mcpSettings.persistNote")}
           </p>
-        </section>
+        </SettingsPanel>
       </div>
       {save.error && (
         <p role="alert" className="text-sm text-[color:var(--danger-text)]">
@@ -1929,12 +2025,17 @@ function McpSettingsForm({
         </p>
       )}
       <div className="flex justify-end">
-        <Button disabled={save.isPending} onClick={() => save.mutate()}>
+        <GatedButton
+          gate="mcp_settings:update"
+          control="mcp-settings-save"
+          disabled={save.isPending}
+          onClick={() => save.mutate()}
+        >
           {save.isPending && (
             <Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" aria-hidden />
           )}
           {save.isPending ? t("common.saving") : t("pages.mcpSettings.save")}
-        </Button>
+        </GatedButton>
       </div>
     </PageBody>
   );

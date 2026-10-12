@@ -1,7 +1,10 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import * as React from "react";
+import { MemoryRouter, useInRouterContext } from "react-router";
 
 import { json } from "./story-harness";
+import { Toaster } from "@/components/ui/toaster";
+import { ToastProvider } from "@/lib/toast";
 import type {
   McpGatewaySettingsRow,
   McpLibraryItem,
@@ -270,5 +273,22 @@ export function Harness({
     },
     [],
   );
-  return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+  // the library links to the catalog; a story that brings its own router keeps it
+  const inRouter = useInRouterContext();
+  return (
+    <QueryClientProvider client={client}>
+      {inRouter ? children : <MemoryRouter>{children}</MemoryRouter>}
+    </QueryClientProvider>
+  );
+}
+
+// the toast region is what outlives a closed sheet or dialog, so the stories
+// that assert an outcome mount it
+export function Toasts({ children }: { children: React.ReactNode }) {
+  return (
+    <ToastProvider>
+      {children}
+      <Toaster />
+    </ToastProvider>
+  );
 }

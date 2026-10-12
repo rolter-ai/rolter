@@ -38,6 +38,8 @@ export interface EditorSheetProps {
    * discard-changes confirmation on scrim/Escape/Cancel (see DiscardGuard) */
   dirty: boolean;
   errorMessage?: string;
+  /** the translated next step, between `errorMessage` and `errorDetail` */
+  errorHint?: string;
   /**
    * What the control plane said, shown under `errorMessage` as its detail.
    * The lead is the caller's translated line; this stays as the server wrote it.
@@ -60,6 +62,7 @@ export function EditorSheet({
   subtitle,
   dirty,
   errorMessage,
+  errorHint,
   errorDetail,
   cancelLabel,
   saveLabel,
@@ -105,7 +108,7 @@ export function EditorSheet({
       <SheetHeader title={title} subtitle={subtitle} onClose={close} closeDisabled={locked} />
       <SheetBody>{children}</SheetBody>
       <SheetFooter>
-        <SheetError message={errorMessage} detail={errorDetail} />
+        <SheetError message={errorMessage} hint={errorHint} detail={errorDetail} />
         <SheetActions>
           <Button variant="ghost" disabled={locked} onClick={close}>
             {cancelLabel ?? t("common.cancel")}

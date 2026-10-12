@@ -2,18 +2,36 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import { McpLibrary, McpSettings, ToolGroups } from "./McpManagement";
-import { GROUPS, Harness, LIBRARY, SERVERS, SETTINGS, routed } from "./mcp-story-fixtures";
+import {
+  GROUPS,
+  Harness,
+  LIBRARY,
+  SERVERS,
+  SETTINGS,
+  Toasts,
+  routed,
+  urlOf,
+} from "./mcp-story-fixtures";
 
 import {
   cancelConfirmation,
   confirmDestructive,
+  expectAllowed,
   expectEmptyState,
+  expectLoadError,
+  expectNoFalseEmpty,
   expectRefused,
   expectSheetClosed,
+  expectSkeleton,
   Harness as GatedHarness,
   json,
   recording,
 } from "./story-harness";
+
+// no organization to read from: the screen says so instead of sitting on a
+// skeleton or an empty list
+const noOrg = () => async (input: RequestInfo | URL, init?: RequestInit) =>
+  /\/orgs(\?|$)/.test(urlOf(input)) ? json([]) : routed()(input, init);
 
 const meta = {
   title: "Screens/McpManagement",
@@ -92,16 +110,100 @@ export const LibraryInstallsServer: Story = {
     });
     return (
       <Harness fetchStub={stub}>
-        <McpLibrary />
+        <Toasts>
+          <McpLibrary />
+        </Toasts>
       </Harness>
     );
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await userEvent.click(await canvas.findByRole("button", { name: "Install" }));
-    await waitFor(() =>
-      expect(canvas.getAllByRole("button", { name: "Installed" })).toHaveLength(2),
+    await userEvent.click(await canvas.findByRole("button", { name: "Install Linear" }));
+    // an installed entry is a status, not a disabled button, and it points on
+    // to Configure; the toast says the same where the click happened (#2173)
+    await waitFor(() => expect(canvas.getAllByText("Installed")).toHaveLength(2));
+    await expect(canvas.queryByRole("button", { name: /^Installed$/ })).not.toBeInTheDocument();
+    await expect(canvas.getAllByRole("link", { name: "Configure" })[0]).toHaveAttribute(
+      "href",
+      "/mcp-catalog",
     );
+    await waitFor(() => expect(within(document.body).getByText("Linear installed")).toBeVisible());
+    await expect(within(document.body).getByText(/choose Configure/)).toBeVisible();
+  },
+};
+// a refused install used to leave the button as it was and say nothing
+export const LibraryInstallFails: Story = {
+  render: () => (
+    <Harness
+      fetchStub={routed({
+        servers: async (_input, init) =>
+          init?.method === "POST"
+            ? json({ error: { message: "slug linear is already registered" } }, 409)
+            : json(SERVERS),
+      })}
+    >
+      <Toasts>
+        <McpLibrary />
+      </Toasts>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const install = await canvas.findByRole("button", { name: "Install Linear" });
+    await userEvent.click(install);
+    const body = within(document.body);
+    await waitFor(() => expect(body.getByText("Could not install Linear")).toBeVisible());
+    await expect(body.getByText(/slug linear is already registered/)).toBeVisible();
+    await waitFor(() => expect(install).toBeEnabled());
+  },
+};
+export const LibraryLoading: Story = {
+  render: () => (
+    <Harness fetchStub={routed({ library: () => new Promise<Response>(() => {}) })}>
+      <McpLibrary />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectSkeleton(canvasElement);
+    await expectNoFalseEmpty(canvasElement, /library is empty/);
+  },
+};
+export const LibraryEmpty: Story = {
+  render: () => (
+    <Harness fetchStub={routed({ library: async () => json([]) })}>
+      <McpLibrary />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectEmptyState(canvasElement, /The library is empty/);
+  },
+};
+export const LibraryError: Story = {
+  render: () => (
+    <Harness
+      fetchStub={routed({
+        library: async () => json({ error: { message: "catalog offline" } }, 503),
+      })}
+    >
+      <McpLibrary />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectLoadError(canvasElement, /failed to return the MCP library/i);
+    await expectNoFalseEmpty(canvasElement, /library is empty/);
+  },
+};
+export const LibraryNoOrg: Story = {
+  render: () => (
+    <Harness fetchStub={noOrg()}>
+      <McpLibrary />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await waitFor(() =>
+      expect(within(canvasElement).getByText("Choose an organization")).toBeVisible(),
+    );
+    await expect(within(canvasElement).queryByRole("button", { name: /^Install/ })).toBeNull();
   },
 };
 
@@ -223,7 +325,9 @@ export const SettingsSavesChanges: Story = {
     });
     return (
       <Harness fetchStub={stub}>
-        <McpSettings />
+        <Toasts>
+          <McpSettings />
+        </Toasts>
       </Harness>
     );
   },
@@ -234,6 +338,10 @@ export const SettingsSavesChanges: Story = {
     await userEvent.type(retries, "3");
     await userEvent.click(canvas.getByRole("button", { name: "Save MCP settings" }));
     await waitFor(() => expect(retries).toHaveValue(3));
+    // the save closes nothing, so without a toast it confirmed nothing (#2173)
+    await waitFor(() =>
+      expect(within(document.body).getByText("MCP settings saved")).toBeVisible(),
+    );
   },
 };
 
@@ -245,7 +353,237 @@ export const ToolGroupsGatedForMember: Story = {
     </GatedHarness>
   ),
   play: async ({ canvasElement }) => {
+    await expectRefused(canvasElement, "Create group");
     await expectRefused(canvasElement, "Delete tool group Triage");
     await expectRefused(canvasElement, "Configure tool group Triage");
+  },
+};
+// the empty state offers the same create, and a gate that refused one of the
+// two and not the other would leak
+export const ToolGroupsEmptyGatedForMember: Story = {
+  render: () => (
+    <GatedHarness role="member" fetchStub={routed({ groups: async () => json([]) })}>
+      <ToolGroups />
+    </GatedHarness>
+  ),
+  play: async ({ canvasElement }) => {
+    await waitFor(() => expect(within(canvasElement).getByText(/No tool groups/)).toBeVisible());
+    await expectRefused(canvasElement, "Create group");
+  },
+};
+export const ToolGroupsAllowedForAdmin: Story = {
+  render: () => (
+    <GatedHarness role="admin" fetchStub={routed()}>
+      <ToolGroups />
+    </GatedHarness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectAllowed(canvasElement, "Create group");
+    await expectAllowed(canvasElement, "Delete tool group Triage");
+    await expectAllowed(canvasElement, "Configure tool group Triage");
+  },
+};
+export const LibraryGatedForMember: Story = {
+  render: () => (
+    <GatedHarness role="member" fetchStub={routed()}>
+      <McpLibrary />
+    </GatedHarness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectRefused(canvasElement, "Install Notion");
+    await expectRefused(canvasElement, "Install Linear");
+  },
+};
+export const LibraryAllowedForAdmin: Story = {
+  render: () => (
+    <GatedHarness role="admin" fetchStub={routed()}>
+      <McpLibrary />
+    </GatedHarness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectAllowed(canvasElement, "Install Notion");
+    await expectAllowed(canvasElement, "Install Linear");
+  },
+};
+// the fields stay readable, as a disabled fieldset, and the Save names the
+// role that would allow it
+export const SettingsGatedForViewer: Story = {
+  render: () => (
+    <GatedHarness role="viewer" fetchStub={routed()}>
+      <McpSettings />
+    </GatedHarness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectRefused(canvasElement, "Save MCP settings");
+    const retries = within(canvasElement).getByLabelText("Maximum retries");
+    await waitFor(() => expect(retries).toBeDisabled());
+    await expect(retries).toHaveValue(SETTINGS.max_retries);
+    const transport = within(canvasElement).getByRole("combobox", { name: "Default transport" });
+    await waitFor(() => expect(transport).toBeDisabled());
+  },
+};
+export const SettingsAllowedForAdmin: Story = {
+  render: () => (
+    <GatedHarness role="admin" fetchStub={routed()}>
+      <McpSettings />
+    </GatedHarness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectAllowed(canvasElement, "Save MCP settings");
+    await expectAllowed(canvasElement, "Maximum retries", "spinbutton");
+  },
+};
+
+export const ToolGroupsLoading: Story = {
+  render: () => (
+    <Harness fetchStub={routed({ groups: () => new Promise<Response>(() => {}) })}>
+      <ToolGroups />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectSkeleton(canvasElement);
+    await expectNoFalseEmpty(canvasElement, /No tool groups/);
+  },
+};
+export const ToolGroupsError: Story = {
+  render: () => (
+    <Harness
+      fetchStub={routed({
+        groups: async () => json({ error: { message: "groups offline" } }, 503),
+      })}
+    >
+      <ToolGroups />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectLoadError(canvasElement, /failed to return tool groups/i);
+    await expectNoFalseEmpty(canvasElement, /No tool groups/);
+  },
+};
+// a failed servers read is not "no servers": the empty state must not send an
+// admin off to register servers that may already exist
+export const ToolGroupsServersFailed: Story = {
+  render: () => (
+    <Harness
+      fetchStub={routed({
+        groups: async () => json([]),
+        servers: async () => json({ error: { message: "registry offline" } }, 503),
+      })}
+    >
+      <ToolGroups />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectLoadError(canvasElement, /failed to return MCP servers/i);
+    await expect(canvas.getByText(/server list could not be read/)).toBeVisible();
+    await expect(canvas.queryByText(/Register MCP servers and declare/)).not.toBeInTheDocument();
+    await expect(canvas.getByRole("button", { name: "Create group" })).toBeDisabled();
+    await expect(await canvas.findByRole("button", { name: /try again/i })).toBeVisible();
+  },
+};
+export const ToolGroupsNoOrg: Story = {
+  render: () => (
+    <Harness fetchStub={noOrg()}>
+      <ToolGroups />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText("Choose an organization")).toBeVisible());
+    await expect(canvas.queryByRole("button", { name: "Create group" })).toBeNull();
+  },
+};
+const created = recording(
+  routed({
+    groups: async (_input, init) =>
+      init?.method === "POST" ? json({ ...GROUPS[0], name: "Builders" }, 201) : json([]),
+  }),
+);
+export const ToolGroupCreateIsAnnounced: Story = {
+  render: () => (
+    <Harness fetchStub={created.stub}>
+      <Toasts>
+        <ToolGroups />
+      </Toasts>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const create = await canvas.findByRole("button", { name: "Create group" });
+    await waitFor(() => expect(create).toBeEnabled());
+    await userEvent.click(create);
+    const body = within(document.body);
+    await userEvent.type(body.getByLabelText("Name"), "Builders");
+    await userEvent.click(body.getByRole("button", { name: "create_issue" }));
+    await userEvent.click(body.getByRole("button", { name: "Save group" }));
+    await expect(await created.expectSentBody("POST", "/mcp/tool-groups")).toMatchObject({
+      name: "Builders",
+      tools: [{ server_id: "server-github", tool: "create_issue" }],
+    });
+    await expectSheetClosed();
+    await waitFor(() => expect(within(document.body).getByText("Builders created")).toBeVisible());
+  },
+};
+
+export const SettingsLoading: Story = {
+  render: () => (
+    <Harness fetchStub={routed({ settings: () => new Promise<Response>(() => {}) })}>
+      <McpSettings />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => expectSkeleton(canvasElement),
+};
+export const SettingsError: Story = {
+  render: () => (
+    <Harness
+      fetchStub={routed({
+        settings: async () => json({ error: { message: "settings offline" } }, 503),
+      })}
+    >
+      <McpSettings />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectLoadError(canvasElement, /failed to return MCP settings/i);
+    await expect(within(canvasElement).queryByLabelText("Maximum retries")).toBeNull();
+  },
+};
+export const SettingsNoOrg: Story = {
+  render: () => (
+    <Harness fetchStub={noOrg()}>
+      <McpSettings />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText("Choose an organization")).toBeVisible());
+    await expect(canvas.queryByRole("button", { name: "Save MCP settings" })).toBeNull();
+  },
+};
+export const SettingsSaveFails: Story = {
+  render: () => (
+    <Harness
+      fetchStub={routed({
+        settings: async (_input, init) =>
+          init?.method === "PUT"
+            ? json({ error: { message: "timeout out of range" } }, 400)
+            : json(SETTINGS),
+      })}
+    >
+      <Toasts>
+        <McpSettings />
+      </Toasts>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "Save MCP settings" }));
+    await waitFor(() =>
+      expect(within(document.body).getByText("Could not save the MCP settings")).toBeVisible(),
+    );
+    // the reason sits beside the Save and again in the toast, which outlives it
+    await expectLoadError(canvasElement, /timeout out of range/);
+    await expect(canvas.getAllByText(/timeout out of range/).length).toBeGreaterThanOrEqual(2);
   },
 };
