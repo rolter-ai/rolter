@@ -47,3 +47,22 @@ curl -H "Authorization: Bearer $SESSION_TOKEN" \
 The filters narrow what your roles already reach and never widen it. Every read is limited to the request log of the orgs, teams and projects you hold a role in, before any filter applies, so naming another tenant's key, unit or customer counts nothing rather than their traffic. See [Who sees which request logs](/security/rbac#who-sees-which-request-logs) for how roles map to rows.
 
 A **saved view** on the `dashboard` surface can hold these four filters beside `window` and `bucket`; see [Saved views](/security/rbac#saved-views).
+
+## Guardrail outcomes
+
+`GET /api/v1/analytics/guardrails` takes the same `since` and `until` as the other reads and answers what each guardrail did to the requests in that window:
+
+```json
+{
+  "recorded": true,
+  "data": [
+    { "action": "redacted", "rule": "Redact customer email", "requests": 12 },
+    { "action": "blocked", "rule": "Block override attempts", "requests": 3 },
+    { "action": "provider_blocked", "rule": "", "requests": 1 }
+  ]
+}
+```
+
+`action` is `blocked`, `redacted` or `annotated` for a rule named in `rule`, and `provider_blocked` or `provider_transformed` with an empty `rule` for the active guardrail provider. A request counts once per rule, scaled by the log's sampling weight like every other count. The rows are limited to the request log you can read, as everywhere on this page. `recorded` is `false`, with `data` empty, when the ClickHouse table lacks `clickhouse/018_guardrail_events.sql`.
+
+`GET /api/v1/analytics/invocations` takes `guardrail=<action>:<rule>` (or `provider_blocked` / `provider_transformed`) to list exactly those requests, and each row carries `guardrail_events`, an array of the same strings.

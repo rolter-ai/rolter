@@ -20,6 +20,12 @@ import {
   GuardrailLoading,
   PolicyCard,
 } from "@/components/GuardrailPanel";
+import {
+  GuardrailOutcomesNotice,
+  OutcomeCounts,
+  RULE_ACTIONS,
+  useGuardrailOutcomes,
+} from "@/components/GuardrailOutcomes";
 import { LoadError } from "@/components/LoadError";
 import { superadminOnly } from "@/components/ForbiddenScreen";
 import { GatedButton } from "@/components/GatedButton";
@@ -117,6 +123,8 @@ function GuardrailRulesScreen() {
     queryFn: fetchGuardrailRules,
     retry: false,
   });
+  // what each rule did over the last week (#2158), read beside the rules
+  const outcomes = useGuardrailOutcomes();
 
   // the same cache entry the Effective config and Models screens read, fetched
   // afresh on every visit: the config can also change outside this tab, which
@@ -309,6 +317,8 @@ function GuardrailRulesScreen() {
         </GuardrailBanner>
       )}
 
+      {!loading && !query.isError && <GuardrailOutcomesNotice query={outcomes} />}
+
       {loading ? (
         <GuardrailLoading />
       ) : query.isError ? (
@@ -369,6 +379,10 @@ function GuardrailRulesScreen() {
                         />
                         {(state?.state === "enforced" || state?.state === "off") && (
                           <OffRoutes routes={offRoutes(rule.name)} />
+                        )}
+                        {/* an overridden row never runs; the file rule's card has the counts */}
+                        {state?.state !== "overridden" && (
+                          <OutcomeCounts query={outcomes} rule={rule.name} actions={RULE_ACTIONS} />
                         )}
                         {state?.state === "overridden" && (
                           <FileRuleNote
@@ -445,6 +459,7 @@ function GuardrailRulesScreen() {
                       <>
                         <RuleDetails rule={rule} streaming={streaming} />
                         <OffRoutes routes={offRoutes(rule.name)} />
+                        <OutcomeCounts query={outcomes} rule={rule.name} actions={RULE_ACTIONS} />
                       </>
                     }
                     actions={

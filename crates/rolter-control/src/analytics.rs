@@ -448,6 +448,7 @@ pub fn router() -> Router<crate::ControlState> {
         .route("/api/v1/analytics/by-model", get(by_model))
         .route("/api/v1/analytics/by-attribution", get(by_attribution))
         .route("/api/v1/analytics/invocations", get(invocations))
+        .route("/api/v1/analytics/guardrails", get(guardrails))
 }
 
 /// Map a cost-attribution dimension name to its whitelisted column. Anything
@@ -784,6 +785,61 @@ async fn by_attribution(
     run(ch.query(&sql, &with_access(window, &access)).await)
 }
 
+/// What each guardrail did to requests in the window (#2158): one row per
+/// `(rule, action)` with the number of requests it acted on.
+///
+/// `action` is `blocked`, `redacted` or `annotated` for a rule (named in
+/// `rule`), and `provider_blocked` or `provider_transformed` with an empty
+/// `rule` for the active guardrail provider. A request counts once per entry
+/// however many times the rule matched in it, scaled by the sampling weight
+/// like every other count here. Rows older than
+/// `clickhouse/018_guardrail_events.sql` carry no events, and a table without
+/// the column answers `recorded: false` with no rows rather than failing, so
+/// the dashboard can say the outcomes are not being kept instead of "no
+/// matches yet".
+async fn guardrails(
+    access: AnalyticsAccess,
+    State(state): State<crate::ControlState>,
+    Query(q): Query<WindowQuery>,
+) -> Response {
+    let ch = match client_or_503(&state) {
+        Ok(ch) => ch,
+        Err(resp) => return resp,
+    };
+    let columns = match ch.request_log_columns().await {
+        Ok(columns) => columns,
+        Err(error) => return query_failed("analytics query failed", &error),
+    };
+    if !columns.has("guardrail_events") {
+        return Json(json!({"data": [], "recorded": false})).into_response();
+    }
+    match ch
+        .query(&guardrails_sql(), &with_access(window_params(&q), &access))
+        .await
+    {
+        Ok(data) => Json(json!({"data": data, "recorded": true})).into_response(),
+        Err(error) => {
+            ch.forget_request_log_columns();
+            query_failed("analytics query failed", &error)
+        }
+    }
+}
+
+/// The rollup behind [`guardrails`]. An entry is `<action>:<rule>`, or just the
+/// action for the provider's; the action never holds a `:`, so the first one
+/// splits it even when a rule name does.
+fn guardrails_sql() -> String {
+    format!(
+        "select \
+            if(position(event, ':') = 0, event, substring(event, 1, position(event, ':') - 1)) as action, \
+            if(position(event, ':') = 0, '', substring(event, position(event, ':') + 1)) as rule, \
+            round(sum(sample_weight)) as requests \
+         from request_logs array join guardrail_events as event \
+         where {WHERE_WINDOW} and {ROW_VISIBLE} \
+         group by action, rule order by requests desc, action, rule format JSON"
+    )
+}
+
 /// Query params for the per-invocation log list: the shared time window plus
 /// optional model/key/status filters and pagination.
 #[derive(Debug, Deserialize)]
@@ -813,6 +869,11 @@ pub struct InvocationsQuery {
     /// `true` narrows the log to requests the gateway recorded as unpriced;
     /// `false` or omitted applies no filter
     pub(crate) unpriced: Option<bool>,
+    /// one guardrail event to filter to, as the `guardrails` rollup names it
+    /// (`blocked:<rule>`, `redacted:<rule>`, `annotated:<rule>`,
+    /// `provider_blocked`, `provider_transformed`); empty/omitted applies no
+    /// filter (#2158)
+    pub(crate) guardrail: Option<String>,
     /// page size, 1..=200 (defaults to 50)
     pub(crate) limit: Option<u32>,
     /// opaque `timestamp|request_id` cursor returned as the preceding page's
@@ -908,13 +969,17 @@ fn invocations_sql(status_expr: &str, columns: &Columns) -> String {
     let upstream_status = columns.select("upstream_status");
     let attempts = columns.select("attempts");
     let lifecycle_operation = columns.select("lifecycle_operation");
+    let guardrail_events = columns.select("guardrail_events");
+    // the filter reads the column, which an older table lacks: it then matches
+    // nothing, which is true, since no event was ever recorded there
+    let guardrail_filter = columns.expr("guardrail_events");
     format!(
         "select ts, request_id, trace_id, org_id, team_id, project_id, virtual_key_id, \
                 business_unit_id, customer_id, \
                 model, provider, target, variant, status, stream, cache_hit, cache_read_tokens, cache_write_tokens, \
                 {cache_write_1h_tokens}, \
                 prompt_tokens, completion_tokens, total_tokens, cost_usd, unpriced, latency_ms, ttft_ms, error, \
-                {upstream_status}, {attempts}, {lifecycle_operation}, \
+                {upstream_status}, {attempts}, {lifecycle_operation}, {guardrail_events}, \
                 if({PAYLOAD_VISIBLE}, payload.request_payload, '') as request_payload, \
                 if({PAYLOAD_VISIBLE}, payload.response_payload, '') as response_payload, \
                 toUInt8(not {PAYLOAD_VISIBLE} \
@@ -937,6 +1002,7 @@ fn invocations_sql(status_expr: &str, columns: &Columns) -> String {
            and ({{request_id:String}} = '' or request_id = {{request_id:String}}) \
            and ({{trace_id:String}} = '' or trace_id = {{trace_id:String}}) \
            and ({{unpriced:UInt8}} = 0 or unpriced = 1) \
+           and ({{guardrail:String}} = '' or has({guardrail_filter}, {{guardrail:String}})) \
            and {status_expr} \
            and {cursor} \
          order by ts desc, request_id desc \
@@ -1001,6 +1067,10 @@ async fn invocations(
     params.push((
         "param_unpriced".to_string(),
         u8::from(q.unpriced.unwrap_or(false)).to_string(),
+    ));
+    params.push((
+        "param_guardrail".to_string(),
+        q.guardrail.clone().unwrap_or_default(),
     ));
     params.push((
         "param_model".to_string(),
@@ -2142,6 +2212,71 @@ mod optional_column_tests {
         let sql = invocations_sql("true", &Columns::default());
         // beside the total it is part of, so a reader sees the pair (#2891)
         assert!(sql.contains("cache_write_tokens, cache_write_1h_tokens,"));
+    }
+
+    async fn rollup(app: &Router) -> (StatusCode, Value) {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/analytics/guardrails")
+                    .body(Body::empty())
+                    .expect("a valid request"),
+            )
+            .await
+            .expect("the router answers");
+        let status = response.status();
+        let body = to_bytes(response.into_body(), 1 << 20)
+            .await
+            .expect("a readable body");
+        (status, serde_json::from_slice(&body).unwrap_or(Value::Null))
+    }
+
+    #[tokio::test]
+    async fn the_guardrail_rollup_splits_events_and_is_scoped_to_the_callers_rows() {
+        let mut columns = REQUIRED.to_vec();
+        columns.extend(every_optional());
+        let stub = Stub::start(&columns).await;
+        let app = app_over(ClickHouseClient::new(&stub.url));
+
+        let (status, body) = rollup(&app).await;
+
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["recorded"], true, "{body}");
+        let sql = stub.list_sql();
+        assert!(
+            sql.contains("array join guardrail_events as event"),
+            "{sql}"
+        );
+        assert!(sql.contains(&format!("and {ROW_VISIBLE}")), "{sql}");
+        assert!(sql.contains("round(sum(sample_weight))"), "{sql}");
+    }
+
+    #[tokio::test]
+    async fn the_guardrail_rollup_says_so_when_the_table_does_not_record_events() {
+        let stub = Stub::start(REQUIRED).await;
+        let app = app_over(ClickHouseClient::new(&stub.url));
+
+        let (status, body) = rollup(&app).await;
+
+        // not a 502: the file is not a condition of upgrading the control plane
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["recorded"], false, "{body}");
+        assert_eq!(body["data"], json!([]), "{body}");
+    }
+
+    #[tokio::test]
+    async fn the_invocation_filter_on_a_guardrail_event_survives_a_table_without_the_column() {
+        let stub = Stub::start(REQUIRED).await;
+        let app = app_over(ClickHouseClient::new(&stub.url));
+
+        let (status, body) = list(&app, "?guardrail=blocked%3Aemail").await;
+
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let sql = stub.list_sql();
+        assert!(
+            sql.contains("has(emptyArrayString(), {guardrail:String})"),
+            "{sql}"
+        );
     }
 
     #[tokio::test]

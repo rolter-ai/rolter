@@ -245,6 +245,15 @@ pub struct RequestLog {
     /// what it was before the column existed.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub lifecycle_operation: String,
+    /// What each guardrail did to this request, as `<action>:<rule>` entries
+    /// (`blocked`, `redacted`, `annotated`) and the bare `provider_blocked` /
+    /// `provider_transformed` for the guardrail provider (#2158). Rule names
+    /// only, never the matched text. Not serialized when empty, so a request no
+    /// guardrail touched is byte for byte what it was before the column, and a
+    /// ClickHouse without `clickhouse/018_guardrail_events.sql` keeps accepting
+    /// every row that has none
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub guardrail_events: Vec<String>,
     /// raw bodies are persisted in the short-retention `request_payloads`
     /// table, never in the primary metadata table
     #[serde(skip)]
@@ -265,6 +274,10 @@ pub struct RequestLog {
     /// sampling decision, never by the request path.
     pub sample_weight: f64,
 }
+
+/// How a withheld row's `error` begins when an output guardrail rule refused
+/// the response; the rest of it is the rule's name.
+pub const GUARDRAIL_WITHHELD_PREFIX: &str = "guardrail_blocked: ";
 
 impl Default for RequestLog {
     fn default() -> Self {
@@ -305,6 +318,7 @@ impl Default for RequestLog {
             upstream_status: 0,
             attempts: 0,
             lifecycle_operation: String::new(),
+            guardrail_events: Vec::new(),
             request_payload: String::new(),
             response_payload: String::new(),
             capture_payloads: false,
@@ -862,6 +876,11 @@ impl UsageLoggingStream {
     /// parse usage from.
     pub fn withhold(mut self, status: u16, reason: String) {
         if let Some(log) = self.pending.as_mut() {
+            // a withheld response is a guardrail outcome only when the policy
+            // was a guardrail rule; the reason names it
+            if let Some(rule) = reason.strip_prefix(GUARDRAIL_WITHHELD_PREFIX) {
+                log.guardrail_events.push(format!("blocked:{rule}"));
+            }
             log.status = status;
             log.error = reason;
             log.withheld = 1;

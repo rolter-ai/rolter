@@ -596,6 +596,13 @@ const INVOCATIONS_QUERY: &[QueryParam] = &[
         "boolean",
         "`true` returns only requests recorded as unpriced; omit for every request",
     ),
+    QueryParam::new(
+        "guardrail",
+        "string",
+        "only requests a guardrail acted on, named as the guardrails rollup does: \
+         `blocked:<rule>`, `redacted:<rule>`, `annotated:<rule>`, `provider_blocked` or \
+         `provider_transformed`; omit for every request",
+    ),
     QueryParam::new("limit", "integer", "page size, 1..=200; defaults to 50"),
     QueryParam::new(
         "cursor",
@@ -1857,13 +1864,26 @@ fn operations() -> Vec<Op> {
                  empty string for a model request and for a row older than the column. A row's \
                  `cache_write_1h_tokens` (a number) is the part of `cache_write_tokens` written to the \
                  provider's 1 hour prompt cache, so the 5 minute share is the difference; it is `0` for a \
-                 provider that reports no split. `upstream_status`, `attempts`, `lifecycle_operation` and \
-                 `cache_write_1h_tokens` come from ClickHouse files an operator applies by hand \
-                 (`clickhouse/015` to `017`): on a table that lacks one the field is still on every row, \
+                 provider that reports no split. `upstream_status`, `attempts`, `lifecycle_operation`, \
+                 `cache_write_1h_tokens` and `guardrail_events` (an array of strings, one per guardrail \
+                 action) come from ClickHouse files an operator applies by hand \
+                 (`clickhouse/015` to `018`): on a table that lacks one the field is still on every row, \
                  as `0` (an empty string for `lifecycle_operation`), and the list does not fail",
             )
             .clickhouse_read()
             .query(INVOCATIONS_QUERY),
+            Op::get(
+                "/api/v1/analytics/guardrails",
+                "getAnalyticsGuardrails",
+                "What each guardrail did to requests in the window: one row per `action` and `rule` \
+                 with the number of `requests` it acted on. `action` is `blocked`, `redacted` or \
+                 `annotated` for a rule (named in `rule`), and `provider_blocked` or \
+                 `provider_transformed` with an empty `rule` for the active guardrail provider. \
+                 `recorded` is `false` when the ClickHouse table lacks \
+                 `clickhouse/018_guardrail_events.sql`, in which case `data` is empty",
+            )
+            .clickhouse_read()
+            .query(WINDOW_QUERY),
         ],
     ));
 

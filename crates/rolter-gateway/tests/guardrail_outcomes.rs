@@ -1,0 +1,231 @@
+//! What each guardrail rule did to a request is on its log row (#2158).
+//!
+//! Request-log rows go to an in-process stand-in for the ClickHouse HTTP
+//! interface, so these tests always run and need no external service.
+
+use std::net::SocketAddr;
+use std::sync::Arc;
+use std::time::Duration;
+
+use axum::extract::State;
+use axum::routing::post;
+use axum::{Json, Router};
+use parking_lot::Mutex;
+use rolter_core::{
+    BalancingStrategy, BuiltinRule, GatewayConfig, GuardAction, GuardStage, GuardrailRule,
+    GuardrailsConfig, ModelRoute, ProviderConfig, ProviderKind, Target, VirtualKeyRecord,
+};
+use serde_json::{json, Value};
+
+const KEY: &str = "sk-guardrail-outcomes";
+
+async fn serve(app: Router) -> SocketAddr {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    addr
+}
+
+#[derive(Clone, Default)]
+struct Rows(Arc<Mutex<Vec<Value>>>);
+
+impl Rows {
+    async fn serve(&self) -> SocketAddr {
+        async fn ingest(
+            State(rows): State<Rows>,
+            axum::extract::RawQuery(query): axum::extract::RawQuery,
+            body: String,
+        ) -> &'static str {
+            if query.unwrap_or_default().contains("request_logs") {
+                for line in body.lines().filter(|line| !line.trim().is_empty()) {
+                    if let Ok(row) = serde_json::from_str::<Value>(line) {
+                        rows.0.lock().push(row);
+                    }
+                }
+            }
+            "ok"
+        }
+        serve(
+            Router::new()
+                .route("/", post(ingest))
+                .with_state(self.clone()),
+        )
+        .await
+    }
+
+    async fn only_row(&self) -> Value {
+        for _ in 0..200 {
+            if !self.0.lock().is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let rows = self.0.lock().clone();
+        assert_eq!(rows.len(), 1, "expected one row, saw {rows:?}");
+        rows[0].clone()
+    }
+}
+
+async fn upstream() -> SocketAddr {
+    serve(Router::new().route(
+        "/v1/chat/completions",
+        post(|| async {
+            Json(json!({
+                "id": "chatcmpl-mock",
+                "object": "chat.completion",
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "write to ops@corp.com"},
+                    "finish_reason": "stop"
+                }],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+            }))
+        }),
+    ))
+    .await
+}
+
+fn config(
+    upstream: SocketAddr,
+    clickhouse: SocketAddr,
+    stage: GuardStage,
+    action: GuardAction,
+) -> GatewayConfig {
+    let mut config = GatewayConfig::default();
+    config.logging.clickhouse_url = Some(format!("http://{clickhouse}"));
+    config.logging.flush_ms = 20;
+    config.logging.batch_max = 1;
+    config.providers.push(ProviderConfig {
+        name: "up".into(),
+        kind: ProviderKind::OpenaiCompatible,
+        api_base: format!("http://{upstream}"),
+        ..Default::default()
+    });
+    config.routes.push(ModelRoute {
+        model: "test-model".into(),
+        strategy: BalancingStrategy::RoundRobin,
+        targets: vec![Target {
+            provider: "up".into(),
+            model: Some("test-model".into()),
+            weight: 1,
+        }],
+        params: Default::default(),
+        param_policy: Default::default(),
+        advanced: Default::default(),
+        cache: None,
+        variants: Default::default(),
+        tenancy: None,
+    });
+    config.db_virtual_keys.push(VirtualKeyRecord {
+        access_policy: None,
+        key_hash: rolter_auth::hash_key(&config.server.resolve_key_pepper(), KEY),
+        id: "key-guardrails".into(),
+        org_id: "org-guardrails".into(),
+        team_id: String::new(),
+        project_id: String::new(),
+        user_id: String::new(),
+        models: vec![],
+        providers: vec![],
+        disabled: false,
+        expires_at: None,
+        cache: None,
+        business_unit_id: String::new(),
+        customer_id: String::new(),
+    });
+    config.guardrails = GuardrailsConfig {
+        enabled: true,
+        max_scan_bytes: None,
+        streaming_post_call: Default::default(),
+        rules: vec![GuardrailRule {
+            name: "email".to_string(),
+            builtin: Some(BuiltinRule::Email),
+            pattern: None,
+            stage,
+            action,
+            replacement: None,
+            include_system: false,
+        }],
+    };
+    config
+}
+
+async fn ask(config: &GatewayConfig, prompt: &str) -> reqwest::Response {
+    let state = rolter_gateway::AppState::with_logging(config, None);
+    let gw = serve(rolter_gateway::build_router(
+        state,
+        "/metrics",
+        32 * 1024 * 1024,
+    ))
+    .await;
+    reqwest::Client::new()
+        .post(format!("http://{gw}/v1/chat/completions"))
+        .bearer_auth(KEY)
+        .json(&json!({"model": "test-model", "messages": [{"role": "user", "content": prompt}]}))
+        .send()
+        .await
+        .unwrap()
+}
+
+async fn run(stage: GuardStage, action: GuardAction, prompt: &str) -> (u16, Value) {
+    let rows = Rows::default();
+    let clickhouse = rows.serve().await;
+    let up = upstream().await;
+    let response = ask(&config(up, clickhouse, stage, action), prompt).await;
+    let status = response.status().as_u16();
+    let _ = response.bytes().await.unwrap();
+    (status, rows.only_row().await)
+}
+
+#[tokio::test]
+async fn a_pre_call_block_leaves_a_row_naming_the_rule_and_never_the_text() {
+    let (status, row) = run(
+        GuardStage::PreCall,
+        GuardAction::Block,
+        "mail zed@secret.example",
+    )
+    .await;
+    assert_eq!(status, 400);
+    assert_eq!(row["status"], 400, "{row}");
+    assert_eq!(row["guardrail_events"], json!(["blocked:email"]), "{row}");
+    assert!(!row.to_string().contains("secret.example"), "{row}");
+}
+
+#[tokio::test]
+async fn a_pre_call_redaction_is_recorded_on_the_delivered_request() {
+    let (status, row) = run(
+        GuardStage::PreCall,
+        GuardAction::Redact,
+        "mail zed@secret.example",
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(row["guardrail_events"], json!(["redacted:email"]), "{row}");
+}
+
+#[tokio::test]
+async fn an_annotate_match_leaves_a_trace_and_forwards_unchanged() {
+    let (status, row) = run(
+        GuardStage::PreCall,
+        GuardAction::Annotate,
+        "mail zed@secret.example",
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(row["guardrail_events"], json!(["annotated:email"]), "{row}");
+}
+
+#[tokio::test]
+async fn a_request_no_rule_matched_carries_no_events_field() {
+    let (status, row) = run(GuardStage::PreCall, GuardAction::Block, "hello").await;
+    assert_eq!(status, 200);
+    assert!(row.get("guardrail_events").is_none(), "{row}");
+}
+
+#[tokio::test]
+async fn a_post_call_block_names_the_rule_on_the_withheld_row() {
+    let (status, row) = run(GuardStage::PostCall, GuardAction::Block, "ping").await;
+    assert_eq!(status, 403);
+    assert_eq!(row["withheld"], 1, "{row}");
+    assert_eq!(row["guardrail_events"], json!(["blocked:email"]), "{row}");
+}

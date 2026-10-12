@@ -341,6 +341,12 @@ pub struct GuardrailReport {
     pub hits: Vec<(String, usize)>,
     pub blocked_by: Option<String>,
     pub redactions: usize,
+    /// names of the rules that rewrote content, once each per request
+    pub redacted_by: Vec<String>,
+    /// names of the `annotate` rules that matched, once each per request.
+    /// Annotate forwards the request unchanged, so this is the only trace one
+    /// leaves (#2158)
+    pub annotated_by: Vec<String>,
 }
 
 impl GuardrailReport {
@@ -349,6 +355,25 @@ impl GuardrailReport {
             entry.1 += count;
         } else {
             self.hits.push((rule.to_string(), count));
+        }
+    }
+
+    /// The per-rule outcomes of this request as `<action>:<rule>` events
+    /// (`blocked`, `redacted`, `annotated`), the form the request log stores.
+    /// Rule names only, never matched text.
+    pub fn events(&self) -> Vec<String> {
+        let mut events = Vec::new();
+        if let Some(rule) = &self.blocked_by {
+            events.push(format!("blocked:{rule}"));
+        }
+        events.extend(self.redacted_by.iter().map(|r| format!("redacted:{r}")));
+        events.extend(self.annotated_by.iter().map(|r| format!("annotated:{r}")));
+        events
+    }
+
+    fn note(list: &mut Vec<String>, rule: &str) {
+        if !list.iter().any(|name| name == rule) {
+            list.push(rule.to_string());
         }
     }
 
@@ -515,13 +540,16 @@ impl CompiledGuardrails {
             }
             report.record(&rule.name, count);
             match rule.action {
-                GuardAction::Annotate => {}
+                GuardAction::Annotate => {
+                    GuardrailReport::note(&mut report.annotated_by, &rule.name);
+                }
                 GuardAction::Block => {
                     report.blocked_by = Some(rule.name.clone());
                     return ScanOutcome::Blocked(rule.name.clone());
                 }
                 GuardAction::Redact => {
                     report.redactions += count;
+                    GuardrailReport::note(&mut report.redacted_by, &rule.name);
                     let replaced = rule
                         .regex
                         .replace_all(&current, rule.token.as_str())
@@ -750,6 +778,24 @@ mod tests {
         assert_eq!(out, ScanOutcome::Unchanged);
         assert_eq!(report.hits, vec![("email".to_string(), 1)]);
         assert_eq!(report.redactions, 0);
+        // the only trace an annotate rule leaves, once however often it matched
+        let again = g.scan_segment("x@y.io z@y.io", false, &mut budget, &mut report);
+        assert_eq!(again, ScanOutcome::Unchanged);
+        assert_eq!(report.events(), vec!["annotated:email".to_string()]);
+    }
+
+    #[test]
+    fn events_name_each_rule_once_by_what_it_did() {
+        let g = compiled(vec![
+            rule("email", BuiltinRule::Email, GuardAction::Redact),
+            rule("phone", BuiltinRule::Phone, GuardAction::Annotate),
+        ]);
+        let mut budget = g.scan_budget();
+        let mut report = GuardrailReport::default();
+        g.scan_segment("a@b.co and c@d.co", false, &mut budget, &mut report);
+        g.scan_segment("e@f.co", false, &mut budget, &mut report);
+        assert_eq!(report.events(), vec!["redacted:email".to_string()]);
+        assert!(!report.events().iter().any(|e| e.contains("@")));
     }
 
     #[test]

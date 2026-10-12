@@ -67,6 +67,11 @@ pub(crate) const OPTIONAL_COLUMNS: &[OptionalColumn] = &[
         name: "cache_write_1h_tokens",
         default: "toUInt32(0)",
     },
+    // 018_guardrail_events.sql
+    OptionalColumn {
+        name: "guardrail_events",
+        default: "emptyArrayString()",
+    },
 ];
 
 /// The probe: every column `request_logs` has in the database the client reads
@@ -132,6 +137,23 @@ impl Columns {
     /// The optional columns the table lacks, for the log line that says so.
     pub(crate) fn missing(&self) -> &[&'static str] {
         &self.missing
+    }
+
+    /// Whether the table has the optional column `name`.
+    pub(crate) fn has(&self, name: &str) -> bool {
+        !self.missing.contains(&name)
+    }
+
+    /// `name` itself when the table has the column, otherwise its default, for
+    /// a predicate that reads the column rather than selecting it.
+    pub(crate) fn expr(&self, name: &str) -> String {
+        match OPTIONAL_COLUMNS
+            .iter()
+            .find(|column| column.name == name && !self.has(name))
+        {
+            Some(column) => column.default.to_string(),
+            None => name.to_string(),
+        }
     }
 
     /// The select-list term for `name`: the column itself when the table has
@@ -262,12 +284,25 @@ mod tests {
     }
 
     #[test]
+    fn a_predicate_reads_the_default_of_a_column_the_table_lacks() {
+        let lacking = Columns::lacking(&["guardrail_events"]);
+        assert!(!lacking.has("guardrail_events"));
+        assert_eq!(lacking.expr("guardrail_events"), "emptyArrayString()");
+        assert_eq!(lacking.expr("attempts"), "attempts");
+        assert_eq!(
+            Columns::default().expr("guardrail_events"),
+            "guardrail_events"
+        );
+    }
+
+    #[test]
     fn only_the_missing_column_is_replaced() {
         let columns = Columns::from_rows(&rows(&[
             "ts",
             "upstream_status",
             "attempts",
             "lifecycle_operation",
+            "guardrail_events",
         ]))
         .expect("the table is visible");
         assert_eq!(columns.missing(), ["cache_write_1h_tokens"]);

@@ -463,9 +463,21 @@ export interface InvocationRow {
   /// older than the column, and absent from a control plane that predates it,
   /// so a reader treats all three as "not a lifecycle call" and says nothing
   lifecycle_operation?: string;
+  /// what each guardrail did to the request, as `<action>:<rule>` entries with
+  /// the action `blocked`, `redacted` or `annotated`, plus the bare
+  /// `provider_blocked` / `provider_transformed` for the guardrail provider
+  /// (#2158). rule names only, never the matched text. absent from a control
+  /// plane that predates it, empty for a request no guardrail touched
+  guardrail_events?: string[];
 }
 
 export interface InvocationsQuery extends AnalyticsWindow {
+  /**
+   * Only the requests a guardrail acted on, named as the `guardrails` rollup
+   * names it: `blocked:<rule>`, `redacted:<rule>`, `annotated:<rule>`,
+   * `provider_blocked` or `provider_transformed` (#2158)
+   */
+  guardrail?: string;
   model?: string;
   key?: string;
   /** business unit ids to narrow to; omitted means every unit (#1247) */
@@ -522,12 +534,50 @@ export function fetchInvocationsPage(query: InvocationsQuery = {}): Promise<Invo
   if (query.request_id) params.set("request_id", query.request_id);
   if (query.trace_id) params.set("trace_id", query.trace_id);
   if (query.unpriced) params.set("unpriced", "true");
+  if (query.guardrail) params.set("guardrail", query.guardrail);
   if (query.limit != null) params.set("limit", String(query.limit));
   if (query.cursor) params.set("cursor", query.cursor);
   const qs = params.toString();
   return getAnalytics<Partial<InvocationsPage>>(
     `/api/v1/analytics/invocations${qs ? `?${qs}` : ""}`,
   ).then((r) => ({ data: r.data ?? [], next_cursor: r.next_cursor ?? null }));
+}
+
+/** what a guardrail did to a request: the three a rule can do, two a provider can */
+export type GuardrailAction =
+  "blocked" | "redacted" | "annotated" | "provider_blocked" | "provider_transformed";
+
+/**
+ * One `(action, rule)` of the guardrail outcome rollup (#2158): how many
+ * requests the rule acted on over the window. `rule` is empty for the
+ * guardrail provider's two actions. A request counts once per rule however
+ * often it matched; the number may arrive as a string, like every ClickHouse
+ * count.
+ */
+export interface GuardrailOutcomeRow {
+  action: GuardrailAction | string;
+  rule: string;
+  requests: number | string;
+}
+
+export interface GuardrailOutcomes {
+  data: GuardrailOutcomeRow[];
+  /**
+   * `false` when the ClickHouse table lacks the column the outcomes are kept
+   * in (`clickhouse/018_guardrail_events.sql` not applied), so an empty `data`
+   * means "not recorded" and not "nothing matched"
+   */
+  recorded: boolean;
+}
+
+/** the outcome rollup; throws AnalyticsUnavailableError without ClickHouse */
+export function fetchGuardrailOutcomes(window: AnalyticsWindow = {}): Promise<GuardrailOutcomes> {
+  return getAnalytics<Partial<GuardrailOutcomes>>(
+    `/api/v1/analytics/guardrails${windowParams(window)}`,
+  ).then((r) => ({
+    data: Array.isArray(r.data) ? r.data : [],
+    recorded: r.recorded !== false,
+  }));
 }
 
 export function fetchConfig(): Promise<GatewayConfigDto> {

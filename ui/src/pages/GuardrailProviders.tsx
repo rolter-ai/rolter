@@ -6,6 +6,12 @@ import { Trans, useTranslation } from "react-i18next";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { GuardrailEmpty, GuardrailLoading, PolicyCard } from "@/components/GuardrailPanel";
+import {
+  GuardrailOutcomesNotice,
+  OutcomeCounts,
+  PROVIDER_ACTIONS,
+  useGuardrailOutcomes,
+} from "@/components/GuardrailOutcomes";
 import { LoadError } from "@/components/LoadError";
 import { superadminOnly } from "@/components/ForbiddenScreen";
 import { GatedButton } from "@/components/GatedButton";
@@ -83,6 +89,8 @@ function GuardrailProvidersScreen() {
     },
     retry: false,
   });
+  // what the active provider did over the last week (#2158)
+  const outcomes = useGuardrailOutcomes();
 
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
   // `query` is the query the user is actually waiting on for this screen
@@ -188,6 +196,10 @@ function GuardrailProvidersScreen() {
         <EnforcementBanner enforcement={enforcement} onRetry={() => void query.refetch()} />
       )}
 
+      {!query.isLoading && !query.isError && providers.length > 0 && (
+        <GuardrailOutcomesNotice query={outcomes} />
+      )}
+
       {query.isLoading ? (
         <GuardrailLoading />
       ) : query.isError ? (
@@ -248,6 +260,11 @@ function GuardrailProvidersScreen() {
                     <p className="mt-1 text-[color:var(--status-warning-text)]">
                       {t("pages.guardrailProviders.postCallCardNote")}
                     </p>
+                  )}
+                  {/* the gateway records the provider's outcomes without a name,
+                      so only the one it is sending requests to can own them */}
+                  {enforcement && providerStatus(provider, enforcement) === "enforced" && (
+                    <OutcomeCounts query={outcomes} rule="" actions={PROVIDER_ACTIONS} />
                   )}
                 </>
               }
