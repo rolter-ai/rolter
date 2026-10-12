@@ -138,6 +138,9 @@ export function Table<T extends Record<string, unknown>>({
                       className={cn(
                         "border-b border-[color:var(--border-subtle)] px-4 py-2 align-middle text-[color:var(--text-secondary)]",
                         c.mono && "font-mono text-xs text-foreground",
+                        // a sized column is sized to its content: the slack goes to
+                        // the unsized ones instead of stretching every cell
+                        c.width && "whitespace-nowrap",
                         c.align ? ALIGN[c.align] : undefined,
                       )}
                     >

@@ -6,6 +6,7 @@ import {
   cancelConfirmation,
   confirmDestructive,
   expectForbidden,
+  expectLoadError,
   expectNoFalseEmpty,
   expectSkeleton,
   expectTableStateInFrame,
@@ -19,6 +20,7 @@ import {
 } from "./story-harness";
 import type { ClusterNodeRow } from "@/lib/api";
 import ru from "@/lib/i18n/locales/ru.json";
+import { resolveColorToken } from "@/lib/story-tokens";
 import { atMobile, phoneFits } from "@/lib/story-viewport";
 
 const node = (over: Partial<ClusterNodeRow> = {}): ClusterNodeRow => ({
@@ -79,9 +81,63 @@ export const Loaded: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     // liveness and convergence are separate axes: gw-2 polls but lags
-    await waitFor(() => expect(canvas.getByText("LAGGING")).toBeVisible());
-    await expect(canvas.getByText("STALE")).toBeVisible();
-    await expect(canvas.getByText("DRAINING")).toBeVisible();
+    await waitFor(() => expect(canvas.getByText("Lagging")).toBeVisible());
+    await expect(canvas.getByText("Stale")).toBeVisible();
+    await expect(canvas.getByText("Draining")).toBeVisible();
+    // the summary names what "lagging" is behind
+    await expect(canvas.getByText(/newest config v7/)).toBeVisible();
+    // draining is the operator's choice: info, not the red of a stale node
+    await expect(getComputedStyle(canvas.getByText("Draining")).color).toBe(
+      resolveColorToken("--status-info-text"),
+    );
+    // draining is read by the gateway watcher, so a control node has no Drain
+    await expect(canvas.getByRole("button", { name: "Drain node gw-1" })).toBeVisible();
+    await expect(canvas.queryByRole("button", { name: "Drain node cp-1" })).toBeNull();
+    await expect(canvas.getByRole("button", { name: "Forget node cp-1" })).toBeVisible();
+  },
+};
+
+export const LoadedInRussian: Story = {
+  globals: { locale: "ru" },
+  render: () => <Harness fetchStub={async () => json(FLEET)} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const { states } = ru.pages.cluster;
+    await waitFor(() => expect(canvas.getByText(states.lagging)).toBeVisible());
+    await expect(canvas.getByText(states.stale)).toBeVisible();
+    await expect(canvas.getByText(states.draining)).toBeVisible();
+    await expect(canvas.queryByText("LAGGING")).toBeNull();
+  },
+};
+
+// the control plane answers 5xx: a retry is on offer, and it reaches the network
+let controlPlaneDown = true;
+const reads: string[] = [];
+export const LoadFailsAndRetries: Story = {
+  render: () => {
+    controlPlaneDown = true;
+    reads.length = 0;
+    return (
+      <Harness
+        fetchStub={async (input) => {
+          reads.push(String(input));
+          return controlPlaneDown
+            ? json({ error: { message: "control plane unavailable" } }, 503)
+            : json(FLEET);
+        }}
+      />
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectLoadError(canvasElement, /failed to return cluster nodes/i);
+    await expect(canvas.getByText("control plane unavailable")).toBeInTheDocument();
+    await expectNoFalseEmpty(canvasElement, /No nodes have reported in/);
+    const before = reads.length;
+    controlPlaneDown = false;
+    await userEvent.click(canvas.getByRole("button", { name: "Try again" }));
+    await expect(await canvas.findByText("gw-old")).toBeInTheDocument();
+    await expect(reads.length).toBeGreaterThan(before);
   },
 };
 

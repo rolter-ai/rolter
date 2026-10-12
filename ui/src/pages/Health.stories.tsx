@@ -151,7 +151,7 @@ export const Loaded: Story = {
     await expect(within(dead).getByText("gpt-4o-mini")).toBeVisible();
     await expect(within(dead).getByText("2 targets")).toBeVisible();
     // the headline is the provider-grain row, and it names what fed it
-    await expect(within(dead).getByText("probed · probe, status_page")).toBeVisible();
+    await expect(within(dead).getByText("probed · probes, status page")).toBeVisible();
     await expect(within(dead).getByText("uptime · 200 events")).toBeVisible();
 
     // #2116: the strip names its range, its legend and its values as text
@@ -179,6 +179,11 @@ export const Loaded: Story = {
     await expect(parseFloat(down[0].style.height)).toBeGreaterThan(
       parseFloat(bars[0].style.height),
     );
+
+    // #2122: a target's figures name themselves, in words rather than by position
+    const gpt = within(dead).getByTestId("health-target-gpt-4o");
+    await expect(within(gpt).getByText("MTTR 42s")).toBeVisible();
+    await expect(within(gpt).getByText("uptime", { exact: false })).toBeInTheDocument();
 
     // a target with no timeline rows says so, never "no events" beside counts
     const mini = canvas.getByTestId("health-target-gpt-4o-mini");
@@ -343,6 +348,17 @@ export const SlaStates: Story = {
     await expect(within(sonnet).getByText("SLA at risk")).toBeInTheDocument();
     const haiku = canvas.getByTestId("health-target-haiku@eu");
     await expect(within(haiku).getByText("within SLA")).toBeInTheDocument();
+
+    // the rollups answered with no incident, which is zero and not unknown
+    const mistral = within(canvas.getByTestId("health-card-mistral"));
+    await expect(mistral.getByText("Incidents").nextElementSibling).toHaveTextContent("0");
+
+    // a breach is not painted on every element of the card: the pill and the
+    // border carry it, so the headline figure stays neutral (#2122)
+    const groq = canvas.getByTestId("health-card-groq");
+    await expect(getComputedStyle(within(groq).getByText("95.00%")).color).not.toBe(
+      resolveColorToken("--status-danger-text"),
+    );
 
     // the line above the grid says what "at risk" means
     await expect(canvas.getByText(/SLA at risk means/)).toBeVisible();
