@@ -239,8 +239,57 @@ export const Loaded: Story = {
     ).toBeVisible();
     await expect(card(canvasElement, "Production LLM Guard").getByText("enforced")).toBeVisible();
     await expect(card(canvasElement, "Staging evaluator").getByText("paused")).toBeVisible();
+    // the detail line pluralises and formats its numbers (#2164)
+    await expect(
+      card(canvasElement, "Production LLM Guard").getByText(
+        "1,800 ms timeout · 1 retry · 64 KiB cap",
+      ),
+    ).toBeVisible();
+    await expect(
+      card(canvasElement, "Staging evaluator").getByText(
+        "2,500 ms timeout · 0 retries · 32 KiB cap",
+      ),
+    ).toBeVisible();
+    // fail-closed is the safe default, so it is not painted as a fault
+    await expect(card(canvasElement, "Production LLM Guard").getByText("fail-closed")).toHaveClass(
+      /bg-muted/,
+    );
     // the shell's ScreenHeader owns the page's only h1 (#2241)
     await expect(within(canvasElement).queryAllByRole("heading", { level: 1 })).toHaveLength(0);
+  },
+};
+
+/** The same detail line in Russian, whose retry count takes a form per number. */
+export const LoadedInRussian: Story = {
+  globals: { locale: "ru" },
+  render: () => <Harness fetchStub={registry(PROVIDERS)} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText("Production LLM Guard");
+    await expect(canvasElement).toHaveTextContent(
+      /таймаут 1\s800 мс · 1 повтор · лимит тела 64 КиБ/,
+    );
+    await expect(canvasElement).toHaveTextContent(
+      /таймаут 2\s500 мс · 0 повторов · лимит тела 32 КиБ/,
+    );
+  },
+};
+
+/**
+ * The fail-open warning sits under the failure policy it explains, the field
+ * the dialog describes itself by, and the body cap says its unit (#2164).
+ */
+export const FailOpenWarningSitsWithTheFailurePolicy: Story = {
+  render: () => <Harness fetchStub={registry(PROVIDERS)} />,
+  play: async ({ canvasElement }) => {
+    await userEvent.click(
+      await within(canvasElement).findByRole("button", { name: /Edit provider Staging evaluator/ }),
+    );
+    const dialog = within(await within(document.body).findByRole("dialog"));
+    await waitFor(() => expect(dialog.getByLabelText("Body cap (bytes)")).toBeVisible());
+    await expect(dialog.getByLabelText("Failure policy")).toHaveAccessibleDescription(
+      /Fail-open favors availability/,
+    );
   },
 };
 export const Loading: Story = {

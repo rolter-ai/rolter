@@ -7,7 +7,7 @@ Rolter can inspect request or response content with built-in detectors, custom r
 
 ## Inspection rules
 
-Rules run by ascending position, after any rules defined in the `[[guardrails.rules]]` tables of the [config file](/configuration/config-file). Each rule uses exactly one source:
+Rules run by ascending position, after any rules defined in the `[[guardrails.rules]]` tables of the [config file](/configuration/config-file). The dashboard lists them in that order, and a new rule starts 10 after the last one. Each rule uses exactly one source:
 
 - **Built-in detector** — email address, phone number, API token, or payment card.
 - **Custom regex** — compiled by Rolter's bounded, linear-time regex engine before the rule is published.
