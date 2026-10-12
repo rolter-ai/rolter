@@ -58,7 +58,14 @@ const withSurface: Decorator = (Story) =>
   );
 
 // storybook has no url/localStorage story for locale, so the toolbar owns it:
-// flip the globe to proof a component against a longer-word language
+// flip the globe to proof a component against a longer-word language.
+//
+// the decorator's effect runs after the first paint, and i18n is one instance
+// for the whole browser session, so a story that follows a Russian one starts
+// in Russian and flips mid-play: the play finds an English button, clicks it,
+// and reads a sheet that opened in the old language (#3067). `beforeEach`
+// below settles the language before the story mounts; this effect only follows
+// the toolbar when it is flipped while a story is on screen
 const withLocale: Decorator = (Story, context) => {
   const locale = (context.globals.locale as Locale | undefined) ?? DEFAULT_LOCALE;
   React.useEffect(() => {
@@ -73,6 +80,11 @@ const preview: Preview = {
   // window sees the fallback's metrics. load every face once, before the first
   // story renders. `Behaviour/Fonts` asserts the faces are the ones on screen
   beforeAll: loadTokenFonts,
+  // runs before the story renders and is awaited, so no frame of the play is
+  // drawn in the language the previous story left behind (#3067)
+  beforeEach: async ({ globals }) => {
+    await setLocale((globals.locale as Locale | undefined) ?? DEFAULT_LOCALE);
+  },
   decorators: [withLocale, withSurface],
   // the guard behind `withPageA11y` (#1373): a page story has to get the three
   // page-level rules enabled, with axe looking at the whole document, or its axe

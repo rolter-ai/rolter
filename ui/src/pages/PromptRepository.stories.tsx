@@ -369,9 +369,14 @@ export const RendersSamplesAndSavesDraft: Story = {
     // the request a caller sends, beside the render it produces (#2110): the
     // sample fills the required variable and the default stands in for tone
     const request = canvas.getByRole("region", { name: /What callers send/ });
-    await expect(request).toHaveTextContent(/"rolter_template_vars"/);
-    await expect(request).toHaveTextContent(/"customer_name": "Aster Labs"/);
-    await expect(request).toHaveTextContent(/"tone": "calm and direct"/);
+    // the block is highlighted from a lazy chunk, one keystroke behind the
+    // field it mirrors, so the whole shape is awaited together rather than
+    // read on the frame after the last key (#3067)
+    await waitFor(() => {
+      expect(request).toHaveTextContent(/"rolter_template_vars"/);
+      expect(request).toHaveTextContent(/"customer_name": "Aster Labs"/);
+      expect(request).toHaveTextContent(/"tone": "calm and direct"/);
+    });
     await expect(canvas.getAllByText("invalid_prompt_template")[0]).toBeVisible();
     await userEvent.click(canvas.getByRole("button", { name: /Save as new draft/ }));
     await expectToast(canvasElement, /Draft v3 saved/);
