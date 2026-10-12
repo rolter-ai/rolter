@@ -25,7 +25,8 @@ const ROOT = join(import.meta.dir, "..");
 // screen, and it says so in its own header comment, so it skips too, as does
 // `shell-harness.tsx`, which mounts the whole shell for `App.stories.tsx` and
 // stubs a wire note in English on purpose (#1546), and `story-strict.tsx`,
-// the StrictMode host those stories mount into, with its own mount button (#1887).
+// the StrictMode host those stories mount into, with its own mount button (#1887),
+// and `mcp-story-fixtures.tsx`, the sample registry the MCP screens' stories share.
 // `src/lib` is scanned too: `scope.ts` rendered English straight into the
 // shell for months while the gate looked only at components and pages (#1200).
 // the i18n machinery itself and the tests are the exceptions
@@ -36,7 +37,7 @@ const SCANNED = [
   "src/App.tsx",
 ];
 const SKIP =
-  /\.(stories|test)\.tsx?$|(^|\/)(story-harness|story-strict|shell-harness)\.tsx$|^src\/lib\/i18n\//;
+  /\.(stories|test)\.tsx?$|(^|\/)(story-harness|story-strict|shell-harness|mcp-story-fixtures)\.tsx$|^src\/lib\/i18n\//;
 
 // read as one tree, so a table or helper exported by one file and rendered by
 // another is followed to where it is written (#1765)

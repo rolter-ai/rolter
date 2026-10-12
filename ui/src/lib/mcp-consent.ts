@@ -106,13 +106,47 @@ export function useConsentAnnouncements(onCompleted: (message: ConsentAnnounceme
   }, []);
 }
 
+/** What the caller's own sessions say about one server. */
+export type ServerConnection =
+  { state: "active"; until: string } | { state: "expired"; since: string };
+
+/**
+ * Per server, the caller's best session: a live one (the furthest expiry wins)
+ * or, failing that, the most recently expired one. A server with no entry has
+ * never been consented to by this account, or only holds revoked sessions, and
+ * reads as not connected. Filtered to `userId` for the reason `connectedServers`
+ * gives.
+ */
+export function serverConnections(
+  grants: McpOAuthGrantRow[] | undefined,
+  sessions: McpOAuthSessionRow[] | undefined,
+  userId: string | undefined,
+  now: number,
+): Map<string, ServerConnection> {
+  const result = new Map<string, ServerConnection>();
+  if (!userId || !grants || !sessions) return result;
+  const mine = new Map<string, string>();
+  for (const grant of grants) {
+    if (grant.active && grant.user_id === userId) mine.set(grant.id, grant.server_id);
+  }
+  for (const session of sessions) {
+    const server = mine.get(session.grant_id);
+    if (!server || session.revoked_at) continue;
+    const ends = Date.parse(session.expires_at);
+    const seen = result.get(server);
+    if (ends > now) {
+      if (seen?.state !== "active" || ends > Date.parse(seen.until))
+        result.set(server, { state: "active", until: session.expires_at });
+    } else if (!seen || (seen.state === "expired" && ends > Date.parse(seen.since))) {
+      result.set(server, { state: "expired", since: session.expires_at });
+    }
+  }
+  return result;
+}
+
 /**
  * The servers `userId` holds a live session on: an active grant of theirs with
  * a session under it that is neither revoked nor expired.
- *
- * Filtered to the one account on purpose. An org admin's listings carry every
- * member's grants, and a card that read "connected" because a colleague had
- * consented would be telling the admin something false about their own access.
  */
 export function connectedServers(
   grants: McpOAuthGrantRow[] | undefined,
@@ -120,17 +154,9 @@ export function connectedServers(
   userId: string | undefined,
   now: number,
 ): Set<string> {
-  const connected = new Set<string>();
-  if (!userId || !grants || !sessions) return connected;
-  const mine = new Map<string, string>();
-  for (const grant of grants) {
-    if (grant.active && grant.user_id === userId) mine.set(grant.id, grant.server_id);
+  const live = new Set<string>();
+  for (const [server, connection] of serverConnections(grants, sessions, userId, now)) {
+    if (connection.state === "active") live.add(server);
   }
-  for (const session of sessions) {
-    const server = mine.get(session.grant_id);
-    if (server && !session.revoked_at && Date.parse(session.expires_at) > now) {
-      connected.add(server);
-    }
-  }
-  return connected;
+  return live;
 }

@@ -73,7 +73,11 @@ import {
 } from "@/lib/api";
 import { useOptionalAuth } from "@/lib/auth";
 import { useFormat } from "@/lib/i18n/format";
-import { connectedServers, useConsentAnnouncements } from "@/lib/mcp-consent";
+import {
+  serverConnections,
+  useConsentAnnouncements,
+  type ServerConnection,
+} from "@/lib/mcp-consent";
 import {
   authDraft,
   authDraftValid,
@@ -108,6 +112,7 @@ import {
 import { useScope } from "@/lib/scope";
 import { slugify } from "@/lib/slug";
 import { useMcpConnect } from "@/lib/use-mcp-connect";
+import { errorDetail, useToast } from "@/lib/toast";
 import { useScreenReady } from "@/lib/ux-react";
 
 const TRANSPORTS = ["streamable_http", "sse", "websocket"];
@@ -479,8 +484,18 @@ function OAuthClientSection({
   );
 }
 
-// the request and the pop-up handling are shared with Reconnect on Auth Sessions
-function ConnectButton({ server }: { server: McpServerRow }) {
+// the request and the pop-up handling are shared with Reconnect on Auth Sessions.
+// the reason a disabled Connect is disabled is text on the card, not a tooltip,
+// and the button points at it
+function ConnectButton({
+  server,
+  expired,
+  describedBy,
+}: {
+  server: McpServerRow;
+  expired: boolean;
+  describedBy?: string;
+}) {
   const { t } = useTranslation();
   const ready = oauthConnectable(server);
   const connect = useMcpConnect(server);
@@ -488,8 +503,12 @@ function ConnectButton({ server }: { server: McpServerRow }) {
     <Button
       variant="outline"
       disabled={!ready || connect.isPending}
-      title={ready ? undefined : t("pages.mcpCatalog.connect.unconfigured")}
-      aria-label={t("pages.mcpCatalog.connect.ready", { name: server.name })}
+      aria-describedby={ready ? undefined : describedBy}
+      aria-label={
+        expired
+          ? t("pages.mcpOAuth.reconnect.action", { server: server.name })
+          : t("pages.mcpCatalog.connect.ready", { name: server.name })
+      }
       onClick={() => connect.mutate()}
     >
       {connect.isPending ? (
@@ -497,8 +516,50 @@ function ConnectButton({ server }: { server: McpServerRow }) {
       ) : (
         <Link2 className="mr-2 h-4 w-4" aria-hidden />
       )}
-      {t("pages.mcpCatalog.connect.action")}
+      {t(expired ? "pages.mcpCatalog.connect.reconnect" : "pages.mcpCatalog.connect.action")}
     </Button>
+  );
+}
+
+// where the caller stands with an oauth server, in words: a missing client is
+// said first, since no session can exist without one. `connection` is
+// undefined when the sessions listing is out of reach, and then the card says
+// nothing rather than "not connected"
+function ConnectionLine({
+  server,
+  connection,
+  known,
+  id,
+}: {
+  server: McpServerRow;
+  connection: ServerConnection | undefined;
+  known: boolean;
+  id: string;
+}) {
+  const { t } = useTranslation();
+  const fmt = useFormat();
+  if (!oauthConnectable(server))
+    return (
+      <p id={id} className="mt-3 text-xs text-[color:var(--status-warning-text)]">
+        {t("pages.mcpCatalog.connect.unconfigured")}
+      </p>
+    );
+  if (!known) return null;
+  const [text, tone] = !connection
+    ? [t("pages.mcpCatalog.connect.none"), "text-muted-foreground"]
+    : connection.state === "active"
+      ? [
+          t("pages.mcpCatalog.connect.activeUntil", { when: fmt.dateTime(connection.until) }),
+          "text-[color:var(--status-success-text)]",
+        ]
+      : [
+          t("pages.mcpCatalog.connect.expiredAt", { when: fmt.dateTime(connection.since) }),
+          "text-[color:var(--status-warning-text)]",
+        ];
+  return (
+    <p id={id} className={`mt-3 text-xs ${tone}`}>
+      {text}
+    </p>
   );
 }
 
@@ -506,6 +567,7 @@ export function McpCatalog() {
   const { t } = useTranslation();
   const { orgId } = useScope();
   const client = useQueryClient();
+  const toast = useToast();
   const query = useQuery({
     queryKey: ["mcp-servers", orgId],
     queryFn: () => fetchMcpServers(orgId as string),
@@ -532,10 +594,12 @@ export function McpCatalog() {
     enabled: !!orgId,
     retry: false,
   });
-  const connected = React.useMemo(
-    () => connectedServers(grants.data, sessions.data, auth?.user?.id, Date.now()),
+  const connections = React.useMemo(
+    () => serverConnections(grants.data, sessions.data, auth?.user?.id, Date.now()),
     [grants.data, sessions.data, auth?.user?.id],
   );
+  // "not connected" is only a claim when both listings answered for a known account
+  const connectionKnown = !!auth?.user?.id && grants.isSuccess && sessions.isSuccess;
   // Connect finishes in the tab the authorization server sends the user back
   // to, never in this one. that tab announces the new session, and the cards
   // re-read who is connected rather than waiting for a reload
@@ -572,20 +636,63 @@ export function McpCatalog() {
       void client.invalidateQueries({ queryKey: ["mcp-servers", orgId] });
       void client.invalidateQueries({ queryKey: ["mcp-oauth-client"] });
     },
-    onSuccess: () => setEditing(undefined),
+    onSuccess: (server, { initial }) => {
+      setEditing(undefined);
+      toast.push(
+        initial
+          ? {
+              tone: "success",
+              title: t("toast.saved"),
+              detail: t("toast.savedDetail", { what: server.name }),
+            }
+          : { tone: "success", title: t("toast.created", { what: server.name }) },
+      );
+    },
+    // the dialog keeps its own inline reason; the toast is what outlives it
+    onError: (error, { draft }) =>
+      toast.push({
+        tone: "error",
+        title: t("toast.saveFailed", { what: draft.input.name }),
+        detail: errorDetail(error),
+      }),
   });
   const remove = useMutation({
-    mutationFn: deleteMcpServer,
-    onSuccess: () => {
+    mutationFn: (server: McpServerRow) => deleteMcpServer(server.id),
+    onSuccess: (_done, server) => {
       void client.invalidateQueries({ queryKey: ["mcp-servers", orgId] });
       setDeleting(null);
+      toast.push({ tone: "success", title: t("toast.deleted", { what: server.name }) });
     },
+    onError: (error, server) =>
+      toast.push({
+        tone: "error",
+        title: t("toast.deleteFailed", { what: server.name }),
+        detail: errorDetail(error),
+      }),
   });
   const toggle = useMutation({
     mutationFn: (server: McpServerRow) =>
       updateMcpServer(server.id, { ...serverInput(server), enabled: !server.enabled }),
-    onSuccess: () => void client.invalidateQueries({ queryKey: ["mcp-servers", orgId] }),
+    onSuccess: (_row, server) => {
+      void client.invalidateQueries({ queryKey: ["mcp-servers", orgId] });
+      toast.push({
+        tone: "success",
+        title: t(
+          server.enabled ? "pages.mcpCatalog.toggle.disabled" : "pages.mcpCatalog.toggle.enabled",
+          { name: server.name },
+        ),
+      });
+    },
+    // a switch that bounced back reads as nothing having happened (#1197)
+    onError: (error, server) =>
+      toast.push({
+        tone: "error",
+        title: t("toast.saveFailed", { what: server.name }),
+        detail: errorDetail(error),
+      }),
   });
+  // only the card whose request is in flight locks; the others stay live
+  const toggling = toggle.isPending ? toggle.variables?.id : undefined;
   if (!orgId)
     return (
       <PageBody>
@@ -666,11 +773,6 @@ export function McpCatalog() {
                     <Badge tone={server.source === "library" ? "accent" : "neutral"}>
                       {server.source}
                     </Badge>
-                    {connected.has(server.id) && (
-                      <Badge tone="success" dot>
-                        {t("pages.mcpCatalog.connect.connected")}
-                      </Badge>
-                    )}
                   </div>
                   <p className="mt-1 truncate font-mono text-xs text-muted-foreground">
                     {server.url}
@@ -680,6 +782,7 @@ export function McpCatalog() {
                   gate="mcp_server:update"
                   control="mcp-server-toggle"
                   checked={server.enabled}
+                  disabled={toggling === server.id}
                   aria-label={t("pages.mcpCatalog.servers.toggleAria", { name: server.name })}
                   onCheckedChange={() => toggle.mutate(server)}
                 />
@@ -690,11 +793,25 @@ export function McpCatalog() {
               <div className="mt-3">
                 <ToolBadges tools={server.tools} />
               </div>
+              {server.auth_kind === "oauth" && (
+                <ConnectionLine
+                  id={`mcp-connection-${server.id}`}
+                  server={server}
+                  connection={connections.get(server.id)}
+                  known={connectionKnown}
+                />
+              )}
               <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-[color:var(--border-subtle)] pt-3">
                 <Badge tone="info">{server.transport.replace("_", " ")}</Badge>
                 <AuthBadge server={server} />
                 <span className="ml-auto flex flex-wrap justify-end gap-1">
-                  <ConnectButton server={server} />
+                  {server.auth_kind === "oauth" && (
+                    <ConnectButton
+                      server={server}
+                      expired={connections.get(server.id)?.state === "expired"}
+                      describedBy={`mcp-connection-${server.id}`}
+                    />
+                  )}
                   <GatedButton
                     gate="mcp_server:delete"
                     control="mcp-server-delete"
@@ -747,7 +864,7 @@ export function McpCatalog() {
         confirmLabel={t("pages.mcpCatalog.confirm.deleteConfirm")}
         pending={remove.isPending}
         error={remove.error}
-        onConfirm={() => deleting && remove.mutate(deleting.id)}
+        onConfirm={() => deleting && remove.mutate(deleting)}
       />
     </PageBody>
   );
@@ -785,12 +902,14 @@ function AuthBadge({ server }: { server: McpServerRow }) {
       tone={
         server.auth_kind === "none"
           ? "neutral"
-          : armed || server.auth_kind === "oauth"
+          : armed || (server.auth_kind === "oauth" && oauthConnectable(server))
             ? "success"
             : "warning"
       }
     >
-      {t(`pages.mcpCatalog.auth.kinds.${server.auth_kind}.badge`)}
+      {server.auth_kind === "oauth" && !oauthConnectable(server)
+        ? t("pages.mcpCatalog.auth.kinds.oauth.badgeNoClient")
+        : t(`pages.mcpCatalog.auth.kinds.${server.auth_kind}.badge`)}
     </Badge>
   );
 }
