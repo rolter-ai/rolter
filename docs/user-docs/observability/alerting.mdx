@@ -236,7 +236,8 @@ like this, with `rule` left out:
 
 In the dashboard, the toast after **Evaluate now** says what became of a
 transition: delivered with the endpoint's status, failed with the reason, or
-recorded without delivery. A failed delivery turns the toast red.
+recorded without delivery, followed by the reading and the threshold it crossed in
+the signal's unit. A failed delivery turns the toast red.
 
 A failed evaluation sets the rule to `error` and comes back as an error toast
 carrying the same reason as `last_error`, which makes this the quickest way to
@@ -499,25 +500,36 @@ A channel update takes `name`, `endpoint`, `enabled` and, only to replace it,
 
 ## History
 
-**Alerting → History** lists the 200 most recent rows, newest first, with the
-state (`firing` or `resolved`), delivery status, time, rule and detail. The state
-and delivery columns come first so they stay in view on a phone. Every change of
-state has a row, including those of rules with no channel.
+**Alerting → History** lists the rows 100 at a time, newest first, with the
+state (`firing` or `resolved`), delivery status, time, rule, reading and detail.
+The state and delivery columns come first so they stay in view on a phone. Every
+change of state has a row, including those of rules with no channel.
 
-When the control plane returns a full 200, older rows exist that the screen does
-not reach, and a note above the list says so. The toolbar narrows the list:
+A full page may be followed by older rows, and **Load older transitions** under
+the list reads the next page from the last row shown (the `before` cursor below).
+A page that comes back short is the end, and the button goes away. The toolbar
+narrows the list, and each picker is sent to the API, so it reaches its own
+newest rows rather than searching the page already loaded:
 
-- **Rule** is sent to the API as `rule_id`, so it lists that rule's own newest
-  200 rows, which can reach further back than the same rule's rows in the
-  all-rules list.
-- **State** and **Delivery** filter the rows already loaded. The API now filters
-  and pages by both (see below); the screen has not been changed to send them.
+- **Rule** is sent as `rule_id`.
+- **State** is sent as `state`.
+- **Delivery** is sent as `delivery_status`.
 
-The `detail` text, and each code below, come from the control plane as stored, in English, in
-every language. A long detail wraps onto further lines inside its column rather
-than being cut, so a diagnosis such as `channel secret could not be unsealed;
-check ROLTER_KEK` reads in full. On a phone the detail is the last column, so
-scroll the list sideways to reach it.
+Changing a picker starts the list again from the newest matching row.
+
+The **Reading** column shows the value the rule read when the row was written and,
+under it, the threshold it was held against, both in the signal's unit (`11%`
+above `5%`, `840 ms` above `2,000 ms`). A transition written for a window with no
+data reads **No data**, and a row from before readings were recorded shows `—`.
+
+The **Detail** column and the rule card's `last_error` are translated from the
+`detail_code` and `last_error_code` below, with their `detail_params` /
+`last_error_params` filling in the numbers. A code this build does not know, a
+row written before codes existed, and a code whose numbers did not arrive show
+the control plane's English `detail` / `last_error` as stored. A long detail wraps
+onto further lines inside its column rather than being cut, so a diagnosis such
+as `channel secret could not be unsealed; check ROLTER_KEK` reads in full. On a
+phone the detail is the last column, so scroll the list sideways to reach it.
 
 | Delivery status | Detail                                                                                                                                                                                                                                                                                                                                                    |
 | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

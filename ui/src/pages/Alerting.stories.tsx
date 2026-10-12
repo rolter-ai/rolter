@@ -26,6 +26,7 @@ import {
   sheet,
   Toasted,
   answerDiscardPrompt,
+  type FetchStub,
 } from "./story-harness";
 import type { AlertChannelRow, AlertNotificationRow, AlertRuleRow } from "@/lib/api";
 import { formattersFor } from "@/lib/i18n/format";
@@ -176,6 +177,30 @@ const HISTORY: AlertNotificationRow[] = [
   },
 ];
 
+/**
+ * The history endpoint as the control plane answers it: newest first by
+ * `(sent_at, id)`, narrowed by `rule_id`, `state` and `delivery_status`, and
+ * paged by the keyset cursor `before=<sent_at>,<id>` (#2333).
+ */
+function historyApi(all: AlertNotificationRow[], fallback: FetchStub) {
+  const newestFirst = [...all].sort(
+    (a, b) => b.sent_at.localeCompare(a.sent_at) || b.id.localeCompare(a.id),
+  );
+  return scoped(async (input, init) => {
+    const url = new URL(String(input), "http://localhost");
+    if (!url.pathname.endsWith("/alert-notifications")) return fallback(input, init);
+    const q = url.searchParams;
+    const limit = Number(q.get("limit") ?? 100);
+    const [sentAt, id] = (q.get("before") ?? "").split(",");
+    const page = newestFirst
+      .filter((n) => !q.get("rule_id") || n.rule_id === q.get("rule_id"))
+      .filter((n) => !q.get("state") || n.state === q.get("state"))
+      .filter((n) => !q.get("delivery_status") || n.delivery_status === q.get("delivery_status"))
+      .filter((n) => !sentAt || n.sent_at < sentAt || (n.sent_at === sentAt && n.id < id));
+    return json(page.slice(0, limit));
+  });
+}
+
 const loaded = routes([
   ["/alert-channels", () => CHANNELS],
   ["/alert-rules", () => RULES],
@@ -184,6 +209,8 @@ const loaded = routes([
   // is caught rather than matching the fallback
   ["/api/v1/currency", () => ({ base: "EUR", codes: ["EUR"], rates: {} })],
 ]);
+
+const filtering = recording(historyApi(HISTORY, loaded));
 
 /** the value under a rule card's figure label, read as the `dd` its `dt` names */
 const stat = (card: HTMLElement, label: string) =>
@@ -1395,7 +1422,7 @@ export const RuleStatesReadInRussian: Story = {
 export const HistoryReadInRussian: Story = {
   globals: { locale: "ru" },
   render: () => (
-    <Harness fetchStub={loaded} route="/alerting-history">
+    <Harness fetchStub={filtering.stub} route="/alerting-history">
       <HistoryScreen />
     </Harness>
   ),
@@ -1419,49 +1446,110 @@ export const HistoryReadInRussian: Story = {
   },
 };
 
-// --- the history: a cap that says so, and a filter --------------------------
+// --- the history: paged by keyset, filtered by the API (#3049) --------------
 
-// exactly as many rows as the screen asks for: the API gave everything it was
-// allowed to, so older rows may exist
-const CAPPED: AlertNotificationRow[] = Array.from({ length: 200 }, (_, i) => ({
+// more rows than one page holds: the first read comes back full, so older rows
+// may exist, and the next page starts strictly below the last row read
+const MANY: AlertNotificationRow[] = Array.from({ length: 150 }, (_, i) => ({
   ...HISTORY[i % HISTORY.length],
-  id: `note-${i}`,
+  id: `note-${String(i).padStart(3, "0")}`,
   sent_at: new Date(Date.UTC(2026, 7, 11, 12) - i * 60_000).toISOString(),
 }));
 
-const cappedHistory = recording(
-  routes([
-    ["/alert-channels", () => CHANNELS],
-    ["/alert-rules", () => RULES],
-    ["/alert-notifications", () => CAPPED],
-  ]),
-);
+const manyApi = historyApi(MANY, loaded);
+const pagedHistory = recording(manyApi);
 
-// the screen asked for 200 and stopped there with no word about it (#2126)
-export const HistorySaysWhenItIsCapped: Story = {
+export const HistoryPagesOlderRows: Story = {
   render: () => (
-    <Harness fetchStub={cappedHistory.stub} route="/alerting-history">
+    <Harness fetchStub={pagedHistory.stub} route="/alerting-history">
       <HistoryScreen />
     </Harness>
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(
-      await canvas.findByText(/Only the newest 200 transitions are listed; older ones exist\./),
+      await canvas.findByText("100 newest transitions loaded · older ones follow"),
     ).toBeInTheDocument();
-    await expect(canvas.getByText("200 transitions · newest first")).toBeInTheDocument();
-    await cappedHistory.expectSent("GET", "limit=200");
-    // a rule's own read is capped the same way, and the note says whose
-    await pickOption(await canvas.findByLabelText("Filter by rule"), "slow p95");
-    await expect(
-      await canvas.findByText(/Only this rule's newest 200 transitions are listed/),
-    ).toBeInTheDocument();
-    await expect(canvas.queryByText(/Pick a rule to read/)).toBeNull();
+    await pagedHistory.expectSent("GET", "limit=100");
+    const table = canvas.getByRole("table", { name: "Alert History" });
+    await expect(within(table).getAllByRole("row")).toHaveLength(101);
+
+    // the cursor is the last row's `<sent_at>,<id>`, so a row written in the
+    // same instant is neither skipped nor shown twice
+    await userEvent.click(canvas.getByRole("button", { name: "Load older transitions" }));
+    await pagedHistory.expectSent(
+      "GET",
+      `before=${encodeURIComponent(`${MANY[99].sent_at},${MANY[99].id}`)}`,
+    );
+    await expect(await canvas.findByText("150 transitions · newest first")).toBeInTheDocument();
+    await expect(within(table).getAllByRole("row")).toHaveLength(151);
+    // the page was short, so that was the end
+    await expect(canvas.queryByRole("button", { name: "Load older transitions" })).toBeNull();
+    await expect(canvas.queryByText(/older ones exist/)).toBeNull();
   },
 };
 
-// the rule filter goes to the API, so it reaches that rule's older rows; the
-// endpoint has no state or delivery filter, so those narrow the rows read
+// a filter starts the list over at the newest row of what it matches
+export const HistoryFilterRestartsThePaging: Story = {
+  render: () => (
+    <Harness fetchStub={pagedHistory.stub} route="/alerting-history">
+      <HistoryScreen />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "Load older transitions" }));
+    await expect(await canvas.findByText("150 transitions · newest first")).toBeInTheDocument();
+    await pickOption(canvas.getByLabelText("Filter by delivery"), "Skipped");
+    // 50 of the 150 are skipped: one page, no older button
+    await expect(await canvas.findByText("50 transitions · newest first")).toBeInTheDocument();
+    await expect(canvas.queryByRole("button", { name: "Load older transitions" })).toBeNull();
+  },
+};
+
+// an older page that fails keeps the rows already read, and retries from there
+const olderFails = (() => {
+  let failing = true;
+  return {
+    stub: scoped(async (input, init) => {
+      const url = new URL(String(input), "http://localhost");
+      if (failing && url.searchParams.has("before")) {
+        return json({ error: { message: "control plane unavailable" } }, 500);
+      }
+      return manyApi(input, init);
+    }),
+    recover: () => {
+      failing = false;
+    },
+    reset: () => {
+      failing = true;
+    },
+  };
+})();
+
+export const HistoryOlderPageFailsAndRetries: Story = {
+  render: () => {
+    olderFails.reset();
+    return (
+      <Harness fetchStub={olderFails.stub} route="/alerting-history">
+        <HistoryScreen />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "Load older transitions" }));
+    await expectLoadError(canvasElement, /failed to return alert history/);
+    // the first page is still on screen, not replaced by the failure
+    await expect(canvas.getAllByRole("row").length).toBeGreaterThan(100);
+    olderFails.recover();
+    await userEvent.click(canvas.getByRole("button", { name: "Try again" }));
+    await expect(await canvas.findByText("150 transitions · newest first")).toBeInTheDocument();
+    await waitFor(() => expect(canvas.queryByRole("alert")).toBeNull());
+  },
+};
+
+// all three filters go to the API, so each reaches its own older rows
 const historyByRule = recording(
   scoped(async (input, init) => {
     const url = new URL(String(input), "http://localhost");
@@ -1494,7 +1582,7 @@ export const HistoryFiltersByRule: Story = {
 
 export const HistoryFiltersByStateAndDelivery: Story = {
   render: () => (
-    <Harness fetchStub={loaded} route="/alerting-history">
+    <Harness fetchStub={filtering.stub} route="/alerting-history">
       <HistoryScreen />
     </Harness>
   ),
@@ -1504,6 +1592,7 @@ export const HistoryFiltersByStateAndDelivery: Story = {
 
     // delivery: only the alert nobody received
     await pickOption(canvas.getByLabelText("Filter by delivery"), "Failed");
+    await filtering.expectSent("GET", "delivery_status=failed");
     await waitFor(() => expect(canvas.queryByText("HTTP 200")).toBeNull());
     await expect(canvas.getByText("could not connect to the endpoint")).toBeInTheDocument();
     await expect(canvas.getByText("1 transition · newest first")).toBeInTheDocument();
@@ -1511,6 +1600,7 @@ export const HistoryFiltersByStateAndDelivery: Story = {
     // state: nothing both firing and failed, so the filters have an empty state
     // of their own, which names them and offers to clear them
     await pickOption(canvas.getByLabelText("Filter by state"), "Firing");
+    await filtering.expectSent("GET", "state=firing");
     await expect(await canvas.findByText("No transitions match these filters")).toBeVisible();
     await expect(canvas.queryByText("No alert transitions yet")).toBeNull();
     await userEvent.click(canvas.getByRole("button", { name: "Clear filters" }));
@@ -1575,6 +1665,335 @@ export const HistoryReadInRussianOnAPhone: Story = {
       }
     }
     await expectNoHorizontalOverflow();
+  },
+};
+
+// --- #3049: coded details, and the reading a row was written for -------------
+
+// every detail below carries a distinct English fallback, so a row that reads
+// as the catalog's words was translated from its code and not echoed
+const CODED: AlertNotificationRow[] = [
+  {
+    id: "note-c1",
+    rule_id: "rule-1",
+    channel_id: "chan-1",
+    state: "firing",
+    delivery_status: "delivered",
+    detail: "fallback for http_ok",
+    detail_code: "http_ok",
+    detail_params: { status: 204 },
+    value: 0.11,
+    threshold: 0.05,
+    sent_at: "2026-08-11T12:05:00Z",
+  },
+  {
+    id: "note-c2",
+    rule_id: "rule-1",
+    channel_id: "chan-1",
+    state: "firing",
+    delivery_status: "failed",
+    detail: "fallback for timeout",
+    detail_code: "timeout",
+    detail_params: { seconds: 10 },
+    value: 0.09,
+    threshold: 0.05,
+    sent_at: "2026-08-11T12:04:00Z",
+  },
+  {
+    id: "note-c3",
+    rule_id: "rule-2",
+    channel_id: null,
+    state: "resolved",
+    delivery_status: "skipped",
+    detail: "fallback for no_channel",
+    detail_code: "no_channel",
+    detail_params: null,
+    value: 840,
+    threshold: 2000,
+    sent_at: "2026-08-11T12:03:00Z",
+  },
+  // a code a later build added: the control plane's English is all there is
+  {
+    id: "note-c4",
+    rule_id: "rule-2",
+    channel_id: "chan-1",
+    state: "firing",
+    delivery_status: "failed",
+    detail: "the proxy refused the tunnel",
+    detail_code: "proxy_refused",
+    detail_params: { host: "alerts.example.com" },
+    value: 3100,
+    threshold: 2000,
+    sent_at: "2026-08-11T12:02:00Z",
+  },
+  // a known code whose number did not arrive would print `{{seconds}}`
+  {
+    id: "note-c5",
+    rule_id: "rule-1",
+    channel_id: "chan-1",
+    state: "firing",
+    delivery_status: "failed",
+    detail: "timed out after ten seconds",
+    detail_code: "timeout",
+    detail_params: {},
+    value: 0.2,
+    threshold: 0.05,
+    sent_at: "2026-08-11T12:01:00Z",
+  },
+  // written for a window with no data: no reading to show
+  {
+    id: "note-c6",
+    rule_id: "rule-2",
+    channel_id: "chan-1",
+    state: "firing",
+    delivery_status: "delivered",
+    detail: "fallback for no data",
+    detail_code: "http_ok",
+    detail_params: { status: 200, no_data: true },
+    value: null,
+    threshold: 2000,
+    sent_at: "2026-08-11T12:00:00Z",
+  },
+  // written before codes and readings existed
+  {
+    id: "note-c7",
+    rule_id: "rule-1",
+    channel_id: "chan-1",
+    state: "resolved",
+    delivery_status: "delivered",
+    detail: "HTTP 200 from before codes",
+    detail_code: null,
+    detail_params: null,
+    value: null,
+    threshold: null,
+    sent_at: "2026-08-10T12:00:00Z",
+  },
+];
+
+const coded = routes([
+  ["/alert-notifications", () => CODED],
+  ["/alert-channels", () => CHANNELS],
+  ["/alert-rules", () => RULES],
+  ["/api/v1/currency", () => ({ base: "EUR", codes: ["EUR"], rates: {} })],
+]);
+
+export const HistoryTranslatesDeliveryCodes: Story = {
+  render: () => (
+    <Harness fetchStub={coded} route="/alerting-history">
+      <HistoryScreen />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("HTTP 204")).toBeInTheDocument();
+    await expect(canvas.getByText("timed out after 10s")).toBeInTheDocument();
+    await expect(canvas.getByText("no channel configured")).toBeInTheDocument();
+    // the English fallback stays for what the build cannot say
+    await expect(canvas.getByText("the proxy refused the tunnel")).toBeInTheDocument();
+    await expect(canvas.getByText("timed out after ten seconds")).toBeInTheDocument();
+    await expect(canvas.queryByText(/\{\{/)).toBeNull();
+    await expect(canvas.getByText("HTTP 200 from before codes")).toBeInTheDocument();
+    for (const fallback of [
+      "fallback for http_ok",
+      "fallback for timeout",
+      "fallback for no_channel",
+    ]) {
+      await expect(canvas.queryByText(fallback)).toBeNull();
+    }
+  },
+};
+
+export const HistoryTranslatesDeliveryCodesInRussian: Story = {
+  globals: { locale: "ru" },
+  render: () => (
+    <Harness fetchStub={coded} route="/alerting-history">
+      <HistoryScreen />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const { delivery } = ru.pages.alerting.codes;
+    await expect(
+      await canvas.findByText(delivery.timeout.replace("{{seconds}}", "10")),
+    ).toBeInTheDocument();
+    await expect(canvas.getByText(delivery.no_channel)).toBeInTheDocument();
+    await expect(canvas.getByText("the proxy refused the tunnel")).toBeInTheDocument();
+    await expect(canvas.queryByText("timed out after 10s")).toBeNull();
+    await expect(canvas.queryByText(/\{\{/)).toBeNull();
+  },
+};
+
+export const HistoryShowsEachReadingInItsUnit: Story = {
+  render: () => (
+    <Harness fetchStub={coded} route="/alerting-history">
+      <HistoryScreen />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const table = await canvas.findByRole("table", { name: "Alert History" });
+    await expectListTable(canvasElement, "Alert History");
+    const row = (detail: string) =>
+      within(table).getByText(detail).closest('[role="row"]') as HTMLElement;
+    // an error-rate fraction reads as a percentage, a latency in milliseconds,
+    // each against the threshold the rule held at the time
+    const rate = within(await waitFor(() => row("HTTP 204")));
+    await expect(rate.getByText("11%")).toBeInTheDocument();
+    await expect(rate.getByText("above 5%")).toBeInTheDocument();
+    const latency = within(row("no channel configured"));
+    await expect(latency.getByText("840 ms")).toBeInTheDocument();
+    await expect(latency.getByText(/^above 2,000.ms$/)).toBeInTheDocument();
+    // a no-data transition has no reading, and says so
+    await expect(within(row("HTTP 200 from before codes")).getAllByText("—")).not.toHaveLength(0);
+    await expect(within(table).getAllByText("No data")).toHaveLength(1);
+  },
+};
+
+// --- the Evaluate toast and the rule card read the same codes ------------------
+
+const codedEvaluation = scoped(async (input, init) => {
+  if (init?.method === "POST") {
+    return json({
+      rule: RULES[0],
+      notified: false,
+      notification: {
+        id: "note-9",
+        rule_id: "rule-1",
+        channel_id: "chan-1",
+        state: "firing",
+        delivery_status: "failed",
+        detail: "fallback for http_error",
+        detail_code: "http_error",
+        detail_params: { status: 503 },
+        value: 0.11,
+        threshold: 0.05,
+        sent_at: "2026-08-11T12:01:00Z",
+      },
+    });
+  }
+  return loaded(input, init);
+});
+
+export const EvaluateToastShowsTheReadingAndTheCodedDetail: Story = {
+  render: () => (
+    <Harness fetchStub={codedEvaluation}>
+      <Toasted>
+        <AlertRules />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, "Evaluate rule high error rate now");
+    await expectToast(
+      canvasElement,
+      /delivery failed: HTTP 503\..*It read 11% against a threshold of 5%\./,
+      "error",
+    );
+  },
+};
+
+export const EvaluateToastReadsInRussian: Story = {
+  globals: { locale: "ru" },
+  render: () => (
+    <Harness fetchStub={codedEvaluation}>
+      <Toasted>
+        <AlertRules />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(
+      canvasElement,
+      ru.pages.alerting.rules.evaluateAria.replace("{{name}}", "high error rate"),
+    );
+    await expectToast(canvasElement, /HTTP 503\..*Значение: 11\s%, порог: 5\s%\./, "error");
+    await expect(within(canvasElement).queryByText(/fallback for http_error/)).toBeNull();
+  },
+};
+
+// a failed Evaluate answers with the rule error's code in `error.code`
+export const EvaluateFailureIsTranslatedFromItsCode: Story = {
+  render: () => (
+    <Harness
+      fetchStub={scoped(async (input, init) => {
+        if (init?.method === "POST") {
+          return json(
+            { error: { code: "clickhouse_not_configured", message: "english fallback" } },
+            500,
+          );
+        }
+        return loaded(input, init);
+      })}
+    >
+      <Toasted>
+        <AlertRules />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, "Evaluate rule high error rate now");
+    await expectToast(canvasElement, /alert evaluation requires CLICKHOUSE_URL/, "error");
+    await expect(within(canvasElement).queryByText(/english fallback/)).toBeNull();
+  },
+};
+
+const ERRORED: AlertRuleRow[] = [
+  {
+    ...RULES[2],
+    last_error: "analytics query timed out after 30s (fallback)",
+    last_error_code: "query_timeout",
+    last_error_params: { seconds: 30 },
+  },
+  {
+    ...RULES[3],
+    state: "error",
+    last_error: "a failure only a later build names",
+    last_error_code: "disk_on_fire",
+    last_error_params: null,
+  },
+];
+
+export const RuleCardTranslatesItsLastError: Story = {
+  render: () => (
+    <Harness
+      fetchStub={routes([
+        ["/alert-rules", () => ERRORED],
+        ["/alert-channels", () => CHANNELS],
+      ])}
+    >
+      <AlertRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(
+      await canvas.findByText("analytics query timed out after 30s"),
+    ).toBeInTheDocument();
+    await expect(canvas.queryByText(/\(fallback\)/)).toBeNull();
+    await expect(canvas.getByText("a failure only a later build names")).toBeInTheDocument();
+  },
+};
+
+export const RuleCardTranslatesItsLastErrorInRussian: Story = {
+  globals: { locale: "ru" },
+  render: () => (
+    <Harness
+      fetchStub={routes([
+        ["/alert-rules", () => ERRORED],
+        ["/alert-channels", () => CHANNELS],
+      ])}
+    >
+      <AlertRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(
+      await canvas.findByText(
+        ru.pages.alerting.codes.ruleError.query_timeout.replace("{{seconds}}", "30"),
+      ),
+    ).toBeInTheDocument();
+    await expect(canvas.queryByText(/\(fallback\)/)).toBeNull();
   },
 };
 

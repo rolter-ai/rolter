@@ -1419,6 +1419,7 @@
         "reportedDelivered": "Отправлено состояние «{{state}}», канал его принял ({{detail}}).",
         "reportedFailed": "Отправлено состояние «{{state}}», но доставка не удалась: {{detail}}. Пока состояние не изменится, доставка будет повторяться.",
         "reportedSkipped": "Состояние «{{state}}» записано без доставки: {{detail}}.",
+        "reportedReading": "Значение: {{value}}, порог: {{threshold}}.",
         "deleteAria": "Удалить правило {{name}}",
         "editAria": "Изменить правило {{name}}",
         "evaluateAria": "Вычислить правило {{name}} сейчас",
@@ -1526,15 +1527,15 @@
         "colRule": "Правило",
         "colState": "Состояние",
         "colDelivery": "Доставка",
+        "colReading": "Значение",
         "colDetail": "Подробности",
+        "loadOlder": "Загрузить более старые",
         "ruleFilterAria": "Фильтр по правилу",
         "allRules": "Все правила",
         "stateFilterAria": "Фильтр по состоянию",
         "allStates": "Все состояния",
         "deliveryFilterAria": "Фильтр по доставке",
         "allDeliveries": "Все доставки",
-        "cappedAll": "Показаны только последние {{limit}} смен состояния; более старые есть, но не выводятся. Фильтры по состоянию и доставке работают только по этим строкам. Выберите правило, чтобы прочитать его собственные последние {{limit}}.",
-        "cappedRule": "Показаны только последние {{limit}} смен состояния этого правила; более старые есть, но не выводятся. Фильтры по состоянию и доставке работают только по этим строкам.",
         "noMatchTitle": "Нет смен состояния под эти фильтры",
         "noMatchBody": "Ни одна записанная смена состояния не подходит под выбранные правило, состояние и доставку. Сбросьте фильтры, чтобы увидеть остальные."
       },
@@ -1557,7 +1558,36 @@
       "historySummary_one": "{{count}} смена состояния · сначала новые",
       "historySummary_few": "{{count}} смены состояния · сначала новые",
       "historySummary_many": "{{count}} смен состояния · сначала новые",
-      "historySummary_other": "{{count}} смены состояния · сначала новые"
+      "historySummary_other": "{{count}} смены состояния · сначала новые",
+      "historySummaryMore_one": "Загружена {{count}} последняя смена состояния · дальше более старые",
+      "historySummaryMore_few": "Загружены {{count}} последние смены состояния · дальше более старые",
+      "historySummaryMore_many": "Загружено {{count}} последних смен состояния · дальше более старые",
+      "historySummaryMore_other": "Загружено {{count}} последней смены состояния · дальше более старые",
+      "codes": {
+        "delivery": {
+          "http_ok": "HTTP {{status}}",
+          "http_error": "HTTP {{status}}",
+          "timeout": "время ожидания истекло через {{seconds}} с",
+          "connect_failed": "не удалось подключиться к адресу",
+          "delivery_failed": "доставка не удалась",
+          "egress_denied": "адрес запрещён политикой исходящего трафика",
+          "secret_unsealable": "секрет канала не удалось расшифровать; проверьте ROLTER_KEK",
+          "secret_invalid": "секрет канала не годится как значение заголовка",
+          "client_unavailable": "не удалось создать клиент вебхука",
+          "no_channel": "канал не задан",
+          "channel_disabled": "канал выключен"
+        },
+        "ruleError": {
+          "clickhouse_not_configured": "для проверки правил нужен CLICKHOUSE_URL",
+          "clickhouse_unreachable": "не удалось подключиться к ClickHouse",
+          "clickhouse_timeout": "запрос к ClickHouse не уложился во время ожидания",
+          "query_timeout": "аналитический запрос не уложился в {{seconds}} с",
+          "clickhouse_error": "ClickHouse ответил ошибкой; исключение записано в журнале панели управления",
+          "clickhouse_bad_response": "по адресу CLICKHOUSE_URL отвечает не ClickHouse",
+          "query_failed": "аналитический запрос не выполнился; причина записана в журнале панели управления",
+          "unknown_signal": "эта сборка не знает сигнал {{signal}}"
+        }
+      }
     },
     "connectors": {
       "collectorConfig": {

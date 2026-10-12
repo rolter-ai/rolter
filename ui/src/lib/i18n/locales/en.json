@@ -1351,6 +1351,7 @@
         "reportedDelivered": "Reported {{state}}; the channel accepted it ({{detail}}).",
         "reportedFailed": "Reported {{state}}, but delivery failed: {{detail}}. It is retried while the state holds.",
         "reportedSkipped": "Recorded {{state}} without delivering it: {{detail}}.",
+        "reportedReading": "It read {{value}} against a threshold of {{threshold}}.",
         "deleteAria": "Delete rule {{name}}",
         "editAria": "Edit rule {{name}}",
         "evaluateAria": "Evaluate rule {{name}} now",
@@ -1454,15 +1455,15 @@
         "colRule": "Rule",
         "colState": "State",
         "colDelivery": "Delivery",
+        "colReading": "Reading",
         "colDetail": "Detail",
+        "loadOlder": "Load older transitions",
         "ruleFilterAria": "Filter by rule",
         "allRules": "All rules",
         "stateFilterAria": "Filter by state",
         "allStates": "All states",
         "deliveryFilterAria": "Filter by delivery",
         "allDeliveries": "All deliveries",
-        "cappedAll": "Only the newest {{limit}} transitions are listed; older ones exist. The state and delivery filters search these rows only. Pick a rule to read that rule's own newest {{limit}}.",
-        "cappedRule": "Only this rule's newest {{limit}} transitions are listed; older ones exist. The state and delivery filters search these rows only.",
         "noMatchTitle": "No transitions match these filters",
         "noMatchBody": "No recorded transition fits the rule, state and delivery you picked. Clear the filters to see the rest."
       },
@@ -1479,7 +1480,34 @@
       "ruleSummary_one": "{{count}} rule · evaluated every 60s against gateway analytics",
       "ruleSummary_other": "{{count}} rules · evaluated every 60s against gateway analytics",
       "historySummary_one": "{{count}} transition · newest first",
-      "historySummary_other": "{{count}} transitions · newest first"
+      "historySummary_other": "{{count}} transitions · newest first",
+      "historySummaryMore_one": "{{count}} newest transition loaded · older ones follow",
+      "historySummaryMore_other": "{{count}} newest transitions loaded · older ones follow",
+      "codes": {
+        "delivery": {
+          "http_ok": "HTTP {{status}}",
+          "http_error": "HTTP {{status}}",
+          "timeout": "timed out after {{seconds}}s",
+          "connect_failed": "could not connect to the endpoint",
+          "delivery_failed": "delivery failed",
+          "egress_denied": "endpoint denied by the egress policy",
+          "secret_unsealable": "channel secret could not be unsealed; check ROLTER_KEK",
+          "secret_invalid": "channel secret is not a valid header value",
+          "client_unavailable": "the webhook client could not be built",
+          "no_channel": "no channel configured",
+          "channel_disabled": "channel disabled"
+        },
+        "ruleError": {
+          "clickhouse_not_configured": "alert evaluation requires CLICKHOUSE_URL",
+          "clickhouse_unreachable": "could not connect to ClickHouse",
+          "clickhouse_timeout": "the request to ClickHouse timed out",
+          "query_timeout": "analytics query timed out after {{seconds}}s",
+          "clickhouse_error": "ClickHouse answered with an error; the control plane log has the exception",
+          "clickhouse_bad_response": "the response at CLICKHOUSE_URL is not from ClickHouse",
+          "query_failed": "the analytics query failed; the control plane log has the cause",
+          "unknown_signal": "this build does not know the signal {{signal}}"
+        }
+      }
     },
     "connectors": {
       "collectorConfig": {
