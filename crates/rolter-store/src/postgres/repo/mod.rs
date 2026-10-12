@@ -6775,6 +6775,75 @@ mod tests {
         assert!(plan.delete.is_empty());
     }
 
+    /// #2946: a row whose `egress_proxies` holds a non-string used to fail every
+    /// read of it, so the provider could neither be listed nor repaired.
+    #[tokio::test]
+    async fn a_provider_with_a_non_string_proxy_entry_lists_and_can_be_rewritten() {
+        if !super::super::test_database::is_configured() {
+            eprintln!("skipping: {} not set", super::super::test_database::URL_ENV);
+            return;
+        }
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
+        let org = OrgRepo(&pool).create("acme", "acme").await.unwrap();
+        sqlx::query("alter table providers drop constraint providers_egress_proxies_strings")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let id: Uuid = sqlx::query_scalar(
+            "insert into providers (org_id, name, slug, kind, api_base, egress_proxies)
+             values ($1, 'odd', 'odd', 'openai', 'https://api.openai.com',
+                     '[\"http://proxy.example.com:3128\", 7]'::jsonb)
+             returning id",
+        )
+        .bind(org.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let repo = ProviderRepo(&pool);
+
+        let listed = repo.list(org.id).await.expect("the listing decodes");
+        assert_eq!(listed.len(), 1);
+        assert_eq!(
+            listed[0].egress_proxies.0,
+            ["http://proxy.example.com:3128"],
+            "the string entries are kept"
+        );
+        assert_eq!(repo.get(id).await.unwrap().egress_proxies.0.len(), 1);
+
+        // an update that leaves the pool alone still answers
+        let kept = repo
+            .update(id, None, None, None, None, None, None, None, None, None)
+            .await
+            .expect("an update that omits the pool succeeds");
+        assert_eq!(kept.egress_proxies.0.len(), 1);
+
+        let pool_now = vec!["http://other.example.com:3128".to_string()];
+        let rewritten = repo
+            .update(
+                id,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(&pool_now),
+                None,
+                None,
+                None,
+            )
+            .await
+            .expect("a write that sets the pool succeeds");
+        assert_eq!(rewritten.egress_proxies.0, pool_now);
+        let stored: serde_json::Value =
+            sqlx::query_scalar("select egress_proxies from providers where id = $1")
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(stored, serde_json::json!(pool_now), "the row is repaired");
+    }
+
     /// #2235: the strategy and the target list change in one transaction, the
     /// targets that survive keep their ids, and a write that fails part way
     /// leaves the route exactly as it was.

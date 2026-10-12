@@ -3506,6 +3506,88 @@ async fn a_provider_with_an_unreadable_proxy_pool_is_left_out_of_the_snapshot() 
     );
 }
 
+/// #2950: a bootstrap-file route may name a stored provider, and when the
+/// loader leaves that provider out the file's reference used to dangle, which
+/// refused the snapshot for every tenant.
+#[tokio::test]
+async fn a_file_route_naming_a_left_out_stored_provider_keeps_the_snapshot_served() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    rolter_store::postgres::run_migrations(&pool)
+        .await
+        .expect("migrate");
+    let org_id: uuid::Uuid =
+        sqlx::query_scalar("insert into orgs (name, slug) values ('acme', 'acme') returning id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    sqlx::query("alter table providers drop constraint providers_egress_proxies_strings")
+        .execute(&pool)
+        .await
+        .unwrap();
+    for (name, egress_proxies) in [
+        ("pooled", r#"["http://proxy.example.com:3128"]"#),
+        ("unreadable", r#"["http://proxy.example.com:3128", 7]"#),
+    ] {
+        sqlx::query(
+            "insert into providers (org_id, name, slug, kind, api_base, api_key_env,
+                                    egress_proxies)
+             values ($1, $2, $2, 'openai_compatible', 'https://llm.example.com/v1',
+                     'UPSTREAM_KEY', $3::jsonb)",
+        )
+        .bind(org_id)
+        .bind(name)
+        .bind(egress_proxies)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    let file_config = rolter_core::GatewayConfig::from_toml_str(
+        r#"
+        [[routes]]
+        model = "from-file"
+        [[routes.targets]]
+        provider = "pooled"
+        [[routes.targets]]
+        provider = "unreadable"
+
+        [[routes]]
+        model = "only-unreadable"
+        [[routes.targets]]
+        provider = "unreadable"
+        "#,
+    )
+    .expect("file config");
+    let app = rolter_control::test_app_with_file_config(pool.clone(), None, file_config)
+        .await
+        .expect("build app");
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+
+    let response = client
+        .get(format!("http://{addr}/internal/snapshot"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        200,
+        "a file route naming a left-out provider must not withhold the snapshot"
+    );
+    let snapshot: Value = response.json().await.unwrap();
+    let routes = snapshot["config"]["routes"].as_array().expect("routes");
+    assert_eq!(routes.len(), 1, "{snapshot}");
+    assert_eq!(routes[0]["model"], "from-file", "{snapshot}");
+    let targets: Vec<&str> = routes[0]["targets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|t| t["provider"].as_str())
+        .collect();
+    assert_eq!(targets, ["pooled"], "{snapshot}");
+}
+
 /// Editing a budget or rate limit takes `update` on it, which the matrix
 /// grants to an admin of the scope and not to a viewer (#1285). Both reach the
 /// row's own scope chain, so the check is against where the cap already lives.

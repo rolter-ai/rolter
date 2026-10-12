@@ -73,7 +73,10 @@ fn fields_in(source: &str, name: &str) -> Option<BTreeSet<String>> {
             let Some((field, _)) = field.split_once(':') else {
                 continue;
             };
-            fields.insert(rename_in(&attributes).unwrap_or_else(|| field.trim().to_string()));
+            // a `#[serde(skip)]` field is runtime state, never a key a file can set
+            if !attributes.contains("serde(skip)") {
+                fields.insert(rename_in(&attributes).unwrap_or_else(|| field.trim().to_string()));
+            }
             attributes.clear();
         }
     }

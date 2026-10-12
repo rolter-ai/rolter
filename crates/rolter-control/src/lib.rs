@@ -2454,10 +2454,21 @@ async fn build_snapshot(
         }
         Err(err) => {
             tracing::error!(%err, "failed to load config snapshot");
+            // the store's own account of why (never a driver error or a
+            // value) rides along so the gateway's poll log can say which
+            // setting held the snapshot back (#2947). left out when empty or
+            // when the store cannot say, which keeps the opaque body a
+            // database outage has always had
+            let explained = state.store.load_problems().await.unwrap_or_default();
+            let error = if explained.is_empty() {
+                json!({"message": "failed to load config snapshot"})
+            } else {
+                json!({"message": "failed to load config snapshot", "problems": explained})
+            };
             BuiltSnapshot::error(
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({"error": {"message": "failed to load config snapshot"}})),
+                    Json(json!({ "error": error })),
                 )
                     .into_response(),
                 version,
@@ -3613,6 +3624,38 @@ mod tests {
             )
             .await;
             assert_eq!(status, 500, "{body}");
+            assert!(!body.to_string().contains("secret_db_details"), "{body}");
+        }
+    }
+
+    /// #2947: a refused load says why on the snapshot endpoint itself, so a
+    /// gateway can log it, and a driver error still never reaches the body.
+    #[tokio::test]
+    async fn a_refused_snapshot_carries_the_stores_explanation() {
+        async fn snapshot(store: RefusingConfigStore) -> (u16, Value) {
+            let mut state = state_with_token(None);
+            state.store = Arc::new(store);
+            let addr = serve(build_app_with_internal(state)).await;
+            let response = reqwest::get(format!("http://{addr}/internal/snapshot"))
+                .await
+                .unwrap();
+            (response.status().as_u16(), response.json().await.unwrap())
+        }
+
+        let line =
+            "security setting required_headers cannot be read (it is an array, not an object)";
+        let (status, body) = snapshot(RefusingConfigStore {
+            explanation: Some(vec![line.to_string()]),
+        })
+        .await;
+        assert_eq!(status, 500, "{body}");
+        assert_eq!(body["error"]["problems"], json!([line]), "{body}");
+        assert!(!body.to_string().contains("secret_db_details"), "{body}");
+
+        for explanation in [None, Some(Vec::new())] {
+            let (status, body) = snapshot(RefusingConfigStore { explanation }).await;
+            assert_eq!(status, 500, "{body}");
+            assert!(body["error"].get("problems").is_none(), "{body}");
             assert!(!body.to_string().contains("secret_db_details"), "{body}");
         }
     }
