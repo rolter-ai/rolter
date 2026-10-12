@@ -148,7 +148,7 @@ async fn list(
         )))
         .fetch_all(pool(&state))
         .await
-        .map_err(|e| Error::Store(e.to_string()))?,
+        .map_err(rolter_store::postgres::store_err)?,
     ))
 }
 
@@ -176,7 +176,7 @@ async fn create(
     .bind(secret.as_ref().map(|(_, n)| n.as_slice()))
     .fetch_one(pool(&state))
     .await
-    .map_err(|e| Error::Store(e.to_string()))?;
+    .map_err(rolter_store::postgres::store_err)?;
     audit(&state, &principal, "connector.create", &connector, None).await;
     Ok(Json(connector))
 }
@@ -193,7 +193,7 @@ async fn update(
     let mut tx = pool(&state)
         .begin()
         .await
-        .map_err(|e| Error::Store(e.to_string()))?;
+        .map_err(rolter_store::postgres::store_err)?;
     let (stored, had_secret): (String, bool) = sqlx::query_as(
         "select endpoint, auth_ciphertext is not null from observability_connectors \
          where id=$1 for no key update",
@@ -201,7 +201,7 @@ async fn update(
     .bind(id)
     .fetch_optional(&mut *tx)
     .await
-    .map_err(|e| Error::Store(e.to_string()))?
+    .map_err(rolter_store::postgres::store_err)?
     .ok_or_else(|| Error::NotFound(format!("connector {id}")))?;
     // a secret was given for one receiver; repointed at another origin, the
     // connector would hand it to whoever answers there, so it is dropped
@@ -247,8 +247,10 @@ async fn update(
     .bind(reset_health)
     .fetch_one(&mut *tx)
     .await
-    .map_err(|e| Error::Store(e.to_string()))?;
-    tx.commit().await.map_err(|e| Error::Store(e.to_string()))?;
+    .map_err(rolter_store::postgres::store_err)?;
+    tx.commit()
+        .await
+        .map_err(rolter_store::postgres::store_err)?;
     audit(
         &state,
         &principal,
@@ -270,7 +272,7 @@ async fn remove(
         .bind(id)
         .execute(pool(&state))
         .await
-        .map_err(|e| Error::Store(e.to_string()))?
+        .map_err(rolter_store::postgres::store_err)?
         .rows_affected()
         == 0
     {
@@ -310,7 +312,7 @@ async fn test_delivery(
     .bind(id)
     .fetch_optional(pool(&state))
     .await
-    .map_err(|e| Error::Store(e.to_string()))?
+    .map_err(rolter_store::postgres::store_err)?
     .ok_or_else(|| Error::NotFound(format!("connector {id}")))?;
     let (kind, endpoint, ciphertext, nonce) = row;
 
@@ -344,7 +346,7 @@ async fn test_delivery(
     .bind(error.as_deref())
     .execute(pool(&state))
     .await
-    .map_err(|e| Error::Store(e.to_string()))?;
+    .map_err(rolter_store::postgres::store_err)?;
 
     Ok(Json(TestResult {
         delivered: outcome.is_ok(),

@@ -2618,10 +2618,10 @@ fn error_schemas(p: &Prim) -> Value {
                             "type": "string",
                             "description": "stable, never renamed; a client branches on it \
                                 rather than on `message`. The common ones are `name_taken`, \
-                                `invalid_field`, `referenced` and `scope_mismatch` (#2567)"
+                                `invalid_field`, `invalid_body`, `referenced` and `scope_mismatch` (#2567, #2729)"
                         },
                         "param": nullable_string,
-                        // the field an `invalid_field` refusal is about
+                        // the field (or list row, `injected_headers.x-team`) an `invalid_field` refusal is about
                         "field": string
                     }
                 }

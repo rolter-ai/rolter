@@ -363,12 +363,18 @@ every other code, `no_local_password` included, reads from the shared copy (#284
 On the control plane, a refusal earns a code by going through the helpers in
 `crates/rolter-control/src/crud.rs` rather than a bare `Error::Config` or
 `ApiError::Conflict`: `invalid_field(field, message)` for a 400 about one field
-(the body then carries `field` too), `name_taken(message)` for a taken name, and
+(the body then carries `field` too: a bare wire name, or a path into a list or
+map such as `forwarded_headers[2]` or `injected_headers.x-team`, so the dashboard
+marks the row without matching message text; module validators call it rather
+than keeping a local `invalid`), `ApiError::InvalidBody` (`invalid_body`) for a
+body that does not parse, `name_taken(message)` for a taken name, and
 `ApiError::CodedConflict` with `REFERENCED` or `SCOPE_MISMATCH` for the other
 409s. A unique violation the store reports is `Error::AlreadyExists`, which the
 API renders as `409 name_taken` with a generic message, so a write that loses a
 race, or hits a constraint nobody checked first, never surfaces as a 500
-(#2567). Status codes do not change when a code is added. The codes are listed
+(#2567). A query that bypasses the repositories maps its `sqlx` error through
+`rolter_store::postgres::store_err` for the same reason, never through
+`Error::Store(e.to_string())` (#2729). Status codes do not change when a code is added. The codes are listed
 in `docs/user-docs/api/control-plane-openapi.mdx`. `invalid_field` is the one
 known code whose server message `describeError` keeps as `detail`, because the
 translated line cannot say which field was wrong.

@@ -16,11 +16,10 @@ use axum::routing::get;
 use axum::{Json, Router};
 use serde::Deserialize;
 
-use rolter_core::Error;
 use rolter_store::postgres::models::SecuritySettings;
 use rolter_store::postgres::repo::{AuditLogRepo, SecuritySettingsRepo};
 
-use crate::crud::{pool, publish_config_change, ApiError, ApiResult, SafeJson};
+use crate::crud::{invalid_field, pool, publish_config_change, ApiError, ApiResult, SafeJson};
 use crate::rbac::{authorize_superadmin, Principal};
 use crate::rbac_matrix::superadmin_cap;
 use crate::ControlState;
@@ -52,20 +51,17 @@ struct UpdateSecuritySettings {
     auth_bypass_routes: Vec<String>,
 }
 
-fn invalid(message: impl Into<String>) -> ApiError {
-    ApiError::Core(Error::Config(message.into()))
-}
-
-fn validate_origin(origin: &str) -> ApiResult<()> {
+fn validate_origin(origin: &str, field: &str) -> ApiResult<()> {
     let origin = origin.trim();
     if origin.is_empty()
         || origin.contains('*')
         || !(origin.starts_with("https://") || origin.starts_with("http://"))
         || origin.contains(['?', '#', '@'])
     {
-        return Err(invalid(format!(
-            "allowed origin '{origin}' must be an exact http(s) origin without wildcards"
-        )));
+        return Err(invalid_field(
+            field,
+            format!("allowed origin '{origin}' must be an exact http(s) origin without wildcards"),
+        ));
     }
     let authority = origin
         .strip_prefix("https://")
@@ -74,50 +70,61 @@ fn validate_origin(origin: &str) -> ApiResult<()> {
     let authority = authority.strip_suffix('/').unwrap_or(authority);
     if authority.is_empty() || authority.contains('/') || authority.chars().any(char::is_whitespace)
     {
-        return Err(invalid(format!(
-            "allowed origin '{origin}' must not include a path"
-        )));
+        return Err(invalid_field(
+            field,
+            format!("allowed origin '{origin}' must not include a path"),
+        ));
     }
     Ok(())
 }
 
-fn validate_header_name(name: &str, field: &str) -> ApiResult<()> {
+fn validate_header_name(name: &str, list: &str, field: &str) -> ApiResult<()> {
     if HeaderName::from_bytes(name.trim().as_bytes()).is_err() {
-        return Err(invalid(format!("{field} header '{name}' is invalid")));
+        return Err(invalid_field(
+            field,
+            format!("{list} header '{name}' is invalid"),
+        ));
     }
     Ok(())
 }
 
-fn validate_bypass_route(route: &str) -> ApiResult<()> {
+fn validate_bypass_route(route: &str, field: &str) -> ApiResult<()> {
     let route = route.trim();
     if !route.starts_with("/v1/")
         || route.contains(['*', '{', '}', '?', '#'])
         || route.chars().any(char::is_whitespace)
     {
-        return Err(invalid(format!(
-            "auth bypass route '{route}' must be an exact /v1 path without wildcards"
-        )));
+        return Err(invalid_field(
+            field,
+            format!("auth bypass route '{route}' must be an exact /v1 path without wildcards"),
+        ));
     }
     Ok(())
 }
 
 fn validate_settings(body: &UpdateSecuritySettings) -> ApiResult<()> {
-    for origin in &body.allowed_origins {
-        validate_origin(origin)?;
+    for (idx, origin) in body.allowed_origins.iter().enumerate() {
+        validate_origin(origin, &format!("allowed_origins[{idx}]"))?;
     }
-    for header in &body.allowed_headers {
-        validate_header_name(header, "allowed_headers")?;
+    for (idx, header) in body.allowed_headers.iter().enumerate() {
+        validate_header_name(
+            header,
+            "allowed_headers",
+            &format!("allowed_headers[{idx}]"),
+        )?;
     }
     for (header, value) in &body.required_headers {
-        validate_header_name(header, "required_headers")?;
+        let row = format!("required_headers.{header}");
+        validate_header_name(header, "required_headers", &row)?;
         if value.trim().is_empty() || value.contains(['\r', '\n']) {
-            return Err(invalid(format!(
-                "required header '{header}' must have a non-empty single-line value"
-            )));
+            return Err(invalid_field(
+                row,
+                format!("required header '{header}' must have a non-empty single-line value"),
+            ));
         }
     }
-    for route in &body.auth_bypass_routes {
-        validate_bypass_route(route)?;
+    for (idx, route) in body.auth_bypass_routes.iter().enumerate() {
+        validate_bypass_route(route, &format!("auth_bypass_routes[{idx}]"))?;
     }
     Ok(())
 }
@@ -139,7 +146,8 @@ async fn update_security_settings(
             // way for the same reason (#2357)
             &body.allowed_origins,
             &body.allowed_headers,
-            serde_json::to_value(&body.required_headers).map_err(|err| invalid(err.to_string()))?,
+            serde_json::to_value(&body.required_headers)
+                .map_err(|_| ApiError::Curated("required headers could not be stored".into()))?,
             &body.auth_bypass_routes,
         )
         .await?;
@@ -175,16 +183,35 @@ mod tests {
 
     #[test]
     fn rejects_wildcards_and_control_plane_bypass_paths() {
-        assert!(validate_origin("https://*.example.com").is_err());
-        assert!(validate_bypass_route("/admin/providers").is_err());
-        assert!(validate_bypass_route("/v1/*").is_err());
+        assert!(validate_origin("https://*.example.com", "allowed_origins[0]").is_err());
+        assert!(validate_bypass_route("/admin/providers", "auth_bypass_routes[0]").is_err());
+        assert!(validate_bypass_route("/v1/*", "auth_bypass_routes[1]").is_err());
+    }
+
+    #[test]
+    fn a_refusal_names_the_list_row_it_is_about() {
+        let body = UpdateSecuritySettings {
+            allowed_origins: vec!["https://ok.example.com".into(), "https://*.bad".into()],
+            allowed_headers: vec![],
+            required_headers: Default::default(),
+            auth_bypass_routes: vec![],
+        };
+        let Err(ApiError::InvalidField { field, .. }) = validate_settings(&body) else {
+            panic!("expected an invalid_field refusal");
+        };
+        assert_eq!(field, "allowed_origins[1]");
     }
 
     #[test]
     fn accepts_exact_origin_headers_and_openai_path() {
-        assert!(validate_origin("https://console.example.com").is_ok());
-        assert!(validate_header_name("x-tenant-id", "required_headers").is_ok());
-        assert!(validate_bypass_route("/v1/models").is_ok());
+        assert!(validate_origin("https://console.example.com", "allowed_origins[0]").is_ok());
+        assert!(validate_header_name(
+            "x-tenant-id",
+            "required_headers",
+            "required_headers.x-tenant-id"
+        )
+        .is_ok());
+        assert!(validate_bypass_route("/v1/models", "auth_bypass_routes[0]").is_ok());
     }
 
     #[test]

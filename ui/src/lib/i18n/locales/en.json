@@ -293,6 +293,7 @@
       "codes": {
         "analytics_query_failed": "The analytics query failed.",
         "internal": "The control plane hit an internal error.",
+        "invalid_body": "The request was not valid JSON for this action. Reload the page and try again.",
         "invalid_credentials": "The email or password is wrong.",
         "invalid_cursor": "The page position is no longer valid. Reload the list.",
         "invalid_exchange_code": "This sign-in link has expired or was already used. Start again.",

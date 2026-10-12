@@ -13,11 +13,10 @@ use axum::routing::get;
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
-use rolter_core::Error;
 use rolter_store::postgres::models::ClientSettings;
 use rolter_store::postgres::repo::{AuditLogRepo, ClientSettingsRepo};
 
-use crate::crud::{pool, publish_config_change, ApiError, ApiResult, SafeJson};
+use crate::crud::{invalid_field, pool, publish_config_change, ApiResult, SafeJson};
 use crate::rbac::{authorize_superadmin, Principal};
 use crate::rbac_matrix::superadmin_cap;
 use crate::ControlState;
@@ -91,24 +90,26 @@ struct UpdateClientSettings {
     request_id_header: String,
 }
 
-fn invalid(message: impl Into<String>) -> ApiError {
-    ApiError::Core(Error::Config(message.into()))
-}
-
 /// Reject anything that would not survive the wire: a header name that is not a
 /// valid token, a reserved name, or a value with control characters in it.
-fn validate_header_name(name: &str) -> ApiResult<String> {
+/// `field` is the path of the offending entry (`forwarded_headers[2]`,
+/// `injected_headers.x-team`), so a client can mark that row.
+fn validate_header_name(name: &str, field: &str) -> ApiResult<String> {
     let lower = name.trim().to_ascii_lowercase();
     if lower.is_empty() {
-        return Err(invalid("header names must not be empty"));
+        return Err(invalid_field(field, "header names must not be empty"));
     }
     if HeaderName::try_from(lower.as_str()).is_err() {
-        return Err(invalid(format!("'{name}' is not a valid header name")));
+        return Err(invalid_field(
+            field,
+            format!("'{name}' is not a valid header name"),
+        ));
     }
     if RESERVED_HEADERS.contains(&lower.as_str()) {
-        return Err(invalid(format!(
-            "'{lower}' is managed by the gateway and cannot be forwarded or injected"
-        )));
+        return Err(invalid_field(
+            field,
+            format!("'{lower}' is managed by the gateway and cannot be forwarded or injected"),
+        ));
     }
     Ok(lower)
 }
@@ -117,38 +118,59 @@ fn validate_settings(body: &UpdateClientSettings) -> ApiResult<()> {
     if let Some(url) = body.public_base_url.as_deref() {
         let url = url.trim();
         if !(url.is_empty() || url.starts_with("http://") || url.starts_with("https://")) {
-            return Err(invalid("public_base_url must be an http(s) URL"));
+            return Err(invalid_field(
+                "public_base_url",
+                "public_base_url must be an http(s) URL",
+            ));
         }
         if url.len() > 2_048 {
-            return Err(invalid("public_base_url must be at most 2048 characters"));
+            return Err(invalid_field(
+                "public_base_url",
+                "public_base_url must be at most 2048 characters",
+            ));
         }
     }
     if body.forwarded_headers.len() > 64 {
-        return Err(invalid("at most 64 forwarded headers are allowed"));
+        return Err(invalid_field(
+            "forwarded_headers",
+            "at most 64 forwarded headers are allowed",
+        ));
     }
     if body.injected_headers.len() > 64 {
-        return Err(invalid("at most 64 injected headers are allowed"));
+        return Err(invalid_field(
+            "injected_headers",
+            "at most 64 injected headers are allowed",
+        ));
     }
-    for name in &body.forwarded_headers {
-        validate_header_name(name)?;
+    for (idx, name) in body.forwarded_headers.iter().enumerate() {
+        validate_header_name(name, &format!("forwarded_headers[{idx}]"))?;
     }
     for (name, value) in &body.injected_headers {
-        validate_header_name(name)?;
+        // the map is keyed by name, so the name is the row's path
+        let row = format!("injected_headers.{}", name.trim().to_ascii_lowercase());
+        validate_header_name(name, &row)?;
         if value.len() > 4_096 {
-            return Err(invalid(format!("value for '{name}' exceeds 4096 bytes")));
+            return Err(invalid_field(
+                row,
+                format!("value for '{name}' exceeds 4096 bytes"),
+            ));
         }
         if value.chars().any(|c| c.is_control()) {
-            return Err(invalid(format!(
-                "value for '{name}' must not contain control characters"
-            )));
+            return Err(invalid_field(
+                row,
+                format!("value for '{name}' must not contain control characters"),
+            ));
         }
     }
-    let request_id_header = validate_header_name(&body.request_id_header)?;
+    let request_id_header = validate_header_name(&body.request_id_header, "request_id_header")?;
     // the gateway reads, echoes and logs this header, so it refuses a few
     // names the upstream lists allow; checking the same rule here keeps a save
     // from succeeding while the gateway keeps using the default (#2925)
     if let Some(problem) = rolter_core::request_id_header_problem(&request_id_header) {
-        return Err(invalid(format!("request_id_header: {problem}")));
+        return Err(invalid_field(
+            "request_id_header",
+            format!("request_id_header: {problem}"),
+        ));
     }
     Ok(())
 }
@@ -223,6 +245,7 @@ async fn update_client_settings(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::crud::ApiError;
 
     fn body() -> UpdateClientSettings {
         UpdateClientSettings {
@@ -231,6 +254,34 @@ mod tests {
             injected_headers: BTreeMap::from([("x-org".to_string(), "acme".to_string())]),
             request_id_header: "x-request-id".to_string(),
         }
+    }
+
+    fn refused_field(body: &UpdateClientSettings) -> String {
+        match validate_settings(body) {
+            Err(ApiError::InvalidField { field, .. }) => field,
+            other => panic!("expected an invalid_field refusal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_bad_header_names_its_row_rather_than_the_message_prefix() {
+        let mut bad = body();
+        bad.injected_headers
+            .insert("bad header".to_string(), "v".to_string());
+        assert_eq!(refused_field(&bad), "injected_headers.bad header");
+
+        let mut bad = body();
+        bad.forwarded_headers.push("authorization".to_string());
+        assert_eq!(refused_field(&bad), "forwarded_headers[1]");
+
+        let mut bad = body();
+        bad.injected_headers
+            .insert("x-big".to_string(), "v".repeat(5_000));
+        assert_eq!(refused_field(&bad), "injected_headers.x-big");
+
+        let mut bad = body();
+        bad.public_base_url = Some("ftp://x".to_string());
+        assert_eq!(refused_field(&bad), "public_base_url");
     }
 
     #[test]

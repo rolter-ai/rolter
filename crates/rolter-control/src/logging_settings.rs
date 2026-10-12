@@ -6,11 +6,10 @@ use axum::routing::get;
 use axum::{Json, Router};
 use serde::Deserialize;
 
-use rolter_core::Error;
 use rolter_store::postgres::models::LoggingSettings;
 use rolter_store::postgres::repo::{AuditLogRepo, LoggingSettingsRepo};
 
-use crate::crud::{pool, publish_config_change, ApiError, ApiResult, SafeJson};
+use crate::crud::{invalid_field, pool, publish_config_change, ApiResult, SafeJson};
 use crate::rbac::{authorize_superadmin, Principal};
 use crate::rbac_matrix::superadmin_cap;
 use crate::ControlState;
@@ -62,30 +61,32 @@ fn default_payload_retention_hours() -> i32 {
     168
 }
 
-fn invalid(message: impl Into<String>) -> ApiError {
-    ApiError::Core(Error::Config(message.into()))
-}
-
 fn validate_settings(body: &UpdateLoggingSettings) -> ApiResult<()> {
     if !body.sample_rate.is_finite() || !(0.0..=1.0).contains(&body.sample_rate) {
-        return Err(invalid("sample_rate must be in [0, 1]"));
+        return Err(invalid_field(
+            "sample_rate",
+            "sample_rate must be in [0, 1]",
+        ));
     }
     if !(0..=1_048_576).contains(&body.payload_capture_max_bytes) {
-        return Err(invalid(
+        return Err(invalid_field(
+            "payload_capture_max_bytes",
             "payload_capture_max_bytes must be between 0 and 1048576",
         ));
     }
     if body.payload_capture_redact_fields.iter().any(|field| {
         field.trim().is_empty() || field.len() > 128 || field.chars().any(char::is_control)
     }) {
-        return Err(invalid(
+        return Err(invalid_field(
+            "payload_capture_redact_fields",
             "payload_capture_redact_fields must contain 1-128 visible-character keys",
         ));
     }
     if body.payload_capture_models.iter().any(|model| {
         model.trim().is_empty() || model.len() > 255 || model.chars().any(char::is_control)
     }) {
-        return Err(invalid(
+        return Err(invalid_field(
+            "payload_capture_models",
             "payload_capture_models must contain 1-255 visible-character model names",
         ));
     }
@@ -94,22 +95,28 @@ fn validate_settings(body: &UpdateLoggingSettings) -> ApiResult<()> {
         .iter()
         .any(|id| uuid::Uuid::parse_str(id).is_err())
     {
-        return Err(invalid(
+        return Err(invalid_field(
+            "payload_capture_virtual_key_ids",
             "payload_capture_virtual_key_ids must contain valid UUIDs",
         ));
     }
     if !(1..=3650).contains(&body.retention_days) {
-        return Err(invalid("retention_days must be between 1 and 3650"));
+        return Err(invalid_field(
+            "retention_days",
+            "retention_days must be between 1 and 3650",
+        ));
     }
     if !(1..=8760).contains(&body.payload_retention_hours) {
-        return Err(invalid(
+        return Err(invalid_field(
+            "payload_retention_hours",
             "payload_retention_hours must be between 1 and 8760",
         ));
     }
     // raw bodies are the sensitive half; keeping them past the metadata they
     // belong to would leak prompt content the operator meant to expire
     if i64::from(body.payload_retention_hours) > i64::from(body.retention_days) * 24 {
-        return Err(invalid(
+        return Err(invalid_field(
+            "payload_retention_hours",
             "payload_retention_hours must not exceed retention_days",
         ));
     }

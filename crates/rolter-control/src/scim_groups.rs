@@ -790,7 +790,7 @@ async fn create_mapping(
     )
     .await?;
     require_non_empty(&body.group_name, "group_name")?;
-    crate::sso::parse_role(&body.role)?;
+    crate::sso::parse_role(&body.role, "role")?;
     // a mapping may only grant inside its own org, or an IdP admin could hand
     // their users a foothold in someone else's tenant
     let scope_org = match (body.team_id, body.project_id) {

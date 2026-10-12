@@ -14,6 +14,7 @@ import { GatewayError } from "@/lib/gateway";
 export const KNOWN_ERROR_CODES = [
   "analytics_query_failed",
   "internal",
+  "invalid_body",
   "invalid_credentials",
   "invalid_cursor",
   "invalid_exchange_code",
@@ -45,8 +46,9 @@ const known = new Set<string>(KNOWN_ERROR_CODES);
 
 // codes whose translated line cannot say which input was wrong, so the server's
 // words stay underneath as detail: an `invalid_field` message names the field
-// and the rule it broke (#2567)
-const keepsDetail = new Set<string>(["invalid_field"]);
+// and the rule it broke (#2567), an `invalid_body` one says what did not parse
+// (#2729)
+const keepsDetail = new Set<string>(["invalid_field", "invalid_body"]);
 
 /**
  * The inline copy for a failure: a translated line, plus the raw server message

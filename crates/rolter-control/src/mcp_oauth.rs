@@ -24,7 +24,6 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use rolter_core::Error;
 // the one authoritative MCP transport list; the check constraints and the
 // dashboard dropdown match it, pinned by `transports_match_the_schema` (#783)
 use rolter_core::MCP_TRANSPORTS as TRANSPORTS;
@@ -37,8 +36,8 @@ use rolter_store::postgres::repo::{
 };
 
 use crate::crud::{
-    explicit_null, log_audit, pool, publish_config_change, require_non_empty, ApiError, ApiResult,
-    SafeJson,
+    explicit_null, invalid_field, log_audit, pool, publish_config_change, require_non_empty,
+    ApiError, ApiResult, SafeJson,
 };
 use crate::mcp_oauth_flow::kek;
 use crate::rbac::{authorize, holds_admin, Principal, ScopeChain};
@@ -78,17 +77,19 @@ pub(crate) fn router() -> Router<ControlState> {
         )
 }
 
-fn invalid(message: impl Into<String>) -> ApiError {
-    ApiError::Core(Error::Config(message.into()))
-}
-
 fn validate_required_scopes(scopes: &[String]) -> ApiResult<()> {
     if scopes.iter().any(|scope| scope.trim().is_empty()) {
-        return Err(invalid("required_scopes must not contain empty values"));
+        return Err(invalid_field(
+            "required_scopes",
+            "required_scopes must not contain empty values",
+        ));
     }
     let unique_scopes: std::collections::HashSet<_> = scopes.iter().collect();
     if unique_scopes.len() != scopes.len() {
-        return Err(invalid("required_scopes must not contain duplicates"));
+        return Err(invalid_field(
+            "required_scopes",
+            "required_scopes must not contain duplicates",
+        ));
     }
     Ok(())
 }
@@ -168,11 +169,11 @@ fn default_custom_source() -> String {
 
 fn validate_tools(tools: &[String]) -> ApiResult<()> {
     if tools.iter().any(|tool| tool.trim().is_empty()) {
-        return Err(invalid("tools must not contain empty names"));
+        return Err(invalid_field("tools", "tools must not contain empty names"));
     }
     let unique: std::collections::HashSet<_> = tools.iter().collect();
     if unique.len() != tools.len() {
-        return Err(invalid("tools must not contain duplicates"));
+        return Err(invalid_field("tools", "tools must not contain duplicates"));
     }
     Ok(())
 }
@@ -195,24 +196,24 @@ async fn create_server(
     require_non_empty(&body.url, "url")?;
     let transport = body.transport.as_deref().unwrap_or("streamable_http");
     if !TRANSPORTS.contains(&transport) {
-        return Err(invalid(format!(
-            "transport must be one of {}",
-            TRANSPORTS.join(", ")
-        )));
+        return Err(invalid_field(
+            "transport",
+            format!("transport must be one of {}", TRANSPORTS.join(", ")),
+        ));
     }
     // an MCP server is a URL the deployment will be asked to call on a user's
     // behalf, so it is held to the same egress rules as an upstream provider
     if !(body.url.starts_with("http://") || body.url.starts_with("https://")) {
-        return Err(invalid("url must be an http(s) endpoint"));
+        return Err(invalid_field("url", "url must be an http(s) endpoint"));
     }
     state
         .egress
         .check_url(&body.url, "MCP server URL")
-        .map_err(invalid)?;
+        .map_err(|message| invalid_field("url", message))?;
     validate_required_scopes(&body.required_scopes)?;
     validate_tools(&body.tools)?;
     if !matches!(body.source.as_str(), "custom" | "library") {
-        return Err(invalid("source must be custom or library"));
+        return Err(invalid_field("source", "source must be custom or library"));
     }
     if body.source == "library"
         && !matches_catalog(
@@ -224,7 +225,8 @@ async fn create_server(
             &body.required_scopes,
         )
     {
-        return Err(invalid(
+        return Err(invalid_field(
+            "source",
             "library server definition does not match the curated catalog",
         ));
     }
@@ -281,9 +283,10 @@ struct UpdateMcpServer {
 /// from the check constraint.
 fn validate_override(value: Option<i32>, field: &str, lo: i32, hi: i32) -> ApiResult<()> {
     match value {
-        Some(value) if !(lo..=hi).contains(&value) => Err(invalid(format!(
-            "{field} must be between {lo} and {hi}, or null to inherit the org default"
-        ))),
+        Some(value) if !(lo..=hi).contains(&value) => Err(invalid_field(
+            field,
+            format!("{field} must be between {lo} and {hi}, or null to inherit the org default"),
+        )),
         _ => Ok(()),
     }
 }
@@ -316,18 +319,18 @@ async fn update_server(
     require_non_empty(name, "name")?;
     require_non_empty(url, "url")?;
     if !TRANSPORTS.contains(&transport) {
-        return Err(invalid(format!(
-            "transport must be one of {}",
-            TRANSPORTS.join(", ")
-        )));
+        return Err(invalid_field(
+            "transport",
+            format!("transport must be one of {}", TRANSPORTS.join(", ")),
+        ));
     }
     if !(url.starts_with("http://") || url.starts_with("https://")) {
-        return Err(invalid("url must be an http(s) endpoint"));
+        return Err(invalid_field("url", "url must be an http(s) endpoint"));
     }
     state
         .egress
         .check_url(url, "MCP server URL")
-        .map_err(invalid)?;
+        .map_err(|message| invalid_field("url", message))?;
     validate_required_scopes(required_scopes)?;
     validate_tools(tools)?;
     let connect_timeout_ms = body
@@ -403,7 +406,8 @@ const RESERVED_AUTH_HEADERS: [&str; 10] = [
 
 fn validate_header_name(name: &str) -> ApiResult<()> {
     if name.is_empty() || name.len() > 64 {
-        return Err(invalid(
+        return Err(invalid_field(
+            "auth_header_name",
             "auth_header_name must be between 1 and 64 characters",
         ));
     }
@@ -412,12 +416,16 @@ fn validate_header_name(name: &str) -> ApiResult<()> {
         .bytes()
         .all(|b| b.is_ascii_alphanumeric() || b"!#$%&\'*+.^_`|~-".contains(&b))
     {
-        return Err(invalid("auth_header_name must be a valid HTTP field name"));
+        return Err(invalid_field(
+            "auth_header_name",
+            "auth_header_name must be a valid HTTP field name",
+        ));
     }
     if RESERVED_AUTH_HEADERS.contains(&name.to_ascii_lowercase().as_str()) {
-        return Err(invalid(format!(
-            "auth_header_name must not be '{name}': rolter sets that header itself"
-        )));
+        return Err(invalid_field(
+            "auth_header_name",
+            format!("auth_header_name must not be '{name}': rolter sets that header itself"),
+        ));
     }
     Ok(())
 }
@@ -447,22 +455,25 @@ fn plan_set_auth(
     let carries_credential = matches!(auth_kind, "bearer" | "header");
     match (auth_kind, auth_header_name) {
         ("header", None) => {
-            return Err(invalid(
+            return Err(invalid_field(
+                "auth_kind",
                 "auth_kind 'header' requires auth_header_name, e.g. X-Api-Key",
             ))
         }
         ("header", Some(name)) => validate_header_name(name)?,
         (_, Some(_)) => {
-            return Err(invalid(
+            return Err(invalid_field(
+                "auth_header_name",
                 "auth_header_name is only meaningful for auth_kind 'header'",
             ))
         }
         (_, None) => {}
     }
     if !carries_credential && credential.is_some_and(|c| !c.is_empty()) {
-        return Err(invalid(format!(
-            "auth_kind '{auth_kind}' carries no credential"
-        )));
+        return Err(invalid_field(
+            "auth_kind",
+            format!("auth_kind '{auth_kind}' carries no credential"),
+        ));
     }
     if carries_credential {
         match credential {
@@ -472,15 +483,13 @@ fn plan_set_auth(
             // surfaces as a 500 — whether or not one is already stored. refuse it
             // here, and name the move that actually removes a credential (#1553)
             Some("") => {
-                return Err(invalid(format!(
-                    "auth_kind '{auth_kind}' requires a credential; send auth_kind 'none' to                      remove the stored credential instead of an empty one"
+                return Err(invalid_field("auth_kind", format!("auth_kind '{auth_kind}' requires a credential; send auth_kind 'none' to                      remove the stored credential instead of an empty one"
                 )))
             }
             // nothing supplied and nothing stored leaves the row violating the
             // same constraint, so it is the same 400 rather than a 500
             None if !has_credential => {
-                return Err(invalid(format!(
-                    "auth_kind '{auth_kind}' requires a credential"
+                return Err(invalid_field("auth_kind", format!("auth_kind '{auth_kind}' requires a credential"
                 )))
             }
             // nothing supplied but one already stored keeps it: this is how a
@@ -511,7 +520,10 @@ async fn set_auth(
         body.auth_kind.as_str(),
         "none" | "bearer" | "header" | "oauth"
     ) {
-        return Err(invalid("auth_kind must be none, bearer, header or oauth"));
+        return Err(invalid_field(
+            "auth_kind",
+            "auth_kind must be none, bearer, header or oauth",
+        ));
     }
     let plan = plan_set_auth(
         &body.auth_kind,
@@ -844,14 +856,20 @@ struct ToolGroupInput {
 
 fn validate_tool_refs(tools: &[ToolRef]) -> ApiResult<()> {
     if tools.iter().any(|item| item.tool.trim().is_empty()) {
-        return Err(invalid("tool group references must name a tool"));
+        return Err(invalid_field(
+            "tools",
+            "tool group references must name a tool",
+        ));
     }
     let unique: std::collections::HashSet<_> = tools
         .iter()
         .map(|item| (item.server_id, item.tool.as_str()))
         .collect();
     if unique.len() != tools.len() {
-        return Err(invalid("tool group references must be unique"));
+        return Err(invalid_field(
+            "tools",
+            "tool group references must be unique",
+        ));
     }
     Ok(())
 }
@@ -867,12 +885,20 @@ async fn validate_tool_refs_for_org(
         let server = servers
             .iter()
             .find(|server| server.id == item.server_id)
-            .ok_or_else(|| invalid("tool group references a server outside this organization"))?;
+            .ok_or_else(|| {
+                invalid_field(
+                    "tools",
+                    "tool group references a server outside this organization",
+                )
+            })?;
         if !server.tools.contains(&item.tool) {
-            return Err(invalid(format!(
-                "tool '{}' is not declared by server '{}'",
-                item.tool, server.slug
-            )));
+            return Err(invalid_field(
+                "tools",
+                format!(
+                    "tool '{}' is not declared by server '{}'",
+                    item.tool, server.slug
+                ),
+            ));
         }
     }
     Ok(())
@@ -909,7 +935,8 @@ async fn create_tool_group(
     require_non_empty(&body.name, "name")?;
     require_non_empty(&body.slug, "slug")?;
     validate_tool_refs_for_org(&state, org_id, &body.tools).await?;
-    let tools = serde_json::to_value(&body.tools).map_err(|error| invalid(error.to_string()))?;
+    let tools = serde_json::to_value(&body.tools)
+        .map_err(|_| ApiError::Curated("tools could not be stored".into()))?;
     let group = McpToolGroupRepo(pool(&state))
         .create(
             org_id,
@@ -960,7 +987,8 @@ async fn update_tool_group(
     )
     .await?;
     validate_tool_refs_for_org(&state, current.org_id, &body.tools).await?;
-    let tools = serde_json::to_value(&body.tools).map_err(|error| invalid(error.to_string()))?;
+    let tools = serde_json::to_value(&body.tools)
+        .map_err(|_| ApiError::Curated("tools could not be stored".into()))?;
     let group = repo
         .update(id, &body.name, &body.description, body.enabled, &tools)
         .await?;
@@ -1049,26 +1077,35 @@ async fn update_mcp_settings(
         body.default_transport.as_str(),
         "sse" | "streamable_http" | "websocket"
     ) {
-        return Err(invalid(
+        return Err(invalid_field(
+            "default_transport",
             "default_transport must be sse, streamable_http, or websocket",
         ));
     }
     if !(100..=60_000).contains(&body.connect_timeout_ms) {
-        return Err(invalid("connect_timeout_ms must be between 100 and 60000"));
+        return Err(invalid_field(
+            "connect_timeout_ms",
+            "connect_timeout_ms must be between 100 and 60000",
+        ));
     }
     if !(1_000..=300_000).contains(&body.request_timeout_ms) {
-        return Err(invalid(
+        return Err(invalid_field(
+            "request_timeout_ms",
             "request_timeout_ms must be between 1000 and 300000",
         ));
     }
     if !(0..=5).contains(&body.max_retries) {
-        return Err(invalid("max_retries must be between 0 and 5"));
+        return Err(invalid_field(
+            "max_retries",
+            "max_retries must be between 0 and 5",
+        ));
     }
     if !matches!(
         body.default_failure_mode.as_str(),
         "fail_open" | "fail_closed"
     ) {
-        return Err(invalid(
+        return Err(invalid_field(
+            "default_failure_mode",
             "default_failure_mode must be fail_open or fail_closed",
         ));
     }
