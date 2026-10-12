@@ -33,7 +33,7 @@ import {
   uxEvents,
   type Recorder,
 } from "./story-harness";
-import type { BudgetRow, RateLimitRow, VirtualKeyRow } from "@/lib/api";
+import type { BudgetRow, BudgetSpendReport, RateLimitRow, VirtualKeyRow } from "@/lib/api";
 import en from "@/lib/i18n/locales/en.json";
 import ru from "@/lib/i18n/locales/ru.json";
 import { atMobile, expectNoHorizontalOverflow } from "@/lib/story-viewport";
@@ -63,6 +63,16 @@ const BUDGETS: BudgetRow[] = [
     created_at: "2026-07-02T00:00:00Z",
   },
 ];
+
+// the gateway's counters, as the control plane reads them (#2091): the first
+// budget is comfortably inside its cap, the second is close to it
+const SPEND: BudgetSpendReport = {
+  status: "ok",
+  budgets: [
+    { id: "budget-1", spent_usd: "212.5000", resets_at: "2026-08-01T00:00:00Z" },
+    { id: "budget-2", spent_usd: "46.2500", resets_at: "2026-07-03T00:00:00Z" },
+  ],
+};
 
 const RATE_LIMITS: RateLimitRow[] = [
   {
@@ -104,6 +114,7 @@ const KEYS: VirtualKeyRow[] = [
 // the longer fragment has to be matched ahead of the shared prefix
 const loaded = routes([
   ["/virtual-keys", () => KEYS],
+  ["/budgets/spend", () => SPEND],
   ["/budgets", () => BUDGETS],
   ["/rate-limits", () => RATE_LIMITS],
 ]);
@@ -127,6 +138,90 @@ export const Loaded: Story = {
       <Limits />
     </Harness>
   ),
+};
+
+function withSpend(spend: BudgetSpendReport) {
+  return (
+    <Harness
+      fetchStub={routes([
+        ["/virtual-keys", () => KEYS],
+        ["/budgets/spend", () => spend],
+        ["/budgets", () => BUDGETS],
+        ["/rate-limits", () => RATE_LIMITS],
+      ])}
+    >
+      <Limits />
+    </Harness>
+  );
+}
+
+/**
+ * #2091: the card says how much of the cap is spent, how much is left and when
+ * the counter resets, with the figures also in text so the bar is not the only
+ * carrier. Close to the cap the bar takes the warning hue.
+ */
+export const SpendNearTheCap: Story = {
+  render: () => withSpend(SPEND),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText(/\$212\.50 spent · \$287\.50 left · 43%/)).toBeVisible();
+    await expect(canvas.getByText(/\$46\.25 spent · \$3\.75 left · 93%/)).toBeVisible();
+    await expect(canvasElement.querySelectorAll("[data-spend=warning]")).toHaveLength(1);
+    await expect(canvasElement.querySelectorAll("[data-spend=ok]")).toHaveLength(1);
+    await expect(canvas.getAllByText(/^Resets /)).toHaveLength(2);
+    await expect(canvas.getAllByRole("progressbar")).toHaveLength(2);
+  },
+};
+
+export const SpendExhausted: Story = {
+  render: () =>
+    withSpend({
+      status: "ok",
+      budgets: [
+        { id: "budget-1", spent_usd: "500.0000", resets_at: "2026-08-01T00:00:00Z" },
+        { id: "budget-2", spent_usd: "61.0000", resets_at: "2026-07-03T00:00:00Z" },
+      ],
+    }),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText(/\$500\.00 spent · cap reached \(100%\)/)).toBeVisible();
+    await expect(canvas.getByText(/\$61\.00 spent · cap reached \(122%\)/)).toBeVisible();
+    await expect(canvasElement.querySelectorAll("[data-spend=danger]")).toHaveLength(2);
+  },
+};
+
+/** A counter the control plane could not read is unknown, never a zero. */
+export const SpendUnavailable: Story = {
+  render: () =>
+    withSpend({
+      status: "unavailable",
+      budgets: [
+        { id: "budget-1", spent_usd: null, resets_at: "2026-08-01T00:00:00Z" },
+        { id: "budget-2", spent_usd: null, resets_at: "2026-07-03T00:00:00Z" },
+      ],
+    }),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findAllByText(/spend so far is unavailable/i)).toHaveLength(2);
+    await expect(canvas.queryByRole("progressbar")).toBeNull();
+    await expect(canvas.queryByText(/\$0\.00 spent/)).toBeNull();
+  },
+};
+
+export const SpendNeedsRedis: Story = {
+  render: () =>
+    withSpend({
+      status: "not_configured",
+      budgets: [
+        { id: "budget-1", spent_usd: null, resets_at: null },
+        { id: "budget-2", spent_usd: null, resets_at: null },
+      ],
+    }),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect((await canvas.findAllByText(/ROLTER_REDIS_URL/)).length).toBe(2);
+    await expect(canvas.queryByRole("progressbar")).toBeNull();
+  },
 };
 
 export const Loading: Story = {

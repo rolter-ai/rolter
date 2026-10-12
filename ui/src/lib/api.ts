@@ -2073,6 +2073,40 @@ export function fetchBudgets(scopeType: string, scopeId: string): Promise<Budget
   );
 }
 
+/// how the control plane answered a spend read (#2091)
+export type BudgetSpendStatus = "ok" | "not_configured" | "unavailable";
+
+export interface BudgetSpendRow {
+  /// the budget row's id
+  id: string;
+  /// the gateway's counter for the current window as text, or null when it
+  /// could not be read; null is never a zero
+  spent_usd: string | null;
+  /// start of the next window, null for a budget that never resets
+  resets_at: string | null;
+}
+
+export interface BudgetSpendReport {
+  status: BudgetSpendStatus;
+  budgets: BudgetSpendRow[];
+}
+
+/**
+ * The spend so far against each budget on a scope. A body that is not a report
+ * reads as unavailable rather than as an empty one, so a malformed answer can
+ * never show a budget as untouched.
+ */
+export async function fetchBudgetSpend(
+  scopeType: string,
+  scopeId: string,
+): Promise<BudgetSpendReport> {
+  const body = await getJson<Partial<BudgetSpendReport> | null>(
+    `/api/v1/budgets/spend?scope_type=${encodeURIComponent(scopeType)}&scope_id=${encodeURIComponent(scopeId)}`,
+  );
+  if (!body || !Array.isArray(body.budgets)) return { status: "unavailable", budgets: [] };
+  return { status: body.status ?? "unavailable", budgets: body.budgets };
+}
+
 export function createBudget(input: CreateBudgetInput): Promise<BudgetRow> {
   return sendJson<BudgetRow>("POST", "/api/v1/budgets", input);
 }

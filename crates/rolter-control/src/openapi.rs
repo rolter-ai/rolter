@@ -1341,6 +1341,13 @@ fn operations() -> Vec<Op> {
             Op::get("/api/v1/budgets", "listBudgets", "List spend budgets")
                 .query(SCOPE_QUERY)
                 .ok(Payload::List("Budget")),
+            Op::get(
+                "/api/v1/budgets/spend",
+                "getBudgetSpend",
+                "Spend so far against each budget on a scope, from the gateway's Redis counters",
+            )
+            .query(SCOPE_QUERY)
+            .ok(Payload::Ref("BudgetSpendReport")),
             Op::post("/api/v1/budgets", "createBudget", "Create a spend budget")
                 .body(Payload::Ref("CreateBudget"))
                 .ok(Payload::Ref("Budget")),
@@ -3083,6 +3090,29 @@ fn governance_schemas(p: &Prim) -> Value {
                 },
                 "unpriced_policy": {"type": ["string", "null"], "enum": ["ignore", "warn", "block", null]},
                 "created_at": timestamp
+            }
+        },
+        "BudgetSpendReport": {
+            "type": "object",
+            "required": ["status", "budgets"],
+            "properties": {
+                "status": {
+                    "type": "string",
+                    "enum": ["ok", "not_configured", "unavailable"],
+                    "description": "not_configured: the control plane has no Redis url. unavailable: Redis did not answer. In both, every spent_usd is null"
+                },
+                "budgets": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["id", "spent_usd", "resets_at"],
+                        "properties": {
+                            "id": uuid,
+                            "spent_usd": {"type": ["string", "null"], "description": "the gateway's counter for the current window, four decimal places. null when it could not be read; never zero in its place"},
+                            "resets_at": {"type": ["string", "null"], "format": "date-time", "description": "start of the next window, UTC; null for a budget that never resets"}
+                        }
+                    }
+                }
             }
         },
         "CreateBudget": {

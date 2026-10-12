@@ -6,16 +6,17 @@ description: "List, create, edit in place and delete spend budgets and rate limi
 
 Budgets and rate limits stored in the database are managed through the control plane. Each one hangs off a **scope**: an org, team, project, virtual key, business unit or customer, named by `scope_type` and `scope_id`. What the caps do once they reach the gateway is covered in [Budgets & Rate Limits](/security/budgets-and-rate-limits); this page is the API.
 
-| Method   | Path                                          | What it does                      |
-| -------- | --------------------------------------------- | --------------------------------- |
-| `GET`    | `/api/v1/budgets?scope_type=…&scope_id=…`     | list the budgets on one scope     |
-| `POST`   | `/api/v1/budgets`                             | create a budget                   |
-| `PATCH`  | `/api/v1/budgets/{id}`                        | change a budget in place          |
-| `DELETE` | `/api/v1/budgets/{id}`                        | delete a budget                   |
-| `GET`    | `/api/v1/rate-limits?scope_type=…&scope_id=…` | list the rate limits on one scope |
-| `POST`   | `/api/v1/rate-limits`                         | create a rate limit               |
-| `PATCH`  | `/api/v1/rate-limits/{id}`                    | change a rate limit in place      |
-| `DELETE` | `/api/v1/rate-limits/{id}`                    | delete a rate limit               |
+| Method   | Path                                            | What it does                               |
+| -------- | ----------------------------------------------- | ------------------------------------------ |
+| `GET`    | `/api/v1/budgets?scope_type=…&scope_id=…`       | list the budgets on one scope              |
+| `GET`    | `/api/v1/budgets/spend?scope_type=…&scope_id=…` | spend so far against each of those budgets |
+| `POST`   | `/api/v1/budgets`                               | create a budget                            |
+| `PATCH`  | `/api/v1/budgets/{id}`                          | change a budget in place                   |
+| `DELETE` | `/api/v1/budgets/{id}`                          | delete a budget                            |
+| `GET`    | `/api/v1/rate-limits?scope_type=…&scope_id=…`   | list the rate limits on one scope          |
+| `POST`   | `/api/v1/rate-limits`                           | create a rate limit                        |
+| `PATCH`  | `/api/v1/rate-limits/{id}`                      | change a rate limit in place               |
+| `DELETE` | `/api/v1/rate-limits/{id}`                      | delete a rate limit                        |
 
 `scope_type` is one of `org`, `team`, `project`, `virtual_key`, `business_unit` or `customer`. Both list routes require both query parameters and answer `400` without them.
 
@@ -94,6 +95,27 @@ The response is the updated row. A few rules:
 The row keeps its `id` and `created_at`. Spend counters in Redis are keyed by scope and period window rather than by budget row, so raising or lowering `limit_usd` keeps the spend already counted this period. Changing `period` moves the budget onto that window's counter.
 
 </Note>
+
+### Spend so far
+
+`GET /api/v1/budgets/spend?scope_type=…&scope_id=…` returns, for each budget on the scope, what the gateway has counted against it in the current window. It reads the same Redis counter the gateway checks on every request, so the figure is the one a `402` is decided on. It needs the same permission as listing the budgets.
+
+```json
+{
+  "status": "ok",
+  "budgets": [
+    {
+      "id": "2f1c9a4e-7b3d-4e8a-9c21-5d6f0a1b2c3d",
+      "spent_usd": "212.5000",
+      "resets_at": "2026-08-01T00:00:00Z"
+    }
+  ]
+}
+```
+
+`resets_at` is the start of the next window in UTC, and `null` for a budget that never resets. An absent counter is a window nothing has been spent in, so it reads `"0.0000"`.
+
+`status` says whether the figures can be trusted. `ok` means the counters were read. `not_configured` means the control plane has no `ROLTER_REDIS_URL`, and `unavailable` means Redis did not answer within two seconds. In both of those `spent_usd` is `null` for every budget, never zero: a budget that cannot be read is unknown, not untouched. The control plane must point at the same Redis as the gateways, or it reads counters nobody writes.
 
 ## Rate limits
 
