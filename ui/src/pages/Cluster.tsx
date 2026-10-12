@@ -30,15 +30,20 @@ const REFETCH_MS = 15_000;
 // the two health axes the server reports separately: a node can be polling but
 // lagging the newest snapshot, or converged but no longer polling at all
 function StateBadges({ node }: { node: ClusterNodeRow }) {
+  const { t } = useTranslation();
   return (
-    <div className="flex flex-wrap items-center gap-1.5">
+    <div className="flex items-center gap-1.5">
       <Badge dot tone={node.live ? "success" : "danger"}>
-        {node.live ? "LIVE" : "STALE"}
+        {node.live ? t("pages.cluster.states.live") : t("pages.cluster.states.stale")}
       </Badge>
       <Badge tone={node.converged ? "neutral" : "warning"}>
-        {node.converged ? "CONVERGED" : "LAGGING"}
+        {node.converged ? t("pages.cluster.states.converged") : t("pages.cluster.states.lagging")}
       </Badge>
-      {node.desired_state === "draining" && <Badge tone="accent">DRAINING</Badge>}
+      {/* draining is the operator's own choice, not a fault: it takes the info
+          tone and leaves the red of a stale node alone */}
+      {node.desired_state === "draining" && (
+        <Badge tone="info">{t("pages.cluster.states.draining")}</Badge>
+      )}
     </div>
   );
 }
@@ -100,16 +105,23 @@ function ClusterScreen() {
   };
 
   const columns: TableColumn<ClusterNodeRow & Record<string, unknown>>[] = [
-    { key: "id", header: t("pages.cluster.columns.node"), mono: true },
+    { key: "id", header: t("pages.cluster.columns.node"), mono: true, width: "1%" },
     {
       key: "role",
       header: t("pages.cluster.columns.role"),
+      width: "1%",
       render: (_v, row) => <Badge tone="outline">{row.role}</Badge>,
     },
-    { key: "build_version", header: t("pages.cluster.columns.build"), mono: true },
+    {
+      key: "build_version",
+      header: t("pages.cluster.columns.build"),
+      mono: true,
+      width: "1%",
+    },
     {
       key: "config_version",
       header: t("pages.cluster.columns.config"),
+      width: "1%",
       align: "right",
       mono: true,
       render: (_v, row) => `v${row.config_version}`,
@@ -117,11 +129,13 @@ function ClusterScreen() {
     {
       key: "state",
       header: t("pages.cluster.columns.state"),
+      width: "1%",
       render: (_v, row) => <StateBadges node={row} />,
     },
     {
       key: "last_seen_at",
       header: t("pages.cluster.columns.lastSeen"),
+      width: "1%",
       align: "right",
       render: (_v, row) => (
         <span title={fmt.dateTime(row.last_seen_at)}>{fmt.relative(row.last_seen_at, now)}</span>
@@ -139,22 +153,26 @@ function ClusterScreen() {
           <div className="flex justify-end gap-2">
             {/* the label names the node: a table of them all offering
                 "Drain" is N controls a screen reader cannot tell apart (#1214) */}
-            <GatedButton
-              gate="cluster_node:update"
-              control="node-drain"
-              variant="outline"
-              size="sm"
-              aria-label={t(draining ? "pages.cluster.returnAria" : "pages.cluster.drainAria", {
-                node: row.id,
-              })}
-              disabled={drain.isPending}
-              onClick={() => drain.mutate({ id: row.id, draining: !draining })}
-            >
-              {drain.isPending && drain.variables?.id === row.id && (
-                <Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" />
-              )}
-              {draining ? t("pages.cluster.returnToService") : t("pages.cluster.drain")}
-            </GatedButton>
+            {/* draining is read by the gateway's snapshot watcher, so a
+                control-plane node has nothing to drain */}
+            {row.role === "gateway" && (
+              <GatedButton
+                gate="cluster_node:update"
+                control="node-drain"
+                variant="outline"
+                size="sm"
+                aria-label={t(draining ? "pages.cluster.returnAria" : "pages.cluster.drainAria", {
+                  node: row.id,
+                })}
+                disabled={drain.isPending}
+                onClick={() => drain.mutate({ id: row.id, draining: !draining })}
+              >
+                {drain.isPending && drain.variables?.id === row.id && (
+                  <Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" />
+                )}
+                {draining ? t("pages.cluster.returnToService") : t("pages.cluster.drain")}
+              </GatedButton>
+            )}
             {/* a node that is still running reappears on its next poll, so
                 forgetting is only meaningful once it has gone stale */}
             <GatedButton
@@ -201,12 +219,15 @@ function ClusterScreen() {
   const rows = nodes.data ?? [];
   const live = rows.filter((n) => n.live).length;
   const lagging = rows.filter((n) => n.live && !n.converged).length;
+  // the newest config a live node runs: a lagging node is behind this one
+  const newest = rows.filter((n) => n.live).reduce((v, n) => Math.max(v, n.config_version), 0);
 
   return (
     <PageBody>
       <div className="flex flex-wrap items-center gap-3">
         <span className="text-sm text-muted-foreground">
           {t("pages.cluster.summary", { count: rows.length, live })}
+          {live > 0 && ` · ${t("pages.cluster.newest", { version: newest })}`}
           {lagging > 0 && ` · ${t("pages.cluster.lagging", { count: lagging })}`}
         </span>
       </div>

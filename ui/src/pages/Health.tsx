@@ -48,6 +48,19 @@ function useSlaLabel(): (state: SlaState) => string {
         : t("pages.health.slaWithin");
 }
 
+function useSourceLabel(): (source: string) => string {
+  const { t } = useTranslation();
+  return (source) =>
+    source === "probe"
+      ? t("pages.health.sources.probe")
+      : source === "status_page"
+        ? t("pages.health.sources.status_page")
+        : source === "passive"
+          ? t("pages.health.sources.passive")
+          : // a source this build does not know is shown as the control plane sent it
+            source;
+}
+
 function pct(fmt: Formatters, v: number): string {
   return fmt.percent(v, 2);
 }
@@ -341,19 +354,16 @@ function TargetRow({
         {row.target_id}
       </span>
       <Timeline buckets={buckets} className="h-4 w-20 flex-none" />
-      <span
-        className={cn(
-          "w-16 flex-none text-right font-mono text-xs",
-          state === "breaching" && "text-[color:var(--status-danger-text)]",
-        )}
-      >
+      <span className="w-16 flex-none text-right font-mono text-xs">
+        <span className="sr-only">{t("pages.health.uptimeShort")} </span>
         {pct(fmt, row.uptime)}
       </span>
       <span className="w-24 flex-none text-right font-mono text-xs text-[color:var(--text-subtle)]">
         {t("pages.health.failuresShort", { count: row.errors + row.timeouts })}
       </span>
-      <span className="w-20 flex-none text-right font-mono text-xs text-[color:var(--text-subtle)]">
-        {mttrLabel(fmt, mttr?.mttr_seconds)}
+      {/* a bare "42s" says nothing, so the figure names itself */}
+      <span className="w-28 flex-none text-right font-mono text-xs text-[color:var(--text-subtle)]">
+        {t("pages.health.mttr")} {mttrLabel(fmt, mttr?.mttr_seconds)}
       </span>
     </div>
   );
@@ -388,6 +398,7 @@ export default function Health() {
     list.push(row);
     timelineByTarget.set(k, list);
   }
+  const sourceLabel = useSourceLabel();
   const groups = groupByProvider(uptime.data ?? []);
   const since = recentSince(timeline.data ?? []);
 
@@ -467,30 +478,19 @@ export default function Health() {
               }}
             >
               <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
-                <span
-                  className="h-2 w-2 flex-none rounded-full"
-                  style={{ background: SLA_FILL[state] }}
-                />
                 <span className="font-mono text-sm font-semibold">{group.provider}</span>
                 <span className="font-mono text-xs text-[color:var(--text-subtle)]">
                   {head.derived
                     ? t("pages.health.grainDerived")
                     : t("pages.health.grainProvider", {
-                        sources: head.sources.join(", ") || "—",
+                        sources: head.sources.map(sourceLabel).join(", ") || "—",
                       })}
                 </span>
                 <SlaPill state={state} />
               </div>
               <div className="flex items-end gap-3">
                 <div className="flex flex-col gap-px">
-                  <span
-                    className={cn(
-                      "font-mono text-2xl font-medium leading-none",
-                      // the figure is the window's uptime, which an at-risk
-                      // provider still holds, so only a breach colours it
-                      state === "breaching" && "text-[color:var(--status-danger-text)]",
-                    )}
-                  >
+                  <span className={cn("font-mono text-2xl font-medium leading-none")}>
                     {pct(fmt, head.uptime)}
                   </span>
                   <span className="text-[0.6875rem] uppercase tracking-[0.06em] text-[color:var(--text-subtle)]">
@@ -509,7 +509,8 @@ export default function Health() {
                 />
                 <Stat
                   label={t("pages.health.incidents")}
-                  value={providerMttr ? fmt.number(providerMttr.incidents) : "—"}
+                  // the rollups answered and name no incident: that is zero, not unknown
+                  value={fmt.number(providerMttr ? providerMttr.incidents : 0)}
                 />
               </div>
               {group.targets.length > 0 && (
@@ -532,12 +533,7 @@ export default function Health() {
                 <span className="text-xs text-muted-foreground">
                   {t("pages.health.errorBudget")}
                 </span>
-                <span
-                  className="ml-auto font-mono text-xs"
-                  style={{
-                    color: head.burn > 1 ? "var(--status-danger-text)" : "var(--text-secondary)",
-                  }}
-                >
+                <span className="ml-auto font-mono text-xs text-[color:var(--text-secondary)]">
                   {fmt.percent(head.burn, 0)}
                 </span>
               </div>

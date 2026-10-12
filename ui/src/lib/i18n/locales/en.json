@@ -1939,6 +1939,14 @@
       "forget": "Forget",
       "summary_one": "{{count}} node · {{live}} live",
       "summary_other": "{{count}} nodes · {{live}} live",
+      "newest": "newest config v{{version}}",
+      "states": {
+        "live": "Live",
+        "stale": "Stale",
+        "converged": "Converged",
+        "lagging": "Lagging",
+        "draining": "Draining"
+      },
       "lagging_one": "{{count}} still applying the newest config",
       "lagging_other": "{{count}} still applying the newest config"
     },
@@ -2675,6 +2683,12 @@
       "failuresShort_other": "{{count}} failures",
       "grainDerived": "rolled up from targets",
       "grainProvider": "probed · {{sources}}",
+      "sources": {
+        "probe": "probes",
+        "status_page": "status page",
+        "passive": "traffic"
+      },
+      "uptimeShort": "uptime",
       "incidents": "Incidents",
       "mttr": "MTTR",
       "noTimeline": "No timeline.",

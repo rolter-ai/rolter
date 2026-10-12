@@ -2055,6 +2055,14 @@
       "summary_few": "{{count}} узла · {{live}} в сети",
       "summary_many": "{{count}} узлов · {{live}} в сети",
       "summary_other": "{{count}} узла · {{live}} в сети",
+      "newest": "новейшая конфигурация v{{version}}",
+      "states": {
+        "live": "В сети",
+        "stale": "Не отвечает",
+        "converged": "Синхронизирован",
+        "lagging": "Отстаёт",
+        "draining": "Выводится"
+      },
       "lagging_one": "{{count}} ещё применяет новую конфигурацию",
       "lagging_few": "{{count}} ещё применяют новую конфигурацию",
       "lagging_many": "{{count}} ещё применяют новую конфигурацию",
@@ -2845,6 +2853,12 @@
       "failuresShort_other": "{{count}} отказа",
       "grainDerived": "сводка по целям",
       "grainProvider": "по пробам · {{sources}}",
+      "sources": {
+        "probe": "пробы",
+        "status_page": "страница статуса",
+        "passive": "трафик"
+      },
+      "uptimeShort": "аптайм",
       "incidents": "Инциденты",
       "mttr": "MTTR",
       "noTimeline": "Нет временной шкалы.",
