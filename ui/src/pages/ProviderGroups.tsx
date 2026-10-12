@@ -42,6 +42,7 @@ import { RowCapabilityScope } from "@/lib/can";
 import { rowGateScope } from "@/lib/provider-scope";
 import { useScope } from "@/lib/scope";
 import { errorDetail, useToast } from "@/lib/toast";
+import { usesWeights } from "@/lib/strategies";
 import { useScreenReady } from "@/lib/ux-react";
 
 const GRID = `${primaryColumn(1.2)} 1fr 1.2fr 1fr 2fr 108px`;
@@ -131,7 +132,7 @@ export default function ProviderGroups() {
           onClick={() => setSheet({ mode: "add" })}
           disabled={scopeBlocked || !scope.orgId}
         >
-          + {t("pages.providerGroups.emptyAction")}
+          {t("pages.providerGroups.emptyAction")}
         </GatedButton>
       </Toolbar>
 
@@ -206,7 +207,7 @@ export default function ProviderGroups() {
             </ListCell>
             <ListCell className="flex min-w-0 items-center gap-1">
               <span className="truncate font-mono text-xs text-[color:var(--text-secondary)]">
-                {group.slug}/
+                {t("pages.providerGroups.address", { slug: group.slug })}
               </span>
               <CopyButton
                 value={`${group.slug}/`}
@@ -219,14 +220,16 @@ export default function ProviderGroups() {
             </ListCell>
             <ListCell className="flex min-w-0 flex-wrap items-center gap-1">
               {group.members.length === 0 ? (
-                <span className="text-xs text-muted-foreground">
-                  {t("pages.providerGroups.noMembers")}
-                </span>
+                <Badge tone="warning">{t("pages.providerGroups.noMembers")}</Badge>
               ) : (
                 group.members.map((m) => (
                   <Badge key={m.provider_id} tone="outline" className="font-mono text-[11px]">
-                    {m.provider_name}
-                    {m.weight !== 1 ? ` ·${m.weight}` : ""}
+                    {usesWeights(group.strategy) && m.weight !== 1
+                      ? t("pages.providerGroups.memberWeight", {
+                          name: m.provider_name,
+                          weight: m.weight,
+                        })
+                      : m.provider_name}
                   </Badge>
                 ))
               )}

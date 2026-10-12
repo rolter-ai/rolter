@@ -2926,7 +2926,9 @@
         "scope": "Scope"
       },
       "copyAddress": "Copy address prefix",
-      "noMembers": "no members",
+      "address": "{{slug}}/<model>",
+      "memberWeight": "{{name}} · weight {{weight}}",
+      "noMembers": "no members, resolves to nothing",
       "edit": "Edit",
       "confirm": {
         "deleteTitle": "Delete provider group {{name}}?",
@@ -4659,6 +4661,9 @@
       "title": "Members",
       "add": "Add member",
       "none": "No members yet. A group with no members resolves to nothing.",
+      "emptyError": "Add at least one member: a group with no members resolves to nothing, so every request to it fails.",
+      "upstreamModelHint": "Leave Upstream model empty to pass the model name the client asked for through unchanged.",
+      "weightsIgnored": "{{strategy}} does not read weights, so they are kept but do not split traffic. Only weighted, pipeline and adaptive groups use them.",
       "noProviders": "No providers in this org yet — add providers first.",
       "upstreamModel": "Upstream model",
       "weight": "Weight",
