@@ -7,6 +7,7 @@ import AuditLog from "./AuditLog";
 import {
   Harness,
   expectEmptyState,
+  expectToast,
   expectGateAnswered,
   expectLoadError,
   expectNoFalseEmpty,
@@ -19,6 +20,7 @@ import {
   recording,
   routes,
   scoped,
+  Toasted,
   withCapabilities,
   type FetchStub,
 } from "./story-harness";
@@ -468,7 +470,7 @@ export const NamesASuperadminWithNoMembership: Story = {
     const operator = await canvas.findByText("root@example.com");
     await expect(operator).toHaveAttribute("title", OPERATOR.id);
     await expect(canvas.getByText("ada@example.com")).toHaveAttribute("title", MEMBER.id);
-    await expect(canvas.getByText("33333333")).toHaveAttribute("title", STRANGER);
+    await expect(canvas.getByText("Not in this org")).toHaveAttribute("title", STRANGER);
     await orgScope.expectSent("GET", "/orgs/org-1/users?include_unassigned=true");
     // the deployment's account list is for the other scope, not asked here
     await expectGateAnswered();
@@ -505,7 +507,7 @@ export const NamesASuperadminWithNoMembershipInTheWholeDeployment: Story = {
     await deploymentScope.expectSent("GET", "/api/v1/users");
     const operator = await canvas.findByText("root@example.com");
     await expect(operator).toHaveAttribute("title", OPERATOR.id);
-    await expect(canvas.getByText("33333333")).toHaveAttribute("title", STRANGER);
+    await expect(canvas.getByText("Unknown account")).toHaveAttribute("title", STRANGER);
 
     const filter = canvas.getByRole("combobox", { name: "Filter by actor" });
     const listbox = await openOptions(filter);
@@ -575,7 +577,7 @@ export const NamesAnActorFromAnotherOrgInTheWholeDeployment: Story = {
     await expect(canvas.getByText("budget.update")).toBeVisible();
     await expect(canvas.getByText("ada@example.com")).toHaveAttribute("title", MEMBER.id);
     await expect(canvas.getByText("root@example.com")).toHaveAttribute("title", OPERATOR.id);
-    await expect(canvas.getByText("33333333")).toHaveAttribute("title", STRANGER);
+    await expect(canvas.getByText("Unknown account")).toHaveAttribute("title", STRANGER);
     await expect(canvas.queryByText("44444444")).toBeNull();
 
     const filter = canvas.getByRole("combobox", { name: "Filter by actor" });
@@ -619,7 +621,7 @@ export const AFailedDeploymentListFallsBackToTheOrgsPeople: Story = {
     await expect(await canvas.findByText("budget.update")).toBeVisible();
     await expect(canvas.getByText("root@example.com")).toHaveAttribute("title", OPERATOR.id);
     await expect(canvas.getByText("ada@example.com")).toHaveAttribute("title", MEMBER.id);
-    await expect(canvas.getByText("44444444")).toHaveAttribute("title", ELSEWHERE.id);
+    await expect(canvas.getByTitle(ELSEWHERE.id)).toHaveTextContent("Unknown account");
     await expect(canvas.queryByText("grace@other.example")).toBeNull();
     await expect(canvas.queryByRole("alert")).toBeNull();
     const listbox = await openOptions(canvas.getByRole("combobox", { name: "Filter by actor" }));
@@ -647,7 +649,7 @@ export const TheOrgsPeopleStayNamedWhileTheDeploymentListLoads: Story = {
     await expect(await canvas.findByText("budget.update")).toBeVisible();
     await expect(canvas.getByText("root@example.com")).toBeVisible();
     await expect(canvas.getByText("ada@example.com")).toBeVisible();
-    await expect(canvas.getByText("44444444")).toHaveAttribute("title", ELSEWHERE.id);
+    await expect(canvas.getByTitle(ELSEWHERE.id)).toHaveTextContent("Unknown account");
     await expect(canvas.getByRole("combobox", { name: "Filter by actor" })).toBeVisible();
   },
 };
@@ -664,7 +666,7 @@ export const AnAdminDoesNotAskForUnassignedAccounts: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(await canvas.findByText("ada@example.com")).toBeVisible();
-    await expect(canvas.getByText("22222222")).toHaveAttribute("title", OPERATOR.id);
+    await expect(canvas.getByTitle(OPERATOR.id)).toHaveTextContent("Not in this org");
     await expect(canvas.queryByText("root@example.com")).toBeNull();
     await expectGateAnswered();
     await expect(asAdmin.calls.filter((c) => c.url.includes("include_unassigned"))).toHaveLength(0);
@@ -677,5 +679,167 @@ export const AnAdminDoesNotAskForUnassignedAccounts: Story = {
     const listbox = await openOptions(canvas.getByRole("combobox", { name: "Filter by actor" }));
     await expect(within(listbox).getByRole("option", { name: "ada@example.com" })).toBeVisible();
     await expect(within(listbox).queryByRole("option", { name: "root@example.com" })).toBeNull();
+  },
+};
+
+// -------------------------- entries shown whole (#2129)
+
+const FULL_TARGET = "5a5a5a5a-1111-2222-3333-444444444444";
+
+const wholeEntries = [
+  entry({
+    id: "w-1",
+    action: "provider.update",
+    target_id: FULL_TARGET,
+    actor_user_id: STRANGER,
+    detail: { name: "openai-prod" },
+  }),
+  entry({ id: "w-2", action: "route.delete", actor_user_id: null, target_id: null, detail: null }),
+];
+
+/**
+ * The detail opens in a row of its own under the entry it belongs to,
+ * labelled with the action, target and time; every id is whole and copyable;
+ * an actor the org's list does not carry says so instead of showing a prefix;
+ * and a row with no actor reads "system" from the catalog.
+ */
+export const DetailOpensUnderItsRow: Story = {
+  render: () => <Screen fetchStub={routes([["/audit-log", () => page(wholeEntries)]])} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("Not in this org")).toBeVisible();
+    await expect(canvas.getByText("system")).toBeVisible();
+
+    await userEvent.click(
+      canvas.getByRole("button", {
+        name: "Show details for action provider.update on target provider",
+      }),
+    );
+    const entryRegion = await canvas.findByRole("region", {
+      name: /^provider\.update · provider · /,
+    });
+    await expect(entryRegion).toHaveTextContent("2026");
+    await expect(within(entryRegion).getByTestId("audit-targetId")).toHaveTextContent(FULL_TARGET);
+    await expect(within(entryRegion).getByTestId("audit-actorId")).toHaveTextContent(STRANGER);
+    await expect(within(entryRegion).getByText("2026-08-06T10:00:00Z")).toBeVisible();
+    await expect(within(entryRegion).getByRole("button", { name: /Copy Target id/ })).toBeVisible();
+    // directly under its own row, not after the table
+    const rows = canvas.getAllByRole("row");
+    const own = rows.findIndex((r) => r.textContent?.includes("provider.update"));
+    await expect(rows[own + 1]).toContainElement(entryRegion);
+    await expect(within(entryRegion).getByText(/openai-prod/)).toBeVisible();
+
+    await userEvent.click(
+      canvas.getByRole("button", {
+        name: "Hide details for action provider.update on target provider",
+      }),
+    );
+    await waitFor(() => expect(canvas.queryByRole("region")).toBeNull());
+  },
+};
+
+// -------------------------- export (#2130)
+
+async function captureDownload(names: string[], run: () => Promise<void>): Promise<void> {
+  const original = HTMLAnchorElement.prototype.click;
+  HTMLAnchorElement.prototype.click = function capture(this: HTMLAnchorElement) {
+    names.push(this.download);
+  };
+  try {
+    await run();
+  } finally {
+    HTMLAnchorElement.prototype.click = original;
+  }
+}
+
+/** two pages, so the export has to follow the cursor with the filters on both */
+const exportPages = () =>
+  recording(
+    scoped(async (input) => {
+      const url = new URL(String(input), "http://localhost");
+      if (url.pathname.endsWith("/audit-log")) {
+        return json(
+          url.searchParams.get("cursor")
+            ? { ...page([entry({ id: "x-2", action: "route.delete" })]), has_previous: true }
+            : {
+                ...page([entry({ id: "x-1" })]),
+                next_cursor: "c-2",
+                has_next: true,
+              },
+        );
+      }
+      return json([]);
+    }),
+  );
+
+const exporting = exportPages();
+
+// the file holds the whole filtered log: the action filter rides on every page
+// request, the cursor is followed, and the name carries the org and the window
+export const ExportsTheFilteredLog: Story = {
+  render: () => <Screen fetchStub={exporting.stub} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText("provider.create");
+    await userEvent.type(
+      canvas.getByRole("combobox", { name: "Filter by action" }),
+      "sso_provider.up",
+    );
+    await userEvent.click(
+      await within(document.body).findByRole("option", { name: "sso_provider.update" }),
+    );
+    await userEvent.click(canvas.getByRole("radio", { name: "Last 7d" }));
+
+    const names: string[] = [];
+    await captureDownload(names, async () => {
+      await userEvent.click(canvas.getByRole("button", { name: "Export CSV" }));
+      await waitFor(() => expect(names).toHaveLength(1));
+    });
+    await expect(names[0]).toMatch(
+      /^audit-log-rolter-\d{4}-\d{2}-\d{2}_to_\d{4}-\d{2}-\d{2}\.csv$/,
+    );
+
+    const exportCalls = exporting.calls.filter(
+      (c) => c.url.includes("/audit-log") && c.url.includes("limit=500"),
+    );
+    await expect(exportCalls).toHaveLength(2);
+    for (const call of exportCalls) {
+      await expect(call.url).toContain("action=sso_provider.update");
+      await expect(call.url).toContain("from=");
+      await expect(call.url).not.toContain("include_total");
+    }
+    await expect(exportCalls[1].url).toContain("cursor=c-2");
+  },
+};
+
+const exportFails = recording(
+  scoped(async (input) => {
+    const url = new URL(String(input), "http://localhost");
+    if (url.pathname.endsWith("/audit-log") && url.searchParams.get("limit") === "500") {
+      return json({ error: { message: "store unavailable" } }, 500);
+    }
+    return url.pathname.endsWith("/audit-log") ? json(page([entry()])) : json([]);
+  }),
+);
+
+export const ExportFails: Story = {
+  render: () => (
+    <MemoryRouter>
+      <Harness fetchStub={exportFails.stub}>
+        <Toasted>
+          <AuditLog />
+        </Toasted>
+      </Harness>
+    </MemoryRouter>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText("provider.create");
+    const names: string[] = [];
+    await captureDownload(names, async () => {
+      await userEvent.click(canvas.getByRole("button", { name: "Export JSON" }));
+      await expectToast(canvasElement, /Could not export the audit log export/, "error");
+    });
+    await expect(names).toHaveLength(0);
   },
 };

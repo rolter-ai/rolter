@@ -85,6 +85,31 @@ export const RenderedCells: Story = {
 };
 
 /**
+ * A row's detail opens in a full-width row directly under it (#2129), so the
+ * reader never has to match a block below the table to the row it came from.
+ */
+export const DetailUnderItsRow: Story = {
+  render: () => (
+    <Table
+      columns={COLUMNS}
+      data={ROWS}
+      rowKey="id"
+      detailRow={(row) => (row.id === "r2" ? <p>Detail for {row.model}</p> : null)}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const detail = canvas.getByText("Detail for claude-sonnet");
+    await expect(detail).toBeVisible();
+    const rows = canvas.getAllByRole("row");
+    // header, three data rows, one detail row
+    await expect(rows).toHaveLength(5);
+    await expect(rows[2]).toHaveTextContent("claude-sonnet");
+    await expect(rows[3]).toContainElement(detail);
+  },
+};
+
+/**
  * Loaded and empty (#1180). The placeholder is rendered in one full-width cell
  * so it sits inside the table's border with the column headers still above it:
  * a header row over nothing reads as a screen that is still loading.
