@@ -2093,6 +2093,37 @@ export const RealtimeStartsOverOnATabSwitch: Story = {
   },
 };
 
+/**
+ * An open realtime socket counts as a gateway call in flight (#2758): a route
+ * added while it is live does not re-mint the key under it, and the re-mint
+ * goes out once the session is stopped.
+ */
+export const LiveRealtimeSessionHoldsTheRemint: Story = {
+  beforeEach: () => {
+    projectRoutes.length = 0;
+    return fakeRealtime();
+  },
+  render: () => <Screen fetchStub={reminting.stub} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText(/This project has no routes yet/);
+    await userEvent.click(canvas.getByRole("tab", { name: "Realtime" }));
+    await clickWhenEnabled(canvasElement, "Start session");
+    await canvas.findByText("● connected");
+    const before = mintsIn(reminting.calls);
+
+    projectRoutes.push(ROUTES[0]);
+    document.dispatchEvent(new Event("visibilitychange", { bubbles: true }));
+    // the routes are re-read, but the key is not swapped under the live socket
+    await waitFor(() => expect(canvas.getByRole("button", { name: "Stop session" })).toBeVisible());
+    await new Promise((r) => setTimeout(r, 300));
+    await expect(mintsIn(reminting.calls)).toBe(before);
+
+    await userEvent.click(canvas.getByRole("button", { name: "Stop session" }));
+    await waitFor(() => expect(mintsIn(reminting.calls)).toBe(before + 1));
+  },
+};
+
 // the model picker row and the composer wrap on a phone (#1242)
 export const Mobile: Story = {
   ...atMobile,

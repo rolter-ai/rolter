@@ -64,6 +64,7 @@ import {
   type PlaygroundKeyState,
   getGatewayCallsInFlight,
   subscribeGatewayCalls,
+  trackGatewaySession,
 } from "@/lib/gateway";
 import { useFormat } from "@/lib/i18n/format";
 import { useOptionalPreferences } from "@/lib/preferences";
@@ -1714,18 +1715,28 @@ function RealtimeMode({ models }: { models: ModelOption[] }) {
   const [log, setLog] = React.useState<string[]>([]);
   const [draft, setDraft] = React.useState("");
   const wsRef = React.useRef<WebSocket | null>(null);
+  // the session counts as a gateway call from open to close, so a re-mint
+  // waits for it rather than swapping the key under a live socket
+  const releaseRef = React.useRef<(() => void) | null>(null);
+  const release = React.useCallback(() => {
+    releaseRef.current?.();
+    releaseRef.current = null;
+  }, []);
 
   const append = (line: string) => setLog((l) => [...l.slice(-40), line]);
 
   const stop = React.useCallback(() => {
     wsRef.current?.close();
     wsRef.current = null;
+    release();
     setLive(false);
-  }, []);
+  }, [release]);
 
   const start = () => {
     try {
+      release();
       const ws = new WebSocket(realtimeUrl(model));
+      releaseRef.current = trackGatewaySession();
       wsRef.current = ws;
       ws.onopen = () => {
         setLive(true);
@@ -1734,6 +1745,7 @@ function RealtimeMode({ models }: { models: ModelOption[] }) {
       ws.onmessage = (ev) => append("← " + String(ev.data).slice(0, 200));
       ws.onerror = () => append(`✕ ${t("pages.playground.realtimeLog.socketError")}`);
       ws.onclose = () => {
+        if (wsRef.current === ws) release();
         setLive(false);
         append(`○ ${t("pages.playground.realtimeLog.closed")}`);
       };
@@ -1742,7 +1754,13 @@ function RealtimeMode({ models }: { models: ModelOption[] }) {
     }
   };
 
-  React.useEffect(() => () => wsRef.current?.close(), []);
+  React.useEffect(
+    () => () => {
+      wsRef.current?.close();
+      release();
+    },
+    [release],
+  );
 
   const send = () => {
     if (!draft.trim() || !wsRef.current) return;

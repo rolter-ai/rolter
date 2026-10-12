@@ -100,14 +100,33 @@ export function subscribeGatewayCalls(listener: () => void): () => void {
   };
 }
 
-async function tracked<T>(call: () => Promise<T>): Promise<T> {
-  inFlight += 1;
+function notifyCalls(): void {
   for (const listener of inFlightListeners) listener();
+}
+
+/**
+ * Count a call that outlives a single awaited promise — a realtime socket,
+ * from the moment it is opened until it closes. Returns the release; calling
+ * it more than once counts once.
+ */
+export function trackGatewaySession(): () => void {
+  inFlight += 1;
+  notifyCalls();
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    inFlight -= 1;
+    notifyCalls();
+  };
+}
+
+async function tracked<T>(call: () => Promise<T>): Promise<T> {
+  const release = trackGatewaySession();
   try {
     return await call();
   } finally {
-    inFlight -= 1;
-    for (const listener of inFlightListeners) listener();
+    release();
   }
 }
 
@@ -260,13 +279,16 @@ export interface GatewayModel {
  * not picked up yet from one it never will.
  */
 export async function fetchGatewayModels(signal?: AbortSignal): Promise<GatewayModel[]> {
-  const res = await fetch(`${GW_BASE}/v1/models`, {
-    headers: authHeaders(false),
-    signal,
+  // counted like any other call, so a re-mint cannot swap the key mid-probe
+  return tracked(async () => {
+    const res = await fetch(`${GW_BASE}/v1/models`, {
+      headers: authHeaders(false),
+      signal,
+    });
+    if (!res.ok) throw await gwError(res);
+    const body = (await res.json()) as { data?: GatewayModel[] };
+    return body.data ?? [];
   });
-  if (!res.ok) throw await gwError(res);
-  const body = (await res.json()) as { data?: GatewayModel[] };
-  return body.data ?? [];
 }
 
 export interface ChatMessage {
