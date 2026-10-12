@@ -127,6 +127,49 @@ export const Edit: Story = {
 };
 
 /**
+ * A weight only means something under a strategy that reads it. GROUP is
+ * `cache_aware`, so the inputs stay (the stored weights are kept) but are
+ * disabled and the sheet says why; switching to `weighted` enables them (#2140).
+ */
+export const WeightsAreOffUnderCacheAware: Story = {
+  render: () => <Stage mode="edit" group={GROUP} />,
+  play: async () => {
+    const dialog = within(sheet());
+    const picker = await dialog.findByLabelText("Strategy");
+    await waitFor(() => expect(picker).toHaveValue("cache_aware"));
+    const weights = await dialog.findAllByLabelText("Relative weight");
+    await expect(weights).toHaveLength(2);
+    for (const w of weights) await expect(w).toBeDisabled();
+    await waitFor(() =>
+      expect(dialog.getByText(/cache_aware does not read weights/)).toBeVisible(),
+    );
+    await expect(dialog.getByText(/Leave Upstream model empty/)).toBeVisible();
+    await pickOption(picker, /^weighted\b/);
+    await waitFor(() => expect(dialog.getAllByLabelText("Relative weight")[0]).toBeEnabled());
+    await expect(dialog.queryByText(/does not read weights/)).toBeNull();
+  },
+};
+
+/**
+ * A group with no members fails every request, so saving one is refused with an
+ * inline error instead of a request; adding a member lets it through (#2140).
+ */
+export const EmptyGroupCannotBeSaved: Story = {
+  render: () => <Stage mode="add" />,
+  play: async () => {
+    const dialog = within(sheet());
+    await userEvent.type(dialog.getByLabelText("Name"), "vllm-cluster");
+    await userEvent.click(dialog.getByRole("button", { name: "Create group" }));
+    await waitFor(() => expect(dialog.getByText(/Add at least one member/)).toBeVisible());
+    calls.expectNotSent("POST", `/orgs/${ORG.id}/provider-groups`);
+    await userEvent.click(dialog.getByRole("button", { name: /add member/i }));
+    await waitFor(() => expect(dialog.queryByText(/Add at least one member/)).toBeNull());
+    await userEvent.click(dialog.getByRole("button", { name: "Create group" }));
+    await calls.expectSentBody("POST", `/orgs/${ORG.id}/provider-groups`);
+  },
+};
+
+/**
  * The strategy's own description stays under the picker, replacing the generic
  * "how requests are balanced" line, and adaptive can be chosen (#2136).
  */
@@ -217,6 +260,7 @@ export const SaveRejected: Story = {
   play: async () => {
     const dialog = within(sheet());
     await userEvent.type(dialog.getByLabelText("Name"), "vllm-cluster");
+    await userEvent.click(dialog.getByRole("button", { name: /add member/i }));
     await userEvent.click(dialog.getByRole("button", { name: "Create group" }));
     await waitFor(() => expect(dialog.getByText(/already taken/)).toBeVisible());
     await expect(dialog.getByLabelText("Name")).toHaveValue("vllm-cluster");

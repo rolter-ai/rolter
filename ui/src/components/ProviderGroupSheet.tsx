@@ -30,6 +30,7 @@ import {
 } from "@/lib/api";
 import { StrategyPicker } from "@/components/StrategyPicker";
 import { providersUsableFrom, usableFrom } from "@/lib/provider-scope";
+import { usesWeights } from "@/lib/strategies";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useFormTelemetry } from "@/lib/ux-react";
 
@@ -98,6 +99,8 @@ function MemberEditor({
   known,
   owner,
   members,
+  strategy,
+  emptyError,
   onChange,
 }: {
   /** the providers this group's scope may use: the ones the picker offers */
@@ -107,12 +110,21 @@ function MemberEditor({
   /** the project the group is scoped to, `null` when org-wide */
   owner: string | null;
   members: DraftMember[];
+  /** the group's strategy: only some read the weights typed here */
+  strategy: string;
+  /** a save was tried with nobody in the group */
+  emptyError: boolean;
   onChange: (next: DraftMember[]) => void;
 }) {
   const { t } = useTranslation();
   const update = (i: number, patch: Partial<DraftMember>) =>
     onChange(members.map((m, idx) => (idx === i ? { ...m, ...patch } : m)));
   const remove = (i: number) => onChange(members.filter((_, idx) => idx !== i));
+  const weighted = usesWeights(strategy);
+  // from sm up the row is four columns under a caption row; below it the
+  // upstream model drops to a line of its own so a long name is not clipped
+  const columns = "sm:grid-cols-[minmax(0,1.4fr)_minmax(0,1.4fr)_64px_28px]";
+  const rowGrid = `grid items-center gap-2 grid-cols-[minmax(0,1fr)_64px_28px] ${columns}`;
 
   return (
     <div className="space-y-2">
@@ -140,10 +152,17 @@ function MemberEditor({
       {members.length === 0 && providers.length > 0 && (
         <p className="text-xs text-muted-foreground">{t("providerGroupSheet.members.none")}</p>
       )}
+      <FieldError
+        id="group-members-empty"
+        error={
+          emptyError && members.length === 0
+            ? t("providerGroupSheet.members.emptyError")
+            : undefined
+        }
+      />
       {members.length > 0 && (
         <div
-          className="grid gap-2 text-[11px] uppercase tracking-[0.06em] text-[color:var(--text-subtle)]"
-          style={{ gridTemplateColumns: "1.4fr 1.4fr 64px 28px" }}
+          className={`hidden gap-2 text-[11px] uppercase tracking-[0.06em] text-[color:var(--text-subtle)] sm:grid ${columns}`}
         >
           <span>{t("common.provider")}</span>
           <span>{t("providerGroupSheet.members.upstreamModel")}</span>
@@ -159,10 +178,7 @@ function MemberEditor({
         const errorId = `group-member-${i}-scope`;
         return (
           <React.Fragment key={i}>
-            <div
-              className="grid items-center gap-2"
-              style={{ gridTemplateColumns: "1.4fr 1.4fr 64px 28px" }}
-            >
+            <div className={rowGrid}>
               <Combobox
                 value={m.provider_id}
                 aria-label={t("common.provider")}
@@ -179,7 +195,7 @@ function MemberEditor({
                 value={m.upstream_model}
                 onChange={(e) => update(i, { upstream_model: e.target.value })}
                 placeholder={t("providerGroupSheet.members.upstreamModelPlaceholder")}
-                className="font-mono"
+                className="order-last col-span-3 font-mono sm:order-none sm:col-span-1"
               />
               {/* the grid's column captions above are not `<label>`s, so each cell
               names itself — a `title` alone is a hidden label and nothing a
@@ -188,6 +204,7 @@ function MemberEditor({
                 aria-label={t("providerGroupSheet.members.relativeWeight")}
                 type="number"
                 min={1}
+                disabled={!weighted}
                 value={m.weight}
                 onChange={(e) => update(i, { weight: e.target.value })}
                 title={t("providerGroupSheet.members.relativeWeight")}
@@ -218,6 +235,16 @@ function MemberEditor({
           </React.Fragment>
         );
       })}
+      {members.length > 0 && (
+        <p className="text-xs text-muted-foreground">
+          {t("providerGroupSheet.members.upstreamModelHint")}
+        </p>
+      )}
+      {members.length > 0 && !weighted && (
+        <p className="text-xs text-muted-foreground">
+          {t("providerGroupSheet.members.weightsIgnored", { strategy })}
+        </p>
+      )}
     </div>
   );
 }
@@ -261,6 +288,7 @@ export function ProviderGroupSheet({
     seededRef.current = true;
     const d = mode === "edit" && group ? fromGroup(group) : blankDraft();
     setDraft(d);
+    setTriedEmpty(false);
     initialRef.current = JSON.stringify(d);
   }, [open, mode, group]);
 
@@ -290,6 +318,10 @@ export function ProviderGroupSheet({
     open,
     { dirty },
   );
+
+  // a save tried with nobody in the group is refused, and says why
+  const [triedEmpty, setTriedEmpty] = React.useState(false);
+  const hasMember = toMemberInputs(draft.members).length > 0;
 
   const save = useMutation({
     mutationFn: () => {
@@ -464,6 +496,8 @@ export function ProviderGroupSheet({
           known={providers}
           owner={scopeValue || null}
           members={draft.members}
+          strategy={draft.strategy}
+          emptyError={triedEmpty}
           onChange={(members) => set({ members })}
         />
       </SheetBody>
@@ -477,6 +511,10 @@ export function ProviderGroupSheet({
           <Button
             disabled={!canSave}
             onClick={() => {
+              if (!hasMember) {
+                setTriedEmpty(true);
+                return;
+              }
               ux.submitted();
               save.mutate();
             }}

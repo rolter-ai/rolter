@@ -37,7 +37,7 @@ const GROUPS: ProviderGroupRow[] = [
     org_id: "org-1",
     name: "frontier",
     slug: "frontier",
-    strategy: "fastest",
+    strategy: "weighted",
     created_at: "2026-03-01T00:00:00Z",
     members: [
       { group_id: "g-1", provider_id: "p-1", provider_name: "openai-prod", weight: 3, position: 0 },
@@ -75,8 +75,63 @@ export const Loaded: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByText("frontier")).toBeVisible());
-    await expect(canvas.getByText("openai-prod ·3")).toBeVisible();
+    await expect(canvas.getByText("openai-prod · weight 3")).toBeVisible();
+    // the address a client types, not only the prefix it starts with
+    await expect(canvas.getByText("frontier/<model>")).toBeVisible();
     await expectListTable(canvasElement, "Provider Groups");
+  },
+};
+
+const MIXED: ProviderGroupRow[] = [
+  ...GROUPS,
+  {
+    id: "g-2",
+    org_id: "org-1",
+    name: "overflow",
+    slug: "overflow",
+    strategy: "round_robin",
+    created_at: "2026-03-02T00:00:00Z",
+    members: [],
+  },
+  {
+    id: "g-3",
+    org_id: "org-1",
+    name: "vllm-cluster",
+    slug: "vllm-cluster",
+    strategy: "cache_aware",
+    created_at: "2026-03-03T00:00:00Z",
+    members: [
+      { group_id: "g-3", provider_id: "p-3", provider_name: "vllm-a", weight: 2, position: 0 },
+      { group_id: "g-3", provider_id: "p-4", provider_name: "vllm-b", weight: 1, position: 1 },
+    ],
+  },
+];
+
+/**
+ * A group with no members fails every request, so the list marks it with a
+ * warning rather than muted text, and a weight only shows under a strategy that
+ * reads it: `cache_aware` stores weights it never consults (#2140).
+ */
+export const EmptyGroupAndIgnoredWeights: Story = {
+  render: () => (
+    <Harness
+      fetchStub={routes([
+        ["/provider-groups", () => MIXED],
+        ["/providers", () => []],
+      ])}
+    >
+      <ProviderGroups />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const empty = await canvas.findByText("no members, resolves to nothing");
+    await expect(empty).toBeVisible();
+    await expect(canvas.getAllByText("no members, resolves to nothing")).toHaveLength(1);
+    // weight 2 on a cache_aware member is not printed; weight 3 on a weighted one is
+    await expect(canvas.getByText("vllm-a")).toBeVisible();
+    await expect(canvas.queryByText(/vllm-a · weight/)).toBeNull();
+    await expect(canvas.getByText("openai-prod · weight 3")).toBeVisible();
   },
 };
 
