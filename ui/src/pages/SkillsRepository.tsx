@@ -17,6 +17,7 @@ import { useTranslation } from "react-i18next";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { GatedButton } from "@/components/GatedButton";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -1072,9 +1073,7 @@ function AccessFields({
               key={team.id}
               className="flex cursor-pointer items-center gap-2 rounded-lg border border-[color:var(--border-subtle)] p-2.5 text-sm hover:bg-[color:var(--surface-hover)]"
             >
-              <input
-                type="checkbox"
-                className="h-4 w-4 accent-[color:var(--red-folk)]"
+              <Checkbox
                 checked={value.allowed_team_ids.includes(team.id)}
                 onChange={() => toggleTeam(team.id)}
               />
@@ -1085,9 +1084,8 @@ function AccessFields({
       </fieldset>
       {includeRetired && (
         <label className="flex cursor-pointer items-start gap-2.5 rounded-lg border border-[color:var(--border-subtle)] p-3">
-          <input
-            type="checkbox"
-            className="mt-0.5 h-4 w-4 accent-[color:var(--red-folk)]"
+          <Checkbox
+            className="mt-0.5"
             checked={value.retired ?? false}
             onChange={(event) => onChange({ ...value, retired: event.target.checked })}
           />

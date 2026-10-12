@@ -3,6 +3,7 @@ import { KeySquare, Lock, Pencil, Trash2, X } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
+import { Checkbox } from "@/components/ui/checkbox";
 import { IconFrame } from "@/components/ui/icon-frame";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { EditorSheet } from "@/components/EditorSheet";
@@ -981,9 +982,7 @@ function GrantGrid({
                   }
                   return (
                     <span key={action} className="flex w-6 justify-center">
-                      <input
-                        type="checkbox"
-                        className="h-4 w-4 accent-[color:var(--red-folk)] disabled:cursor-not-allowed disabled:opacity-40"
+                      <Checkbox
                         aria-label={label}
                         title={view.superadmin_only ? t("pages.rbac.custom.superadminHint") : label}
                         disabled={view.superadmin_only}

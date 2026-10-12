@@ -110,6 +110,7 @@ const WAIVER = /ui-primitives-allow:\s*(.*)$/;
 export type RuleId =
   | "select"
   | "hand-rolled-listbox"
+  | "checkbox"
   | "pre"
   | "native-dialog"
   | "hand-rolled-confirmation"
@@ -156,6 +157,9 @@ const ADVICE: Record<RuleId, string> = {
     "`@/components/ui/menu` for a list of verbs; both filter fuzzily with " +
     "`@/lib/fuzzy`. A surface that really is its own widget (the command " +
     "palette) says why with a `ui-primitives-allow:` comment above the line.",
+  checkbox:
+    'a native `<input type="checkbox">` is drawn by the browser, and tinted red it ' +
+    "breaks the red budget (#2223). Use `Checkbox` from `@/components/ui/checkbox`.",
   pre:
     "a raw `<pre>` is a payload without a copy button, without a focusable " +
     "scroll region and without highlighting. Render JSON, YAML, TOML, CSV or " +
@@ -428,6 +432,15 @@ export function checkSource(
     if (/<select[\s/>]/.test(line) || /<select$/.test(line)) record(index, "select", "<select>");
     const listbox = /\brole=(?:\{[^}]*)?["'](listbox|option|combobox)["']/.exec(line);
     if (listbox) record(index, "hand-rolled-listbox", `role="${listbox[1]}"`);
+    if (/<input[\s/>]/.test(line) || /<input$/.test(line)) {
+      // the tag can run over many lines, so read it whole from here
+      const from = maskedLines.slice(0, index).join("\n").length + (index > 0 ? 1 : 0);
+      const start = from + line.indexOf("<input");
+      const tag = masked.slice(start, endOfTag(masked, start));
+      if (/\btype\s*=\s*(\{\s*)?["'`]checkbox["'`]/.test(tag)) {
+        record(index, "checkbox", '<input type="checkbox">');
+      }
+    }
     if (/<pre[\s/>]/.test(line) || /<pre$/.test(line)) record(index, "pre", "<pre>");
     const native = /\bwindow\.(confirm|alert|prompt)\s*\(/.exec(line);
     if (native) record(index, "native-dialog", `window.${native[1]}()`);

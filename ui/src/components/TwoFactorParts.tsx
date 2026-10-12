@@ -1,6 +1,7 @@
 import { useTranslation } from "react-i18next";
 
 import { QrCode } from "@/components/QrCode";
+import { Checkbox } from "@/components/ui/checkbox";
 import { CodeBlock } from "@/components/ui/code-block";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
@@ -103,11 +104,10 @@ export function RecoveryCodesList({
     <>
       <CodeBlock value={codes.join("\n")} label={t("account.mfa.codes.label")} />
       <label className="mt-3 flex items-start gap-2 text-sm text-foreground">
-        <input
-          type="checkbox"
+        <Checkbox
+          className="mt-0.5"
           checked={saved}
           onChange={(e) => onSavedChange(e.target.checked)}
-          className="mt-0.5 h-4 w-4 accent-[color:var(--red-folk)]"
         />
         <span>{t("account.mfa.codes.acknowledge")}</span>
       </label>
