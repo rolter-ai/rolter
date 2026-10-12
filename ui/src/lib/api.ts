@@ -3920,8 +3920,9 @@ export interface ConnectorInput {
   enabled: boolean;
   sampling_rate: number;
   auth_secret_ref?: string | null;
-  /// write-only bearer token, sealed before persistence
-  managed_auth_secret?: string;
+  /// write-only bearer token, sealed before persistence. On update, omitted
+  /// keeps the stored one and `null` removes it
+  managed_auth_secret?: string | null;
 }
 
 export function fetchConnectors(): Promise<ConnectorRow[]> {

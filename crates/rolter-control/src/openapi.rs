@@ -1991,7 +1991,7 @@ fn operations() -> Vec<Op> {
             Op::put(
                 "/api/v1/connectors/{id}",
                 "updateConnector",
-                "Update an observability connector",
+                "Update an observability connector (managed_auth_secret: omit to keep, null or blank to remove)",
             ),
             Op::delete(
                 "/api/v1/connectors/{id}",

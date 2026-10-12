@@ -866,7 +866,7 @@ interface SentUpdate {
   enabled: boolean;
   sampling_rate: number;
   auth_secret_ref: string | null;
-  managed_auth_secret?: string;
+  managed_auth_secret?: string | null;
 }
 
 const editing = (list: ConnectorRow[] = CONNECTORS) =>
@@ -906,7 +906,7 @@ export const EditsAConnectorInPlaceKeepingItsSecret: Story = {
     await expect(secret).toHaveValue("");
     await expect(form.getByText(copy.form.secretKeepHint)).toBeVisible();
     // `enabled` belongs to the card's switch: the sheet has no start switch
-    await expect(form.queryByRole("switch")).toBeNull();
+    await expect(form.queryByRole("switch", { name: copy.form.start })).toBeNull();
 
     const endpoint = form.getByLabelText(copy.form.endpoint);
     await userEvent.clear(endpoint);
@@ -998,6 +998,29 @@ export const ASecretOfSpacesIsNotSent: Story = {
     await userEvent.click(form.getByRole("button", { name: en.common.save }));
     const body = await blankSecret.expectSentBody<SentUpdate>("PUT", "/connectors/c-1");
     await expect(body).not.toHaveProperty("managed_auth_secret");
+  },
+};
+
+const removes = editing();
+
+// a blank field means keep, so removing the secret is its own switch and goes
+// out as an explicit null (#2402)
+export const RemovesTheStoredSecretOnRequest: Story = {
+  render: () => <Harness fetchStub={removes.stub} toasted />,
+  play: async ({ canvasElement }) => {
+    const copy = en.pages.connectors;
+    const form = await openEditSheet(canvasElement);
+    await userEvent.type(form.getByLabelText(copy.form.secretEdit), "typed");
+    await userEvent.click(form.getByRole("switch", { name: copy.form.secretRemove }));
+    await expect(await form.findByText(copy.form.secretRemoveHint)).toBeVisible();
+    // the typed text is discarded and the field cannot take more
+    await expect(form.getByLabelText(copy.form.secretEdit)).toHaveValue("");
+    await expect(form.getByLabelText(copy.form.secretEdit)).toBeDisabled();
+
+    await userEvent.click(form.getByRole("button", { name: en.common.save }));
+    const body = await removes.expectSentBody<SentUpdate>("PUT", "/connectors/c-1");
+    await expect(body.managed_auth_secret).toBeNull();
+    await expectSheetClosed();
   },
 };
 
@@ -1581,7 +1604,7 @@ export const EditSheetInRussianAtMobile: Story = {
     await expect(form.getByRole("button", { name: ru.common.save })).toBeEnabled();
     await expectNoHorizontalOverflow();
     // nothing in the sheet is a start switch, and nothing left for Create
-    await expect(form.queryByRole("switch")).toBeNull();
+    await expect(form.queryByRole("switch", { name: copy.form.start })).toBeNull();
     editsInRussian.expectNotSent("PUT", "/connectors/c-1");
   },
 };

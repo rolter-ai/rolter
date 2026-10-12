@@ -10,13 +10,15 @@
 //! surface out of the data plane. So this endpoint is not "ship telemetry to
 //! N sinks"; it is "render the collector config that does".
 //!
-//! An operator points their collector at
-//! `GET /api/v1/connectors/collector-config` (the OTel Collector's `confmap`
-//! HTTP provider accepts a `--config=http://...` source), or fetches it on a
-//! schedule and reloads. rolter's own OTLP export (`OTEL_EXPORTER_OTLP_*`)
-//! targets that one collector; this document is what routes what it receives
-//! out to every enabled connector, each in its own pipeline so its sampling
-//! rate and auth apply independently.
+//! The endpoint `GET /api/v1/connectors/collector-config` authorizes a
+//! superadmin principal only, and a collector has no session to present one,
+//! so it cannot be pointed at the URL directly without putting the admin token
+//! in its deployment. An operator fetches the document (the dashboard's
+//! Collector config dialog does) and saves it as the collector's config file,
+//! reloading when connectors change. rolter's own OTLP export
+//! (`OTEL_EXPORTER_OTLP_*`) targets that one collector; this document is what
+//! routes what it receives out to every enabled connector, each in its own
+//! pipeline so its sampling rate and auth apply independently.
 //!
 //! `sampling_rate` is rendered as a `probabilistic_sampler` processor scoped
 //! to that connector's pipeline — sampling is the collector's job now, not
