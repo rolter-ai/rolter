@@ -2198,7 +2198,11 @@ mod query_failed_tests {
         });
         let seen = logs.0.lock().clone();
         assert_eq!(seen.len(), 1);
-        assert!(!seen[0].contains(secret), "secret leaked in log: {}", seen[0]);
+        assert!(
+            !seen[0].contains(secret),
+            "secret leaked in log: {}",
+            seen[0]
+        );
         assert!(
             seen[0].contains("http://***@clickhouse.internal:8123/"),
             "url was not redacted: {}",
