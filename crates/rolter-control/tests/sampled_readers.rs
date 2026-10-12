@@ -363,3 +363,87 @@ async fn alert_signals_scale_by_the_row_weight_and_the_error_rate_stays_a_ratio_
     near(read_alert(&stack, "spend_velocity").await, 2.0);
     near(read_alert(&stack, "error_rate").await, 0.75);
 }
+
+/// One kept row of `weight` requests whose plugins did `events` (#2243).
+fn plugin_row(org: &str, weight: f64, ts: &str, events: &[&str]) -> Value {
+    let mut row = row("key-plugins", 200, weight);
+    row["ts"] = json!(ts);
+    row["org_id"] = json!(org);
+    row["plugin_events"] = json!(events);
+    row
+}
+
+#[tokio::test]
+async fn the_plugin_rollup_counts_each_outcome_by_weight_and_names_the_newest_error() {
+    let Some(stack) = stack().await else {
+        eprintln!("skipping: the postgres and clickhouse test servers are not both set");
+        return;
+    };
+    let newest = now();
+    let older = (chrono::Utc::now() - chrono::Duration::minutes(10))
+        .format("%Y-%m-%d %H:%M:%S%.3f")
+        .to_string();
+    stack
+        .insert(&[
+            plugin_row(
+                "org-a",
+                2.0,
+                &older,
+                &["error:audit:connect", "allowed:redact"],
+            ),
+            plugin_row("org-a", 4.0, &newest, &["error:audit:status_503"]),
+            plugin_row(
+                "org-a",
+                1.0,
+                &newest,
+                &["blocked:redact", "transformed:audit"],
+            ),
+            // the same slug in another organization is a plugin of its own
+            plugin_row("org-b", 3.0, &newest, &["allowed:audit"]),
+            // a row no plugin saw adds nothing
+            row("key-plugins", 200, 5.0),
+        ])
+        .await;
+
+    let body: Value = stack
+        .http
+        .get(format!("http://{}/api/v1/analytics/plugins", stack.addr))
+        .bearer_auth(ADMIN_TOKEN)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(body["recorded"], true, "{body}");
+    let find = |org: &str, plugin: &str| -> Value {
+        body["data"]
+            .as_array()
+            .and_then(|rows| {
+                rows.iter()
+                    .find(|r| r["org_id"] == org && r["plugin"] == plugin)
+            })
+            .cloned()
+            .unwrap_or_else(|| panic!("no {org}/{plugin} in {body}"))
+    };
+
+    let audit = find("org-a", "audit");
+    // 2 + 4 + 1 calls by weight, 6 of them failures, 1 transformed
+    assert_eq!(audit["calls"].as_f64(), Some(7.0), "{body}");
+    assert_eq!(audit["errors"].as_f64(), Some(6.0), "{body}");
+    assert_eq!(audit["transformed"].as_f64(), Some(1.0), "{body}");
+    assert_eq!(audit["blocked"].as_f64(), Some(0.0), "{body}");
+    // the newest failure wins, not the one inserted first
+    assert_eq!(audit["last_error_kind"], "status_503", "{body}");
+    assert!(audit["last_error_at"].is_string(), "{body}");
+
+    let redact = find("org-a", "redact");
+    assert_eq!(redact["calls"].as_f64(), Some(3.0), "{body}");
+    assert_eq!(redact["blocked"].as_f64(), Some(1.0), "{body}");
+    assert!(redact["last_error_at"].is_null(), "{body}");
+    assert_eq!(redact["last_error_kind"], "", "{body}");
+
+    let other = find("org-b", "audit");
+    assert_eq!(other["calls"].as_f64(), Some(3.0), "{body}");
+    assert_eq!(other["errors"].as_f64(), Some(0.0), "{body}");
+}
