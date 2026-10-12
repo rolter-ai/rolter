@@ -57,6 +57,46 @@ const PROVIDERS_QUERY_KEY = ["providers"];
 // how many names the delete confirm spells out before it says "and N more"
 const USAGE_NAMES_SHOWN = 8;
 
+/**
+ * Where a provider's credential comes from. A stored key wins over an
+ * `api_key_env`, as it does at request time. `unknown` is a control plane that
+ * predates `has_stored_key`: it cannot tell a keyless provider from a sealed one
+ */
+function credentialSource(p: ProviderRow): "sealed" | "env" | "none" | "unknown" {
+  if (p.has_stored_key) return "sealed";
+  if (p.api_key_env) return "env";
+  return p.has_stored_key === false ? "none" : "unknown";
+}
+
+function CredentialSource({ provider }: { provider: ProviderRow }) {
+  const { t } = useTranslation();
+  switch (credentialSource(provider)) {
+    case "sealed":
+      return (
+        <Badge tone="success" title={t("pages.providers.credentialSealedHint")}>
+          {t("pages.providers.credentialSealed")}
+        </Badge>
+      );
+    case "env":
+      return (
+        <span
+          className="truncate font-mono text-xs text-muted-foreground"
+          title={t("pages.providers.credentialEnvHint", { name: provider.api_key_env })}
+        >
+          {provider.api_key_env}
+        </span>
+      );
+    case "none":
+      return (
+        <Badge tone="warning" title={t("pages.providers.credentialNoneHint")}>
+          {t("pages.providers.credentialNone")}
+        </Badge>
+      );
+    default:
+      return <span className="text-xs text-muted-foreground">—</span>;
+  }
+}
+
 function UsageNames({
   label,
   entries,
@@ -203,7 +243,7 @@ export default function Providers() {
   } | null>(null);
   const [deleteTarget, setDeleteTarget] = React.useState<ProviderRow | null>(null);
   const { sort, cycle, apply } = useSort<
-    "name" | "kind" | "apiBase" | "slug" | "keyEnv" | "scope"
+    "name" | "kind" | "apiBase" | "slug" | "credential" | "scope"
   >();
   const [search, setSearch] = React.useState("");
   // the label the list is narrowed to, as `key=value`; "" is no filter
@@ -251,7 +291,8 @@ export default function Providers() {
     kind: (p) => providerKindName(p.kind, t),
     apiBase: (p) => p.api_base,
     slug: (p) => p.slug,
-    keyEnv: (p) => p.api_key_env ?? "",
+    // by the label the column shows, then the variable name
+    credential: (p) => `${credentialSource(p)}:${p.api_key_env ?? ""}`,
     // org-wide rows first, then by the project's name
     scope: (p) => (p.project_id ? orgScopeText(t, orgScope, { project_id: p.project_id }) : ""),
   });
@@ -332,8 +373,8 @@ export default function Providers() {
             onCycle={(c) => cycle(c as never)}
           />
           <SortLabel
-            label={t("pages.providers.colKeyEnv")}
-            col="keyEnv"
+            label={t("pages.providers.colCredential")}
+            col="credential"
             sort={sort}
             onCycle={(c) => cycle(c as never)}
           />
@@ -370,8 +411,8 @@ export default function Providers() {
                 className="h-6 px-1"
               />
             </ListCell>
-            <ListCell className="truncate font-mono text-xs text-muted-foreground">
-              {provider.api_key_env || "—"}
+            <ListCell className="flex min-w-0 items-center">
+              <CredentialSource provider={provider} />
             </ListCell>
             <ListCell className="grid">
               <ProjectScopeBadge projectId={provider.project_id} scope={orgScope} />

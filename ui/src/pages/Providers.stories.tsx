@@ -96,6 +96,44 @@ export const Loaded: Story = {
   },
 };
 
+// the three places a credential can come from read differently in the list
+export const CredentialSources: Story = {
+  render: () => (
+    <Harness
+      fetchStub={routes([
+        [
+          "/providers",
+          () => [
+            { ...PROVIDERS[0], has_stored_key: true },
+            { ...PROVIDERS[1], has_stored_key: false },
+            {
+              ...PROVIDERS[1],
+              id: "p-3",
+              name: "bare-vllm",
+              slug: "bare-vllm",
+              api_key_env: null,
+              has_stored_key: false,
+            },
+          ],
+        ],
+        ["/config/problems", () => ({ problems: [] })],
+      ])}
+    >
+      <Providers />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const row = async (name: string) =>
+      (await canvas.findAllByText(name))[0].closest("[role=row]") as HTMLElement;
+    // the stored key wins over the variable the row also names
+    await expect(within(await row("openai-prod")).getByText("Sealed")).toBeVisible();
+    await expect(within(await row("openai-prod")).queryByText("OPENAI_API_KEY")).toBeNull();
+    await expect(within(await row("anthropic-eu")).getByText("ANTHROPIC_API_KEY")).toBeVisible();
+    await expect(within(await row("bare-vllm")).getByText("None")).toBeVisible();
+  },
+};
+
 // the rows are skeletons inside the real table, so the column headers stay put
 // and the list does not jump a row-height when the data lands
 export const Loading: Story = {
@@ -577,7 +615,7 @@ export const EveryColumnSorts: Story = {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getAllByText("mistral-fr").length).toBeGreaterThan(0));
     await expectListTable(canvasElement, "Model Providers");
-    for (const name of ["Name", "Type", "API base", "Slug", "Key env"]) {
+    for (const name of ["Name", "Type", "API base", "Slug", "Credential"]) {
       const header = canvas.getByRole("columnheader", { name });
       await expect(within(header).getByRole("button")).toBeVisible();
       await expect(header).toHaveAttribute("aria-sort", "none");

@@ -8,6 +8,8 @@ A provider is one upstream endpoint plus the credential Rolter uses to reach it.
 
 Add them from **Providers** in the dashboard, or through the management API. Every column of the list sorts: click a heading for ascending, again for descending, and a third time to go back to the order the control plane sent.
 
+The **Credential** column says where each provider's key comes from: **Sealed** for a key stored in the control plane, the name of the environment variable when the provider names one instead, and **None** when it has neither. A stored key wins over a variable the provider also names. The column shows the source only, never the key; the same fact is the `has_stored_key` field in the [provider API](/api/providers).
+
 The name is fixed once the provider is created, and the form says so. The slug, which is the `provider-slug/model` address, is fixed too. Leave the slug blank and its placeholder shows the one the name will give.
 
 The **Kind** picker lists each provider by display name with a line on what it is (_OpenAI-compatible: vLLM, TGI, LM Studio or any server that speaks the OpenAI API_); the stored id sits under it. Below **API base** the form previews the address requests go to, and that depends on the kind: `/v1/messages` for Anthropic, an embeddings endpoint for Hugging Face TEI, `/v1/chat/completions` for most of the rest. The hint under **Provider key** says which header the key is sent in.
