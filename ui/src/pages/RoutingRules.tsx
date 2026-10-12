@@ -11,20 +11,24 @@ import { DeleteIconButton } from "@/components/ui/delete-icon-button";
 import { Button } from "@/components/ui/button";
 import { LoadError } from "@/components/LoadError";
 import { CardGridSkeleton, LoadingRegion } from "@/components/LoadingState";
-import { PageBody, Toolbar } from "@/components/screen";
+import { PageBody, StatusDot, Toolbar } from "@/components/screen";
+import { healthPresentation } from "@/components/target-health";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { LabelChips, LabelFilterSelect, LabelSheet, useSubjectLabels } from "@/components/Labels";
 import {
   deleteRoute,
+  fetchHealthTimeline,
   fetchModels,
   fetchProviders,
   fetchRoutes,
   fetchRouteTargets,
+  fetchUptime,
   type RouteRow,
   type RouteTargetRow,
 } from "@/lib/api";
 import { useFormat } from "@/lib/i18n/format";
+import { HEALTH_SLA, targetHealth, type TargetHealth } from "@/lib/route-targets";
 import { useScope } from "@/lib/scope";
 import { StrategyBadge } from "@/components/StrategyBadge";
 import { usesWeights } from "@/lib/strategies";
@@ -72,6 +76,25 @@ export default function RoutingRules() {
     enabled: !!scope.orgId,
   });
 
+  // the 7-day uptime rollup, under the key Model Catalog and Health share, so
+  // the three screens read one cached answer. It needs ClickHouse and analytics
+  // access; where either is missing the screen says so once and the cards
+  // still render
+  const uptime = useQuery({
+    queryKey: ["health-uptime", HEALTH_SLA],
+    queryFn: async () => (await fetchUptime(HEALTH_SLA)) ?? [],
+    enabled: (routes.data?.length ?? 0) > 0,
+    retry: false,
+  });
+  // the hourly timeline tells "within SLA" from "SLA at risk"; optional, so a
+  // target is judged on the rollup alone where it cannot be read
+  const timeline = useQuery({
+    queryKey: ["health-timeline"],
+    queryFn: async () => (await fetchHealthTimeline("hour").catch(() => [])) ?? [],
+    enabled: uptime.isSuccess,
+    retry: false,
+  });
+
   const targetQueries = useQueries({
     queries: (routes.data ?? []).map((r) => ({
       queryKey: ["route-targets", r.id],
@@ -101,6 +124,21 @@ export default function RoutingRules() {
 
   const providerName = (id: string) =>
     providers.data?.find((p) => p.id === id)?.name ?? id.slice(0, 8);
+
+  // a target's health is looked up by provider name, which the rollups key on,
+  // so it waits for the provider list as well as for the rollup: a row judged
+  // on an id fallback would read "no health data" about a target never asked
+  // after
+  const healthFor =
+    uptime.isSuccess && providers.isSuccess && Array.isArray(uptime.data)
+      ? (tg: RouteTargetRow, route: RouteRow): TargetHealth | null =>
+          targetHealth(
+            uptime.data,
+            providerName(tg.provider_id),
+            tg.upstream_model || route.model,
+            timeline.data,
+          )
+      : undefined;
 
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: ["routes", scope.projectId] });
@@ -165,6 +203,22 @@ export default function RoutingRules() {
       {routes.isPending && !!scope.projectId && (
         <CardGridSkeleton cards={3} height={196} min={360} />
       )}
+      {uptime.isError && (
+        // one note for the whole screen, not "no health data" on every row; the
+        // cause (no ClickHouse, a 403) is in the control plane's own words
+        <p
+          role="status"
+          className="max-w-[72ch] text-xs leading-snug text-muted-foreground"
+          data-testid="health-unavailable"
+        >
+          {t("pages.routing.healthUnavailable")}
+          {uptime.error instanceof Error && uptime.error.message && (
+            <span className="ml-1 font-mono text-[color:var(--text-subtle)]">
+              {uptime.error.message}
+            </span>
+          )}
+        </p>
+      )}
       {routes.error && (
         <LoadError
           error={routes.error}
@@ -218,7 +272,12 @@ export default function RoutingRules() {
                   </span>
                 )}
               </div>
-              <RouteTargets route={r} state={targets} providerName={providerName} />
+              <RouteTargets
+                route={r}
+                state={targets}
+                providerName={providerName}
+                healthFor={healthFor}
+              />
               <div className="flex items-center gap-2 border-t border-[color:var(--border-subtle)] pt-3">
                 {/* the count needs an answer too: a pending or failed read is
                     not a route with no targets */}
@@ -331,11 +390,30 @@ export default function RoutingRules() {
 }
 
 /**
+ * One target's uptime against the SLA, in words beside the dot. The state is
+ * the 7-day rollup's, not the gateway's live breaker, which no endpoint
+ * exposes to the control plane; a target nothing observed says so.
+ */
+function TargetHealthLine({ health }: { health: TargetHealth | null }) {
+  const { t } = useTranslation();
+  const fmt = useFormat();
+  const view = healthPresentation(health);
+  return (
+    <div className={`flex items-center gap-1.5 text-xs ${view.textClass}`}>
+      <StatusDot color={view.color} />
+      <span className="min-w-0">
+        {t(view.labelKey, { uptime: health ? fmt.percent(health.uptime, 2) : "" })}
+      </span>
+    </div>
+  );
+}
+
+/**
  * The target half of a route card, for whichever answer the card holds.
  *
- * No health is drawn. Nothing on this screen reads it, and the dot that stood
- * here was always green, so a target behind an open breaker read as healthy
- * (#2133). A share of the route is drawn only under a strategy that reads
+ * A target's health is drawn only where the uptime rollup was read; the dot
+ * that stood here once was always green, so a target behind an open breaker
+ * read as healthy (#2133). A share of the route is drawn only under a strategy that reads
  * weights; under any other the balancer never consults them, so the card says
  * that once instead of printing a split the gateway does not make.
  */
@@ -343,10 +421,13 @@ function RouteTargets({
   route,
   state,
   providerName,
+  healthFor,
 }: {
   route: RouteRow;
   state: TargetsState;
   providerName: (id: string) => string;
+  /** absent until the rollup and the provider names are both known */
+  healthFor?: (target: RouteTargetRow, route: RouteRow) => TargetHealth | null;
 }) {
   const { t } = useTranslation();
   const fmt = useFormat();
@@ -416,6 +497,7 @@ function RouteTargets({
                   </span>
                 )}
               </div>
+              {healthFor && <TargetHealthLine health={healthFor(tg, route)} />}
               {weighted && (
                 <div
                   data-testid="target-share"

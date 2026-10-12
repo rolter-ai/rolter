@@ -175,6 +175,8 @@ The last two hours are the two newest hourly buckets in the timeline. A probed p
 
 **Models** reads the same three states for the targets of each route: the catalog row counts the targets below SLA, or at risk when none are below, and the expanded list says "SLA at risk" in words beside the uptime. Where the timeline cannot be read, a target is judged on the 7-day rollup alone.
 
+**Routing Rules** puts the same state under each target on its cards.
+
 **Error budget burn** is the 7-day failure rate as a share of the 1% the SLA allows. Above 100% is a breach.
 
 ## Gateway liveness endpoint
