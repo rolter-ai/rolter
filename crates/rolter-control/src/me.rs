@@ -765,7 +765,14 @@ async fn my_usage(
         .await
     {
         Ok(keys) => keys,
-        Err(err) => return run(Err(anyhow::anyhow!(err.to_string()))),
+        Err(err) => {
+            tracing::warn!(error = %err, "failed to list virtual keys for user usage");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(serde_json::json!({"error": {"message": "internal server error"}})),
+            )
+                .into_response();
+        }
     };
     if keys.is_empty() {
         // no keys → no rows, and nothing to build an `in ()` list from

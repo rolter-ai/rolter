@@ -611,7 +611,10 @@ pub(crate) fn run(rows: anyhow::Result<Vec<Value>>) -> Response {
 /// slow (narrow the window) rather than that ClickHouse is down.
 pub(crate) fn query_failed(what: &'static str, err: &anyhow::Error) -> Response {
     if is_timeout(err) {
-        tracing::warn!(error = %err, "{what}: timed out");
+        tracing::warn!(
+            error = %rolter_core::redact::redact_urls_in_text(&format!("{err:#}")),
+            "{what}: timed out"
+        );
         return (
             StatusCode::GATEWAY_TIMEOUT,
             Json(json!({"error": {
@@ -621,7 +624,10 @@ pub(crate) fn query_failed(what: &'static str, err: &anyhow::Error) -> Response 
         )
             .into_response();
     }
-    tracing::warn!(error = %err, "{what}");
+    tracing::warn!(
+        error = %rolter_core::redact::redact_urls_in_text(&format!("{err:#}")),
+        "{what}"
+    );
     (
         StatusCode::BAD_GATEWAY,
         Json(json!({"error": {"message": what, "code": "analytics_query_failed"}})),
@@ -2129,6 +2135,36 @@ mod tests {
 mod query_failed_tests {
     use super::query_failed;
     use axum::body::to_bytes;
+    use parking_lot::Mutex;
+    use std::sync::Arc;
+    use tracing_subscriber::layer::SubscriberExt;
+
+    #[derive(Clone, Default)]
+    struct WarnLogs(Arc<Mutex<Vec<String>>>);
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for WarnLogs {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            struct Visitor(String);
+            impl tracing::field::Visit for Visitor {
+                fn record_debug(
+                    &mut self,
+                    field: &tracing::field::Field,
+                    value: &dyn std::fmt::Debug,
+                ) {
+                    self.0.push_str(&format!("{}={value:?} ", field.name()));
+                }
+            }
+            if *event.metadata().level() == tracing::Level::WARN {
+                let mut visitor = Visitor(String::new());
+                event.record(&mut visitor);
+                self.0.lock().push(visitor.0);
+            }
+        }
+    }
 
     // the database's message is for the log, never for the browser
     #[tokio::test]
@@ -2146,6 +2182,27 @@ mod query_failed_tests {
         assert!(
             !text.contains("request_logs") && !text.contains("10.0.0.9"),
             "{text}"
+        );
+    }
+
+    #[test]
+    fn query_failed_redacts_urls_in_warn_log() {
+        let logs = WarnLogs::default();
+        let subscriber = tracing_subscriber::registry().with(logs.clone());
+        let secret = "secret_pass_123";
+        let err = anyhow::anyhow!(
+            "clickhouse query failed (400 Bad Request): http://user:{secret}@clickhouse.internal:8123/?query=SELECT%201"
+        );
+        tracing::subscriber::with_default(subscriber, || {
+            let _ = query_failed("analytics query failed", &err);
+        });
+        let seen = logs.0.lock().clone();
+        assert_eq!(seen.len(), 1);
+        assert!(!seen[0].contains(secret), "secret leaked in log: {}", seen[0]);
+        assert!(
+            seen[0].contains("http://***@clickhouse.internal:8123/"),
+            "url was not redacted: {}",
+            seen[0]
         );
     }
 }

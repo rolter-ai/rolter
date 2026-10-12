@@ -35,7 +35,13 @@
 
 **Learning:** `api_error_message(err)` in `crates/rolter-control/src/sso.rs` previously converted `ApiError::Core(e)` by calling `e.to_string()`. When `e` was an `Error::Store` (carrying SQL or database connection strings), this leaked internal database details via `IdentityError::Provider(...)`.
 **Prevention:** Sanitize internal errors in error message converters by checking for `Error::NotFound` / `Error::Config` vs internal errors, logging the internal detail with `tracing::error!`, and returning a generic error message like `"internal server error"`.
+
 ## 2026-10-03 - Redact Control Plane Internal Errors in Admin Proxy 502 Responses
 
 **Learning:** `bad_gateway` in `crates/rolter-gateway/src/admin_proxy.rs` previously echoed `err` strings (containing internal transport or connection failures) directly into the JSON error response message when forwarding requests to the control plane failed.
 **Prevention:** Always log detailed internal error messages via `tracing::warn!` or `tracing::error!` and return a sanitized, static error message (such as `"control plane unreachable"`) in 502 HTTP error response bodies.
+
+## 2026-10-18 - Redact Internal Error Strings in Control Plane Analytics and Profile Endpoints
+
+**Learning:** `query_failed` in `crates/rolter-control/src/analytics.rs` previously passed raw `err` strings to `tracing::warn!` without URL redaction, and `my_usage` in `crates/rolter-control/src/me.rs` echoed internal database errors (`err.to_string()`) in `500` JSON responses when fetching virtual keys failed.
+**Prevention:** Redact URLs in text using `rolter_core::redact::redact_urls_in_text` when logging ClickHouse/HTTP errors, log database failures internally via `tracing::warn!`, and return a sanitized static error message (such as `"internal server error"`) in HTTP error response bodies.
