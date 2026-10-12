@@ -441,6 +441,7 @@ export const GroupCreateScopedToAProject: Story = {
   play: async () => {
     await pick(await scopePicker(), "Gateway");
     await userEvent.type(screen().getByLabelText("Name"), "gateway-fleet");
+    await userEvent.click(screen().getByRole("button", { name: "Add member" }));
     await userEvent.click(screen().getByRole("button", { name: "Create group" }));
     const body = await recorder.expectSentBody<{ project_id: string }>("POST", "/provider-groups");
     await expect(body.project_id).toBe("project-1");
@@ -450,7 +451,13 @@ export const GroupCreateScopedToAProject: Story = {
 export const GroupEditMakesItOrgWideAgain: Story = {
   render: () => {
     recorder = recording(api(async () => json({ ...GROUP, project_id: null })));
-    return <GroupSheetUnder recorder={recorder} mode="edit" row={{ ...GROUP, members: [] }} />;
+    return (
+      <GroupSheetUnder
+        recorder={recorder}
+        mode="edit"
+        row={{ ...GROUP, members: [{ ...GROUP.members[0], provider_id: "p-org" }] }}
+      />
+    );
   },
   play: async () => {
     await pick(await scopePicker(), "Whole organization");
@@ -474,6 +481,7 @@ export const GroupForANonAdminIsOwnProjectOnly: Story = {
     await waitFor(async () => expect(await optionsOf(scope)).toEqual(["Gateway", "Search"]));
     await expect(scope).toHaveValue("Gateway");
     await userEvent.type(screen().getByLabelText("Name"), "gateway-fleet");
+    await userEvent.click(screen().getByRole("button", { name: "Add member" }));
     await userEvent.click(screen().getByRole("button", { name: "Create group" }));
     const body = await recorder.expectSentBody<{ project_id: string }>("POST", "/provider-groups");
     await expect(body.project_id).toBe("project-1");
