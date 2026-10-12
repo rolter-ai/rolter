@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, ArrowDown, Loader2, Plus, Puzzle, Webhook } from "lucide-react";
+import { AlertTriangle, ArrowDown, Building2, Loader2, Plus, Puzzle, Webhook } from "lucide-react";
 import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
 
@@ -148,10 +148,16 @@ export default function Plugins() {
     return <PluginLoading />;
   }
   if (scope.errorKey || !scope.orgId) {
+    // an organization the screen cannot reach is a state, not a stray line (#2179)
     return (
-      <p className="p-[22px] text-sm text-muted-foreground">
-        {scopeMessage ?? t("pages.plugins.noOrg")}
-      </p>
+      <div className="mx-auto max-w-[1180px] p-[22px]">
+        <EmptyState
+          uxTarget="plugins-no-scope"
+          icon={<Building2 />}
+          title={t("pages.plugins.noOrgTitle")}
+          description={scopeMessage ?? t("pages.plugins.noOrg")}
+        />
+      </div>
     );
   }
 
@@ -254,6 +260,7 @@ export default function Plugins() {
         orgId={scope.orgId}
         projects={scope.projects}
         stages={stages}
+        plugins={plugins}
         onClose={() => setEditing(undefined)}
         onDone={() => {
           setEditing(undefined);
@@ -299,7 +306,7 @@ function StageLane({
 }) {
   const { t } = useTranslation();
   return (
-    <section className="grid gap-3 rounded-[12px] border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)]/30 p-4 lg:grid-cols-[210px_1fr]">
+    <section className="grid gap-3 lg:grid-cols-[210px_1fr]">
       <div>
         <div className="flex items-center gap-2">
           <span className="flex h-8 w-8 items-center justify-center rounded-lg border border-[color:var(--border-default)] bg-background">
@@ -326,7 +333,7 @@ function StageLane({
                     <h3 className="truncate text-sm font-semibold">
                       {plugin.position.toString().padStart(2, "0")} · {plugin.name}
                     </h3>
-                    <Badge tone={plugin.enabled ? "accent" : "neutral"} dot>
+                    <Badge tone={plugin.enabled ? "success" : "neutral"} dot>
                       {plugin.enabled
                         ? t("pages.plugins.stateEnabled")
                         : t("pages.plugins.statePaused")}
@@ -363,6 +370,11 @@ function StageLane({
                 </Badge>
                 {plugin.secret_env && <Badge tone="info">{t("pages.plugins.secretRef")}</Badge>}
               </div>
+              {plugin.enabled && (
+                <p className="mt-2 text-xs text-muted-foreground">
+                  {t(`pages.plugins.onFailure.${plugin.failure_mode}`)}
+                </p>
+              )}
               {refusesStreams(plugin) && (
                 <p className="mt-2 flex items-start gap-1.5 text-xs text-[color:var(--status-warning-text)]">
                   <AlertTriangle className="mt-px h-3.5 w-3.5 flex-none" aria-hidden />
@@ -424,6 +436,7 @@ function PluginDialog({
   orgId,
   projects,
   stages,
+  plugins,
   onClose,
   onDone,
 }: {
@@ -432,6 +445,7 @@ function PluginDialog({
   orgId: string;
   projects: Array<{ id: string; name: string }>;
   stages: StageCopy[];
+  plugins: PluginInstanceRow[];
   onClose: () => void;
   onDone: () => void;
 }) {
@@ -444,9 +458,12 @@ function PluginDialog({
     description: initial?.description ?? "",
     stage: initial?.stage ?? ("pre_route" as Stage),
     enabled: initial?.enabled ?? false,
-    position: String(initial?.position ?? 0),
+    // null until typed: a new plugin follows the last one at its stage (#2179)
+    position: initial ? String(initial.position) : (null as string | null),
     failure_mode: initial?.failure_mode ?? ("fail_open" as FailureMode),
-    endpoint: initial?.endpoint ?? "https://plugins.internal/hook",
+    // empty on purpose: a made-up host there goes live the moment the plugin
+    // is enabled without anyone having edited it (#2179)
+    endpoint: initial?.endpoint ?? "",
     secret_env: initial?.secret_env ?? "",
     config: JSON.stringify(initial?.config ?? {}, null, 2),
   });
@@ -488,8 +505,15 @@ function PluginDialog({
       });
     },
   });
+  // after the last plugin already at the chosen stage
+  const nextPosition = plugins
+    .filter((plugin) => plugin.stage === form.stage)
+    .reduce((next, plugin) => Math.max(next, plugin.position + 1), 0);
+  const position = form.position ?? String(nextPosition);
   const set = (patch: Partial<typeof form>) => {
     setForm((value) => ({ ...value, ...patch }));
+    // the config is checked as it is typed rather than only on Install
+    if ("config" in patch) visibility.touch("config");
     // an edit answers the server's complaint about that field
     setServerErrors((errors) => {
       const next = { ...errors };
@@ -528,7 +552,7 @@ function PluginDialog({
       kind: "webhook",
       stage: form.stage,
       enabled: form.enabled,
-      position: Number(form.position),
+      position: Number(position),
       failure_mode: form.failure_mode,
       endpoint: form.endpoint,
       secret_env: form.secret_env || null,
@@ -603,6 +627,7 @@ function PluginDialog({
           <Input
             id="plugin-endpoint"
             type="url"
+            placeholder="https://plugins.example.com/hook"
             value={form.endpoint}
             onChange={(event) => set({ endpoint: event.target.value })}
           />
@@ -618,7 +643,7 @@ function PluginDialog({
               id="plugin-position"
               type="number"
               min={0}
-              value={form.position}
+              value={position}
               onChange={(event) => set({ position: event.target.value })}
             />
           </Field>

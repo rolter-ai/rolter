@@ -4,6 +4,8 @@ import { expect, userEvent, waitFor, within } from "storybook/test";
 import Plugins from "./Plugins";
 import {
   cancelConfirmation,
+  expectLoadError,
+  expectNoFalseEmpty,
   confirmDestructive,
   expectEmptyState,
   expectForbidden,
@@ -145,7 +147,15 @@ type Story = StoryObj<typeof meta>;
 export const Loaded: Story = {
   render: () => <Harness fetchStub={withPlugins(PLUGINS)} />,
   play: async ({ canvasElement }) => {
-    await card(canvasElement, "PII redaction");
+    const redact = await card(canvasElement, "PII redaction");
+    // enabled reads in the success tone the guardrail screens use, and an
+    // enabled plugin says what its failure policy does to traffic
+    await expect(within(redact).getByText("enabled").className).toMatch(/status-success/);
+    await expect(
+      within(redact).getByText(/If the endpoint fails, requests are refused/),
+    ).toBeVisible();
+    const audit = await card(canvasElement, "Response audit");
+    await expect(within(audit).queryByText(/If the endpoint fails/)).toBeNull();
     // the shell's ScreenHeader owns the page's only h1 (#2241)
     await expect(within(canvasElement).queryAllByRole("heading", { level: 1 })).toHaveLength(0);
   },
@@ -171,6 +181,83 @@ export const Forbidden: Story = {
   },
 };
 
+// a 5xx is retryable, unlike the 403 above: the alert offers Try again, and
+// the list that comes back replaces it
+let pluginsDown = true;
+export const LoadFailedThenRetried: Story = {
+  render: () => {
+    pluginsDown = true;
+    return (
+      <Harness
+        fetchStub={async (input) =>
+          scopeResponse(String(input)) ??
+          (pluginsDown ? json({ error: { message: "boom" } }, 500) : json(PLUGINS))
+        }
+      />
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectLoadError(canvasElement, /failed to return plugins/i);
+    await expectNoFalseEmpty(canvasElement, /No plugins installed/);
+    pluginsDown = false;
+    await userEvent.click(canvas.getByRole("button", { name: /try again/i }));
+    await card(canvasElement, "PII redaction");
+  },
+};
+
+// no organization to list plugins for: a state of its own, not a stray line
+export const NoOrganization: Story = {
+  render: () => (
+    <Harness
+      fetchStub={async (input) =>
+        String(input).endsWith("/api/v1/orgs") ? json([]) : json(PLUGINS)
+      }
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    await expectEmptyState(canvasElement, /No organization to show plugins for/);
+    await expect(within(canvasElement).queryByRole("button", { name: /install/i })).toBeNull();
+  },
+};
+
+/**
+ * The install form (#2179): the endpoint starts empty, with an example as its
+ * placeholder, so an enabled plugin cannot point live traffic at a host nobody
+ * chose; the position follows the last plugin at the chosen stage until it is
+ * typed over; a broken configuration is flagged as it is typed.
+ */
+export const InstallFormDefaults: Story = {
+  render: () => <Harness fetchStub={withPlugins(PLUGINS)} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: /install plugin/i }));
+    const dialog = within(await within(document.body).findByRole("dialog"));
+    const endpoint = dialog.getByLabelText("Webhook endpoint");
+    await expect(endpoint).toHaveValue("");
+    await expect(endpoint).toHaveAttribute("placeholder", expect.stringMatching(/^https:\/\//));
+
+    const position = dialog.getByLabelText("Position");
+    // nothing at pre-route yet; 10 sits at pre-upstream and 30 at post-response
+    await expect(position).toHaveValue(0);
+    await pickOption(dialog.getByLabelText("Pipeline stage"), "Pre-upstream");
+    await waitFor(() => expect(position).toHaveValue(11));
+    await pickOption(dialog.getByLabelText("Pipeline stage"), "Post-response");
+    await waitFor(() => expect(position).toHaveValue(31));
+    await userEvent.clear(position);
+    await userEvent.type(position, "5");
+    await pickOption(dialog.getByLabelText("Pipeline stage"), "Pre-upstream");
+    await expect(position).toHaveValue(5);
+
+    // flagged while typing, with no press on Install
+    const config = dialog.getByLabelText("Plugin configuration");
+    await expect(config).not.toHaveAttribute("aria-invalid");
+    await userEvent.type(config, "x");
+    await waitFor(() => expect(config).toHaveAttribute("aria-invalid", "true"));
+    await expect(config).toHaveAccessibleDescription("Configuration must be valid JSON.");
+  },
+};
+
 export const InstallsWebhookConfiguration: Story = {
   render: () => (
     <Harness
@@ -186,6 +273,10 @@ export const InstallsWebhookConfiguration: Story = {
     await userEvent.click(await canvas.findByRole("button", { name: /install plugin/i }));
     const dialog = within(document.body).getByRole("dialog");
     await userEvent.type(within(dialog).getByLabelText("Name"), "Policy webhook");
+    await userEvent.type(
+      within(dialog).getByLabelText("Webhook endpoint"),
+      "https://hooks.example.com/p",
+    );
     await userEvent.click(within(dialog).getByRole("button", { name: "Install plugin" }));
     await waitFor(() =>
       expect(within(document.body).queryByRole("dialog")).not.toBeInTheDocument(),
@@ -219,6 +310,10 @@ export const InstallRejectedByTheServer: Story = {
     await userEvent.click(await canvas.findByRole("button", { name: /install plugin/i }));
     const dialog = within(document.body).getByRole("dialog");
     await userEvent.type(within(dialog).getByLabelText("Name"), "Policy webhook");
+    await userEvent.type(
+      within(dialog).getByLabelText("Webhook endpoint"),
+      "https://hooks.example.com/p",
+    );
     await userEvent.click(within(dialog).getByRole("button", { name: "Install plugin" }));
 
     await expectToast(canvasElement, /already installed/, "error");
@@ -234,6 +329,10 @@ export const RejectsInvalidConfiguration: Story = {
     await userEvent.click(await canvas.findByRole("button", { name: /install plugin/i }));
     const dialog = within(document.body).getByRole("dialog");
     await userEvent.type(within(dialog).getByLabelText("Name"), "Broken plugin");
+    await userEvent.type(
+      within(dialog).getByLabelText("Webhook endpoint"),
+      "https://hooks.example.com/p",
+    );
     await userEvent.clear(within(dialog).getByLabelText("Plugin configuration"));
     await userEvent.click(within(dialog).getByLabelText("Plugin configuration"));
     await userEvent.paste("[]");
@@ -301,6 +400,11 @@ export const ServerRejectionLandsOnTheField: Story = {
     await userEvent.type(within(dialog).getByLabelText("Name"), "Policy webhook");
     const secret = within(dialog).getByLabelText("Secret environment variable");
     await userEvent.type(secret, " ");
+    await userEvent.type(
+      within(dialog).getByLabelText("Webhook endpoint"),
+      "https://hooks.example.com/p",
+    );
+
     await userEvent.click(within(dialog).getByRole("button", { name: "Install plugin" }));
     await waitFor(() => expect(secret).toHaveAttribute("aria-invalid", "true"));
     await expect(secret).toHaveAccessibleDescription(

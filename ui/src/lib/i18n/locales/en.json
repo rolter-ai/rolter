@@ -821,6 +821,11 @@
         "cardRefused": "Refuses streamed requests in its scope while enabled",
         "noteRefused": "While this plugin is enabled, streamed requests in its scope are refused with <0>400 plugin_streaming_unsupported</0>. A fail-closed plugin must approve every response, and it cannot see a stream. Chat clients and coding agents usually stream; choose {{option}} to let their streams through unchecked.",
         "noteSkipped": "Streamed responses skip this plugin and reach the client unchecked; only non-streamed responses are sent to it. Under {{option}}, streamed requests in its scope would be refused instead."
+      },
+      "noOrgTitle": "No organization to show plugins for",
+      "onFailure": {
+        "fail_open": "If the endpoint fails, requests continue unchecked.",
+        "fail_closed": "If the endpoint fails, requests are refused."
       }
     },
     "routing": {
