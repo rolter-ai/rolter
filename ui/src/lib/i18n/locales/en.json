@@ -1792,9 +1792,11 @@
         "sessionTitle": "Revoke session on {{server}}?",
         "sessionBody": "The token behind this session stops working at once. The consent it was minted under stands, so a new session can be created without asking the user again.",
         "sessionConfirm": "Revoke session",
-        "grantTitle": "Revoke consent",
+        "grantTitle": "Revoke {{owner}}'s consent for {{server}}?",
         "grantBody": "Revoking this grant for <0>{{server}}</0> also revokes {{sessions}} under it, in the same transaction. The user must consent again before the server can be called on their behalf.",
-        "grantConfirm": "Revoke consent"
+        "grantConfirm": "Revoke consent",
+        "grantDone": "Revoked {{owner}}'s consent for {{server}}",
+        "grantFailed": "Could not revoke the consent"
       },
       "refresh": {
         "action": "Renew this session on {{server}}",
@@ -1810,7 +1812,7 @@
       "grantsEmptyTitle": "No consent granted yet",
       "grantsEmptyBody": "A grant appears the first time a user completes the OAuth flow for an MCP server. Nothing is created here — consent is only ever given by the user.",
       "sessionsEmptyTitle": "No sessions yet",
-      "sessionsEmptyBody": "A session is minted when a user's consent is exchanged for a token. Start one with Connect on MCP Catalog — the session appears here as soon as the user approves.",
+      "sessionsEmptyBody": "A session is minted when a user's consent is exchanged for a token. Start one with <0>Connect on MCP Catalog</0> — the session appears here as soon as the user approves.",
       "grants": {
         "revokeAria": "Revoke the consent {{owner}} gave {{server}}",
         "revokeTitle": "Revoke this consent and every session under it"
@@ -1821,7 +1823,8 @@
         "header": "Sessions",
         "revokeTitle": "Revoke this session; the consent behind it stands",
         "colRenew": "Renew",
-        "colRevoke": "Revoke"
+        "colRevoke": "Revoke",
+        "colReconnect": "Reconnect"
       },
       "server": "Server",
       "owner": "Owner",
@@ -1842,7 +1845,40 @@
       "grantsCount_one": "{{count}} grant · {{active}} active",
       "grantsCount_other": "{{count}} grants · {{active}} active",
       "sessionsCount_one": "{{count}} session · {{live}} live",
-      "sessionsCount_other": "{{count}} sessions · {{live}} live"
+      "sessionsCount_other": "{{count}} sessions · {{live}} live",
+      "filters": {
+        "serverAria": "Filter by server",
+        "ownerAria": "Filter by owner",
+        "allServers": "All servers",
+        "allOwners": "All owners",
+        "liveOnly": "Live only"
+      },
+      "noMatchTitle": "No rows match these filters",
+      "noMatchBody": "Clear a filter to see the rest of the list.",
+      "grantsCountShown": "Showing {{shown}} of {{total}} grants",
+      "sessionsCountShown": "Showing {{shown}} of {{total}} sessions",
+      "reconnect": {
+        "action": "Reconnect to {{server}}"
+      },
+      "bulk": {
+        "action": "Revoke all shown",
+        "ownerOnServer": "{{owner}} on {{server}}",
+        "partial": "{{failed}} of {{total}} could not be revoked:",
+        "grantsTitle_one": "Revoke {{count}} consent for {{target}}?",
+        "grantsTitle_other": "Revoke {{count}} consents for {{target}}?",
+        "grantsBody": "Each consent is revoked together with the sessions under it, {{sessions}} in all. Users must consent again before their servers can be called on their behalf.",
+        "grantsConfirm_one": "Revoke {{count}} consent",
+        "grantsConfirm_other": "Revoke {{count}} consents",
+        "grantsDone_one": "Revoked {{count}} consent",
+        "grantsDone_other": "Revoked {{count}} consents",
+        "sessionsTitle_one": "Revoke {{count}} session for {{target}}?",
+        "sessionsTitle_other": "Revoke {{count}} sessions for {{target}}?",
+        "sessionsBody": "The tokens behind these sessions stop working at once. The consents they were minted under stand, so new sessions can be created without asking the users again.",
+        "sessionsConfirm_one": "Revoke {{count}} session",
+        "sessionsConfirm_other": "Revoke {{count}} sessions",
+        "sessionsDone_one": "Revoked {{count}} session",
+        "sessionsDone_other": "Revoked {{count}} sessions"
+      }
     },
     "cluster": {
       "confirm": {

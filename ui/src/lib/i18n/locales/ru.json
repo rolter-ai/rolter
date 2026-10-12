@@ -1880,9 +1880,11 @@
         "sessionTitle": "Отозвать сессию на {{server}}?",
         "sessionBody": "Токен этой сессии перестанет работать немедленно. Согласие, по которому она была выдана, остаётся в силе — новую сессию можно создать, не спрашивая пользователя снова.",
         "sessionConfirm": "Отозвать сессию",
-        "grantTitle": "Отозвать согласие",
+        "grantTitle": "Отозвать согласие {{owner}} для {{server}}?",
         "grantBody": "Отзыв этого согласия для <0>{{server}}</0> в той же транзакции отзывает и {{sessions}} под ним. Пользователю придётся дать согласие заново, прежде чем к серверу можно будет обращаться от его имени.",
-        "grantConfirm": "Отозвать согласие"
+        "grantConfirm": "Отозвать согласие",
+        "grantDone": "Согласие {{owner}} для {{server}} отозвано",
+        "grantFailed": "Не удалось отозвать согласие"
       },
       "refresh": {
         "action": "Обновить сессию на {{server}}",
@@ -1902,7 +1904,7 @@
       "grantsEmptyTitle": "Согласий пока нет",
       "grantsEmptyBody": "Согласие появляется, когда пользователь впервые проходит OAuth-поток для MCP-сервера. Здесь ничего не создаётся — согласие даёт только сам пользователь.",
       "sessionsEmptyTitle": "Сессий пока нет",
-      "sessionsEmptyBody": "Сессия выпускается, когда согласие пользователя обменивается на токен. Начните с кнопки «Подключить» в разделе «Каталог MCP» — сессия появится здесь сразу после подтверждения.",
+      "sessionsEmptyBody": "Сессия выпускается, когда согласие пользователя обменивается на токен. Начните с кнопки «Подключить» в разделе <0>«Каталог MCP»</0> — сессия появится здесь сразу после подтверждения.",
       "grants": {
         "revokeAria": "Отозвать согласие {{owner}} для {{server}}",
         "revokeTitle": "Отозвать это согласие и все сессии под ним"
@@ -1913,7 +1915,8 @@
         "header": "Сессии",
         "revokeTitle": "Отозвать эту сессию; согласие за ней остаётся в силе",
         "colRenew": "Обновление",
-        "colRevoke": "Отзыв"
+        "colRevoke": "Отзыв",
+        "colReconnect": "Повторное подключение"
       },
       "server": "Сервер",
       "owner": "Владелец",
@@ -1938,7 +1941,52 @@
       "sessionsCount_one": "{{count}} сессия · активных: {{live}}",
       "sessionsCount_few": "{{count}} сессии · активных: {{live}}",
       "sessionsCount_many": "{{count}} сессий · активных: {{live}}",
-      "sessionsCount_other": "{{count}} сессий · активных: {{live}}"
+      "sessionsCount_other": "{{count}} сессий · активных: {{live}}",
+      "filters": {
+        "serverAria": "Фильтр по серверу",
+        "ownerAria": "Фильтр по владельцу",
+        "allServers": "Все серверы",
+        "allOwners": "Все владельцы",
+        "liveOnly": "Только активные"
+      },
+      "noMatchTitle": "Нет строк под эти фильтры",
+      "noMatchBody": "Сбросьте фильтр, чтобы увидеть остальной список.",
+      "grantsCountShown": "Показано {{shown}} из {{total}} согласий",
+      "sessionsCountShown": "Показано {{shown}} из {{total}} сессий",
+      "reconnect": {
+        "action": "Подключиться к {{server}} заново"
+      },
+      "bulk": {
+        "action": "Отозвать все показанные",
+        "ownerOnServer": "{{owner}} на {{server}}",
+        "partial": "Не удалось отозвать {{failed}} из {{total}}:",
+        "grantsTitle_one": "Отозвать {{count}} согласие для {{target}}?",
+        "grantsTitle_few": "Отозвать {{count}} согласия для {{target}}?",
+        "grantsTitle_many": "Отозвать {{count}} согласий для {{target}}?",
+        "grantsTitle_other": "Отозвать {{count}} согласий для {{target}}?",
+        "grantsBody": "Каждое согласие отзывается вместе с сессиями под ним, всего {{sessions}}. Пользователям придётся дать согласие заново, прежде чем к их серверам можно будет обращаться от их имени.",
+        "grantsConfirm_one": "Отозвать {{count}} согласие",
+        "grantsConfirm_few": "Отозвать {{count}} согласия",
+        "grantsConfirm_many": "Отозвать {{count}} согласий",
+        "grantsConfirm_other": "Отозвать {{count}} согласий",
+        "grantsDone_one": "Отозвано {{count}} согласие",
+        "grantsDone_few": "Отозвано {{count}} согласия",
+        "grantsDone_many": "Отозвано {{count}} согласий",
+        "grantsDone_other": "Отозвано {{count}} согласий",
+        "sessionsTitle_one": "Отозвать {{count}} сессию для {{target}}?",
+        "sessionsTitle_few": "Отозвать {{count}} сессии для {{target}}?",
+        "sessionsTitle_many": "Отозвать {{count}} сессий для {{target}}?",
+        "sessionsTitle_other": "Отозвать {{count}} сессий для {{target}}?",
+        "sessionsBody": "Токены этих сессий перестанут работать немедленно. Согласия, по которым они были выданы, остаются в силе — новые сессии можно создать, не спрашивая пользователей снова.",
+        "sessionsConfirm_one": "Отозвать {{count}} сессию",
+        "sessionsConfirm_few": "Отозвать {{count}} сессии",
+        "sessionsConfirm_many": "Отозвать {{count}} сессий",
+        "sessionsConfirm_other": "Отозвать {{count}} сессий",
+        "sessionsDone_one": "Отозвана {{count}} сессия",
+        "sessionsDone_few": "Отозваны {{count}} сессии",
+        "sessionsDone_many": "Отозвано {{count}} сессий",
+        "sessionsDone_other": "Отозвано {{count}} сессий"
+      }
     },
     "cluster": {
       "confirm": {

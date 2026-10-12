@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react";
+import * as React from "react";
 import { MemoryRouter } from "react-router";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
@@ -6,20 +7,27 @@ import { AuthSessions, OAuthGrants } from "./McpOAuth";
 import {
   cancelConfirmation,
   confirmDestructive,
+  expectNoUxEvent,
   expectRefused,
   expectListTable,
+  expectSheetClosed,
   expectSkeleton,
+  expectUxEvent,
   Harness as ScreenHarness,
   json,
   NEEDS_MEMBER,
+  pickOption,
+  recordUxEvents,
   recording,
   type FetchStub,
   type StoryRole,
 } from "./story-harness";
 import { Toaster } from "@/components/ui/toaster";
 import type { McpOAuthGrantRow, McpOAuthSessionRow, McpServerRow, UserRow } from "@/lib/api";
+import { AuthProvider } from "@/lib/auth";
 import { CONSENT_CHANNEL, type ConsentAnnouncement, type ConsentFailure } from "@/lib/mcp-consent";
 import { ToastProvider } from "@/lib/toast";
+import { UxScreenProvider } from "@/lib/ux-react";
 
 const ORG = { id: "org-1", name: "acme", slug: "acme", created_at: "2026-01-01T00:00:00Z" };
 const TEAM = { id: "team-1", org_id: ORG.id, name: "platform", created_at: "2026-01-01T00:00:00Z" };
@@ -258,6 +266,275 @@ export const GrantRevokeNamesItsSessions: Story = {
     const body = within(document.body);
     await waitFor(() => expect(body.getByText(/also revokes 2 live sessions/)).toBeVisible());
     await expect(body.getByText(/in the same transaction/)).toBeVisible();
+    // the title names whose consent and for which server, so an admin
+    // revoking someone else's is told whose (#2174)
+    await expect(
+      body.getByRole("heading", { name: "Revoke ada@acme.dev's consent for github?" }),
+    ).toBeVisible();
+  },
+};
+
+// the revoke goes through the shared confirmation (#2174): a cancel sends
+// nothing and is an abandon, a confirm sends the DELETE, says so in a toast and
+// lands as `save_confirmed`
+const grantRevokes = recording(async (input, init) =>
+  init?.method === "DELETE" ? json(grant({ active: false })) : routed()(input, init),
+);
+
+function Toasted({ children }: { children: React.ReactNode }) {
+  return (
+    <ToastProvider>
+      {children}
+      <Toaster />
+    </ToastProvider>
+  );
+}
+
+export const GrantRevokeConfirmsFirst: Story = {
+  beforeEach: recordUxEvents,
+  render: () => (
+    <Harness fetchStub={grantRevokes.stub}>
+      <Toasted>
+        <UxScreenProvider screen="oauth-grants">
+          <OAuthGrants />
+        </UxScreenProvider>
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const revoke = await canvas.findByRole("button", {
+      name: "Revoke the consent ada@acme.dev gave github",
+    });
+    await userEvent.click(revoke);
+    await cancelConfirmation();
+    grantRevokes.expectNotSent("DELETE", "/mcp/grants/");
+    const abandon = await expectUxEvent("form_abandon", "mcp-oauth-grant-revoke");
+    await expect(abandon.outcome).toBe("cancelled");
+    expectNoUxEvent("form_submit", "mcp-oauth-grant-revoke");
+
+    await userEvent.click(revoke);
+    await confirmDestructive(/also revokes 2 live sessions/, "Revoke consent");
+    await grantRevokes.expectSent("DELETE", "/mcp/grants/grant-ada-github");
+    await expectUxEvent("form_submit", "mcp-oauth-grant-revoke");
+    await expectSheetClosed();
+    await expectUxEvent("save_confirmed", "mcp-oauth-grant-revoke");
+    await waitFor(() =>
+      expect(canvas.getByText("Revoked ada@acme.dev's consent for github")).toBeVisible(),
+    );
+  },
+};
+
+// the request is on the wire: the dialog says so and takes no second press
+export const GrantRevokePending: Story = {
+  render: () => (
+    <Harness
+      fetchStub={async (input, init) =>
+        init?.method === "DELETE" ? new Promise<Response>(() => {}) : routed()(input, init)
+      }
+    >
+      <OAuthGrants />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(
+      await canvas.findByRole("button", { name: "Revoke the consent ada@acme.dev gave github" }),
+    );
+    const dialog = within(await within(document.body).findByRole("dialog"));
+    await userEvent.click(dialog.getByRole("button", { name: "Revoke consent" }));
+    await waitFor(() =>
+      expect(dialog.getByRole("button", { name: "Revoke consent" })).toBeDisabled(),
+    );
+    await expect(dialog.getByRole("button", { name: "Cancel" })).toBeDisabled();
+  },
+};
+
+// a refusal stays beside the button that caused it and is toasted as well
+export const GrantRevokeFails: Story = {
+  render: () => (
+    <Harness
+      fetchStub={async (input, init) =>
+        init?.method === "DELETE"
+          ? json({ error: { message: "grant is held by another transaction" } }, 409)
+          : routed()(input, init)
+      }
+    >
+      <Toasted>
+        <OAuthGrants />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(
+      await canvas.findByRole("button", { name: "Revoke the consent ada@acme.dev gave github" }),
+    );
+    await confirmDestructive(/ada@acme.dev/, "Revoke consent");
+    const dialog = within(await within(document.body).findByRole("dialog"));
+    await expect(await dialog.findByRole("alert")).toHaveTextContent(/held by another transaction/);
+    await waitFor(() => expect(canvas.getByText("Could not revoke the consent")).toBeVisible());
+  },
+};
+
+// the leaver's grants across every server (#2176): ada holds consent on both
+// servers, bo on jira only
+const BULK_GRANTS: McpOAuthGrantRow[] = [
+  grant(),
+  grant({ id: "grant-ada-jira", server_id: "srv-jira", granted_at: "2026-06-03T09:00:00Z" }),
+  grant({
+    id: "grant-bo-jira",
+    server_id: "srv-jira",
+    user_id: "user-bo",
+    scopes: ["tools:read"],
+  }),
+];
+const BULK_SESSIONS: McpOAuthSessionRow[] = [
+  session({ id: "sess-a1" }),
+  session({ id: "sess-a2", grant_id: "grant-ada-jira" }),
+  session({ id: "sess-a3", grant_id: "grant-ada-jira", scopes: ["tools:call"] }),
+  session({
+    id: "sess-a4",
+    grant_id: "grant-ada-jira",
+    expires_at: new Date(Date.now() - 600_000).toISOString(),
+  }),
+  session({ id: "sess-b1", grant_id: "grant-bo-jira" }),
+];
+const bulkRoutes = (over: Parameters<typeof routed>[0] = {}) =>
+  routed({ grants: () => json(BULK_GRANTS), sessions: () => json(BULK_SESSIONS), ...over });
+
+export const GrantsFilterByOwner: Story = {
+  render: () => (
+    <Harness fetchStub={bulkRoutes()}>
+      <OAuthGrants />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText("3 grants · 3 active")).toBeVisible());
+    await pickOption(canvas.getByRole("combobox", { name: "Filter by owner" }), "bo@acme.dev");
+    await waitFor(() => expect(canvas.getByText("Showing 1 of 3 grants")).toBeVisible());
+    await expect(canvas.queryByText("ada@acme.dev")).toBeNull();
+    // the server list is what the table holds, narrowed again by the pair
+    await pickOption(canvas.getByRole("combobox", { name: "Filter by server" }), "jira");
+    await expect(canvas.getByText("Showing 1 of 3 grants")).toBeVisible();
+    await userEvent.click(canvas.getByRole("button", { name: "Clear filters" }));
+    await waitFor(() => expect(canvas.getByText("3 grants · 3 active")).toBeVisible());
+  },
+};
+
+// a revoked consent is history; "live only" hides it, and a filter that
+// matches nothing says so and offers the way out instead of the actionless
+// "no consent granted yet" (#2176)
+export const GrantsFilteredEmpty: Story = {
+  render: () => (
+    <Harness fetchStub={routed()}>
+      <OAuthGrants />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText("REVOKED")).toBeVisible());
+    const live = canvas.getByRole("button", { name: "Live only" });
+    await userEvent.click(live);
+    await expect(live).toHaveAttribute("aria-pressed", "true");
+    await waitFor(() => expect(canvas.queryByText("REVOKED")).toBeNull());
+    await pickOption(canvas.getByRole("combobox", { name: "Filter by owner" }), "bo@acme.dev");
+    await waitFor(() => expect(canvas.getByText("No rows match these filters")).toBeVisible());
+    await expect(canvas.queryByText("No consent granted yet")).toBeNull();
+    await userEvent.click(canvas.getAllByRole("button", { name: "Clear filters" })[0]);
+    await waitFor(() => expect(canvas.getByText("ada@acme.dev")).toBeVisible());
+  },
+};
+
+const bulkGrantRevokes = recording(async (input, init) =>
+  init?.method === "DELETE" ? json(grant({ active: false })) : bulkRoutes()(input, init),
+);
+
+// the action waits for an owner or a server, names them and the count, and
+// revokes only what is shown
+export const GrantsRevokeAllShown: Story = {
+  beforeEach: recordUxEvents,
+  render: () => (
+    <Harness fetchStub={bulkGrantRevokes.stub}>
+      <Toasted>
+        <UxScreenProvider screen="oauth-grants">
+          <OAuthGrants />
+        </UxScreenProvider>
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText("3 grants · 3 active")).toBeVisible());
+    await expect(canvas.queryByRole("button", { name: "Revoke all shown" })).toBeNull();
+    await pickOption(canvas.getByRole("combobox", { name: "Filter by owner" }), "ada@acme.dev");
+    await userEvent.click(await canvas.findByRole("button", { name: "Revoke all shown" }));
+    // ada's two consents carry three live sessions between them
+    await confirmDestructive(
+      /also revokes 3 live sessions|together with the sessions under it, 3 live sessions/,
+      "Revoke 2 consents",
+    );
+    await bulkGrantRevokes.expectSent("DELETE", "/mcp/grants/grant-ada-github");
+    await bulkGrantRevokes.expectSent("DELETE", "/mcp/grants/grant-ada-jira");
+    bulkGrantRevokes.expectNotSent("DELETE", "/mcp/grants/grant-bo-jira");
+    await expectUxEvent("save_confirmed", "mcp-oauth-grants-revoke-all");
+    await waitFor(() => expect(canvas.getByText("Revoked 2 consents")).toBeVisible());
+  },
+};
+
+// the dialog's title is what tells the reviewer who is about to lose access
+export const GrantsRevokeAllNamesTheOwner: Story = {
+  render: () => (
+    <Harness fetchStub={bulkRoutes()}>
+      <OAuthGrants />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await pickOption(
+      await canvas.findByRole("combobox", { name: "Filter by owner" }),
+      "ada@acme.dev",
+    );
+    await pickOption(canvas.getByRole("combobox", { name: "Filter by server" }), "jira");
+    await userEvent.click(await canvas.findByRole("button", { name: "Revoke all shown" }));
+    await expect(
+      await within(document.body).findByRole("heading", {
+        name: "Revoke 1 consent for ada@acme.dev on jira?",
+      }),
+    ).toBeVisible();
+    await cancelConfirmation();
+  },
+};
+
+// one row failing must not hide the others: the rest are revoked, the dialog
+// stays open and says how many did not go through
+export const GrantsRevokeAllPartlyFails: Story = {
+  render: () => (
+    <Harness
+      fetchStub={async (input, init) =>
+        init?.method === "DELETE"
+          ? String(input).endsWith("grant-ada-jira")
+            ? json({ error: { message: "upstream refused" } }, 502)
+            : json(grant({ active: false }))
+          : bulkRoutes()(input, init)
+      }
+    >
+      <OAuthGrants />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await pickOption(
+      await canvas.findByRole("combobox", { name: "Filter by owner" }),
+      "ada@acme.dev",
+    );
+    await userEvent.click(await canvas.findByRole("button", { name: "Revoke all shown" }));
+    await confirmDestructive(/ada@acme.dev/, "Revoke 2 consents");
+    const dialog = within(await within(document.body).findByRole("dialog"));
+    await expect(await dialog.findByRole("alert")).toHaveTextContent(
+      /1 of 2 could not be revoked: upstream refused/,
+    );
   },
 };
 
@@ -364,6 +641,11 @@ export const SessionsEmpty: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByText("No sessions yet")).toBeVisible());
+    // the way to a first session is a link, not a sentence about one (#2177)
+    await expect(canvas.getByRole("link", { name: "Connect on MCP Catalog" })).toHaveAttribute(
+      "href",
+      "/mcp-catalog",
+    );
   },
 };
 
@@ -670,4 +952,186 @@ export const ConsentInternalError: Story = {
 export const ConsentUnknownReason: Story = {
   render: failedAt("from_a_newer_control_plane", "srv-github"),
   play: expectRefusal(NAMED, /The connection did not complete/),
+};
+
+// ---------------------------------------------------------------------------
+// filters, bulk revoke and reconnect on Auth Sessions (#2176, #2175)
+
+export const SessionsFilterByOwner: Story = {
+  render: () => (
+    <Harness fetchStub={bulkRoutes()}>
+      <AuthSessions />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText("5 sessions · 4 live")).toBeVisible());
+    await pickOption(canvas.getByRole("combobox", { name: "Filter by owner" }), "ada@acme.dev");
+    await waitFor(() => expect(canvas.getByText("Showing 4 of 5 sessions")).toBeVisible());
+    // "live only" drops ada's expired session as well
+    await userEvent.click(canvas.getByRole("button", { name: "Live only" }));
+    await waitFor(() => expect(canvas.getByText("Showing 3 of 5 sessions")).toBeVisible());
+    await expect(canvas.queryByText("EXPIRED")).toBeNull();
+  },
+};
+
+export const SessionsFilteredEmpty: Story = {
+  render: () => (
+    <Harness fetchStub={routed()}>
+      <AuthSessions />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await pickOption(
+      await canvas.findByRole("combobox", { name: "Filter by owner" }),
+      "bo@acme.dev",
+    );
+    await userEvent.click(canvas.getByRole("button", { name: "Live only" }));
+    await waitFor(() => expect(canvas.getByText("No rows match these filters")).toBeVisible());
+    await expect(canvas.queryByText("No sessions yet")).toBeNull();
+    await userEvent.click(canvas.getAllByRole("button", { name: "Clear filters" })[0]);
+    await waitFor(() => expect(canvas.getByText("EXPIRED")).toBeVisible());
+  },
+};
+
+const bulkSessionRevokes = recording(async (input, init) =>
+  init?.method === "DELETE"
+    ? json(session({ revoked_at: new Date().toISOString() }))
+    : bulkRoutes()(input, init),
+);
+
+// ada's expired session is not revoked yet, so it is part of what is shown
+export const SessionsRevokeAllShown: Story = {
+  beforeEach: recordUxEvents,
+  render: () => (
+    <Harness fetchStub={bulkSessionRevokes.stub}>
+      <Toasted>
+        <UxScreenProvider screen="auth-sessions">
+          <AuthSessions />
+        </UxScreenProvider>
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText("5 sessions · 4 live")).toBeVisible());
+    await expect(canvas.queryByRole("button", { name: "Revoke all shown" })).toBeNull();
+    await pickOption(canvas.getByRole("combobox", { name: "Filter by owner" }), "ada@acme.dev");
+    await userEvent.click(await canvas.findByRole("button", { name: "Revoke all shown" }));
+    await expect(
+      await within(document.body).findByRole("heading", {
+        name: "Revoke 4 sessions for ada@acme.dev?",
+      }),
+    ).toBeVisible();
+    await confirmDestructive(/consents they were minted under stand/, "Revoke 4 sessions");
+    for (const id of ["sess-a1", "sess-a2", "sess-a3", "sess-a4"])
+      await bulkSessionRevokes.expectSent("DELETE", `/mcp/sessions/${id}`);
+    bulkSessionRevokes.expectNotSent("DELETE", "/mcp/sessions/sess-b1");
+    await expectUxEvent("save_confirmed", "mcp-oauth-sessions-revoke-all");
+    await waitFor(() => expect(canvas.getByText("Revoked 4 sessions")).toBeVisible());
+  },
+};
+
+// signed in the way a login leaves the browser, minus the token, so the
+// provider knows the account without asking /auth/me for it
+function SignedInAs({ user, children }: { user: UserRow; children: React.ReactNode }) {
+  React.useState(() => {
+    localStorage.setItem("rolter.session.email", user.email);
+    localStorage.setItem("rolter.session.user", JSON.stringify(user));
+    localStorage.removeItem("rolter.session.token");
+  });
+  React.useEffect(
+    () => () => {
+      localStorage.removeItem("rolter.session.email");
+      localStorage.removeItem("rolter.session.user");
+    },
+    [],
+  );
+  return <AuthProvider>{children}</AuthProvider>;
+}
+
+const AUTHORIZE_STARTED = {
+  authorization_url: "https://mcp.example.com/jira/authorize?client_id=rolter-jira&state=abc",
+  state: "abc",
+  expires_in: 600,
+};
+const reconnects = recording(async (input, init) =>
+  String(input).includes("/oauth/authorize") ? json(AUTHORIZE_STARTED) : routed()(input, init),
+);
+
+// bo's session on jira expired and has no refresh token, so the way back is a
+// new consent: Reconnect starts it the way Connect does. ada's rows, which bo
+// does not own, offer no such thing
+export const SessionReconnectsAnExpiredSession: Story = {
+  render: () => (
+    <SignedInAs user={USERS[1]}>
+      <Harness fetchStub={reconnects.stub}>
+        <Toasted>
+          <AuthSessions />
+        </Toasted>
+      </Harness>
+    </SignedInAs>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const opened: string[] = [];
+    const original = window.open;
+    window.open = ((url?: string | URL) => {
+      opened.push(String(url));
+      return {} as Window;
+    }) as typeof window.open;
+    try {
+      // one button, on the one row the caller owns
+      const reconnect = await canvas.findByRole("button", { name: "Reconnect to jira" });
+      await expect(canvas.getAllByRole("button", { name: /^Reconnect to/ })).toHaveLength(1);
+      await userEvent.click(reconnect);
+      await reconnects.expectSent("POST", "/mcp-servers/srv-jira/oauth/authorize");
+      await waitFor(() => expect(opened).toEqual([AUTHORIZE_STARTED.authorization_url]));
+      await waitFor(() => expect(canvas.getByText("Consent started for jira")).toBeVisible());
+    } finally {
+      window.open = original;
+    }
+  },
+};
+
+// a blocked pop-up is said out loud, as it is on the MCP Catalog
+export const SessionReconnectPopupBlocked: Story = {
+  render: () => (
+    <SignedInAs user={USERS[1]}>
+      <Harness fetchStub={reconnects.stub}>
+        <Toasted>
+          <AuthSessions />
+        </Toasted>
+      </Harness>
+    </SignedInAs>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const original = window.open;
+    window.open = (() => null) as typeof window.open;
+    try {
+      await userEvent.click(await canvas.findByRole("button", { name: "Reconnect to jira" }));
+      await waitFor(() => expect(canvas.getByText("The consent tab was blocked")).toBeVisible());
+    } finally {
+      window.open = original;
+    }
+  },
+};
+
+// a colleague's expired session is theirs to reconnect, not the viewer's
+export const SessionReconnectIsOnlyForTheOwner: Story = {
+  render: () => (
+    <SignedInAs user={USERS[0]}>
+      <Harness fetchStub={routed()}>
+        <AuthSessions />
+      </Harness>
+    </SignedInAs>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText("EXPIRED")).toBeVisible());
+    // ada owns two healthy renewable sessions; bo's expired one is not hers
+    await expect(canvas.queryByRole("button", { name: /^Reconnect to/ })).toBeNull();
+  },
 };

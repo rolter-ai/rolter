@@ -36,6 +36,10 @@ Because the cascade is the point, the dashboard names it before you commit: the 
 
 Revoked grants are not deleted. The row stays with its `revoked_at` and `revoked_by` fields set, so the audit trail of who consented, and who withdrew it, survives.
 
+## Filtering and revoking in bulk
+
+Both screens filter by server and by owner, and a **Live only** toggle hides revoked grants and expired or revoked sessions. When a leaver's access has to end, pick their address in the owner filter and use **Revoke all shown**. The action appears once a server or an owner is picked, so one click cannot take the whole org. Its confirmation names the owner (or server) and the count, and on a grant it states how many live sessions go with them. Rows are revoked one by one: if some fail, the rest still go, and the dialog says how many did not.
+
 ## Who sees which rows
 
 Both listings are scoped by ownership, and the dashboard says so on the page rather than implying the table is the whole org:
@@ -297,6 +301,12 @@ means consent is gone, and the user simply consents again. A renew that fails
 in the dashboard usually means exactly this: the session is already gone, and
 the fix is to Connect again rather than to retry. Network blips and
 `5xx` responses are left for the next sweep.
+
+On your own rows, a session that is expired, revoked or has no refresh token
+shows a **Reconnect** action. It starts consent for that server exactly as
+Connect on the MCP Catalog does, in a new tab, so you do not have to leave
+Auth Sessions to find the way back. Other users' rows keep revoke only: a
+consent is only ever given by the person it belongs to.
 
 Which status a failed renew answers tells you whose problem it is.
 `POST /api/v1/mcp/sessions/{id}/refresh` (and the exchange below) answer `400`
