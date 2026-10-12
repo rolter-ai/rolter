@@ -1605,6 +1605,39 @@ mod tests {
         literal.parse().expect("a valid decimal literal")
     }
 
+    /// Reads one whole HTTP request (headers, then `Content-Length` body bytes)
+    /// from a fake server socket. A single `read` can return a partial request
+    /// under load, which made the assertions on the body flake (#3035).
+    async fn read_http_request(sock: &mut tokio::net::TcpStream) -> String {
+        use tokio::io::AsyncReadExt;
+
+        let mut data = Vec::new();
+        let mut chunk = [0u8; 4096];
+        let mut needed = None;
+        loop {
+            if needed.is_none() {
+                if let Some(end) = data.windows(4).position(|w| w == b"\r\n\r\n") {
+                    let head = String::from_utf8_lossy(&data[..end]).to_ascii_lowercase();
+                    let len = head
+                        .lines()
+                        .find_map(|l| l.strip_prefix("content-length:"))
+                        .and_then(|v| v.trim().parse::<usize>().ok())
+                        .unwrap_or(0);
+                    needed = Some(end + 4 + len);
+                }
+            }
+            if needed.is_some_and(|n| data.len() >= n) {
+                break;
+            }
+            let n = sock.read(&mut chunk).await.unwrap_or(0);
+            if n == 0 {
+                break;
+            }
+            data.extend_from_slice(&chunk[..n]);
+        }
+        String::from_utf8_lossy(&data).to_string()
+    }
+
     #[test]
     fn usage_buffer_pool_reuses_small_buffers() {
         let pool = UsageBufferPool::default();
@@ -1707,7 +1740,7 @@ mod tests {
 
     #[tokio::test]
     async fn requests_sharing_a_caller_request_id_get_distinct_log_keys() {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::io::AsyncWriteExt;
 
         // one connection per insert, so request_logs and request_payloads
         // arrive as separate bodies
@@ -1717,9 +1750,8 @@ mod tests {
             let mut seen = Vec::new();
             while seen.len() < 2 {
                 let (mut sock, _) = listener.accept().await.unwrap();
-                let mut buf = vec![0u8; 16384];
-                let n = sock.read(&mut buf).await.unwrap();
-                seen.push(String::from_utf8_lossy(&buf[..n]).to_string());
+                let request = read_http_request(&mut sock).await;
+                seen.push(request);
                 sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
                     .await
                     .unwrap();
@@ -3104,18 +3136,17 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
 
     #[tokio::test]
     async fn a_sampled_row_is_written_with_its_weight() {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::io::AsyncWriteExt;
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let (mut sock, _) = listener.accept().await.unwrap();
-            let mut buf = vec![0u8; 8192];
-            let n = sock.read(&mut buf).await.unwrap();
+            let request = read_http_request(&mut sock).await;
             sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
                 .await
                 .unwrap();
-            String::from_utf8_lossy(&buf[..n]).to_string()
+            request
         });
         let sink = LogSink::spawn(
             format!("http://{addr}"),
@@ -3143,16 +3174,15 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
 
     #[tokio::test]
     async fn writes_batch_as_jsoneachrow_over_http() {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::io::AsyncWriteExt;
 
         // minimal one-shot http server standing in for clickhouse
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let (mut sock, _) = listener.accept().await.unwrap();
-            let mut buf = vec![0u8; 8192];
-            let n = sock.read(&mut buf).await.unwrap();
-            let req = String::from_utf8_lossy(&buf[..n]).to_string();
+            let request = read_http_request(&mut sock).await;
+            let req = request;
             sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
                 .await
                 .unwrap();
@@ -3190,15 +3220,14 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
 
     #[tokio::test]
     async fn each_row_in_a_batch_keeps_its_own_request_time() {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::io::AsyncWriteExt;
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let (mut sock, _) = listener.accept().await.unwrap();
-            let mut buf = vec![0u8; 8192];
-            let n = sock.read(&mut buf).await.unwrap();
-            let req = String::from_utf8_lossy(&buf[..n]).to_string();
+            let request = read_http_request(&mut sock).await;
+            let req = request;
             sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
                 .await
                 .unwrap();
@@ -3266,15 +3295,14 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
 
     #[tokio::test]
     async fn a_burst_inside_one_flush_keeps_millisecond_resolution() {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::io::AsyncWriteExt;
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let (mut sock, _) = listener.accept().await.unwrap();
-            let mut buf = vec![0u8; 8192];
-            let n = sock.read(&mut buf).await.unwrap();
-            let req = String::from_utf8_lossy(&buf[..n]).to_string();
+            let request = read_http_request(&mut sock).await;
+            let req = request;
             sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
                 .await
                 .unwrap();
@@ -3348,18 +3376,17 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
     #[tokio::test]
     async fn a_client_that_leaves_mid_stream_is_marked_and_keeps_its_tokens() {
         use futures_util::StreamExt;
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::io::AsyncWriteExt;
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let (mut sock, _) = listener.accept().await.unwrap();
-            let mut buf = vec![0u8; 16384];
-            let n = sock.read(&mut buf).await.unwrap();
+            let request = read_http_request(&mut sock).await;
             sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
                 .await
                 .unwrap();
-            String::from_utf8_lossy(&buf[..n]).to_string()
+            request
         });
 
         let metrics = Arc::new(Metrics::default());
@@ -3419,18 +3446,17 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
     #[tokio::test]
     async fn stream_wrapper_forwards_bytes_and_logs_usage() {
         use futures_util::StreamExt;
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::io::AsyncWriteExt;
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let (mut sock, _) = listener.accept().await.unwrap();
-            let mut buf = vec![0u8; 8192];
-            let n = sock.read(&mut buf).await.unwrap();
+            let request = read_http_request(&mut sock).await;
             sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
                 .await
                 .unwrap();
-            String::from_utf8_lossy(&buf[..n]).to_string()
+            request
         });
 
         let metrics = Arc::new(Metrics::default());
@@ -3499,18 +3525,17 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
     #[tokio::test]
     async fn a_model_with_no_price_is_recorded_as_unpriced_not_as_zero_cost() {
         use futures_util::StreamExt;
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::io::AsyncWriteExt;
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let (mut sock, _) = listener.accept().await.unwrap();
-            let mut buf = vec![0u8; 8192];
-            let n = sock.read(&mut buf).await.unwrap();
+            let request = read_http_request(&mut sock).await;
             sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
                 .await
                 .unwrap();
-            String::from_utf8_lossy(&buf[..n]).to_string()
+            request
         });
 
         let metrics = Arc::new(Metrics::default());
@@ -3687,17 +3712,16 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
 
     /// Accept one ClickHouse insert on a raw socket and return the request text.
     async fn capture_one_insert() -> (std::net::SocketAddr, tokio::task::JoinHandle<String>) {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::io::AsyncWriteExt;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let (mut sock, _) = listener.accept().await.unwrap();
-            let mut buf = vec![0u8; 16384];
-            let n = sock.read(&mut buf).await.unwrap();
+            let request = read_http_request(&mut sock).await;
             sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
                 .await
                 .unwrap();
-            String::from_utf8_lossy(&buf[..n]).to_string()
+            request
         });
         (addr, server)
     }
