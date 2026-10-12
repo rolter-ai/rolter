@@ -6,6 +6,7 @@ import GuardrailRules from "./GuardrailRules";
 import {
   cancelConfirmation,
   confirmDestructive,
+  expectAnalyticsUnavailable,
   expectEmptyState,
   expectForbidden,
   expectLoadError,
@@ -129,6 +130,18 @@ const withPolicy =
   (list: FetchStub, config: () => Response = () => json(effectiveConfig())): FetchStub =>
   async (input, init) =>
     isConfig(input) ? config() : list(input, init);
+
+const isOutcomes = (input: RequestInfo | URL) =>
+  new URL(String(input), "http://localhost").pathname === "/api/v1/analytics/guardrails";
+
+/**
+ * Answer the outcome rollup (#2158) on its own path and `list` everywhere
+ * else. `outcomes` is the response, so a story can make it an error or a 503.
+ */
+const withOutcomes =
+  (list: FetchStub, outcomes: () => Response): FetchStub =>
+  async (input, init) =>
+    isOutcomes(input) ? outcomes() : withPolicy(list)(input, init);
 
 /**
  * The screen under the shared fetch-stub harness, with a role to render as.
@@ -1097,3 +1110,122 @@ const rulesFit = phoneFits({
 });
 export const SmallPhone: Story = rulesFit("small", "en");
 export const SmallPhoneInRussian: Story = rulesFit("small", "ru");
+
+/**
+ * Each card states what its rule did over the last seven days, and every
+ * non-zero count opens the LLM Logs rows behind it (#2158). A rule that never
+ * matched says so rather than printing three zeros.
+ */
+export const ShowsWhatEachRuleDid: Story = {
+  render: () => (
+    <Harness
+      fetchStub={withOutcomes(
+        async () => json(RULES),
+        () =>
+          json({
+            recorded: true,
+            data: [
+              { action: "redacted", rule: "Redact customer email", requests: "12" },
+              { action: "blocked", rule: "Block override attempts", requests: "3" },
+            ],
+          }),
+      )}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const redact = within(await ruleCard(canvasElement, /Redact customer email/));
+    await expect(await redact.findByText("Matches in the last 7 days")).toBeVisible();
+    const redacted = redact.getByRole("link", { name: /12 requests Redacted/ });
+    await expect(redacted).toHaveTextContent("12");
+    await expect(redacted).toHaveAttribute(
+      "href",
+      "/logs?window=7d&guardrail=redacted%3ARedact%20customer%20email",
+    );
+    // a count of zero is plain text: there is no row to open
+    await expect(redact.queryByRole("link", { name: /Blocked/ })).toBeNull();
+
+    const block = within(await ruleCard(canvasElement, /Block override attempts/));
+    await expect(await block.findByRole("link", { name: /3 requests Blocked/ })).toHaveAttribute(
+      "href",
+      "/logs?window=7d&guardrail=blocked%3ABlock%20override%20attempts",
+    );
+  },
+};
+
+/** A rule that has not matched in the window says "no matches", not a row of zeros. */
+export const NoMatchesYet: Story = {
+  render: () => (
+    <Harness
+      fetchStub={withOutcomes(
+        async () => json(RULES),
+        () => json({ recorded: true, data: [] }),
+      )}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const card = within(await ruleCard(canvasElement, /Redact customer email/));
+    await expect(await card.findByText("No matches in the last 7 days.")).toBeVisible();
+    await expect(card.queryByRole("link", { name: /requests/ })).toBeNull();
+  },
+};
+
+/**
+ * A deployment with no ClickHouse cannot count anything. The screen says so
+ * once, calmly, and the cards claim neither matches nor their absence.
+ */
+export const NoAnalytics: Story = {
+  render: () => (
+    <Harness
+      fetchStub={withOutcomes(
+        async () => json(RULES),
+        () =>
+          json({ error: { message: "analytics unavailable: no clickhouse_url configured" } }, 503),
+      )}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    await expectAnalyticsUnavailable(
+      canvasElement,
+      "Match counts need an analytics store",
+      "analytics unavailable: no clickhouse_url configured",
+    );
+    await expect(canvasElement).not.toHaveTextContent(/No matches in the last 7 days/);
+    await expect(canvasElement).not.toHaveTextContent(/Counting matches/);
+  },
+};
+
+/** ClickHouse is there but the file that keeps outcomes was never applied. */
+export const OutcomesNotRecorded: Story = {
+  render: () => (
+    <Harness
+      fetchStub={withOutcomes(
+        async () => json(RULES),
+        () => json({ recorded: false, data: [] }),
+      )}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText(/Match counts are not being kept/)).toBeVisible();
+    await expect(canvasElement).not.toHaveTextContent(/No matches in the last 7 days/);
+  },
+};
+
+/** The rollup failing leaves the rules readable and says the counts are missing. */
+export const OutcomesFailed: Story = {
+  render: () => (
+    <Harness
+      fetchStub={withOutcomes(
+        async () => json(RULES),
+        () => json({ error: { message: "clickhouse offline" } }, 502),
+      )}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const card = within(await ruleCard(canvasElement, /Redact customer email/));
+    await expect(
+      await card.findByText("Could not load match counts.", undefined, { timeout: 6000 }),
+    ).toBeVisible();
+    await expect(card.getByText("enforced", { exact: true })).toBeVisible();
+  },
+};

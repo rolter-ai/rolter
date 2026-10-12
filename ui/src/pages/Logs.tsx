@@ -193,6 +193,7 @@ type FilterParam =
   | "business_unit"
   | "customer"
   | "unpriced"
+  | "guardrail"
   | "request_id"
   | "trace_id";
 
@@ -226,6 +227,8 @@ function useLogFilters() {
   const unitParam = params.get("business_unit") ?? "";
   const customerParam = params.get("customer") ?? "";
   const unpriced = params.get("unpriced") === "true";
+  // one guardrail outcome, as the Guardrail Rules cards link it (#2158)
+  const guardrail = (params.get("guardrail") ?? "").trim();
   const requestId = (params.get("request_id") ?? "").trim();
   const traceId = (params.get("trace_id") ?? "").trim();
   // memoised on the raw value: a fresh array every render would look like a
@@ -265,6 +268,7 @@ function useLogFilters() {
     units,
     customers,
     unpriced,
+    guardrail,
     /** the id being looked up, if any */
     lookup,
     /** changes whenever any filter does */
@@ -276,6 +280,7 @@ function useLogFilters() {
       unitParam,
       customerParam,
       unpriced,
+      guardrail,
       lookup?.kind,
       lookup?.value,
     ].join("|"),
@@ -303,8 +308,17 @@ function useLogFilters() {
     setUnits: (next: string[]) => update({ business_unit: next.join(",") }),
     setCustomers: (next: string[]) => update({ customer: next.join(",") }),
     setUnpriced: (next: boolean) => update({ unpriced: next ? "true" : "" }),
+    clearGuardrail: () => update({ guardrail: "" }),
     clear: () =>
-      update({ status: "", model: "", key: "", business_unit: "", customer: "", unpriced: "" }),
+      update({
+        status: "",
+        model: "",
+        key: "",
+        business_unit: "",
+        customer: "",
+        unpriced: "",
+        guardrail: "",
+      }),
     setLookup: (next: LogLookup | null) =>
       update({
         request_id: next?.kind === "request_id" ? next.value : "",
@@ -312,7 +326,15 @@ function useLogFilters() {
         // a new lookup starts from the whole log: the rail's picks would
         // narrow it without the field saying so
         ...(next
-          ? { status: "", model: "", key: "", business_unit: "", customer: "", unpriced: "" }
+          ? {
+              status: "",
+              model: "",
+              key: "",
+              business_unit: "",
+              customer: "",
+              unpriced: "",
+              guardrail: "",
+            }
           : {}),
       }),
   };
@@ -365,6 +387,7 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
     units: unitSel,
     customers: customerSel,
     unpriced,
+    guardrail,
     lookup,
   } = filters;
   const windowOptions = useTimeWindowOptions();
@@ -436,6 +459,7 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
       unitSel.join(","),
       customerSel.join(","),
       unpriced,
+      guardrail,
       cursors[page - 1] ?? "",
       lookupKey,
     ],
@@ -454,6 +478,7 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
         business_unit: unitSel.length ? unitSel : undefined,
         customer: customerSel.length ? customerSel : undefined,
         unpriced: unpriced || undefined,
+        guardrail: guardrail || undefined,
         status,
         limit: PAGE_SIZE,
         cursor: cursors[page - 1],
@@ -557,7 +582,8 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
     (keyId ? 1 : 0) +
     unitSel.length +
     customerSel.length +
-    (unpriced ? 1 : 0);
+    (unpriced ? 1 : 0) +
+    (guardrail ? 1 : 0);
   // what a saved view keeps of the screen: the lookup, the page and the
   // unpriced flag are not filters it holds, and an `all` status or an empty
   // value is left out rather than saved as a filter that filters nothing
@@ -858,6 +884,18 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
                 onChange={(picked) => filters.setUnpriced(picked.includes("unpriced"))}
               />
             </FilterSection>
+            {/* arrives from a Guardrail Rules card, and is the only way to drop it */}
+            {guardrail && (
+              <FilterSection title={t("pages.logs.guardrail")} defaultOpen count={1}>
+                <FilterCheckList
+                  options={[{ value: guardrail, label: guardrail }]}
+                  selected={[guardrail]}
+                  onChange={(picked) => {
+                    if (picked.length === 0) filters.clearGuardrail();
+                  }}
+                />
+              </FilterSection>
+            )}
             {(units.data ?? []).length > 0 && (
               <FilterSection title={t("pages.logs.businessUnit")} count={unitSel.length}>
                 <FilterSearchList

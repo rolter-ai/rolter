@@ -2089,6 +2089,25 @@
         "readOnly": "Read-only · config file"
       }
     },
+    "guardrailOutcomes": {
+      "heading": "Matches in the last 7 days",
+      "none": "No matches in the last 7 days.",
+      "loading": "Counting matches…",
+      "failed": "Could not load match counts.",
+      "viewAria": "{{total}} requests {{action}}, open in LLM Logs",
+      "notRecorded": "Match counts are not being kept. Apply clickhouse/018_guardrail_events.sql to the ClickHouse database to record what each rule blocks, redacts and annotates.",
+      "actions": {
+        "blocked": "Blocked",
+        "redacted": "Redacted",
+        "annotated": "Annotated",
+        "provider_blocked": "Blocked",
+        "provider_transformed": "Transformed"
+      },
+      "noAnalytics": {
+        "title": "Match counts need an analytics store",
+        "body": "Guardrail outcomes are read from the request log in ClickHouse. Set <0>CLICKHOUSE_URL</0> on the control plane to see what each rule blocked, redacted or annotated."
+      }
+    },
     "guardrailProviders": {
       "confirm": {
         "title": "Delete {{name}}?",
@@ -2751,6 +2770,7 @@
       "allKeys": "All keys",
       "latency": "Latency",
       "cost": "Cost",
+      "guardrail": "Guardrail",
       "unpricedOnly": "Unpriced only",
       "tokens": "Tokens",
       "tokensInOut": "{{in}} in · {{out}} out",

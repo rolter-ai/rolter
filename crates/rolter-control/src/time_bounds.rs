@@ -403,6 +403,7 @@ mod tests {
         ("/api/v1/analytics/by-model", None),
         ("/api/v1/analytics/by-attribution", None),
         ("/api/v1/analytics/invocations", Some("request_id")),
+        ("/api/v1/analytics/guardrails", None),
         ("/api/v1/health/uptime", None),
         ("/api/v1/health/mttr", None),
         ("/api/v1/health/timeline", None),

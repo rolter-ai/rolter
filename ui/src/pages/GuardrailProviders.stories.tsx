@@ -1,10 +1,12 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
+import { MemoryRouter } from "react-router";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import GuardrailProviders from "./GuardrailProviders";
 import {
   cancelConfirmation,
   confirmDestructive,
+  expectAnalyticsUnavailable,
   expectEmptyState,
   expectForbidden,
   expectLoadError,
@@ -152,6 +154,14 @@ function registry(
   };
 }
 
+/** answer the guardrail outcome rollup (#2158) with `outcomes`, everything else with `list` */
+const withOutcomes =
+  (list: FetchStub, outcomes: () => Response): FetchStub =>
+  async (input, init) =>
+    new URL(String(input), "http://localhost").pathname === "/api/v1/analytics/guardrails"
+      ? outcomes()
+      : list(input, init);
+
 /** the card a provider is drawn on, found by its title */
 const card = (canvasElement: HTMLElement, name: string) => {
   const heading = within(canvasElement).getByRole("heading", { name });
@@ -191,14 +201,17 @@ function Harness({
   ) : (
     <GuardrailProviders />
   );
+  // the outcome counts link to LLM Logs, and a link needs a router
   return (
-    <ScreenHarness fetchStub={fetchStub} role={role}>
-      {reported ? (
-        <UxScreenProvider screen="guardrail-providers">{screen}</UxScreenProvider>
-      ) : (
-        screen
-      )}
-    </ScreenHarness>
+    <MemoryRouter>
+      <ScreenHarness fetchStub={fetchStub} role={role}>
+        {reported ? (
+          <UxScreenProvider screen="guardrail-providers">{screen}</UxScreenProvider>
+        ) : (
+          screen
+        )}
+      </ScreenHarness>
+    </MemoryRouter>
   );
 }
 
@@ -1097,3 +1110,73 @@ const providersFit = phoneFits({
 });
 export const SmallPhone: Story = providersFit("small", "en");
 export const SmallPhoneInRussian: Story = providersFit("small", "ru");
+
+/**
+ * The provider the gateway sends requests to states what it did over the last
+ * seven days; a paused one, which the gateway never calls, states nothing
+ * (#2158).
+ */
+export const ShowsWhatTheActiveProviderDid: Story = {
+  render: () => (
+    <Harness
+      fetchStub={withOutcomes(registry(PROVIDERS), () =>
+        json({
+          recorded: true,
+          data: [
+            { action: "provider_blocked", rule: "", requests: "4" },
+            { action: "provider_transformed", rule: "", requests: "9" },
+          ],
+        }),
+      )}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    await within(canvasElement).findByRole("heading", { name: "Production LLM Guard" });
+    const active = card(canvasElement, "Production LLM Guard");
+    await expect(await active.findByText("Matches in the last 7 days")).toBeVisible();
+    await expect(active.getByRole("link", { name: /4 requests Blocked/ })).toHaveAttribute(
+      "href",
+      "/logs?window=7d&guardrail=provider_blocked",
+    );
+    await expect(active.getByRole("link", { name: /9 requests Transformed/ })).toHaveAttribute(
+      "href",
+      "/logs?window=7d&guardrail=provider_transformed",
+    );
+    const paused = card(canvasElement, "Staging evaluator");
+    await expect(paused.queryByText("Matches in the last 7 days")).toBeNull();
+    await expect(paused.queryByText(/No matches/)).toBeNull();
+  },
+};
+
+/** A provider that has not blocked or changed anything yet says so. */
+export const ActiveProviderNoMatchesYet: Story = {
+  render: () => (
+    <Harness
+      fetchStub={withOutcomes(registry(PROVIDERS), () => json({ recorded: true, data: [] }))}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    await within(canvasElement).findByRole("heading", { name: "Production LLM Guard" });
+    const active = card(canvasElement, "Production LLM Guard");
+    await expect(await active.findByText("No matches in the last 7 days.")).toBeVisible();
+  },
+};
+
+/** No ClickHouse: one calm notice, and no claim on the card either way. */
+export const OutcomesNeedAnalytics: Story = {
+  render: () => (
+    <Harness
+      fetchStub={withOutcomes(registry(PROVIDERS), () =>
+        json({ error: { message: "analytics unavailable: no clickhouse_url configured" } }, 503),
+      )}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    await expectAnalyticsUnavailable(
+      canvasElement,
+      "Match counts need an analytics store",
+      "analytics unavailable: no clickhouse_url configured",
+    );
+    await expect(canvasElement).not.toHaveTextContent(/No matches in the last 7 days/);
+  },
+};

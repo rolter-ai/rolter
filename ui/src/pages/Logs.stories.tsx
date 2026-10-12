@@ -1415,6 +1415,41 @@ export const AnUnpricedLinkComesBackFiltered: Story = {
   },
 };
 
+const guardrailLink = recording(serverFiltered(ROWS));
+
+/**
+ * #2158: a Guardrail Rules card links here with the outcome it counted. The
+ * server is asked for that outcome before the first page, the rail shows it as
+ * a filter, and unticking it drops the filter from the address and the read.
+ */
+export const AGuardrailLinkComesBackFiltered: Story = {
+  parameters: { address: "/logs?window=7d&guardrail=blocked%3Aemail" },
+  render: () => (
+    <Harness fetchStub={guardrailLink.stub}>
+      <Logs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(modelsOnScreen(canvasElement)).not.toEqual([]));
+    const reads = guardrailLink.calls
+      .filter((c) => c.url.includes("/analytics/invocations"))
+      .map((c) => new URL(c.url, "http://localhost").searchParams);
+    for (const sent of reads) await expect(sent.get("guardrail")).toBe("blocked:email");
+
+    await userEvent.click(canvas.getByRole("button", { name: "Filters · 1" }));
+    const check = await canvas.findByRole("checkbox", { name: "blocked:email" });
+    await expect(check).toHaveAttribute("aria-checked", "true");
+    await userEvent.click(check);
+    await waitFor(() => {
+      const reads = guardrailLink.calls
+        .filter((c) => c.url.includes("/analytics/invocations"))
+        .map((c) => new URL(c.url, "http://localhost").searchParams);
+      return expect(reads[reads.length - 1]?.has("guardrail")).toBe(false);
+    });
+  },
+};
+
 const staleUnpriced = recording(serverFiltered(ROWS));
 
 /** An address that says `unpriced=yes` is not the filter: only `true` is, as with an unknown status. */

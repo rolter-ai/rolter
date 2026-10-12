@@ -382,14 +382,14 @@ The cursor is a position in the list's sort key — `(ts, request_id)`, newest f
 Treat the cursor as opaque and pass it back unchanged. `next_cursor` is `null` only for an empty page; a short page still carries one, so stop when a page comes back with no rows. `limit` is clamped to `1..=200` and defaults to 50. A cursor that is not `timestamp|request_id`, or whose timestamp is not one of the [time window](#time-windows) forms, is a `400` with `param: "cursor"` and `code: "invalid_cursor"`. The MCP call log (`GET /api/v1/mcp/logs`) pages the same way over `(ts, event_id)` and checks its cursor the same way.
 
 <Note>
-  Every filter — `since`, `until`, `model`, `key`, `business_unit`, `customer`, `status`, `unpriced`, `request_id`, `trace_id` — must be repeated with the cursor, since it is the same query resumed rather than a stored server-side page.
+  Every filter — `since`, `until`, `model`, `key`, `business_unit`, `customer`, `status`, `unpriced`, `guardrail`, `request_id`, `trace_id` — must be repeated with the cursor, since it is the same query resumed rather than a stored server-side page.
 </Note>
 
 The **LLM Logs** screen pages the same way. **Next page** follows the cursor the current page returned and **Previous page** goes back to the one it came from, so a page you return to holds the requests it held before, however much traffic arrived in between. Only the first page follows live traffic while **Streaming** is on; later pages stay fixed on their cursor. Changing a filter starts again from the newest request, and a page after a full last page reads as the end of the log with a **Back to newest** button.
 
 ### Optional columns in the invocation list
 
-Four fields of a row come from ClickHouse files that an existing deployment applies by hand (see [Upgrading](/deployment/upgrading)). Every row from `GET /api/v1/analytics/invocations` carries all four, whether or not the file has been applied:
+Five fields of a row come from ClickHouse files that an existing deployment applies by hand (see [Upgrading](/deployment/upgrading)). Every row from `GET /api/v1/analytics/invocations` carries all five, whether or not the file has been applied:
 
 | Field                   | Type   | Added by                      | Read as when the table lacks it |
 | ----------------------- | ------ | ----------------------------- | ------------------------------- |
@@ -397,6 +397,9 @@ Four fields of a row come from ClickHouse files that an existing deployment appl
 | `attempts`              | number | `015_upstream_attempts.sql`   | `0`                             |
 | `lifecycle_operation`   | string | `016_lifecycle_operation.sql` | `""` (empty string)             |
 | `cache_write_1h_tokens` | number | `017_cache_write_1h.sql`      | `0`                             |
+| `guardrail_events`      | array  | `018_guardrail_events.sql`    | `[]`                            |
+
+`guardrail_events` lists what each guardrail did to the request, as `<action>:<rule name>` entries (`blocked:`, `redacted:` or `annotated:`) and `provider_blocked` / `provider_transformed` for the guardrail provider; it is empty for a request no guardrail touched. See [What each rule did](/security/guardrails#what-each-rule-did).
 
 `cache_write_1h_tokens` is the part of the row's `cache_write_tokens` that went to the provider's 1 hour cache, never more than the total. The 5 minute share is the difference: `cache_write_tokens - cache_write_1h_tokens`. It is `0` for a provider that reports no split (every provider but Anthropic), for a request that wrote only to the 5 minute cache, and for every row older than the file.
 

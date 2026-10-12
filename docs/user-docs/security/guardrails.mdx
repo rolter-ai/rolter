@@ -55,6 +55,22 @@ Rules defined in the config file are listed under **Config-file rules**, read-on
 
 The effective configuration does not say where each rule came from, so the screen infers it from names. A rule the configuration carries is a config-file rule when no card has its name, when the card with its name is paused, or when it differs from that card in any field. A config-file rule identical in every field to an enabled card cannot be told apart from it and is shown as that card. Enforcement is the same either way, but deleting or pausing the card would leave the file's copy running. [#2249](https://github.com/rolter-ai/rolter/issues/2249) tracks reporting the source directly.
 
+### What each rule did
+
+Every request a guardrail acts on leaves its outcome on the request's row in **LLM Logs**: the rule's name and what it did, never the text it matched. A rule's card on **Guardrails → Rules** counts them over the last seven days.
+
+| Outcome     | When                                                                                                                             |
+| ----------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `blocked`   | a `block` rule refused the request (a pre-call rule, `400 guardrail_blocked`) or withheld the response (a post-call rule, `403`) |
+| `redacted`  | a `redact` rule rewrote the request before it went upstream                                                                      |
+| `annotated` | an `annotate` rule matched; the request was forwarded unchanged, and this is the only trace it leaves                            |
+
+A request counts once per rule however many times the rule matched in it. Each non-zero count on a card links to the **LLM Logs** rows behind it (the log's **Guardrail** filter, `guardrail=blocked:<rule name>` in the address). A rule that has not matched says **No matches in the last 7 days**. The active provider's card on **Guardrails → Providers** counts the requests the provider blocked and the ones it replaced the content of (`provider_blocked`, `provider_transformed`); a provider that is not the one the gateway calls shows nothing.
+
+The counts are read from ClickHouse. Without `CLICKHOUSE_URL` the screens say so once, and with ClickHouse but without `clickhouse/018_guardrail_events.sql` applied they say the counts are not being kept (see [Upgrading](/deployment/upgrading)); neither is shown as "no matches". Output rules that redact or annotate a response are not counted yet, only the ones that withhold it, and neither is a guardrail provider's transport failure.
+
+The same rollup is `GET /api/v1/analytics/guardrails` (see [Dashboard analytics](/api/dashboard-analytics#guardrail-outcomes)).
+
 ### Turning a rule off for one route
 
 A route can switch a rule off for its own traffic. Name the rule in the route's `advanced.guardrails.disable` list. Every other route keeps running it, and a rule added later reaches every route that does not name it. A rule the route lists under `advanced.guardrails.enable` runs there even if `disable` names it too.

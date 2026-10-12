@@ -1747,12 +1747,15 @@ async fn proxy(
     // place and force the re-serialized forward path below. never logs raw
     // matches — only rule-name/count counters (ROL-261).
     let mut guardrail_redacted = false;
+    // what each guardrail did to this request, for its log row (#2158)
+    let mut guardrail_events: Vec<String> = Vec::new();
     // the route's override decides which rules apply here; a route that
     // disables every rule skips the JSON walk entirely (#590)
     if snap.guardrails.pre_call_active_for(&entry.guardrails) {
         match crate::guardrails::apply_input(&snap.guardrails, &entry.guardrails, path, &mut parsed)
         {
             Ok(report) => {
+                guardrail_events = report.events();
                 if report.redactions > 0 {
                     guardrail_redacted = true;
                     state
@@ -1763,13 +1766,15 @@ async fn proxy(
             }
             Err(rule) => {
                 state.metrics.guardrail_blocks_total.fetch_add(1, Relaxed);
-                return refuse.log(
+                let events = vec![format!("blocked:{rule}")];
+                return refuse.log_with_events(
                     crate::error::ApiError::new(
                         StatusCode::BAD_REQUEST,
                         format!("request blocked by guardrail '{rule}'"),
                     )
                     .with_code("guardrail_blocked")
                     .into_response(),
+                    events,
                 );
             }
         }
@@ -1796,7 +1801,8 @@ async fn proxy(
         {
             crate::guardrail_webhook::WebhookOutcome::Allow => {}
             crate::guardrail_webhook::WebhookOutcome::Block(reason) => {
-                return refuse.log(
+                guardrail_events.push(PROVIDER_BLOCKED_EVENT.to_string());
+                return refuse.log_with_events(
                     crate::error::ApiError::new(
                         StatusCode::BAD_REQUEST,
                         reason
@@ -1804,9 +1810,11 @@ async fn proxy(
                     )
                     .with_code("guardrail_blocked")
                     .into_response(),
+                    guardrail_events,
                 );
             }
             crate::guardrail_webhook::WebhookOutcome::Transform(content) => {
+                guardrail_events.push(PROVIDER_TRANSFORMED_EVENT.to_string());
                 parsed = content;
                 webhook_transformed = true;
             }
@@ -2218,6 +2226,7 @@ async fn proxy(
                     customer_id: customer_id.clone(),
                     model: model.clone(),
                     sample_rate: snap.logging.sample_rate,
+                    guardrail_events: guardrail_events.clone(),
                     started,
                 },
                 DeliveryPolicy {
@@ -2284,6 +2293,7 @@ async fn proxy(
                             customer_id: customer_id.clone(),
                             model: model.clone(),
                             sample_rate: snap.logging.sample_rate,
+                            guardrail_events: guardrail_events.clone(),
                             started,
                         },
                         DeliveryPolicy {
@@ -2332,6 +2342,7 @@ async fn proxy(
             model: model.clone(),
             stream: stream as u8,
             sample_rate: snap.logging.sample_rate,
+            guardrail_events: guardrail_events.clone(),
             ..Default::default()
         },
     );
@@ -2788,6 +2799,7 @@ async fn proxy(
                     String::new()
                 },
                 sample_rate: snap.logging.sample_rate,
+                guardrail_events,
                 ..Default::default()
             };
             // on a cache-eligible route, buffer a successful response (JSON or a
@@ -2990,6 +3002,7 @@ async fn proxy(
                 latency_ms: started.elapsed().as_millis() as u32,
                 error,
                 sample_rate: snap.logging.sample_rate,
+                guardrail_events,
                 ..Default::default()
             };
             if no_target {
@@ -4430,6 +4443,11 @@ fn withheld_response(
     refusal
 }
 
+/// The log-row events the guardrail provider leaves (#2158); a rule's are
+/// `<action>:<rule>`, see [`rolter_core::GuardrailReport::events`].
+const PROVIDER_BLOCKED_EVENT: &str = "provider_blocked";
+const PROVIDER_TRANSFORMED_EVENT: &str = "provider_transformed";
+
 /// Who asked for what, captured once a request is authenticated: enough to
 /// write its request-log row on any path that answers without running the
 /// forwarding pipeline that builds one for a provider request.
@@ -4450,6 +4468,8 @@ struct RequestLogCtx {
     model: String,
     sample_rate: f64,
     started: Instant,
+    /// what each guardrail did to the request (#2158)
+    guardrail_events: Vec<String>,
 }
 
 impl RequestLogCtx {
@@ -4479,6 +4499,7 @@ impl RequestLogCtx {
             model: model.to_string(),
             sample_rate,
             started,
+            guardrail_events: Vec::new(),
         }
     }
 
@@ -4501,6 +4522,7 @@ impl RequestLogCtx {
             latency_ms,
             ttft_ms: latency_ms,
             sample_rate: self.sample_rate,
+            guardrail_events: self.guardrail_events,
             ..Default::default()
         }
     }
@@ -4559,6 +4581,12 @@ impl Refusals<'_> {
     /// `error` is the message the response carries, so the log says what the
     /// caller was told.
     fn log(&self, response: Response) -> Response {
+        self.log_with_events(response, Vec::new())
+    }
+
+    /// [`Refusals::log`] for a refusal a guardrail made, so the row names the
+    /// rule that acted (#2158).
+    fn log_with_events(&self, response: Response, guardrail_events: Vec<String>) -> Response {
         let error = refusal_error(&response);
         let model = &self.model[..self.model.floor_char_boundary(REFUSAL_MODEL_MAX_BYTES)];
         let ctx = RequestLogCtx::new(
@@ -4572,6 +4600,7 @@ impl Refusals<'_> {
         self.state.log.log_refusal(RequestLog {
             status: response.status().as_u16(),
             error,
+            guardrail_events,
             ..ctx.into_log()
         });
         response
@@ -4885,7 +4914,7 @@ fn guardrail_output_blocked(rule: &str) -> Response {
 /// The log-row `error` for a completion a post-call rule withheld. Names the
 /// rule, never the text it matched (#1478).
 fn guardrail_withheld_reason(rule: &str) -> String {
-    format!("guardrail_blocked: {rule}")
+    format!("{}{rule}", crate::logging::GUARDRAIL_WITHHELD_PREFIX)
 }
 
 /// `x-rolter-*` response headers that expose the routing decision for a request:
