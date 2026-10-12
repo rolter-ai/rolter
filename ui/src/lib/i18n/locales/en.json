@@ -1588,6 +1588,8 @@
         "secretEdit": "Bearer secret (write-only)",
         "secretNoneHint": "No secret is stored. Type one to add it.",
         "secretKeepHint": "A secret is stored. Leave this blank to keep it, or type a new one to replace it.",
+        "secretRemove": "Remove the stored secret",
+        "secretRemoveHint": "Saving removes the stored secret. The connector sends no bearer header until a new one is added.",
         "secretReplaceHint": "Saving replaces the stored secret with this one.",
         "secretMovesHint": "The endpoint now points at another scheme, host or port, so the stored secret is dropped on save. Type the new endpoint's secret to keep it authenticated.",
         "start": "Start sending as soon as it is created",

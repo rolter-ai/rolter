@@ -560,9 +560,9 @@ function ConnectorsScreen() {
  * the fields the sheet has no control for go back as found: `enabled` (the
  * card's switch owns it) and `auth_secret_ref`. The bearer secret is write-only
  * and a blank field leaves it out of the body, which the control plane reads as
- * "keep the stored one". It cannot be cleared through the API, so the sheet
- * offers no clear, and it is not dropped when the endpoint moves to another
- * origin, which the hint under the field says.
+ * "keep the stored one". A switch below the field sends an explicit `null`,
+ * which removes it (#2402); the stored secret is also dropped when the
+ * endpoint moves to another origin, which the hint under the field says.
  */
 function ConnectorSheet({
   open,
@@ -586,6 +586,8 @@ function ConnectorSheet({
   const [sampling, setSampling] = React.useState(openingSampling);
   // write-only: an edit starts blank, because the stored secret is never read back
   const [secret, setSecret] = React.useState("");
+  // an explicit remove, sent as `null`: a blank field only ever means keep
+  const [removeSecret, setRemoveSecret] = React.useState(false);
   // a connector is an egress path, so it is created switched off unless the
   // operator says otherwise: the order the docs teach is test it, then turn it
   // on, and the first request log must not leave before the first test (#2349).
@@ -610,7 +612,11 @@ function ConnectorSheet({
   const save = useMutation({
     mutationFn: ({ rate, enabled }: { rate: number; enabled: boolean }) => {
       // a blank secret is left out, which an update reads as "keep the stored one"
-      const replacement = secret.trim() ? { managed_auth_secret: secret } : {};
+      const replacement = removeSecret
+        ? { managed_auth_secret: null }
+        : secret.trim()
+          ? { managed_auth_secret: secret }
+          : {};
       return existing
         ? updateConnector(existing.id, {
             ...asInput(existing),
@@ -669,6 +675,7 @@ function ConnectorSheet({
       setEndpoint(existing?.endpoint ?? "");
       setSampling(openingSampling);
       setSecret("");
+      setRemoveSecret(false);
       setStartNow(false);
       // a refusal for one connector must not greet the next one opened
       save.reset();
@@ -680,7 +687,8 @@ function ConnectorSheet({
     ? name !== existing.name ||
       endpoint !== existing.endpoint ||
       sampling !== openingSampling ||
-      secret !== ""
+      secret !== "" ||
+      removeSecret
     : !!(name.trim() || endpoint.trim() || secret.trim() || sampling !== "100" || startNow);
 
   // what happens to the stored secret on save, said beside the field that
@@ -690,11 +698,13 @@ function ConnectorSheet({
     ? undefined
     : !existing.auth_secret_configured
       ? t("pages.connectors.form.secretNoneHint")
-      : secret.trim()
-        ? t("pages.connectors.form.secretReplaceHint")
-        : movesOrigin(existing.endpoint, endpoint)
-          ? t("pages.connectors.form.secretMovesHint")
-          : t("pages.connectors.form.secretKeepHint");
+      : removeSecret
+        ? t("pages.connectors.form.secretRemoveHint")
+        : secret.trim()
+          ? t("pages.connectors.form.secretReplaceHint")
+          : movesOrigin(existing.endpoint, endpoint)
+            ? t("pages.connectors.form.secretMovesHint")
+            : t("pages.connectors.form.secretKeepHint");
 
   return (
     <EditorSheet
@@ -758,8 +768,19 @@ function ConnectorSheet({
             value={secret}
             onChange={(e) => setSecret(e.target.value)}
             placeholder={t("pages.connectors.form.secretPlaceholder")}
+            disabled={removeSecret}
           />
         </Field>
+        {existing?.auth_secret_configured && (
+          <SwitchRow
+            title={t("pages.connectors.form.secretRemove")}
+            checked={removeSecret}
+            onChange={(on) => {
+              setRemoveSecret(on);
+              if (on) setSecret("");
+            }}
+          />
+        )}
         {/* said again when it is on, because that is the choice with a
             consequence: request logs leave for the endpoint as Create lands */}
         {!existing && (

@@ -15927,6 +15927,98 @@ async fn serve_capturing_sink() -> (SocketAddr, std::sync::Arc<std::sync::Mutex<
     (addr, seen)
 }
 
+/// #2402: an update keeps, replaces or removes the stored bearer secret.
+#[tokio::test]
+async fn a_connector_update_keeps_replaces_or_clears_its_secret() {
+    skip_without_db!();
+    std::env::set_var("ROLTER_KEK", TEST_KEK);
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app =
+        rolter_control::test_app_with_admin_token(pool.clone(), Some(admin_token().to_string()))
+            .await
+            .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let (sink, _) = serve_capturing_sink().await;
+    let created: Value = client
+        .post(format!("{base}/api/v1/connectors"))
+        .bearer_auth(admin_token())
+        .json(&json!({
+            "name": "Sink",
+            "kind": "otlp_http",
+            "endpoint": format!("http://{sink}/v1/logs"),
+            "enabled": true,
+            "sampling_rate": 1.0,
+            "managed_auth_secret": random_password(),
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let id = created["id"].as_str().unwrap().to_string();
+    let put = |secret: Option<Value>| {
+        let client = client.clone();
+        let url = format!("{base}/api/v1/connectors/{id}");
+        let endpoint = format!("http://{sink}/v1/logs");
+        async move {
+            let mut body = json!({
+                "name": "Sink",
+                "kind": "otlp_http",
+                "endpoint": endpoint,
+                "enabled": true,
+                "sampling_rate": 1.0,
+            });
+            if let Some(secret) = secret {
+                body["managed_auth_secret"] = secret;
+            }
+            let response = client
+                .put(url)
+                .bearer_auth(admin_token())
+                .json(&body)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 200);
+            response.json::<Value>().await.unwrap()
+        }
+    };
+    let columns = || async {
+        sqlx::query_as::<_, (bool, bool)>(
+            "select auth_ciphertext is not null, auth_nonce is not null \
+             from observability_connectors",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+    };
+
+    // absent keeps
+    assert_eq!(put(None).await["auth_secret_configured"], true);
+    assert_eq!(columns().await, (true, true));
+    // a new value replaces
+    let replaced = put(Some(random_password().into())).await;
+    assert_eq!(replaced["auth_secret_configured"], true);
+    // an explicit null removes both columns together
+    let cleared = put(Some(Value::Null)).await;
+    assert_eq!(cleared["auth_secret_configured"], false);
+    assert_eq!(columns().await, (false, false));
+    // a blank string removes too, and clearing nothing stays a no-op
+    put(Some(random_password().into())).await;
+    assert_eq!(
+        put(Some("  ".into())).await["auth_secret_configured"],
+        false
+    );
+    assert_eq!(columns().await, (false, false));
+    assert_eq!(
+        put(Some(Value::Null)).await["auth_secret_configured"],
+        false
+    );
+}
+
 /// #2403: a connector's stored secret belongs to the endpoint's origin.
 #[tokio::test]
 async fn a_connector_moved_to_another_origin_drops_its_secret_unless_given_a_new_one() {

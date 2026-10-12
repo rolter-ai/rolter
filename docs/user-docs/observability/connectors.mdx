@@ -83,15 +83,15 @@ again.
 
 ## Fields
 
-| Field                 | Meaning                                                  |
-| --------------------- | -------------------------------------------------------- |
-| `name`                | Unique label for the connector                           |
-| `kind`                | `otlp_http`                                              |
-| `endpoint`            | The `http(s)` URL telemetry is POSTed to                 |
-| `enabled`             | Required. `false` sends nothing until it is turned on    |
-| `sampling_rate`       | `0.0`–`1.0`. `0.0` sends nothing, `1.0` sends everything |
-| `auth_secret_ref`     | A reference into your external secret manager            |
-| `managed_auth_secret` | Write-only bearer token, sealed before storage           |
+| Field                 | Meaning                                                                                                |
+| --------------------- | ------------------------------------------------------------------------------------------------------ |
+| `name`                | Unique label for the connector                                                                         |
+| `kind`                | `otlp_http`                                                                                            |
+| `endpoint`            | The `http(s)` URL telemetry is POSTed to                                                               |
+| `enabled`             | Required. `false` sends nothing until it is turned on                                                  |
+| `sampling_rate`       | `0.0`–`1.0`. `0.0` sends nothing, `1.0` sends everything                                               |
+| `auth_secret_ref`     | A reference into your external secret manager                                                          |
+| `managed_auth_secret` | Write-only bearer token, sealed before storage. On update: omitted keeps it, `null` or `""` removes it |
 
 The dashboard's **Add connector** sheet takes sampling as a percentage from 0 to 100 and
 stores it as that rate (25 becomes `0.25`). `0` is kept as `0`: the connector is created and
@@ -116,9 +116,8 @@ is stored. The sheet has no start switch: whether a connector is sending is stil
 card, and an edit leaves it as it found it.
 
 The secret field is write-only and starts blank. Left blank, the stored secret is kept; typing one
-replaces it. A stored secret cannot be removed yet, in the sheet or through the API: an empty
-`managed_auth_secret` is refused, so a connector that has to lose its credential is deleted and
-added again. As with an alert channel, a secret belongs to the endpoint's origin: pointing the
+replaces it. To remove the stored secret, send `managed_auth_secret: null` (or a blank string) in the update;
+omitting the field keeps it. The audit entry records that the secret was removed. As with an alert channel, a secret belongs to the endpoint's origin: pointing the
 connector at another scheme, host or port without typing a new secret drops the stored one, so it is
 never sent to the new endpoint. Type that endpoint's own secret to replace it. An edit that stays on
 the same origin, such as another path, keeps the secret. The audit entry records that the secret was

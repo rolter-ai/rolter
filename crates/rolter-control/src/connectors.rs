@@ -4,10 +4,12 @@
 //! all. A connector says where a deployment additionally ships its telemetry:
 //! endpoint, auth, sampling rate, on or off.
 //!
-//! **Strictly opt-in and off by default.** An air-gapped deployment must keep
-//! working, so a deployment with no connectors has no egress path, and a
-//! connector row with `enabled = false` sends nothing. Creating one does not
-//! turn it on.
+//! **Strictly opt-in.** An air-gapped deployment must keep working, so a
+//! deployment with no connectors has no egress path, and a connector row with
+//! `enabled = false` sends nothing. `enabled` is a required field with no
+//! default: the caller chooses it, and a body that sends `true` creates a live
+//! connector (the dashboard's add sheet sends `false` unless its start switch
+//! is on).
 //!
 //! Two things are deliberately not left to trust:
 //!
@@ -86,9 +88,10 @@ struct ConnectorInput {
     sampling_rate: f64,
     #[serde(default)]
     auth_secret_ref: Option<String>,
-    /// write-only bearer token; sealed before it reaches Postgres
-    #[serde(default)]
-    managed_auth_secret: Option<String>,
+    /// write-only bearer token; sealed before it reaches Postgres. On update
+    /// absent keeps the stored one, `null` or a blank string removes it
+    #[serde(default, deserialize_with = "crate::crud::explicit_null")]
+    managed_auth_secret: Option<Option<String>>,
 }
 
 fn columns() -> &'static str {
@@ -159,7 +162,12 @@ async fn create(
 ) -> ApiResult<Json<Connector>> {
     authorize_superadmin(&principal, superadmin_cap!("connector", Create))?;
     validate(&input, &state.egress)?;
-    let secret = input.managed_auth_secret.as_deref().map(seal).transpose()?;
+    let secret = input
+        .managed_auth_secret
+        .as_ref()
+        .and_then(|v| v.as_deref())
+        .map(seal)
+        .transpose()?;
     let connector: Connector = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "insert into observability_connectors \
          (name, kind, endpoint, enabled, sampling_rate, auth_secret_ref, auth_ciphertext, auth_nonce) \
@@ -189,7 +197,15 @@ async fn update(
 ) -> ApiResult<Json<Connector>> {
     authorize_superadmin(&principal, superadmin_cap!("connector", Update))?;
     validate(&input, &state.egress)?;
-    let secret = input.managed_auth_secret.as_deref().map(seal).transpose()?;
+    // absent keeps the stored secret; null or blank removes it
+    let remove_secret = input
+        .managed_auth_secret
+        .as_ref()
+        .is_some_and(|v| v.as_deref().is_none_or(|s| s.trim().is_empty()));
+    let secret = match &input.managed_auth_secret {
+        Some(Some(value)) if !remove_secret => Some(seal(value)?),
+        _ => None,
+    };
     let mut tx = pool(&state)
         .begin()
         .await
@@ -214,12 +230,13 @@ async fn update(
         (Ok(stored), Ok(new)) => stored.origin() != new.origin(),
         _ => true,
     };
-    let clear_secret = origin_changed && secret.is_none();
+    let clear_secret = (origin_changed || remove_secret) && secret.is_none();
     // health describes one endpoint and credential; once either changes the
     // recorded result is a claim about something that no longer exists, and
     // a green card over an untried endpoint is the silent no-op the test
     // delivery guards against. Other edits keep the history
-    let reset_health = stored != input.endpoint.trim() || secret.is_some();
+    let reset_health =
+        stored != input.endpoint.trim() || secret.is_some() || (remove_secret && had_secret);
     // coalesce leaves an existing secret in place when the caller does not
     // resend it on the same origin, so editing the sampling rate cannot
     // silently drop the credential the connector needs
