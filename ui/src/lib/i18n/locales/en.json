@@ -2182,6 +2182,38 @@
         "body": "Guardrail outcomes are read from the request log in ClickHouse. Set <0>CLICKHOUSE_URL</0> on the control plane to see what each rule blocked, redacted or annotated."
       }
     },
+    "pluginOutcomes": {
+      "heading": "Calls in the last 7 days",
+      "none": "No calls in the last 7 days.",
+      "loading": "Counting calls…",
+      "failed": "Could not load call counts.",
+      "notRecorded": "Call counts are not being kept. Apply clickhouse/019_plugin_events.sql to the ClickHouse database to record what each plugin does.",
+      "counts": {
+        "calls": "Calls",
+        "blocked": "Blocked",
+        "transformed": "Transformed",
+        "annotated": "Annotated",
+        "errors": "Errors"
+      },
+      "lastError": "Last error: {{kind}}, {{when}}.",
+      "kinds": {
+        "refused": "the egress policy refused the endpoint",
+        "timeout": "the call timed out",
+        "connect": "could not connect",
+        "body": "the response could not be read",
+        "status": "the endpoint answered with status {{code}}",
+        "unknown": "the call failed"
+      },
+      "failing": "Failing every call: {{errors}} of {{calls}} calls in the last 7 days got no answer.",
+      "failingEffect": {
+        "fail_open": "Requests continue unchecked.",
+        "fail_closed": "Requests it covers are being refused."
+      },
+      "noAnalytics": {
+        "title": "Call counts need an analytics store",
+        "body": "Plugin calls are read from the request log in ClickHouse. Set <0>CLICKHOUSE_URL</0> on the control plane to see whether each plugin is answering, blocking or failing."
+      }
+    },
     "guardrailProviders": {
       "confirm": {
         "title": "Delete {{name}}?",

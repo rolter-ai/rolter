@@ -7,6 +7,12 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { GatedButton } from "@/components/GatedButton";
 import { GatedSwitch } from "@/components/GatedSwitch";
 import { LoadError } from "@/components/LoadError";
+import {
+  PluginActivity,
+  PluginOutcomesNotice,
+  usePluginOutcomes,
+  type PluginOutcomesQuery,
+} from "@/components/PluginOutcomes";
 import { CardGridSkeleton } from "@/components/LoadingState";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -114,6 +120,8 @@ export default function Plugins() {
     enabled: Boolean(scope.orgId),
     retry: false,
   });
+  // what each plugin did over the last week (#2243), read beside the list
+  const outcomes = usePluginOutcomes();
 
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
   // `query` is the query the user is actually waiting on for this screen
@@ -163,6 +171,7 @@ export default function Plugins() {
   }
 
   const plugins = query.data ?? [];
+  const orgId = scope.orgId;
   return (
     <div className="mx-auto flex max-w-[1180px] flex-col gap-5 p-[22px]">
       <header className="flex flex-col gap-3 border-b border-[color:var(--border-subtle)] pb-5 sm:flex-row sm:items-end sm:justify-between">
@@ -173,6 +182,10 @@ export default function Plugins() {
           <Plus className="h-4 w-4" aria-hidden /> {t("pages.plugins.install")}
         </GatedButton>
       </header>
+
+      {!query.isLoading && !query.isError && plugins.length > 0 && (
+        <PluginOutcomesNotice query={outcomes} />
+      )}
 
       {query.isLoading ? (
         <PluginLoading />
@@ -206,6 +219,8 @@ export default function Plugins() {
               <StageLane
                 stage={stage}
                 plugins={plugins.filter((plugin) => plugin.stage === stage.key)}
+                outcomes={outcomes}
+                orgId={orgId}
                 projectNames={Object.fromEntries(
                   scope.projects.map((project) => [project.id, project.name]),
                 )}
@@ -289,6 +304,8 @@ function PluginLoading() {
 function StageLane({
   stage,
   plugins,
+  outcomes,
+  orgId,
   projectNames,
   togglingId,
   removingId,
@@ -298,6 +315,8 @@ function StageLane({
 }: {
   stage: StageCopy;
   plugins: PluginInstanceRow[];
+  outcomes: PluginOutcomesQuery;
+  orgId: string;
   projectNames: Record<string, string>;
   togglingId?: string;
   removingId?: string;
@@ -376,6 +395,13 @@ function StageLane({
                   {t(`pages.plugins.onFailure.${plugin.failure_mode}`)}
                 </p>
               )}
+              <PluginActivity
+                query={outcomes}
+                orgId={orgId}
+                slug={plugin.slug}
+                enabled={plugin.enabled}
+                failureMode={plugin.failure_mode}
+              />
               {refusesStreams(plugin) && (
                 <p className="mt-2 flex items-start gap-1.5 text-xs text-[color:var(--status-warning-text)]">
                   <AlertTriangle className="mt-px h-3.5 w-3.5 flex-none" aria-hidden />

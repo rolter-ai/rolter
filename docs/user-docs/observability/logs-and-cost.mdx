@@ -389,7 +389,7 @@ The **LLM Logs** screen pages the same way. **Next page** follows the cursor the
 
 ### Optional columns in the invocation list
 
-Five fields of a row come from ClickHouse files that an existing deployment applies by hand (see [Upgrading](/deployment/upgrading)). Every row from `GET /api/v1/analytics/invocations` carries all five, whether or not the file has been applied:
+Six fields of a row come from ClickHouse files that an existing deployment applies by hand (see [Upgrading](/deployment/upgrading)). Every row from `GET /api/v1/analytics/invocations` carries all six, whether or not the file has been applied:
 
 | Field                   | Type   | Added by                      | Read as when the table lacks it |
 | ----------------------- | ------ | ----------------------------- | ------------------------------- |
@@ -398,8 +398,11 @@ Five fields of a row come from ClickHouse files that an existing deployment appl
 | `lifecycle_operation`   | string | `016_lifecycle_operation.sql` | `""` (empty string)             |
 | `cache_write_1h_tokens` | number | `017_cache_write_1h.sql`      | `0`                             |
 | `guardrail_events`      | array  | `018_guardrail_events.sql`    | `[]`                            |
+| `plugin_events`         | array  | `019_plugin_events.sql`       | `[]`                            |
 
 `guardrail_events` lists what each guardrail did to the request, as `<action>:<rule name>` entries (`blocked:`, `redacted:` or `annotated:`) and `provider_blocked` / `provider_transformed` for the guardrail provider; it is empty for a request no guardrail touched. See [What each rule did](/security/guardrails#what-each-rule-did).
+
+`plugin_events` lists what each plugin did to the request, as `<outcome>:<slug>` entries (`allowed`, `blocked`, `transformed` or `annotated`) and `error:<slug>:<kind>` for a call that got no verdict; it is empty for a request no plugin was consulted on. See [What each plugin did](/configuration/plugins#what-each-plugin-did).
 
 `cache_write_1h_tokens` is the part of the row's `cache_write_tokens` that went to the provider's 1 hour cache, never more than the total. The 5 minute share is the difference: `cache_write_tokens - cache_write_1h_tokens`. It is `0` for a provider that reports no split (every provider but Anthropic), for a request that wrote only to the 5 minute cache, and for every row older than the file.
 

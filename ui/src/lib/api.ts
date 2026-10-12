@@ -580,6 +580,49 @@ export function fetchGuardrailOutcomes(window: AnalyticsWindow = {}): Promise<Gu
   }));
 }
 
+/**
+ * One plugin of the outcome rollup (#2243): how many requests it was consulted
+ * on over the window and how they ended. `plugin` is the plugin's slug. The
+ * counts may arrive as strings, like every ClickHouse count. A call that got no
+ * verdict is an `errors` one, whatever the plugin's failure policy then did to
+ * the request, so a fail-closed plugin that refused traffic because its
+ * endpoint was down counts there and not under `blocked`.
+ */
+export interface PluginOutcomeRow {
+  /** a slug is unique within an organization only */
+  org_id: string;
+  plugin: string;
+  calls: number | string;
+  blocked: number | string;
+  transformed: number | string;
+  annotated: number | string;
+  errors: number | string;
+  /** the newest failure, `null` while `errors` is 0 */
+  last_error_at: string | null;
+  /** `refused`, `timeout`, `connect`, `body` or `status_<code>`; empty while `errors` is 0 */
+  last_error_kind: string;
+}
+
+export interface PluginOutcomes {
+  data: PluginOutcomeRow[];
+  /**
+   * `false` when the ClickHouse table lacks the column the calls are kept in
+   * (`clickhouse/019_plugin_events.sql` not applied), so an empty `data` means
+   * "not recorded" and not "no calls yet"
+   */
+  recorded: boolean;
+}
+
+/** the plugin rollup; throws AnalyticsUnavailableError without ClickHouse */
+export function fetchPluginOutcomes(window: AnalyticsWindow = {}): Promise<PluginOutcomes> {
+  return getAnalytics<Partial<PluginOutcomes>>(
+    `/api/v1/analytics/plugins${windowParams(window)}`,
+  ).then((r) => ({
+    data: Array.isArray(r.data) ? r.data : [],
+    recorded: r.recorded !== false,
+  }));
+}
+
 export function fetchConfig(): Promise<GatewayConfigDto> {
   return getJson<GatewayConfigDto>("/api/v1/config");
 }

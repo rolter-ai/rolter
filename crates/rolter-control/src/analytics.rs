@@ -806,15 +806,18 @@ async fn guardrails(
     events_rollup(access, state, q, "guardrail_events", guardrails_sql()).await
 }
 
-/// What each plugin did to requests in the window (#2243): one row per plugin
-/// with its calls, verdicts and failures.
+/// What each plugin did to requests in the window (#2243): one row per
+/// organization and plugin slug, with its calls, verdicts and failures. A slug
+/// is only unique within an organization, so `org_id` tells two apart; an
+/// org-wide and a project plugin of one organization that share a slug are
+/// counted together.
 ///
 /// `calls` is every consultation, and `blocked`, `transformed`, `annotated` and
 /// `errors` are the parts of it that ended that way; the rest were `allowed`.
 /// An `errors` call gave no verdict, so a fail-closed plugin that refused
 /// traffic because its endpoint was down counts there and not under `blocked`.
 /// `last_error_at` and `last_error_kind` name the newest failure (`refused`,
-/// `timeout`, `connect`, `status_<code>` or `body`), and are empty when
+/// `timeout`, `connect`, `status_<code>` or `body`), and are `null` and empty when
 /// `errors` is `0`. Counts are scaled by the sampling weight like every other
 /// count here, and `last_error_at` can only be a sampled row's. A table without
 /// `clickhouse/019_plugin_events.sql` answers `recorded: false` with no rows,
@@ -864,21 +867,21 @@ async fn events_rollup(
 /// `error:<slug>:<kind>`; a slug is `[a-z0-9-]`, so splitting on `:` is exact.
 fn plugins_sql() -> String {
     format!(
-        "select plugin, \
+        "select org_id, plugin, \
             round(sum(weight)) as calls, \
             round(sumIf(weight, outcome = 'blocked')) as blocked, \
             round(sumIf(weight, outcome = 'transformed')) as transformed, \
             round(sumIf(weight, outcome = 'annotated')) as annotated, \
             round(sumIf(weight, outcome = 'error')) as errors, \
-            if(errors = 0, '', toString(maxIf(ts, outcome = 'error'))) as last_error_at, \
+            if(errors = 0, NULL, maxIf(ts, outcome = 'error')) as last_error_at, \
             argMaxIf(kind, ts, outcome = 'error') as last_error_kind \
          from (\
-            select ts, sample_weight as weight, \
+            select ts, org_id, sample_weight as weight, \
                 splitByChar(':', event) as parts, \
                 parts[1] as outcome, parts[2] as plugin, parts[3] as kind \
             from request_logs array join plugin_events as event \
             where {WHERE_WINDOW} and {ROW_VISIBLE}) \
-         group by plugin order by calls desc, plugin format JSON"
+         group by org_id, plugin order by calls desc, org_id, plugin format JSON"
     )
 }
 

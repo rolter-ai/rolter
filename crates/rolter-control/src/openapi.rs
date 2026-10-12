@@ -1906,12 +1906,12 @@ fn operations() -> Vec<Op> {
             Op::get(
                 "/api/v1/analytics/plugins",
                 "getAnalyticsPlugins",
-                "What each plugin did to requests in the window: one row per `plugin` (its slug) with \
+                "What each plugin did to requests in the window: one row per `org_id` and `plugin` (its slug) with \
                  `calls`, and the `blocked`, `transformed`, `annotated` and `errors` among them (the \
                  rest were allowed). An `errors` call gave no verdict, so a fail-closed plugin that \
                  refused traffic because its endpoint was down counts there, not under `blocked`. \
                  `last_error_at` and `last_error_kind` (`refused`, `timeout`, `connect`, \
-                 `status_<code>` or `body`) name the newest failure and are empty when `errors` is \
+                 `status_<code>` or `body`) name the newest failure and are `null` and empty when `errors` is \
                  `0`. `recorded` is `false` when the ClickHouse table lacks \
                  `clickhouse/019_plugin_events.sql`, in which case `data` is empty",
             )
