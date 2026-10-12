@@ -9,12 +9,14 @@ import { EditorSheet } from "@/components/EditorSheet";
 import { GatedButton } from "@/components/GatedButton";
 import { LoadError } from "@/components/LoadError";
 import { CardGridSkeleton, FormSkeleton } from "@/components/LoadingState";
-import { ListSummary, PageBody, Pill, RowIconButton } from "@/components/screen";
+import { ListSummary, PageBody, RowIconButton } from "@/components/screen";
+import { describedBy, FieldError } from "@/components/ui/field-error";
 import { Button } from "@/components/ui/button";
 import { Combobox } from "@/components/ui/combobox";
 import { DeleteIconButton } from "@/components/ui/delete-icon-button";
 import { EmptyState, EmptyStateLink } from "@/components/ui/empty-state";
 import { Input } from "@/components/ui/input";
+import { Overline } from "@/components/ui/overline";
 import {
   fetchRouteComplexity,
   fetchRoutes,
@@ -143,9 +145,7 @@ export default function ComplexityRouter() {
       )}
       {failed.length > 0 && (
         <div className="flex flex-col gap-2.5">
-          <div className="text-[0.6875rem] uppercase tracking-[0.07em] text-[color:var(--text-subtle)]">
-            {t("pages.complexityRouter.policyLoadFailed")}
-          </div>
+          <Overline as="h2">{t("pages.complexityRouter.policyLoadFailed")}</Overline>
           {/* one alert for the group rather than one per route: it is the same
               endpoint failing every time, and the routes it covers are named
               underneath. retry re-runs exactly the reads that failed */}
@@ -183,9 +183,6 @@ export default function ComplexityRouter() {
               <span className="min-w-0 truncate font-mono text-sm font-semibold">
                 {route.model}
               </span>
-              <Pill className="ml-auto" color="var(--status-info-text)" tint="rgba(59,130,246,.14)">
-                {t("pages.complexityRouter.tierCount", { count: tiers.length })}
-              </Pill>
             </div>
             <div className="flex flex-col gap-1.5">
               {/* renamed off `t`: the screen now translates its own copy, and a
@@ -205,6 +202,17 @@ export default function ComplexityRouter() {
                 </div>
               ))}
             </div>
+            {/* no catch-all means no tier takes the largest requests; they keep
+                the route they asked for, which the card says rather than leaves
+                to be guessed */}
+            {tiers[tiers.length - 1].max_input_bytes != null && (
+              <p className="text-xs text-muted-foreground">
+                {t("pages.complexityRouter.aboveLast", {
+                  size: formatBytes(fmt, tiers[tiers.length - 1].max_input_bytes as number),
+                  model: route.model,
+                })}
+              </p>
+            )}
             <div className="flex items-center justify-end border-t border-[color:var(--border-subtle)] pt-3">
               {/* a complexity policy is stored on the route, so editing one
                   is the route's own update capability (#1258) */}
@@ -227,9 +235,7 @@ export default function ComplexityRouter() {
 
       {!routes.isLoading && checking.length > 0 && (
         <div className="flex flex-col gap-2.5">
-          <div className="text-[0.6875rem] uppercase tracking-[0.07em] text-[color:var(--text-subtle)]">
-            {t("pages.complexityRouter.checkingPolicy")}
-          </div>
+          <Overline as="h2">{t("pages.complexityRouter.checkingPolicy")}</Overline>
           <CardGridSkeleton
             cards={checking.length}
             height={196}
@@ -241,9 +247,9 @@ export default function ComplexityRouter() {
 
       {unconfigured.length > 0 && (
         <>
-          <div className="mt-2 text-[0.6875rem] uppercase tracking-[0.07em] text-[color:var(--text-subtle)]">
+          <Overline as="h2" className="mt-2">
             {t("pages.complexityRouter.noPolicyYet")}
-          </div>
+          </Overline>
           <div className="flex flex-wrap gap-2.5">
             {/* a policy lives on its route, so this entry point is the same
                 `route:update` the edit button on a configured card is */}
@@ -286,6 +292,45 @@ function formatBytes(fmt: Formatters, bytes: number) {
   return `${fmt.number(bytes)} B`;
 }
 
+/** one tier's complaints, each a catalog key under `pages.complexityRouter.validation` */
+interface TierErrors {
+  name?: string;
+  ceiling?: string;
+}
+
+/**
+ * The server's shape rules, read before the round trip so the row at fault is
+ * named instead of a toast naming the tier. Ceilings must climb strictly, a
+ * tier with no ceiling closes the policy so only the last may omit one, and
+ * names are unique. The server stays the authority.
+ */
+function checkTiers(tiers: ComplexityTier[]): TierErrors[] {
+  const seen = new Set<string>();
+  let previous: number | null = null;
+  return tiers.map((tier, i) => {
+    const errors: TierErrors = {};
+    const name = tier.name.trim();
+    if (name === "") errors.name = "nameRequired";
+    else if (seen.has(name)) errors.name = "nameDuplicate";
+    seen.add(name);
+    const ceiling = tier.max_input_bytes;
+    if (ceiling == null) {
+      if (i + 1 !== tiers.length) errors.ceiling = "catchAllNotLast";
+    } else if (!Number.isInteger(ceiling) || ceiling <= 0) {
+      errors.ceiling = "ceilingPositive";
+    } else if (previous != null && ceiling <= previous) {
+      errors.ceiling = "ceilingAscending";
+    } else {
+      previous = ceiling;
+    }
+    return errors;
+  });
+}
+
+// name, ceiling, route, remove: one grid for the header and every row
+const TIER_GRID =
+  "grid grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)_minmax(0,1.6fr)_auto] items-start gap-2";
+
 function PolicyDialog({
   route,
   allRoutes,
@@ -297,6 +342,8 @@ function PolicyDialog({
 }) {
   // `t` is the tier in the rows below, so the catalog reader takes another name
   const { t: translate } = useTranslation();
+  const fmt = useFormat();
+  const base = React.useId();
   const toast = useToast();
   const queryClient = useQueryClient();
   const existing = useQuery({
@@ -346,6 +393,9 @@ function PolicyDialog({
   const set = (i: number, patch: Partial<ComplexityTier>) =>
     setTiers((ts) => ts?.map((t, j) => (j === i ? { ...t, ...patch } : t)) ?? null);
 
+  const rowErrors = checkTiers(tiers ?? []);
+  const invalidRows = rowErrors.filter((e) => e.name || e.ceiling).length;
+  const last = tiers?.[tiers.length - 1];
   const dirty = JSON.stringify(tiers) !== JSON.stringify(existing.data?.tiers ?? null);
 
   return (
@@ -358,9 +408,17 @@ function PolicyDialog({
         model: route.model,
       })}
       dirty={dirty}
-      errorMessage={save.isError ? (save.error as Error).message : undefined}
+      errorMessage={
+        invalidRows > 0
+          ? translate("common.fieldsNeedAttention", { count: invalidRows })
+          : save.isError
+            ? (save.error as Error).message
+            : undefined
+      }
       saveLabel={translate("common.save")}
-      canSave={!!tiers && tiers.length > 0 && !existing.isPending && !existing.error}
+      canSave={
+        !!tiers && tiers.length > 0 && invalidRows === 0 && !existing.isPending && !existing.error
+      }
       saving={save.isPending}
       onSave={() => tiers && save.mutate(tiers)}
     >
@@ -380,42 +438,94 @@ function PolicyDialog({
       )}
       {!existing.isPending && !existing.error && (
         <div className="space-y-2.5">
-          {(tiers ?? []).map((t, i) => (
-            <div key={i} className="flex items-center gap-2">
-              <Input
-                className="w-[110px] font-mono text-xs"
-                value={t.name}
-                placeholder={translate("pages.complexityRouter.tierNamePlaceholder")}
-                onChange={(e) => set(i, { name: e.target.value })}
-              />
-              <Input
-                className="w-[110px] font-mono text-xs"
-                type="number"
-                min={1}
-                value={t.max_input_bytes ?? ""}
-                placeholder={translate("pages.complexityRouter.catchAll")}
-                onChange={(e) =>
-                  set(i, {
-                    max_input_bytes: e.target.value === "" ? null : Number(e.target.value),
-                  })
-                }
-              />
-              <Combobox
-                size="sm"
-                className="min-w-0 flex-1 font-mono"
-                aria-label={translate("pages.complexityRouter.tierRouteAria")}
-                value={t.route}
-                onChange={(route) => set(i, { route })}
-                options={allRoutes.map((m) => ({ value: m, label: m }))}
-              />
-              <DeleteIconButton
-                label={translate("pages.complexityRouter.removeTierAria", {
-                  name: t.name || i + 1,
-                })}
-                onClick={() => setTiers((ts) => ts?.filter((_, j) => j !== i) ?? null)}
-              />
-            </div>
-          ))}
+          {/* column headers: a placeholder is gone once a value is typed, and
+              a ceiling that reads 4096 must say it is bytes */}
+          <div className={`${TIER_GRID} text-xs font-medium text-[color:var(--text-secondary)]`}>
+            <span>{translate("pages.complexityRouter.columns.name")}</span>
+            <span>{translate("pages.complexityRouter.columns.ceiling")}</span>
+            <span>{translate("pages.complexityRouter.columns.route")}</span>
+            <span className="w-[30px]" />
+          </div>
+          {(tiers ?? []).map((t, i) => {
+            const errors = rowErrors[i] ?? {};
+            const nameErrorId = `${base}-${i}-name-error`;
+            const ceilingErrorId = `${base}-${i}-ceiling-error`;
+            return (
+              <div key={i} className="space-y-1">
+                <div className={TIER_GRID}>
+                  <Input
+                    className="font-mono text-xs"
+                    value={t.name}
+                    aria-label={translate("pages.complexityRouter.tierNameAria", { n: i + 1 })}
+                    aria-invalid={errors.name ? true : undefined}
+                    aria-describedby={describedBy(!!errors.name && nameErrorId)}
+                    onChange={(e) => set(i, { name: e.target.value })}
+                  />
+                  <div className="min-w-0">
+                    <Input
+                      className="font-mono text-xs"
+                      type="number"
+                      min={1}
+                      value={t.max_input_bytes ?? ""}
+                      placeholder={translate("pages.complexityRouter.catchAll")}
+                      aria-label={translate("pages.complexityRouter.tierCeilingAria", {
+                        n: i + 1,
+                      })}
+                      aria-invalid={errors.ceiling ? true : undefined}
+                      aria-describedby={describedBy(!!errors.ceiling && ceilingErrorId)}
+                      onChange={(e) =>
+                        set(i, {
+                          max_input_bytes: e.target.value === "" ? null : Number(e.target.value),
+                        })
+                      }
+                    />
+                    <span className="mt-0.5 block text-xs text-[color:var(--text-subtle)]">
+                      {t.max_input_bytes == null
+                        ? translate("pages.complexityRouter.noCeiling")
+                        : `= ${formatBytes(fmt, t.max_input_bytes)}`}
+                    </span>
+                  </div>
+                  <Combobox
+                    size="sm"
+                    className="min-w-0 font-mono"
+                    aria-label={translate("pages.complexityRouter.tierRouteAria", { n: i + 1 })}
+                    value={t.route}
+                    onChange={(route) => set(i, { route })}
+                    options={allRoutes.map((m) => ({ value: m, label: m }))}
+                  />
+                  <DeleteIconButton
+                    label={translate("pages.complexityRouter.removeTierAria", {
+                      name: t.name || i + 1,
+                    })}
+                    onClick={() => setTiers((ts) => ts?.filter((_, j) => j !== i) ?? null)}
+                  />
+                </div>
+                <FieldError
+                  id={nameErrorId}
+                  error={
+                    errors.name && translate(`pages.complexityRouter.validation.${errors.name}`)
+                  }
+                />
+                <FieldError
+                  id={ceilingErrorId}
+                  error={
+                    errors.ceiling &&
+                    translate(`pages.complexityRouter.validation.${errors.ceiling}`)
+                  }
+                />
+              </div>
+            );
+          })}
+          {/* where the requests above the last ceiling go: with no catch-all
+              they keep the route they asked for */}
+          {last && last.max_input_bytes != null && (
+            <p className="text-xs text-[color:var(--text-subtle)]">
+              {translate("pages.complexityRouter.aboveLast", {
+                size: formatBytes(fmt, last.max_input_bytes),
+                model: route.model,
+              })}
+            </p>
+          )}
           <Button
             size="sm"
             variant="outline"

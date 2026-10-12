@@ -148,9 +148,18 @@ type Story = StoryObj<typeof meta>;
 export const Loaded: Story = {
   render: () => <Harness fetchStub={async () => json(TELEMETRY)} />,
   play: async ({ canvas }) => {
-    await waitFor(() => expect(canvas.getByText("BLEND ACTIVE")).toBeVisible());
-    await expect(canvas.getAllByText("DISABLED")).toHaveLength(2);
+    // the stat card carries the same words as the route's badge
+    await waitFor(() => expect(canvas.getAllByText("Blend active")).toHaveLength(2));
+    await expect(canvas.getAllByText("Disabled")).toHaveLength(2);
     await expect(canvas.getByRole("cell", { name: "0.814" })).toBeVisible();
+    // the target the blend prefers is marked, and the header says which way
+    // the score runs
+    await expect(canvas.getAllByText("Preferred")).toHaveLength(1);
+    await expect(canvas.getAllByText("higher is preferred")[0]).toBeVisible();
+    // cost is money per Mtok, not a bare number
+    await expect(canvas.getByRole("cell", { name: "$6.80" })).toBeVisible();
+    // each decision mode reads as one swatch, label and value
+    await expect(canvas.getAllByText("Exploration")[0].closest("div")).toHaveTextContent("64 · 5%");
 
     // Additional gateways stay compact until the operator asks for their
     // node-specific signals. Native details/summary preserves keyboard access.
@@ -298,7 +307,20 @@ export const RetryAfterFailure: Story = {
   },
   play: async ({ canvas }) => {
     await userEvent.click(await canvas.findByRole("button", { name: "Try again" }));
-    await waitFor(() => expect(canvas.getByText("BLEND ACTIVE")).toBeVisible());
+    await waitFor(() => expect(canvas.getAllByText("Blend active")).toHaveLength(2));
+  },
+};
+
+// the state words come from the catalog, so a Russian dashboard has none left
+// in English (#2146)
+export const LoadedInRussian: Story = {
+  globals: { locale: "ru" },
+  render: () => <Harness fetchStub={async () => json(TELEMETRY)} />,
+  play: async ({ canvas }) => {
+    await waitFor(() => expect(canvas.getAllByText("Смешивание активно")).toHaveLength(2));
+    await expect(canvas.getAllByText("Отключено")).toHaveLength(1);
+    await expect(canvas.getByText("Предпочтительная")).toBeVisible();
+    await expect(canvas.queryByText("BLEND ACTIVE")).not.toBeInTheDocument();
   },
 };
 

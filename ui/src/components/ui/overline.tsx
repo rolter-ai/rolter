@@ -13,7 +13,7 @@ export function Overline({
   as: Tag = "div",
   className,
   ...props
-}: React.HTMLAttributes<HTMLElement> & { as?: "div" | "dt" | "h3" | "span" }) {
+}: React.HTMLAttributes<HTMLElement> & { as?: "div" | "dt" | "h2" | "h3" | "span" }) {
   return (
     <Tag
       className={cn(
