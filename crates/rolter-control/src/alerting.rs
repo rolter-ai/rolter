@@ -1078,6 +1078,15 @@ async fn read_signal(
             "alert evaluation requires CLICKHOUSE_URL",
         ));
     };
+    read_signal_from(ch, signal, window_secs).await
+}
+
+/// [`read_signal`] against a given ClickHouse client.
+async fn read_signal_from(
+    ch: &crate::analytics::ClickHouseClient,
+    signal: &str,
+    window_secs: i32,
+) -> Result<Option<f64>, SignalError> {
     let sql = metric_sql(signal, window_secs).map_err(|_| SignalError {
         code: error_code::UNKNOWN_SIGNAL,
         params: Some(serde_json::json!({ "signal": signal })),
@@ -1164,10 +1173,12 @@ fn truncate(text: &str, max: usize) -> String {
 fn metric_sql(signal: &str, window_secs: i32) -> ApiResult<String> {
     let window = window_secs.clamp(60, 86_400);
     let expression = match signal {
-        "error_rate" => "if(count() = 0, 0, countIf(status >= 500) / count())".to_string(),
+        // a ratio of weighted counts: each kept row stands for `sample_weight`
+        // real requests, so a rate change inside the window cannot skew it
+        "error_rate" => "if(sum(sample_weight) = 0, 0, sumIf(sample_weight, status >= 500) / sum(sample_weight))".to_string(),
         "p95_latency_ms" => "if(count() = 0, 0, quantile(0.95)(latency_ms))".to_string(),
-        "spend_velocity" => format!("sum(cost_usd) * 3600 / {window}"),
-        "request_volume" => "count()".to_string(),
+        "spend_velocity" => format!("sum(cost_usd * sample_weight) * 3600 / {window}"),
+        "request_volume" => "sum(sample_weight)".to_string(),
         "provider_health_flaps" => "countIf(outcome != 'ok')".to_string(),
         _ => return Err(invalid_field("signal", "unknown alert signal")),
     };
@@ -1176,6 +1187,9 @@ fn metric_sql(signal: &str, window_secs: i32) -> ApiResult<String> {
     } else {
         "request_logs"
     };
+    // samples stays a plain row count: it only says whether the window held
+    // any logged row, which the weights must not inflate. provider_health_events
+    // is not sampled and has no weight column
     // samples as a float: ClickHouse quotes a 64-bit integer in JSON output
     Ok(format!("select toFloat64({expression}) as value, toFloat64(count()) as samples from {table} where ts >= now64(3) - interval {window} second format JSON"))
 }
@@ -1816,6 +1830,23 @@ mod tests {
             .unwrap()
             .contains("provider_health_events"));
         assert!(metric_sql("not_a_real_signal", 60).is_err());
+    }
+
+    #[test]
+    fn request_log_signals_scale_by_the_row_weight() {
+        for signal in ["request_volume", "spend_velocity", "error_rate"] {
+            let sql = metric_sql(signal, 60).unwrap();
+            assert!(sql.contains("sample_weight"), "{signal}: {sql}");
+        }
+        // the ratio is of weighted counts on both sides
+        let sql = metric_sql("error_rate", 60).unwrap();
+        assert!(
+            !sql.contains("countIf(status") && !sql.contains("/ count()"),
+            "{sql}"
+        );
+        // the unsampled health table has no weight to apply
+        let sql = metric_sql("provider_health_flaps", 60).unwrap();
+        assert!(!sql.contains("sample_weight"), "{sql}");
     }
 
     #[test]

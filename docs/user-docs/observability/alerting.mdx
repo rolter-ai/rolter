@@ -32,9 +32,12 @@ In the dashboard it is the **Alerting** group, with one screen for each:
   [Permissions](#permissions-and-audit)).
 
 Rules read the request log, and the log can be sampled. With a
-[`sample_rate`](/observability/log-settings#sampling) below `1`,
-`request_volume` and `spend_velocity` count only the sampled rows and read low,
-while `error_rate` and `p95_latency_ms` become estimates from the sample.
+[`sample_rate`](/observability/log-settings#sampling) below `1`, each kept row
+carries the number of real requests it stands for, and `request_volume` and
+`spend_velocity` add those up, so a threshold set against real traffic still
+means real traffic. `error_rate` is the weighted share of failing requests, a
+ratio of weighted counts. `p95_latency_ms` is an estimate from the sample.
+Rows written before the sample weight was recorded count as one request each.
 
 ## How a rule is evaluated
 

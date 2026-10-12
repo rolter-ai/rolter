@@ -660,13 +660,13 @@ async fn summary(
 // traffic or spend (#2239); averages and percentiles are left alone, since a
 // uniform sample already estimates them. Rows written unsampled, or before the
 // column existed, weigh 1.
-const REQUESTS: &str = "round(sum(sample_weight))";
-const TOKENS: &str = "round(sum(total_tokens * sample_weight))";
-const PROMPT_TOKENS: &str = "round(sum(prompt_tokens * sample_weight))";
-const COMPLETION_TOKENS: &str = "round(sum(completion_tokens * sample_weight))";
-const COST: &str = "round(sum(cost_usd * sample_weight), 6)";
-const UNPRICED: &str = "round(sumIf(sample_weight, unpriced = 1))";
-const ERRORS: &str = "round(sumIf(sample_weight, status >= 400))";
+pub(crate) const REQUESTS: &str = "round(sum(sample_weight))";
+pub(crate) const TOKENS: &str = "round(sum(total_tokens * sample_weight))";
+pub(crate) const PROMPT_TOKENS: &str = "round(sum(prompt_tokens * sample_weight))";
+pub(crate) const COMPLETION_TOKENS: &str = "round(sum(completion_tokens * sample_weight))";
+pub(crate) const COST: &str = "round(sum(cost_usd * sample_weight), 6)";
+pub(crate) const UNPRICED: &str = "round(sumIf(sample_weight, unpriced = 1))";
+pub(crate) const ERRORS: &str = "round(sumIf(sample_weight, status >= 400))";
 
 /// Per-bucket time series of requests, tokens and cost.
 async fn timeseries(
