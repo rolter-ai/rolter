@@ -780,8 +780,20 @@ describe("snapshotOmissions", () => {
     expect(routes.has("gpt-4o")).toBe(false);
   });
 
+  it("reads a file key dropped for its allow-list and the public example key", () => {
+    const { keys, exampleKey } = snapshotOmissions([
+      "virtual key 'ci-bot' omitted from the snapshot: it allows only omitted providers ('edge'), and an empty allow-list would let it reach every provider",
+      "virtual key '<unnamed>' omitted from the snapshot: it allows only omitted providers ('edge'), and an empty allow-list would let it reach every provider",
+      "virtual key 'sk-rolter-dev' omitted from the snapshot: it is the public example key from the bundled rolter.example.toml and allows every model",
+      "virtual key 'mixed' allow-list entries 'edge' omitted from the snapshot: the providers are themselves omitted, and the key stays limited to its other providers",
+    ]);
+    expect([...keys.keys()]).toEqual(["ci-bot", "<unnamed>"]);
+    expect(exampleKey).toMatch(/^it is the public example key/);
+  });
+
   it("is empty before the problems are known", () => {
-    const { providers, routes } = snapshotOmissions(undefined);
-    expect(providers.size + routes.size).toBe(0);
+    const { providers, routes, keys, exampleKey } = snapshotOmissions(undefined);
+    expect(providers.size + routes.size + keys.size).toBe(0);
+    expect(exampleKey).toBeUndefined();
   });
 });

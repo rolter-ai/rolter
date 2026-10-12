@@ -27,6 +27,8 @@ import {
   fetchConfig,
   fetchConfigProblems,
   snapshotOmissions,
+  REDACTED_PUBLIC_EXAMPLE_KEY,
+  UNNAMED_KEY,
   type GatewayConfigDto,
   type ProviderDto,
   type RouteDto,
@@ -134,7 +136,9 @@ export default function Config() {
               providers={cfg.providers}
               omissions={omissions}
             />
-            {cfg.virtual_keys.length > 0 && <VirtualKeysTable keys={cfg.virtual_keys} />}
+            {cfg.virtual_keys.length > 0 && (
+              <VirtualKeysTable keys={cfg.virtual_keys} omissions={omissions} />
+            )}
           </>
         )}
 
@@ -453,7 +457,13 @@ function RoutesTable({
 // virtual keys defined in the config file. the secret is never drawn: a name
 // and what the key may call is what a reader needs, and the table has no column
 // the secret could land in
-function VirtualKeysTable({ keys }: { keys: VirtualKeyDto[] }) {
+function VirtualKeysTable({
+  keys,
+  omissions,
+}: {
+  keys: VirtualKeyDto[];
+  omissions: SnapshotOmissions;
+}) {
   const { t } = useTranslation();
   const title = t("pages.config.tables.virtualKeys");
   return (
@@ -463,14 +473,32 @@ function VirtualKeysTable({ keys }: { keys: VirtualKeyDto[] }) {
           <ListHeaderCell>{t("pages.config.tables.name")}</ListHeaderCell>
           <ListHeaderCell>{t("pages.config.tables.allowedModels")}</ListHeaderCell>
         </ListHeader>
-        {keys.map((k, i) => (
-          <ListRow key={`${k.name ?? ""}-${i}`} grid={KEY_GRID}>
-            <ListCell className={VALUE}>{k.name || "—"}</ListCell>
-            <ListCell className={`${VALUE} text-muted-foreground`}>
-              {k.models.length > 0 ? k.models.join(" · ") : t("pages.config.tables.allModels")}
-            </ListCell>
-          </ListRow>
-        ))}
+        {keys.map((k, i) => {
+          // the public example key is told apart by its redacted value; any
+          // other key by its name, which the problem line carries
+          const omitted =
+            k.key === REDACTED_PUBLIC_EXAMPLE_KEY
+              ? omissions.exampleKey
+              : omissions.keys.get(k.name || UNNAMED_KEY);
+          return (
+            <ListRow
+              key={`${k.name ?? ""}-${i}`}
+              grid={KEY_GRID}
+              className={omitted === undefined ? undefined : "items-start"}
+            >
+              <ListCell className={`${VALUE} flex flex-col items-start gap-1`}>
+                <span>{k.name || "—"}</span>
+                {omitted !== undefined && <NotServed />}
+              </ListCell>
+              <ListCell className={`${VALUE} flex flex-col gap-1 text-muted-foreground`}>
+                <span>
+                  {k.models.length > 0 ? k.models.join(" · ") : t("pages.config.tables.allModels")}
+                </span>
+                {omitted !== undefined && <OmissionReason reason={omitted} />}
+              </ListCell>
+            </ListRow>
+          );
+        })}
       </ListTable>
     </TableSection>
   );

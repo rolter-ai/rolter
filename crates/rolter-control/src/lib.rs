@@ -1972,6 +1972,7 @@ async fn get_config(
 /// reads the token-guarded `/internal/snapshot` instead.
 fn redact_config_for_dashboard(config: &mut GatewayConfig) {
     const REDACTED: &str = "[redacted]";
+    const REDACTED_PUBLIC_EXAMPLE_KEY: &str = "[redacted: public example key]";
     for provider in &mut config.providers {
         provider.api_key = None;
         for key in &mut provider.api_keys {
@@ -1992,7 +1993,16 @@ fn redact_config_for_dashboard(config: &mut GatewayConfig) {
         }
     }
     for key in &mut config.virtual_keys {
-        key.key = REDACTED.to_string();
+        // the public example key is the one file key whose omission line names
+        // its value rather than its name, so the dashboard could not match that
+        // line to a row. its value is published in every checkout, so naming it
+        // discloses nothing, and it lets the row say it is left out (#2954)
+        key.key = if key.is_public_example_key() {
+            REDACTED_PUBLIC_EXAMPLE_KEY
+        } else {
+            REDACTED
+        }
+        .to_string();
     }
     // the dashboard never reads these; the gateway takes them from the snapshot.
     // a database key record names its org, team, project and creator, so even
@@ -2712,6 +2722,25 @@ mod tests {
         assert!(args.database_url.is_none());
     }
 
+    // the one key whose value is published is told apart, so the dashboard can
+    // mark its row as left out of the snapshot (#2954)
+    #[test]
+    fn dashboard_config_marks_the_public_example_key() {
+        use rolter_core::config::{VirtualKeyConfig, PUBLIC_EXAMPLE_KEY};
+        let mut config = GatewayConfig::default();
+        config.virtual_keys.push(VirtualKeyConfig {
+            key: PUBLIC_EXAMPLE_KEY.into(),
+            ..Default::default()
+        });
+        config.virtual_keys.push(VirtualKeyConfig {
+            key: "sk-rolter-private".into(),
+            ..Default::default()
+        });
+        redact_config_for_dashboard(&mut config);
+        assert_eq!(config.virtual_keys[0].key, "[redacted: public example key]");
+        assert_eq!(config.virtual_keys[1].key, "[redacted]");
+    }
+
     // the dashboard config view answers without a session: nothing in it may
     // be a credential, however it got there
     #[test]
@@ -2792,6 +2821,7 @@ mod tests {
             config.providers[0].egress_proxy.as_deref(),
             Some("http://***@proxy.internal:3128/")
         );
+        assert_eq!(config.virtual_keys[0].key, "[redacted]");
         assert!(config.mcp_oauth_sessions.is_empty());
         assert!(config.db_virtual_keys.is_empty());
         assert!(config.mcp_servers.is_empty());
