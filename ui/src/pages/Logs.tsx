@@ -24,6 +24,7 @@ import {
   FilterSection,
 } from "@/components/ui/filter-panel";
 import { LoadError } from "@/components/LoadError";
+import { SampledLogNotice } from "@/components/SampledLogNotice";
 import { SavedViews } from "@/components/SavedViews";
 import { ListSkeleton } from "@/components/LoadingState";
 import { Badge } from "@/components/ui/badge";
@@ -987,6 +988,10 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
               </button>
             </div>
           </div>
+        </div>
+
+        <div className="flex-none px-[18px] pb-3 empty:hidden">
+          <SampledLogNotice kind="rows" />
         </div>
 
         {/* the id a client was handed, pasted here: a request id or a trace

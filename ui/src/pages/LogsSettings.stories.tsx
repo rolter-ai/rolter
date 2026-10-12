@@ -97,9 +97,9 @@ export const TheCaptureSwitchStatesWhatItDoesNotStore: Story = {
 /**
  * #2088: lowering the sample rate shrinks every figure read from the log.
  *
- * The gateway drops an unsampled row before it reaches ClickHouse, and nothing
- * that reads the log scales the rest back up, so at 25 % the Dashboard shows
- * about a quarter of the real spend. The story starts at 100 %, where there is
+ * The gateway drops an unsampled row before it reaches ClickHouse and the
+ * analytics reads scale the rest back up (#2239), so at 25 % the Dashboard shows
+ * an estimate built from a quarter of the traffic. The story starts at 100 %, where there is
  * nothing to warn about, sets 25 % and asserts the warning states the share
  * before anything is saved, and that the field carries it as its description.
  */
@@ -117,7 +117,7 @@ export const SettingARateBelowFullWarnsWithTheShare: Story = {
       expect(canvas.getByText("The log keeps about 1 in 4 requests.")).toBeVisible(),
     );
     await expect(
-      canvas.getByText(/read from it come to about 25% of the real figures/),
+      canvas.getByText(/scaled up from this sample, so they are estimates/),
     ).toBeVisible();
     await expect(rate).toHaveAccessibleDescription(/about 1 in 4 requests/);
   },
@@ -142,10 +142,10 @@ export const FullSampleRateShowsNoWarning: Story = {
     await expect(await canvas.findByLabelText("Sample rate percent")).toHaveValue("100");
     await expect(canvas.queryByText(/The log keeps/)).toBeNull();
     await expect(
-      canvas.getByText(/Dashboard, LLM Logs, Business Units and Customers/),
+      canvas.getByText(/Dashboard, LLM Logs, Business Units and Customers read this log/),
     ).toBeVisible();
     await expect(
-      canvas.getByText(/budgets, rate limits and \/metrics still count every request/),
+      canvas.getByText(/Budgets, rate limits and \/metrics still count every request/),
     ).toBeVisible();
   },
 };

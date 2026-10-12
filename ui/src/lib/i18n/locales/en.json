@@ -142,6 +142,14 @@
       "last30d": "Last 30 days",
       "monthToDate": "Month to date",
       "lastMonth": "Last month"
+    },
+    "sampledLog": {
+      "title_one": "The request log keeps about {{numerator}} in {{denominator}} request.",
+      "title_other": "The request log keeps about {{numerator}} in {{denominator}} requests.",
+      "figures": "Request counts, spend and tokens here are estimates scaled up from that sample. Averages and percentiles are read from the sample as it is.",
+      "rows": "This list shows only the sampled requests. A request missing from it was still served.",
+      "noneTitle": "The request log keeps no requests.",
+      "noneBody": "Nothing new is recorded, so these figures stop growing."
     }
   },
   "docs": {
@@ -3314,11 +3322,11 @@
       "everyModel": "every model",
       "nothing": "nothing",
       "sampleRate": "Sample Rate",
-      "sampleRateHint": "Share of requests written to the log. Lower it to cut storage on high-volume deployments. The Dashboard, LLM Logs, Business Units and Customers take their request counts, spend and tokens from this log, so they cover only the share it keeps; budgets, rate limits and /metrics still count every request.",
+      "sampleRateHint": "Share of requests written to the log. Lower it to cut storage on high-volume deployments. The Dashboard, LLM Logs, Business Units and Customers read this log. Their request counts, spend and tokens are scaled up from the sample, so they are estimates; the LLM Logs list shows only the sampled requests. Budgets, rate limits and /metrics still count every request.",
       "sampled": {
         "title_one": "The log keeps about {{numerator}} in {{denominator}} request.",
         "title_other": "The log keeps about {{numerator}} in {{denominator}} requests.",
-        "body": "Spend, tokens and request counts read from it come to about {{percent}} of the real figures.",
+        "body": "Counts, spend and tokens on the screens that read it are scaled up from this sample, so they are estimates.",
         "noneTitle": "The log keeps no requests.",
         "noneBody": "The screens that read it get no new requests, spend or tokens."
       },

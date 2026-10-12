@@ -7,6 +7,7 @@ import { AnalyticsUnavailable } from "@/components/AnalyticsUnavailable";
 import { PageBody } from "@/components/screen";
 import { GettingStarted } from "@/components/GettingStarted";
 import { IncompleteSpendNotice } from "@/components/IncompleteSpendNotice";
+import { SampledLogNotice } from "@/components/SampledLogNotice";
 import { LoadError } from "@/components/LoadError";
 import { SavedViews } from "@/components/SavedViews";
 import { Combobox } from "@/components/ui/combobox";
@@ -376,6 +377,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
         <RefreshFailed read={summary} region="dashboard" />
       </div>
 
+      <SampledLogNotice kind="figures" />
       <IncompleteSpendNotice
         requests={num(summary.data?.unpriced_requests)}
         models={num(summary.data?.unpriced_models)}

@@ -20,6 +20,7 @@ import {
   routes,
   scoped,
   uxEvents,
+  withSampleRate,
   type FetchStub,
   type Recorder,
   type StoryRole,
@@ -1494,5 +1495,52 @@ export const AStaleRefreshRecordsOneErrorStatePerAppearance: Story = {
     upstream = "failing";
     await waitFor(() => expect(errorRegions()).toHaveLength(stale.length * 2));
     await expect([...errorRegions()].sort()).toEqual([...stale, ...stale].sort());
+  },
+};
+
+/**
+ * #2231: below 100 % the figures are scaled up from a sample (#2239), and the
+ * screen says so with the share the log keeps. The settings are a superadmin's
+ * to read, so that is the role the story mounts as.
+ */
+export const ASampledLogSaysTheFiguresAreEstimates: Story = {
+  render: () => render(withSampleRate(loaded, 0.25), "superadmin"),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const notice = await canvas.findByTestId("sampled-log-notice");
+    await expect(notice).toHaveTextContent("The request log keeps about 1 in 4 requests.");
+    await expect(notice).toHaveTextContent(/estimates scaled up from that sample/);
+    await expect(notice).toHaveAttribute("role", "status");
+    // the figures themselves are still drawn
+    await expect(await canvas.findAllByText(fmt.number(132))).not.toHaveLength(0);
+  },
+};
+
+const fullLog = recording(withSampleRate(loaded, 1));
+
+// a log that keeps every request has nothing to qualify
+export const AFullLogShowsNoSamplingNote: Story = {
+  render: () => render(fullLog.stub, "superadmin"),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect((await canvas.findAllByText(fmt.number(132))).length).toBeGreaterThan(0);
+    await fullLog.expectSent("GET", "/api/v1/logging-settings");
+    // the answer is in the cache a beat after the request leaves
+    await sleep(100);
+    await expect(canvas.queryByTestId("sampled-log-notice")).toBeNull();
+  },
+};
+
+const adminOfSampledLog = recording(withSampleRate(loaded, 0.25));
+
+// the rate is not an admin's to read: the screen asks for nothing and says nothing
+export const AnAdminIsNotToldTheRate: Story = {
+  render: () => render(adminOfSampledLog.stub, "admin"),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect((await canvas.findAllByText(fmt.number(132))).length).toBeGreaterThan(0);
+    await expectGateAnswered();
+    adminOfSampledLog.expectNotSent("GET", "/api/v1/logging-settings");
+    await expect(canvas.queryByTestId("sampled-log-notice")).toBeNull();
   },
 };

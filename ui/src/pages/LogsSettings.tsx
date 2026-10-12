@@ -16,7 +16,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { fetchLoggingSettings, updateLoggingSettings, type LoggingSettingsDto } from "@/lib/api";
 import { useFormat } from "@/lib/i18n/format";
 import { serverFieldError } from "@/lib/field-errors";
-import { sampleShare } from "@/lib/sampling";
+import { parseSamplingPercent, sampleShare, samplingPercentText } from "@/lib/sampling";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useScreenReady } from "@/lib/ux-react";
 
@@ -41,7 +41,7 @@ const splitList = (value: string) =>
 // the API takes a 0..1 fraction; operators think in percent, so the field is
 // percent and the conversion happens at the edge
 const fromDto = (dto: LoggingSettingsDto): FormState => ({
-  samplePercent: String(Math.round(dto.sample_rate * 1000) / 10),
+  samplePercent: samplingPercentText(dto.sample_rate),
   captureEnabled: dto.payload_capture_enabled,
   maxBytes: String(dto.payload_capture_max_bytes),
   redactFields: dto.payload_capture_redact_fields.join(", "),
@@ -52,10 +52,13 @@ const fromDto = (dto: LoggingSettingsDto): FormState => ({
   uiEvents: dto.ui_events,
 });
 
-// the percent field as a number, or NaN while it holds nothing usable. a blank
-// field is NaN rather than the 0 that `Number("")` makes of it, so clearing the
-// field can never save a policy that logs nothing
-const parsePercent = (value: string) => (value.trim() === "" ? Number.NaN : Number(value));
+// the typed percent as the 0..1 rate, or null while it holds nothing usable: a
+// blank or malformed field never becomes a rate, so clearing it cannot save a
+// policy that logs everything or nothing
+const sampleRateOf = (text: string) => {
+  const parsed = parseSamplingPercent(text);
+  return parsed.ok ? parsed.rate : null;
+};
 
 const validMaxBytes = (value: string) => {
   const n = Number(value);
@@ -87,8 +90,7 @@ const WIRE_FIELDS: Record<string, FieldKey> = {
 
 function validate(form: FormState): FieldErrors {
   const errors: FieldErrors = {};
-  const percent = parsePercent(form.samplePercent);
-  if (!Number.isFinite(percent) || percent < 0 || percent > 100) {
+  if (!parseSamplingPercent(form.samplePercent).ok) {
     errors.samplePercent = "pages.logsSettings.errors.sampleRange";
   }
   // the field is disabled while capture is off, so a bad value there could
@@ -148,7 +150,8 @@ function LogsSettingsScreen() {
   const save = useMutation({
     mutationFn: (f: FormState) =>
       updateLoggingSettings({
-        sample_rate: Number(f.samplePercent) / 100,
+        // validated before a save can start, so the fallback is never sent
+        sample_rate: sampleRateOf(f.samplePercent) ?? settings.data?.sample_rate ?? 1,
         payload_capture_enabled: f.captureEnabled,
         // an unusable value is only reachable with capture off; keep what is stored
         payload_capture_max_bytes: validMaxBytes(f.maxBytes)
@@ -274,7 +277,7 @@ function LogsSettingsScreen() {
           </span>
         </div>
         <FieldError id={errorId("samplePercent")} error={errors.samplePercent} />
-        <SampledLogWarning id={sampleWarningId} percent={parsePercent(form.samplePercent)} />
+        <SampledLogWarning id={sampleWarningId} rate={sampleRateOf(form.samplePercent)} />
       </SettingsPanel>
 
       <SettingsPanel
@@ -435,9 +438,11 @@ function LogsSettingsScreen() {
  * What a sample rate below 100 % does to every figure read from the request log
  * (#2088).
  *
- * The gateway drops an unsampled row before it reaches ClickHouse, and nothing
- * that reads the log scales the rest back up, so at 25 % the Dashboard's spend
- * is about a quarter of the real spend. The warning follows the form state, so
+ * The gateway drops an unsampled row before it reaches ClickHouse and stamps
+ * each kept row with the number of requests it stands for. The analytics reads
+ * scale counts, spend and tokens by it (#2239), so at 25 % the Dashboard's spend
+ * is an estimate built from a quarter of the traffic, not a quarter of the
+ * spend. The warning follows the form state, so
  * it shows for an edit that has not been saved yet as well as for a saved rate
  * on load.
  *
@@ -445,12 +450,11 @@ function LogsSettingsScreen() {
  * region inserted together with its text is not reliably announced, and the
  * warning appearing mid-edit is what a screen-reader user needs to hear.
  */
-function SampledLogWarning({ id, percent }: { id: string; percent: number }) {
+function SampledLogWarning({ id, rate }: { id: string; rate: number | null }) {
   const { t } = useTranslation();
   const format = useFormat();
-  const below = Number.isFinite(percent) && percent >= 0 && percent < 100;
-  const rate = percent / 100;
-  const share = below ? sampleShare(rate) : null;
+  const below = rate !== null && rate < 1;
+  const share = rate !== null && below ? sampleShare(rate) : null;
   return (
     <div id={id} role="status">
       {below && (
@@ -467,9 +471,7 @@ function SampledLogWarning({ id, percent }: { id: string; percent: number }) {
                 : t("pages.logsSettings.sampled.noneTitle")}
             </span>{" "}
             {share
-              ? t("pages.logsSettings.sampled.body", {
-                  percent: format.number(rate, { style: "percent", maximumFractionDigits: 2 }),
-                })
+              ? t("pages.logsSettings.sampled.body")
               : t("pages.logsSettings.sampled.noneBody")}
           </span>
         </p>
