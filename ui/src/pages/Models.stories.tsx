@@ -40,7 +40,7 @@ import { UxScreenProvider } from "@/lib/ux-react";
 
 const MODELS: EffectiveModelDto[] = [
   { model: "gpt-4o", strategy: "weighted", targets: 2, source: "db" },
-  { model: "claude-sonnet", strategy: "least_load", targets: 1, source: "config" },
+  { model: "claude-sonnet", strategy: "fastest", targets: 1, source: "config" },
 ];
 
 // one route fanned out over two providers, which is the shape the provider
@@ -79,7 +79,7 @@ const CONFIG = {
     },
     {
       model: "claude-sonnet",
-      strategy: "least_load",
+      strategy: "fastest",
       targets: [{ provider: "anthropic", model: "claude-sonnet-4-20250514", weight: 1 }],
     },
   ],

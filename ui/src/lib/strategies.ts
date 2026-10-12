@@ -18,15 +18,52 @@ import type { DocsPage } from "@/lib/docs";
 export type Strategy = (typeof STRATEGIES)[number];
 
 /**
- * Strategies governed somewhere other than this picker.
+ * Strategies a deployment-wide policy governs on top of the per-route choice.
  *
- * `adaptive` is driven by the deployment-wide `[adaptive_routing]` policy and
- * has its own screen; offering it in a per-route dropdown would misrepresent
- * how it is controlled. It is still rendered when it is already the value —
- * see {@link strategyOptions} — because hiding a choice is not a reason to
- * destroy it.
+ * `adaptive` is picked per route like any other, but the `[adaptive_routing]`
+ * policy sets its blend and the kill switch, so its hint says so and links
+ * Adaptive Routing settings.
  */
-const NOT_OFFERED: readonly string[] = ["adaptive"];
+const DEPLOYMENT_WIDE: readonly string[] = ["adaptive"];
+
+/**
+ * How the pickers group the strategies, in the order the groups are listed
+ * (#2136). Every value of `STRATEGIES` sits in exactly one; the strategy test
+ * fails on one that sits in none.
+ */
+export const STRATEGY_GROUPS = {
+  simple: ["round_robin", "random", "power_of_two"],
+  cacheAware: [
+    "cache_aware",
+    "consistent_hash",
+    "precise_cache_aware",
+    "lmcache_aware",
+    "lora_aware",
+  ],
+  latencyCost: ["fastest", "predicted_latency", "cheapest", "adaptive"],
+  weighted: ["weighted", "pipeline"],
+} as const satisfies Record<string, readonly Strategy[]>;
+
+export type StrategyGroup = keyof typeof STRATEGY_GROUPS;
+
+/** The group `strategy` is listed under, or `null` for a value this build does not know. */
+export function strategyGroup(strategy: string): StrategyGroup | null {
+  for (const [group, members] of Object.entries(STRATEGY_GROUPS)) {
+    if ((members as readonly string[]).includes(strategy)) return group as StrategyGroup;
+  }
+  return null;
+}
+
+/**
+ * The i18n key of the one-line description of `strategy`, drawn from the
+ * load-balancing page's "best for" column, or `null` for a value this build
+ * does not know.
+ */
+export function strategyDescriptionKey(strategy: string): string | null {
+  // camel-cased: a key ending `_two` (`power_of_two`) reads as a plural form
+  const key = strategy.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase());
+  return strategyGroup(strategy) ? `strategies.descriptions.${key}` : null;
+}
 
 /**
  * Strategies that need a telemetry source configured on the member providers.
@@ -61,7 +98,7 @@ export function usesWeights(strategy: string): boolean {
 /** The i18n key describing `strategy`, or `null` when it needs no caveat. */
 export function strategyHintKey(strategy: string): string | null {
   if (NEEDS_TELEMETRY.includes(strategy)) return "pages.routing.strategyHints.needsTelemetry";
-  if (NOT_OFFERED.includes(strategy)) return "pages.routing.strategyHints.deploymentWide";
+  if (DEPLOYMENT_WIDE.includes(strategy)) return "pages.routing.strategyHints.deploymentWide";
   return null;
 }
 
@@ -78,17 +115,24 @@ export function strategyDocsPage(strategy: string): DocsPage | null {
   return null;
 }
 
+/** Where the deployment-wide policy of `strategy` is set, when it has one. */
+export function strategyPolicyPath(strategy: string): string | null {
+  return DEPLOYMENT_WIDE.includes(strategy) ? "/adaptive-settings" : null;
+}
+
 /**
  * The options a strategy picker should render, given the value it currently
- * holds.
+ * holds, ordered by group.
  *
- * `current` is always present in the result even when it is not offered, so the
- * control displays the truth and a save cannot drop it. An unknown value — a
- * strategy added to the backend and not yet to `STRATEGIES` — is preserved on
- * the same principle rather than snapped to a default.
+ * `current` is always present in the result even when this build does not know
+ * it, so the control displays the truth and a save cannot drop it. An unknown
+ * value — a strategy added to the backend and not yet to `STRATEGIES` — is
+ * preserved on the same principle rather than snapped to a default.
  */
 export function strategyOptions(current?: string): string[] {
-  const offered = STRATEGIES.filter((s) => !NOT_OFFERED.includes(s));
-  if (current && !offered.includes(current as Strategy)) return [current, ...offered];
-  return [...offered];
+  // grouped first; a contract value no group lists yet is appended, not lost
+  const grouped: string[] = Object.values(STRATEGY_GROUPS).flatMap((m) => [...m]);
+  const offered = [...grouped, ...STRATEGIES.filter((s) => !grouped.includes(s))];
+  if (current && !offered.includes(current)) return [current, ...offered];
+  return offered;
 }

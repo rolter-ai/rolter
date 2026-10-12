@@ -14,9 +14,8 @@ import {
   type RefusalField,
   type ServerRefusal,
 } from "@/components/ModelSheet";
-import { StrategyHint } from "@/components/StrategyHint";
+import { StrategyPicker } from "@/components/StrategyPicker";
 import { Button } from "@/components/ui/button";
-import { Combobox } from "@/components/ui/combobox";
 import { FieldError } from "@/components/ui/field-error";
 import { FieldLabel } from "@/components/ui/field-label";
 import { FormSection } from "@/components/ui/form-section";
@@ -39,7 +38,6 @@ import {
 } from "@/lib/api";
 import { useErrorVisibility } from "@/lib/error-visibility";
 import { providersUsableFrom } from "@/lib/provider-scope";
-import { strategyOptions } from "@/lib/strategies";
 import { errorDetail, useToast } from "@/lib/toast";
 import { useFormTelemetry } from "@/lib/ux-react";
 
@@ -299,14 +297,11 @@ export function RouteSheet({
                   info={t("modelSheet.routing.strategyInfo")}
                   htmlFor={ids.strategyLabel}
                 />
-                <Combobox
+                <StrategyPicker
                   id={ids.strategyLabel}
-                  className="font-mono"
                   value={draft.strategy}
                   onChange={(strategy) => setDraft((d) => ({ ...d, strategy }))}
-                  options={strategyOptions(draft.strategy).map((s) => ({ value: s, label: s }))}
                 />
-                <StrategyHint strategy={draft.strategy} />
               </div>
               <TargetEditor
                 targets={draft.targets}

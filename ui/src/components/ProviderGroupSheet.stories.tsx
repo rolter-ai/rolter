@@ -13,7 +13,9 @@ import {
   scoped,
   sheet,
   answerDiscardPrompt,
+  pickOption,
 } from "@/pages/story-harness";
+import en from "@/lib/i18n/locales/en.json";
 import type { ProviderGroupRow, ProviderRow } from "@/lib/api";
 
 const provider = (id: string, name: string): ProviderRow => ({
@@ -121,6 +123,30 @@ export const Edit: Story = {
     await expect(dialog.getByLabelText("Slug")).toHaveValue("vllm-cluster");
     await expect(dialog.getByLabelText("Strategy")).toHaveValue("cache_aware");
     await expect(dialog.getAllByLabelText("Provider")).toHaveLength(2);
+  },
+};
+
+/**
+ * The strategy's own description stays under the picker, replacing the generic
+ * "how requests are balanced" line, and adaptive can be chosen (#2136).
+ */
+export const StrategyDescriptionFollowsTheChoice: Story = {
+  render: () => <Stage mode="edit" group={GROUP} />,
+  play: async () => {
+    const dialog = within(sheet());
+    const picker = await dialog.findByLabelText("Strategy");
+    await waitFor(() => expect(picker).toHaveValue("cache_aware"));
+    await waitFor(() =>
+      expect(dialog.getByText(en.strategies.descriptions.cacheAware)).toBeVisible(),
+    );
+    await expect(dialog.queryByText(/how requests are balanced/i)).toBeNull();
+    await pickOption(picker, /^adaptive\b/);
+    await waitFor(() => expect(picker).toHaveValue("adaptive"));
+    await expect(await dialog.findByText(en.strategies.descriptions.adaptive)).toBeVisible();
+    await expect(dialog.getByRole("link", { name: "Adaptive Routing settings" })).toHaveAttribute(
+      "href",
+      "/adaptive-settings",
+    );
   },
 };
 

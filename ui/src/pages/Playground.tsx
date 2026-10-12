@@ -16,7 +16,7 @@ import {
 } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
-import { Link } from "react-router";
+import { Link, useSearchParams } from "react-router";
 
 import { CopyAsCodeButton } from "@/components/CodeSnippetDialog";
 import { DocsLink } from "@/components/DocsLink";
@@ -1231,7 +1231,16 @@ function ChatMode({ models, preferred }: { models: ModelOption[]; preferred: str
   // once the catalog confirms the gateway serves it; a stale name that no
   // longer routes would only make the first message fail
   const saved = useOptionalPreferences()?.preferences?.default_playground_model ?? null;
-  const preferredModel = saved && models.some((option) => option.id === saved) ? saved : preferred;
+  // a link from Routing Rules names the route to try (`?model=`); it outranks
+  // the saved model, but only once the catalog confirms the gateway serves it
+  const [params] = useSearchParams();
+  const requested = params.get("model");
+  const preferredModel =
+    requested && models.some((option) => option.id === requested)
+      ? requested
+      : saved && models.some((option) => option.id === saved)
+        ? saved
+        : preferred;
   // a column's thread lives in the column, so a column needs an identity that
   // outlasts its position: removing the first of two must not hand its thread
   // to the one that moved up

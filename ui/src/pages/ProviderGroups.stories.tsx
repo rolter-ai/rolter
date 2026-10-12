@@ -37,7 +37,7 @@ const GROUPS: ProviderGroupRow[] = [
     org_id: "org-1",
     name: "frontier",
     slug: "frontier",
-    strategy: "least_load",
+    strategy: "fastest",
     created_at: "2026-03-01T00:00:00Z",
     members: [
       { group_id: "g-1", provider_id: "p-1", provider_name: "openai-prod", weight: 3, position: 0 },

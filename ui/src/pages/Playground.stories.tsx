@@ -274,7 +274,16 @@ function shortKeyWait() {
  * no gate is mounted and every control renders enabled. The router is for the
  * routeless project's link to Routing Rules.
  */
-function Screen({ fetchStub, role }: { fetchStub: FetchStub; role?: StoryRole }) {
+function Screen({
+  fetchStub,
+  role,
+  entry = "/",
+}: {
+  fetchStub: FetchStub;
+  role?: StoryRole;
+  /** the address the screen is opened at, for a link that carries a query */
+  entry?: string;
+}) {
   // during render, not in an effect: the screen's own effects run first, and
   // a key left behind would suppress the automatic mint under test
   React.useState(() => {
@@ -283,7 +292,7 @@ function Screen({ fetchStub, role }: { fetchStub: FetchStub; role?: StoryRole })
   });
   React.useEffect(() => () => setPlaygroundKey(""), []);
   return (
-    <MemoryRouter>
+    <MemoryRouter initialEntries={[entry]}>
       <Harness fetchStub={fetchStub} role={role}>
         <Playground />
       </Harness>
@@ -340,6 +349,28 @@ export const MintsAKeyOnOpen: Story = {
       expect(within(listbox).getByRole("option", { name: "abc/minicpm5-1b" })).toBeTruthy(),
     );
     await userEvent.keyboard("{Escape}");
+  },
+};
+
+/**
+ * A link from Routing Rules opens the screen on that route's model (`?model=`,
+ * #2138), where the catalog confirms the gateway serves it. A name it does not
+ * serve is ignored rather than selected, so the first message cannot fail on it.
+ */
+export const OpensOnTheLinkedModel: Story = {
+  render: () => <Screen fetchStub={mints.stub} entry="/playground?model=abc%2Fminicpm5-1b" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByRole("button", { name: "Send to abc/minicpm5-1b" });
+  },
+};
+
+export const IgnoresALinkedModelItDoesNotServe: Story = {
+  render: () => <Screen fetchStub={mints.stub} entry="/playground?model=no-such-model" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByRole("button", { name: "Send to minicpm5-1b" });
+    await expect(canvas.queryByRole("button", { name: /Send to no-such-model/ })).toBeNull();
   },
 };
 

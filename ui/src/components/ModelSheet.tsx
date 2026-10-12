@@ -5,7 +5,7 @@ import { Trans, useTranslation } from "react-i18next";
 
 import { FormSkeleton } from "@/components/LoadingState";
 import { RouteTargetList } from "@/components/RouteTargetList";
-import { StrategyHint } from "@/components/StrategyHint";
+import { StrategyPicker } from "@/components/StrategyPicker";
 import { useDiscardGuard } from "@/components/DiscardGuard";
 import { Button } from "@/components/ui/button";
 import { ChipGroup } from "@/components/ui/chip-group";
@@ -58,7 +58,7 @@ import { cacheWrite1hPatch, cacheWritePatch } from "@/lib/cache-write-rate";
 import { useErrorVisibility } from "@/lib/error-visibility";
 import { providersUsableFrom } from "@/lib/provider-scope";
 import type { RouteTargetView } from "@/lib/route-targets";
-import { strategyOptions, usesWeights } from "@/lib/strategies";
+import { usesWeights } from "@/lib/strategies";
 import { errorDetail, useToast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { useFormTelemetry } from "@/lib/ux-react";
@@ -1697,15 +1697,12 @@ export function ModelSheet({
               info={t("modelSheet.routing.strategyInfo")}
               htmlFor="ms-strategy"
             />
-            <Combobox
+            <StrategyPicker
               id="ms-strategy"
-              className="font-mono"
               value={draft.strategy}
               disabled={readonly}
               onChange={(strategy) => set({ strategy })}
-              options={strategyOptions(draft.strategy).map((s) => ({ value: s, label: s }))}
             />
-            <StrategyHint strategy={draft.strategy} />
           </div>
           {readonly ? (
             configTargets && configTargets.length > 0 ? (

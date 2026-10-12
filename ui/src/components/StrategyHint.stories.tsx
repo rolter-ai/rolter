@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react";
+import { MemoryRouter } from "react-router";
 import { expect, waitFor } from "storybook/test";
 
 import { withDocsBase } from "@/pages/story-harness";
@@ -10,6 +11,14 @@ import { StrategyHint } from "./StrategyHint";
 const meta = {
   title: "Components/StrategyHint",
   component: StrategyHint,
+  // adaptive links its settings screen
+  decorators: [
+    (Story) => (
+      <MemoryRouter>
+        <Story />
+      </MemoryRouter>
+    ),
+  ],
 } satisfies Meta<typeof StrategyHint>;
 
 export default meta;
@@ -107,15 +116,24 @@ export const NoLinkWithoutADocsHost: Story = {
   },
 };
 
-/** Governed by the deployment-wide policy, shown only because it is the value. */
+/**
+ * Governed by the deployment-wide policy: the note says the policy sets the
+ * blend and the kill switch, and links where that is set (#2136).
+ */
 export const DeploymentWide: Story = {
-  // a docs host is configured so the missing link is a decision, not the
+  // a docs host is configured so the missing docs link is a decision, not the
   // air-gapped default
   beforeEach: withDocsBase("https://docs.example.com"),
   args: { strategy: "adaptive" },
   play: async ({ canvas }) => {
-    await expect(await canvas.findByRole("note")).toHaveTextContent(/adaptive-routing policy/);
-    await expect(canvas.queryByRole("link")).toBeNull();
+    const note = await canvas.findByRole("note");
+    await expect(note).toHaveTextContent(/adaptive-routing policy/);
+    await expect(note).toHaveTextContent(/kill switch/);
+    await expect(canvas.getAllByRole("link")).toHaveLength(1);
+    await expect(canvas.getByRole("link", { name: "Adaptive Routing settings" })).toHaveAttribute(
+      "href",
+      "/adaptive-settings",
+    );
   },
 };
 
