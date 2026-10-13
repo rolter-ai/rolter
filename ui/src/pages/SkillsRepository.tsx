@@ -10,13 +10,13 @@ import {
   RotateCcw,
   Settings2,
   ShieldCheck,
-  Trash2,
 } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { GatedButton } from "@/components/GatedButton";
+import { DeleteIconButton } from "@/components/ui/delete-icon-button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -692,15 +692,12 @@ function SkillWorkbench({
             >
               <Settings2 className="h-4 w-4" /> {t("pages.skillsRepo.settings")}
             </GatedButton>
-            <GatedButton
+            <DeleteIconButton
               gate="skill:delete"
               control="skill-delete"
-              variant="ghost"
-              aria-label={t("pages.skillsRepo.deleteAction", { name: skill.name })}
+              label={t("pages.skillsRepo.deleteAction", { name: skill.name })}
               onClick={onDelete}
-            >
-              <Trash2 className="h-4 w-4" />
-            </GatedButton>
+            />
             {baseVersion && !selectedPublished && !skill.retired_at && (
               <GatedButton
                 gate="skill:update"

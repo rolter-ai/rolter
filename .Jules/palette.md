@@ -57,3 +57,8 @@
 
 **Learning:** Hand-rolled icon buttons using GatedButton with Trash2 and Loader2 manually recreate button styling and pending state checks, missing standard design system traits like hover border states (hover:border-[color:var(--status-danger)]).
 **Action:** Replace custom gated icon delete buttons on list/card items with DeleteIconButton from @/components/ui/delete-icon-button.
+
+## 2026-10-13 - Repositories DeleteIconButton Primitive Adoption
+
+**Learning:** Replacing hand-rolled icon delete buttons with DeleteIconButton across workbench pages (like PromptRepository and SkillsRepository) ensures consistent hover states, keyboard focus indicators, and gated click telemetry.
+**Action:** When updating icon delete controls on complex workspace/editor screens, replace both gated header buttons and un-gated row item buttons with DeleteIconButton.
