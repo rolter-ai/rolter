@@ -430,6 +430,7 @@ type Part = "memberships" | "users" | "projects" | "budgets";
 /** the org's teams with the reads each card and the sheet draw on; `fail` breaks one of them */
 function teamsApi(fail: Partial<Record<Part, "pending" | "error">> = {}) {
   let deleted = false;
+  let renamed: string | null = null;
   return recording(async (input, init) => {
     const url = new URL(String(input), "http://localhost");
     const path = url.pathname;
@@ -444,7 +445,21 @@ function teamsApi(fail: Partial<Record<Part, "pending" | "error">> = {}) {
       deleted = true;
       return json({}, 204);
     }
-    if (/\/teams$/.test(path)) return json(deleted ? TEAMS.slice(1) : TEAMS);
+    if (init?.method === "PUT" && path === "/api/v1/teams/team-1") {
+      const { name } = JSON.parse(String(init.body)) as { name: string };
+      if (name === "Research") {
+        return json(
+          { error: { code: "name_taken", message: "team 'Research' already exists" } },
+          409,
+        );
+      }
+      renamed = name;
+      return json({ ...TEAMS[0], name });
+    }
+    if (/\/teams$/.test(path)) {
+      const rows = renamed ? [{ ...TEAMS[0], name: renamed }, ...TEAMS.slice(1)] : TEAMS;
+      return json(deleted ? rows.slice(1) : rows);
+    }
     if (/\/memberships$/.test(path)) return answer("memberships", GRANTS);
     if (/\/users$/.test(path)) return answer("users", PEOPLE);
     if (/\/orgs\/org-1\/projects$/.test(path)) return answer("projects", PROJECTS);
@@ -540,7 +555,10 @@ export const OpensATeamToSeeItsProjectsAndPeople: Story = {
     await waitFor(() =>
       expect(panel.getByText("No one holds a role on this project directly.")).toBeVisible(),
     );
-    await expect(panel.getByRole("link", { name: "Users" })).toHaveAttribute("href", "/gov-users");
+    await expect(panel.getByRole("link", { name: "Users" })).toHaveAttribute(
+      "href",
+      "/gov-users?team=team-1",
+    );
     await expect(panel.getByRole("link", { name: /Budgets & Limits of Platform/ })).toHaveAttribute(
       "href",
       "/budgets?scope_type=team&scope_id=team-1",
@@ -661,5 +679,100 @@ export const DeleteRefusedToAMember: Story = {
       await within(canvasElement).findByRole("button", { name: "Open Platform" }),
     );
     await expectRefused(document.body, "Delete Platform…");
+  },
+};
+
+// #3126: the name at the top of the sheet renames the team
+const renaming = teamsApi();
+export const RenamesATeam: Story = {
+  render: () => (
+    <Harness fetchStub={renaming.stub} role="admin">
+      <Toasted>
+        <Teams />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "Open Platform" }));
+    const panel = within(sheet());
+    const field = panel.getByLabelText("Team name");
+    // nothing to send until the name differs
+    // story-wait-allow: disabled by the unchanged name from its first paint, not by the gate
+    await expect(panel.getByRole("button", { name: "Rename" })).toBeDisabled();
+    await userEvent.clear(field);
+    await userEvent.type(field, "Core platform");
+    await userEvent.click(panel.getByRole("button", { name: "Rename" }));
+    await expect(await renaming.expectSentBody("PUT", "/api/v1/teams/team-1")).toEqual({
+      name: "Core platform",
+    });
+    await expectToast(canvasElement, /Core platform updated/);
+    await canvas.findByRole("group", { name: "Core platform" });
+    await expect(canvas.queryByRole("group", { name: "Platform" })).toBeNull();
+  },
+};
+
+// a name another team holds is pinned under the field, not shown in a toast
+export const RenameToATakenNameIsPinnedToTheField: Story = {
+  render: () => (
+    <Harness fetchStub={teamsApi().stub} role="admin">
+      <Toasted>
+        <Teams />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await userEvent.click(
+      await within(canvasElement).findByRole("button", { name: "Open Platform" }),
+    );
+    const panel = within(sheet());
+    const field = panel.getByLabelText("Team name");
+    await userEvent.clear(field);
+    await userEvent.type(field, "Research");
+    await userEvent.click(panel.getByRole("button", { name: "Rename" }));
+    const taken = await panel.findByText(/A team called Research already exists/);
+    await waitFor(() => expect(taken).toBeVisible());
+    await expect(field).toHaveAttribute("aria-invalid", "true");
+    await expect(field).toHaveFocus();
+    // editing the name answers the complaint
+    await userEvent.type(field, "2");
+    await waitFor(() => expect(field).not.toHaveAttribute("aria-invalid", "true"));
+  },
+};
+
+export const RenameToAnEmptyNameIsRefusedLocally: Story = {
+  render: () => {
+    const api = teamsApi();
+    return (
+      <Harness fetchStub={api.stub} role="admin">
+        <Teams />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    await userEvent.click(
+      await within(canvasElement).findByRole("button", { name: "Open Platform" }),
+    );
+    const panel = within(sheet());
+    await userEvent.clear(panel.getByLabelText("Team name"));
+    const empty = await panel.findByText("Enter a name for the team.");
+    await waitFor(() => expect(empty).toBeVisible());
+  },
+};
+
+// renaming is the team's admin's; a member opens the sheet and is refused
+export const RenameRefusedToAMember: Story = {
+  render: () => (
+    <Harness fetchStub={teamsApi().stub} role="member">
+      <Teams />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await userEvent.click(
+      await within(canvasElement).findByRole("button", { name: "Open Platform" }),
+    );
+    const field = within(sheet()).getByLabelText("Team name");
+    await userEvent.type(field, "x");
+    await expectRefused(document.body, "Rename");
   },
 };

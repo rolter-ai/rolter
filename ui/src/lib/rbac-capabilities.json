@@ -56,6 +56,13 @@
           "authenticated_only": false
         },
         {
+          "action": "update",
+          "minimum_role": "admin",
+          "superadmin_only": false,
+          "authenticated_only": false,
+          "scope": "team"
+        },
+        {
           "action": "delete",
           "minimum_role": "admin",
           "superadmin_only": false,

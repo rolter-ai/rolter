@@ -1,4 +1,6 @@
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { ArrowUpRight, Folder, Trash2, User } from "lucide-react";
+import * as React from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router";
 
@@ -7,12 +9,25 @@ import { LoadError } from "@/components/LoadError";
 import { ListSkeleton } from "@/components/LoadingState";
 import { Pill } from "@/components/screen";
 import { EmptyState } from "@/components/ui/empty-state";
+import { Field } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
 import { Overline } from "@/components/ui/overline";
 import { Sheet, SheetBody, SheetHeader } from "@/components/ui/sheet";
-import type { MembershipRow, OrgProjectRow, TeamRow, UserRow } from "@/lib/api";
+import {
+  ApiError,
+  renameTeam,
+  type MembershipRow,
+  type OrgProjectRow,
+  type TeamRow,
+  type UserRow,
+} from "@/lib/api";
 import { RowCapabilityScope } from "@/lib/can";
+import { errorText } from "@/lib/error-copy";
 import { useFormat } from "@/lib/i18n/format";
+import { useScope } from "@/lib/scope";
 import { teamPeople } from "@/lib/team-people";
+import { useToast } from "@/lib/toast";
+import { useFieldErrors } from "@/lib/use-field-errors";
 
 /** What a read the sheet depends on is doing: still going, failed, or answered. */
 interface Read {
@@ -32,8 +47,8 @@ interface Read {
  * whatever scope the sidebar happens to hold, so a team admin is offered their
  * own team's actions and nothing of another team's.
  *
- * There is no rename here: the control plane has no endpoint to change a team's
- * name, and a control that sends nothing is worse than none.
+ * The name at the top renames the team (`PUT /api/v1/teams/{id}`, #3126). A name
+ * another team of the org holds comes back as a 409 and is pinned under the field.
  */
 export function TeamSheet({
   team,
@@ -53,6 +68,48 @@ export function TeamSheet({
 }) {
   const { t } = useTranslation();
   const fmt = useFormat();
+  const queryClient = useQueryClient();
+  const toast = useToast();
+  const scope = useScope();
+
+  const [name, setName] = React.useState(team.name);
+  // the list refetches after a rename and hands the sheet the stored name
+  React.useEffect(() => setName(team.name), [team.name]);
+  const nameId = `team-${team.id}-name`;
+  const fields = useFieldErrors<"name">({
+    order: ["name"],
+    wire: { name: "name" },
+    idOf: () => nameId,
+    local: { name: name.trim() ? undefined : t("pages.teams.sheet.nameEmpty") },
+    // a taken name is a 409, which the 400-only wire table does not place
+    place: (error) =>
+      error instanceof ApiError && error.code === "name_taken"
+        ? { field: "name", message: t("pages.teams.sheet.nameTaken", { name: name.trim() }) }
+        : null,
+  });
+  const rename = useMutation({
+    mutationFn: (next: string) => renameTeam(team.id, { name: next }),
+    onSuccess: (row) => {
+      queryClient.invalidateQueries({ queryKey: ["teams", scope.orgId] });
+      // the sidebar's scope switcher lists the same teams under `scope`
+      queryClient.invalidateQueries({ queryKey: ["scope"] });
+      fields.clear();
+      toast.push({
+        tone: "success",
+        title: t("toast.saved"),
+        detail: t("toast.savedDetail", { what: row.name }),
+      });
+    },
+    onError: (error) => {
+      if (fields.refuse(error)) return;
+      toast.push({
+        tone: "error",
+        title: t("toast.saveFailed", { what: team.name }),
+        detail: errorText(error, t),
+      });
+    },
+  });
+  const unchanged = name.trim() === team.name;
 
   const own = projects.data?.filter((p) => p.team_id === team.id);
   const people = memberships.data
@@ -91,6 +148,42 @@ export function TeamSheet({
           onClose={onClose}
         />
         <SheetBody>
+          <form
+            className="flex items-start gap-2"
+            noValidate
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (unchanged) return;
+              fields.submit(() => rename.mutate(name.trim()));
+            }}
+          >
+            <Field
+              className="min-w-0 flex-1"
+              label={t("pages.teams.teamName")}
+              error={fields.errorOf("name")}
+            >
+              <Input
+                id={nameId}
+                value={name}
+                onChange={(e) => {
+                  setName(e.target.value);
+                  fields.edit("name");
+                }}
+                placeholder={t("pages.teams.teamNamePlaceholder")}
+              />
+            </Field>
+            <GatedButton
+              type="submit"
+              gate="team:update"
+              control="team-rename"
+              variant="outline"
+              className="mt-[22px]"
+              disabled={unchanged || rename.isPending}
+            >
+              {t("pages.teams.sheet.rename")}
+            </GatedButton>
+          </form>
+
           <section className="space-y-2" aria-labelledby={`team-${team.id}-people`}>
             <Overline as="h3" id={`team-${team.id}-people`}>
               {t("pages.teams.sheet.people")}
@@ -181,7 +274,7 @@ export function TeamSheet({
             </Overline>
             <div className="flex flex-wrap gap-x-4 gap-y-1.5 text-sm">
               <Link
-                to="/gov-users"
+                to={`/gov-users?team=${encodeURIComponent(team.id)}`}
                 className="inline-flex items-center gap-1 underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               >
                 {t("nav.gov-users")}

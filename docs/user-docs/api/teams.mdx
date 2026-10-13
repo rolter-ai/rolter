@@ -1,0 +1,47 @@
+---
+title: "Renaming a Team"
+sidebarTitle: "Teams"
+description: "PUT /api/v1/teams/{id} renames a team. A name another team of the organization holds answers 409 name_taken, and the audit log records the old and new name."
+---
+
+A team is created with `POST /api/v1/orgs/{org_id}/teams` and removed with `DELETE /api/v1/teams/{id}`. `PUT /api/v1/teams/{id}` changes its name.
+
+## Request
+
+```http
+PUT /api/v1/teams/{id}
+Authorization: Bearer <session or admin token>
+Content-Type: application/json
+
+{"name": "Platform"}
+```
+
+```bash
+curl -s -X PUT https://control.example.com/api/v1/teams/$TEAM_ID \
+  -H "Authorization: Bearer $ROLTER_SESSION_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "Platform"}'
+```
+
+`name` is the only field. Surrounding whitespace is trimmed before the name is stored. Any other field is refused.
+
+## Response
+
+The renamed team, in the shape the list returns: `id`, `org_id`, `name` and `created_at`. The id does not change, so grants, budgets and projects stay attached.
+
+## Errors
+
+| Status | Code            | When                                                        |
+| ------ | --------------- | ----------------------------------------------------------- |
+| 400    | `invalid_field` | `name` is empty or only whitespace; `error.field` is `name` |
+| 403    |                 | the caller does not hold admin on the team or above         |
+| 404    |                 | no team has that id                                         |
+| 409    | `name_taken`    | another team of the same organization already has that name |
+
+## Who may rename
+
+Renaming is the `team:update` capability, decided at the team itself: an admin of the team, or of its organization, may rename it. Creating and deleting a team stay an organization admin's. `GET /api/v1/rbac/matrix` lists the rows.
+
+Every rename is written to the audit log as `team.update`, with the `old_name` and `new_name` in its detail.
+
+The dashboard offers the same action as **Rename** in a team's sheet under **Governance → Teams**.

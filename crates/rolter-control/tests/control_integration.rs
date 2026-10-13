@@ -25658,6 +25658,133 @@ async fn a_routes_strategy_targets_and_weights_change_in_one_update() {
     assert_eq!(status, 404);
 }
 
+/// #3126: a team is renamed at the team's own scope. Its admin renames it, a
+/// viewer is refused, a name another team of the org holds is a 409
+/// `name_taken`, an empty one a 400, and the audit row names both names.
+#[tokio::test]
+async fn a_team_is_renamed_by_its_own_admin() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("drift".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let call = |method: reqwest::Method, path: String, token: String, body: Value| {
+        let client = client.clone();
+        let base = base.clone();
+        async move {
+            let resp = client
+                .request(method, format!("{base}{path}"))
+                .bearer_auth(token)
+                .json(&body)
+                .send()
+                .await
+                .unwrap();
+            let status = resp.status().as_u16();
+            (status, resp.json::<Value>().await.unwrap_or(Value::Null))
+        }
+    };
+    let admin = |method: reqwest::Method, path: String, body: Value| {
+        call(method, path, "drift".to_string(), body)
+    };
+    let (_, org) = admin(
+        reqwest::Method::POST,
+        "/api/v1/orgs".into(),
+        json!({"name": "Acme", "slug": "acme"}),
+    )
+    .await;
+    let org_id: uuid::Uuid = org["id"].as_str().unwrap().parse().unwrap();
+    let mut teams = Vec::new();
+    for name in ["core", "research"] {
+        let (_, team) = admin(
+            reqwest::Method::POST,
+            format!("/api/v1/orgs/{org_id}/teams"),
+            json!({"name": name}),
+        )
+        .await;
+        teams.push(team["id"].as_str().unwrap().parse::<uuid::Uuid>().unwrap());
+    }
+    let path = format!("/api/v1/teams/{}", teams[0]);
+
+    let team_admin = seed_user(&pool, "team-admin@acme.test", false).await;
+    seed_membership(&pool, team_admin, None, Some(teams[0]), None, "admin").await;
+    let team_admin = seed_session(&pool, team_admin, "rename_team_admin").await;
+    let other_admin = seed_user(&pool, "other-admin@acme.test", false).await;
+    seed_membership(&pool, other_admin, None, Some(teams[1]), None, "admin").await;
+    let other_admin = seed_session(&pool, other_admin, "rename_other_admin").await;
+    let viewer = seed_user(&pool, "viewer@acme.test", false).await;
+    seed_membership(&pool, viewer, None, Some(teams[0]), None, "viewer").await;
+    let viewer = seed_session(&pool, viewer, "rename_viewer").await;
+
+    let rename = |token: String, name: &str| {
+        call(
+            reqwest::Method::PUT,
+            path.clone(),
+            token,
+            json!({"name": name}),
+        )
+    };
+    let (status, body) = rename(viewer, "platform").await;
+    assert_eq!(status, 403, "a viewer cannot rename: {body}");
+    let (status, body) = rename(other_admin, "platform").await;
+    assert_eq!(status, 403, "another team's admin cannot rename: {body}");
+
+    let (status, body) = rename(team_admin.clone(), "research").await;
+    assert_eq!(status, 409, "{body}");
+    assert_eq!(body["error"]["code"], "name_taken", "{body}");
+    let (status, body) = rename(team_admin.clone(), "  ").await;
+    assert_eq!(status, 400, "{body}");
+    assert_eq!(body["error"]["field"], "name", "{body}");
+
+    let (status, body) = rename(team_admin, " platform ").await;
+    assert_eq!(status, 200, "a team admin renames their team: {body}");
+    assert_eq!(
+        body["name"], "platform",
+        "the name is stored trimmed: {body}"
+    );
+    assert_eq!(body["id"], teams[0].to_string());
+
+    let (status, listed) = admin(
+        reqwest::Method::GET,
+        format!("/api/v1/orgs/{org_id}/teams"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, 200, "{listed}");
+    let names: Vec<&str> = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["platform", "research"], "{listed}");
+
+    let (status, page) = admin(
+        reqwest::Method::GET,
+        format!("/api/v1/orgs/{org_id}/audit-log?action=team.update"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, 200, "{page}");
+    let rows = page["items"].as_array().unwrap();
+    assert_eq!(rows.len(), 1, "only the rename that went through: {page}");
+    assert_eq!(rows[0]["target_id"], teams[0].to_string());
+    assert_eq!(rows[0]["detail"]["old_name"], "core", "{page}");
+    assert_eq!(rows[0]["detail"]["new_name"], "platform", "{page}");
+
+    let (status, _) = call(
+        reqwest::Method::PUT,
+        format!("/api/v1/teams/{}", uuid::Uuid::new_v4()),
+        "drift".to_string(),
+        json!({"name": "ghost"}),
+    )
+    .await;
+    assert_eq!(status, 404);
+}
+
 /// #3074: a guard names the scope its `CAPABILITIES` row declares. Deleting a
 /// project is a team admin's, as creating one is, and deleting a team is an org
 /// admin's; the admin of the project or team itself is refused. Granting a role

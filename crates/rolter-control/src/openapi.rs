@@ -917,6 +917,10 @@ fn operations() -> Vec<Op> {
             Op::post("/api/v1/orgs/{org_id}/teams", "createTeam", "Create a team")
                 .body(Payload::Ref("CreateTeam"))
                 .ok(Payload::Ref("Team")),
+            Op::put("/api/v1/teams/{id}", "updateTeam", "Rename a team")
+                .body(Payload::Ref("UpdateTeam"))
+                .ok(Payload::Ref("Team"))
+                .conflict("a team of the organization already has that name"),
             Op::delete("/api/v1/teams/{id}", "deleteTeam", "Delete a team"),
             Op::get(
                 "/api/v1/teams/{team_id}/projects",
@@ -2825,6 +2829,13 @@ fn tenancy_schemas(p: &Prim) -> Value {
             "properties": {"id": uuid, "org_id": uuid, "name": string, "created_at": timestamp}
         },
         "CreateTeam": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {"name": string},
+            "additionalProperties": false
+        },
+
+        "UpdateTeam": {
             "type": "object",
             "required": ["name"],
             "properties": {"name": string},

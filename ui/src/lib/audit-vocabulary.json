@@ -144,6 +144,7 @@
     "sso_provider.update",
     "team.create",
     "team.delete",
+    "team.update",
     "user.create",
     "user.delete",
     "user.password_reset",

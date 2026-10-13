@@ -1050,6 +1050,11 @@ export function createTeam(orgId: string, input: { name: string }): Promise<Team
   return sendJson<TeamRow>("POST", `/api/v1/orgs/${orgId}/teams`, input);
 }
 
+/** Renames a team; a name another team of the org holds answers `409 name_taken` (#3126). */
+export function renameTeam(id: string, input: { name: string }): Promise<TeamRow> {
+  return sendJson<TeamRow>("PUT", `/api/v1/teams/${id}`, input);
+}
+
 export function deleteTeam(id: string): Promise<void> {
   return sendJson<void>("DELETE", `/api/v1/teams/${id}`);
 }
