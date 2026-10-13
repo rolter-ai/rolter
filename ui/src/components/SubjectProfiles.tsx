@@ -1,4 +1,4 @@
-import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
@@ -13,8 +13,8 @@ import { Plus, X } from "lucide-react";
 import {
   createAccessProfileAssignment,
   deleteAccessProfileAssignment,
-  fetchAccessProfile,
   fetchAccessProfiles,
+  fetchOrgAccessProfileAssignments,
   type AccessProfileAssignmentRow,
   type AccessProfileRow,
 } from "@/lib/api";
@@ -30,18 +30,20 @@ export interface HeldProfile {
   assignment: AccessProfileAssignmentRow;
 }
 
+/** the cache key of the org's assignment list; the bare prefix refreshes every org's */
+export const ASSIGNMENTS_KEY = (orgId?: string) =>
+  (orgId ? ["access-profile-assignments", orgId] : ["access-profile-assignments"]) as string[];
+
 function holds(subject: ProfileSubject, a: AccessProfileAssignmentRow): boolean {
   return "user_id" in subject ? a.user_id === subject.user_id : a.team_id === subject.team_id;
 }
 
 /**
- * The org's access profiles with who holds each (#3010).
+ * The org's access profiles with who holds each (#3010, #3025).
  *
- * Assignments have no list of their own by subject, so this reads the profile
- * list and each profile's detail, under the same query keys the Access Profiles
- * cards use: the two screens share one cache, and a row per user on the Users
- * screen costs one request per profile however many rows ask. A deployment has
- * few profiles, which is why this stays a handful of requests.
+ * Two reads however many rows ask: the profile list, and every assignment of
+ * the org's profiles in one request. The rows share them through the query
+ * cache, and a row filters the assignments for its own subject.
  */
 export function useOrgProfiles(orgId: string | undefined) {
   const list = useQuery({
@@ -50,29 +52,21 @@ export function useOrgProfiles(orgId: string | undefined) {
     enabled: !!orgId,
     retry: false,
   });
-  const details = useQueries({
-    queries: (list.data ?? []).map((profile) => ({
-      queryKey: ["access-profile", profile.id],
-      queryFn: () => fetchAccessProfile(profile.id),
-      retry: false,
-    })),
+  const assignments = useQuery({
+    queryKey: ASSIGNMENTS_KEY(orgId),
+    queryFn: () => fetchOrgAccessProfileAssignments(orgId as string),
+    enabled: !!orgId,
+    retry: false,
   });
   // a read that has not answered holds no rows, and is never "holds nothing"
-  const pending = list.isLoading || details.some((d) => d.isLoading);
-  const failed = list.isError || details.some((d) => d.isError);
+  const pending = list.isLoading || assignments.isLoading;
+  const failed = list.isError || assignments.isError;
   const held = (subject: ProfileSubject): HeldProfile[] =>
-    (list.data ?? []).flatMap((profile, i) => {
-      const assignment = details[i]?.data?.assignments?.find((a) => holds(subject, a));
-      return assignment ? [{ profile, assignment }] : [];
+    (assignments.data ?? []).flatMap((assignment) => {
+      const profile = (list.data ?? []).find((p) => p.id === assignment.profile_id);
+      return profile && holds(subject, assignment) ? [{ profile, assignment }] : [];
     });
-  return {
-    profiles: list.data,
-    assignmentsOf: (profileId: string) =>
-      details[(list.data ?? []).findIndex((p) => p.id === profileId)]?.data?.assignments ?? [],
-    held,
-    pending,
-    failed,
-  };
+  return { profiles: list.data, held, pending, failed };
 }
 
 /** what `SubjectProfiles` asks its screen to confirm */
@@ -184,6 +178,7 @@ export function AssignSubjectProfileSheet({
     mutationFn: () => createAccessProfileAssignment(profileId, subject),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["access-profile", profileId] });
+      void queryClient.invalidateQueries({ queryKey: ASSIGNMENTS_KEY(orgId) });
       toast.push({
         tone: "success",
         title: t("subjectProfiles.assigned", { profile: chosen?.name, name }),
@@ -249,6 +244,7 @@ export function UnassignSubjectProfileDialog({
     mutationFn: (item: UnassignTarget) => deleteAccessProfileAssignment(item.assignment.id),
     onSuccess: (_void, done) => {
       void queryClient.invalidateQueries({ queryKey: ["access-profile", done.profile.id] });
+      void queryClient.invalidateQueries({ queryKey: ASSIGNMENTS_KEY() });
       toast.push({
         tone: "success",
         title: t("pages.accessProfiles.assign.removed", { name: done.name }),

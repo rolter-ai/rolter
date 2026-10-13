@@ -897,9 +897,9 @@ impl From<ApiError> for ScimError {
                 let scim_type = (code == crate::crud::NAME_TAKEN).then_some("uniqueness");
                 Self::new(StatusCode::CONFLICT, scim_type, message)
             }
-            ApiError::InvalidField { message, .. } | ApiError::InvalidBody(message) => {
-                Self::invalid(message)
-            }
+            ApiError::InvalidField { message, .. }
+            | ApiError::InvalidBody(message)
+            | ApiError::InvalidQuery(message) => Self::invalid(message),
             ApiError::TooManyAttempts(_) => Self::new(
                 StatusCode::TOO_MANY_REQUESTS,
                 None,

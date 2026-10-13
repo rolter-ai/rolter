@@ -1290,6 +1290,19 @@ export function fetchAccessProfileAssignments(id: string): Promise<AccessProfile
   return getJson<AccessProfileAssignmentRow[]>(`/api/v1/access-profiles/${id}/assignments`);
 }
 
+// every assignment of the org's profiles in one read, narrowed to one user or
+// team when given. The Users and Teams screens read it instead of one detail
+// per profile (#3025)
+export function fetchOrgAccessProfileAssignments(
+  orgId: string,
+  subject?: { user_id: string } | { team_id: string },
+): Promise<AccessProfileAssignmentRow[]> {
+  const query = subject ? `?${new URLSearchParams(subject).toString()}` : "";
+  return getJson<AccessProfileAssignmentRow[]>(
+    `/api/v1/orgs/${orgId}/access-profile-assignments${query}`,
+  );
+}
+
 // exactly one of user_id / team_id is set; a team assignment reaches every
 // member, which is the point of a profile over a direct grant
 export function createAccessProfileAssignment(

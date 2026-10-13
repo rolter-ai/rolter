@@ -3227,6 +3227,19 @@ function profileStub(initial: Record<string, string[]> = { "p-1": ["user-2"], "p
       );
       return json({}, 204);
     }
+    if (/\/access-profile-assignments(\?|$)/.test(url)) {
+      return json(
+        [...held].flatMap(([profileId, users]) =>
+          users.map((user_id) => ({
+            id: `a-${profileId}-${user_id}`,
+            profile_id: profileId,
+            user_id,
+            team_id: null,
+            created_at: "",
+          })),
+        ),
+      );
+    }
     const detail = /\/access-profiles\/(p-\d)$/.exec(url);
     if (detail) {
       const profile = detail[1] === "p-1" ? SUPPORT : ONCALL;
@@ -3251,9 +3264,10 @@ const withProfiles = (rec: Recorder): FetchStub => scoped(rec.stub);
 const userRow = (canvas: ReturnType<typeof within>, email: string) =>
   within(canvas.getByText(email).closest('[role="row"]') as HTMLElement);
 
+const listsProfiles = profileStub();
 export const ListsTheProfilesAPersonHolds: Story = {
   render: () => {
-    const rec = profileStub();
+    const rec = listsProfiles;
     return (
       <Harness fetchStub={withProfiles(rec)} role="admin">
         <Users />
@@ -3268,6 +3282,9 @@ export const ListsTheProfilesAPersonHolds: Story = {
       name: "Access profiles held by grace@example.com",
     });
     await expect(within(list).getByText("Support engineers")).toBeVisible();
+    // the assignments come in one org-wide read, not a detail per profile (#3025)
+    await listsProfiles.expectSent("GET", "/access-profile-assignments");
+    listsProfiles.expectNotSent("GET", "/access-profiles/p-1");
     // a person who holds none reads as such, never as a blank cell
     await waitFor(() =>
       expect(userRow(canvas, "ada@example.com").getByText("no access profile")).toBeVisible(),
@@ -3280,7 +3297,7 @@ export const ProfilesFailedToLoad: Story = {
     <Harness
       role="admin"
       fetchStub={scoped(async (input) =>
-        String(input).includes("/access-profiles")
+        String(input).includes("/access-profile")
           ? json({ error: { message: "boom" } }, 500)
           : String(input).includes("/memberships")
             ? json(MEMBERSHIPS)
@@ -3306,7 +3323,7 @@ export const ProfilesStillLoading: Story = {
     <Harness
       role="admin"
       fetchStub={scoped((input) =>
-        String(input).includes("/access-profiles")
+        String(input).includes("/access-profile")
           ? new Promise<Response>(() => {})
           : Promise.resolve(
               String(input).includes("/memberships") ? json(MEMBERSHIPS) : json(USERS),

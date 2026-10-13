@@ -378,7 +378,7 @@ On the control plane, a refusal earns a code by going through the helpers in
 map such as `forwarded_headers[2]` or `injected_headers.x-team`, so the dashboard
 marks the row without matching message text; module validators call it rather
 than keeping a local `invalid`), `ApiError::InvalidBody` (`invalid_body`) for a
-body that does not parse, `name_taken(message)` for a taken name, and
+body that does not parse, `ApiError::InvalidQuery` (`invalid_query`) for a query string that does not deserialize (use the `Query` extractor in `crud.rs`, not axum's, so the rejection is coded), `name_taken(message)` for a taken name, and
 `ApiError::CodedConflict` with `REFERENCED` or `SCOPE_MISMATCH` for the other
 409s. A unique violation the store reports is `Error::AlreadyExists`, which the
 API renders as `409 name_taken` with a generic message, so a write that loses a

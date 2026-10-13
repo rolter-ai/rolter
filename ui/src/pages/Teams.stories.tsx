@@ -219,6 +219,19 @@ function teamProfiles(initial: Record<string, string[]> = { "p-1": ["team-1"], "
       );
       return json({}, 204);
     }
+    if (/\/access-profile-assignments$/.test(path)) {
+      return json(
+        [...held].flatMap(([profileId, teams]) =>
+          teams.map((team_id) => ({
+            id: `a-${profileId}-${team_id}`,
+            profile_id: profileId,
+            user_id: null,
+            team_id,
+            created_at: "",
+          })),
+        ),
+      );
+    }
     const detail = /\/access-profiles\/(p-\d)$/.exec(path);
     if (detail) {
       return json({
@@ -239,9 +252,10 @@ function teamProfiles(initial: Record<string, string[]> = { "p-1": ["team-1"], "
   });
 }
 
+const listsTeamProfiles = teamProfiles();
 export const ListsTheProfilesATeamHolds: Story = {
   render: () => (
-    <Harness fetchStub={teamProfiles().stub} role="admin">
+    <Harness fetchStub={listsTeamProfiles.stub} role="admin">
       <Teams />
     </Harness>
   ),
@@ -249,6 +263,9 @@ export const ListsTheProfilesATeamHolds: Story = {
     const canvas = within(canvasElement);
     const list = await canvas.findByRole("list", { name: "Access profiles held by Platform" });
     await expect(within(list).getByText("Support engineers")).toBeVisible();
+    // the assignments come in one org-wide read, not a detail per profile (#3025)
+    await listsTeamProfiles.expectSent("GET", "/access-profile-assignments");
+    listsTeamProfiles.expectNotSent("GET", "/access-profiles/p-1");
     // a team that holds none reads as such
     await waitFor(() => expect(canvas.getByText("no access profile")).toBeVisible());
   },
@@ -262,7 +279,7 @@ export const ProfilesFailedToLoad: Story = {
         const path = new URL(String(input), "http://localhost").pathname;
         if (path === "/api/v1/orgs") return json([ORG]);
         if (/\/teams$/.test(path)) return json(TEAMS);
-        if (path.includes("/access-profiles")) return json({ error: { message: "boom" } }, 500);
+        if (path.includes("/access-profile")) return json({ error: { message: "boom" } }, 500);
         return json([]);
       }}
     >

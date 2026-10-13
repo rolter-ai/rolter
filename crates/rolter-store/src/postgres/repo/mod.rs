@@ -5944,6 +5944,32 @@ impl AccessProfileRepo<'_> {
         .map_err(store_err)
     }
 
+    /// The assignments of every profile in `org_id`, narrowed to one user or one
+    /// team when given. The join is the tenancy bound: a subject that also holds
+    /// profiles in another org never leaks them through this org's route.
+    pub async fn list_org_assignments(
+        &self,
+        org_id: Uuid,
+        user_id: Option<Uuid>,
+        team_id: Option<Uuid>,
+    ) -> Result<Vec<AccessProfileAssignment>> {
+        sqlx::query_as(
+            "select a.id, a.profile_id, a.user_id, a.team_id, a.created_at \
+             from access_profile_assignments a \
+             join access_profiles p on p.id = a.profile_id \
+             where p.org_id = $1 \
+               and ($2::uuid is null or a.user_id = $2) \
+               and ($3::uuid is null or a.team_id = $3) \
+             order by a.created_at, a.id",
+        )
+        .bind(org_id)
+        .bind(user_id)
+        .bind(team_id)
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)
+    }
+
     pub async fn get_assignment(&self, id: Uuid) -> Result<AccessProfileAssignment> {
         sqlx::query_as(
             "select id, profile_id, user_id, team_id, created_at \

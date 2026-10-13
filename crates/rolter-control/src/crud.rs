@@ -6,7 +6,7 @@
 //! (see `main.rs`), since these routes need direct pool access beyond what
 //! the [`rolter_store::ConfigStore`] trait exposes.
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, patch, post, put};
@@ -260,6 +260,10 @@ pub(crate) enum ApiError {
     /// code [`INVALID_BODY`]. The parser cannot tell which input was wrong
     /// reliably, so unlike [`ApiError::InvalidField`] it names no field
     InvalidBody(String),
+    /// a 400 for a query string that does not deserialize into the list
+    /// parameters the endpoint takes (`limit=abc`, a malformed id), rendered with
+    /// the stable code [`INVALID_QUERY`]
+    InvalidQuery(String),
     /// missing or invalid credentials (401)
     Unauthenticated,
     /// authenticated but lacking the required role at the scope (403)
@@ -298,6 +302,7 @@ impl IntoResponse for ApiError {
             | Self::BadGateway { code, .. } => Some(*code),
             Self::InvalidField { .. } => Some(INVALID_FIELD),
             Self::InvalidBody(_) => Some(INVALID_BODY),
+            Self::InvalidQuery(_) => Some(INVALID_QUERY),
             Self::Core(Error::AlreadyExists(_)) => Some(NAME_TAKEN),
             // the same code the sign-in answers a lock with, so a client reads
             // one name for it wherever a password is being guessed
@@ -332,9 +337,9 @@ impl IntoResponse for ApiError {
                 (StatusCode::INTERNAL_SERVER_ERROR, message)
             }
             Self::BadGateway { message, .. } => (StatusCode::BAD_GATEWAY, message),
-            Self::InvalidField { message, .. } | Self::InvalidBody(message) => {
-                (StatusCode::BAD_REQUEST, message)
-            }
+            Self::InvalidField { message, .. }
+            | Self::InvalidBody(message)
+            | Self::InvalidQuery(message) => (StatusCode::BAD_REQUEST, message),
             Self::Conflict(message) | Self::CodedConflict { message, .. } => {
                 (StatusCode::CONFLICT, message)
             }
@@ -384,6 +389,11 @@ pub(crate) const INVALID_FIELD: &str = "invalid_field";
 /// JSON, or JSON that is not the shape the endpoint takes (#2729)
 pub(crate) const INVALID_BODY: &str = "invalid_body";
 
+/// stable code of the 400 for a query string that does not deserialize into
+/// the parameters the endpoint takes. The analytics extractor in
+/// `time_bounds.rs` answers the same code in its own envelope
+pub(crate) const INVALID_QUERY: &str = "invalid_query";
+
 /// stable code of the 409 for a name, slug, email or key that another record
 /// already holds (#2567). Raised by the explicit checks and, as the backstop for
 /// a concurrent write or an unchecked constraint, by every unique violation the
@@ -403,6 +413,28 @@ pub(crate) const SCOPE_MISMATCH: &str = "scope_mismatch";
 /// constraint and a table, which is schema detail the caller has no use for
 const ALREADY_EXISTS_MESSAGE: &str =
     "a record with that name or identifier already exists; choose another";
+
+/// axum's `Query` with a refusal in the control plane's error envelope: a
+/// query string that does not deserialize is a coded 400 rather than axum's
+/// plain-text rejection, which the dashboard could only show verbatim
+pub(crate) struct Query<T>(pub(crate) T);
+
+impl<S, T> axum::extract::FromRequestParts<S> for Query<T>
+where
+    T: serde::de::DeserializeOwned,
+    S: Send + Sync,
+{
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        axum::extract::Query::<T>::try_from_uri(&parts.uri)
+            .map(|axum::extract::Query(query)| Self(query))
+            .map_err(|rejection| ApiError::InvalidQuery(rejection.body_text()))
+    }
+}
 
 /// the 400 for one field of the request, with the stable [`INVALID_FIELD`] code
 pub(crate) fn invalid_field(field: impl Into<String>, message: impl Into<String>) -> ApiError {
@@ -563,7 +595,7 @@ pub(crate) fn require_allowed_egress(
     state
         .egress
         .check_url(url, field)
-        .map_err(|problem| ApiError::Core(Error::Config(problem)))
+        .map_err(|problem| invalid_field(field, problem))
 }
 
 /// Announce a config change after a mutation that touches the effective
@@ -690,9 +722,10 @@ fn audit_log_filter(query: &AuditLogQuery) -> ApiResult<(AuditLogFilter, i64)> {
         .start_at
         .is_some_and(|start| filter.end_at.is_some_and(|end| start > end))
     {
-        return Err(ApiError::Core(Error::Config(
-            "start_at must be before or equal to end_at".to_string(),
-        )));
+        return Err(invalid_field(
+            "start_at",
+            "start_at must be before or equal to end_at",
+        ));
     }
     Ok((filter, limit))
 }
@@ -780,9 +813,10 @@ fn normalized_filter(value: Option<String>, field: &str) -> ApiResult<Option<Str
         .filter(|value| !value.is_empty())
         .map(|value| {
             if value.len() > 256 || value.chars().any(char::is_control) {
-                return Err(ApiError::Core(Error::Config(format!(
-                    "{field} must be 1-256 visible characters"
-                ))));
+                return Err(invalid_field(
+                    field,
+                    format!("{field} must be 1-256 visible characters"),
+                ));
             }
             Ok(value)
         })
@@ -790,16 +824,14 @@ fn normalized_filter(value: Option<String>, field: &str) -> ApiResult<Option<Str
 }
 
 fn parse_audit_cursor(cursor: &str) -> ApiResult<AuditLogCursor> {
-    let (at, id) = cursor.rsplit_once('|').ok_or_else(|| {
-        ApiError::Core(Error::Config(
-            "cursor must contain timestamp and id".to_string(),
-        ))
-    })?;
+    let (at, id) = cursor
+        .rsplit_once('|')
+        .ok_or_else(|| invalid_field("cursor", "cursor must contain timestamp and id"))?;
     let at = DateTime::parse_from_rfc3339(at)
-        .map_err(|_| ApiError::Core(Error::Config("cursor has an invalid timestamp".to_string())))?
+        .map_err(|_| invalid_field("cursor", "cursor has an invalid timestamp"))?
         .with_timezone(&Utc);
-    let id = Uuid::parse_str(id)
-        .map_err(|_| ApiError::Core(Error::Config("cursor has an invalid id".to_string())))?;
+    let id =
+        Uuid::parse_str(id).map_err(|_| invalid_field("cursor", "cursor has an invalid id"))?;
     Ok(AuditLogCursor { at, id })
 }
 
@@ -1504,14 +1536,13 @@ async fn create_prompt_template_version(
     SafeJson(body): SafeJson<CreatePromptTemplateVersion>,
 ) -> ApiResult<Json<PromptTemplateVersion>> {
     if !body.variables.is_array() {
-        return Err(ApiError::Core(Error::Config(
-            "variables must be a JSON array".to_string(),
-        )));
+        return Err(invalid_field("variables", "variables must be a JSON array"));
     }
     if !body.decorators.is_array() {
-        return Err(ApiError::Core(Error::Config(
-            "decorators must be a JSON array".to_string(),
-        )));
+        return Err(invalid_field(
+            "decorators",
+            "decorators must be a JSON array",
+        ));
     }
     check_prompt_template_version(id, &body.variables, &body.decorators)?;
     let repo = PromptTemplateRepo(pool(&state));
@@ -1571,9 +1602,10 @@ async fn set_prompt_template_version(
     action: &str,
 ) -> ApiResult<Json<PromptTemplate>> {
     if version <= 0 {
-        return Err(ApiError::Core(Error::Config(
-            "version must be greater than zero".to_string(),
-        )));
+        return Err(invalid_field(
+            "version",
+            "version must be greater than zero",
+        ));
     }
     let repo = PromptTemplateRepo(pool(state));
     let existing = repo.get_template(id).await?;
@@ -1709,9 +1741,10 @@ async fn set_prompt_template_scopes(
     SafeJson(body): SafeJson<SetPromptTemplateScopes>,
 ) -> ApiResult<StatusCode> {
     if version <= 0 {
-        return Err(ApiError::Core(Error::Config(
-            "version must be greater than zero".to_string(),
-        )));
+        return Err(invalid_field(
+            "version",
+            "version must be greater than zero",
+        ));
     }
     let repo = PromptTemplateRepo(pool(&state));
     let template = repo.get_template(id).await?;
@@ -1829,9 +1862,10 @@ fn default_viewer_role() -> String {
 fn validate_access_role(role: &str) -> ApiResult<()> {
     match role {
         "viewer" | "member" | "admin" => Ok(()),
-        _ => Err(ApiError::Core(Error::Config(
-            "minimum_role must be one of viewer, member, admin".to_string(),
-        ))),
+        _ => Err(invalid_field(
+            "minimum_role",
+            "minimum_role must be one of viewer, member, admin",
+        )),
     }
 }
 
@@ -2043,10 +2077,10 @@ fn validate_skill_reference(reference: &str) -> ApiResult<()> {
         .map(|(_, rest)| rest.split('/').next().unwrap_or_default().contains('@'))
         .unwrap_or(true);
     if !allowed_scheme || authority_has_credentials {
-        return Err(ApiError::Core(Error::Config(
-            "content_ref must use https, git+https, oci, or s3 without embedded credentials"
-                .to_string(),
-        )));
+        return Err(invalid_field(
+            "content_ref",
+            "content_ref must use https, git+https, oci, or s3 without embedded credentials",
+        ));
     }
     Ok(())
 }
@@ -2058,22 +2092,22 @@ async fn create_skill_version(
     SafeJson(body): SafeJson<CreateSkillVersion>,
 ) -> ApiResult<Json<SkillVersion>> {
     if !body.metadata.is_object() {
-        return Err(ApiError::Core(Error::Config(
-            "metadata must be a JSON object".to_string(),
-        )));
+        return Err(invalid_field("metadata", "metadata must be a JSON object"));
     }
     if metadata_contains_sensitive_key(&body.metadata) {
-        return Err(ApiError::Core(Error::Config(
-            "metadata must not contain secret-bearing fields".to_string(),
-        )));
+        return Err(invalid_field(
+            "metadata",
+            "metadata must not contain secret-bearing fields",
+        ));
     }
     match (&body.content, &body.content_ref) {
         (Some(content), None) => require_non_empty(content, "content")?,
         (None, Some(reference)) => validate_skill_reference(reference)?,
         _ => {
-            return Err(ApiError::Core(Error::Config(
-                "exactly one of content or content_ref is required".to_string(),
-            )))
+            return Err(invalid_field(
+                "content",
+                "exactly one of content or content_ref is required",
+            ))
         }
     }
     let repo = SkillRepo(pool(&state));
@@ -2138,9 +2172,10 @@ async fn set_skill_version(
     action: &str,
 ) -> ApiResult<Json<Skill>> {
     if version <= 0 {
-        return Err(ApiError::Core(Error::Config(
-            "version must be greater than zero".to_string(),
-        )));
+        return Err(invalid_field(
+            "version",
+            "version must be greater than zero",
+        ));
     }
     let repo = SkillRepo(pool(state));
     let existing = repo.get_skill(id).await?;
@@ -2460,10 +2495,13 @@ async fn update_project_settings(
     authorize(&state, &principal, chain, cap!("project_settings", Update)).await?;
     let role = body.payload_min_role.trim();
     if !PAYLOAD_MIN_ROLES.contains(&role) {
-        return Err(ApiError::Core(Error::Config(format!(
-            "payload_min_role must be one of {}",
-            PAYLOAD_MIN_ROLES.join(", ")
-        ))));
+        return Err(invalid_field(
+            "payload_min_role",
+            format!(
+                "payload_min_role must be one of {}",
+                PAYLOAD_MIN_ROLES.join(", ")
+            ),
+        ));
     }
     ProjectRepo(pool(&state))
         .set_payload_min_role(id, role)
@@ -3390,9 +3428,10 @@ mod api_base_tests {
 
 fn validate_kind(kind: &str) -> ApiResult<()> {
     if !PROVIDER_KINDS.contains(&kind) {
-        return Err(ApiError::Core(Error::Config(format!(
-            "kind must be one of {PROVIDER_KINDS:?}"
-        ))));
+        return Err(invalid_field(
+            "kind",
+            format!("kind must be one of {PROVIDER_KINDS:?}"),
+        ));
     }
     Ok(())
 }
@@ -3415,9 +3454,7 @@ fn require_wellformed_api_base(kind: &str, api_base: &str) -> ApiResult<()> {
         return Ok(());
     };
     match parsed.api_base_problem(api_base) {
-        Some(problem) => Err(ApiError::Core(Error::Config(format!(
-            "api_base: {problem}"
-        )))),
+        Some(problem) => Err(invalid_field("api_base", format!("api_base: {problem}"))),
         None => Ok(()),
     }
 }
@@ -3914,9 +3951,10 @@ fn to_member_tuples(members: &[GroupMemberInput]) -> Vec<(Uuid, Option<String>, 
 
 fn validate_strategy(strategy: &str) -> ApiResult<()> {
     if !STRATEGIES.contains(&strategy) {
-        return Err(ApiError::Core(Error::Config(format!(
-            "strategy must be one of {STRATEGIES:?}"
-        ))));
+        return Err(invalid_field(
+            "strategy",
+            format!("strategy must be one of {STRATEGIES:?}"),
+        ));
     }
     Ok(())
 }
@@ -4536,9 +4574,10 @@ fn normalize_json_object(value: serde_json::Value, field: &str) -> ApiResult<ser
     match value {
         serde_json::Value::Null => Ok(serde_json::json!({})),
         v @ serde_json::Value::Object(_) => Ok(v),
-        _ => Err(ApiError::Core(Error::Config(format!(
-            "{field} must be a json object"
-        )))),
+        _ => Err(invalid_field(
+            field,
+            format!("{field} must be a json object"),
+        )),
     }
 }
 
@@ -4555,9 +4594,10 @@ fn validate_advanced(advanced: &AdvancedModelConfig) -> ApiResult<()> {
         ("output_tokens", advanced.limits.output_tokens),
     ] {
         if value.is_some_and(|limit| limit == 0 || limit > 10_000_000) {
-            return Err(ApiError::Core(Error::Config(format!(
-                "{field} must be between 1 and 10000000"
-            ))));
+            return Err(invalid_field(
+                field,
+                format!("{field} must be between 1 and 10000000"),
+            ));
         }
     }
     // zero is a value here, unlike the other limits: it turns retries off for
@@ -4568,9 +4608,10 @@ fn validate_advanced(advanced: &AdvancedModelConfig) -> ApiResult<()> {
         .retries
         .is_some_and(|retries| retries > MAX_ROUTE_RETRIES)
     {
-        return Err(ApiError::Core(Error::Config(format!(
-            "retries must be between 0 and {MAX_ROUTE_RETRIES}"
-        ))));
+        return Err(invalid_field(
+            "retries",
+            format!("retries must be between 0 and {MAX_ROUTE_RETRIES}"),
+        ));
     }
     // the same rule the snapshot and the proxy apply, so a header accepted here
     // is one the gateway sends: a name that is not a token, a value the wire
@@ -5126,9 +5167,10 @@ const SCOPE_TYPES: [&str; 6] = [
 
 fn validate_scope(scope_type: &str) -> ApiResult<()> {
     if !SCOPE_TYPES.contains(&scope_type) {
-        return Err(ApiError::Core(Error::Config(format!(
-            "scope_type must be one of {SCOPE_TYPES:?}"
-        ))));
+        return Err(invalid_field(
+            "scope_type",
+            format!("scope_type must be one of {SCOPE_TYPES:?}"),
+        ));
     }
     Ok(())
 }
@@ -5333,9 +5375,10 @@ fn validate_unpriced_policy(value: Option<&str>) -> ApiResult<()> {
     match value {
         None => Ok(()),
         Some(policy) if UNPRICED_POLICIES.contains(&policy) => Ok(()),
-        Some(_) => Err(ApiError::Core(Error::Config(format!(
-            "unpriced_policy must be one of {UNPRICED_POLICIES:?}"
-        )))),
+        Some(_) => Err(invalid_field(
+            "unpriced_policy",
+            format!("unpriced_policy must be one of {UNPRICED_POLICIES:?}"),
+        )),
     }
 }
 
@@ -5420,9 +5463,10 @@ fn validate_limit_usd(value: &str) -> ApiResult<()> {
     match value.trim().parse::<f64>() {
         // a range check refuses NaN and both infinities along with the rest
         Ok(limit) if (0.0..LIMIT_USD_CEILING).contains(&limit) => Ok(()),
-        _ => Err(ApiError::Core(Error::Config(
-            "limit_usd must be a finite number from 0 to 99999999.9999".into(),
-        ))),
+        _ => Err(invalid_field(
+            "limit_usd",
+            "limit_usd must be a finite number from 0 to 99999999.9999",
+        )),
     }
 }
 
@@ -5442,9 +5486,10 @@ fn validate_period(value: &str) -> ApiResult<()> {
         .iter()
         .map(|(spelling, _)| *spelling)
         .collect();
-    Err(ApiError::Core(Error::Config(format!(
-        "period must be one of {accepted:?}; there are no rolling windows such as 7d"
-    ))))
+    Err(invalid_field(
+        "period",
+        format!("period must be one of {accepted:?}; there are no rolling windows such as 7d"),
+    ))
 }
 
 /// What an edit actually moved, field by field, for the audit row.
@@ -5640,9 +5685,10 @@ struct UpdateRateLimit {
 fn validate_rate_limit_caps(rpm: Option<i32>, tpm: Option<i32>) -> ApiResult<()> {
     for (field, value) in [("rpm", rpm), ("tpm", tpm)] {
         if matches!(value, Some(cap) if cap < 1) {
-            return Err(ApiError::Core(Error::Config(format!(
-                "{field} must be at least 1, or null for no cap"
-            ))));
+            return Err(invalid_field(
+                field,
+                format!("{field} must be at least 1, or null for no cap"),
+            ));
         }
     }
     Ok(())
@@ -6418,9 +6464,10 @@ async fn create_membership(
             (chain, None, None, Some(body.scope_id))
         }
         other => {
-            return Err(ApiError::Core(Error::Config(format!(
-                "scope_type must be one of org, team, project (got '{other}')"
-            ))))
+            return Err(invalid_field(
+                "scope_type",
+                format!("scope_type must be one of org, team, project (got '{other}')"),
+            ))
         }
     };
 
@@ -7068,7 +7115,7 @@ mod cap_edit_tests {
     use super::*;
 
     fn refused<T: std::fmt::Debug>(res: ApiResult<T>) -> bool {
-        matches!(res, Err(ApiError::Core(Error::Config(_))))
+        matches!(res, Err(ApiError::InvalidField { .. }))
     }
 
     #[test]
@@ -7167,7 +7214,7 @@ mod cap_edit_tests {
         }
         for bad in ["7d", "weekly", "dialy", "", "  ", "1w", "month"] {
             match validate_period(bad) {
-                Err(ApiError::Core(Error::Config(message))) => {
+                Err(ApiError::InvalidField { message, .. }) => {
                     for (spelling, _) in BudgetPeriod::SPELLINGS {
                         assert!(
                             message.contains(spelling),
