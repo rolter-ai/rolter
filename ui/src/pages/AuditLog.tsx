@@ -17,7 +17,9 @@ import { Input } from "@/components/ui/input";
 import { Segmented } from "@/components/ui/segmented";
 import { Table, type TableColumn } from "@/components/ui/table";
 import {
+  fetchAuditLogExport,
   fetchAuditLogPage,
+  isEndpointNotMounted,
   fetchDeploymentAuditLogPage,
   fetchDeploymentUsers,
   fetchUsers,
@@ -29,6 +31,7 @@ import {
   auditExportRow,
   auditJson,
   collectAuditLog,
+  downloadBlob,
   downloadText,
   type AuditExportFormat,
 } from "@/lib/audit-export";
@@ -232,6 +235,22 @@ export default function AuditLog() {
         actor: actorParam,
         from: exportFrom,
       };
+      // the control plane streams the whole filtered log with no row cap; only
+      // one that predates the endpoint sends the browser back to reading pages
+      try {
+        const file = await fetchAuditLogExport(
+          deployment ? "deployment" : (scope.orgId as string),
+          format,
+          filters,
+        );
+        downloadBlob(
+          file.name ?? auditExportName({ org: orgLabel, from: exportFrom, format }),
+          file.blob,
+        );
+        return { count: null, truncated: false };
+      } catch (error) {
+        if (!isEndpointNotMounted(error)) throw error;
+      }
       const { entries, truncated } = await collectAuditLog(
         (query) =>
           deployment
@@ -250,9 +269,12 @@ export default function AuditLog() {
     onSuccess: ({ count, truncated }) => {
       toast.push({
         tone: truncated ? "info" : "success",
-        title: t(truncated ? "pages.auditLog.export.truncated" : "pages.auditLog.export.done", {
-          count,
-        }),
+        title:
+          count == null
+            ? t("pages.auditLog.export.downloaded")
+            : t(truncated ? "pages.auditLog.export.truncated" : "pages.auditLog.export.done", {
+                count,
+              }),
       });
     },
     onError: (error) => {

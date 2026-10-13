@@ -614,6 +614,24 @@ through the deployment-wide `GET /api/v1/audit-log`, which only a superadmin
 may call (#1858). See
 [security: who reads account events](security.md#who-reads-account-events-1854).
 
+### Streaming audit export (#3051)
+
+`GET /api/v1/orgs/{org_id}/audit-log/export?format=csv|json` and the
+superadmin-only `GET /api/v1/audit-log/export` live in
+`crates/rolter-control/src/audit_export.rs`. They authorize with the page read's
+own capabilities (`audit_log:read`, `deployment_audit_log:read`) and walk the
+same `AuditLogRepo::list_page` / `list_page_all` queries, so the org scoping
+(its own rows plus the account events of its people) is the page read's and an
+export is never wider. The body is a `stream::unfold` over the keyset cursor,
+1,000 rows a page, with actor e-mails resolved a page at a time into a map that
+grows only with the number of distinct actors. The CSV cell escaping mirrors
+`cell` in `ui/src/lib/audit-export.ts` and the two must change together.
+
+A read that fails after the headers went out ends the body with an I/O error
+rather than a clean close. The export is recorded as `audit_log.export` before
+the first byte, with the format and filters in `detail`; it adds no capability,
+since "can read the log" already means "can read all of it".
+
 ### Who an audit row names as the actor (#2844)
 
 `audit_log.actor_user_id` and the other "who did this" columns (`scim_tokens.created_by`, `invitations.invited_by`, `mcp_oauth_grants.revoked_by`) are filled from `Principal::account_id()`, never by matching the variant. `Principal::for_user` turns a superadmin account into `Principal::Superadmin { account: Some(id) }` (#2813), and that account holds no membership anywhere when it is the operator `rolter-seed` creates, so a `match` that keeps `Principal::User` and sends `Superadmin` to `None` drops exactly the actor an audit trail matters most for. Until #2844 about sixteen handlers carried that `match`.

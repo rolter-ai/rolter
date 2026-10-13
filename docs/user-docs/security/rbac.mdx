@@ -189,9 +189,20 @@ In the dashboard, a superadmin sees a scope switch on **Governance → Audit Log
 
 ## Exporting the audit log
 
-**Export CSV** and **Export JSON** on **Governance → Audit Logs** download the log under the filters in force (actor, action, target type and time window) rather than the 25 rows on screen. The dashboard reads `GET /api/v1/orgs/{org_id}/audit-log` (or `GET /api/v1/audit-log` in the whole-deployment view) 500 rows at a time and follows the cursor, so the file holds exactly what the API returns for those filters, newest first.
+**Export CSV** and **Export JSON** on **Governance → Audit Logs** download the log under the filters in force (actor, action, target type and time window) rather than the 25 rows on screen. The control plane builds the file and streams it, so there is no row cap: a year of changes arrives whole, newest first, and the control plane holds one page of it at a time however long the log is.
 
-Each row has `at` (UTC, ISO 8601 with a `Z`), `actor_email` (empty when the dashboard cannot name the account), `actor_user_id`, `action`, `target_type`, `target_id`, `org_id`, `entry_id` and `detail` (a JSON string in the CSV). The file is named `audit-log-<org>-<from>_to_<today>.<csv|json>`, where `<from>` is `all` for the **All** window. An export stops at the newest 10,000 rows and says so; narrow the window or the filters to reach the rest.
+The same file is available to an API client:
+
+- `GET /api/v1/orgs/{org_id}/audit-log/export?format=csv|json` for an organization's log, gated and scoped exactly like `GET /api/v1/orgs/{org_id}/audit-log`. It needs `audit_log:read` in that organization, and it returns the same rows, account events of the organization's own people included, and never more.
+- `GET /api/v1/audit-log/export?format=csv|json` for the whole deployment, superadmin only like `GET /api/v1/audit-log`.
+
+Both take the page read's filters, `actor`, `action`, `target_type`, `start_at` and `end_at`, and ignore `limit`, `cursor` and `direction`. A missing or unknown `format` is a `400`. If a read fails part way, the response ends in an error instead of a clean close, so a truncated file is never mistaken for a complete one.
+
+Each row has `at` (UTC, ISO 8601 with a `Z`), `actor_email` (empty when the account no longer exists), `actor_user_id`, `action`, `target_type`, `target_id`, `org_id`, `entry_id` and `detail` (a JSON string in the CSV). The CSV defuses spreadsheet formulas: a cell that starts with `=`, `+`, `-`, `@`, a tab or a carriage return gets a leading `'`. The JSON is one array of row objects. The file is named `audit-log-<org>-<from>_to_<to>.<csv|json>`, where `<from>` is `all` without a lower bound and `<to>` is the upper bound or today.
+
+Starting an export is itself audited: an `audit_log.export` entry in the organization (no organization for the deployment-wide export) names who ran it and the format and filters it used. It is written before the first byte is sent, so an export that is abandoned part way is still on record.
+
+A control plane that predates the endpoint answers `404`; the dashboard then falls back to reading the pages itself, 500 rows at a time, and stops at the newest 10,000 rows with a notice.
 
 The actor of a deployment-wide row can belong to any organization. `GET /api/v1/users` lists every account in the deployment, ordered by e-mail, so an API client can name any of them, and it is what the dashboard's **Whole deployment** view reads to do the same; see [Listing every account in the deployment](/api/deployment-users). Its `deployment_user:read` capability is superadmin-only, like `deployment_audit_log:read`.
 

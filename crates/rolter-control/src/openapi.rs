@@ -444,6 +444,41 @@ const AUDIT_LOG_QUERY: &[QueryParam] = &[
     ),
 ];
 
+/// The filters of the audit-log page read, minus the paging, plus the format:
+/// an export streams the whole filtered log (#3051).
+const AUDIT_EXPORT_QUERY: &[QueryParam] = &[
+    QueryParam::required(
+        "format",
+        "string",
+        "`csv` or `json`; the body streams as an attachment, newest first, with no row cap",
+    ),
+    QueryParam::new(
+        "actor",
+        "string",
+        "exact actor user id; omit for every actor",
+    ),
+    QueryParam::new(
+        "action",
+        "string",
+        "exact action name; omit for every action",
+    ),
+    QueryParam::new(
+        "target_type",
+        "string",
+        "exact target type; omit for every type",
+    ),
+    QueryParam::new(
+        "start_at",
+        "string",
+        "inclusive lower bound, RFC 3339; omit for no lower bound",
+    ),
+    QueryParam::new(
+        "end_at",
+        "string",
+        "inclusive upper bound, RFC 3339; omit for no upper bound",
+    ),
+];
+
 /// The scope selector both budget and rate-limit lists require. Not optional:
 /// the handlers deserialize these as bare fields, so omitting either is a 400.
 const SCOPE_QUERY: &[QueryParam] = &[
@@ -861,6 +896,18 @@ fn operations() -> Vec<Op> {
                 "Page the deployment-wide audit log (superadmin)",
             )
             .query(AUDIT_LOG_QUERY),
+            Op::get(
+                "/api/v1/orgs/{org_id}/audit-log/export",
+                "exportAuditLog",
+                "Stream an organization's filtered audit log as CSV or JSON",
+            )
+            .query(AUDIT_EXPORT_QUERY),
+            Op::get(
+                "/api/v1/audit-log/export",
+                "exportDeploymentAuditLog",
+                "Stream the deployment-wide audit log as CSV or JSON (superadmin)",
+            )
+            .query(AUDIT_EXPORT_QUERY),
             Op::get(
                 "/api/v1/orgs/{org_id}/teams",
                 "listTeams",

@@ -2195,6 +2195,269 @@ async fn the_deployment_audit_log_is_a_superadmins_and_returns_org_less_rows() {
     assert_eq!(back["items"], first["items"]);
 }
 
+/// The export walks the log past one page, so a long log arrives whole, under
+/// the page read's filters and scoping, with the actor named and a formula
+/// defused, and the export itself is on the record (#3051).
+#[tokio::test]
+async fn the_audit_export_streams_every_page_under_the_page_reads_scope() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("audit".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let org: uuid::Uuid = sqlx::query_scalar(
+        "insert into orgs (name, slug) values ('Acme Corp', 'acme-corp') returning id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let other: uuid::Uuid = sqlx::query_scalar(
+        "insert into orgs (name, slug) values ('Globex', 'globex') returning id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let admin = seed_user(&pool, "admin@acme.test", false).await;
+    seed_membership(&pool, admin, Some(org), None, None, "admin").await;
+    let viewer = seed_user(&pool, "viewer@acme.test", false).await;
+    seed_membership(&pool, viewer, Some(org), None, None, "viewer").await;
+    let outsider = seed_user(&pool, "admin@globex.test", false).await;
+    seed_membership(&pool, outsider, Some(other), None, None, "admin").await;
+    // 2,500 rows is three pages of 1,000; the odd ones carry another action
+    sqlx::query(
+        "insert into audit_log (org_id, actor_user_id, action, target_type, target_id, detail, at)
+         select $1, $2, case when n % 2 = 0 then 'budget.update' else 'budget.create' end,
+                'budget', gen_random_uuid(), jsonb_build_object('n', n),
+                now() - make_interval(secs => n)
+         from generate_series(1, 2500) n",
+    )
+    .bind(org)
+    .bind(admin)
+    .execute(&pool)
+    .await
+    .unwrap();
+    // a value typed by someone else: a spreadsheet would run this as a formula
+    sqlx::query(
+        "insert into audit_log (org_id, actor_user_id, action, target_type, detail, at)
+         values ($1, $2, 'budget.update', 'budget', to_jsonb('=HYPERLINK(\"http://x\")'::text),
+                 now() + interval '1 minute')",
+    )
+    .bind(org)
+    .bind(admin)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "insert into audit_log (org_id, actor_user_id, action, target_type, target_id, detail)
+         select $1, $2, 'budget.create', 'budget', gen_random_uuid(), '{}'
+         from generate_series(1, 5)",
+    )
+    .bind(other)
+    .bind(outsider)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let admin_session = seed_session(&pool, admin, "export_admin").await;
+    let viewer_session = seed_session(&pool, viewer, "export_viewer").await;
+    let outsider_session = seed_session(&pool, outsider, "export_out").await;
+    let url = format!("http://{addr}/api/v1/orgs/{org}/audit-log/export");
+
+    let csv = client
+        .get(&url)
+        .query(&[("format", "csv")])
+        .bearer_auth(&admin_session)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(csv.status(), 200);
+    let disposition = csv.headers()["content-disposition"].to_str().unwrap();
+    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    assert_eq!(
+        disposition,
+        format!("attachment; filename=\"audit-log-acme-corp-all_to_{today}.csv\"")
+    );
+    assert!(csv.headers()["content-type"]
+        .to_str()
+        .unwrap()
+        .starts_with("text/csv"));
+    let body = csv.text().await.unwrap();
+    let lines: Vec<&str> = body.split("\r\n").collect();
+    assert_eq!(
+        lines[0],
+        "at,actor_email,actor_user_id,action,target_type,target_id,org_id,entry_id,detail"
+    );
+    // header + 2,501 rows + this export's own audit entry (written before the
+    // first byte) + the empty tail after the last CRLF
+    assert_eq!(lines.len(), 1 + 2502 + 1, "every page is in the file");
+    assert!(lines.last().unwrap().is_empty());
+    assert!(
+        lines[1].contains("'=HYPERLINK"),
+        "newest first, and the formula is defused: {}",
+        lines[1]
+    );
+    assert!(lines[1].contains(",admin@acme.test,"), "{}", lines[1]);
+    assert!(lines[1].split(',').next().unwrap().ends_with('Z'));
+    assert!(!body.contains(&other.to_string()), "another org's rows");
+    let mut ids: Vec<&str> = lines[1..2503]
+        .iter()
+        .map(|line| line.split(',').nth(7).unwrap())
+        .collect();
+    ids.sort();
+    ids.dedup();
+    assert_eq!(ids.len(), 2502, "a page overlapped or skipped a row");
+
+    // the filters of the page read narrow the file
+    let filtered = client
+        .get(&url)
+        .query(&[("format", "csv"), ("action", "budget.update")])
+        .bearer_auth(&admin_session)
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert_eq!(
+        filtered.split("\r\n").count(),
+        1 + 1251 + 1,
+        "{filtered:.200}"
+    );
+    let none = client
+        .get(&url)
+        .query(&[("format", "csv"), ("start_at", "2999-01-01T00:00:00Z")])
+        .bearer_auth(&admin_session)
+        .send()
+        .await
+        .unwrap();
+    assert!(none.headers()["content-disposition"]
+        .to_str()
+        .unwrap()
+        .contains("2999-01-01_to_"));
+    assert_eq!(none.text().await.unwrap().split("\r\n").count(), 2);
+    let backwards = client
+        .get(&url)
+        .query(&[
+            ("format", "csv"),
+            ("start_at", "2026-02-01T00:00:00Z"),
+            ("end_at", "2026-01-01T00:00:00Z"),
+        ])
+        .bearer_auth(&admin_session)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(backwards.status(), 400);
+
+    // json is one valid array holding the same rows
+    let json: Value = client
+        .get(&url)
+        .query(&[("format", "json"), ("action", "budget.create")])
+        .bearer_auth(&admin_session)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let rows = json.as_array().unwrap();
+    assert_eq!(rows.len(), 1250);
+    assert_eq!(rows[0]["actor_email"], "admin@acme.test");
+    assert_eq!(rows[0]["org_id"], org.to_string());
+    assert!(rows[0]["detail"]["n"].is_number());
+
+    // never wider than the page read: a viewer, another org's admin and the
+    // deployment-wide route are all refused
+    for session in [&viewer_session, &outsider_session] {
+        let denied = client
+            .get(&url)
+            .query(&[("format", "csv")])
+            .bearer_auth(session)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(denied.status(), 403);
+    }
+    let wide = client
+        .get(format!("http://{addr}/api/v1/audit-log/export"))
+        .query(&[("format", "csv")])
+        .bearer_auth(&admin_session)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(wide.status(), 403);
+    let bad = client
+        .get(&url)
+        .query(&[("format", "xml")])
+        .bearer_auth(&admin_session)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bad.status(), 400);
+
+    // the export is on the record, with who ran it and under what filter;
+    // the refused ones are not
+    let recorded: Vec<(Option<uuid::Uuid>, Value)> = sqlx::query_as(
+        "select actor_user_id, detail from audit_log where action = 'audit_log.export'
+         order by at",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(recorded.len(), 4, "{recorded:?}");
+    assert!(recorded.iter().all(|(actor, _)| *actor == Some(admin)));
+    assert_eq!(recorded[1].1["action"], "budget.update");
+    assert_eq!(recorded[1].1["format"], "csv");
+    assert_eq!(recorded[3].1["format"], "json");
+}
+
+/// The deployment-wide export is the superadmin's and includes org-less rows.
+#[tokio::test]
+async fn the_deployment_audit_export_is_a_superadmins() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("audit".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let operator = seed_user(&pool, "operator@deploy.test", true).await;
+    sqlx::query(
+        "insert into audit_log (org_id, actor_user_id, action, target_type, target_id, detail)
+         values (null, $1, 'auth.login', 'user', $1, '{}')",
+    )
+    .bind(operator)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let session = seed_session(&pool, operator, "deploy_export").await;
+    let url = format!("http://{addr}/api/v1/audit-log/export");
+    let response = client
+        .get(&url)
+        .query(&[("format", "csv")])
+        .bearer_auth(&session)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert!(response.headers()["content-disposition"]
+        .to_str()
+        .unwrap()
+        .contains("audit-log-deployment-all_to_"));
+    let body = response.text().await.unwrap();
+    assert!(body.contains(",operator@deploy.test,"), "{body}");
+    assert!(body.contains(",auth.login,"), "{body}");
+    let unauthenticated = client
+        .get(&url)
+        .query(&[("format", "csv")])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unauthenticated.status(), 401);
+}
+
 #[tokio::test]
 async fn org_slug_is_validated() {
     skip_without_db!();

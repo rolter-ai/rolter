@@ -41,6 +41,8 @@ mod egress_client;
 // the renderer is pure and compiles without a store so its determinism and
 // secret-stripping are covered by the default-feature test run too; only the
 // route it backs needs postgres
+#[cfg(feature = "postgres")]
+mod audit_export;
 pub mod config_export;
 #[cfg(feature = "postgres")]
 mod connectors;

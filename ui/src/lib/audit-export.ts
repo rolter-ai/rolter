@@ -119,7 +119,12 @@ export async function collectAuditLog(
 
 /** hands `text` to the browser as a file; an object URL, not a data URI, for size */
 export function downloadText(name: string, text: string, type: string): void {
-  const url = URL.createObjectURL(new Blob([text], { type }));
+  downloadBlob(name, new Blob([text], { type }));
+}
+
+/** hands a ready file, such as the control plane's streamed export, to the browser */
+export function downloadBlob(name: string, blob: Blob): void {
+  const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
   a.download = name;

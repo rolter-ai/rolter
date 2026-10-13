@@ -1894,6 +1894,7 @@ mod tests {
         ("alerting.rs", include_str!("alerting.rs")),
         ("analytics.rs", include_str!("analytics.rs")),
         ("analytics_access.rs", include_str!("analytics_access.rs")),
+        ("audit_export.rs", include_str!("audit_export.rs")),
         ("auth.rs", include_str!("auth.rs")),
         ("auth_policy.rs", include_str!("auth_policy.rs")),
         ("cluster.rs", include_str!("cluster.rs")),
