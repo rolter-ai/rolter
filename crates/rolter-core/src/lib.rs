@@ -26,6 +26,7 @@ pub mod plugin_dispatch;
 pub mod probe;
 pub mod prompt_templates;
 pub mod redact;
+pub mod secret_env;
 #[cfg(feature = "shutdown")]
 pub mod shutdown;
 pub mod slug;
@@ -85,6 +86,7 @@ pub use prompt_templates::{
     PromptTemplateActivationScope, PromptTemplateRequestScope, PromptTemplatesConfig, RenderError,
     RenderedMessage, TemplateReport, TemplateVariable, TEMPLATE_VARS_FIELD,
 };
+pub use secret_env::{credential_from_env, is_control_plane_secret, is_secret_unless_allowed};
 pub use stability::{
     stability_of, stability_of_nav_key, subsystem, Stability, SubsystemStability, SUBSYSTEMS,
 };

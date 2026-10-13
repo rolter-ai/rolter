@@ -63,6 +63,15 @@ impl WebhookAuth {
             Self::SharedSecret { secret_env } => secret_env,
         }
     }
+
+    /// The secret, read from the environment unless the variable is one of the
+    /// deployment's own secrets (`ROLTER_GUARDRAIL_TOKEN` stays allowed). A row
+    /// saved before the control plane refused such names must not send them to
+    /// the webhook's url. `allowed` adds the variables a caller documents as
+    /// its own credential.
+    pub fn resolve_secret(&self, allowed: &[&str]) -> Option<String> {
+        crate::secret_env::credential_from_env(self.env_var(), allowed)
+    }
 }
 
 /// Custom guardrail webhook configuration (`[guardrail_webhook]`). Disabled by

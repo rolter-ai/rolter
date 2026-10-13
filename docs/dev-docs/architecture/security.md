@@ -327,7 +327,7 @@ reveals whether a credential variable is set, which is a mutation-level power.
   broken endpoint is not reported as a passing one.
 - The credential is read from the **control plane's** environment, because the
   draft names a variable and the destination is operator-chosen. A name
-  that `secret_env::is_control_plane_secret` matches (a deny-list of the KEK,
+  that `rolter_core::is_control_plane_secret` matches (a deny-list of the KEK,
   peppers, tokens, database and cache urls, plus every `ROLTER_` name except
   `ROLTER_GUARDRAIL_TOKEN`) is refused with a 400 so the trial cannot be used
   to send a control-plane secret to an arbitrary address. The provider
@@ -337,6 +337,20 @@ reveals whether a credential variable is set, which is a mutation-level power.
   before the variable is read (#3085). A variable that is unset here (gateways may have it) is a
   `credential_unset` result and no call is made; `skip_credential` calls
   without it.
+- The gateway applies the same predicate (#3097), because a row saved before
+  #3085 or imported by `rolter-seed` never passed the save-time check:
+  `GatewayConfig::sanitize_for_snapshot` clears a provider's `api_key_env` and
+  `api_keys[].env` that name a deployment secret and adds a `/config/problems`
+  line naming the row (the provider stays and serves without the credential, so
+  it is not an `omitted` record); `resolve_api_key` refuses the name again for a
+  config that skipped the pass; `validate()` rejects a file config that carries
+  one; `rolter-seed --import` stops before writing any row. The webhook callers
+  that read a row-named variable at call time (guardrail webhook, PII
+  sanitizer, plugins) go through `WebhookAuth::resolve_secret`: the call goes
+  out without the header and logs a warning. `ROLTER_GUARDRAIL_TOKEN` stays
+  allowed, and plugins also allow `ROLTER_PLUGIN_TOKEN`. Egress proxy
+  `${NAME}` references and the gateway's own fixed reads (`CLICKHOUSE_URL`,
+  Redis URL, KEK) name no value an operator row chooses to send out.
 
 The gateway's `EgressClient` is one pooled client per `AppState`, bound to the
 same live policy handle as the upstream forwarder, so a reload re-tunes it. It

@@ -65,7 +65,7 @@ fn config(api_base: String, key_env: &str, upstream_model: &str) -> GatewayConfi
 
 #[tokio::test]
 async fn chat_and_stream_use_environment_bearer_key() {
-    const KEY_ENV: &str = "ROLTER_TEST_OLLAMA_CLOUD_KEY";
+    const KEY_ENV: &str = "TEST_OLLAMA_CLOUD_KEY";
     std::env::set_var(KEY_ENV, "mock-ollama-cloud-key");
     let upstream = serve(Router::new().route("/v1/chat/completions", post(mock_cloud))).await;
     let gw = serve(rolter_gateway::build_router_from_config(&config(
