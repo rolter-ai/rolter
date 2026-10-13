@@ -247,7 +247,7 @@ In the dashboard and API, the provider's `project_id` is the same scope. See [Pr
 
 #### \[\[providers.api_keys\]\]
 
-Multiple weighted API keys for one provider. When present, this list takes precedence over the single `api_key`/`api_key_env` pair. Providers cap throughput per key, so rotating across keys multiplies your effective RPM/TPM and isolates a single revoked or throttled key from taking the whole provider down.
+Multiple weighted API keys for one provider. When present, this list takes precedence over the single `api_key`/`api_key_env` pair. Providers cap throughput per key, so rotating across keys multiplies your effective RPM/TPM and isolates a single revoked or throttled key from taking the whole provider down. On every request the gateway picks one key from the pool with probability proportional to its weight. A key that gets `429` or `401` upstream is parked on a cooldown and the request retries immediately on a sibling key; the target itself stays in rotation, and key cooldown trips are visible as `rolter_key_cooldowns_tripped_total` in `/metrics`.
 
 <ParamField path="key" type="string">
   An inline API key. Use `env` instead wherever possible.
@@ -560,7 +560,7 @@ Catalog metadata and model-scoped policy for one route. The dashboard's model sh
 
 ##### \[routes.advanced.limits\]
 
-Per-route request limits. An omitted key inherits the gateway-wide default, except `rpm`, `tpm` and `concurrency` where omitted means no cap. See [Route limits](/concepts/providers-and-routes#route-limits).
+Per-route request limits. An omitted key inherits the gateway-wide default, except `rpm`, `tpm` and `concurrency` where omitted means no cap. See [Route limits](/concepts/providers-and-routes#route-limits). A request over an `rpm`, `tpm` or `concurrency` cap is refused with `429` and `Retry-After`. Without `redis_url`, `rpm` and `tpm` are not enforced and `concurrency` still is. A zero fails config validation, and a stored row that carries one is served without that cap and reported by `GET /api/v1/config/problems`.
 
 <ParamField path="timeout_secs" type="integer">
   Response headers timeout in seconds (`1` and up); replaces `[timeouts]` `request_secs` for this route. A streamed body is not cut short.
@@ -571,7 +571,7 @@ Per-route request limits. An omitted key inherits the gateway-wide default, exce
 </ParamField>
 
 <ParamField path="output_tokens" type="integer">
-  Refuses a request asking for more completion tokens than this limit.
+  Refuses a request whose `max_tokens`, `max_completion_tokens` or `max_output_tokens` is above this limit.
 </ParamField>
 
 <ParamField path="rpm" type="integer">
