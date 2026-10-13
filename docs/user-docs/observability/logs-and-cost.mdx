@@ -343,6 +343,7 @@ That covers a date the calendar does not have (`2026-02-30`), a lowercase `t` or
 - **Virtual key** takes one key, picked by name from the keys of the project you are looking at. The address carries it as `key=<id>`.
 - **Cost** has one check, **Unpriced only**, which keeps the requests recorded as unpriced (see [Unpriced traffic](#unpriced-traffic)). The API takes it as `unpriced=true`.
 - **Business unit** and **Customer** each take several values. A request matches when it was charged to any of the ones you picked.
+- **Plugin** appears when the address names one (`plugin=blocked:<slug>`), and keeps the requests that plugin acted on. **Clear filters** drops it.
 
 **Clear filters** at the top of the rail drops every filter at once. When nothing matches, the empty table offers the same button.
 
@@ -356,11 +357,11 @@ A link can outlive what it names. A status value the API does not know is ignore
 
 ### Saved views
 
-**Saved views** beside **Filters** keeps the filters you have applied under a name, so you can come back to them in one click. A view holds the time window, status, model, key, business unit and customer. It never holds an id lookup, the page you were on or the **Unpriced only** check. Pick **Apply** to set the screen's filters from the view, **Rename** to change its name, or the bin to delete it. Each account keeps up to 50 views per screen, and a name can be used once.
+**Saved views** beside **Filters** keeps the filters you have applied under a name, so you can come back to them in one click. On **LLM Logs** a view holds the time window, status, model, key, business unit and customer; on the Dashboard it holds the window, model, key, business unit and customer. It never holds an id lookup, the page you were on or the **Unpriced only** check. Pick **Apply** to set the screen's filters from the view, **Rename** to change its name, or the bin to delete it. Each account keeps up to 50 views per screen, and a name can be used once.
 
 Views are private: they follow your account to any browser you sign in from, and nobody else sees them. They never widen what you can read. If a view names a key, business unit or customer that you can no longer read, it is applied without that filter and the screen says how many it left out, for example _Applied without: 1 key, 2 customers_. The ids are not shown. Saving again keeps only the filters applied at that moment.
 
-The [Dashboard](/concepts/dashboard) has the same control and keeps the time window it is reading. Saved views need a signed-in account, so they are unavailable while the control plane runs in open mode.
+The [Dashboard](/concepts/dashboard) has the same control and, applying a view, shows the same _Applied without: …_ notice for anything you can no longer read. Saved views need a signed-in account, so they are unavailable while the control plane runs in open mode.
 
 ## Paging the invocation log
 
@@ -382,7 +383,7 @@ The cursor is a position in the list's sort key — `(ts, request_id)`, newest f
 Treat the cursor as opaque and pass it back unchanged. `next_cursor` is `null` only for an empty page; a short page still carries one, so stop when a page comes back with no rows. `limit` is clamped to `1..=200` and defaults to 50. A cursor that is not `timestamp|request_id`, or whose timestamp is not one of the [time window](#time-windows) forms, is a `400` with `param: "cursor"` and `code: "invalid_cursor"`. The MCP call log (`GET /api/v1/mcp/logs`) pages the same way over `(ts, event_id)` and checks its cursor the same way.
 
 <Note>
-  Every filter — `since`, `until`, `model`, `key`, `business_unit`, `customer`, `status`, `unpriced`, `guardrail`, `request_id`, `trace_id` — must be repeated with the cursor, since it is the same query resumed rather than a stored server-side page.
+  Every filter — `since`, `until`, `model`, `key`, `business_unit`, `customer`, `status`, `unpriced`, `guardrail`, `plugin`, `request_id`, `trace_id` — must be repeated with the cursor, since it is the same query resumed rather than a stored server-side page.
 </Note>
 
 The **LLM Logs** screen pages the same way. **Next page** follows the cursor the current page returned and **Previous page** goes back to the one it came from, so a page you return to holds the requests it held before, however much traffic arrived in between. Only the first page follows live traffic while **Streaming** is on; later pages stay fixed on their cursor. Changing a filter starts again from the newest request, and a page after a full last page reads as the end of the log with a **Back to newest** button.

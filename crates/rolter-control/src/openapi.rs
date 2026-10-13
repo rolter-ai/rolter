@@ -477,6 +477,12 @@ const CUSTOMER_FILTER: QueryParam = QueryParam::new(
     "comma-separated customer ids; omit for every customer",
 );
 
+const PROJECT_FILTER: QueryParam = QueryParam::new(
+    "project",
+    "string",
+    "exact project id; omit for every project the caller may read",
+);
+
 /// The dashboard's summary and by-model reads: the window plus the row filters.
 const DASHBOARD_QUERY: &[QueryParam] = &[
     SINCE,
@@ -485,6 +491,7 @@ const DASHBOARD_QUERY: &[QueryParam] = &[
     KEY_FILTER,
     BUSINESS_UNIT_FILTER,
     CUSTOMER_FILTER,
+    PROJECT_FILTER,
 ];
 
 /// The window plus the bucket only the timeseries endpoint reads, and the
@@ -501,6 +508,7 @@ const TIMESERIES_QUERY: &[QueryParam] = &[
     KEY_FILTER,
     BUSINESS_UNIT_FILTER,
     CUSTOMER_FILTER,
+    PROJECT_FILTER,
 ];
 
 /// The uptime endpoint's window plus the target it measures against.
@@ -601,6 +609,7 @@ const INVOCATIONS_QUERY: &[QueryParam] = &[
     KEY_FILTER,
     BUSINESS_UNIT_FILTER,
     CUSTOMER_FILTER,
+    PROJECT_FILTER,
     QueryParam::new("status", "string", "all|error|success; defaults to all"),
     QueryParam::new(
         "request_id",
@@ -625,6 +634,13 @@ const INVOCATIONS_QUERY: &[QueryParam] = &[
         "only requests a guardrail acted on, named as the guardrails rollup does: \
          `blocked:<rule>`, `redacted:<rule>`, `annotated:<rule>`, `provider_blocked:<provider>`, \
          `provider_transformed:<provider>` (the bare forms for unnamed rows); omit for every request",
+    ),
+    QueryParam::new(
+        "plugin",
+        "string",
+        "only requests a plugin acted on, named as the plugins rollup does: \
+         `blocked:<slug>`, `transformed:<slug>`, `annotated:<slug>` or `error:<slug>:<kind>`; \
+         omit for every request",
     ),
     QueryParam::new("limit", "integer", "page size, 1..=200; defaults to 50"),
     QueryParam::new(
@@ -3910,6 +3926,7 @@ mod tests {
                 "key",
                 "business_unit",
                 "customer",
+                "project",
             ] {
                 assert!(names.contains(filter), "{path} lacks {filter}: {names:?}");
                 assert!(invocations.contains(filter), "invocations lacks {filter}");

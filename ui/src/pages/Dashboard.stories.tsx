@@ -1571,3 +1571,273 @@ export const AnAdminIsNotToldTheRate: Story = {
     await expect(canvas.queryByTestId("sampled-log-notice")).toBeNull();
   },
 };
+
+// the row filters (#2725): the same four LLM Logs has, kept in the address and
+// sent to every read on the screen
+const UNIT = { id: "unit-1", org_id: "org-1", name: "Platform Engineering", slug: "platform" };
+const CUSTOMER = { id: "cust-1", org_id: "org-1", name: "Acme Corp", slug: "acme" };
+const KEY = {
+  id: "vk-ci",
+  project_id: "project-1",
+  name: "ci-runner",
+  key_prefix: "rk_live_ab12",
+  models: [],
+  providers: [],
+  disabled: false,
+};
+const SAVED_VIEW_ID = "11111111-1111-4111-8111-111111111111";
+const GONE_CUSTOMER = "44444444-4444-4444-8444-444444444444";
+const SAVED_VIEW = {
+  id: SAVED_VIEW_ID,
+  surface: "dashboard",
+  name: "Platform spend",
+  filters: {
+    window: "7d",
+    model: "gpt-4o",
+    business_unit: ["unit-1"],
+    customer: ["cust-1", GONE_CUSTOMER],
+  },
+  effective_filters: {
+    window: "7d",
+    model: "gpt-4o",
+    business_unit: ["unit-1"],
+    customer: ["cust-1"],
+  },
+  unavailable: [{ filter: "customer", id: GONE_CUSTOMER }],
+  created_at: "2026-09-01T09:00:00Z",
+  updated_at: "2026-09-01T09:00:00Z",
+};
+
+/** the four analytics reads and the lists the pickers offer, answering what `answer` says of the model filter */
+const filterable = (
+  extra: (path: string, init?: RequestInit) => Response | undefined = () => undefined,
+) =>
+  recording(
+    scoped(async (input, init) => {
+      const url = new URL(String(input), "http://localhost");
+      const own = extra(url.pathname, init);
+      if (own) return own;
+      const model = url.searchParams.get("model");
+      if (url.pathname === "/api/v1/analytics/summary") {
+        return json({ data: [model ? { ...SUMMARY, requests: 84 } : SUMMARY] });
+      }
+      if (url.pathname === "/api/v1/analytics/by-model") {
+        return json({ data: BY_MODEL.filter((m) => !model || m.model === model) });
+      }
+      if (url.pathname === "/api/v1/models")
+        return json([{ model: "gpt-4o" }, { model: "claude-sonnet-4" }]);
+      if (url.pathname.includes("/business-units")) return json([UNIT]);
+      if (url.pathname.includes("/customers")) return json([CUSTOMER]);
+      if (url.pathname.endsWith("/virtual-keys")) return json([KEY]);
+      return loaded(input, init);
+    }),
+  );
+
+function AddressProbe() {
+  const { search } = useLocation();
+  return <span data-testid="address" data-search={search} hidden />;
+}
+const addressOf = (canvasElement: HTMLElement) =>
+  new URLSearchParams(within(canvasElement).getByTestId("address").dataset.search ?? "");
+
+const renderAt = (recorder: Recorder, address = "/", role?: StoryRole) => (
+  <MemoryRouter initialEntries={[address]}>
+    <Harness fetchStub={recorder.stub} role={role}>
+      <Dashboard />
+      <AddressProbe />
+    </Harness>
+  </MemoryRouter>
+);
+
+/** the query string of the latest read of `path` */
+const lastRead = (recorder: Recorder, path: string) => {
+  const reads = recorder.calls.filter((c) => new URL(c.url, "http://localhost").pathname === path);
+  return new URL(reads[reads.length - 1]?.url ?? "", "http://localhost").searchParams;
+};
+const READS = [
+  "/api/v1/analytics/summary",
+  "/api/v1/analytics/timeseries",
+  "/api/v1/analytics/by-model",
+  "/api/v1/analytics/invocations",
+];
+
+const picking = filterable();
+
+/**
+ * Picking a model and a business unit writes both to the address, counts them
+ * on the Filters button and sends them to all four reads; Clear filters takes
+ * them out again and the reads go back to unfiltered.
+ */
+export const FiltersNarrowEveryReadAndLiveInTheAddress: Story = {
+  render: () => renderAt(picking),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findAllByText(fmt.number(132));
+    await userEvent.click(canvas.getByRole("button", { name: "Filters" }));
+    const model = await canvas.findByRole("combobox", { name: "Model" });
+    await userEvent.click(model);
+    await userEvent.click(await canvas.findByRole("option", { name: /gpt-4o/ }));
+    await userEvent.click(await canvas.findByRole("checkbox", { name: /Platform Engineering/ }));
+    await waitFor(() => expect(addressOf(canvasElement).get("business_unit")).toBe("unit-1"));
+    await expect(addressOf(canvasElement).get("model")).toBe("gpt-4o");
+    await expect(canvas.getByRole("button", { name: "Filters · 2" })).toBeVisible();
+    await waitFor(() => {
+      for (const path of READS) {
+        const sent = lastRead(picking, path);
+        expect(sent.get("model")).toBe("gpt-4o");
+        expect(sent.get("business_unit")).toBe("unit-1");
+      }
+    });
+    await canvas.findAllByText(fmt.number(84));
+
+    await userEvent.click(canvas.getByRole("button", { name: "Clear filters" }));
+    await waitFor(() => expect(addressOf(canvasElement).has("model")).toBe(false));
+    await expect(addressOf(canvasElement).has("business_unit")).toBe(false);
+    await waitFor(() => {
+      for (const path of READS) expect(lastRead(picking, path).has("model")).toBe(false);
+    });
+    await expect(canvas.getByRole("button", { name: "Filters" })).toBeVisible();
+  },
+};
+
+const restoring = filterable();
+
+/** An address that names filters opens narrowed: the reads carry them and the pickers show them. */
+export const FiltersComeBackFromTheAddress: Story = {
+  render: () =>
+    renderAt(restoring, "/?window=7d&model=gpt-4o&key=vk-ci&business_unit=unit-1&customer=cust-1"),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findAllByText(fmt.number(84));
+    await waitFor(() => {
+      for (const path of READS) {
+        const sent = lastRead(restoring, path);
+        expect(sent.get("model")).toBe("gpt-4o");
+        expect(sent.get("key")).toBe("vk-ci");
+        expect(sent.get("business_unit")).toBe("unit-1");
+        expect(sent.get("customer")).toBe("cust-1");
+      }
+    });
+    await userEvent.click(canvas.getByRole("button", { name: "Filters · 4" }));
+    await expect(await canvas.findByRole("combobox", { name: "Model" })).toHaveValue("gpt-4o");
+    await expect(await canvas.findByRole("combobox", { name: "Virtual key" })).toHaveValue(
+      "ci-runner (rk_live_ab12…)",
+    );
+    await expect(
+      await canvas.findByRole("checkbox", { name: /Platform Engineering/ }),
+    ).toBeChecked();
+  },
+};
+
+const noMatch = filterable((path, init) => {
+  void init;
+  if (path === "/api/v1/analytics/summary")
+    return json({ data: [{ ...SUMMARY, requests: 0, errors: 0, cost_usd: 0 }] });
+  if (
+    path === "/api/v1/analytics/timeseries" ||
+    path === "/api/v1/analytics/by-model" ||
+    path === "/api/v1/analytics/invocations"
+  )
+    return json({ data: [] });
+  return undefined;
+});
+
+/** A filter that matches nothing says so, rather than reading as a deployment that has served no traffic. */
+export const AFilterThatMatchesNothingSaysSo: Story = {
+  render: () => renderAt(noMatch, "/?model=gpt-4o"),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() =>
+      expect(canvas.getAllByText(en.pages.dashboard.noMatch).length).toBeGreaterThanOrEqual(3),
+    );
+    await expect(canvas.queryByText(en.pages.dashboard.noTraffic)).toBeNull();
+    await expect(canvas.queryByText(en.pages.dashboard.nothingLogged)).toBeNull();
+  },
+};
+
+const withView = filterable((path) =>
+  path === "/api/v1/me/saved-views" ? json([SAVED_VIEW]) : undefined,
+);
+
+/**
+ * Applying a saved view writes its `effective_filters` into the address and
+ * counts what the account could no longer read, as LLM Logs does.
+ */
+export const ApplyingASavedViewSetsTheFilters: Story = {
+  render: () => renderAt(withView, "/?key=vk-ci"),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "Saved views" }));
+    await userEvent.click(
+      await within(document.body).findByRole("button", { name: "Apply Platform spend" }),
+    );
+    await waitFor(() => expect(addressOf(canvasElement).get("model")).toBe("gpt-4o"));
+    const address = addressOf(canvasElement);
+    await expect(address.get("window")).toBe("7d");
+    await expect(address.get("business_unit")).toBe("unit-1");
+    await expect(address.get("customer")).toBe("cust-1");
+    // the view does not name a key, so the one already picked is cleared
+    await expect(address.has("key")).toBe(false);
+    await expect(await canvas.findByRole("status")).toHaveTextContent(
+      "Applied without: 1 customer.",
+    );
+    await waitFor(() => expect(lastRead(withView, READS[0]).get("customer")).toBe("cust-1"));
+  },
+};
+
+const saving = filterable((path, init) => {
+  if (path !== "/api/v1/me/saved-views") return undefined;
+  return init?.method === "POST" ? json(SAVED_VIEW, 201) : json([]);
+});
+
+/** Saving keeps the window and the filters applied now, and leaves out the empty ones. */
+export const SavingAViewKeepsTheFilters: Story = {
+  render: () => renderAt(saving, "/?window=30d&model=gpt-4o&customer=cust-1"),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "Saved views" }));
+    const sheet = within(await within(document.body).findByRole("dialog", { name: "Saved views" }));
+    await userEvent.type(await sheet.findByLabelText("Save the current filters as"), "Mine");
+    await userEvent.click(sheet.getByRole("button", { name: "Save view" }));
+    const body = await saving.expectSentBody<{ filters: Record<string, unknown> }>(
+      "POST",
+      "/api/v1/me/saved-views",
+    );
+    await expect(body.filters).toEqual({ window: "30d", model: "gpt-4o", customer: ["cust-1"] });
+  },
+};
+
+const keyless = filterable((path) =>
+  path.endsWith("/virtual-keys") ? json({ error: { message: "forbidden" } }, 403) : undefined,
+);
+
+/** A caller who may not list keys gets the other pickers and no key picker, not an empty one. */
+export const WithoutKeyAccessThereIsNoKeyPicker: Story = {
+  render: () => renderAt(keyless, "/", "viewer"),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findAllByText(fmt.number(132));
+    await userEvent.click(canvas.getByRole("button", { name: "Filters" }));
+    await expect(await canvas.findByRole("combobox", { name: "Model" })).toBeVisible();
+    await expectGateAnswered();
+    await expect(canvas.queryByRole("combobox", { name: "Virtual key" })).toBeNull();
+  },
+};
+
+/** The panel is a disclosure: the button names its state and Escape-free keyboard use opens and closes it. */
+export const TheFilterPanelOpensFromTheKeyboard: Story = {
+  render: () => renderAt(filterable()),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findAllByText(fmt.number(132));
+    const button = canvas.getByRole("button", { name: "Filters" });
+    await expect(button).toHaveAttribute("aria-expanded", "false");
+    button.focus();
+    await userEvent.keyboard("{Enter}");
+    await expect(button).toHaveAttribute("aria-expanded", "true");
+    await expect(await canvas.findByRole("region", { name: "Filters" })).toBeVisible();
+    await userEvent.keyboard("{Enter}");
+    await expect(button).toHaveAttribute("aria-expanded", "false");
+    await expect(button).toHaveFocus();
+  },
+};

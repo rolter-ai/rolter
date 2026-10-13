@@ -1471,6 +1471,33 @@ export const AGuardrailLinkComesBackFiltered: Story = {
   },
 };
 
+const pluginLink = recording(serverFiltered(ROWS));
+
+/**
+ * #2243: an address that names a plugin outcome asks the server for it before
+ * the first page, the rail shows it as a filter, and unticking it drops it from
+ * the address and the read, as with a guardrail outcome.
+ */
+export const APluginLinkComesBackFiltered: Story = {
+  parameters: { address: "/logs?window=7d&plugin=blocked%3Apii-scan" },
+  render: () => (
+    <Harness fetchStub={pluginLink.stub}>
+      <Logs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(modelsOnScreen(canvasElement)).not.toEqual([]));
+    await expect(lastLogQuery(pluginLink).get("plugin")).toBe("blocked:pii-scan");
+
+    await userEvent.click(canvas.getByRole("button", { name: "Filters · 1" }));
+    const check = await canvas.findByRole("checkbox", { name: "blocked:pii-scan" });
+    await expect(check).toHaveAttribute("aria-checked", "true");
+    await userEvent.click(check);
+    await waitFor(() => expect(lastLogQuery(pluginLink).has("plugin")).toBe(false));
+  },
+};
+
 const staleUnpriced = recording(serverFiltered(ROWS));
 
 /** An address that says `unpriced=yes` is not the filter: only `true` is, as with an unknown status. */

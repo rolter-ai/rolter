@@ -281,11 +281,39 @@ export interface AnalyticsWindow {
   bucket?: string;
 }
 
-function windowParams(window: AnalyticsWindow): string {
+/**
+ * The row filters the summary, timeseries, by-model and invocation reads share
+ * (#2453): the same four names and shapes on each, applied inside the caller's
+ * row visibility. An omitted or empty one filters nothing.
+ */
+export interface AnalyticsRowFilters {
+  /** one exact model name */
+  model?: string;
+  /** one exact virtual key id */
+  key?: string;
+  /** business unit ids to narrow to; omitted means every unit (#1247) */
+  business_unit?: string[];
+  /** customer ids to narrow to; omitted means every customer */
+  customer?: string[];
+  /** one exact project id; omitted means every project the caller may read (#3090) */
+  project?: string;
+}
+
+// the control plane splits the two sets on commas, so a set travels as one param
+function setRowFilterParams(params: URLSearchParams, filters: AnalyticsRowFilters) {
+  if (filters.model) params.set("model", filters.model);
+  if (filters.key) params.set("key", filters.key);
+  if (filters.project) params.set("project", filters.project);
+  if (filters.business_unit?.length) params.set("business_unit", filters.business_unit.join(","));
+  if (filters.customer?.length) params.set("customer", filters.customer.join(","));
+}
+
+function windowParams(window: AnalyticsWindow & AnalyticsRowFilters): string {
   const params = new URLSearchParams();
   if (window.since) params.set("since", window.since);
   if (window.until) params.set("until", window.until);
   if (window.bucket) params.set("bucket", window.bucket);
+  setRowFilterParams(params, window);
   const qs = params.toString();
   return qs ? `?${qs}` : "";
 }
@@ -337,7 +365,7 @@ export interface AnalyticsByModelRow {
  * reach the control plane" panel instead of zeroes (#1608)
  */
 export function fetchAnalyticsSummary(
-  window: AnalyticsWindow = {},
+  window: AnalyticsWindow & AnalyticsRowFilters = {},
 ): Promise<AnalyticsSummary | null> {
   return getAnalytics<DataEnvelope<AnalyticsSummary>>(
     `/api/v1/analytics/summary${windowParams(window)}`,
@@ -345,7 +373,7 @@ export function fetchAnalyticsSummary(
 }
 
 export function fetchAnalyticsTimeseries(
-  window: AnalyticsWindow = {},
+  window: AnalyticsWindow & AnalyticsRowFilters = {},
 ): Promise<AnalyticsTimeseriesPoint[]> {
   return getAnalytics<DataEnvelope<AnalyticsTimeseriesPoint>>(
     `/api/v1/analytics/timeseries${windowParams(window)}`,
@@ -353,7 +381,7 @@ export function fetchAnalyticsTimeseries(
 }
 
 export function fetchAnalyticsByModel(
-  window: AnalyticsWindow = {},
+  window: AnalyticsWindow & AnalyticsRowFilters = {},
 ): Promise<AnalyticsByModelRow[]> {
   return getAnalytics<DataEnvelope<AnalyticsByModelRow>>(
     `/api/v1/analytics/by-model${windowParams(window)}`,
@@ -469,21 +497,25 @@ export interface InvocationRow {
   /// (#2158). rule names only, never the matched text. absent from a control
   /// plane that predates it, empty for a request no guardrail touched
   guardrail_events?: string[];
+  /// what each plugin did to the request, as `<outcome>:<slug>` or
+  /// `error:<slug>:<kind>` entries (#2243); absent from a control plane that
+  /// predates it, empty for a request no plugin touched
+  plugin_events?: string[];
 }
 
-export interface InvocationsQuery extends AnalyticsWindow {
+export interface InvocationsQuery extends AnalyticsWindow, AnalyticsRowFilters {
   /**
    * Only the requests a guardrail acted on, named as the `guardrails` rollup
    * names it: `blocked:<rule>`, `redacted:<rule>`, `annotated:<rule>`,
    * `provider_blocked:<name>` or `provider_transformed:<name>`, or the bare forms (#2158)
    */
   guardrail?: string;
-  model?: string;
-  key?: string;
-  /** business unit ids to narrow to; omitted means every unit (#1247) */
-  business_unit?: string[];
-  /** customer ids to narrow to; omitted means every customer */
-  customer?: string[];
+  /**
+   * Only the requests a plugin acted on, named as the `plugins` rollup names
+   * its entries: `blocked:<slug>`, `transformed:<slug>`, `annotated:<slug>` or
+   * `error:<slug>:<kind>` (#2243)
+   */
+  plugin?: string;
   status?: "all" | "error" | "success";
   /**
    * The `x-request-id` the gateway returned to the client, matched exactly
@@ -525,16 +557,13 @@ export function fetchInvocationsPage(query: InvocationsQuery = {}): Promise<Invo
   const params = new URLSearchParams();
   if (query.since) params.set("since", query.since);
   if (query.until) params.set("until", query.until);
-  if (query.model) params.set("model", query.model);
-  if (query.key) params.set("key", query.key);
-  // the control plane splits these on commas, so a set travels as one param
-  if (query.business_unit?.length) params.set("business_unit", query.business_unit.join(","));
-  if (query.customer?.length) params.set("customer", query.customer.join(","));
+  setRowFilterParams(params, query);
   if (query.status) params.set("status", query.status);
   if (query.request_id) params.set("request_id", query.request_id);
   if (query.trace_id) params.set("trace_id", query.trace_id);
   if (query.unpriced) params.set("unpriced", "true");
   if (query.guardrail) params.set("guardrail", query.guardrail);
+  if (query.plugin) params.set("plugin", query.plugin);
   if (query.limit != null) params.set("limit", String(query.limit));
   if (query.cursor) params.set("cursor", query.cursor);
   const qs = params.toString();

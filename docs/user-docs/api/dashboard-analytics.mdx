@@ -27,10 +27,11 @@ Every parameter is optional. A filter you leave out, or send empty, applies no f
 | `key`           | all three    | one exact virtual key id                                                      |
 | `business_unit` | all three    | comma-separated business unit ids; a row attributed to any of them is counted |
 | `customer`      | all three    | comma-separated customer ids; a row attributed to any of them is counted      |
+| `project`       | all three    | one exact project id                                                          |
 
 `since` and `until` take the [time window](/observability/logs-and-cost#time-windows) forms, and anything else is a `400` with `code: "invalid_time_bound"`. A `bucket` outside the list is a `400` too.
 
-The four filters are the ones `GET /api/v1/analytics/invocations` takes, with the same shapes and the same meaning, so a filter counts the same requests on the Dashboard as it lists on **LLM Logs**. Filters combine: `model=gpt-4o&customer=…` counts only that customer's `gpt-4o` traffic. An id nothing was attributed to matches nothing, so a filter only ever narrows.
+The five filters are the ones `GET /api/v1/analytics/invocations` takes, with the same shapes and the same meaning, so a filter counts the same requests on the Dashboard as it lists on **LLM Logs**. Filters combine: `model=gpt-4o&customer=…` counts only that customer's `gpt-4o` traffic. An id nothing was attributed to matches nothing, so a filter only ever narrows.
 
 ```bash
 # one customer's spend this month, by day
@@ -46,7 +47,7 @@ curl -H "Authorization: Bearer $SESSION_TOKEN" \
 
 The filters narrow what your roles already reach and never widen it. Every read is limited to the request log of the orgs, teams and projects you hold a role in, before any filter applies, so naming another tenant's key, unit or customer counts nothing rather than their traffic. See [Who sees which request logs](/security/rbac#who-sees-which-request-logs) for how roles map to rows.
 
-A **saved view** on the `dashboard` surface can hold these four filters beside `window` and `bucket`; see [Saved views](/security/rbac#saved-views).
+A **saved view** on the `dashboard` surface can hold `model`, `key`, `business_unit` and `customer` (not `project`) beside `window` and `bucket`; see [Saved views](/security/rbac#saved-views).
 
 ## Guardrail outcomes
 
@@ -66,6 +67,8 @@ A **saved view** on the `dashboard` surface can hold these four filters beside `
 `action` is `blocked`, `redacted` or `annotated` for a rule named in `rule`, and `provider_blocked` or `provider_transformed` for a guardrail provider, with the provider's name in `rule` (empty for rows written before the name was recorded, or by a provider that has none). A request counts once per rule, scaled by the log's sampling weight like every other count. The rows are limited to the request log you can read, as everywhere on this page. `recorded` is `false`, with `data` empty, when the ClickHouse table lacks `clickhouse/018_guardrail_events.sql`.
 
 `GET /api/v1/analytics/invocations` takes `guardrail=<action>:<rule>` (`provider_blocked:<provider name>` / `provider_transformed:<provider name>`, or the bare `provider_blocked` / `provider_transformed`) to list exactly those requests, and each row carries `guardrail_events`, an array of the same strings.
+
+`GET /api/v1/analytics/invocations` also takes `plugin=<outcome>:<slug>` (or `error:<slug>:<kind>`), named as the plugin rollup below names its entries, to list exactly the requests a plugin acted on; each row carries `plugin_events`, an array of the same strings. Unlike the four shared filters, `guardrail` and `plugin` are only on the invocation list. On a table without `clickhouse/019_plugin_events.sql` a `plugin` filter matches nothing.
 
 ## Plugin outcomes
 
