@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { SettingsBody } from "@/components/screen";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
@@ -244,21 +245,21 @@ function PerformanceScreen() {
 
   if (policy.isLoading) {
     return (
-      <div className="mx-auto flex max-w-[840px] flex-col gap-3.5 p-[22px]">
+      <SettingsBody>
         <PanelSkeleton panels={3} height={132} />
-      </div>
+      </SettingsBody>
     );
   }
   if (policy.isError) {
     return (
-      <div className="mx-auto flex max-w-[840px] flex-col gap-3.5 p-[22px]">
+      <SettingsBody>
         <LoadError
           error={policy.error}
           resource={t("errors.resources.performanceSettings")}
           onRetry={() => void policy.refetch()}
           target="performance"
         />
-      </div>
+      </SettingsBody>
     );
   }
   if (!form) return null;
@@ -291,7 +292,7 @@ function PerformanceScreen() {
   const status = dirty ? t("pages.performance.status.changed", { count: changed.length }) : null;
 
   return (
-    <div className="mx-auto flex max-w-[840px] flex-col gap-3.5 p-[22px]">
+    <SettingsBody>
       <SettingsPanel
         title={t("pages.performance.retries.title")}
         description={t("pages.performance.retries.desc")}
@@ -390,7 +391,7 @@ function PerformanceScreen() {
         </Button>
       </SaveBar>
       {leavePrompt}
-    </div>
+    </SettingsBody>
   );
 }
 

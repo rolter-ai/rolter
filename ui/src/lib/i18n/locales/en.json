@@ -888,9 +888,9 @@
       "copyModel": "Copy model name",
       "tryIt": "Try it",
       "tryRoute": "Try {{model}} in the Playground",
-      "traffic_one": "{{requests}} request for this model name, org-wide, in the last {{hours}} h · {{errors}} errors",
-      "traffic_other": "{{requests}} requests for this model name, org-wide, in the last {{hours}} h · {{errors}} errors",
-      "noTraffic": "No requests for this model name, org-wide, in the last {{hours}} h",
+      "traffic_one": "{{requests}} request for this model name in this project in the last {{hours}} h · {{errors}} errors",
+      "traffic_other": "{{requests}} requests for this model name in this project in the last {{hours}} h · {{errors}} errors",
+      "noTraffic": "No requests for this model name in this project in the last {{hours}} h",
       "trafficUnavailable": "Request counts are unavailable here, so the cards show none.",
       "noAnalytics": {
         "title": "Route traffic needs ClickHouse",

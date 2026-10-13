@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { SettingsBody } from "@/components/screen";
 import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { Link } from "react-router";
@@ -195,21 +196,21 @@ function AdaptiveSettingsScreen() {
 
   if (policy.isLoading) {
     return (
-      <div className="mx-auto flex max-w-[840px] flex-col gap-3.5 p-[22px]">
+      <SettingsBody>
         <PanelSkeleton panels={3} height={112} />
-      </div>
+      </SettingsBody>
     );
   }
   if (policy.isError) {
     return (
-      <div className="mx-auto flex max-w-[840px] flex-col gap-3.5 p-[22px]">
+      <SettingsBody>
         <LoadError
           error={policy.error}
           resource={t("errors.resources.adaptiveSettings")}
           onRetry={() => void policy.refetch()}
           target="adaptive-settings"
         />
-      </div>
+      </SettingsBody>
     );
   }
   if (!form) return null;
@@ -226,7 +227,7 @@ function AdaptiveSettingsScreen() {
   const total = WEIGHTS.reduce((a, [key]) => a + (Number(form[key]) || 0), 0);
 
   return (
-    <div className="mx-auto flex max-w-[840px] flex-col gap-3.5 p-[22px]">
+    <SettingsBody>
       <SettingsPanel
         title={t("pages.adaptiveSettings.title")}
         description={
@@ -366,7 +367,7 @@ function AdaptiveSettingsScreen() {
           </Link>
         }
       />
-    </div>
+    </SettingsBody>
   );
 }
 

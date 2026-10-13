@@ -60,10 +60,9 @@ interface RouteTraffic {
 }
 
 /**
- * the rollup keys on the public model name and is org-wide: the dashboard
- * filters carry no project or route id (#3036), so two projects that define a
- * route with one model name read the same pooled figure. The card says so in
- * its line; a route nothing called has no row
+ * the rollup keys on the public model name and is read with the route's
+ * project filter (#3101), so two projects that define a route with one model
+ * name each see their own figure; a route nothing called has no row
  */
 function trafficFor(rows: AnalyticsByModelRow[], model: string): RouteTraffic {
   const row = rows.find((r) => r.model === model);
@@ -138,10 +137,10 @@ export default function RoutingRules() {
   // ClickHouse, which a deployment may run without: that is an answer the
   // screen states, never a zero on every card
   const traffic = useQuery({
-    queryKey: ["route-traffic", TRAFFIC_WINDOW_HOURS],
+    queryKey: ["route-traffic", scope.projectId, TRAFFIC_WINDOW_HOURS],
     queryFn: async () => {
       const since = new Date(Date.now() - TRAFFIC_WINDOW_HOURS * 3_600_000).toISOString();
-      const rows = await fetchAnalyticsByModel({ since });
+      const rows = await fetchAnalyticsByModel({ since, project: scope.projectId as string });
       return Array.isArray(rows) ? rows : [];
     },
     enabled: (routes.data?.length ?? 0) > 0,

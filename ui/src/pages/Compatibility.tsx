@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { SettingsBody } from "@/components/screen";
 import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
 
@@ -132,21 +133,21 @@ function CompatibilityScreen() {
 
   if (policy.isLoading) {
     return (
-      <div className="mx-auto flex max-w-[840px] flex-col gap-3.5 p-[22px]">
+      <SettingsBody>
         <PanelSkeleton panels={2} height={112} />
-      </div>
+      </SettingsBody>
     );
   }
   if (policy.isError) {
     return (
-      <div className="mx-auto flex max-w-[840px] flex-col gap-3.5 p-[22px]">
+      <SettingsBody>
         <LoadError
           error={policy.error}
           resource={t("errors.resources.compatibilitySettings")}
           onRetry={() => void policy.refetch()}
           target="compatibility"
         />
-      </div>
+      </SettingsBody>
     );
   }
   if (!form) return null;
@@ -160,7 +161,7 @@ function CompatibilityScreen() {
   const restartRequired = policy.data?.restart_required ?? [];
 
   return (
-    <div className="mx-auto flex max-w-[840px] flex-col gap-3.5 p-[22px]">
+    <SettingsBody>
       <SettingsPanel
         title={t("pages.compatibility.version.title")}
         description={
@@ -225,7 +226,7 @@ function CompatibilityScreen() {
         pending={save.isPending}
         onSave={() => fields.submit(() => save.mutate(form))}
       />
-    </div>
+    </SettingsBody>
   );
 }
 

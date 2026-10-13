@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { SettingsBody } from "@/components/screen";
 import { Plus } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
@@ -256,21 +257,21 @@ function ClientSettingsScreen() {
 
   if (settings.isLoading) {
     return (
-      <div className="mx-auto flex max-w-[840px] flex-col gap-3.5 p-[22px]">
+      <SettingsBody>
         <PanelSkeleton panels={3} height={148} />
-      </div>
+      </SettingsBody>
     );
   }
   if (settings.isError) {
     return (
-      <div className="mx-auto flex max-w-[840px] flex-col gap-3.5 p-[22px]">
+      <SettingsBody>
         <LoadError
           error={settings.error}
           resource={t("errors.resources.clientSettings")}
           onRetry={() => void settings.refetch()}
           target="client-settings"
         />
-      </div>
+      </SettingsBody>
     );
   }
   if (!form || !settings.data) return null;
@@ -290,7 +291,7 @@ function ClientSettingsScreen() {
   const exampleBase = gatewayBase(form.publicBaseUrl)?.url ?? null;
 
   return (
-    <div className="mx-auto flex max-w-[840px] flex-col gap-3.5 p-[22px]">
+    <SettingsBody>
       <SettingsPanel
         title={t("pages.clientSettings.baseUrl")}
         description={t("pages.clientSettings.baseUrlHint")}
@@ -454,7 +455,7 @@ function ClientSettingsScreen() {
         pending={save.isPending}
         onSave={() => fields.submit(() => save.mutate(form))}
       />
-    </div>
+    </SettingsBody>
   );
 }
 

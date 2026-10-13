@@ -14,7 +14,4 @@
 // empty object.
 import type { ShapeAllowList } from "./check-ui-primitives";
 
-export const REPEATED_SHAPES: ShapeAllowList = {
-  "div|flex flex-col gap-3.5 max-w-[840px] mx-auto p-[22px]":
-    "the deployment-settings page shell, in all eight settings screens and in each of their loading, error and content states. a `SettingsPage` wrapper is #1711's first item; it is the largest of the nine and the one worth doing on its own",
-};
+export const REPEATED_SHAPES: ShapeAllowList = {};

@@ -338,6 +338,10 @@ The shell is a fixed 232px sidebar (a drawer below `md`) beside a content column
 header band. Screens pad their header and body with a 22px horizontal gutter; cards pad 24px;
 table cells pad 16px by 8px. Spacing follows Tailwind's 4px scale.
 
+Settings screens use `SettingsBody`, `PageBody`'s left-aligned gutter capped at 840px, so a form
+keeps a readable measure without centring: content stays at the same left edge when moving between
+a list screen and a settings one (#3053).
+
 Sheets slide in from the right at up to 580px wide and take the full width on small screens. The
 page never scrolls sideways: grid and flex children carry `min-w-0`, and wide tables scroll inside
 their card.
