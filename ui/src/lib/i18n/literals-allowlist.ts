@@ -45,10 +45,8 @@ export const NOT_COPY: AllowList = {
     shimmer:
       "a voice id the speech endpoint takes verbatim (OpenAI's own names), spliced into the translated `voiceOption` label",
   },
-  "src/pages/PromptRepository.tsx": {
+  "src/components/versioned-repository.tsx": {
     "v{…}": "a version number in `v3` notation, the same in every locale",
-  },
-  "src/pages/SkillsRepository.tsx": {
-    "v{…}": "a version number in `v3` notation, the same in every locale",
+    true: "the `aria-current` token for the selected row, a value of the attribute rather than copy",
   },
 };

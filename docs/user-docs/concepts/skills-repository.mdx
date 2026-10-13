@@ -38,11 +38,15 @@ Selecting **Save new version** appends a version. Saved content, references, and
 
 A version newer than the live one offers **Publish**, in the skill header and in the history rail, and an older one offers **Roll back**. Both ask for confirmation first and change only which version callers resolve by the skill's slug; newer versions remain in history after a roll back. When nothing is live yet, every version offers **Publish**.
 
+### Compare a version with the live one
+
+A selected version that is not the live one offers **Compare with live vN** in the skill header. The comparison shows the content source, the SKILL.md content as a line diff (inline or side by side), and the metadata key by key. The publish and roll back dialogs carry the same comparison under **Changes from live vN**, folded behind **Show changes**. The control plane does not record who created a version yet, so the history rail shows no author.
+
 Retiring a skill stops callers from resolving it, in every team, without deleting its metadata or version history. **Retire** in the skill header asks for confirmation; **Restore** puts the skill back when it should be available again.
 
 ## Unsaved edits
 
-The editor marks **Unsaved changes** while it differs from the version it was opened from. Selecting another skill or version, or leaving the screen, asks whether to discard them first. Cancel keeps the edits.
+The editor marks **Unsaved changes** while it differs from the version it was opened from. Selecting another skill or version, creating a skill, or leaving the screen asks whether to discard them first. Cancel keeps the edits; a skill created before you cancelled is still listed, just not selected. On a phone the version history is a single line above the editor; tap it to open the list.
 
 To remove a skill for good, use **Delete** in the skill header. Deleting drops every version and access rule with it, so the dialog asks you to type the skill's slug back before it will proceed. Prefer retiring when you only need callers to stop resolving the skill — retirement is reversible, deletion is not.
 

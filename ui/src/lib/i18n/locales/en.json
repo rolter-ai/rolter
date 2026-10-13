@@ -1145,7 +1145,6 @@
       "unpublished": "Unpublished",
       "liveBadge": "v{{version}} live",
       "noDescription": "No description yet.",
-      "publishVersion": "Publish v{{version}}",
       "saving": "Saving…",
       "saveNewDraft": "Save as new draft",
       "editingFrom": "editing from immutable v{{version}}",
@@ -1201,17 +1200,13 @@
       "emptyDecorator": "Empty decorator",
       "requestShapeTitle": "What callers send",
       "callerVarsHint": "Callers send variables in <0>rolter_template_vars</0> in the request body. A request that leaves out a required variable, or sends one no template in its scope declares, is refused with 400 <1>invalid_prompt_template</1>.",
-      "versionHistory": "Version history",
       "versionHistoryHint": "Saved versions cannot be edited.",
-      "noSavedVersions": "No saved versions",
-      "published": "Published",
       "versionCounts": "{{variables}} · {{decorators}}",
       "versionVariables_one": "{{count}} variable",
       "versionVariables_other": "{{count}} variables",
       "versionDecorators_one": "{{count}} decorator",
       "versionDecorators_other": "{{count}} decorators",
       "unsavedChanges": "Unsaved changes",
-      "rollbackTo": "Roll back to v{{version}}",
       "createTitle": "Create prompt template",
       "createDescription": "The slug is a stable identity. Content is added as an immutable version next.",
       "fieldSlug": "Slug",
@@ -1243,7 +1238,11 @@
         "deleteConsequence": "Every version, scope and sample is deleted with it. This cannot be undone.",
         "deleteSlugLabel": "Type {{slug}} to confirm",
         "deleteConfirm": "Delete template"
-      }
+      },
+      "scopesLoading": "Loading scopes…",
+      "scopesUnavailable": "Scopes unavailable",
+      "scopesNone": "No scopes",
+      "scopesList": "Scopes: {{names}}"
     },
     "skillsRepo": {
       "deleteAction": "Delete {{name}}",
@@ -1278,7 +1277,6 @@
       "unpublished": "Unpublished",
       "liveBadge": "v{{version}} live",
       "noDescription": "No description yet.",
-      "publishVersion": "Publish v{{version}}",
       "saving": "Saving…",
       "saveNewVersion": "Save new version",
       "minimumRoleMeta": "minimum role: {{role}}",
@@ -1299,13 +1297,9 @@
       "versionMetadataDescription": "Optional non-secret JSON for runtime requirements, capabilities, or provenance.",
       "metadataJson": "Metadata JSON",
       "secretFieldsRejected": "Fields containing secret, password, token, or API key names are rejected by the control plane.",
-      "versionHistory": "Version history",
       "versionHistoryHint": "Content and metadata never change.",
-      "noSavedVersions": "No saved versions",
-      "published": "Published",
       "artifactReferenceMeta": "artifact reference",
       "inlineContentMeta": "inline content",
-      "rollbackTo": "Roll back to v{{version}}",
       "fieldName": "Name",
       "fieldSlug": "Slug",
       "fieldOptional": "optional",
@@ -5246,6 +5240,50 @@
       "adaptive": "Blend of latency, cost and load, tuned by the gateway. For pools mixed in both price and latency.",
       "loraAware": "Prefers a target that already holds the requested LoRA adapter. For fleets serving many adapters over shared base weights.",
       "predictedLatency": "Ranks targets by the modelled cost of this request, from queue depth and prompt size. For variable prompt sizes and deep queues."
+    }
+  },
+  "repository": {
+    "history": "Version history",
+    "noSavedVersions": "No saved versions",
+    "published": "Published",
+    "publishVersion": "Publish v{{version}}",
+    "rollbackTo": "Roll back to v{{version}}",
+    "historySummary_one": "{{count}} version · v{{version}} selected",
+    "historySummary_other": "{{count}} versions · v{{version}} selected",
+    "changes": {
+      "title": "Changes from live v{{live}} to v{{version}}",
+      "identical": "v{{version}} is identical to live v{{live}}.",
+      "count_one": "{{count}} difference",
+      "count_other": "{{count}} differences",
+      "show": "Show changes",
+      "hide": "Hide changes"
+    },
+    "compare": {
+      "action": "Compare with live v{{live}}",
+      "title": "v{{version}} compared with live v{{live}}",
+      "description": "Removed lines are in live v{{live}} only; added lines are in the version you are looking at. Both versions are immutable."
+    },
+    "diff": {
+      "added": "Added",
+      "removed": "Removed",
+      "before": "Before",
+      "after": "After",
+      "unchanged_one": "{{count}} unchanged line",
+      "unchanged_other": "{{count}} unchanged lines",
+      "layout": "{{name}} layout",
+      "inline": "Inline",
+      "split": "Side by side",
+      "identical": "No differences.",
+      "source": "Source",
+      "variableRequired": "required",
+      "variableOptional": "optional",
+      "variableDefault": "default “{{value}}”",
+      "field": {
+        "added": "added",
+        "removed": "removed",
+        "changed": "changed",
+        "same": "unchanged"
+      }
     }
   }
 }

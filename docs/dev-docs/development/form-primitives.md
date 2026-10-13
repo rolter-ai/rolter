@@ -382,6 +382,17 @@ The reducer and `changedKeys` are plain functions with unit tests beside them, s
 React test renderer. The Security screen is the first consumer. The shared field errors are `useFieldErrors` above. The saved-at line that #2214 asks every settings
 screen to carry is not here yet; it belongs beside this hook rather than in each screen.
 
+## The versioned-repository kit
+
+The Prompt Repository and the Skills Repository are both a named thing with immutable versions, one of them live, and are built from one kit, `ui/src/components/versioned-repository.tsx` (#2221):
+
+- `RepositoryShell`, `RepositoryIndex`, `VersionRail`, `VersionBadge`, `VersionMeta`, `SectionHeading` and `RepositoryLoadingState` draw the page. The rail is a folded one-line toggle above the editor under `lg` and a static panel from `lg` (#3118).
+- `liveAction` is the one rule for the verb a version offers: newer than the live one is a publish, older is a roll back, and with nothing live every version is a publish. `MakeLiveDialog` is the confirmation shell and `useLatched` keeps its request through the render that closes it.
+- `ChangesPanel`, `CompareButton` and `VersionCompareDialog` carry the comparison with the live version (#2112), built on `TextDiff` and `FieldDiff` in `ui/src/components/ui/text-diff.tsx` and the pure line and field diff in `ui/src/lib/text-diff.ts`. `ui/src/lib/version-diff.ts` turns a prompt or skill version pair into the rows. The diff is written in the repository rather than taken from a package, so nothing is added to the bundle.
+- `DeleteBySlugDialog` is the destructive confirmation that needs the slug typed back.
+
+What differs stays with the screen: the editor, the copy that names the thing, and what a make-live dialog says about impact. A screen passes its own already-translated title and description. Selecting a row, a version, or the row a create just made goes through `useDraftSwitch`, so unsaved edits are never replaced without the discard prompt.
+
 ## Still to do
 
 `ModelSheet` is the only consumer today. `ProviderSheet`, `ProviderGroupSheet`
