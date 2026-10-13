@@ -677,7 +677,7 @@ fn operations() -> Vec<Op> {
             Op::get(
                 "/api/v1/config",
                 "getConfig",
-                "The assembled gateway configuration, with every secret redacted",
+                "The assembled gateway configuration, with every secret redacted. Providers, routes and groups are limited to the organizations and projects the caller holds a role in; a superadmin sees all",
             ),
             Op::get(
                 "/api/v1/config/problems",
@@ -1156,7 +1156,7 @@ fn operations() -> Vec<Op> {
             Op::get(
                 "/api/v1/models",
                 "listModels",
-                "List every public model name served, with each entry's targets and owning organization",
+                "List the public model names served in the caller's organizations and projects (all for a superadmin), with each entry's targets and owning organization",
             )
             .ok(Payload::List("EffectiveModel")),
             Op::delete(

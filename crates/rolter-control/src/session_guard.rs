@@ -20,8 +20,23 @@ use crate::ControlState;
 
 /// Proof that the request carried a credential this control plane accepts.
 /// Holds nothing: a handler that needs the caller's identity or role takes a
-/// `Principal` or `CurrentUser` instead.
-pub(crate) struct AnySession;
+/// `Principal` or `CurrentUser` instead, except for the one thing a guarded
+/// read may need: `principal`, set when a database-backed session resolved, so
+/// a read can scope tenant rows to the caller (#3094). It is `None` in open
+/// mode and for the admin token without a database, which see everything.
+pub(crate) struct AnySession {
+    #[cfg(feature = "postgres")]
+    pub(crate) principal: Option<crate::rbac::Principal>,
+}
+
+impl AnySession {
+    fn unscoped() -> Self {
+        Self {
+            #[cfg(feature = "postgres")]
+            principal: None,
+        }
+    }
+}
 
 fn unauthenticated() -> Response {
     (
@@ -41,14 +56,16 @@ impl FromRequestParts<ControlState> for AnySession {
         // open mode: the CRUD API already treats every caller as superadmin,
         // so this view is no more exposed than the rows behind it
         let Some(expected) = state.admin_token.as_deref() else {
-            return Ok(AnySession);
+            return Ok(AnySession::unscoped());
         };
         // with a database a session resolves exactly as it does for the CRUD
         // API: the admin token, superadmin sessions and every role pass
         #[cfg(feature = "postgres")]
         if state.pool.is_some() {
             return match crate::rbac::Principal::from_request_parts(parts, state).await {
-                Ok(_) => Ok(AnySession),
+                Ok(principal) => Ok(AnySession {
+                    principal: Some(principal),
+                }),
                 Err(error) => Err(error.into_response()),
             };
         }
@@ -66,7 +83,7 @@ impl FromRequestParts<ControlState> for AnySession {
                 expected.as_bytes(),
             ))
         {
-            Ok(AnySession)
+            Ok(AnySession::unscoped())
         } else {
             Err(unauthenticated())
         }

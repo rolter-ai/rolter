@@ -107,6 +107,13 @@ count. A route created through the API also carries `org_id` and `project_id`;
 a route from `rolter.toml` has neither. Two organizations that serve the same
 model name are two entries, told apart by `org_id`.
 
+The list is scoped to the caller. A member sees the routes of the organizations
+they hold a role in, plus the routes of a single project they hold a role in;
+another organization's models, targets, `org_id` and `project_id` are not
+listed. A superadmin, the admin token and open mode see every route, and so does
+anyone for routes from `rolter.toml`, which belong to the deployment. A
+deployment with one organization lists what it listed before.
+
 ## Who may call it, and what it refuses
 
 Changing a route takes the **admin** role on its project (or on the project's

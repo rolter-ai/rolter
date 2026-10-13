@@ -42,6 +42,7 @@ use crate::rbac::{
     authorize, authorize_superadmin, policy_allows, reaches_org, Principal, ScopeChain, ScopeFilter,
 };
 use crate::rbac_matrix::{cap, superadmin_cap, Requirement};
+use crate::tenant_view::TenantView;
 use crate::ControlState;
 
 pub fn router() -> Router<ControlState> {
@@ -5886,10 +5887,17 @@ async fn list_models(
     // model visibility carried by the caller's access profiles (#534);
     // unrestricted for a superadmin and for anyone holding no policy
     let policy = caller_policy(&state, &principal).await?;
-    let models = config
-        .routes
-        .iter()
-        .filter(|r| policy.permits_model(&r.model))
+    // the organizations and projects the caller can see (#3094); a row of
+    // another tenant is not listed, targets and ids included
+    let mut view = TenantView::load(&state, Some(&principal)).await?;
+    let mut routes = Vec::new();
+    for route in &config.routes {
+        if policy.permits_model(&route.model) && view.sees(&state, route.tenancy.as_ref()).await {
+            routes.push(route);
+        }
+    }
+    let models = routes
+        .into_iter()
         .map(|r| EffectiveModel {
             model: r.model.clone(),
             strategy: r.strategy,

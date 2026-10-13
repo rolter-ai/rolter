@@ -472,7 +472,12 @@ image keeps its own default.
 A store that cannot be read is a `500` with the redacted `{"error": {"message": "internal server error"}}` body on both `GET /api/v1/config` and `GET /api/v1/config/problems` (#2248), never an empty default configuration: the dashboard shows its load error rather than a deployment with no providers.
 
 `GET /api/v1/config` answers a signed-in caller of any role (or the admin
-token, or anyone in open mode) and nobody else; see [The public route
+token, or anyone in open mode) and nobody else, and lists only the providers,
+routes and provider groups of the organizations and projects that caller can see
+(#3094; a superadmin, the admin token and open mode see all, a file-defined row
+with no tenancy is everyone's). `GET /api/v1/config/problems` renumbers its
+`omitted` records to match that shorter list, but its sentences still name every
+tenant's entries (#3100). See [The public route
 allowlist](#the-public-route-allowlist-1840). It serves the dashboard's config
 screen. It serializes the same `GatewayConfig` the store loads for the gateway's
 `/internal/snapshot`, and on a Postgres store holding `ROLTER_KEK` that load has
