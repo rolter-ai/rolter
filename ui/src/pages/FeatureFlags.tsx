@@ -260,7 +260,7 @@ function FlagCard({
       badge={
         (unavailable || changed) && (
           <>
-            {unavailable && <Badge tone="warning">UNAVAILABLE</Badge>}
+            {unavailable && <Badge tone="warning">{t("pages.featureFlags.unavailable")}</Badge>}
             {changed && <Badge tone="info">{t("pages.featureFlags.changed")}</Badge>}
           </>
         )
@@ -276,7 +276,7 @@ function FlagCard({
     >
       {unavailable && (
         <p className="w-full text-[0.6875rem] text-[color:var(--text-subtle)]">
-          {unavailableReason}
+          {t("pages.featureFlags.unavailableReason", { reason: unavailableReason })}
         </p>
       )}
       {unavailable && storedOn && (

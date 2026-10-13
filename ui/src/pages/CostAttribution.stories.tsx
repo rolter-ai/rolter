@@ -192,7 +192,22 @@ export const BusinessUnitsLoaded: Story = {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByText("Platform Engineering")).toBeVisible());
     // a retired unit keeps its history rather than disappearing
-    await expect(canvas.getByText("RETIRED")).toBeVisible();
+    await expect(canvas.getByText("Retired")).toBeVisible();
+  },
+};
+
+export const BusinessUnitsLoadedInRussian: Story = {
+  globals: { locale: "ru" },
+  render: () => (
+    <Harness fetchStub={router({})}>
+      <BusinessUnits />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText("Platform Engineering")).toBeVisible());
+    await expect(canvas.getByText(ru.pages.costAttribution.retired)).toBeVisible();
+    await expect(canvas.queryByText("Retired")).toBeNull();
   },
 };
 

@@ -24,6 +24,7 @@ import {
 } from "./story-harness";
 import type { SkillRow, SkillVersionRow } from "@/lib/api";
 import { CapabilityProvider } from "@/lib/can";
+import ru from "@/lib/i18n/locales/ru.json";
 import { UxScreenProvider } from "@/lib/ux-react";
 
 const ORG = "00000000-0000-4000-8000-000000000011";
@@ -184,6 +185,22 @@ export const Loaded: Story = {
     await within(canvasElement).findAllByText("Incident coordinator");
     // the shell's ScreenHeader owns the page's only h1 (#2241)
     await expect(within(canvasElement).queryAllByRole("heading", { level: 1 })).toHaveLength(0);
+  },
+};
+
+// the role in "minimum role: …" is the dashboard's word for it, as in the
+// settings dialog, not the stored identifier (#2098)
+export const LoadedInRussian: Story = {
+  globals: { locale: "ru" },
+  render: () => <Harness fetchStub={loadedStub()} />,
+  play: async ({ canvasElement }) => {
+    const { skillsRepo } = ru.pages;
+    await within(canvasElement).findAllByText("Incident coordinator");
+    await expect(
+      await within(canvasElement).findByText(
+        skillsRepo.minimumRoleMeta.replace("{{role}}", skillsRepo.roleMember),
+      ),
+    ).toBeVisible();
   },
 };
 

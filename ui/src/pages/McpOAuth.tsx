@@ -49,6 +49,7 @@ import {
   type McpServerRow,
   type UserRow,
 } from "@/lib/api";
+import { grantStateLabel, oauthStateLabel } from "@/lib/enum-labels";
 import { errorText } from "@/lib/error-copy";
 import { useOptionalAuth } from "@/lib/auth";
 import { useFormat } from "@/lib/i18n/format";
@@ -466,7 +467,7 @@ export function OAuthGrants() {
                     </ListCell>
                     <ListCell className="grid">
                       <Badge tone={g.active ? "success" : "neutral"} dot={g.active}>
-                        {g.active ? "ACTIVE" : "REVOKED"}
+                        {grantStateLabel(g.active, t)}
                       </Badge>
                     </ListCell>
                     <ListCell className="grid">
@@ -951,11 +952,13 @@ export function AuthSessions() {
                         }
                         dot={state === "active"}
                       >
-                        {state.toUpperCase()}
+                        {oauthStateLabel(state, t)}
                       </Badge>
                       {/* renewability is reported as a flag; the refresh token
                           itself is never part of the payload */}
-                      {s.has_refresh_token && <Badge tone="info">RENEWABLE</Badge>}
+                      {s.has_refresh_token && (
+                        <Badge tone="info">{t("pages.mcpOAuth.states.renewable")}</Badge>
+                      )}
                       {fresh && (
                         <Badge tone="accent">{t("pages.mcpOAuth.consent.newSession")}</Badge>
                       )}

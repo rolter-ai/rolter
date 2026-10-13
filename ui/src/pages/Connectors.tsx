@@ -46,6 +46,7 @@ import {
   updateConnector,
   type ConnectorRow,
 } from "@/lib/api";
+import { connectorHealthLabel } from "@/lib/enum-labels";
 import { errorText } from "@/lib/error-copy";
 import { useFormat } from "@/lib/i18n/format";
 import { movesOrigin } from "@/lib/origin";
@@ -299,7 +300,7 @@ function ConnectorsScreen() {
   const problemWith = (c: ConnectorRow): string | null => {
     const probed = test.variables?.id === c.id;
     if (probed && test.data && !test.data.delivered) {
-      const reason = test.data.health_error ?? test.data.health_status;
+      const reason = test.data.health_error ?? connectorHealthLabel(test.data.health_status, t);
       return reason === c.health_error
         ? null
         : t("pages.connectors.testFailed", { message: reason });
@@ -420,7 +421,7 @@ function ConnectorsScreen() {
                 )}
                 <Pill color={tone[0]} tint={tone[1]}>
                   <StatusDot color={tone[0]} className="h-1.5 w-1.5" />
-                  {c.health_status}
+                  {connectorHealthLabel(c.health_status, t)}
                 </Pill>
                 {/* the blue is for a rate that is being applied */}
                 <Pill
@@ -440,7 +441,9 @@ function ConnectorsScreen() {
                 )}
               </div>
               {c.health_error && (
-                <p className="text-xs text-[color:var(--status-danger-text)]">{c.health_error}</p>
+                <p className="text-xs text-[color:var(--status-danger-text)]">
+                  {t("pages.connectors.testFailed", { message: c.health_error })}
+                </p>
               )}
               {/* the probe's own verdict, which the row only picks up after the
                   invalidated list comes back. saying why delivery failed at the

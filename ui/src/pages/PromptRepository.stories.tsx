@@ -29,6 +29,7 @@ import type {
   PromptTemplateVersionRow,
 } from "@/lib/api";
 import { CapabilityProvider } from "@/lib/can";
+import ru from "@/lib/i18n/locales/ru.json";
 import { atShort, expectInViewport } from "@/lib/story-viewport";
 import { UxScreenProvider } from "@/lib/ux-react";
 
@@ -295,6 +296,19 @@ export const Loaded: Story = {
     await within(canvasElement).findAllByText("Support concierge");
     // the shell's ScreenHeader owns the page's only h1 (#2241)
     await expect(within(canvasElement).queryAllByRole("heading", { level: 1 })).toHaveLength(0);
+  },
+};
+
+// the preview names each decorator's role and position the way the editor above it does
+export const PreviewInRussian: Story = {
+  globals: { locale: "ru" },
+  render: () => <Harness fetchStub={loadedStub()} />,
+  play: async ({ canvasElement }) => {
+    const { promptRepo } = ru.pages;
+    const preview = await within(canvasElement).findByLabelText(promptRepo.renderedPreviewAria);
+    await expect(within(preview).getByText(promptRepo.roleSystem)).toBeVisible();
+    await expect(within(preview).getByText(promptRepo.positionPrepend)).toBeVisible();
+    await expect(within(preview).queryByText("prepend")).toBeNull();
   },
 };
 

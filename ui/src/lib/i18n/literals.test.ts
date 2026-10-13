@@ -1088,3 +1088,21 @@ describe("findLiteralsInTree follows copy across imports", () => {
     expect(findLiteralsInTree({ "src/a.tsx": source })).toEqual(findLiterals(source, "src/a.tsx"));
   });
 });
+
+describe("findLiterals reads a status spelled in capitals (#2023)", () => {
+  const texts = (src: string) => findLiterals(src, "src/pages/A.tsx").map((l) => l.text);
+
+  test("a badge's all-caps word in text and in a ternary is copy", () => {
+    expect(texts("export const A = () => <Badge>UNAVAILABLE</Badge>;")).toEqual(["UNAVAILABLE"]);
+    expect(
+      texts('export const A = (g) => <Badge>{g.active ? "ACTIVE" : "REVOKED"}</Badge>;'),
+    ).toEqual(["ACTIVE", "REVOKED"]);
+  });
+
+  test("a unit, an acronym or a code is still notation", () => {
+    expect(texts("export const A = () => <span>USD</span>;")).toEqual([]);
+    expect(texts("export const A = () => <span>HTTP</span>;")).toEqual([]);
+    expect(texts("export const A = () => <span>SHA256</span>;")).toEqual([]);
+    expect(texts("export const A = () => <span>IN_PROGRESS</span>;")).toEqual([]);
+  });
+});

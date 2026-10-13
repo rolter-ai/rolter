@@ -53,6 +53,7 @@ import {
   type TeamRow,
   type UpdateSkillInput,
 } from "@/lib/api";
+import { skillRoleLabel } from "@/lib/enum-labels";
 import { errorText } from "@/lib/error-copy";
 import { useFormat } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
@@ -71,8 +72,7 @@ interface Draft {
 
 const EMPTY_DRAFT: Draft = {
   mode: "inline",
-  content:
-    "---\nname: my-skill\ndescription: Explain when this skill should run\n---\n\n# Instructions\n\nDescribe the workflow here.\n",
+  content: "---\nname: my-skill\ndescription:\n---\n",
   contentRef: "",
   metadataText: "{}",
 };
@@ -727,7 +727,7 @@ function SkillWorkbench({
         <div className="mt-3 flex min-h-5 flex-wrap items-center gap-x-3 gap-y-1 text-xs">
           <span className="font-mono text-[color:var(--text-subtle)]">{skill.slug}</span>
           <span className="text-muted-foreground">
-            {t("pages.skillsRepo.minimumRoleMeta", { role: skill.minimum_role })}
+            {t("pages.skillsRepo.minimumRoleMeta", { role: skillRoleLabel(skill.minimum_role, t) })}
           </span>
           <span className="text-muted-foreground">
             {skill.allowed_team_ids.length

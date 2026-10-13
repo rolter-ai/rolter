@@ -35,6 +35,7 @@ import {
   MCP_TRANSPORTS,
   type McpLogRow,
 } from "@/lib/api";
+import { mcpStatusLabel } from "@/lib/enum-labels";
 import type { CodeLanguage } from "@/lib/code";
 import { useOptionalAuth } from "@/lib/auth";
 import { useFormat } from "@/lib/i18n/format";
@@ -188,7 +189,7 @@ function McpLogsScreen() {
           }}
           options={[
             { value: "", label: t("pages.mcpLogs.allStatuses") },
-            ...MCP_STATUSES.map((s) => ({ value: s, label: s })),
+            ...MCP_STATUSES.map((s) => ({ value: s, label: mcpStatusLabel(s, t) })),
           ]}
         />
         <Combobox
@@ -320,7 +321,7 @@ function McpRow({ row, onSelect }: { row: McpLogRow; onSelect: () => void }) {
       </ListCell>
       <ListCell className="grid">
         <Pill color={tone[0]} tint={tone[1]}>
-          {row.status}
+          {mcpStatusLabel(row.status, t)}
         </Pill>
       </ListCell>
       <ListCell className="truncate font-mono text-[0.6875rem] text-[color:var(--text-subtle)]">
@@ -415,7 +416,7 @@ function DetailDrawer({ eventId, onClose }: { eventId: string; onClose: () => vo
       {d && (
         <>
           <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
-            <DrawerStat label={t("pages.mcpLogs.status")} value={d.status} />
+            <DrawerStat label={t("pages.mcpLogs.status")} value={mcpStatusLabel(d.status, t)} />
             <DrawerStat
               label={t("pages.mcpLogs.latency")}
               value={t("analytics.ms", { value: fmt.number(Math.round(d.latency_ms)) })}

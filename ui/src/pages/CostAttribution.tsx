@@ -110,8 +110,9 @@ const UNASSIGNED = "__none__";
 // a retired unit or customer keeps its history and stops being offered for new
 // attribution; deleting one removes it outright
 function RetiredBadge({ retiredAt }: { retiredAt: string | null }) {
+  const { t } = useTranslation();
   if (!retiredAt) return null;
-  return <Badge tone="neutral">RETIRED</Badge>;
+  return <Badge tone="neutral">{t("pages.costAttribution.retired")}</Badge>;
 }
 
 interface EditorState {

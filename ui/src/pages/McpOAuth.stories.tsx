@@ -25,6 +25,7 @@ import {
 import { Toaster } from "@/components/ui/toaster";
 import type { McpOAuthGrantRow, McpOAuthSessionRow, McpServerRow, UserRow } from "@/lib/api";
 import { AuthProvider } from "@/lib/auth";
+import ru from "@/lib/i18n/locales/ru.json";
 import { CONSENT_CHANNEL, type ConsentAnnouncement, type ConsentFailure } from "@/lib/mcp-consent";
 import { ToastProvider } from "@/lib/toast";
 import { UxScreenProvider } from "@/lib/ux-react";
@@ -240,11 +241,27 @@ export const GrantsLoaded: Story = {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByText("ada@acme.dev")).toBeVisible());
     // the revoked consent is kept so the audit trail survives
-    await expect(canvas.getByText("REVOKED")).toBeVisible();
+    await expect(canvas.getByText("Revoked")).toBeVisible();
     await expect(canvas.getByText("2 live")).toBeVisible();
     // expired sessions are historical rows, not live revoke impact
     await expect(canvas.getByText("0 live")).toBeVisible();
     await expectListTable(canvasElement, "OAuth Grants");
+  },
+};
+
+export const GrantsLoadedInRussian: Story = {
+  globals: { locale: "ru" },
+  render: () => (
+    <Harness fetchStub={routed()}>
+      <OAuthGrants />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const { states } = ru.pages.mcpOAuth;
+    await waitFor(() => expect(canvas.getByText(states.revoked)).toBeVisible());
+    await expect(canvas.getAllByText(states.active).length).toBeGreaterThan(0);
+    await expect(canvas.queryByText("Revoked")).toBeNull();
   },
 };
 
@@ -434,11 +451,11 @@ export const GrantsFilteredEmpty: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await waitFor(() => expect(canvas.getByText("REVOKED")).toBeVisible());
+    await waitFor(() => expect(canvas.getByText("Revoked")).toBeVisible());
     const live = canvas.getByRole("button", { name: "Live only" });
     await userEvent.click(live);
     await expect(live).toHaveAttribute("aria-pressed", "true");
-    await waitFor(() => expect(canvas.queryByText("REVOKED")).toBeNull());
+    await waitFor(() => expect(canvas.queryByText("Revoked")).toBeNull());
     await pickOption(canvas.getByRole("combobox", { name: "Filter by owner" }), "bo@acme.dev");
     await waitFor(() => expect(canvas.getByText("No rows match these filters")).toBeVisible());
     await expect(canvas.queryByText("No consent granted yet")).toBeNull();
@@ -588,11 +605,27 @@ export const SessionsLoaded: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await waitFor(() => expect(canvas.getByText("EXPIRED")).toBeVisible());
+    await waitFor(() => expect(canvas.getByText("Expired")).toBeVisible());
     // renewability is a flag on the row; the refresh token is never in the payload
-    await expect(canvas.getAllByText("RENEWABLE")).toHaveLength(2);
+    await expect(canvas.getAllByText("Renewable")).toHaveLength(2);
     await expect(canvas.getByText("never")).toBeVisible();
     await expectListTable(canvasElement, "Auth Sessions");
+  },
+};
+
+export const SessionsLoadedInRussian: Story = {
+  globals: { locale: "ru" },
+  render: () => (
+    <Harness fetchStub={routed()}>
+      <AuthSessions />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const { states } = ru.pages.mcpOAuth;
+    await waitFor(() => expect(canvas.getByText(states.expired)).toBeVisible());
+    await expect(canvas.getAllByText(states.renewable)).toHaveLength(2);
+    await expect(canvas.queryByText("Renewable")).toBeNull();
   },
 };
 
@@ -912,7 +945,7 @@ const expectRefusal =
     ).toHaveAttribute("href", "/mcp-catalog");
     // the listing underneath still loads, nothing in it is new, and no other
     // tab is told anything
-    await waitFor(() => expect(canvas.getByText("EXPIRED")).toBeVisible());
+    await waitFor(() => expect(canvas.getByText("Expired")).toBeVisible());
     await expect(canvas.queryByText("New")).toBeNull();
     await expect(heard).toEqual([]);
   };
@@ -971,7 +1004,7 @@ export const SessionsFilterByOwner: Story = {
     // "live only" drops ada's expired session as well
     await userEvent.click(canvas.getByRole("button", { name: "Live only" }));
     await waitFor(() => expect(canvas.getByText("Showing 3 of 5 sessions")).toBeVisible());
-    await expect(canvas.queryByText("EXPIRED")).toBeNull();
+    await expect(canvas.queryByText("Expired")).toBeNull();
   },
 };
 
@@ -991,7 +1024,7 @@ export const SessionsFilteredEmpty: Story = {
     await waitFor(() => expect(canvas.getByText("No rows match these filters")).toBeVisible());
     await expect(canvas.queryByText("No sessions yet")).toBeNull();
     await userEvent.click(canvas.getAllByRole("button", { name: "Clear filters" })[0]);
-    await waitFor(() => expect(canvas.getByText("EXPIRED")).toBeVisible());
+    await waitFor(() => expect(canvas.getByText("Expired")).toBeVisible());
   },
 };
 
@@ -1130,7 +1163,7 @@ export const SessionReconnectIsOnlyForTheOwner: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await waitFor(() => expect(canvas.getByText("EXPIRED")).toBeVisible());
+    await waitFor(() => expect(canvas.getByText("Expired")).toBeVisible());
     // ada owns two healthy renewable sessions; bo's expired one is not hers
     await expect(canvas.queryByRole("button", { name: /^Reconnect to/ })).toBeNull();
   },
