@@ -1707,6 +1707,11 @@
         "start": "Start sending as soon as it is created",
         "startHint": "Off by default. Create it switched off, run Test delivery from its card, then turn it on.",
         "startOnHint": "Request logs are sent to this endpoint from the moment you press Create."
+      },
+      "health": {
+        "healthy": "Healthy",
+        "unhealthy": "Unhealthy",
+        "unknown": "Unknown"
       }
     },
     "accessProfiles": {
@@ -2080,6 +2085,12 @@
         "sessionsConfirm_other": "Revoke {{count}} sessions",
         "sessionsDone_one": "Revoked {{count}} session",
         "sessionsDone_other": "Revoked {{count}} sessions"
+      },
+      "states": {
+        "active": "Active",
+        "expired": "Expired",
+        "revoked": "Revoked",
+        "renewable": "Renewable"
       }
     },
     "cluster": {
@@ -2180,7 +2191,8 @@
       "unassigned": "unassigned",
       "edit": "Edit",
       "retire": "Retire",
-      "restore": "Restore"
+      "restore": "Restore",
+      "retired": "Retired"
     },
     "guardrailRules": {
       "confirm": {
@@ -3289,7 +3301,14 @@
       "payloadWithheld": "The arguments and result were captured for this call, but they are hidden for your role: on this project, tool arguments and results are shown to its members and admins. A project admin can let viewers read them too, in the project's settings.",
       "notFoundTitle": "This call is not available",
       "notFoundBody": "It no longer exists, or it belongs to an organization, team or project you do not hold a role in.",
-      "openDetails": "Open call details for {{tool}} on {{server}} at {{time}}"
+      "openDetails": "Open call details for {{tool}} on {{server}} at {{time}}",
+      "statuses": {
+        "success": "Success",
+        "error": "Error",
+        "timeout": "Timed out",
+        "auth_denied": "Auth denied",
+        "transport_error": "Transport error"
+      }
     },
     "providerGroups": {
       "emptyTitle": "No provider groups yet",
@@ -3955,7 +3974,8 @@
       "validation": {
         "anthropicVersion": "Anthropic version must be a dated release like 2023-06-01.",
         "defaultMaxTokens": "Default max tokens must be a whole number between 1 and 1000000."
-      }
+      },
+      "restart": "Restart"
     },
     "featureFlags": {
       "lastSaved": "Last saved {{when}}",
@@ -3999,7 +4019,9 @@
           "title": "Guardrails",
           "desc": "Run the configured pre- and post-call guardrail rules on every request."
         }
-      }
+      },
+      "unavailable": "Unavailable",
+      "unavailableReason": "Unavailable here: {{reason}}"
     },
     "preferences": {
       "language": {

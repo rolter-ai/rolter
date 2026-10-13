@@ -32,6 +32,7 @@ import type {
   PromptTemplateVersionRow,
 } from "@/lib/api";
 import { CapabilityProvider } from "@/lib/can";
+import ru from "@/lib/i18n/locales/ru.json";
 import { atShort, expectInViewport } from "@/lib/story-viewport";
 import { UxScreenProvider } from "@/lib/ux-react";
 
@@ -401,6 +402,19 @@ export const KeepsTheDraftWhenSwitchingVersions: Story = {
       ),
     );
     await expect(canvas.queryByText("Unsaved changes")).toBeNull();
+  },
+};
+
+// the preview names each decorator's role and position the way the editor above it does
+export const PreviewInRussian: Story = {
+  globals: { locale: "ru" },
+  render: () => <Harness fetchStub={loadedStub()} />,
+  play: async ({ canvasElement }) => {
+    const { promptRepo } = ru.pages;
+    const preview = await within(canvasElement).findByLabelText(promptRepo.renderedPreviewAria);
+    await expect(within(preview).getByText(promptRepo.roleSystem)).toBeVisible();
+    await expect(within(preview).getByText(promptRepo.positionPrepend)).toBeVisible();
+    await expect(within(preview).queryByText("prepend")).toBeNull();
   },
 };
 

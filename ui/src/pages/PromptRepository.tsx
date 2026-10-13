@@ -62,6 +62,7 @@ import {
   type PromptTemplateVariable,
   type PromptTemplateVersionRow,
 } from "@/lib/api";
+import { decoratorPositionLabel, decoratorRoleLabel } from "@/lib/enum-labels";
 import { errorText } from "@/lib/error-copy";
 import { useFormat } from "@/lib/i18n/format";
 import { addedScopes, publishImpact, scopeKey, templateVarsExample } from "@/lib/prompt-templates";
@@ -1319,9 +1320,9 @@ function PreviewMessage({
     <article className="border-b border-[color:var(--border-subtle)] py-2.5">
       <div className="flex items-center justify-between">
         <span className="text-[0.6875rem] font-semibold uppercase tracking-[0.12em]">
-          {decorator.role}
+          {decoratorRoleLabel(decorator.role, t)}
         </span>
-        <Badge tone="outline">{decorator.position}</Badge>
+        <Badge tone="outline">{decoratorPositionLabel(decorator.position, t)}</Badge>
       </div>
       <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-6">
         {content || (

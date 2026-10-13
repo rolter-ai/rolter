@@ -17,6 +17,7 @@ import {
   type StoryRole,
 } from "./story-harness";
 import { fetchConfig, type FeatureFlagsDto } from "@/lib/api";
+import ru from "@/lib/i18n/locales/ru.json";
 
 const BASE: FeatureFlagsDto = {
   response_cache: true,
@@ -120,9 +121,40 @@ export const Unavailable: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await waitFor(() => expect(canvas.getAllByText("UNAVAILABLE")).toHaveLength(2));
+    await waitFor(() => expect(canvas.getAllByText("Unavailable")).toHaveLength(2));
     await expect(canvas.getByRole("switch", { name: "Response Cache" })).toBeDisabled();
     await expect(canvas.getByRole("switch", { name: "Circuit Breaker" })).toBeEnabled();
+  },
+};
+
+// the badge and the lead-in are the dashboard's words; the reason after the
+// colon is the control plane's own, so the lead-in says whose it is (#2098)
+export const UnavailableInRussian: Story = {
+  globals: { locale: "ru" },
+  render: () => (
+    <Harness
+      fetchStub={async () =>
+        json({
+          ...BASE,
+          response_cache: false,
+          unavailable: [
+            { flag: "response_cache", reason: "no redis url is configured" },
+            { flag: "cache_aware_routing", reason: "no provider publishes kv-cache events" },
+          ],
+        })
+      }
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const { featureFlags } = ru.pages;
+    await waitFor(() => expect(canvas.getAllByText(featureFlags.unavailable)).toHaveLength(2));
+    await expect(
+      canvas.getByText(
+        featureFlags.unavailableReason.replace("{{reason}}", "no redis url is configured"),
+      ),
+    ).toBeVisible();
+    await expect(canvas.queryByText("Unavailable")).toBeNull();
   },
 };
 

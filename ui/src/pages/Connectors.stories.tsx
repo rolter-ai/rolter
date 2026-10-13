@@ -176,9 +176,9 @@ export const Loaded: Story = {
 
     // health is its own axis, independent of enabled: a connector that has
     // never been tested reports `unknown` rather than claiming to be healthy
-    await expect(canvas.getByText("healthy")).toBeVisible();
-    await expect(canvas.getByText("unknown")).toBeVisible();
-    await expect(canvas.getByText("unhealthy")).toBeVisible();
+    await expect(canvas.getByText("Healthy")).toBeVisible();
+    await expect(canvas.getByText("Unknown")).toBeVisible();
+    await expect(canvas.getByText("Unhealthy")).toBeVisible();
 
     // the sampling rate is shown as a percentage, so 0.1 must read as 10%
     await expect(canvas.getByText("10% sampled")).toBeVisible();
@@ -204,6 +204,25 @@ export const Loaded: Story = {
   },
 };
 
+// health states and the probe's reason read in the dashboard's language; the
+// reason itself is the sink's, so it follows a translated lead-in (#2098)
+export const LoadedInRussian: Story = {
+  globals: { locale: "ru" },
+  render: () => <Harness fetchStub={async () => json(CONNECTORS)} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const { health, testFailed } = ru.pages.connectors;
+    await waitFor(() => expect(canvas.getByText("signoz")).toBeVisible());
+    await expect(canvas.getByText(health.healthy)).toBeVisible();
+    await expect(canvas.getByText(health.unknown)).toBeVisible();
+    await expect(canvas.getByText(health.unhealthy)).toBeVisible();
+    await expect(
+      canvas.getByText(testFailed.replace("{{message}}", "sink returned HTTP 401")),
+    ).toBeVisible();
+    await expect(canvas.queryByText("Healthy")).toBeNull();
+  },
+};
+
 // a connector that is switched off has to read as off, not as a broken one:
 // health is its own axis, so a never-tested connector says `unknown` and
 // nothing else on its card said that nothing is being sent (#2349)
@@ -220,8 +239,8 @@ export const SwitchedOffConnectorReadsAsOff: Story = {
       "false",
     );
     // off is not unhealthy: nothing has been tested, and nothing is wrong
-    await expect(off.getByText("unknown")).toBeVisible();
-    await expect(off.queryByText("unhealthy")).toBeNull();
+    await expect(off.getByText("Unknown")).toBeVisible();
+    await expect(off.queryByText("Unhealthy")).toBeNull();
     await expect(off.queryByRole("alert")).toBeNull();
 
     // the ones that are sending say nothing of the kind

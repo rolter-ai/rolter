@@ -360,6 +360,8 @@ interface Candidate {
   text: string;
   /** read in a position that renders it as it stands — see `isNotCopy` */
   strict?: boolean;
+  /** an all-caps word in a position that shows it as it stands — see `ALL_CAPS_WORD` */
+  caps?: boolean;
 }
 
 /**
@@ -488,6 +490,8 @@ function stringsIn(expr: string, base: number, strict = false): Candidate[] {
         // not a single-line literal; leave it
       } else if (isFragment(expr, j, end, text)) {
         out.push({ index: base + j, text, strict: true });
+      } else if (strict && ALL_CAPS_WORD.test(text) && isResult(expr, j, end)) {
+        out.push({ index: base + j, text, strict: true, caps: true });
       } else if (READS_AS_COPY.test(text)) {
         out.push({ index: base + j, text });
       } else if (strict && LOWERCASE_WORD.test(text) && isResult(expr, j, end)) {
@@ -512,6 +516,12 @@ function stringsIn(expr: string, base: number, strict = false): Candidate[] {
   return out;
 }
 
+// a badge's status word: five or more capitals and nothing else. a unit or a
+// code is shorter or carries a digit. it is copy only where the string is shown
+// as it stands (a text node, a rendered expression's result): a map of HTTP
+// methods or wire codes holds the same shape and stays notation (#2023)
+const ALL_CAPS_WORD = /^[A-Z]{5,}$/;
+
 /**
  * Strings that look like prose to a regex but are not copy. Kept narrow — a
  * false negative here is a string that silently stays untranslated, so the bar
@@ -520,11 +530,13 @@ function stringsIn(expr: string, base: number, strict = false): Candidate[] {
  * `strict` is set where the string is rendered as it stands (`LOWERCASE_WORD`):
  * there a bare lowercase word is a label, not a wire value.
  */
-function isNotCopy(text: string, strict = false): boolean {
+function isNotCopy(text: string, strict = false, caps = false): boolean {
   const t = text.trim();
   if (t.length < 3) return true;
   // no lowercase letter at all: an acronym, a code, a unit (USD, RPM, TPM, ID)
-  if (!/[a-z]/.test(t)) return true;
+  // ...except a status spelled the way a badge shows it (`UNAVAILABLE`,
+  // `REVOKED`), which the gate used to wave through (#2023)
+  if (!/[a-z]/.test(t)) return !(caps && ALL_CAPS_WORD.test(t));
   if (strict && LOWERCASE_WORD.test(t)) return false;
   // an identifier or a wire value rather than a sentence: no spaces and it
   // looks like code (dots, slashes, underscores, camelCase runs of digits)
@@ -1208,9 +1220,15 @@ export function scanFile(source: string, file: string, exported: Uses = noUses()
   // the tag ends that open onto children; text after any other one is code
   const inside = childPositions(scanned, tags);
 
-  const push = (index: number, raw: string, kind: Literal["kind"], strict = false) => {
+  const push = (
+    index: number,
+    raw: string,
+    kind: Literal["kind"],
+    strict = false,
+    caps = false,
+  ) => {
     const text = normalize(raw);
-    if (isNotCopy(text, strict)) return;
+    if (isNotCopy(text, strict, caps)) return;
     const line = lineOf(source, masked.map[index] ?? 0);
     const key = `${line}:${text}`;
     if (seen.has(key)) return;
@@ -1219,7 +1237,7 @@ export function scanFile(source: string, file: string, exported: Uses = noUses()
   };
   /** every candidate in an expression that renders as it stands */
   const pushAll = (cs: Candidate[], kind: Literal["kind"]) => {
-    for (const c of cs) push(c.index, c.text, kind, c.strict);
+    for (const c of cs) push(c.index, c.text, kind, c.strict, c.caps);
   };
 
   // identifiers rendered bare where copy goes, with the kind they render as.
@@ -1287,7 +1305,7 @@ export function scanFile(source: string, file: string, exported: Uses = noUses()
   }
   for (const m of scanned.matchAll(TEXT)) {
     if (!inside.has(m.index)) continue;
-    push(m.index, m[1], "text", true);
+    push(m.index, m[1], "text", true, true);
   }
   for (const m of scanned.matchAll(TEXT_EXPR)) readExpr(m, 1, "text");
   for (const m of scanned.matchAll(TEXT_MIXED)) {

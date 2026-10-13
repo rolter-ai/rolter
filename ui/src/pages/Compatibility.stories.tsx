@@ -13,6 +13,7 @@ import {
   type StoryRole,
 } from "./story-harness";
 import type { CompatibilityPolicyDto } from "@/lib/api";
+import ru from "@/lib/i18n/locales/ru.json";
 
 const BASE: CompatibilityPolicyDto = {
   anthropic_version: "2023-06-01",
@@ -75,8 +76,20 @@ export const RestartRequired: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await waitFor(() => expect(canvas.getByText("RESTART")).toBeVisible());
+    await waitFor(() => expect(canvas.getByText("Restart")).toBeVisible());
     await expect(canvas.getByText("anthropic_version")).toBeVisible();
+  },
+};
+
+export const RestartRequiredInRussian: Story = {
+  globals: { locale: "ru" },
+  render: () => (
+    <Harness fetchStub={async () => json({ ...BASE, restart_required: ["anthropic_version"] })} />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText(ru.pages.compatibility.restart)).toBeVisible());
+    await expect(canvas.queryByText("Restart")).toBeNull();
   },
 };
 

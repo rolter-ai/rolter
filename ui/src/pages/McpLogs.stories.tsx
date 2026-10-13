@@ -93,6 +93,24 @@ export const Loaded: Story = {
   },
 };
 
+// how a call ended reads in the dashboard's language; the transport is the
+// protocol's own identifier and stays as stored
+export const StatusesInRussian: Story = {
+  globals: { locale: "ru" },
+  render: () => (
+    <Harness fetchStub={loaded}>
+      <McpLogs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const { statuses } = ru.pages.mcpLogs;
+    await waitFor(() => expect(canvas.getAllByText(statuses.success).length).toBeGreaterThan(0));
+    await expect(canvas.getAllByText(statuses.timeout).length).toBeGreaterThan(0);
+    await expect(canvas.queryByText("success")).toBeNull();
+  },
+};
+
 /**
  * Figures go through `useFormat()`, the window is stated beside the pager, and the
  * drawer's ids can be copied and followed to the request log (#2165).
