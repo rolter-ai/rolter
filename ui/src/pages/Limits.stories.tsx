@@ -1683,3 +1683,167 @@ export const ProjectAdminOnAMixOfProjectTeamAndOrgCaps: Story = {
     await expectRefused(canvasElement, /Delete the 800 rpm rate limit/);
   },
 };
+
+// caps across the org, as `GET /api/v1/orgs/{org_id}/budgets` answers them: the
+// project's own two, plus the team's and the org's above it, a business unit's
+// and a virtual key's (#2093)
+const ORG_BUDGETS: BudgetRow[] = [
+  ...BUDGETS,
+  { ...BUDGETS[0], id: "budget-team", scope_type: "team", scope_id: "team-1", limit_usd: "900.00" },
+  { ...BUDGETS[0], id: "budget-org", scope_type: "org", scope_id: "org-1", limit_usd: "2000.00" },
+  {
+    ...BUDGETS[0],
+    id: "budget-unit",
+    scope_type: "business_unit",
+    scope_id: "unit-1",
+    limit_usd: "300.00",
+  },
+  {
+    ...BUDGETS[0],
+    id: "budget-key",
+    scope_type: "virtual_key",
+    scope_id: "abcdef0123456789",
+    limit_usd: "20.00",
+  },
+];
+const ORG_RATE_LIMITS: RateLimitRow[] = [
+  ...RATE_LIMITS,
+  { ...RATE_LIMITS[0], id: "rl-team", scope_type: "team", scope_id: "team-1", rpm: 700, tpm: null },
+  { ...RATE_LIMITS[0], id: "rl-org", scope_type: "org", scope_id: "org-1", rpm: 800, tpm: null },
+];
+
+const orgWide = (budgets: BudgetRow[], rateLimits: RateLimitRow[]) =>
+  routes([
+    ["/virtual-keys", () => KEYS],
+    ["/business-units", () => [{ id: "unit-1", name: "Support", slug: "support" }]],
+    ["/orgs/org-1/budgets", () => budgets],
+    ["/orgs/org-1/rate-limits", () => rateLimits],
+    ["/budgets/spend", () => spendFor(BUDGETS)],
+    ["/budgets", () => BUDGETS],
+    ["/rate-limits", () => RATE_LIMITS],
+  ]);
+
+/**
+ * #2093: with "All scopes" picked the screen lists every cap the caller may
+ * read across the org, grouped under the scope each belongs to and named, not
+ * shown as a uuid. Scope types come in the picker's order, so the org leads.
+ */
+export const EveryCapAcrossTheOrgIsListedByScope: Story = {
+  render: () => (
+    <Harness fetchStub={orgWide(ORG_BUDGETS, ORG_RATE_LIMITS)}>
+      <Limits />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("$500.00")).toBeVisible();
+    await pickOption(await canvas.findByLabelText("Scope type"), "All scopes");
+    await expect(await canvas.findByText("$2,000.00")).toBeVisible();
+    const headings = canvas.getAllByRole("heading", { level: 3 }).map((h) => h.textContent);
+    await expect(headings).toEqual([
+      "Organization Rolter",
+      "Team Platform",
+      "Project Gateway",
+      "Virtual key abcdef01",
+      "Business unit Support",
+      "Organization Rolter",
+      "Team Platform",
+      "Project Gateway",
+    ]);
+    await expect(canvas.queryByText("org-1")).toBeNull();
+    await expect(canvas.queryByText("team-1")).toBeNull();
+    // the counters are read per scope, so none is claimed here
+    await expect(canvas.queryByText(/spend so far is unavailable/i)).toBeNull();
+    await expect(canvas.queryByRole("progressbar")).toBeNull();
+    // creating a cap still needs a scope to hang it off
+    await expect(canvas.getByRole("button", { name: /add budget/i })).toBeDisabled();
+    // each card names its own scope for a screen reader
+    await expect(
+      canvas.getByRole("button", {
+        name: "Delete the monthly budget of $900.00 for Team Platform",
+      }),
+    ).toBeInTheDocument();
+  },
+};
+
+/** The picked type narrows the org-wide list, and a picked scope narrows it to one scope. */
+export const PickingATypeAndThenAScopeNarrowsTheList: Story = {
+  render: () => (
+    <Harness fetchStub={orgWide(ORG_BUDGETS, ORG_RATE_LIMITS)}>
+      <Limits />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("$500.00")).toBeVisible();
+    await pickOption(await canvas.findByLabelText("Scope type"), "Team");
+    await expect(await canvas.findByText("$900.00")).toBeVisible();
+    await expect(canvas.queryByText("$2,000.00")).toBeNull();
+    await expect(canvas.queryByText("$500.00")).toBeNull();
+    await expect(canvas.getByText(/Showing every Team cap in the organization/)).toBeVisible();
+
+    // a scope narrows to the per-scope read again, where a cap can be added
+    await pickOption(await canvas.findByLabelText("Scope"), "Platform");
+    await waitFor(() => expect(canvas.getByRole("button", { name: /add budget/i })).toBeEnabled());
+  },
+};
+
+/** Nothing in the org is capped: the empty copy says so and offers no add, which needs a scope. */
+export const AnOrgWithNoCapsSaysSo: Story = {
+  render: () => (
+    <Harness fetchStub={orgWide([], [])}>
+      <Limits />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await pickOption(await canvas.findByLabelText("Scope type"), "All scopes");
+    await expect(await canvas.findByText("No budgets in this organization")).toBeVisible();
+    await expect(canvas.getByText("No rate limits in this organization")).toBeVisible();
+    await expect(
+      canvas.queryByRole("button", { name: "Add budget", hidden: false }),
+    ).toBeDisabled();
+  },
+};
+
+/** A type with no caps reads differently from an org with none. */
+export const ATypeWithNoCapsNamesTheFilter: Story = {
+  render: () => (
+    <Harness fetchStub={orgWide(ORG_BUDGETS, ORG_RATE_LIMITS)}>
+      <Limits />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("$500.00")).toBeVisible();
+    await pickOption(await canvas.findByLabelText("Scope type"), "Customer");
+    await expect(await canvas.findByText("No budgets for this scope type")).toBeVisible();
+    await expect(canvas.getByText("No rate limits for this scope type")).toBeVisible();
+  },
+};
+
+/** The org-wide read failing is said where the list would be, and retries. */
+export const AFailedOrgWideReadSaysSoAndRetries: Story = {
+  render: () => (
+    <Harness
+      fetchStub={scoped(async (input) => {
+        const url = String(input);
+        if (url.includes("/orgs/org-1/budgets"))
+          return json({ error: { message: "store unavailable" } }, 500);
+        if (url.includes("/budgets/spend")) return json(spendFor(BUDGETS));
+        if (url.includes("/budgets")) return json(BUDGETS);
+        if (url.includes("/virtual-keys")) return json(KEYS);
+        return json(url.includes("/rate-limits") ? RATE_LIMITS : []);
+      })}
+    >
+      <Limits />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("$500.00")).toBeVisible();
+    await pickOption(await canvas.findByLabelText("Scope type"), "All scopes");
+    await expectLoadError(canvasElement, /failed to return budgets/i);
+    await expectNoFalseEmpty(canvasElement, /no budgets/i);
+  },
+};

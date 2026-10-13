@@ -181,6 +181,11 @@ pub fn router() -> Router<ControlState> {
         )
         .route("/api/v1/budgets", get(list_budgets).post(create_budget))
         .route("/api/v1/budgets/spend", get(budget_spend))
+        .route("/api/v1/orgs/{org_id}/budgets", get(list_org_budgets))
+        .route(
+            "/api/v1/orgs/{org_id}/rate-limits",
+            get(list_org_rate_limits),
+        )
         .route(
             "/api/v1/budgets/{id}",
             patch(update_budget).delete(delete_budget),
@@ -5228,6 +5233,77 @@ async fn list_budgets(
     ))
 }
 
+/// The caps of an org-wide list the caller may read, each decided by the rule
+/// [`authorize_scope_read`] applies to its scope alone: the role at the row's
+/// own scope, or the team or org above a place the caller holds the role at
+/// (#2527). A caller with no role anywhere in the org is refused; one with a
+/// role below it gets the rows they may read, which can be none.
+async fn readable_caps<T>(
+    state: &ControlState,
+    principal: &Principal,
+    requirement: Requirement,
+    org_id: Uuid,
+    rows: Vec<T>,
+    scope_of: impl Fn(&T) -> (&str, Uuid),
+) -> ApiResult<Vec<T>> {
+    let filter = ScopeFilter::load(state, principal, requirement).await?;
+    if filter.allows(ScopeChain::org(org_id)) {
+        return Ok(rows);
+    }
+    let reach = filter.reach(pool(state)).await?;
+    if !reaches_org(&reach, org_id) {
+        return Err(ApiError::Forbidden);
+    }
+    let mut chains: HashMap<(String, Uuid), ScopeChain> = HashMap::new();
+    let mut visible = Vec::new();
+    for row in rows {
+        let (scope_type, scope_id) = scope_of(&row);
+        let key = (scope_type.to_string(), scope_id);
+        let chain = match chains.get(&key) {
+            Some(chain) => *chain,
+            None => {
+                let chain = ScopeChain::from_scope(pool(state), scope_type, scope_id).await?;
+                chains.insert(key, chain);
+                chain
+            }
+        };
+        let above = || {
+            reach.iter().any(|held| {
+                let sits_under = match scope_type {
+                    "org" => held.org == Some(scope_id),
+                    "team" => held.team == Some(scope_id),
+                    _ => false,
+                };
+                sits_under && filter.allows(*held)
+            })
+        };
+        if filter.allows(chain) || above() {
+            visible.push(row);
+        }
+    }
+    Ok(visible)
+}
+
+/// Every budget the caller may read across one org, so "which caps exist here"
+/// is one request instead of one per scope.
+async fn list_org_budgets(
+    principal: Principal,
+    State(state): State<ControlState>,
+    Path(org_id): Path<Uuid>,
+) -> ApiResult<Json<Vec<Budget>>> {
+    let rows = BudgetRepo(pool(&state)).list_in_org(org_id).await?;
+    let rows = readable_caps(
+        &state,
+        &principal,
+        cap!("budget", Read),
+        org_id,
+        rows,
+        |b| (b.scope_type.as_str(), b.scope_id),
+    )
+    .await?;
+    Ok(Json(rows))
+}
+
 /// Spend so far against one budget, as the gateway counts it.
 #[derive(Serialize, Debug, PartialEq)]
 struct BudgetSpend {
@@ -5627,6 +5703,26 @@ async fn list_rate_limits(
             .list_for_scope(&scope.scope_type, scope.scope_id)
             .await?,
     ))
+}
+
+/// Every rate limit the caller may read across one org; see
+/// [`list_org_budgets`].
+async fn list_org_rate_limits(
+    principal: Principal,
+    State(state): State<ControlState>,
+    Path(org_id): Path<Uuid>,
+) -> ApiResult<Json<Vec<RateLimit>>> {
+    let rows = RateLimitRepo(pool(&state)).list_in_org(org_id).await?;
+    let rows = readable_caps(
+        &state,
+        &principal,
+        cap!("rate_limit", Read),
+        org_id,
+        rows,
+        |r| (r.scope_type.as_str(), r.scope_id),
+    )
+    .await?;
+    Ok(Json(rows))
 }
 
 #[derive(Deserialize)]

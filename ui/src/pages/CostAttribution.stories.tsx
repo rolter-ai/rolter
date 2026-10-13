@@ -5,10 +5,13 @@ import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import { BusinessUnits, Customers } from "./CostAttribution";
 import {
+  answerDiscardPrompt,
   cancelConfirmation,
+  expectClosesWithoutPrompting,
   confirmDestructive,
   expectAnalyticsUnavailable,
   expectInStatusRegion,
+  expectLoadError,
   expectNoFalseEmpty,
   expectRefused,
   expectSheetClosed,
@@ -300,7 +303,7 @@ export const RejectsAnInvalidSlug: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByText("Platform Engineering")).toBeVisible());
-    await userEvent.click(canvas.getAllByRole("button", { name: "+ New business unit" })[0]);
+    await userEvent.click(canvas.getAllByRole("button", { name: "New business unit" })[0]);
     const sheet = within(document.body);
     await userEvent.type(await sheet.findByLabelText("Name"), "Ops");
     const slug = sheet.getByLabelText("Slug");
@@ -315,9 +318,10 @@ export const RejectsAnInvalidSlug: Story = {
 /**
  * The unit is refused (#1607).
  *
- * The refusal is reported twice — an assertive toast and the inline message
- * beside the toolbar — and both are asserted, because either could stop
- * reporting on its own.
+ * The refusal is reported twice — an assertive toast and the sheet's own error
+ * slot — and both are asserted, because either could stop reporting on its own.
+ * The toolbar says nothing: it is not where a refused create is read, and a
+ * message left there outlived the sheet it belonged to.
  *
  * The sheet survives it, with the typed draft intact. It did not: `onSubmit`
  * called `setOpen(false)` before the mutation had answered, so a refused save
@@ -342,22 +346,12 @@ export const CreateRejectedByTheServer: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByText("Platform Engineering")).toBeVisible());
-    await userEvent.click(canvas.getAllByRole("button", { name: "+ New business unit" })[0]);
+    await userEvent.click(canvas.getAllByRole("button", { name: "New business unit" })[0]);
     const panel = within(document.body);
     await userEvent.type(await panel.findByLabelText("Name"), "Ops");
     await userEvent.click(panel.getByRole("button", { name: "Create" }));
 
     await expectToast(canvasElement, /already taken/, "error");
-    // and the inline copy beside the toolbar, which is what is left on screen
-    // once the toast has gone — matched by excluding the toast's own live
-    // region, since both carry the same words
-    await waitFor(() =>
-      expect(
-        canvas
-          .getAllByText(/already taken/)
-          .some((node) => node.closest('[role="alert"]') === null),
-      ).toBe(true),
-    );
     // and the draft is still there to correct: the sheet stands, the name field
     // holds what was typed, and the inline refusal is inside the sheet
     await expect(panel.getByRole("button", { name: "Create" })).toBeVisible();
@@ -1071,5 +1065,262 @@ export const CustomersCarryTheSamplingNoteInRussian: Story = {
     const canvas = within(canvasElement);
     const notice = await canvas.findByTestId("sampled-log-notice");
     await expect(notice).toHaveTextContent("Лог запросов сохраняет примерно 1 из 4 запросов.");
+  },
+};
+
+const ru_ = ru.pages.costAttribution;
+
+/**
+ * #2111: the retired badge is catalog copy, so the Russian screen does not show
+ * a literal English word, and the request counts go through the locale's number
+ * format rather than arriving as a raw `4200`.
+ */
+export const RetiredBadgeAndCountsFollowTheLocale: Story = {
+  globals: { locale: "ru" },
+  render: () => (
+    <Harness fetchStub={router({})}>
+      <BusinessUnits />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText(ru_.retired)).toBeVisible();
+    await expect(canvas.queryByText("RETIRED")).toBeNull();
+    await expect(canvas.queryByText("Retired")).toBeNull();
+    // 4 200 запросов, with the locale's grouping, not 4200
+    await expect(canvas.getByText(/^4\s200 запросов$/)).toBeVisible();
+    await expect(canvas.queryByText(/4200/)).toBeNull();
+  },
+};
+
+export const RequestCountsAreGroupedInEnglish: Story = {
+  render: () => (
+    <Harness fetchStub={router({})}>
+      <BusinessUnits />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("4,200 requests")).toBeVisible();
+    await expect(canvas.queryByText(/4200/)).toBeNull();
+  },
+};
+
+/** The create button carries an icon, not a plus sign typed into the copy. */
+export const TheCreateButtonUsesTheIconNotAGlyph: Story = {
+  render: () => (
+    <Harness fetchStub={router({})}>
+      <BusinessUnits />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const button = await canvas.findByRole("button", { name: "New business unit" });
+    await expect(button.textContent?.trim()).toBe("New business unit");
+    await expect(button.querySelector("svg")).not.toBeNull();
+  },
+};
+
+/**
+ * Closing the sheet with a typed name asks before it throws the draft away, as
+ * every other create sheet does; an untouched one closes at once.
+ */
+export const ADraftIsNotDiscardedSilently: Story = {
+  render: () => (
+    <Harness fetchStub={router({})}>
+      <BusinessUnits />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click((await canvas.findAllByRole("button", { name: "New business unit" }))[0]);
+    const panel = within(document.body);
+    await userEvent.type(await panel.findByLabelText("Name"), "Ops");
+    await userEvent.click(panel.getByRole("button", { name: "Cancel" }));
+    // the draft is still behind the question when it is declined
+    await answerDiscardPrompt(false);
+    await expect(panel.getByLabelText("Name")).toHaveValue("Ops");
+    await userEvent.click(panel.getByRole("button", { name: "Cancel" }));
+    await answerDiscardPrompt(true);
+    await expectSheetClosed();
+  },
+};
+
+/** An untouched sheet closes at once: a prompt on a form nobody edited is noise. */
+export const AnUntouchedSheetClosesWithoutPrompting: Story = {
+  render: () => (
+    <Harness fetchStub={router({})}>
+      <BusinessUnits />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click((await canvas.findAllByRole("button", { name: "New business unit" }))[0]);
+    await expectClosesWithoutPrompting();
+  },
+};
+
+/**
+ * A refused create leaves its message in the sheet. Closing the sheet takes the
+ * message with it: the toolbar never carries a failure the operator has already
+ * walked away from.
+ */
+export const ARefusedCreateLeavesNothingOnTheToolbar: Story = {
+  render: () => (
+    <Harness
+      fetchStub={router({
+        units: (init) =>
+          init?.method === "POST"
+            ? json({ error: { message: "slug ops is already taken" } }, 409)
+            : json(UNITS),
+      })}
+    >
+      <Toasted>
+        <BusinessUnits />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    // the refusal's words anywhere but a toast or the sheet
+    const onTheToolbar = () =>
+      canvas
+        .queryAllByText(/already taken/)
+        .filter(
+          (node) => node.closest('[role="alert"], [role="status"], [role="dialog"]') === null,
+        );
+    await userEvent.click((await canvas.findAllByRole("button", { name: "New business unit" }))[0]);
+    const panel = within(document.body);
+    await userEvent.type(await panel.findByLabelText("Name"), "Ops");
+    await userEvent.click(panel.getByRole("button", { name: "Create" }));
+    await expect(await within(sheet()).findByText(/already taken/)).toBeVisible();
+    // the toolbar holds nothing while the sheet is open, and nothing after
+    await expect(onTheToolbar()).toEqual([]);
+    await userEvent.click(panel.getByRole("button", { name: "Cancel" }));
+    await answerDiscardPrompt(true);
+    await expectSheetClosed();
+    await expect(onTheToolbar()).toEqual([]);
+  },
+};
+
+/** The biggest spenders come first, whatever order the control plane listed them in. */
+export const CardsComeInOrderOfSpend: Story = {
+  render: () => (
+    <Harness
+      fetchStub={router({
+        customers: () => json([...CUSTOMERS].reverse()),
+        spend: () =>
+          json({
+            data: [
+              spendRow(CUSTOMERS[0].id, 10, 100),
+              spendRow(CUSTOMERS[1].id, 500, 9000),
+              spendRow("", 5, 50),
+            ],
+          }),
+      })}
+    >
+      <Customers />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText("9,000 requests")).toBeVisible());
+    const names = canvas.getAllByRole("button", { name: /^Edit / }).map((b) => b.ariaLabel);
+    await expect(names).toEqual(["Edit Globex", "Edit Acme Corp"]);
+  },
+};
+
+/** The three figures of the strip share one top edge, so their labels line up. */
+export const TheStripLabelsShareOneTopEdge: Story = {
+  render: () => (
+    <Harness fetchStub={router({})}>
+      <BusinessUnits />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText(/of the window/);
+    const tops = [/^Spend, /, "Attributed", "Unattributed"].map(
+      (label) => canvas.getByText(label).getBoundingClientRect().top,
+    );
+    await expect(new Set(tops.map(Math.round)).size).toBe(1);
+  },
+};
+
+const failingRoster = (kind: "units" | "customers") => {
+  let healthy = false;
+  return {
+    retry: () => {
+      healthy = true;
+    },
+    stub: router({
+      [kind]: () =>
+        healthy
+          ? json(kind === "units" ? UNITS : CUSTOMERS)
+          : json({ error: { message: "store unavailable" } }, 500),
+    }),
+  };
+};
+
+/** A roster that fails says so, quotes the control plane, and its retry brings the cards back. */
+export const BusinessUnitsFailToLoadAndRetry: Story = {
+  render: () => {
+    const failing = failingRoster("units");
+    return (
+      <Harness fetchStub={failing.stub}>
+        <button type="button" data-heal onClick={failing.retry}>
+          heal
+        </button>
+        <BusinessUnits />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectLoadError(canvasElement, /failed to return business units/i);
+    await expectNoFalseEmpty(canvasElement, /No business units yet/);
+    await userEvent.click(canvas.getByRole("button", { name: "heal" }));
+    await userEvent.click(canvas.getByRole("button", { name: "Try again" }));
+    await expect(await canvas.findByText("Platform Engineering")).toBeVisible();
+  },
+};
+
+export const CustomersLoading: Story = {
+  render: () => (
+    <Harness
+      fetchStub={async (input, init) =>
+        String(input).includes("/customers")
+          ? new Promise<Response>(() => {})
+          : router({})(input, init)
+      }
+    >
+      <Customers />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectSkeleton(canvasElement);
+    await expectNoFalseEmpty(canvasElement, /No customers yet/);
+  },
+};
+
+export const CustomersFailToLoadAndRetry: Story = {
+  render: () => {
+    const failing = failingRoster("customers");
+    return (
+      <Harness fetchStub={failing.stub}>
+        <button type="button" data-heal onClick={failing.retry}>
+          heal
+        </button>
+        <Customers />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectLoadError(canvasElement, /failed to return customers/i);
+    await expectNoFalseEmpty(canvasElement, /No customers yet/);
+    await userEvent.click(canvas.getByRole("button", { name: "heal" }));
+    await userEvent.click(canvas.getByRole("button", { name: "Try again" }));
+    await expect(await canvas.findByText("Acme Corp")).toBeVisible();
   },
 };

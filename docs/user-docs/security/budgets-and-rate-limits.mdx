@@ -300,6 +300,12 @@ rpm = 2000
 
 Like budgets, rate limits follow **most-restrictive-wins** across the scope chain. A per-key limit can throttle a client well below the project-level ceiling, and an org-level limit acts as a global backstop.
 
+## Seeing every cap in the organization
+
+The **Budgets & Limits** screen opens on your current project. Pick **All scopes** as the scope type to list every budget and rate limit you may read across the organization, grouped under the scope each belongs to and named, not shown as an id. Pick one scope type to filter the list, and then one scope to narrow it to that scope. A cap is created on a picked scope, so the add buttons stay off until one is picked. The spend-so-far figure is read per scope and appears once a scope is picked.
+
+You see the caps your role allows, and the same rule applies as when you pick scopes one at a time: a project member sees the caps of their project, its team and the organization. The API behind the list is in [Budgets & rate limits](/api/budgets-and-rate-limits).
+
 ## Changing a budget or rate limit
 
 Budgets and rate limits stored in the database are edited in place. On the

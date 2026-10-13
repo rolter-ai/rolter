@@ -34,6 +34,8 @@ import {
   fetchBudgets,
   fetchBusinessUnits,
   fetchCustomers,
+  fetchOrgBudgets,
+  fetchOrgRateLimits,
   fetchRateLimits,
   fetchVirtualKeys,
   SCOPE_TYPES,
@@ -69,10 +71,15 @@ const SCOPE_PLACEHOLDERS: Record<string, string> = {
   customer: "pages.limits.selectCustomer",
 };
 
+// the scope type that lists every cap the caller may read across the org
+// instead of the caps of one scope type (#2093)
+const ALL_SCOPES = "all";
+
 // budgets and rate limits share a scope (scope_type + scope_id), so this
-// page combines both concerns behind one scope picker. defaults to the
-// current project scope — pick another scope_type and paste an id to
-// manage org/team/virtual-key scoped limits.
+// page combines both concerns behind one scope picker. it opens on the current
+// project. the type narrows the org-wide list and a picked scope narrows it
+// to one scope, which is also the only place a cap is created: a new cap needs
+// a scope to hang off.
 export default function Limits() {
   const { t } = useTranslation();
   const toast = useToast();
@@ -91,11 +98,19 @@ export default function Limits() {
   const [scopeType, setScopeType] = React.useState<string>(fromLink ? linked : "project");
   const [scopeId, setScopeId] = React.useState<string>(fromLink ? linkedId : "");
 
+  // the screen opens on the current project, once: choosing a scope type later
+  // leaves the scope unpicked, which lists that type across the org (#2093)
+  const [typePicked, setTypePicked] = React.useState(false);
   React.useEffect(() => {
-    if (scopeType === "project" && scope.projectId && !scopeId) {
-      setScopeId(scope.projectId);
-    }
-  }, [scopeType, scope.projectId, scopeId]);
+    if (typePicked || scopeId || !scope.projectId) return;
+    setScopeId(scope.projectId);
+  }, [typePicked, scopeId, scope.projectId]);
+
+  // no scope picked: the lists come from the org-wide read, narrowed by the
+  // type. not while the project default is still on its way, which would read
+  // the whole org for the first frame and then the project
+  const defaultPending = !typePicked && !scopeId && (scope.isLoading || !!scope.projectId);
+  const orgWide = !scopeId && !defaultPending;
 
   const virtualKeys = useQuery({
     queryKey: ["virtual-keys", scope.projectId],
@@ -109,13 +124,14 @@ export default function Limits() {
   const businessUnits = useQuery({
     queryKey: ["business-units", scope.orgId],
     queryFn: () => fetchBusinessUnits(scope.orgId as string),
-    enabled: scopeType === "business_unit" && !!scope.orgId,
+    enabled:
+      !!scope.orgId && (scopeType === "business_unit" || (orgWide && scopeType === ALL_SCOPES)),
   });
 
   const customers = useQuery({
     queryKey: ["customers", scope.orgId],
     queryFn: () => fetchCustomers(scope.orgId as string),
-    enabled: scopeType === "customer" && !!scope.orgId,
+    enabled: !!scope.orgId && (scopeType === "customer" || (orgWide && scopeType === ALL_SCOPES)),
   });
 
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
@@ -124,10 +140,13 @@ export default function Limits() {
 
   useScreenReady(!virtualKeys.isLoading);
 
+  // `in-org` keeps the org-wide read apart from the per-scope one, whose key
+  // is `["budgets", "org", <org id>]` when the picked scope is the org itself
   const budgets = useQuery({
-    queryKey: ["budgets", scopeType, scopeId],
-    queryFn: () => fetchBudgets(scopeType, scopeId),
-    enabled: !!scopeId,
+    queryKey: orgWide ? ["budgets", "in-org", scope.orgId] : ["budgets", scopeType, scopeId],
+    queryFn: () =>
+      orgWide ? fetchOrgBudgets(scope.orgId as string) : fetchBudgets(scopeType, scopeId),
+    enabled: orgWide ? !!scope.orgId : !!scopeId,
   });
 
   // the gateway's own counters, read through the control plane. a separate
@@ -140,17 +159,25 @@ export default function Limits() {
   });
 
   const rateLimits = useQuery({
-    queryKey: ["rate-limits", scopeType, scopeId],
-    queryFn: () => fetchRateLimits(scopeType, scopeId),
-    enabled: !!scopeId,
+    queryKey: orgWide
+      ? ["rate-limits", "in-org", scope.orgId]
+      : ["rate-limits", scopeType, scopeId],
+    queryFn: () =>
+      orgWide ? fetchOrgRateLimits(scope.orgId as string) : fetchRateLimits(scopeType, scopeId),
+    enabled: orgWide ? !!scope.orgId : !!scopeId,
   });
 
-  const invalidateBudgets = () =>
-    queryClient.invalidateQueries({ queryKey: ["budgets", scopeType, scopeId] });
-  const invalidateRateLimits = () =>
-    queryClient.invalidateQueries({
-      queryKey: ["rate-limits", scopeType, scopeId],
-    });
+  // a cap written on one scope changes the org-wide list too, so both go stale
+  const invalidateBudgets = () => queryClient.invalidateQueries({ queryKey: ["budgets"] });
+  const invalidateRateLimits = () => queryClient.invalidateQueries({ queryKey: ["rate-limits"] });
+
+  // the org-wide read answers every scope type; the picked type narrows it
+  const ofType = <T extends { scope_type: string }>(rows: T[] | undefined) =>
+    rows && orgWide && scopeType !== ALL_SCOPES
+      ? rows.filter((row) => row.scope_type === scopeType)
+      : rows;
+  const budgetRows = ofType(budgets.data);
+  const rateLimitRows = ofType(rateLimits.data);
 
   const removeBudget = useMutation({
     mutationFn: (id: string) => deleteBudget(id),
@@ -243,12 +270,38 @@ export default function Limits() {
           : null;
   const pickerPending = !!pickerRead?.query.isLoading;
   // a scope typed in as a uuid has no name to show, and is shown as that uuid
-  const scopeName = scopeOptions.find((option) => option.value === scopeId)?.label ?? scopeId;
+  // a cap's scope by name. a key outside the picked project has no name the
+  // dashboard can read org-wide, and is shown by the start of its id
+  const nameOf = (type: string, id: string): string => {
+    if (type === scopeType) {
+      const picked = scopeOptions.find((option) => option.value === id)?.label;
+      if (picked) return picked;
+    }
+    const named = (rows: { id: string; name: string }[] | undefined) =>
+      rows?.find((row) => row.id === id)?.name;
+    const found =
+      type === "org"
+        ? named(scope.orgs)
+        : type === "team"
+          ? named(orgScope.teams)
+          : type === "project"
+            ? named(orgScope.byTeam.flatMap((entry) => entry.projects))
+            : type === "business_unit"
+              ? named(businessUnits.data)
+              : type === "customer"
+                ? named(customers.data)
+                : virtualKeys.data?.find((key) => key.id === id)?.name;
+    return found || (type === "virtual_key" ? id.slice(0, 8) : id);
+  };
+  const scopeName = scopeId ? nameOf(scopeType, scopeId) : "";
+  // a name is only unique within its type, so an org-wide row says which kind
+  // it belongs to; the per-scope view already said it in the picker
+  const scopeLabelOf = (row: { scope_type: string; scope_id: string }) =>
+    t("pages.limits.scopeNamed", {
+      type: t(`pages.limits.scopeTypes.${orgWide ? row.scope_type : scopeType}`),
+      name: orgWide ? nameOf(row.scope_type, row.scope_id) : scopeName,
+    });
   // the delete confirmations open on it, so the type comes with the name
-  const scopeLabel = t("pages.limits.scopeNamed", {
-    type: t(`pages.limits.scopeTypes.${scopeType}`),
-    name: scopeName,
-  });
   const budgetNames = useBudgetNames(scopeName);
   const rateLimitCaps = useRateLimitCaps();
 
@@ -270,43 +323,56 @@ export default function Limits() {
             <Combobox
               value={scopeType}
               onChange={(picked) => {
+                setTypePicked(true);
                 setScopeType(picked);
-                setScopeId(picked === "project" ? (scope.projectId ?? "") : "");
+                setScopeId("");
               }}
-              options={SCOPE_TYPES.map((type) => ({
+              options={[ALL_SCOPES, ...SCOPE_TYPES].map((type) => ({
                 value: type,
                 label: t(`pages.limits.scopeTypes.${type}`),
               }))}
             />
           </Field>
-          <Field
-            label={t("pages.limits.scopeLabel")}
-            hint={
-              pickerPending
-                ? undefined
-                : t(hasPicker ? "pages.limits.scopeHint" : "pages.limits.scopeIdHint", {
-                    type: t(`pages.limits.scopeTypes.${scopeType}`),
-                  })
-            }
-          >
-            {pickerPending ? (
-              <ControlSkeleton width="100%" />
-            ) : hasPicker ? (
-              <Combobox
-                value={scopeId}
-                onChange={setScopeId}
-                placeholder={t(SCOPE_PLACEHOLDERS[scopeType])}
-                options={scopeOptions}
-              />
-            ) : (
-              <Input
-                value={scopeId}
-                onChange={(e) => setScopeId(e.target.value)}
-                placeholder="00000000-0000-0000-0000-000000000000"
-                className="font-mono text-xs"
-              />
-            )}
-          </Field>
+          {scopeType !== ALL_SCOPES && (
+            <Field
+              label={t("pages.limits.scopeLabel")}
+              hint={
+                pickerPending
+                  ? undefined
+                  : t(
+                      !hasPicker
+                        ? "pages.limits.scopeIdHint"
+                        : orgWide
+                          ? "pages.limits.scopeHintList"
+                          : "pages.limits.scopeHint",
+                      { type: t(`pages.limits.scopeTypes.${scopeType}`) },
+                    )
+              }
+            >
+              {pickerPending ? (
+                <ControlSkeleton width="100%" />
+              ) : hasPicker ? (
+                <Combobox
+                  value={scopeId}
+                  onChange={setScopeId}
+                  placeholder={t(SCOPE_PLACEHOLDERS[scopeType])}
+                  options={scopeOptions}
+                />
+              ) : (
+                <Input
+                  value={scopeId}
+                  onChange={(e) => setScopeId(e.target.value)}
+                  placeholder="00000000-0000-0000-0000-000000000000"
+                  className="font-mono text-xs"
+                />
+              )}
+            </Field>
+          )}
+          {scopeType === ALL_SCOPES && (
+            <p className="text-xs text-muted-foreground sm:self-end">
+              {t("pages.limits.scopeTypeHintAll")}
+            </p>
+          )}
           {/* the picker reads only feed the picker, which falls back to a bare uuid
               box without them, so a failed read is said here (#2642, #2959). the
               query keeps its error once another scope type is picked, hence
@@ -352,34 +418,61 @@ export default function Limits() {
             target="budgets"
           />
         )}
-        {!budgets.isLoading && scopeId && budgets.data?.length === 0 && (
+        {budgetRows?.length === 0 && (
           <EmptyState
             uxTarget="budgets"
             icon={<Wallet />}
-            title={t("pages.limits.budgetsEmptyTitle")}
-            description={t("pages.limits.budgetsEmptyBody")}
+            title={t(
+              !orgWide
+                ? "pages.limits.budgetsEmptyTitle"
+                : scopeType === ALL_SCOPES
+                  ? "pages.limits.budgetsEmptyAllTitle"
+                  : "pages.limits.budgetsEmptyTypeTitle",
+            )}
+            description={t(
+              !orgWide
+                ? "pages.limits.budgetsEmptyBody"
+                : scopeType === ALL_SCOPES
+                  ? "pages.limits.budgetsEmptyAllBody"
+                  : "pages.limits.budgetsEmptyTypeBody",
+              { type: t(`pages.limits.scopeTypes.${scopeType}`) },
+            )}
             actions={
-              <GatedButton
-                gate="budget:create"
-                control="budget-new-empty"
-                disabled={!scopeId}
-                onClick={() => setAddBudgetOpen(true)}
-              >
-                {t("pages.limits.budgetsEmptyAction")}
-              </GatedButton>
+              // a cap hangs off one scope, so the org-wide view has nothing to add to
+              orgWide ? undefined : (
+                <GatedButton
+                  gate="budget:create"
+                  control="budget-new-empty"
+                  onClick={() => setAddBudgetOpen(true)}
+                >
+                  {t("pages.limits.budgetsEmptyAction")}
+                </GatedButton>
+              )
             }
           />
         )}
-        <div className="grid gap-3.5 [grid-template-columns:repeat(auto-fill,minmax(min(280px,100%),1fr))]">
-          {budgets.data?.map((budget) => (
+        <ScopeGroups
+          rows={budgetRows}
+          grouped={orgWide}
+          labelOf={scopeLabelOf}
+          renderCard={(budget) => (
             <BudgetCard
               key={budget.id}
               budget={budget}
-              scope={scopeName}
-              spend={spend.isLoading ? "loading" : spend.isError ? null : (spend.data ?? null)}
+              scope={orgWide ? scopeLabelOf(budget) : scopeName}
+              // the counters are read per scope, so the org-wide list has none
+              spend={
+                orgWide
+                  ? "off"
+                  : spend.isLoading
+                    ? "loading"
+                    : spend.isError
+                      ? null
+                      : (spend.data ?? null)
+              }
               gateAt={capGateScope(budget, {
                 byTeam: orgScope.byTeam,
-                keyProjectId: scope.projectId,
+                keyProjectId: orgWide ? undefined : scope.projectId,
               })}
               onEdit={() => {
                 setEditingBudget(budget);
@@ -390,8 +483,8 @@ export default function Limits() {
               // given spins
               deleting={removeBudget.isPending && budgetToDelete?.id === budget.id}
             />
-          ))}
-        </div>
+          )}
+        />
       </div>
 
       <div className="space-y-3">
@@ -423,33 +516,50 @@ export default function Limits() {
             target="rate-limits"
           />
         )}
-        {!rateLimits.isLoading && scopeId && rateLimits.data?.length === 0 && (
+        {rateLimitRows?.length === 0 && (
           <EmptyState
             uxTarget="rate-limits"
             icon={<Gauge />}
-            title={t("pages.limits.rateLimitsEmptyTitle")}
-            description={t("pages.limits.rateLimitsEmptyBody")}
+            title={t(
+              !orgWide
+                ? "pages.limits.rateLimitsEmptyTitle"
+                : scopeType === ALL_SCOPES
+                  ? "pages.limits.rateLimitsEmptyAllTitle"
+                  : "pages.limits.rateLimitsEmptyTypeTitle",
+            )}
+            description={t(
+              !orgWide
+                ? "pages.limits.rateLimitsEmptyBody"
+                : scopeType === ALL_SCOPES
+                  ? "pages.limits.rateLimitsEmptyAllBody"
+                  : "pages.limits.rateLimitsEmptyTypeBody",
+              { type: t(`pages.limits.scopeTypes.${scopeType}`) },
+            )}
             actions={
-              <GatedButton
-                gate="rate_limit:create"
-                control="rate-limit-new-empty"
-                disabled={!scopeId}
-                onClick={() => setAddRateLimitOpen(true)}
-              >
-                {t("pages.limits.rateLimitsEmptyAction")}
-              </GatedButton>
+              orgWide ? undefined : (
+                <GatedButton
+                  gate="rate_limit:create"
+                  control="rate-limit-new-empty"
+                  onClick={() => setAddRateLimitOpen(true)}
+                >
+                  {t("pages.limits.rateLimitsEmptyAction")}
+                </GatedButton>
+              )
             }
           />
         )}
-        <div className="grid gap-3.5 [grid-template-columns:repeat(auto-fill,minmax(min(280px,100%),1fr))]">
-          {rateLimits.data?.map((limit) => (
+        <ScopeGroups
+          rows={rateLimitRows}
+          grouped={orgWide}
+          labelOf={scopeLabelOf}
+          renderCard={(limit) => (
             <RateLimitCard
               key={limit.id}
               limit={limit}
-              scope={scopeName}
+              scope={orgWide ? scopeLabelOf(limit) : scopeName}
               gateAt={capGateScope(limit, {
                 byTeam: orgScope.byTeam,
-                keyProjectId: scope.projectId,
+                keyProjectId: orgWide ? undefined : scope.projectId,
               })}
               onEdit={() => {
                 setEditingRateLimit(limit);
@@ -458,8 +568,8 @@ export default function Limits() {
               onDelete={() => setRateLimitToDelete(limit)}
               deleting={removeRateLimit.isPending && rateLimitToDelete?.id === limit.id}
             />
-          ))}
-        </div>
+          )}
+        />
       </div>
 
       <BudgetSheet
@@ -476,7 +586,7 @@ export default function Limits() {
           onOpenChange={setEditBudgetOpen}
           scopeType={editingBudget.scope_type}
           scopeId={editingBudget.scope_id}
-          scopeName={scopeName}
+          scopeName={nameOf(editingBudget.scope_type, editingBudget.scope_id)}
           budget={editingBudget}
           onDone={invalidateBudgets}
         />
@@ -495,7 +605,7 @@ export default function Limits() {
           onOpenChange={setEditRateLimitOpen}
           scopeType={editingRateLimit.scope_type}
           scopeId={editingRateLimit.scope_id}
-          scopeName={scopeName}
+          scopeName={nameOf(editingRateLimit.scope_type, editingRateLimit.scope_id)}
           limit={editingRateLimit}
           onDone={invalidateRateLimits}
         />
@@ -514,7 +624,9 @@ export default function Limits() {
           budgetToDelete ? t("pages.limits.confirm.budgetTitle", budgetNames(budgetToDelete)) : ""
         }
         description={
-          budgetToDelete ? t("pages.limits.confirm.budgetBody", { scope: scopeLabel }) : ""
+          budgetToDelete
+            ? t("pages.limits.confirm.budgetBody", { scope: scopeLabelOf(budgetToDelete) })
+            : ""
         }
         confirmLabel={t("pages.limits.confirm.budgetConfirm")}
         pending={removeBudget.isPending}
@@ -538,7 +650,9 @@ export default function Limits() {
             : ""
         }
         description={
-          rateLimitToDelete ? t("pages.limits.confirm.rateLimitBody", { scope: scopeLabel }) : ""
+          rateLimitToDelete
+            ? t("pages.limits.confirm.rateLimitBody", { scope: scopeLabelOf(rateLimitToDelete) })
+            : ""
         }
         confirmLabel={t("pages.limits.confirm.rateLimitConfirm")}
         pending={removeRateLimit.isPending}
@@ -551,6 +665,49 @@ export default function Limits() {
         }
       />
     </PageBody>
+  );
+}
+
+/**
+ * The cards of one list. Per scope they are one grid; org-wide they are grouped
+ * under the scope each belongs to, scope types in the order the picker offers
+ * them and scopes by name, so "which caps exist here" reads scope by scope
+ * (#2093).
+ */
+function ScopeGroups<T extends { id: string; scope_type: string; scope_id: string }>({
+  rows,
+  grouped,
+  labelOf,
+  renderCard,
+}: {
+  rows: T[] | undefined;
+  grouped: boolean;
+  labelOf: (row: T) => string;
+  renderCard: (row: T) => React.ReactNode;
+}) {
+  const grid = "grid gap-3.5 [grid-template-columns:repeat(auto-fill,minmax(min(280px,100%),1fr))]";
+  if (!rows?.length) return null;
+  if (!grouped) return <div className={grid}>{rows.map(renderCard)}</div>;
+  const groups = new Map<string, T[]>();
+  for (const row of rows) {
+    const key = `${row.scope_type}:${row.scope_id}`;
+    groups.set(key, [...(groups.get(key) ?? []), row]);
+  }
+  const typeOrder = (row: T) => SCOPE_TYPES.indexOf(row.scope_type as (typeof SCOPE_TYPES)[number]);
+  const ordered = [...groups.entries()]
+    .map(([key, members]) => ({ key, members, label: labelOf(members[0]) }))
+    .sort(
+      (a, b) => typeOrder(a.members[0]) - typeOrder(b.members[0]) || a.label.localeCompare(b.label),
+    );
+  return (
+    <div className="space-y-4">
+      {ordered.map((group) => (
+        <div key={group.key} className="space-y-2">
+          <h3 className="text-sm font-medium text-muted-foreground">{group.label}</h3>
+          <div className={grid}>{group.members.map(renderCard)}</div>
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -660,12 +817,12 @@ function BudgetSpend({
   spend,
 }: {
   budget: BudgetRow;
-  spend: BudgetSpendReport | "loading" | null;
+  spend: BudgetSpendReport | "loading" | "off" | null;
 }) {
   const { t } = useTranslation();
   const fmt = useFormat();
   const currency = useCurrencyCode();
-  if (spend === "loading") return null;
+  if (spend === "loading" || spend === "off") return null;
   const row = spend?.budgets.find((entry) => entry.id === budget.id);
   const figures = spendFigures(row, budget.limit_usd);
   if (!figures) {
@@ -724,8 +881,11 @@ function BudgetCard({
 }: {
   budget: BudgetRow;
   scope: string;
-  /** "loading" while the read is in flight, null when it failed outright */
-  spend: BudgetSpendReport | "loading" | null;
+  /**
+   * "loading" while the read is in flight, "off" where no counter is read (the
+   * org-wide list), null when it failed outright
+   */
+  spend: BudgetSpendReport | "loading" | "off" | null;
   gateAt: RowScope | undefined;
   onEdit: () => void;
   onDelete: () => void;

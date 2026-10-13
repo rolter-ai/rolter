@@ -6,19 +6,23 @@ description: "List, create, edit in place and delete spend budgets and rate limi
 
 Budgets and rate limits stored in the database are managed through the control plane. Each one hangs off a **scope**: an org, team, project, virtual key, business unit or customer, named by `scope_type` and `scope_id`. What the caps do once they reach the gateway is covered in [Budgets & Rate Limits](/security/budgets-and-rate-limits); this page is the API.
 
-| Method   | Path                                            | What it does                               |
-| -------- | ----------------------------------------------- | ------------------------------------------ |
-| `GET`    | `/api/v1/budgets?scope_type=…&scope_id=…`       | list the budgets on one scope              |
-| `GET`    | `/api/v1/budgets/spend?scope_type=…&scope_id=…` | spend so far against each of those budgets |
-| `POST`   | `/api/v1/budgets`                               | create a budget                            |
-| `PATCH`  | `/api/v1/budgets/{id}`                          | change a budget in place                   |
-| `DELETE` | `/api/v1/budgets/{id}`                          | delete a budget                            |
-| `GET`    | `/api/v1/rate-limits?scope_type=…&scope_id=…`   | list the rate limits on one scope          |
-| `POST`   | `/api/v1/rate-limits`                           | create a rate limit                        |
-| `PATCH`  | `/api/v1/rate-limits/{id}`                      | change a rate limit in place               |
-| `DELETE` | `/api/v1/rate-limits/{id}`                      | delete a rate limit                        |
+| Method   | Path                                            | What it does                                 |
+| -------- | ----------------------------------------------- | -------------------------------------------- |
+| `GET`    | `/api/v1/budgets?scope_type=…&scope_id=…`       | list the budgets on one scope                |
+| `GET`    | `/api/v1/budgets/spend?scope_type=…&scope_id=…` | spend so far against each of those budgets   |
+| `GET`    | `/api/v1/orgs/{org_id}/budgets`                 | list the budgets across one organization     |
+| `POST`   | `/api/v1/budgets`                               | create a budget                              |
+| `PATCH`  | `/api/v1/budgets/{id}`                          | change a budget in place                     |
+| `DELETE` | `/api/v1/budgets/{id}`                          | delete a budget                              |
+| `GET`    | `/api/v1/rate-limits?scope_type=…&scope_id=…`   | list the rate limits on one scope            |
+| `GET`    | `/api/v1/orgs/{org_id}/rate-limits`             | list the rate limits across one organization |
+| `POST`   | `/api/v1/rate-limits`                           | create a rate limit                          |
+| `PATCH`  | `/api/v1/rate-limits/{id}`                      | change a rate limit in place                 |
+| `DELETE` | `/api/v1/rate-limits/{id}`                      | delete a rate limit                          |
 
 `scope_type` is one of `org`, `team`, `project`, `virtual_key`, `business_unit` or `customer`. Both list routes require both query parameters and answer `400` without them.
+
+The organization-wide lists answer "which caps exist here?" in one request. They return every budget (or rate limit) set at the organization or at anything inside it: its teams, projects and virtual keys, and its business units and customers. Each row carries its own `scope_type` and `scope_id`. The rows are the ones the per-scope read would have returned: a caller who holds a role only on one project gets that project's caps, its team's and the organization's, and nothing from a sibling project. A caller with no role anywhere in the organization gets `403`; one with a role below it gets the rows they may read, which can be none. The dashboard's Budgets & Limits screen reads these when no single scope is picked.
 
 ## Budgets
 

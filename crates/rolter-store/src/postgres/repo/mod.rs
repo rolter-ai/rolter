@@ -3340,10 +3340,44 @@ fn keeps_a_cap(rpm: Option<i32>, tpm: Option<i32>) -> bool {
     rpm.is_some_and(|cap| cap > 0) || tpm.is_some_and(|cap| cap > 0)
 }
 
+/// The `where` clause (a literal, so it can sit inside `concat!`) shared by the org-wide budget and rate-limit lists: a row
+/// belongs to org `$1` when its scope is the org, one of its teams, projects or
+/// virtual keys, or one of its business units or customers.
+macro_rules! in_org {
+    () => {
+        "(scope_type = 'org' and scope_id = $1)
+    or (scope_type = 'team' and scope_id in (select id from teams where org_id = $1))
+    or (scope_type = 'project' and scope_id in (
+        select p.id from projects p join teams t on t.id = p.team_id where t.org_id = $1))
+    or (scope_type = 'virtual_key' and scope_id in (
+        select v.id from virtual_keys v
+        join projects p on p.id = v.project_id
+        join teams t on t.id = p.team_id where t.org_id = $1))
+    or (scope_type = 'business_unit' and scope_id in (
+        select id from business_units where org_id = $1))
+    or (scope_type = 'customer' and scope_id in (
+        select id from customers where org_id = $1))"
+    };
+}
+
 /// Budgets, attachable at any scope (org/team/project/virtual_key).
 pub struct BudgetRepo<'a>(pub &'a PgPool);
 
 impl BudgetRepo<'_> {
+    /// Every budget set at the org or at anything inside it, oldest first.
+    pub async fn list_in_org(&self, org_id: Uuid) -> Result<Vec<Budget>> {
+        sqlx::query_as(concat!(
+            "select id, scope_type, scope_id, limit_usd::text as limit_usd, period, unpriced_policy, created_at
+             from budgets where ",
+            in_org!(),
+            " order by created_at"
+        ))
+        .bind(org_id)
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)
+    }
+
     pub async fn list_for_scope(&self, scope_type: &str, scope_id: Uuid) -> Result<Vec<Budget>> {
         sqlx::query_as(
             "select id, scope_type, scope_id, limit_usd::text as limit_usd, period, unpriced_policy, created_at
@@ -3485,6 +3519,20 @@ impl BudgetRepo<'_> {
 pub struct RateLimitRepo<'a>(pub &'a PgPool);
 
 impl RateLimitRepo<'_> {
+    /// Every rate limit set at the org or at anything inside it, oldest first.
+    pub async fn list_in_org(&self, org_id: Uuid) -> Result<Vec<RateLimit>> {
+        sqlx::query_as(concat!(
+            "select id, scope_type, scope_id, rpm, tpm, created_at
+             from rate_limits where ",
+            in_org!(),
+            " order by created_at"
+        ))
+        .bind(org_id)
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)
+    }
+
     pub async fn list_for_scope(&self, scope_type: &str, scope_id: Uuid) -> Result<Vec<RateLimit>> {
         sqlx::query_as(
             "select id, scope_type, scope_id, rpm, tpm, created_at
