@@ -50,6 +50,8 @@ mod crud;
 #[cfg(feature = "postgres")]
 mod feature_flags;
 #[cfg(feature = "postgres")]
+mod guardrail_trial;
+#[cfg(feature = "postgres")]
 mod guardrails;
 mod health;
 #[cfg(feature = "postgres")]
@@ -1144,6 +1146,7 @@ fn build_app_with(state: ControlState, mount_internal: bool) -> Router {
             .merge(mcp_oauth_flow::router())
             .merge(feature_flags::router())
             .merge(guardrails::router())
+            .merge(guardrail_trial::router())
             .merge(labels::router())
             .merge(logging_settings::router())
             .merge(runtime_policy::router())

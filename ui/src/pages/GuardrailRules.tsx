@@ -26,6 +26,7 @@ import {
   RULE_ACTIONS,
   useGuardrailOutcomes,
 } from "@/components/GuardrailOutcomes";
+import { GuardrailRuleTrial } from "@/components/GuardrailRuleTrial";
 import { LoadError } from "@/components/LoadError";
 import { superadminOnly } from "@/components/ForbiddenScreen";
 import { GatedButton } from "@/components/GatedButton";
@@ -41,6 +42,7 @@ import {
 } from "@/components/ui/dialog";
 import { Combobox } from "@/components/ui/combobox";
 import { Field } from "@/components/ui/field";
+import { FormSection } from "@/components/ui/form-section";
 import { Input } from "@/components/ui/input";
 
 import { SwitchRow } from "@/components/ui/switch-row";
@@ -109,6 +111,20 @@ type RuleShape = Pick<GuardrailRuleRow, "stage" | "action" | "include_system"> &
   pattern?: string | null;
   replacement?: string | null;
 };
+
+/** one line on what each built-in detector matches, so the picker does not oversell it (#2159) */
+const DETECTOR_HINT = {
+  email: "pages.guardrailRules.detectorHint.email",
+  phone: "pages.guardrailRules.detectorHint.phone",
+  api_token: "pages.guardrailRules.detectorHint.apiToken",
+  payment_card: "pages.guardrailRules.detectorHint.paymentCard",
+} as const;
+
+const ACTION_HINT = {
+  annotate: "pages.guardrailRules.actionHint.annotate",
+  block: "pages.guardrailRules.actionHint.block",
+  redact: "pages.guardrailRules.actionHint.redact",
+} as const;
 
 const STREAMING_COPY = {
   card: {
@@ -579,6 +595,7 @@ function RuleDialog({
     form.name.trim() !== "" && (form.source_type === "builtin" || Boolean(form.pattern?.trim()));
   // shown before saving, and read out with the stage it depends on
   const noteId = React.useId();
+  const [trialOpen, setTrialOpen] = React.useState(false);
   const streamingNote = form.stage === "post_call" ? streaming : undefined;
   return (
     <Dialog open={open} onOpenChange={(value) => !value && onClose()}>
@@ -637,7 +654,11 @@ function RuleDialog({
           </Field>
         </div>
         {form.source_type === "builtin" ? (
-          <Field label={t("pages.guardrailRules.fieldDetector")} htmlFor="rule-builtin">
+          <Field
+            label={t("pages.guardrailRules.fieldDetector")}
+            htmlFor="rule-builtin"
+            hint={t(DETECTOR_HINT[form.builtin ?? "email"])}
+          >
             <Combobox
               id="rule-builtin"
               value={form.builtin ?? "email"}
@@ -685,7 +706,11 @@ function RuleDialog({
               ]}
             />
           </Field>
-          <Field label={t("pages.guardrailRules.fieldAction")} htmlFor="rule-action">
+          <Field
+            label={t("pages.guardrailRules.fieldAction")}
+            htmlFor="rule-action"
+            hint={t(ACTION_HINT[form.action])}
+          >
             <Combobox
               id="rule-action"
               value={form.action}
@@ -735,6 +760,13 @@ function RuleDialog({
           checked={form.include_system}
           onChange={(include_system) => set({ include_system })}
         />
+        <FormSection
+          title={t("pages.guardrailRules.trial.title")}
+          open={trialOpen}
+          onToggle={() => setTrialOpen((value) => !value)}
+        >
+          <GuardrailRuleTrial draft={ruleBody(form)} />
+        </FormSection>
         {error && (
           <p role="alert" className="text-xs text-[color:var(--status-danger-text)]">
             {error}

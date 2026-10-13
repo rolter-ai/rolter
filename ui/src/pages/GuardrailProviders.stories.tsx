@@ -16,6 +16,7 @@ import {
   expectUxEvent,
   Harness as ScreenHarness,
   json,
+  pickOption,
   recordUxEvents,
   recording,
   Toasted,
@@ -1227,5 +1228,151 @@ export const OutcomesNeedAnalytics: Story = {
       "analytics unavailable: no clickhouse_url configured",
     );
     await expect(canvasElement).not.toHaveTextContent(/No matches in the last 7 days/);
+  },
+};
+
+const isProviderTrial = (input: RequestInfo | URL) =>
+  new URL(String(input), "http://localhost").pathname === "/api/v1/guardrails/providers/test";
+
+/** the register dialog with its URL filled in and the trial panel expanded */
+async function openProviderTrial(canvasElement: HTMLElement) {
+  await userEvent.click(
+    await within(canvasElement).findByRole("button", { name: /add provider/i }),
+  );
+  const dialog = within(await within(document.body).findByRole("dialog"));
+  await userEvent.type(dialog.getByLabelText("Evaluation URL"), "https://policy.corp.internal/x");
+  await userEvent.click(dialog.getByRole("button", { name: "Send a test envelope" }));
+  return dialog;
+}
+
+const providerTrials = recording(
+  registry(PROVIDERS, PRIMARY_WEBHOOK, async (input) =>
+    isProviderTrial(input)
+      ? json({
+          ok: true,
+          decision: { action: "block", reason: "pii detected" },
+          credential: "not_configured",
+          http_status: 200,
+          latency_ms: 42,
+          truncated: false,
+        })
+      : json(POLICY_SERVICE, 201),
+  ),
+);
+
+/**
+ * A draft provider is sent one sample envelope before it is saved (#2265): the
+ * decision and its reason come back with the round trip, and nothing is saved.
+ */
+export const TestsADraftProviderBeforeSaving: Story = {
+  render: () => <Harness fetchStub={providerTrials.stub} />,
+  play: async ({ canvasElement }) => {
+    const dialog = await openProviderTrial(canvasElement);
+    await userEvent.type(dialog.getByLabelText("Sample message"), "hello");
+    await userEvent.click(dialog.getByRole("button", { name: "Send test" }));
+    const result = await dialog.findByRole("status");
+    await expect(within(result).getByText("Block")).toBeVisible();
+    await expect(within(result).getByText("Reason: pii detected")).toBeVisible();
+    await expect(within(result).getByText("42 ms round trip")).toBeVisible();
+
+    const sent = await providerTrials.expectSentBody<Record<string, unknown>>(
+      "POST",
+      "/providers/test",
+    );
+    await expect(sent).toMatchObject({
+      url: "https://policy.corp.internal/x",
+      stage: "pre_call",
+      auth_kind: "none",
+      sample: "hello",
+    });
+    await expect(
+      providerTrials.calls.filter(
+        (call) => call.method === "POST" && !call.url.endsWith("/providers/test"),
+      ),
+    ).toHaveLength(0);
+  },
+};
+
+/**
+ * A credential variable only the gateways have is reported as unset here, not
+ * as the webhook rejecting the call, and the dialog offers to test without it.
+ */
+export const SaysWhenTheCredentialIsNotSetOnTheControlPlane: Story = {
+  render: () => {
+    const sent: Record<string, unknown>[] = [];
+    return (
+      <Harness
+        fetchStub={registry(PROVIDERS, PRIMARY_WEBHOOK, async (input, init) => {
+          if (!isProviderTrial(input)) return json(POLICY_SERVICE, 201);
+          const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+          sent.push(body);
+          return body.skip_credential
+            ? json({
+                ok: true,
+                decision: { action: "allow" },
+                credential: "skipped",
+                http_status: 200,
+                latency_ms: 12,
+                truncated: false,
+              })
+            : json({
+                ok: false,
+                error: {
+                  kind: "credential_unset",
+                  message: "ROLTER_GUARDRAIL_TOKEN is not set on the control plane.",
+                },
+                credential: "unset",
+                latency_ms: 0,
+                truncated: false,
+              });
+        })}
+      />
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const dialog = await openProviderTrial(canvasElement);
+    await pickOption(dialog.getByLabelText("Authentication"), "Bearer token");
+    await userEvent.type(
+      dialog.getByLabelText("Secret environment variable"),
+      "ROLTER_GUARDRAIL_TOKEN",
+    );
+    await userEvent.click(dialog.getByRole("button", { name: "Send test" }));
+    const result = await dialog.findByRole("status");
+    await expect(within(result).getByText("Credential not available here")).toBeVisible();
+    await expect(within(result).getByText(/is not set on the control plane/)).toBeVisible();
+    await expect(within(result).queryByText(/On live traffic/)).toBeNull();
+
+    await userEvent.click(dialog.getByRole("switch", { name: "Send without the credential" }));
+    await userEvent.click(dialog.getByRole("button", { name: "Send test" }));
+    await waitFor(() => expect(dialog.getByRole("status")).toHaveTextContent("Allow"));
+    await expect(dialog.getByRole("status")).toHaveTextContent("without the credential");
+  },
+};
+
+/** a timeout is a result, and says what the failure policy would do to live traffic */
+export const ShowsATimeoutWithItsLiveEffect: Story = {
+  render: () => (
+    <Harness
+      fetchStub={registry(PROVIDERS, PRIMARY_WEBHOOK, async (input) =>
+        isProviderTrial(input)
+          ? json({
+              ok: false,
+              error: { kind: "timeout", message: "the webhook did not answer in time" },
+              credential: "not_configured",
+              latency_ms: 1800,
+              truncated: false,
+            })
+          : json(POLICY_SERVICE, 201),
+      )}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const dialog = await openProviderTrial(canvasElement);
+    await userEvent.click(dialog.getByRole("button", { name: "Send test" }));
+    const result = await dialog.findByRole("status");
+    await expect(within(result).getByText("No answer within the timeout")).toBeVisible();
+    // the draft's failure policy starts as fail closed
+    await expect(within(result).getByText(/rejects the request \(fail closed\)/)).toBeVisible();
+    await expect(within(result).getByText("1800 ms round trip")).toBeVisible();
   },
 };

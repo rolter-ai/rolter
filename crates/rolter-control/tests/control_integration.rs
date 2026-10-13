@@ -24144,3 +24144,244 @@ async fn budget_spend_reads_the_gateway_counter_and_never_invents_zero() {
         .expect("clean up");
     assert_eq!(report["budgets"][0]["spent_usd"], "12.5000");
 }
+
+/// A webhook double: answers every POST with `answer` (after `delay`) and hands
+/// the headers and body of the call it saw to the test.
+async fn guardrail_webhook_double(
+    answer: Value,
+    delay: std::time::Duration,
+    seen: std::sync::Arc<std::sync::Mutex<Vec<(axum::http::HeaderMap, Value)>>>,
+) -> String {
+    use axum::routing::post;
+    let app = axum::Router::new().route(
+        "/check",
+        post(
+            move |headers: axum::http::HeaderMap, axum::Json(body): axum::Json<Value>| {
+                let answer = answer.clone();
+                let seen = seen.clone();
+                async move {
+                    seen.lock().unwrap().push((headers, body));
+                    tokio::time::sleep(delay).await;
+                    axum::Json(answer)
+                }
+            },
+        ),
+    );
+    let addr = serve(app).await;
+    format!("http://{addr}/check")
+}
+
+async fn post_json(base: &str, path: &str, body: Value) -> (u16, Value) {
+    let resp = reqwest::Client::new()
+        .post(format!("{base}{path}"))
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    let status = resp.status().as_u16();
+    (status, resp.json().await.unwrap_or(Value::Null))
+}
+
+/// #2159: an unsaved rule is run against a sample with the gateway's matcher,
+/// and a pattern the gateway would refuse comes back as a 400 on `pattern`.
+#[tokio::test]
+async fn an_unsaved_guardrail_rule_is_tried_against_a_sample() {
+    skip_without_db!();
+    let (app, _db) = fresh_app().await;
+    let base = format!("http://{}", serve(app).await);
+    let path = "/api/v1/guardrails/rules/test";
+
+    let (status, run) = post_json(
+        &base,
+        path,
+        json!({"builtin": "email", "action": "redact", "sample": "write to a@b.io now"}),
+    )
+    .await;
+    assert_eq!(status, 200, "{run}");
+    assert_eq!(run["outcome"], "redacted");
+    assert_eq!(run["match_count"], 1);
+    assert_eq!(run["spans"], json!([{"start": 9, "end": 15}]));
+    assert_eq!(run["redacted"], "write to [REDACTED:EMAIL] now");
+
+    let (_, run) = post_json(
+        &base,
+        path,
+        json!({"pattern": "secret", "action": "block", "sample": "a secret"}),
+    )
+    .await;
+    assert_eq!(run["outcome"], "blocked");
+
+    let (_, run) = post_json(
+        &base,
+        path,
+        json!({"pattern": "secret", "action": "block", "sample": "nothing"}),
+    )
+    .await;
+    assert_eq!(run["outcome"], "no_match");
+
+    let (status, err) = post_json(
+        &base,
+        path,
+        json!({"pattern": "[", "action": "block", "sample": "x"}),
+    )
+    .await;
+    assert_eq!(status, 400, "{err}");
+    assert!(err.to_string().contains("pattern"), "{err}");
+
+    let (status, _) = post_json(
+        &base,
+        path,
+        json!({"pattern": "x", "sample": "x".repeat(70_000)}),
+    )
+    .await;
+    assert_eq!(status, 400, "an oversized sample is refused");
+
+    // nothing was written
+    let rules: Value = reqwest::get(format!("{base}/api/v1/guardrails/rules"))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(rules, json!([]));
+}
+
+/// #2265: an unsaved provider is sent the gateway's envelope and the answer is
+/// reported as a result; failures are results, not 5xx.
+#[tokio::test]
+async fn an_unsaved_guardrail_provider_is_tried_with_a_sample_envelope() {
+    skip_without_db!();
+    let (app, _db) = fresh_app().await;
+    let base = format!("http://{}", serve(app).await);
+    let path = "/api/v1/guardrails/providers/test";
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let none = std::time::Duration::ZERO;
+
+    // pass, with a credential read from an environment variable that is set
+    let allow = guardrail_webhook_double(json!({"action": "allow"}), none, seen.clone()).await;
+    let (status, out) = post_json(
+        &base,
+        path,
+        json!({"url": allow, "auth_kind": "bearer", "auth_env": "PATH",
+               "sample": "hello there"}),
+    )
+    .await;
+    assert_eq!(status, 200, "{out}");
+    assert_eq!(out["ok"], true, "{out}");
+    assert_eq!(out["decision"]["action"], "allow");
+    assert_eq!(out["credential"], "sent");
+    assert_eq!(out["http_status"], 200);
+    let (headers, envelope) = seen.lock().unwrap().remove(0);
+    assert!(headers["authorization"]
+        .to_str()
+        .unwrap()
+        .starts_with("Bearer "));
+    assert_eq!(envelope["direction"], "request");
+    assert_eq!(envelope["stage"], "pre_call");
+    assert_eq!(envelope["content"]["messages"][0]["content"], "hello there");
+    // the answer never echoes the credential
+    assert!(!out.to_string().contains(&std::env::var("PATH").unwrap()));
+
+    // block carries its reason
+    let block = guardrail_webhook_double(
+        json!({"action": "block", "reason": "pii detected"}),
+        none,
+        seen.clone(),
+    )
+    .await;
+    let (_, out) = post_json(&base, path, json!({"url": block})).await;
+    assert_eq!(out["decision"]["action"], "block");
+    assert_eq!(out["decision"]["reason"], "pii detected");
+
+    // a slow webhook is a timeout result
+    let slow = guardrail_webhook_double(
+        json!({"action": "allow"}),
+        std::time::Duration::from_secs(3),
+        seen.clone(),
+    )
+    .await;
+    let (status, out) = post_json(&base, path, json!({"url": slow, "timeout_ms": 200})).await;
+    assert_eq!(status, 200);
+    assert_eq!(out["ok"], false);
+    assert_eq!(out["error"]["kind"], "timeout", "{out}");
+
+    // an answer that is not a decision is reported, not read as allow
+    let junk = guardrail_webhook_double(json!("fine"), none, seen.clone()).await;
+    let (_, out) = post_json(&base, path, json!({"url": junk})).await;
+    assert_eq!(out["error"]["kind"], "unparsable", "{out}");
+
+    // refused egress: the metadata address is never contacted
+    let (status, out) = post_json(
+        &base,
+        path,
+        json!({"url": "http://169.254.169.254/latest/meta-data"}),
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(out["error"]["kind"], "egress_denied", "{out}");
+
+    // a credential variable the control plane does not have: not contacted
+    let before = seen.lock().unwrap().len();
+    let (_, out) = post_json(
+        &base,
+        path,
+        json!({"url": allow, "auth_kind": "bearer",
+               "auth_env": "ROLTER_TEST_GUARDRAIL_TOKEN_NOT_SET"}),
+    )
+    .await;
+    assert_eq!(out["error"]["kind"], "credential_unset", "{out}");
+    assert_eq!(out["credential"], "unset");
+    assert!(out["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("ROLTER_TEST_GUARDRAIL_TOKEN_NOT_SET is not set on the control plane"));
+    assert_eq!(
+        seen.lock().unwrap().len(),
+        before,
+        "the webhook was not called"
+    );
+
+    // ... unless the caller asks to leave the credential out
+    let (_, out) = post_json(
+        &base,
+        path,
+        json!({"url": allow, "auth_kind": "shared_secret",
+               "auth_env": "ROLTER_TEST_GUARDRAIL_TOKEN_NOT_SET", "skip_credential": true}),
+    )
+    .await;
+    assert_eq!(out["ok"], true, "{out}");
+    assert_eq!(out["credential"], "skipped");
+
+    // nothing listening
+    let closed = {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        listener.local_addr().unwrap()
+    };
+    let (_, out) = post_json(
+        &base,
+        path,
+        json!({"url": format!("http://{closed}/check")}),
+    )
+    .await;
+    assert_eq!(out["error"]["kind"], "connection", "{out}");
+
+    // the control plane's own secrets cannot be named, and bad drafts are 400s
+    let (status, _) = post_json(
+        &base,
+        path,
+        json!({"url": allow, "auth_kind": "bearer", "auth_env": "ROLTER_KEK"}),
+    )
+    .await;
+    assert_eq!(status, 400);
+    let (status, _) = post_json(&base, path, json!({"url": "ftp://nope"})).await;
+    assert_eq!(status, 400);
+
+    // an oversized sample is cut to max_body_bytes, as the gateway cuts it
+    let (_, out) = post_json(
+        &base,
+        path,
+        json!({"url": allow, "max_body_bytes": 64, "sample": "y".repeat(500)}),
+    )
+    .await;
+    assert_eq!(out["truncated"], true, "{out}");
+}

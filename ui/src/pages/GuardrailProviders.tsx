@@ -17,6 +17,7 @@ import {
   PROVIDER_ACTIONS,
   useGuardrailOutcomes,
 } from "@/components/GuardrailOutcomes";
+import { GuardrailProviderTrial } from "@/components/GuardrailProviderTrial";
 import { LoadError } from "@/components/LoadError";
 import { superadminOnly } from "@/components/ForbiddenScreen";
 import { GatedButton } from "@/components/GatedButton";
@@ -32,6 +33,7 @@ import {
 } from "@/components/ui/dialog";
 import { Combobox } from "@/components/ui/combobox";
 import { Field } from "@/components/ui/field";
+import { FormSection } from "@/components/ui/form-section";
 import { Input } from "@/components/ui/input";
 
 import { SwitchRow } from "@/components/ui/switch-row";
@@ -590,6 +592,7 @@ function ProviderDialog({
   const set = (patch: Partial<GuardrailProviderInput>) =>
     setForm((value) => ({ ...value, ...patch }));
   const postCall = form.stage === "post_call";
+  const [trialOpen, setTrialOpen] = React.useState(false);
   const urlValid = HTTP_URL.test(form.url);
   // said once the field is left, not on the first keystroke of a URL that is
   // still being typed
@@ -782,6 +785,13 @@ function ProviderDialog({
           checked={form.enabled}
           onChange={(enabled) => set({ enabled })}
         />
+        <FormSection
+          title={t("pages.guardrailProviders.trial.title")}
+          open={trialOpen}
+          onToggle={() => setTrialOpen((value) => !value)}
+        >
+          <GuardrailProviderTrial draft={form} />
+        </FormSection>
         {error && (
           <p role="alert" className="text-xs text-[color:var(--status-danger-text)]">
             {error}

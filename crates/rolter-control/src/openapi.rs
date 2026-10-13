@@ -1549,6 +1549,16 @@ fn operations() -> Vec<Op> {
                 "deleteGuardrailProvider",
                 "Delete a guardrail provider",
             ),
+            Op::post(
+                "/api/v1/guardrails/providers/test",
+                "testGuardrailProvider",
+                "Send a sample envelope to an unsaved guardrail provider (needs guardrail_provider:update)",
+            ),
+            Op::post(
+                "/api/v1/guardrails/rules/test",
+                "testGuardrailRule",
+                "Run an unsaved guardrail rule against sample text (needs guardrail_rule:update)",
+            ),
             Op::get(
                 "/api/v1/guardrails/rules",
                 "listGuardrailRules",

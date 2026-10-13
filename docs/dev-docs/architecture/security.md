@@ -289,6 +289,35 @@ request, fail-open lets it through. Each has a gateway test.
 | guardrail webhook `url` (file and registry)                                  | `require_allowed_egress` (400); `operator_url_problems`           | `EgressClient` before each call; snapshot keeps it and reports it                 |
 | PII sanitizer `url`, `restore_url`                                           | `operator_url_problems` (not stored in the database)              | `EgressClient` before each call; snapshot keeps it and reports it                 |
 | plugin `endpoint`                                                            | `require_allowed_egress` (400); `operator_url_problems`           | `EgressClient` before each call; snapshot keeps it and reports it                 |
+| guardrail provider test (`POST /api/v1/guardrails/providers/test`)           | `check_url` on the draft url (a result, not a 400)                | `rolter-control` `egress_client::builder`, no redirects                           |
+
+#### Guardrail trials run on the control plane (#2159, #2265)
+
+`crates/rolter-control/src/guardrail_trial.rs` serves two dry runs for the
+guardrail dialogs. Both take an unsaved draft, write nothing, and are gated by
+the matching `update` capability (`guardrail_rule:update`,
+`guardrail_provider:update`) rather than a capability of their own: the rule
+trial is read-only, but the provider trial makes the control plane egress and
+reveals whether a credential variable is set, which is a mutation-level power.
+
+- The rule trial calls `rolter_core::dry_run_rule`, which validates and compiles
+  the draft exactly as a stored rule is and takes its outcome from the request
+  path's own `scan_segment` / `scan_output`, so the answer cannot drift from
+  the gateway's. Spans are computed beside the scan and returned in UTF-16
+  units. The sample is capped at 64 KiB, never logged, never audited.
+- The provider trial sends the gateway's `WebhookRequest` envelope once (no
+  retries), with the timeout capped at 10 s and the body bounded by
+  `max_body_bytes` the way `consult_pre_call` bounds it. It reads at most 1 MiB
+  of answer, never returns an error body (an endpoint can echo the credential
+  it rejected), and parses strictly where the gateway parses leniently, so a
+  broken endpoint is not reported as a passing one.
+- The credential is read from the **control plane's** environment, because the
+  draft names a variable and the destination is operator-chosen. A name in
+  `RESERVED_ENV` (the KEK, peppers, tokens, database and cache urls) is refused
+  with a 400 so the trial cannot be used to send a control-plane secret to an
+  arbitrary address. A variable that is unset here (gateways may have it) is a
+  `credential_unset` result and no call is made; `skip_credential` calls
+  without it.
 
 The gateway's `EgressClient` is one pooled client per `AppState`, bound to the
 same live policy handle as the upstream forwarder, so a reload re-tunes it. It
