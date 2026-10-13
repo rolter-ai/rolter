@@ -1,5 +1,5 @@
 import { Menu, RefreshCw } from "lucide-react";
-import { useQueryClient, useIsFetching, type Query } from "@tanstack/react-query";
+import { useQueryClient, type Query } from "@tanstack/react-query";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 
@@ -82,13 +82,11 @@ export function ScreenHeader({
 }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
-  // the pill polls on a clock of its own, and its background check is not the
-  // screen's data refreshing: counted here, it spun and disabled this button
-  // every thirty seconds on every screen
-  const isGlobalFetching = useIsFetching({ predicate: isScreenData }) > 0;
-  const [isManualRefreshing, setIsManualRefreshing] = useState(false);
-
-  const isRefreshing = isManualRefreshing || isGlobalFetching;
+  // busy means *this click* is waiting on the screen's answers. a background
+  // refetch (the pill, a polling screen like LLM Logs every 5s) is not the
+  // reader's request, and counting it flickered the button disabled and spinning
+  // with no input (#1997)
+  const [isRefreshing, setIsManualRefreshing] = useState(false);
 
   async function refresh() {
     setIsManualRefreshing(true);

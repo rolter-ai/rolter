@@ -399,18 +399,36 @@ export function NavSidebar({
   );
 
   // the pointer leaves the 4px handle immediately on a fast drag, so the move
-  // and up listeners live on the document for the duration of the gesture
+  // and up listeners live on the document for the duration of the gesture.
+  // the rail's left edge cannot move while the handle is held, so it is read
+  // once, and moves are coalesced to one state write per frame (#1997)
   React.useEffect(() => {
     if (!dragging) return;
+    const left = navRef.current?.getBoundingClientRect().left ?? 0;
+    let frame = 0;
+    let latest = 0;
     const onMove = (e: PointerEvent) => {
-      const left = navRef.current?.getBoundingClientRect().left ?? 0;
-      setWidth(clampWidth(e.clientX - left));
+      latest = e.clientX;
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        setWidth(clampWidth(latest - left));
+      });
     };
-    const onUp = () => setDragging(false);
+    const onUp = () => {
+      // the last position is the one that is kept
+      if (frame) {
+        cancelAnimationFrame(frame);
+        frame = 0;
+        setWidth(clampWidth(latest - left));
+      }
+      setDragging(false);
+    };
     document.addEventListener("pointermove", onMove);
     document.addEventListener("pointerup", onUp);
     document.addEventListener("pointercancel", onUp);
     return () => {
+      if (frame) cancelAnimationFrame(frame);
       document.removeEventListener("pointermove", onMove);
       document.removeEventListener("pointerup", onUp);
       document.removeEventListener("pointercancel", onUp);
@@ -607,8 +625,9 @@ export function NavSidebar({
       style={showHandle ? { width } : undefined}
       className={cn(
         "relative flex h-full flex-col gap-3 border-r border-[color:var(--border-subtle)] bg-[color:var(--surface-app)] px-2 py-3",
-        // the width transition would fight the pointer during a drag
-        !dragging && "transition-[width]",
+        // the width transition would fight the pointer during a drag, and a
+        // reader who asked for less motion gets the fold at once (#1997)
+        !dragging && "transition-[width] motion-reduce:transition-none",
         folded ? "w-[52px] items-stretch" : "w-[var(--sidebar-width)]",
         isDrawer && "w-full",
         className,
@@ -634,7 +653,7 @@ export function NavSidebar({
             "absolute inset-y-0 -right-1 z-30 w-2 cursor-col-resize touch-none focus-visible:outline-none",
             // a 2px thread on the border line, painted only when the splitter
             // is grabbed or focused so the idle rail stays quiet
-            "after:absolute after:inset-y-0 after:left-1/2 after:w-[2px] after:-translate-x-1/2 after:bg-[color:var(--red-folk)] after:opacity-0 after:transition-opacity after:content-['']",
+            "after:absolute after:inset-y-0 after:left-1/2 after:w-[2px] after:-translate-x-1/2 after:bg-[color:var(--red-folk-text)] after:opacity-0 after:transition-opacity after:content-['']",
             "hover:after:opacity-60 focus-visible:after:opacity-100",
             dragging && "after:opacity-100",
           )}
