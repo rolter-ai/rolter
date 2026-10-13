@@ -16,10 +16,12 @@ const changedFields = (fields: FieldChange[]) =>
   fields.filter((field) => field.kind !== "same").length;
 
 /** the decorators as the text a reader compares: a header line per message, then its content */
-export function decoratorText(decorators: PromptTemplateDecorator[]): string {
-  return decorators
-    .map((decorator) => `[${decorator.role} · ${decorator.position}]\n${decorator.content}`)
-    .join("\n\n");
+export function decoratorText(
+  decorators: PromptTemplateDecorator[],
+  header: (decorator: PromptTemplateDecorator) => string = (decorator) =>
+    `${decorator.role} · ${decorator.position}`,
+): string {
+  return decorators.map((decorator) => `[${header(decorator)}]\n${decorator.content}`).join("\n\n");
 }
 
 export interface PromptDiff {
@@ -39,11 +41,15 @@ export function diffPromptVersions(
   from: { variables: PromptTemplateVariable[]; decorators: PromptTemplateDecorator[] },
   to: { variables: PromptTemplateVariable[]; decorators: PromptTemplateDecorator[] },
   describe: (variable: PromptTemplateVariable) => string,
+  header?: (decorator: PromptTemplateDecorator) => string,
 ): PromptDiff {
   const byName = (variables: PromptTemplateVariable[]) =>
     Object.fromEntries(variables.map((variable) => [variable.name, describe(variable)]));
   const variables = diffFields(byName(from.variables), byName(to.variables));
-  const decorators = diffLines(decoratorText(from.decorators), decoratorText(to.decorators));
+  const decorators = diffLines(
+    decoratorText(from.decorators, header),
+    decoratorText(to.decorators, header),
+  );
   const { added, removed } = countChanges(decorators);
   return { variables, decorators, changed: changedFields(variables) + added + removed };
 }

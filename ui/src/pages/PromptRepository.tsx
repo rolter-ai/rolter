@@ -1834,12 +1834,18 @@ function PromptChanges({
   const { t } = useTranslation();
   const diff = React.useMemo(
     () =>
-      diffPromptVersions(live, target, (variable) =>
-        variable.required
-          ? t("repository.diff.variableRequired")
-          : variable.default
-            ? t("repository.diff.variableDefault", { value: variable.default })
-            : t("repository.diff.variableOptional"),
+      diffPromptVersions(
+        live,
+        target,
+        (variable) =>
+          variable.required
+            ? t("repository.diff.variableRequired")
+            : variable.default
+              ? t("repository.diff.variableDefault", { value: variable.default })
+              : t("repository.diff.variableOptional"),
+        // the role and position by the words the editor and preview use
+        (decorator) =>
+          `${decoratorRoleLabel(decorator.role, t)} · ${decoratorPositionLabel(decorator.position, t)}`,
       ),
     [live, target, t],
   );
