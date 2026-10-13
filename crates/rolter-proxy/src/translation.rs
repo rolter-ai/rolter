@@ -278,6 +278,25 @@ impl TranslationPlan {
         self.client != self.upstream
     }
 
+    /// Whether a Chat Completions client talks to a Chat Completions upstream
+    /// that states its thinking tokens in `total_tokens` alone (Gemini's
+    /// compatible endpoint, #2926). The body is otherwise passed through, but
+    /// the `usage` the client reads is completed so its own accounting matches
+    /// what the gateway bills.
+    pub fn completes_chat_usage(self) -> bool {
+        self.client == Protocol::OpenAiChat
+            && self.upstream == Protocol::OpenAiChat
+            && self.thinking == ThinkingCount::TotalOnly
+    }
+
+    /// Whether the response body is rewritten on its way to the client: a
+    /// dialect translation, or a passthrough whose `usage` is completed. The
+    /// gateway buffers or wraps the body only when this is true, so every other
+    /// route keeps streaming the provider's bytes untouched.
+    pub fn rewrites_response(self) -> bool {
+        self.is_translation() || self.completes_chat_usage()
+    }
+
     pub fn upstream_path(self, original: &str) -> &str {
         // the literals live in rolter-core, which the dashboard previews them
         // from, so what the sheet shows and what is called are one string
@@ -365,8 +384,11 @@ impl TranslationPlan {
 
     /// Translate a complete JSON response or a fully buffered SSE response.
     pub fn translate_response(self, body: Bytes, is_sse: bool) -> Bytes {
-        if !self.is_translation() {
+        if !self.rewrites_response() {
             return body;
+        }
+        if !is_sse && self.completes_chat_usage() {
+            return complete_chat_usage(body, self.thinking);
         }
         if is_sse {
             let mut converter = SseConverter::new(self);
@@ -666,6 +688,32 @@ fn responses_from_openai(v: Value) -> Value {
 
 fn responses_from_anthropic(v: Value) -> Value {
     responses_from_openai(anthropic_response(v))
+}
+
+/// Whether `haystack` holds `needle`; the cheap test that keeps a body or
+/// event with no usage from being parsed (#2926).
+fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack
+        .windows(needle.len())
+        .any(|window| window == needle)
+}
+
+/// A Chat Completions body handed to a chat client with the thinking its
+/// `total_tokens` alone states counted into `completion_tokens` and named in
+/// `completion_tokens_details.reasoning_tokens` (#2926). A body that is not
+/// JSON, states no total or has nothing beyond the prompt and the completion
+/// is returned as it came.
+fn complete_chat_usage(body: Bytes, thinking: ThinkingCount) -> Bytes {
+    if !contains_bytes(&body, b"\"total_tokens\"") {
+        return body;
+    }
+    let Ok(mut value) = serde_json::from_slice::<Value>(&body) else {
+        return body;
+    };
+    if !thinking.completes(&mut value) {
+        return body;
+    }
+    serde_json::to_vec(&value).map(Bytes::from).unwrap_or(body)
 }
 
 fn translate_json(body: Bytes, from: Protocol, to: Protocol, thinking: ThinkingCount) -> Bytes {
@@ -1202,18 +1250,23 @@ impl ThinkingCount {
     /// the translators read. The provider's `total_tokens` is left alone: it is
     /// the prompt and the new completion added up.
     fn fold_into_completion(self, body: &mut Value) {
+        self.completes(body);
+    }
+
+    /// [`Self::fold_into_completion`], saying whether the body changed.
+    fn completes(self, body: &mut Value) -> bool {
         if self == Self::Stated {
-            return;
+            return false;
         }
         let Some(usage) = body.get_mut("usage").filter(|u| u.is_object()) else {
-            return;
+            return false;
         };
         // only a body that spells the count the way the pairs read it first
         let Some(completion) = usage.get("completion_tokens").and_then(Value::as_u64) else {
-            return;
+            return false;
         };
         let Some(thinking) = total_beyond_prompt_and_completion(usage) else {
-            return;
+            return false;
         };
         usage["completion_tokens"] = json!(completion.saturating_add(thinking));
         if !usage
@@ -1226,6 +1279,7 @@ impl ThinkingCount {
         if details.get("reasoning_tokens").is_none() {
             details["reasoning_tokens"] = json!(thinking);
         }
+        true
     }
 }
 
@@ -2319,7 +2373,37 @@ impl SseConverter {
         }
     }
 
+    /// One event of a Chat Completions stream passed on to a chat client, its
+    /// `usage` completed when it states thinking in the total alone (#2926). An
+    /// event that names no total is forwarded as it came, unparsed.
+    fn complete_chat_frame(&self, raw: &[u8]) -> Vec<Bytes> {
+        let verbatim = || {
+            let mut out = Vec::with_capacity(raw.len() + 2);
+            out.extend_from_slice(raw);
+            out.extend_from_slice(b"\n\n");
+            vec![Bytes::from(out)]
+        };
+        if !contains_bytes(raw, b"\"total_tokens\"") {
+            return verbatim();
+        }
+        let text = String::from_utf8_lossy(raw);
+        let Ok(mut value) = serde_json::from_str::<Value>(&join_data_lines(&text)) else {
+            return verbatim();
+        };
+        if !self.plan.thinking.completes(&mut value) {
+            return verbatim();
+        }
+        let event = text
+            .lines()
+            .find_map(|l| l.strip_prefix("event:"))
+            .map(str::trim);
+        vec![sse(event, &value)]
+    }
+
     fn convert_frame(&mut self, raw: &[u8]) -> Vec<Bytes> {
+        if self.plan.completes_chat_usage() {
+            return self.complete_chat_frame(raw);
+        }
         let text = String::from_utf8_lossy(raw);
         let event = text
             .lines()
@@ -5456,6 +5540,129 @@ data: [DONE]
         let v: Value = serde_json::from_slice(&out).unwrap();
         assert_eq!(v["usage"]["input_tokens"], 14);
         assert_eq!(v["usage"]["output_tokens"], 59 + thinking);
+    }
+
+    #[test]
+    fn a_gemini_compat_answer_reaches_a_chat_client_with_its_thinking_counted() {
+        for (name, usage, thinking) in GEMINI_COMPAT_ANSWERS {
+            let value: Value = serde_json::from_str(usage).unwrap();
+            let completion = value["completion_tokens"].as_u64().unwrap();
+            let body = chat_body_with_usage(usage);
+            let out = gemini_compat_plan("/v1/chat/completions")
+                .translate_response(Bytes::from(serde_json::to_vec(&body).unwrap()), false);
+            let v: Value = serde_json::from_slice(&out).unwrap();
+            let shown = &v["usage"];
+            assert_eq!(shown["completion_tokens"], completion + thinking, "{name}");
+            assert_eq!(
+                shown["completion_tokens_details"]["reasoning_tokens"], thinking,
+                "{name}"
+            );
+            // the provider's total is what the three add up to
+            assert_eq!(shown["total_tokens"], value["total_tokens"], "{name}");
+            assert_eq!(
+                shown["prompt_tokens"].as_u64().unwrap()
+                    + shown["completion_tokens"].as_u64().unwrap(),
+                value["total_tokens"].as_u64().unwrap(),
+                "{name}"
+            );
+            // the log reads the completed body without counting it twice
+            let read = TokenUsage::from_openai(shown);
+            assert_eq!(read.completion, completion + thinking, "{name}");
+            assert_eq!(
+                ThinkingCount::of(ProviderKind::Gemini).beside_completion(shown),
+                None,
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_chat_answer_with_nothing_to_complete_is_returned_byte_for_byte() {
+        let plan = gemini_compat_plan("/v1/chat/completions");
+        let bodies = [
+            // no thinking: the total is the prompt and the completion
+            r#"{"choices":[],"usage":{"prompt_tokens":4,"completion_tokens":2,"total_tokens":6}}"#,
+            // no usage at all
+            r#"{"choices":[{"message":{"content":"hi"}}]}"#,
+            // no total
+            r#"{"usage":{"prompt_tokens":4,"completion_tokens":2}}"#,
+            // not json
+            "upstream says no, total_tokens",
+        ];
+        for body in bodies {
+            let out = plan.translate_response(Bytes::from_static(body.as_bytes()), false);
+            assert_eq!(out, Bytes::from_static(body.as_bytes()), "{body}");
+        }
+        // another provider's chat answer is never touched
+        let usage = r#"{"completion_tokens":18,"prompt_tokens":15,"total_tokens":175}"#;
+        let body = Bytes::from(serde_json::to_vec(&chat_body_with_usage(usage)).unwrap());
+        let other = TranslationPlan::resolve(
+            "/v1/chat/completions",
+            ProviderKind::Vertex,
+            RoleProfile::Openai,
+        );
+        assert!(!other.rewrites_response());
+        assert_eq!(other.translate_response(body.clone(), false), body);
+    }
+
+    #[test]
+    fn only_a_chat_client_of_the_gemini_compat_endpoint_has_its_usage_completed() {
+        for (path, completes) in [
+            ("/v1/chat/completions", true),
+            ("/v1/messages", false),
+            ("/v1/responses", false),
+            ("/v1/embeddings", false),
+        ] {
+            assert_eq!(
+                gemini_compat_plan(path).completes_chat_usage(),
+                completes,
+                "{path}"
+            );
+        }
+        // the translated dialects already complete it, so a chat client is the gap
+        assert!(gemini_compat_plan("/v1/messages").is_translation());
+    }
+
+    #[test]
+    fn a_gemini_compat_stream_reaches_a_chat_client_with_every_usage_completed() {
+        let sse = concat!(
+            "data: {\"id\":\"g1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"1\"}}],\"usage\":{\"completion_tokens\":1,\"prompt_tokens\":9,\"total_tokens\":103}}\n\n",
+            "data: {\"id\":\"g1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\", \"}}]}\n\n",
+            "data: {\"id\":\"g1\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"length\"}],\"usage\":{\"completion_tokens\":3,\"prompt_tokens\":9,\"total_tokens\":105}}\n\n",
+            ": keep-alive\n\n",
+            "data: [DONE]\n\n",
+        );
+        let plan = gemini_compat_plan("/v1/chat/completions");
+        // whole, and split at every byte so no boundary is trusted
+        let whole = plan.translate_response(Bytes::copy_from_slice(sse.as_bytes()), true);
+        let mut converter = SseConverter::new(plan);
+        let mut split = Vec::new();
+        for byte in sse.as_bytes() {
+            split.extend(converter.feed(std::slice::from_ref(byte)));
+        }
+        split.extend(converter.finish());
+        assert_eq!(whole, Bytes::from(split.concat()));
+
+        let text = String::from_utf8(whole.to_vec()).unwrap();
+        // the event with no usage, the comment and the terminator are untouched
+        assert!(text.contains(
+            "data: {\"id\":\"g1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\", \"}}]}\n\n"
+        ));
+        assert!(text.contains(": keep-alive\n\n"));
+        assert!(text.ends_with("data: [DONE]\n\n"));
+        let usages: Vec<Value> = frames(&whole)
+            .into_iter()
+            .filter_map(|(_, data)| data.get("usage").cloned())
+            .collect();
+        assert_eq!(usages.len(), 2);
+        // 103 total, 9 prompt, 1 completion: 93 thinking, then 105: 93 again
+        assert_eq!(usages[0]["completion_tokens"], 94);
+        assert_eq!(usages[1]["completion_tokens"], 96);
+        assert_eq!(usages[1]["total_tokens"], 105);
+        assert_eq!(
+            usages[1]["completion_tokens_details"]["reasoning_tokens"],
+            93
+        );
     }
 
     #[test]

@@ -176,6 +176,8 @@ into the 25 once, never again. A body whose provider reported no thinking gets n
 details block. xAI, which states its reasoning tokens beside `completion_tokens`
 and only in its `total_tokens`, is folded into the completion first (#2888).
 
+A chat client served by Gemini's OpenAI-compatible endpoint (`kind = "gemini"`), which states its thinking in `total_tokens` alone, is shown the same completed `usage` although its body is otherwise passed through, buffered or streamed (#2926). Only a body or SSE event that contains `total_tokens` is parsed, and only one whose total is beyond its prompt and completion is rewritten; every other chat provider's bytes reach the client untouched.
+
 The request log and the budgets read the same body the client receives, so a
 priced model is billed the cached share at `cached_input_per_mtok` and the
 written share at `cache_write_per_mtok` whichever dialect the client spoke; see
