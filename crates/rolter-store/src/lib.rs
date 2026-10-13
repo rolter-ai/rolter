@@ -59,6 +59,14 @@ pub trait ConfigStore: Send + Sync {
     async fn load_problems(&self) -> Result<Vec<String>> {
         Ok(Vec::new())
     }
+
+    /// How many of the guardrail rules [`load`](Self::load) returns come from
+    /// the bootstrap file. They are the leading ones, ahead of the registry's,
+    /// so the policy dry run can tell the two apart without the store handing
+    /// out the file config. Zero for a store with no bootstrap file.
+    fn file_guardrail_rules(&self) -> usize {
+        0
+    }
 }
 
 /// An in-memory [`ConfigStore`] for development and tests.
@@ -232,6 +240,10 @@ fn merge_plugins(
 
 #[async_trait]
 impl ConfigStore for MergedConfigStore {
+    fn file_guardrail_rules(&self) -> usize {
+        self.bootstrap.guardrails.rules.len()
+    }
+
     async fn load(&self) -> Result<GatewayConfig> {
         let db = self.inner.load().await?;
         let mut merged = self.bootstrap.clone();

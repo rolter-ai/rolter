@@ -1589,6 +1589,11 @@ fn operations() -> Vec<Op> {
                 "testGuardrailRule",
                 "Run an unsaved guardrail rule against sample text (needs guardrail_rule:update)",
             ),
+            Op::post(
+                "/api/v1/guardrails/policy/test",
+                "testGuardrailPolicy",
+                "Run the whole guardrail policy, with an optional unsaved draft rule, against sample text (needs guardrail_rule:update)",
+            ),
             Op::get(
                 "/api/v1/guardrails/rules",
                 "listGuardrailRules",

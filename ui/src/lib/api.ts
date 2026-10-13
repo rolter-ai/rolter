@@ -4726,6 +4726,54 @@ export interface GuardrailRuleTestResult {
   redacted?: string;
 }
 
+/** why a rule did not act on the sample in a policy run (#3084) */
+export type GuardrailTestSkip =
+  | "system_message"
+  | "over_scan_budget"
+  | "other_stage"
+  | "after_block"
+  | "policy_disabled"
+  | "not_compiled";
+
+/**
+ * The whole rule set run on a sample, with an optional unsaved draft slotted in
+ * at its position (#3084). A draft carrying a saved rule's name replaces it.
+ */
+export interface GuardrailPolicyTestInput {
+  sample: string;
+  stage: GuardrailRuleRow["stage"];
+  /** treat the sample as a system message, which a rule skips unless it opts in */
+  system: boolean;
+  draft?: GuardrailPolicyDraft;
+}
+
+export type GuardrailPolicyDraft = Omit<GuardrailRuleTestInput, "system" | "sample"> & {
+  name?: string | null;
+  /** where it runs among the dashboard rules, as on save */
+  position?: number;
+};
+
+export interface GuardrailPolicyStep {
+  rule: string;
+  stage: GuardrailRuleRow["stage"];
+  action: GuardrailRuleRow["action"];
+  outcome: GuardrailRuleTestResult["outcome"];
+  skip?: GuardrailTestSkip;
+  /** matches against the text as this rule saw it, after earlier redactions */
+  match_count: number;
+  /** the config file runs first, then the dashboard rules by position */
+  source: "file" | "dashboard" | "draft";
+}
+
+export interface GuardrailPolicyTestResult {
+  outcome: GuardrailRuleTestResult["outcome"];
+  steps: GuardrailPolicyStep[];
+  /** the rule that would reject the request */
+  blocked_by?: string;
+  /** the sample after every redaction, when it changed */
+  redacted?: string;
+}
+
 /** a draft provider; the control plane sends one sample envelope to it (#2265) */
 export interface GuardrailProviderTestInput {
   url: string;
@@ -4769,6 +4817,8 @@ export interface GuardrailProviderTestResult {
 
 export const testGuardrailRule = (body: GuardrailRuleTestInput) =>
   sendJson<GuardrailRuleTestResult>("POST", "/api/v1/guardrails/rules/test", body);
+export const testGuardrailPolicy = (body: GuardrailPolicyTestInput) =>
+  sendJson<GuardrailPolicyTestResult>("POST", "/api/v1/guardrails/policy/test", body);
 export const testGuardrailProvider = (body: GuardrailProviderTestInput) =>
   sendJson<GuardrailProviderTestResult>("POST", "/api/v1/guardrails/providers/test", body);
 

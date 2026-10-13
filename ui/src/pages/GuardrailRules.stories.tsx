@@ -1453,3 +1453,176 @@ export const TrialInRussian: Story = {
     await expect(dialog.getByText(copy.trial.outcome.blocked)).toBeVisible();
   },
 };
+
+const isPolicyTrial = (input: RequestInfo | URL) =>
+  new URL(String(input), "http://localhost").pathname === "/api/v1/guardrails/policy/test";
+
+const POLICY_RUN = {
+  outcome: "redacted",
+  steps: [
+    {
+      rule: "file-pager",
+      stage: "pre_call",
+      action: "annotate",
+      outcome: "annotated",
+      match_count: 1,
+      source: "file",
+    },
+    {
+      rule: "Redact customer email",
+      stage: "pre_call",
+      action: "redact",
+      outcome: "redacted",
+      match_count: 1,
+      source: "dashboard",
+    },
+    {
+      rule: "Block email",
+      stage: "pre_call",
+      action: "block",
+      outcome: "no_match",
+      match_count: 0,
+      source: "dashboard",
+    },
+  ],
+  redacted: "PAGER [REDACTED:EMAIL]",
+};
+
+const policyTrials = recording(
+  withPolicy(async (input) => (isPolicyTrial(input) ? json(POLICY_RUN) : json(RULES))),
+);
+
+async function openPolicyTrial(canvasElement: HTMLElement) {
+  await userEvent.click(
+    await within(canvasElement).findByRole("button", { name: "Try the policy" }),
+  );
+  return within(await within(document.body).findByRole("dialog"));
+}
+
+/**
+ * The whole policy is run on a sample (#3084): every rule shows in the order it
+ * runs with where it comes from, a redaction explains why a later block did not
+ * fire, and the text that would be forwarded is shown. The request carries the
+ * sample and stage and no draft.
+ */
+export const TriesThePolicyOnASample: Story = {
+  render: () => <Harness fetchStub={policyTrials.stub} />,
+  play: async ({ canvasElement }) => {
+    const dialog = await openPolicyTrial(canvasElement);
+    await expect(dialog.getByRole("button", { name: "Run policy" })).toBeDisabled();
+    await userEvent.type(dialog.getByLabelText("Sample text"), "PAGER a@b.io");
+    await userEvent.click(dialog.getByRole("button", { name: "Run policy" }));
+
+    const trace = within(await dialog.findByRole("list", { name: "Rules in the order they run" }));
+    const steps = trace.getAllByRole("listitem");
+    await expect(steps).toHaveLength(3);
+    await expect(within(steps[0]).getByText("Config file")).toBeVisible();
+    await expect(within(steps[0]).getByText("Annotated")).toBeVisible();
+    await expect(within(steps[1]).getByText("Dashboard")).toBeVisible();
+    await expect(within(steps[1]).getByText("Redacted")).toBeVisible();
+    await expect(within(steps[2]).getByText("No match")).toBeVisible();
+    await expect(dialog.getByText("Redacted, then forwarded")).toBeVisible();
+    await expect(dialog.getByText(/PAGER \[REDACTED:EMAIL\]/)).toBeVisible();
+
+    const sent = await policyTrials.expectSentBody<Record<string, unknown>>("POST", "/policy/test");
+    await expect(sent).toEqual({ sample: "PAGER a@b.io", stage: "pre_call", system: false });
+
+    // the stage is part of the question, so an answer to the other one is retired
+    await userEvent.click(dialog.getByRole("radio", { name: "Response" }));
+    await waitFor(() => expect(dialog.queryByRole("list", { name: /order they run/ })).toBeNull());
+  },
+};
+
+/** the draft in the rule dialog is slotted into the policy at its own position */
+export const TriesADraftInThePolicy: Story = {
+  render: () => {
+    const recorder = recording(
+      withPolicy(async (input) =>
+        isPolicyTrial(input)
+          ? json({
+              outcome: "blocked",
+              blocked_by: "Draft block",
+              steps: [
+                {
+                  rule: "Draft block",
+                  stage: "pre_call",
+                  action: "block",
+                  outcome: "blocked",
+                  match_count: 1,
+                  source: "draft",
+                },
+                {
+                  rule: "Redact customer email",
+                  stage: "pre_call",
+                  action: "redact",
+                  outcome: "skipped",
+                  skip: "after_block",
+                  match_count: 0,
+                  source: "dashboard",
+                },
+              ],
+            })
+          : json(RULES),
+      ),
+    );
+    return <Harness fetchStub={recorder.stub} />;
+  },
+  play: async ({ canvasElement }) => {
+    const dialog = await openTrial(canvasElement);
+    await userEvent.type(dialog.getByLabelText("Rule name"), "Draft block");
+    await userEvent.type(dialog.getByLabelText("Sample text"), "a@b.io");
+    await userEvent.click(dialog.getByRole("button", { name: "Run in the whole policy" }));
+
+    await expect(await dialog.findByText("Blocked by Draft block")).toBeVisible();
+    const steps = dialog.getAllByRole("listitem");
+    await expect(within(steps[0]).getByText("Draft")).toBeVisible();
+    await expect(
+      within(steps[1]).getByText("Not reached: an earlier rule blocked the request."),
+    ).toBeVisible();
+  },
+};
+
+/** a refusal from the endpoint is shown beside the panel, with no trace */
+export const PolicyTrialShowsAnError: Story = {
+  render: () => (
+    <Harness
+      fetchStub={withPolicy(async (input) =>
+        isPolicyTrial(input)
+          ? json({ error: { message: "sample must be at most 65536 bytes" } }, 400)
+          : json(RULES),
+      )}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const dialog = await openPolicyTrial(canvasElement);
+    await userEvent.type(dialog.getByLabelText("Sample text"), "x");
+    await userEvent.click(dialog.getByRole("button", { name: "Run policy" }));
+    await expect(await dialog.findByRole("alert")).toHaveTextContent(/at most 65536 bytes/);
+    await expect(dialog.queryByRole("list", { name: /order they run/ })).toBeNull();
+  },
+};
+
+/** the panel in Russian */
+export const PolicyTrialInRussian: Story = {
+  globals: { locale: "ru" },
+  render: () => (
+    <Harness
+      fetchStub={withPolicy(async (input) =>
+        isPolicyTrial(input) ? json({ ...POLICY_RUN, outcome: "redacted" }) : json(RULES),
+      )}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const copy = ru.pages.guardrailRules;
+    // the locale decorator switches language from an effect, after first paint
+    await userEvent.click(
+      await within(canvasElement).findByRole("button", { name: copy.policyTrial.open }),
+    );
+    const dialog = within(await within(document.body).findByRole("dialog"));
+    await userEvent.type(dialog.getByLabelText(copy.trial.fieldSample), "PAGER a@b.io");
+    await userEvent.click(dialog.getByRole("button", { name: copy.policyTrial.run }));
+    const verdict = await dialog.findByText(copy.policyTrial.verdict.redacted);
+    await waitFor(() => expect(verdict).toBeVisible());
+    await expect(dialog.getAllByText(copy.policyTrial.source.file).length).toBeGreaterThan(0);
+  },
+};

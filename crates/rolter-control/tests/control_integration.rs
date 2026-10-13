@@ -24953,6 +24953,124 @@ async fn an_unsaved_guardrail_rule_is_tried_against_a_sample() {
     assert_eq!(rules, json!([]));
 }
 
+/// #3084: the whole effective rule set runs in order on a sample, config-file
+/// rules first, a draft slotted at its position, and nothing is written.
+#[tokio::test]
+async fn the_guardrail_policy_is_tried_in_order_on_a_sample() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let file_config = rolter_core::GatewayConfig::from_toml_str(
+        r#"
+        [guardrails]
+        enabled = true
+        [[guardrails.rules]]
+        name = "file-pager"
+        pattern = "PAGER"
+        action = "annotate"
+        "#,
+    )
+    .expect("file config");
+    let app = rolter_control::test_app_with_file_config(db.pool().clone(), None, file_config)
+        .await
+        .expect("build app");
+    let base = format!("http://{}", serve(app).await);
+    let client = reqwest::Client::new();
+    let dashboard = |name: &str, position: i32, action: &str, enabled: bool| {
+        json!({"name": name, "enabled": enabled, "source_type": "builtin",
+               "builtin": "email", "stage": "pre_call", "action": action,
+               "replacement": null, "include_system": false, "position": position})
+    };
+    for body in [
+        dashboard("mask", 10, "redact", true),
+        dashboard("deny", 20, "block", true),
+        dashboard("off", 15, "block", false),
+    ] {
+        let resp = client
+            .post(format!("{base}/api/v1/guardrails/rules"))
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 201, "{}", resp.text().await.unwrap());
+    }
+    let path = "/api/v1/guardrails/policy/test";
+    let names = |run: &Value| -> Vec<String> {
+        run["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["rule"].as_str().unwrap().to_string())
+            .collect()
+    };
+
+    // the redaction hides the address from the block rule behind it, and the
+    // disabled dashboard rule is not part of the policy
+    let (status, run) = post_json(&base, path, json!({"sample": "PAGER a@b.io"})).await;
+    assert_eq!(status, 200, "{run}");
+    assert_eq!(names(&run), ["file-pager", "mask", "deny"]);
+    assert_eq!(run["outcome"], "redacted");
+    assert_eq!(run["redacted"], "PAGER [REDACTED:EMAIL]");
+    assert_eq!(run["steps"][0]["source"], "file");
+    assert_eq!(run["steps"][0]["outcome"], "annotated");
+    assert_eq!(run["steps"][1]["source"], "dashboard");
+    assert_eq!(run["steps"][1]["outcome"], "redacted");
+    assert_eq!(run["steps"][2]["outcome"], "no_match");
+
+    // a draft block ahead of the redaction sees the address and ends the scan
+    let (_, run) = post_json(
+        &base,
+        path,
+        json!({"sample": "a@b.io", "draft": {"name": "early", "position": 5,
+               "builtin": "email", "action": "block"}}),
+    )
+    .await;
+    assert_eq!(names(&run), ["file-pager", "early", "mask", "deny"]);
+    assert_eq!(run["outcome"], "blocked");
+    assert_eq!(run["blocked_by"], "early");
+    assert_eq!(run["steps"][1]["source"], "draft");
+    assert_eq!(run["steps"][2]["skip"], "after_block");
+
+    // a draft carrying a saved rule's name replaces it
+    let (_, run) = post_json(
+        &base,
+        path,
+        json!({"sample": "a@b.io", "draft": {"name": "mask", "position": 10,
+               "builtin": "email", "action": "annotate"}}),
+    )
+    .await;
+    assert_eq!(names(&run), ["file-pager", "mask", "deny"]);
+    assert_eq!(run["outcome"], "blocked");
+    assert_eq!(run["steps"][1]["source"], "draft");
+
+    // a file rule's name wins, a bad draft and an oversized sample are 400s
+    let (status, _) = post_json(
+        &base,
+        path,
+        json!({"sample": "x", "draft": {"name": "file-pager", "pattern": "x"}}),
+    )
+    .await;
+    assert_eq!(status, 400);
+    let (status, err) = post_json(
+        &base,
+        path,
+        json!({"sample": "x", "draft": {"pattern": "["}}),
+    )
+    .await;
+    assert_eq!(status, 400, "{err}");
+    assert!(err.to_string().contains("pattern"), "{err}");
+    let (status, _) = post_json(&base, path, json!({"sample": "x".repeat(70_000)})).await;
+    assert_eq!(status, 400);
+
+    // nothing was written
+    let rules: Value = reqwest::get(format!("{base}/api/v1/guardrails/rules"))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(rules.as_array().unwrap().len(), 3);
+}
+
 /// #2265: an unsaved provider is sent the gateway's envelope and the answer is
 /// reported as a result; failures are results, not 5xx.
 #[tokio::test]
