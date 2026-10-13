@@ -312,10 +312,15 @@ reveals whether a credential variable is set, which is a mutation-level power.
   it rejected), and parses strictly where the gateway parses leniently, so a
   broken endpoint is not reported as a passing one.
 - The credential is read from the **control plane's** environment, because the
-  draft names a variable and the destination is operator-chosen. A name in
-  `RESERVED_ENV` (the KEK, peppers, tokens, database and cache urls) is refused
-  with a 400 so the trial cannot be used to send a control-plane secret to an
-  arbitrary address. A variable that is unset here (gateways may have it) is a
+  draft names a variable and the destination is operator-chosen. A name
+  that `secret_env::is_control_plane_secret` matches (a deny-list of the KEK,
+  peppers, tokens, database and cache urls, plus every `ROLTER_` name except
+  `ROLTER_GUARDRAIL_TOKEN`) is refused with a 400 so the trial cannot be used
+  to send a control-plane secret to an arbitrary address. The provider
+  connection test and model listing (`api_key_env`) share the predicate, and
+  provider create and update refuse the same names with `invalid_field` on
+  `api_key_env`; a stored row that already names one is refused at test time
+  before the variable is read (#3085). A variable that is unset here (gateways may have it) is a
   `credential_unset` result and no call is made; `skip_credential` calls
   without it.
 

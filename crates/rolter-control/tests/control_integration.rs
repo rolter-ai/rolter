@@ -5380,6 +5380,125 @@ async fn provider_test_sends_the_anthropic_key_as_x_api_key() {
     assert!(!tested.to_string().contains(&sealed_secret), "leaked key");
 }
 
+/// #3085: a provider cannot name a control-plane secret as its credential
+/// variable, on save or on test, and a row that already does is never read.
+#[tokio::test]
+async fn provider_api_key_env_cannot_name_a_control_plane_secret() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let app = rolter_control::test_app(db.pool().clone()).await.unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = hits.clone();
+    let upstream = serve(axum::Router::new().fallback(move || {
+        let counter = counter.clone();
+        async move {
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            axum::Json(json!({"data": []}))
+        }
+    }))
+    .await;
+
+    let org: Value = client
+        .post(format!("{base}/api/v1/orgs"))
+        .json(&json!({"name": "Acme", "slug": "acme"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_id = org["id"].as_str().expect("org id");
+    let providers = format!("{base}/api/v1/orgs/{org_id}/providers");
+    let draft = |name: &str, env: &str| {
+        json!({"name": name, "kind": "openai", "api_base": format!("http://{upstream}"),
+               "api_key_env": env})
+    };
+
+    // refused on create
+    let resp = client
+        .post(&providers)
+        .json(&draft("leaky", "ROLTER_KEK"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "invalid_field", "{body}");
+    assert_eq!(body["error"]["field"], "api_key_env", "{body}");
+
+    // an ordinary variable is accepted, and an edit to a secret is refused
+    let created: Value = client
+        .post(&providers)
+        .json(&draft("fine", "ROLTER_TEST_3085_PROVIDER_KEY"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    // the prefix rule refuses it too: no ROLTER_ name is a provider key
+    assert_eq!(created["error"]["field"], "api_key_env", "{created}");
+    let created: Value = client
+        .post(&providers)
+        .json(&draft("fine", "TEST_3085_PROVIDER_KEY"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let provider_id = created["id"].as_str().expect("provider id").to_string();
+    let resp = client
+        .put(format!("{base}/api/v1/providers/{provider_id}"))
+        .json(&json!({"api_key_env": "rolter_database_url"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+
+    // an edit that omits api_key_env keeps the stored name
+    let resp = client
+        .put(format!("{base}/api/v1/providers/{provider_id}"))
+        .json(&json!({"api_base": format!("http://{upstream}")}))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success(), "{}", resp.status());
+    let view: Value = resp.json().await.unwrap();
+    assert_eq!(view["api_key_env"], "TEST_3085_PROVIDER_KEY", "{view}");
+
+    // a row that already names a secret (an import, or saved before the rule)
+    // is refused at test and at listing time, and nothing is sent
+    sqlx::query("update providers set api_key_env='ROLTER_KEK' where id=$1::uuid")
+        .bind(&provider_id)
+        .execute(db.pool())
+        .await
+        .unwrap();
+    std::env::set_var("ROLTER_KEK", TEST_KEK);
+    for (method, path) in [("post", "test"), ("get", "models")] {
+        let url = format!("{base}/api/v1/providers/{provider_id}/{path}");
+        let resp = if method == "post" {
+            client.post(url).send().await.unwrap()
+        } else {
+            client.get(url).send().await.unwrap()
+        };
+        assert_eq!(resp.status(), 400, "{path}");
+        let body: Value = resp.json().await.unwrap();
+        assert_eq!(body["error"]["code"], "invalid_field", "{path}: {body}");
+        assert_eq!(body["error"]["field"], "api_key_env", "{path}: {body}");
+        assert!(!body.to_string().contains(TEST_KEK), "{path}: leaked");
+    }
+    assert_eq!(
+        hits.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "the upstream must not be contacted"
+    );
+}
+
 /// With an admin token configured, the CRUD API and snapshot endpoint reject
 /// unauthenticated calls and accept the bearer token.
 #[tokio::test]
@@ -24326,7 +24445,7 @@ async fn an_unsaved_guardrail_provider_is_tried_with_a_sample_envelope() {
         &base,
         path,
         json!({"url": allow, "auth_kind": "bearer",
-               "auth_env": "ROLTER_TEST_GUARDRAIL_TOKEN_NOT_SET"}),
+               "auth_env": "TEST_GUARDRAIL_TOKEN_NOT_SET"}),
     )
     .await;
     assert_eq!(out["error"]["kind"], "credential_unset", "{out}");
@@ -24334,7 +24453,7 @@ async fn an_unsaved_guardrail_provider_is_tried_with_a_sample_envelope() {
     assert!(out["error"]["message"]
         .as_str()
         .unwrap()
-        .contains("ROLTER_TEST_GUARDRAIL_TOKEN_NOT_SET is not set on the control plane"));
+        .contains("TEST_GUARDRAIL_TOKEN_NOT_SET is not set on the control plane"));
     assert_eq!(
         seen.lock().unwrap().len(),
         before,
@@ -24346,7 +24465,7 @@ async fn an_unsaved_guardrail_provider_is_tried_with_a_sample_envelope() {
         &base,
         path,
         json!({"url": allow, "auth_kind": "shared_secret",
-               "auth_env": "ROLTER_TEST_GUARDRAIL_TOKEN_NOT_SET", "skip_credential": true}),
+               "auth_env": "TEST_GUARDRAIL_TOKEN_NOT_SET", "skip_credential": true}),
     )
     .await;
     assert_eq!(out["ok"], true, "{out}");

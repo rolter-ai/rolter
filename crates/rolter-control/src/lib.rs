@@ -108,6 +108,8 @@ mod scim;
 #[cfg(feature = "postgres")]
 mod scim_groups;
 #[cfg(feature = "postgres")]
+mod secret_env;
+#[cfg(feature = "postgres")]
 mod security;
 #[cfg(feature = "postgres")]
 pub mod seed;
