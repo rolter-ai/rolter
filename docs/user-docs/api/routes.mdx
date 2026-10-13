@@ -74,6 +74,39 @@ curl -s -X PUT https://control.example.com/api/v1/routes/$ROUTE_ID \
 The response is the route row, as `GET /api/v1/projects/{project_id}/routes`
 lists it. List the targets with `GET /api/v1/routes/{route_id}/targets`.
 
+## Reading a project's routes with their targets
+
+`GET /api/v1/projects/{project_id}/routes` lists the project's routes. A screen
+that also shows each route's targets or complexity policy does not need one
+request per route: `include` embeds them in the same response.
+
+```bash
+curl -s "https://control.example.com/api/v1/projects/$PROJECT_ID/routes?include=targets,complexity" \
+  -H "Authorization: Bearer $ROLTER_TOKEN"
+```
+
+| `include` value | adds to each route                                                                                      |
+| --------------- | ------------------------------------------------------------------------------------------------------- |
+| `targets`       | `targets`: the list `GET /api/v1/routes/{route_id}/targets` returns, empty when the route has none      |
+| `complexity`    | `complexity`: the policy `GET /api/v1/routes/{id}/complexity` returns, `{"tiers": []}` when none is set |
+
+Values are comma-separated and each is optional. Without `include` the list is
+the route rows alone, as before; a value other than the two above is a `400`
+with the `invalid_field` code. The embedded fields need the same `route:read`
+permission as the list, and a route an access profile hides from the caller is
+left out of the list together with its targets. The per-route endpoints keep
+working.
+
+## Models and their targets
+
+`GET /api/v1/models` returns one entry per public model name the gateway
+serves. Each entry carries `route_targets`, the route's targets as
+`{provider, model, weight}` where `provider` is the provider's name and `model`
+is the upstream model (`null` forwards the public name), and `targets`, their
+count. A route created through the API also carries `org_id` and `project_id`;
+a route from `rolter.toml` has neither. Two organizations that serve the same
+model name are two entries, told apart by `org_id`.
+
 ## Who may call it, and what it refuses
 
 Changing a route takes the **admin** role on its project (or on the project's

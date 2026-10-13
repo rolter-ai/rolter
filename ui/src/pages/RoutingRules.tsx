@@ -1,10 +1,4 @@
-import {
-  useMutation,
-  useQueries,
-  useQuery,
-  useQueryClient,
-  type UseQueryResult,
-} from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
 import { Pencil, Play, Route, Tag } from "lucide-react";
 import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
@@ -34,7 +28,6 @@ import {
   fetchModels,
   fetchProviders,
   fetchRoutes,
-  fetchRouteTargets,
   fetchUptime,
   type AnalyticsByModelRow,
   type ClusterNodeRow,
@@ -88,14 +81,14 @@ function gatewayConvergence(nodes: ClusterNodeRow[]): { live: number; lagging: n
 /**
  * What is known about one route's targets.
  *
- * `loading` and `failed` are the absence of an answer. Folding either into an
- * empty list said "No targets yet" and "0 targets" about a route whose targets
- * were never read (#2133), the mistake #1461 fixed for complexity policies.
+ * They arrive inside the route list (`include=targets`), so a route that is on
+ * screen already has its answer: the list's own loading and error states cover
+ * the targets too, and no card waits on a read of its own. `unread` is a route
+ * the control plane returned without the field, which only a control plane that
+ * predates it does. Folding it into an empty list said "No targets yet" and
+ * "0 targets" about a route whose targets were never read (#2133).
  */
-type TargetsState =
-  | { kind: "loading" }
-  | { kind: "failed"; error: unknown; retry: () => void }
-  | { kind: "loaded"; targets: RouteTargetRow[] };
+type TargetsState = { kind: "unread" } | { kind: "loaded"; targets: RouteTargetRow[] };
 
 // routing rules: one card per route with its strategy pill, its targets (and
 // their weight shares where the strategy reads weights), and label/delete
@@ -108,8 +101,11 @@ export default function RoutingRules() {
   // deleting a route is the same admin capability adding one is (#1258)
 
   const routes = useQuery({
-    queryKey: ["routes", scope.projectId],
-    queryFn: () => fetchRoutes(scope.projectId as string),
+    // the targets ride along, so the screen costs one request however many
+    // routes the project has (#3031). the key sits under ["routes", project],
+    // which every route mutation already invalidates
+    queryKey: ["routes", scope.projectId, "targets"],
+    queryFn: () => fetchRoutes(scope.projectId as string, ["targets"]),
     enabled: !!scope.projectId,
   });
 
@@ -164,32 +160,18 @@ export default function RoutingRules() {
         : false,
   });
 
-  const targetQueries = useQueries({
-    queries: (routes.data ?? []).map((r) => ({
-      queryKey: ["route-targets", r.id],
-      queryFn: () => fetchRouteTargets(r.id),
-    })),
-  });
-  // one read per route, so each card says which answer it holds. pending
-  // rather than loading: a retry parked in a hidden tab is still not an answer
   const targetsByRoute = new Map<string, TargetsState>();
-  (routes.data ?? []).forEach((r, i) => {
-    const query = targetQueries[i];
-    let state: TargetsState;
-    if (!query || query.isPending) state = { kind: "loading" };
-    else if (query.error) {
-      state = { kind: "failed", error: query.error, retry: () => void query.refetch() };
-    } else state = { kind: "loaded", targets: query.data ?? [] };
-    targetsByRoute.set(r.id, state);
-  });
-  const targetStates = [...targetsByRoute.values()];
+  for (const r of routes.data ?? []) {
+    targetsByRoute.set(
+      r.id,
+      r.targets ? { kind: "loaded", targets: r.targets } : { kind: "unread" },
+    );
+  }
 
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider.
-  // the route list is what the reader waits on first and the target reads
-  // decide what every card says, so readiness follows both. the error signal
-  // is each `LoadError`'s own: one for the list, one per card whose targets
-  // failed (#2444)
-  useScreenReady(!routes.isLoading && !targetStates.some((s) => s.kind === "loading"));
+  // the route list carries the targets, so it is the one thing the reader waits
+  // on. the error signal is its `LoadError`'s own
+  useScreenReady(!routes.isLoading);
 
   const providerName = (id: string) =>
     providers.data?.find((p) => p.id === id)?.name ?? id.slice(0, 8);
@@ -344,7 +326,7 @@ export default function RoutingRules() {
       )}
       <div className="grid gap-3.5 [grid-template-columns:repeat(auto-fill,minmax(min(360px,100%),1fr))]">
         {shown.map((r) => {
-          const targets: TargetsState = targetsByRoute.get(r.id) ?? { kind: "loading" };
+          const targets: TargetsState = targetsByRoute.get(r.id) ?? { kind: "unread" };
           return (
             <div
               key={r.id}
@@ -614,27 +596,9 @@ function RouteTargets({
   const fmt = useFormat();
   const weighted = usesWeights(route.strategy);
 
-  if (state.kind === "loading") {
-    // shaped like the rows it stands in for, so the card holds its height
+  if (state.kind === "unread") {
     return (
-      <LoadingRegion className="flex flex-col gap-2.5" testId="route-targets-loading">
-        {[72, 56].map((width) => (
-          <div key={width} className="flex flex-col gap-[5px]">
-            <Skeleton width={`${width}%`} height={16} radius={4} />
-            {weighted && <Skeleton height={5} radius={9999} />}
-          </div>
-        ))}
-      </LoadingRegion>
-    );
-  }
-  if (state.kind === "failed") {
-    return (
-      <LoadError
-        error={state.error}
-        resource={t("errors.resources.routeTargets")}
-        onRetry={state.retry}
-        target="route-targets"
-      />
+      <p className="text-xs text-[color:var(--text-subtle)]">{t("pages.routing.targetsUnread")}</p>
     );
   }
 

@@ -9,7 +9,6 @@ import {
   confirmDestructive,
   expectAllowed,
   expectRefused,
-  expectInStatusRegion,
   expectLoadError,
   expectSkeleton,
   expectToast,
@@ -145,6 +144,11 @@ const CACHE_AWARE: RouteRow = {
   created_at: "2026-05-03T00:00:00Z",
 };
 
+// a route's name is also the upstream model a target without one forwards, and
+// the targets are on the card from the first paint now (#3031), so the name is
+// found by its own span
+const ROUTE_NAME = { selector: "span.font-semibold" };
+
 const trafficRow = (model: string, requests: number, errors: number): AnalyticsByModelRow => ({
   model,
   requests,
@@ -187,6 +191,11 @@ const answer = (routes: RouteRow[], status = 200, labels: LabelRow[] = []): Fetc
     }
     const targets = /\/routes\/([^/]+)\/targets/.exec(url);
     if (targets) return json(TARGETS[targets[1]] ?? []);
+    // the route list embeds each route's targets when it is asked to, which
+    // is how the screen reads them (#3031)
+    if (status === 200 && url.includes("include=targets")) {
+      return json(routes.map((r) => ({ ...r, targets: TARGETS[r.id] ?? [] })));
+    }
     return json(status === 200 ? routes : { error: { message: "forbidden" } }, status);
   });
 
@@ -207,7 +216,7 @@ export const Loaded: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(await canvas.findByText("gpt-4o")).toBeInTheDocument();
+    await expect(await canvas.findByText("gpt-4o", ROUTE_NAME)).toBeInTheDocument();
     // gpt-4o is `weighted`, so its weights are shares of the route's total and
     // 80/100 is 80%
     const targets = within(await canvas.findByRole("list", { name: "Targets of gpt-4o" }));
@@ -232,7 +241,7 @@ export const Loaded: Story = {
 // ------------------------------------------- traffic, playground link, config (#2138)
 
 const card = async (canvas: ReturnType<typeof within>, model: string) =>
-  within((await canvas.findByText(model)).closest("div.flex-col") as HTMLElement);
+  within((await canvas.findByText(model, ROUTE_NAME)).closest("div.flex-col") as HTMLElement);
 
 /**
  * A route with traffic says how many requests it served over the last day and
@@ -277,7 +286,7 @@ export const TrafficLoading: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(await canvas.findByText("gpt-4o")).toBeInTheDocument();
+    await expect(await canvas.findByText("gpt-4o", ROUTE_NAME)).toBeInTheDocument();
     await expect((await canvas.findAllByTestId("route-traffic-loading")).length).toBe(2);
     await expect(canvas.queryByTestId("route-traffic")).toBeNull();
     await expect(canvas.queryByText(/No requests for this model name/)).toBeNull();
@@ -399,7 +408,7 @@ export const NoGatewayNote: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(await canvas.findByText("gpt-4o")).toBeInTheDocument();
+    await expect(await canvas.findByText("gpt-4o", ROUTE_NAME)).toBeInTheDocument();
     await expect((await canvas.findAllByTestId("route-traffic")).length).toBeGreaterThan(0);
     await expect(canvas.queryByTestId("gateway-config")).toBeNull();
   },
@@ -594,24 +603,57 @@ export const ServerError: Story = {
     await expectNoFalseEmpty(canvasElement, /No routes yet/);
     routesDown = false;
     await userEvent.click(canvas.getByRole("button", { name: /Try again/ }));
-    await expect(await canvas.findByText("gpt-4o")).toBeInTheDocument();
+    await expect(await canvas.findByText("gpt-4o", ROUTE_NAME)).toBeInTheDocument();
     await waitFor(() => expect(canvas.queryByRole("alert")).toBeNull());
   },
 };
 
-// --------------------------------------------------- per-route target reads (#2133)
+// --------------------------------------------------- embedded targets (#2133, #3031)
+
+let reads: Recorder;
 
 /**
- * A target read still in flight holds a skeleton in its card. Folded into an
- * empty list it read "No targets yet." and "0 targets" about targets nobody
- * had seen; claude-sonnet really has none, so that copy appears exactly once.
+ * The targets come with the route list, so a project of N routes costs one
+ * request and none per route. Each route's targets are the ones its own row
+ * carried; claude-sonnet really has none, so that copy appears exactly once.
  */
-export const TargetsLoading: Story = {
+export const TargetsComeWithTheRoutes: Story = {
+  render: () => {
+    reads = recording(answer(ROUTES));
+    return (
+      <Harness fetchStub={reads.stub}>
+        <RoutingRules />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("gpt-4o", ROUTE_NAME)).toBeInTheDocument();
+    await expect(await canvas.findByText("No targets yet.")).toBeInTheDocument();
+    await expect(canvas.getAllByText("No targets yet.")).toHaveLength(1);
+    await expect(canvas.getAllByText("0 targets")).toHaveLength(1);
+    await expect(canvas.getByText("2 targets")).toBeInTheDocument();
+    // one list read asks for the targets, and no route is read for them again
+    const listReads = reads.calls.filter((c) => /\/projects\/[^/]+\/routes/.test(c.url));
+    await expect(listReads).toHaveLength(1);
+    await expect(listReads[0].url).toContain("include=targets");
+    await expect(reads.calls.filter((c) => /\/routes\/[^/?]+\/targets/.test(c.url))).toHaveLength(
+      0,
+    );
+  },
+};
+
+/**
+ * A control plane that predates the embedded targets returns routes without
+ * them. That is not a route with no targets, so the card says it could not
+ * read them rather than "No targets yet." or "0 targets" (#2133).
+ */
+export const TargetsUnreadFromAnOlderControlPlane: Story = {
   render: () => (
     <Harness
       fetchStub={scoped(async (input, init) => {
-        if (String(input).includes("/routes/route-1/targets"))
-          return new Promise<Response>(() => {});
+        const url = String(input);
+        if (/\/projects\/[^/]+\/routes/.test(url)) return json(ROUTES);
         return answer(ROUTES)(input, init);
       })}
     >
@@ -620,51 +662,10 @@ export const TargetsLoading: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(await canvas.findByText("gpt-4o")).toBeInTheDocument();
-    await expectInStatusRegion(canvasElement, "route-targets-loading");
-    await expect(await canvas.findByText("No targets yet.")).toBeInTheDocument();
-    await expect(canvas.getAllByText("No targets yet.")).toHaveLength(1);
-    await expect(canvas.getAllByText("0 targets")).toHaveLength(1);
-  },
-};
-
-// the first read of gpt-4o's targets fails and the retry succeeds; reset on
-// every render so a remount starts from the failure again
-let targetsDown = true;
-const targetsFail = scoped(async (input, init) => {
-  if (targetsDown && String(input).includes("/routes/route-1/targets")) {
-    return json({ error: { message: "route_targets: connection refused" } }, 500);
-  }
-  return answer(ROUTES)(input, init);
-});
-
-/**
- * A failed target read says so in its card, with the control plane's own words
- * and a retry that re-reads that route alone — never "No targets yet.".
- */
-export const TargetsFail: Story = {
-  render: () => {
-    targetsDown = true;
-    return (
-      <Harness fetchStub={targetsFail}>
-        <RoutingRules />
-      </Harness>
-    );
-  },
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await expectLoadError(canvasElement, /this route's targets/);
-    await expect(canvas.getByText(/connection refused/)).toBeInTheDocument();
-    await expect(await canvas.findByText("No targets yet.")).toBeInTheDocument();
-    await expect(canvas.getAllByText("No targets yet.")).toHaveLength(1);
-    await expect(canvas.getAllByText("0 targets")).toHaveLength(1);
-
-    targetsDown = false;
-    await userEvent.click(canvas.getByRole("button", { name: /Try again/ }));
-    const targets = within(await canvas.findByRole("list", { name: "Targets of gpt-4o" }));
-    await expect(targets.getByText("80%")).toBeInTheDocument();
-    await waitFor(() => expect(canvas.queryByRole("alert")).toBeNull());
-    await expect(canvas.getByText("2 targets")).toBeInTheDocument();
+    await expect(await canvas.findByText("gpt-4o", ROUTE_NAME)).toBeInTheDocument();
+    await expect(canvas.getAllByText("Targets could not be read.")).toHaveLength(2);
+    await expect(canvas.queryByText("No targets yet.")).toBeNull();
+    await expect(canvas.queryByText("0 targets")).toBeNull();
   },
 };
 
@@ -840,7 +841,7 @@ export const ConfirmsBeforeDeletingARoute: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(await canvas.findByText("gpt-4o")).toBeInTheDocument();
+    await expect(await canvas.findByText("gpt-4o", ROUTE_NAME)).toBeInTheDocument();
     // by name, not by index: every row control names the route it acts on,
     // so the story asserts on the control it means (#1214)
     const button = canvas.getByRole("button", { name: "Delete route gpt-4o" });
@@ -875,7 +876,7 @@ export const DeletingARoute: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(await canvas.findByText("gpt-4o")).toBeInTheDocument();
+    await expect(await canvas.findByText("gpt-4o", ROUTE_NAME)).toBeInTheDocument();
     const trigger = canvas.getByRole("button", { name: "Delete route gpt-4o" });
     await userEvent.click(trigger);
     await confirmDestructive(/gpt-4o/, /delete route/i);
@@ -909,7 +910,7 @@ export const DeleteFails: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(await canvas.findByText("gpt-4o")).toBeInTheDocument();
+    await expect(await canvas.findByText("gpt-4o", ROUTE_NAME)).toBeInTheDocument();
     await userEvent.click(canvas.getByRole("button", { name: "Delete route gpt-4o" }));
     await confirmDestructive(/gpt-4o/, /delete route/i);
 

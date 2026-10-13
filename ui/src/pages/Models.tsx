@@ -38,7 +38,6 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { LabelChips, LabelFilterSelect, LabelSheet, useSubjectLabels } from "@/components/Labels";
 import {
   deleteModel,
-  fetchConfig,
   fetchModelPrices,
   fetchModels,
   fetchProviders,
@@ -46,7 +45,6 @@ import {
   fetchHealthTimeline,
   fetchUptime,
   type EffectiveModelDto,
-  type RouteDto,
   type RouteRow,
 } from "@/lib/api";
 import { errorText } from "@/lib/error-copy";
@@ -74,6 +72,8 @@ const CAVEAT_LABEL: Record<string, string> = {
 };
 
 interface CatalogRow {
+  /** the row's identity: the model name qualified by its organization, since two can share a name */
+  id: string;
   name: string;
   entry: EffectiveModelDto;
   route: RouteRow | null;
@@ -87,9 +87,9 @@ interface CatalogRow {
    */
   providerNames: string[];
   /**
-   * where the route's traffic goes, read from the effective config the
-   * gateway serves (#1979). `null` until that answers, when only the count the
-   * catalog carries is known — and a config-file route used to stop there
+   * where the route's traffic goes, carried by the catalog entry itself
+   * (#2210). `null` only when the control plane predates that field, and then
+   * just the count is known
    */
   targets: RouteTargetView[] | null;
   targetCount: number;
@@ -144,19 +144,11 @@ export default function Models() {
     queryFn: fetchModelPrices,
     retry: false,
   });
-  // the catalog carries a strategy and a target count per model and no more.
-  // the targets themselves come from the effective config, the merged view the
-  // gateway serves, which holds a `rolter.toml` route and a database one alike
-  // and names each target's provider rather than its row id (#1979). rows are
-  // matched by name, which two orgs can share until the model list carries its
-  // own targets (#2210)
+  // each catalog entry carries its own targets and the organization that owns
+  // it (#2210), so there is no second read of the effective config to match by
+  // name: two organizations that both serve a `gpt-4o` are two entries, each
+  // with its own targets
   const hasModels = (models.data?.length ?? 0) > 0;
-  const config = useQuery({
-    queryKey: ["config"],
-    queryFn: fetchConfig,
-    enabled: hasModels,
-    retry: false,
-  });
   // health is shown where it is known: the uptime rollup needs ClickHouse and
   // analytics access, and without either the targets simply carry no health.
   // the key is the Health screen's, so the two share an answer
@@ -207,14 +199,6 @@ export default function Models() {
     return map;
   }, [routes.data]);
 
-  const effectiveRoute = React.useMemo(() => {
-    const map = new Map<string, RouteDto>();
-    const list = config.data?.routes;
-    if (Array.isArray(list))
-      for (const route of list) if (!map.has(route.model)) map.set(route.model, route);
-    return map;
-  }, [config.data]);
-
   // an absent price row only means "unpriced" once the catalogue has actually
   // been read: while it is loading, or if the request failed, every model would
   // otherwise be reported as unpriced on no evidence
@@ -222,9 +206,12 @@ export default function Models() {
 
   const rows: CatalogRow[] = (models.data ?? []).map((entry) => {
     const route = routeByModel.get(entry.model) ?? null;
-    const effective = effectiveRoute.get(entry.model);
-    const targets = effective
-      ? targetViews(effective, healthKnown ? uptime.data : undefined, timeline.data)
+    const targets = entry.route_targets
+      ? targetViews(
+          { model: entry.model, targets: entry.route_targets },
+          healthKnown ? uptime.data : undefined,
+          timeline.data,
+        )
       : null;
     // the first provider names the column; a route spread over several says so
     // instead of pretending it lives on one
@@ -233,6 +220,8 @@ export default function Models() {
     const policy = route?.param_policy as Record<string, unknown> | undefined;
     const deny = Array.isArray(policy?.deny) ? (policy.deny as unknown[]) : [];
     return {
+      // the model name is shared across organizations, so it cannot key a row
+      id: `${entry.org_id ?? ""}/${entry.model}`,
       name: entry.model,
       entry,
       route,
@@ -288,7 +277,6 @@ export default function Models() {
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: ["models"] });
     queryClient.invalidateQueries({ queryKey: ["routes", scope.projectId] });
-    queryClient.invalidateQueries({ queryKey: ["config"] });
   };
 
   const removeModel = useMutation({
@@ -314,14 +302,14 @@ export default function Models() {
           onChange={(e) => setSearch(e.target.value)}
         />
         <LabelFilterSelect value={labelFilter} onChange={setLabelFilter} options={labels.options} />
-        {/* the tally waits for the catalog, and the provider half for the
-            config that names each target's provider: either one unread would
-            print a zero it has no evidence for (#1980) */}
+        {/* the tally waits for the catalog, which names each target's provider:
+            unread, it would print a zero it has no evidence for (#1980) */}
         <ListSummary data={models.data}>
           {() => (
             <>
               {t("pages.models.modelTally", { count: rows.length })}
-              {config.data && <> · {t("pages.models.providerTally", { count: providerCount })}</>}
+              {" · "}
+              {t("pages.models.providerTally", { count: providerCount })}
             </>
           )}
         </ListSummary>
@@ -441,14 +429,14 @@ export default function Models() {
           <ListSkeleton rows={5} className="p-3" />
         </ListLoadingRow>
         {sorted.map((r) => {
-          const open = expanded.has(r.name) && !!r.targets?.length;
-          const detailId = `${detailPrefix}-${r.name}`;
+          const open = expanded.has(r.id) && !!r.targets?.length;
+          const detailId = `${detailPrefix}-${r.id}`;
           const hintKey = strategyHintKey(r.strategy);
           const withHealth = (r.targets ?? []).filter((tg) => tg.health);
           const failing = withHealth.filter((tg) => tg.health?.state === "breaching").length;
           const atRisk = withHealth.filter((tg) => tg.health?.state === "atRisk").length;
           return (
-            <React.Fragment key={r.name}>
+            <React.Fragment key={r.id}>
               <ListRow grid={GRID} className={open ? "border-b-0" : undefined}>
                 <ListCell className="flex min-w-0 items-center gap-2">
                   <StatusDot color={r.enabled ? "var(--status-success)" : "var(--text-subtle)"} />
@@ -498,7 +486,7 @@ export default function Models() {
                         targets: t("routeTargets.count", { count: r.targetCount }),
                         model: r.name,
                       })}
-                      onClick={() => toggleTargets(r.name)}
+                      onClick={() => toggleTargets(r.id)}
                       className="inline-flex items-center gap-1 rounded-sm font-mono text-xs text-[color:var(--text-secondary)] transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                     >
                       <ChevronRight

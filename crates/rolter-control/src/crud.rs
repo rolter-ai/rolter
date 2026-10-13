@@ -4115,11 +4115,59 @@ async fn delete_provider_group(
 
 // --- routes + targets ---
 
+/// What `GET /api/v1/projects/{project_id}/routes` can embed beside each route.
+#[derive(Deserialize, Default)]
+struct ListRoutesQuery {
+    /// comma-separated extras: `targets` (the route's targets, as
+    /// `GET /api/v1/routes/{id}/targets` lists them) and `complexity` (its
+    /// complexity policy, as `GET /api/v1/routes/{id}/complexity` returns it).
+    /// Omitted, the list is the plain routes it always was
+    include: Option<String>,
+}
+
+/// One route of the list, plus whatever `?include=` asked to have embedded.
+/// The extras are skipped when not asked for, so a client that sends no
+/// `include` reads exactly the body it read before.
+#[derive(Serialize)]
+struct RouteListEntry {
+    #[serde(flatten)]
+    route: Route,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    targets: Option<Vec<RouteTarget>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    complexity: Option<serde_json::Value>,
+}
+
+/// the complexity policy stored in a route's params, or the empty policy
+fn route_complexity(route: &Route) -> serde_json::Value {
+    route
+        .params
+        .get(rolter_balancer::complexity::POLICY_PARAM)
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({"tiers": []}))
+}
+
 async fn list_routes(
     principal: Principal,
     State(state): State<ControlState>,
     Path(project_id): Path<Uuid>,
-) -> ApiResult<Json<Vec<Route>>> {
+    Query(query): Query<ListRoutesQuery>,
+) -> ApiResult<Json<Vec<RouteListEntry>>> {
+    let mut with_targets = false;
+    let mut with_complexity = false;
+    for token in query.include.as_deref().unwrap_or("").split(',') {
+        match token.trim() {
+            "" => {}
+            "targets" => with_targets = true,
+            "complexity" => with_complexity = true,
+            other => {
+                return Err(invalid_field(
+                    "include",
+                    format!("unknown include `{other}`; expected targets or complexity"),
+                ))
+            }
+        }
+    }
     let chain = ScopeChain::from_project(pool(&state), project_id).await?;
     authorize(&state, &principal, chain, cap!("route", Read)).await?;
     let routes = RouteRepo(pool(&state)).list(project_id).await?;
@@ -4127,14 +4175,36 @@ async fn list_routes(
     // profile carrying a policy the filter is the identity, which is every
     // deployment that defines none
     let policy = caller_policy(&state, &principal).await?;
-    Ok(Json(if policy.is_unrestricted() {
+    let routes: Vec<Route> = if policy.is_unrestricted() {
         routes
     } else {
         routes
             .into_iter()
             .filter(|route| policy.permits_route(&route.model))
             .collect()
-    }))
+    };
+    // the targets are read for the project and then dealt out to the routes the
+    // caller may see, so an access profile that hides a route hides its targets
+    // with it (the per-route read does not look at the profile at all)
+    let mut targets: HashMap<Uuid, Vec<RouteTarget>> = HashMap::new();
+    if with_targets {
+        for target in RouteTargetRepo(pool(&state))
+            .list_for_project(project_id)
+            .await?
+        {
+            targets.entry(target.route_id).or_default().push(target);
+        }
+    }
+    Ok(Json(
+        routes
+            .into_iter()
+            .map(|route| RouteListEntry {
+                targets: with_targets.then(|| targets.remove(&route.id).unwrap_or_default()),
+                complexity: with_complexity.then(|| route_complexity(&route)),
+                route,
+            })
+            .collect(),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -4371,13 +4441,7 @@ async fn get_route_complexity(
 ) -> ApiResult<Json<serde_json::Value>> {
     authorize_route(&state, &principal, id, cap!("route", Read)).await?;
     let route = RouteRepo(pool(&state)).get(id).await?;
-    Ok(Json(
-        route
-            .params
-            .get(rolter_balancer::complexity::POLICY_PARAM)
-            .cloned()
-            .unwrap_or_else(|| serde_json::json!({"tiers": []})),
-    ))
+    Ok(Json(route_complexity(&route)))
 }
 
 /// Validate and persist one bounded policy. It travels in `params` through
@@ -5773,6 +5837,18 @@ struct EffectiveModel {
     model: String,
     strategy: rolter_core::BalancingStrategy,
     targets: usize,
+    /// the targets themselves, in the shape the effective config gives them
+    /// (provider name, upstream model, weight), so the catalog needs no second
+    /// read of `/api/v1/config` to show where a model's traffic goes (#2210)
+    route_targets: Vec<rolter_core::Target>,
+    /// the organization the route belongs to; absent for a route from the
+    /// bootstrap file. Two organizations can each serve a `gpt-4o`, and this is
+    /// what tells their entries apart
+    #[serde(skip_serializing_if = "Option::is_none")]
+    org_id: Option<String>,
+    /// the project the route belongs to; absent for a route from the file
+    #[serde(skip_serializing_if = "Option::is_none")]
+    project_id: Option<String>,
     /// "config" = declared in the bootstrap file, read-only at runtime;
     /// "db" = created via this API, full runtime CRUD
     source: &'static str,
@@ -5803,6 +5879,9 @@ async fn list_models(
             model: r.model.clone(),
             strategy: r.strategy,
             targets: r.targets.len(),
+            route_targets: r.targets.clone(),
+            org_id: r.tenancy.as_ref().map(|t| t.org_id.clone()),
+            project_id: r.tenancy.as_ref().and_then(|t| t.project_id.clone()),
             source: if state.config_owned.models.contains(&r.model) {
                 "config"
             } else {

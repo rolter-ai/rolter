@@ -5,7 +5,6 @@ import ComplexityRouter from "./ComplexityRouter";
 import {
   Harness,
   expectEmptyState,
-  expectInStatusRegion,
   expectLoadError,
   expectNoFalseEmpty,
   expectRefused,
@@ -17,9 +16,8 @@ import {
   scoped,
   scopeResponse,
 } from "./story-harness";
-import type { FetchStub } from "./story-harness";
-import en from "@/lib/i18n/locales/en.json";
-import type { ComplexityTier, RouteRow } from "@/lib/api";
+import type { FetchStub, Recorder } from "./story-harness";
+import type { ComplexityPolicy, ComplexityTier, RouteRow } from "@/lib/api";
 
 const route = (over: Partial<RouteRow> = {}): RouteRow => ({
   id: "r-1",
@@ -36,18 +34,44 @@ const route = (over: Partial<RouteRow> = {}): RouteRow => ({
 
 const ROUTES = [route(), route({ id: "r-2", model: "claude-sonnet" })];
 
-/** `LoadError`'s retry, read out of the catalog rather than written out again. */
-const RETRY = en.errors.load.retry;
+const SMALL: ComplexityPolicy = {
+  tiers: [{ name: "small", max_input_bytes: 4096, route: "gpt-4o-mini" }],
+};
 
-// `/complexity` is listed first: it is a suffix of the route path, and `routes`
-// matches in order, so the shorter fragment would otherwise swallow it
-const loaded = routes([
-  [
-    "/complexity",
-    () => ({ tiers: [{ name: "small", max_input_bytes: 4096, route: "gpt-4o-mini" }] }),
-  ],
-  ["/routes", () => ROUTES],
-]);
+/** `GET /routes/{id}/complexity`, the read the editor makes when it opens */
+const PER_ROUTE_POLICY = /\/routes\/([^/?]+)\/complexity/;
+
+/**
+ * The control plane as the screen sees it (#3046): the route list embeds each
+ * route's policy, and the editor reads one route's policy when it opens.
+ * `policyFor` answers with a policy, or `null` for a route the list returns
+ * without one, as a control plane that predates the field does.
+ */
+const serving =
+  (
+    policyFor: (routeId: string) => ComplexityPolicy | null,
+    rest: FetchStub = async () => json([]),
+  ): FetchStub =>
+  async (input, init) => {
+    const url = String(input);
+    const scope = scopeResponse(url);
+    if (scope) return scope;
+    const single = PER_ROUTE_POLICY.exec(url);
+    if (single) {
+      return init?.method === "PUT" ? json(route()) : json(policyFor(single[1]) ?? { tiers: [] });
+    }
+    if (url.includes("/routes")) {
+      return json(
+        ROUTES.map((r) => {
+          const complexity = policyFor(r.id);
+          return complexity ? { ...r, complexity } : r;
+        }),
+      );
+    }
+    return rest(input, init);
+  };
+
+const loaded = serving(() => SMALL);
 
 const meta = {
   title: "Screens/ComplexityRouter",
@@ -145,10 +169,7 @@ export const Forbidden: Story = {
 };
 
 // a route with no policy at all, so the "add a policy" entry point renders
-const unconfigured = routes([
-  ["/complexity", () => ({ tiers: [] })],
-  ["/routes", () => ROUTES],
-]);
+const unconfigured = serving(() => ({ tiers: [] }));
 
 // A complexity policy is stored on its route, so both entry points are
 // `route:update` — admin (#1606).
@@ -176,46 +197,34 @@ export const RefusedToAMemberWithNoPolicyYet: Story = {
   },
 };
 
-// ── per-route policy states (#1461) ───────────────────────────────────────────
+// ── policy states (#1461, #3046) ───────────────────────────────────────────────
 //
-// The list makes one policy request per route, and `?? []` used to collapse
-// every non-answer into "no policy yet": a delayed read, a 500 and the 403 a
-// read-only caller gets all rendered as a route the operator had simply never
-// configured. These four stories pin the four states apart.
+// The policies ride in the route list, so there is no read per route to be
+// late or to fail on its own: while the list is out the screen shows its
+// skeleton, and when it fails the list's alert says so (both are stories
+// above). What stays worth pinning is that a policy which was never delivered
+// is not an empty one.
 
-/** The policy read answers for `r-1` and fails for `r-2`. */
-const oneFailedPolicy: FetchStub = async (input) => {
-  const url = String(input);
-  const scope = scopeResponse(url);
-  if (scope) return scope;
-  if (url.includes("/complexity")) {
-    return url.includes("r-2")
-      ? json({ error: { message: "policy read blew up" } }, 500)
-      : json({ tiers: [{ name: "small", max_input_bytes: 4096, route: "gpt-4o-mini" }] });
-  }
-  if (url.includes("/routes")) return json(ROUTES);
-  return json([]);
-};
-
-// the half of the screen the issue is about: `claude-sonnet`'s policy never
-// arrived, so it must not appear under "No policy yet" — the group that offers
-// to create one
-export const OnePolicyFailedToLoad: Story = {
+/**
+ * A control plane that predates the embedded policy returns routes without it.
+ * `claude-sonnet` must not appear under "No policy yet", the group that offers
+ * to create one, since an editor seeded from nothing would save a fresh draft
+ * over contents nobody has seen.
+ */
+export const OnePolicyNotDelivered: Story = {
   render: () => (
-    <Harness fetchStub={oneFailedPolicy}>
+    <Harness fetchStub={serving((id) => (id === "r-2" ? null : SMALL))}>
       <ComplexityRouter />
     </Harness>
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expectLoadError(canvasElement, /complexity policies/i);
     // the summary counts the route that answered, not the one that did not
     await waitFor(() =>
       expect(canvas.getByText(/1 of 1 route has a complexity policy/)).toBeVisible(),
     );
     await expect(canvas.getByText(/1 route's policy could not be read/)).toBeVisible();
-    // and the unread route offers no way in: an editor seeded from a failed
-    // read would save a fresh draft over contents nobody has seen
+    await expect(canvas.queryByText("No policy yet")).not.toBeInTheDocument();
     await expect(
       canvas.queryByRole("button", { name: "Add a complexity policy for claude-sonnet" }),
     ).not.toBeInTheDocument();
@@ -225,121 +234,44 @@ export const OnePolicyFailedToLoad: Story = {
   },
 };
 
-/** Routes are in, the policy reads are not — the state that read as "empty". */
-const routesWithoutPolicies: FetchStub = async (input) => {
-  const url = String(input);
-  const scope = scopeResponse(url);
-  if (scope) return scope;
-  if (url.includes("/complexity")) return new Promise<Response>(() => {});
-  if (url.includes("/routes")) return json(ROUTES);
-  return json([]);
-};
-
-export const PoliciesStillLoading: Story = {
-  render: () => (
-    <Harness fetchStub={routesWithoutPolicies}>
-      <ComplexityRouter />
-    </Harness>
-  ),
+/** The policies are not a request per route: the list is read once, with them. */
+export const PoliciesComeWithTheRoutes: Story = {
+  render: () => {
+    reads = recording(loaded);
+    return (
+      <Harness fetchStub={reads.stub}>
+        <ComplexityRouter />
+      </Harness>
+    );
+  },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    // the routes resolved, so the page-level skeleton is gone and these are the
-    // per-route policy placeholders — named, so a stray skeleton cannot pass
-    await expectInStatusRegion(canvasElement, "complexity-policies-loading");
-    await expect(canvas.getByText(/Still reading the policy for 2 routes/)).toBeVisible();
-    await expect(canvas.queryByText("No policy yet")).not.toBeInTheDocument();
+    await waitFor(() => expect(canvas.getAllByText("small")).toHaveLength(ROUTES.length));
+    const listReads = reads.calls.filter((c) => /\/projects\/[^/]+\/routes/.test(c.url));
+    await expect(listReads).toHaveLength(1);
+    await expect(listReads[0].url).toContain("include=complexity");
+    await expect(reads.calls.filter((c) => PER_ROUTE_POLICY.test(c.url))).toHaveLength(0);
   },
 };
+
+let reads: Recorder;
 
 /**
- * `GET /routes/{id}/complexity` takes `route:read` server-side (#1666), so a
- * viewer is served the policy — but a caller the control plane refuses the read
- * to entirely still exists (a custom role denied `route:read`, or a control
- * plane older than #1666). The screen says so rather than reporting the routes
- * as unconfigured.
+ * The editor still reads the one policy it is about to overwrite when it opens
+ * rather than seeding a draft from whatever the list cached at page load, and
+ * that read has to be able to fail. It used to seed the default two-tier draft
+ * either way and offer a save that would have replaced a policy nobody had seen.
  */
-const forbiddenPolicies: FetchStub = async (input) => {
-  const url = String(input);
-  const scope = scopeResponse(url);
-  if (scope) return scope;
-  if (url.includes("/complexity")) return json({ error: { message: "forbidden" } }, 403);
-  if (url.includes("/routes")) return json(ROUTES);
-  return json([]);
-};
-
-export const PolicyReadForbidden: Story = {
-  render: () => (
-    <Harness fetchStub={forbiddenPolicies} role="viewer">
-      <ComplexityRouter />
-    </Harness>
-  ),
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await expectLoadError(canvasElement, /You do not have access to complexity policies/);
-    await expect(canvas.queryByText("No policy yet")).not.toBeInTheDocument();
-    // a permission is not a transient failure, so no retry is offered
-    await expect(canvas.queryByRole("button", { name: RETRY })).not.toBeInTheDocument();
-  },
-};
-
-/** The retry on the group alert re-runs the reads that failed. */
-const failsOnce = (): FetchStub => {
-  let attempts = 0;
-  return async (input) => {
-    const url = String(input);
-    const scope = scopeResponse(url);
-    if (scope) return scope;
-    if (url.includes("/complexity")) {
-      attempts += 1;
-      return attempts <= ROUTES.length
-        ? json({ error: { message: "policy read blew up" } }, 500)
-        : json({ tiers: [{ name: "small", max_input_bytes: 4096, route: "gpt-4o-mini" }] });
-    }
-    if (url.includes("/routes")) return json(ROUTES);
-    return json([]);
-  };
-};
-
-export const RetryRecoversThePolicies: Story = {
-  render: () => (
-    <Harness fetchStub={failsOnce()}>
-      <ComplexityRouter />
-    </Harness>
-  ),
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await expectLoadError(canvasElement, /complexity policies/i);
-    await userEvent.click(canvas.getByRole("button", { name: RETRY }));
-    await waitFor(() => expect(canvas.getAllByText("small").length).toBe(ROUTES.length));
-    await expect(canvas.queryByRole("alert")).not.toBeInTheDocument();
-  },
-};
-
-/**
- * The editor re-reads the policy on open, so it holds nothing in the same two
- * ways the list does. It used to seed the default two-tier draft either way and
- * offer a save that would have replaced a policy nobody had seen.
- */
-const secondReadFails = (): FetchStub => {
-  const seen = new Set<string>();
-  return async (input) => {
-    const url = String(input);
-    const scope = scopeResponse(url);
-    if (scope) return scope;
-    if (url.includes("/complexity")) {
-      // the list's read answers; the editor's re-read of the same route does not
-      if (seen.has(url)) return json({ error: { message: "policy read blew up" } }, 500);
-      seen.add(url);
-      return json({ tiers: [{ name: "small", max_input_bytes: 4096, route: "gpt-4o-mini" }] });
-    }
-    if (url.includes("/routes")) return json(ROUTES);
-    return json([]);
-  };
+const editorRead: FetchStub = async (input, init) => {
+  if (PER_ROUTE_POLICY.test(String(input)) && init?.method !== "PUT") {
+    return json({ error: { message: "policy read blew up" } }, 500);
+  }
+  return loaded(input, init);
 };
 
 export const EditorPolicyReadFails: Story = {
   render: () => (
-    <Harness fetchStub={secondReadFails()}>
+    <Harness fetchStub={editorRead}>
       <ComplexityRouter />
     </Harness>
   ),
@@ -372,17 +304,7 @@ const openEditor = async (canvasElement: HTMLElement) => {
 };
 
 /** A saved two-tier policy the editor opens on; `PUT` is recorded. */
-const policyRecorder = (tiers: ComplexityTier[]) =>
-  recording(async (input, init) => {
-    const url = String(input);
-    const scope = scopeResponse(url);
-    if (scope) return scope;
-    if (url.includes("/complexity")) {
-      return init?.method === "PUT" ? json(route()) : json({ tiers });
-    }
-    if (url.includes("/routes")) return json(ROUTES);
-    return json([]);
-  });
+const policyRecorder = (tiers: ComplexityTier[]) => recording(serving(() => ({ tiers })));
 
 const TWO_TIERS: ComplexityTier[] = [
   { name: "small", max_input_bytes: 4096, route: "gpt-4o-mini" },
