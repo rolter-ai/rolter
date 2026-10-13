@@ -167,8 +167,8 @@ export const ShowsPricesAsFigures: Story = {
     await expect(row.getByText("10.00")).toBeInTheDocument();
     await expect(row.getByText("1.25")).toBeInTheDocument();
     await expect(row.getByText("USD")).toBeInTheDocument();
-    // no rate set for the cache writes
-    await expect(row.getAllByText("—")).toHaveLength(2);
+    // no rate set for the cache writes or the image, audio and speech units
+    await expect(row.getAllByText("—")).toHaveLength(5);
   },
 };
 
