@@ -522,6 +522,9 @@ Catalog metadata and model-scoped policy for one route. The dashboard's model sh
 
 <ParamField path="limits" type="table">
   Per-route request settings, written as `[routes.advanced.limits]`. `timeout_secs` (integer, `1` and up) bounds the wait for the upstream's response headers and replaces `[timeouts]` `request_secs` for this route; a streamed body is not cut short. `retries` (integer, `0` to `10`) is the number of extra attempts and replaces `[retry]` `max_retries` for this route, and `0` turns retries off. `output_tokens` (integer) refuses a request whose `max_tokens`, `max_completion_tokens` or `max_output_tokens` is above it. An omitted key inherits the gateway setting.
+
+`rpm` and `tpm` (integers, `1` and up) cap the requests and the tokens per minute this route admits, counted in Redis across every caller and every gateway replica, and `concurrency` (integer, `1` to `10000000`) caps the requests it serves at once on each replica. A request over a cap is refused with `429` and `Retry-After`. Unlike the other keys these have no gateway-wide default: omitted means no cap. Without `redis_url`, `rpm` and `tpm` are not enforced and `concurrency` still is. A zero fails config validation, and a stored row that carries one is served without that cap and reported by `GET /api/v1/config/problems`. See [Route limits](/concepts/providers-and-routes#route-limits).
+
 </ParamField>
 
 <ParamField path="headers" type="table">
@@ -541,7 +544,7 @@ Catalog metadata and model-scoped policy for one route. The dashboard's model sh
 </ParamField>
 
 <Note>
-  Earlier releases also accepted `base_url`, `insecure_tls`, `[routes.advanced.pricing]` and the `rpm`, `tpm`, `concurrency` and `context_window` limits, and stored them, but the gateway never read them ([#2924](https://github.com/rolter-ai/rolter/issues/2924)). They are gone, and a file that still sets one loads with the key ignored and reported as unknown. A second endpoint for a model is a second provider with its own `api_base`; to trust a private certificate authority use `[tls]` `ca_bundles` or the provider's `ca_bundles`; rate limits are set per organization, team, project or key under `[[rate_limits]]`; token rates belong in `[[model_prices]]`.
+  Earlier releases also accepted `base_url`, `insecure_tls`, `[routes.advanced.pricing]` and a `context_window` limit, and stored them, but the gateway never read them ([#2924](https://github.com/rolter-ai/rolter/issues/2924)). They are gone, and a file that still sets one loads with the key ignored and reported as unknown. A second endpoint for a model is a second provider with its own `api_base`; to trust a private certificate authority use `[tls]` `ca_bundles` or the provider's `ca_bundles`; token rates belong in `[[model_prices]]`. The `rpm`, `tpm` and `concurrency` limits went the same way and came back with a reader ([#2936](https://github.com/rolter-ai/rolter/issues/2936)); a limit on a caller rather than a model is set under `[[rate_limits]]`.
 </Note>
 
 ##### \[routes.advanced.guardrails\]

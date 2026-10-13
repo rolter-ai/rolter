@@ -5381,6 +5381,78 @@ mod tests {
         }
     }
 
+    /// 0090: a cap a route carried while nothing read it must not start
+    /// refusing traffic the day the gateway learns to read it (#2936). Only
+    /// `rpm`, `tpm` and `concurrency` go; every other key of the block stays.
+    #[tokio::test]
+    async fn the_route_limits_migration_clears_stale_caps_and_keeps_the_rest() {
+        if !test_database::is_configured() {
+            eprintln!("skipping: {} not set", test_database::URL_ENV);
+            return;
+        }
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
+        let (_, project_id) = seed_project(&pool).await;
+        let insert = |model: &'static str, advanced: serde_json::Value| {
+            let pool = pool.clone();
+            async move {
+                sqlx::query_scalar::<_, Uuid>(
+                    "insert into routes (project_id, model, strategy, advanced)
+                     values ($1, $2, 'round_robin', $3) returning id",
+                )
+                .bind(project_id)
+                .bind(model)
+                .bind(advanced)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+            }
+        };
+        let stale = insert(
+            "stale",
+            serde_json::json!({
+                "limits": {"rpm": 60, "tpm": 1000, "concurrency": 2,
+                           "timeout_secs": 30, "output_tokens": 512},
+                "headers": {"x-a": "b"}
+            }),
+        )
+        .await;
+        let clean = insert("clean", serde_json::json!({"limits": {"retries": 1}})).await;
+        let bare = insert("bare", serde_json::json!({})).await;
+
+        sqlx::raw_sql(include_str!(
+            "../../migrations/0090_clear_unread_route_limits.sql"
+        ))
+        .execute(&pool)
+        .await
+        .expect("the migration applies");
+
+        let advanced = |id: Uuid| {
+            let pool = pool.clone();
+            async move {
+                sqlx::query_scalar::<_, serde_json::Value>(
+                    "select advanced from routes where id = $1",
+                )
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+            }
+        };
+        assert_eq!(
+            advanced(stale).await,
+            serde_json::json!({
+                "limits": {"timeout_secs": 30, "output_tokens": 512},
+                "headers": {"x-a": "b"}
+            })
+        );
+        assert_eq!(
+            advanced(clean).await,
+            serde_json::json!({"limits": {"retries": 1}})
+        );
+        assert_eq!(advanced(bare).await, serde_json::json!({}));
+    }
+
     /// #2943: the migration applies over a row that already breaks it, as any
     /// deployment written to by hand could hold, leaves exactly that check
     /// unvalidated, and still binds every write from then on.

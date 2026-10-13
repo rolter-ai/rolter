@@ -1273,10 +1273,11 @@ pub struct Target {
 /// Every field here is read by something. `model_type`, `capabilities` and
 /// `description` are catalog metadata the dashboard reads back; the gateway
 /// applies `headers`, `locked_headers`, `limits.timeout_secs`, `limits.retries`,
-/// `limits.output_tokens`, `visibility` and `guardrails`.
+/// `limits.output_tokens`, `limits.rpm`, `limits.tpm`, `limits.concurrency`,
+/// `visibility` and `guardrails`.
 // `additional_fields` (#1665) and then `base_url`, `insecure_tls`, `pricing`
-// and the `rpm`, `tpm`, `concurrency` and `context_window` limits (#2924) used
-// to sit here: stored, validated, put in every snapshot and read by nothing,
+// and the `context_window` limit (#2924) used to sit here, as did `rpm`, `tpm`
+// and `concurrency` until #2936 gave them a reader: stored, validated, put in every snapshot and read by nothing,
 // while the docs and the dashboard described them as working. `base_url` and
 // `insecure_tls` were the worst of it. a per-route endpoint would have carried
 // the provider's credential to whatever host the route named, and the provider
@@ -1355,9 +1356,9 @@ pub const RESERVED_ROUTE_HEADERS: &[&str] = &[
 /// nothing (#2924); see the note on [`AdvancedModelConfig`].
 pub const RETIRED_ADVANCED_KEYS: &[&str] = &["base_url", "insecure_tls", "pricing"];
 
-/// Keys that sat in a route's `advanced.limits` and were read by nothing
-/// (#2924).
-pub const RETIRED_LIMIT_KEYS: &[&str] = &["rpm", "tpm", "concurrency", "context_window"];
+/// Keys that sat in a route's `advanced.limits` and are read by nothing
+/// (#2924). `rpm`, `tpm` and `concurrency` were on this list until #2936.
+pub const RETIRED_LIMIT_KEYS: &[&str] = &["context_window"];
 
 /// Remove the retired keys from a route's `advanced` JSON, returning the dotted
 /// name of each one that was there.
@@ -1489,8 +1490,8 @@ fn is_header_value(value: &str) -> bool {
 
 /// Per-model request settings. `None` inherits the gateway setting.
 ///
-/// `rpm`, `tpm`, `concurrency` and `context_window` used to sit beside these
-/// and were read by nothing (#2924); see the note on [`AdvancedModelConfig`].
+/// `context_window` used to sit beside these and was read by nothing (#2924);
+/// see the note on [`AdvancedModelConfig`].
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 pub struct ModelLimits {
     /// bound on the wait for the upstream's response headers, in whole seconds;
@@ -1506,9 +1507,62 @@ pub struct ModelLimits {
     /// refuse a request that asks for more output tokens than this
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_tokens: Option<u32>,
+    /// requests per minute this route admits, across every caller and every
+    /// gateway replica that shares the deployment's Redis. Refused with `429`
+    /// and `Retry-After`. Without Redis the cap is not enforced (#2936)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rpm: Option<u32>,
+    /// tokens per minute this route admits, counted from the usage of finished
+    /// responses, so a burst of requests in flight can overshoot it by their
+    /// own usage. Shared through Redis like `rpm` (#2936)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tpm: Option<u32>,
+    /// requests this route serves at once on one gateway replica, a streamed
+    /// response included until its last byte. Refused with `429` and
+    /// `Retry-After`; the count is per replica and works without Redis (#2936)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub concurrency: Option<u32>,
 }
 
+/// Largest `rpm` or `concurrency` the control plane accepts for a route.
+pub const MAX_ROUTE_THROUGHPUT: u32 = 10_000_000;
+
 impl ModelLimits {
+    /// Every reason one of `rpm`, `tpm` or `concurrency` cannot be applied, one
+    /// sentence each: zero would refuse every request, which is a route that
+    /// should be removed rather than limited, and `rpm` and `concurrency` stop
+    /// at [`MAX_ROUTE_THROUGHPUT`].
+    pub fn throughput_problems(&self) -> Vec<String> {
+        let mut problems = Vec::new();
+        for (name, value, ceiling) in [
+            ("rpm", self.rpm, MAX_ROUTE_THROUGHPUT),
+            ("tpm", self.tpm, u32::MAX),
+            ("concurrency", self.concurrency, MAX_ROUTE_THROUGHPUT),
+        ] {
+            if value.is_some_and(|v| v == 0 || v > ceiling) {
+                problems.push(format!("limits.{name} must be between 1 and {ceiling}"));
+            }
+        }
+        problems
+    }
+
+    /// Unset every throughput cap [`Self::throughput_problems`] names, so the
+    /// route serves unlimited on that axis instead of refusing everything.
+    pub fn drop_unusable_throughput(&mut self) -> Vec<String> {
+        let problems = self.throughput_problems();
+        if !problems.is_empty() {
+            let usable = |v: &mut Option<u32>, ceiling: u32| {
+                if v.is_some_and(|n| n == 0 || n > ceiling) {
+                    *v = None;
+                }
+            };
+            usable(&mut self.rpm, MAX_ROUTE_THROUGHPUT);
+            usable(&mut self.tpm, u32::MAX);
+            usable(&mut self.concurrency, MAX_ROUTE_THROUGHPUT);
+        }
+        problems
+    }
+
     /// The retry budget a request to this route gets, given the gateway-wide
     /// `default`.
     pub fn max_retries(&self, default: u32) -> u32 {
@@ -3921,6 +3975,19 @@ impl GatewayConfig {
             }
         }
 
+        // a zero or oversized throughput cap would refuse every request to the
+        // route. the control plane refuses one on write; a row written around
+        // it serves without that cap rather than being shut (#2936)
+        for route in &mut self.routes {
+            for problem in route.advanced.limits.drop_unusable_throughput() {
+                warnings.push(format!(
+                    "route '{}': {problem}; it is omitted from the snapshot and the route \
+                     serves without that cap",
+                    route.model
+                ));
+            }
+        }
+
         // the control plane refuses an unusable request id header on write, so
         // this covers a row written before it did or by sql. falling back to
         // the default keeps correlation working instead of withholding the
@@ -4804,6 +4871,11 @@ impl GatewayConfig {
                 problems.push(format!("route '{}': {problem}", route.model));
             }
         }
+        for route in &self.routes {
+            for problem in route.advanced.limits.throughput_problems() {
+                problems.push(format!("route '{}': {problem}", route.model));
+            }
+        }
         // the same split for the request id header: a file naming a credential
         // or framing header is refused, the snapshot path resets it (#2925)
         if let Some(problem) = request_id_header_problem(&self.client.request_id_header) {
@@ -5181,6 +5253,98 @@ fn is_proxy_reference(s: &str) -> bool {
 mod tests {
     use super::*;
 
+    /// #2936: a route's throughput caps need a value that can be met. Zero
+    /// would refuse every request, so a file is told and a stored row is
+    /// served without that cap.
+    #[test]
+    fn a_zero_or_oversized_route_throughput_cap_is_a_problem_and_is_dropped_from_a_snapshot() {
+        let mut limits = ModelLimits {
+            rpm: Some(0),
+            tpm: Some(500),
+            concurrency: Some(MAX_ROUTE_THROUGHPUT + 1),
+            ..Default::default()
+        };
+        let problems = limits.throughput_problems();
+        assert_eq!(problems.len(), 2, "{problems:?}");
+        assert!(problems[0].starts_with("limits.rpm"), "{problems:?}");
+        assert!(
+            problems[1].starts_with("limits.concurrency"),
+            "{problems:?}"
+        );
+
+        assert_eq!(limits.drop_unusable_throughput().len(), 2);
+        assert_eq!(
+            (limits.rpm, limits.tpm, limits.concurrency),
+            (None, Some(500), None)
+        );
+        assert!(limits.throughput_problems().is_empty());
+    }
+
+    #[test]
+    fn route_throughput_caps_round_trip_and_older_blobs_read_as_unset() {
+        let limits: ModelLimits =
+            serde_json::from_str(r#"{"rpm":60,"tpm":9000,"concurrency":4}"#).unwrap();
+        assert_eq!(
+            (limits.rpm, limits.tpm, limits.concurrency),
+            (Some(60), Some(9000), Some(4))
+        );
+        let back = serde_json::to_value(&limits).unwrap();
+        assert_eq!(back["rpm"], 60);
+
+        // a blob from before the keys existed, and one that only sets a timeout
+        let older: ModelLimits = serde_json::from_str(r#"{"timeout_secs":30}"#).unwrap();
+        assert_eq!(
+            (older.rpm, older.tpm, older.concurrency),
+            (None, None, None)
+        );
+        assert!(serde_json::to_value(&older).unwrap().get("rpm").is_none());
+    }
+
+    #[test]
+    fn only_context_window_is_still_a_retired_limit_key() {
+        let mut advanced = serde_json::json!({
+            "limits": {"rpm": 1, "tpm": 2, "concurrency": 3, "context_window": 4}
+        });
+        assert_eq!(
+            strip_retired_advanced_keys(&mut advanced),
+            ["limits.context_window"]
+        );
+        assert_eq!(advanced["limits"]["rpm"], 1);
+    }
+
+    #[test]
+    fn a_file_config_with_a_zero_route_cap_fails_validation_and_a_snapshot_prunes_it() {
+        let mut config = GatewayConfig::default();
+        config.providers.push(ProviderConfig {
+            name: "up".into(),
+            api_base: "http://127.0.0.1:1".into(),
+            ..Default::default()
+        });
+        let mut route: ModelRoute = serde_json::from_value(serde_json::json!({
+            "model": "m", "strategy": "round_robin",
+            "targets": [{"provider": "up", "weight": 1}]
+        }))
+        .unwrap();
+        route.advanced.limits.concurrency = Some(0);
+        config.routes.push(route);
+
+        let problems = config
+            .validate()
+            .expect_err("a zero cap is refused in a file");
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.contains("route 'm'") && p.contains("limits.concurrency")),
+            "{problems:?}"
+        );
+        let report = config.sanitize_for_snapshot();
+        assert!(
+            report.iter().any(|w| w.contains("limits.concurrency")),
+            "{report:?}"
+        );
+        assert_eq!(config.routes[0].advanced.limits.concurrency, None);
+    }
+
     fn at(y: i32, m: u32, d: u32, h: u32) -> DateTime<Utc> {
         use chrono::TimeZone;
         Utc.with_ymd_and_hms(y, m, d, h, 30, 0)
@@ -5453,7 +5617,7 @@ mod tests {
 
     /// A stored `advanced` blob written before #2924 still loads.
     ///
-    /// `base_url`, `insecure_tls`, `pricing` and four of the limits were
+    /// `base_url`, `insecure_tls`, `pricing` and `context_window` were
     /// persisted into route rows and read by nothing, and are gone from the
     /// struct. A row that carries them has to keep deserializing whole, with
     /// the keys ignored instead of stopping the parse (so the fields around
@@ -5470,7 +5634,7 @@ mod tests {
                 "insecure_tls": true,
                 "pricing": {"image_per_unit": 0.04, "audio_input_per_minute": 0.1},
                 "limits": {
-                    "rpm": 60, "tpm": 90000, "concurrency": 4, "context_window": 128000,
+                    "context_window": 128000,
                     "timeout_secs": 45, "retries": 3, "output_tokens": 2048
                 },
                 "headers": {"x-model-region": "eu"},
@@ -5490,12 +5654,12 @@ mod tests {
                 "the retired key {key} must not be re-emitted: {written}"
             );
         }
-        for key in ["rpm", "tpm", "concurrency", "context_window"] {
-            assert!(
-                written["advanced"]["limits"].get(key).is_none(),
-                "the retired limit {key} must not be re-emitted: {written}"
-            );
-        }
+        assert!(
+            written["advanced"]["limits"]
+                .get("context_window")
+                .is_none(),
+            "the retired limit context_window must not be re-emitted: {written}"
+        );
     }
 
     /// A file that still sets a retired key is told so: the loader's unknown
@@ -5517,6 +5681,7 @@ mod tests {
             base_url = "https://elsewhere.example"
             insecure_tls = true
             [routes.advanced.limits]
+            context_window = 128000
             rpm = 60
             timeout_secs = 30
         "#;
@@ -5528,7 +5693,7 @@ mod tests {
         for expected in [
             "routes[0].advanced.base_url",
             "routes[0].advanced.insecure_tls",
-            "routes[0].advanced.limits.rpm",
+            "routes[0].advanced.limits.context_window",
         ] {
             assert!(
                 paths.iter().any(|p| p == expected),
@@ -5536,7 +5701,9 @@ mod tests {
             );
         }
         assert!(
-            !paths.iter().any(|p| p.ends_with("timeout_secs")),
+            !paths
+                .iter()
+                .any(|p| p.ends_with("timeout_secs") || p.ends_with("limits.rpm")),
             "a limit the gateway applies is not unknown: {paths:?}"
         );
     }
@@ -5548,8 +5715,8 @@ mod tests {
             "insecure_tls": true,
             "pricing": {"image_per_unit": 0.04},
             "model_type": "chat",
-            "limits": {"rpm": 60, "tpm": 1, "concurrency": 2, "context_window": 8,
-                       "timeout_secs": 30, "retries": 1, "output_tokens": 9},
+            "limits": {"context_window": 8, "timeout_secs": 30, "retries": 1,
+                       "output_tokens": 9, "rpm": 60},
             "headers": {"x-model-region": "eu"}
         });
         let dropped = strip_retired_advanced_keys(&mut blob);
@@ -5559,9 +5726,6 @@ mod tests {
                 "base_url",
                 "insecure_tls",
                 "pricing",
-                "limits.rpm",
-                "limits.tpm",
-                "limits.concurrency",
                 "limits.context_window"
             ]
         );
@@ -5569,7 +5733,7 @@ mod tests {
             blob,
             serde_json::json!({
                 "model_type": "chat",
-                "limits": {"timeout_secs": 30, "retries": 1, "output_tokens": 9},
+                "limits": {"timeout_secs": 30, "retries": 1, "output_tokens": 9, "rpm": 60},
                 "headers": {"x-model-region": "eu"}
             })
         );

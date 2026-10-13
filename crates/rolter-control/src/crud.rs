@@ -4600,6 +4600,11 @@ fn validate_advanced(advanced: &AdvancedModelConfig) -> ApiResult<()> {
             ));
         }
     }
+    // the same rule the snapshot applies, so a cap accepted here is one the
+    // gateway enforces rather than drops (#2936)
+    if let Some(problem) = advanced.limits.throughput_problems().into_iter().next() {
+        return Err(ApiError::Core(Error::Config(problem)));
+    }
     // zero is a value here, unlike the other limits: it turns retries off for
     // the route. the ceiling is the one the gateway applies, which is also what
     // the deployment-wide `retry_max_retries` is held to
@@ -6957,6 +6962,33 @@ mod user_tests {
 
         advanced.limits.output_tokens = None;
         advanced.limits.timeout_secs = Some(0);
+        assert!(is_config_err(validate_advanced(&advanced)));
+    }
+
+    /// A zero cap would refuse every request to the route, and a cap past the
+    /// ceiling is a typo (#2936). Unset is "no cap", and each one is a value on
+    /// its own.
+    #[test]
+    fn advanced_model_validation_bounds_the_throughput_caps() {
+        for field in ["rpm", "tpm", "concurrency"] {
+            let with = |value: Option<u32>| {
+                let mut advanced = AdvancedModelConfig::default();
+                match field {
+                    "rpm" => advanced.limits.rpm = value,
+                    "tpm" => advanced.limits.tpm = value,
+                    _ => advanced.limits.concurrency = value,
+                }
+                validate_advanced(&advanced)
+            };
+            assert!(with(None).is_ok(), "{field} unset");
+            assert!(with(Some(1)).is_ok(), "{field} = 1");
+            assert!(is_config_err(with(Some(0))), "{field} = 0");
+        }
+        let mut advanced = AdvancedModelConfig::default();
+        advanced.limits.rpm = Some(rolter_core::MAX_ROUTE_THROUGHPUT + 1);
+        assert!(is_config_err(validate_advanced(&advanced)));
+        advanced.limits.rpm = Some(rolter_core::MAX_ROUTE_THROUGHPUT);
+        advanced.limits.concurrency = Some(rolter_core::MAX_ROUTE_THROUGHPUT + 1);
         assert!(is_config_err(validate_advanced(&advanced)));
     }
 

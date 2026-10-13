@@ -147,3 +147,14 @@ Tests against a real Redis live in `rate_limits.rs`. They self-skip without
 - A full `tpm` window refuses and charges no request slot.
 - Recovery after `CLIENT KILL`: the first check after the drop is enforced
   through the replayed script.
+
+## Route limits
+
+A route can carry its own `rpm` and `tpm` (`advanced.limits`, #2936). They use
+the same script, window and fail-open as the scope chain, on keys of the form
+`rolter:rl:route:<org>:<route>:<req|tok>:<bucket>`, and are admitted in a second
+call (`RateLimiter::check_route`) after the route is known, so a request a route
+refuses has already taken a slot of the caller's own `rpm`. Both calls share
+`RateLimiter::admit`. `concurrency` is not a Redis counter at all; see
+[Route advanced settings](route-advanced-settings.md#route-throughput-limits) for
+that and for the decisions behind it.

@@ -119,6 +119,7 @@ impl LoadTracker {
                 record: false,
                 queue_depth: 0,
                 prompt_tokens: 0,
+                route_permit: None,
             };
         };
         let key = (model.to_string(), idx);
@@ -142,6 +143,7 @@ impl LoadTracker {
             prompt_tokens: 0,
             started: Instant::now(),
             record: false,
+            route_permit: None,
         }
     }
 }
@@ -162,9 +164,18 @@ pub struct LoadGuard {
     queue_depth: u64,
     /// prompt size, set by the caller once the body has been parsed
     prompt_tokens: usize,
+    /// the slot of the route's `concurrency` cap this request holds (#2936).
+    /// Riding on the guard is what keeps it for the whole streamed response
+    route_permit: Option<crate::route_limits::ConcurrencyPermit>,
 }
 
 impl LoadGuard {
+    /// Keep `permit` until this guard drops, so the route's concurrency slot is
+    /// held as long as the response is still being delivered.
+    pub fn hold_route_permit(&mut self, permit: Option<crate::route_limits::ConcurrencyPermit>) {
+        self.route_permit = permit;
+    }
+
     /// Mark the attempt as successful: its duration counts toward the target's
     /// smoothed latency when the guard drops (i.e. once streaming finishes).
     pub fn mark_ok(&mut self) {

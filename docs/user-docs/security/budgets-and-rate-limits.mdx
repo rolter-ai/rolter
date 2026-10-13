@@ -249,7 +249,7 @@ Each budget card on **Budgets & Limits** shows how much of the cap is spent, how
 
 ## Step 3 — Configure rate limits
 
-A rate limit rejects requests with **HTTP 429** (plus a `Retry-After` header) when the number of requests or tokens in the trailing one-minute window exceeds the cap. Add one `[[rate_limits]]` block per scope you want to throttle.
+A rate limit rejects requests with **HTTP 429** (plus a `Retry-After` header) when the number of requests or tokens in the trailing one-minute window exceeds the cap. Add one `[[rate_limits]]` block per scope you want to throttle. To protect one model rather than a caller, set `rpm`, `tpm` or `concurrency` on the route instead; see [Route limits](/concepts/providers-and-routes#route-limits).
 
 <ParamField path="scope" type="string" required>
   The scope level this limit applies to. One of `org`, `team`, `project`, `key`, `business_unit`, or `customer`.
