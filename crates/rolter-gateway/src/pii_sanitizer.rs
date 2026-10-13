@@ -224,17 +224,18 @@ async fn post<B: serde::Serialize, R: serde::de::DeserializeOwned>(
     if let Some(auth) = &config.auth {
         // secrets are resolved from the environment at call time, never inlined
         // in config; a missing/empty var means the header is simply omitted
-        match auth {
-            WebhookAuth::Bearer { token_env } => {
-                if let Ok(token) = std::env::var(token_env) {
-                    req = req.bearer_auth(token);
-                }
-            }
-            WebhookAuth::SharedSecret { secret_env } => {
-                if let Ok(secret) = std::env::var(secret_env) {
-                    req = req.header("X-Rolter-Guardrail-Secret", secret);
-                }
-            }
+        if let Some(secret) = auth.resolve_secret(&[]) {
+            req = match auth {
+                WebhookAuth::Bearer { .. } => req.bearer_auth(secret),
+                WebhookAuth::SharedSecret { .. } => req.header("X-Rolter-Guardrail-Secret", secret),
+            };
+        } else if rolter_core::is_control_plane_secret(auth.env_var()) {
+            // a stored row can name a deployment secret; sending it to the
+            // webhook's url is what the refusal exists to stop
+            tracing::warn!(
+                env = auth.env_var(),
+                "webhook auth names a deployment secret and was not sent"
+            );
         }
     }
 

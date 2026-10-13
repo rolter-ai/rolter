@@ -166,6 +166,8 @@ These variables apply to both the gateway and the control plane.
 
 Provider credentials are not hard-coded variable names — you choose the name and reference it in `rolter.toml`. Any variable name you set in a provider's `api_key_env` field becomes a provider key variable for that deployment.
 
+A variable that holds a deployment secret (`ROLTER_KEK`, `ROLTER_DATABASE_URL`, `PGPASSWORD`, any other `ROLTER_` name except `ROLTER_GUARDRAIL_TOKEN`) cannot be a provider key. The dashboard refuses it with a `400`. A gateway that meets such a name in a snapshot serves that provider without a credential and lists the row on `/config/problems`; a file config that names one fails validation, and `rolter-seed --import` stops before it writes anything. The same names are not sent as a guardrail webhook or plugin credential either.
+
 ```toml
 [[providers]]
 name = "openai"

@@ -403,6 +403,30 @@ fn same_setting<T: serde::Serialize>(stored: &Option<serde_json::Value>, file: &
     *stored == file
 }
 
+/// Refuse a file whose provider names one of the deployment's own secrets as
+/// its credential variable. The import stores that name as `api_key_env`, and
+/// the gateway would read it and send it to the provider's `api_base`; the
+/// dashboard refuses the same names at save time. Checked before any row is
+/// written, so a bad file imports nothing.
+fn refuse_secret_credentials(config: &GatewayConfig) -> anyhow::Result<()> {
+    for p in &config.providers {
+        let envs = p
+            .api_key_env
+            .iter()
+            .chain(p.api_keys.iter().filter_map(|k| k.env.as_ref()));
+        for env in envs {
+            if rolter_core::is_control_plane_secret(env) {
+                anyhow::bail!(
+                    "provider '{}' names {env} as its credential, which holds a deployment \
+                     secret and cannot be used as a provider credential",
+                    p.name
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Upsert an already-parsed bootstrap config. Split out from
 /// [`import_bootstrap_toml`] so the desired-state behaviour can be tested
 /// without going through a file on disk.
@@ -412,6 +436,7 @@ async fn import_config(
     project_id: Uuid,
     config: &GatewayConfig,
 ) -> anyhow::Result<()> {
+    refuse_secret_credentials(config)?;
     let providers = ProviderRepo(pool);
     let routes = RouteRepo(pool);
     let targets = RouteTargetRepo(pool);
@@ -961,6 +986,28 @@ mod tests {
     use rolter_store::postgres::test_schema::TestSchema;
     use std::collections::HashMap;
     use uuid::Uuid;
+
+    /// #3097: an import file naming a deployment secret as a credential imports
+    /// nothing, so the name never reaches `providers.api_key_env`
+    #[test]
+    fn an_import_naming_a_deployment_secret_as_a_credential_is_refused() {
+        let toml = |env: &str| {
+            format!(
+                "[[providers]]\nname = \"p\"\nkind = \"openai\"\n\
+                 api_base = \"http://127.0.0.1:1\"\napi_key_env = \"{env}\"\n"
+            )
+        };
+        let bad = rolter_core::GatewayConfig::from_toml_str(&toml("ROLTER_KEK")).unwrap();
+        let err = super::refuse_secret_credentials(&bad)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("provider 'p'") && err.contains("ROLTER_KEK"),
+            "{err}"
+        );
+        let ok = rolter_core::GatewayConfig::from_toml_str(&toml("OPENAI_API_KEY")).unwrap();
+        assert!(super::refuse_secret_credentials(&ok).is_ok());
+    }
 
     #[test]
     fn slugify_normalizes() {

@@ -1031,7 +1031,9 @@ impl ApiKeyConfig {
         if let Some(k) = &self.key {
             return Some(k.clone());
         }
-        self.env.as_ref().and_then(|e| std::env::var(e).ok())
+        self.env
+            .as_ref()
+            .and_then(|e| crate::secret_env::credential_from_env(e, &[]))
     }
 }
 
@@ -1070,7 +1072,7 @@ impl ProviderConfig {
         }
         self.api_key_env
             .as_ref()
-            .and_then(|e| std::env::var(e).ok())
+            .and_then(|e| crate::secret_env::credential_from_env(e, &[]))
     }
 
     /// Resolve every configured key with its weight. A legacy single-key
@@ -3750,6 +3752,7 @@ impl GatewayConfig {
         // Cross-provider defects (empty or duplicated names) are deliberately
         // not considered here — silently dropping one of two colliding rows
         // would be worse than refusing, so `validate` still rejects those.
+        self.strip_secret_env_credentials(&mut warnings);
         self.strip_unusable_telemetry(&mut warnings);
         let mut omitted: std::collections::HashSet<String> = std::collections::HashSet::new();
         let invalid: Vec<(usize, String, Vec<String>)> = self
@@ -3943,6 +3946,37 @@ impl GatewayConfig {
     /// policy denies its endpoint or its shape is invalid, keeping the provider.
     /// Cache telemetry is optional, so losing it must not cost the provider its
     /// traffic (#2997); `validate` still refuses the same setting in a file.
+    /// Drop a credential variable that names one of the deployment's own
+    /// secrets. The gateway would otherwise read it and send it to the
+    /// provider's `api_base`; a row saved before the control plane refused such
+    /// names, or imported by `rolter-seed`, can still carry one. The provider
+    /// stays and serves without that credential.
+    fn strip_secret_env_credentials(&mut self, warnings: &mut Vec<String>) {
+        for provider in &mut self.providers {
+            let name = provider.name.clone();
+            if let Some(env) = provider.api_key_env.as_deref() {
+                if crate::secret_env::is_control_plane_secret(env) {
+                    warnings.push(format!(
+                        "provider '{name}' api_key_env '{env}' names a deployment secret and \
+                         was omitted from the snapshot; the provider serves without that credential"
+                    ));
+                    provider.api_key_env = None;
+                }
+            }
+            for key in &mut provider.api_keys {
+                if let Some(env) = key.env.as_deref() {
+                    if crate::secret_env::is_control_plane_secret(env) {
+                        warnings.push(format!(
+                            "provider '{name}' api_keys env '{env}' names a deployment secret and \
+                             was omitted from the snapshot; that key is not used"
+                        ));
+                        key.env = None;
+                    }
+                }
+            }
+        }
+    }
+
     fn strip_unusable_telemetry(&mut self, warnings: &mut Vec<String>) {
         let egress = self.egress.clone();
         for provider in &mut self.providers {
@@ -4297,6 +4331,18 @@ impl GatewayConfig {
                 "provider '{}' has an invalid api_base '{}' (expected http:// or https:// url)",
                 provider.name, provider.api_base
             ));
+        }
+        let secret_envs = provider
+            .api_key_env
+            .iter()
+            .chain(provider.api_keys.iter().filter_map(|k| k.env.as_ref()));
+        for env in secret_envs {
+            if crate::secret_env::is_control_plane_secret(env) {
+                problems.push(format!(
+                    "provider '{}' credential variable '{env}' names a deployment secret",
+                    provider.name
+                ));
+            }
         }
         if provider.kind == ProviderKind::Ollama
             && provider.api_base.trim_end_matches('/').ends_with("/v1")
@@ -5659,6 +5705,72 @@ mod tests {
             problems.contains("route 'm': header 'authorization' cannot be set"),
             "{problems}"
         );
+    }
+
+    /// #3097: a provider row that names a deployment secret as its credential
+    /// variable is served without it, with a line naming the row; the gateway
+    /// never reads the variable.
+    #[test]
+    fn the_snapshot_drops_a_secret_credential_variable_and_keeps_the_provider() {
+        let mut cfg = GatewayConfig::default();
+        cfg.providers.push(ProviderConfig {
+            name: "leaky".to_string(),
+            api_base: "http://127.0.0.1:1".to_string(),
+            api_key_env: Some("ROLTER_KEK".to_string()),
+            api_keys: vec![ApiKeyConfig {
+                env: Some("DATABASE_URL".to_string()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        cfg.providers.push(ProviderConfig {
+            name: "fine".to_string(),
+            api_base: "http://127.0.0.1:2".to_string(),
+            api_key_env: Some("OPENAI_API_KEY".to_string()),
+            ..Default::default()
+        });
+        let report = cfg.sanitize_for_snapshot_report();
+        let lines = report.problems.join("\n");
+        assert!(
+            lines.contains("provider 'leaky' api_key_env 'ROLTER_KEK'"),
+            "{lines}"
+        );
+        assert!(
+            lines.contains("provider 'leaky' api_keys env 'DATABASE_URL'"),
+            "{lines}"
+        );
+        assert!(!lines.contains("fine"), "{lines}");
+        assert!(report.omitted.is_empty(), "{lines}");
+        assert_eq!(cfg.providers.len(), 2);
+        assert_eq!(cfg.providers[0].api_key_env, None);
+        assert_eq!(cfg.providers[0].api_keys[0].env, None);
+        assert_eq!(
+            cfg.providers[1].api_key_env.as_deref(),
+            Some("OPENAI_API_KEY")
+        );
+    }
+
+    /// Defence in depth for a config that never went through the snapshot
+    /// pass: resolving the key refuses the name too, and a file config is
+    /// rejected outright.
+    #[test]
+    fn a_secret_credential_variable_is_never_read() {
+        // SAFETY: test-local env var, no concurrent access to this key elsewhere
+        unsafe { std::env::set_var("ROLTER_TEST_3097_SECRET", "leaked") };
+        let provider = ProviderConfig {
+            name: "leaky".to_string(),
+            api_base: "http://127.0.0.1:1".to_string(),
+            api_key_env: Some("ROLTER_TEST_3097_SECRET".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(provider.resolve_api_key(), None);
+        assert!(provider.resolve_api_keys().is_empty());
+        let mut cfg = GatewayConfig::default();
+        cfg.providers.push(provider);
+        let problems = cfg.validate().unwrap_err().join("\n");
+        assert!(problems.contains("names a deployment secret"), "{problems}");
+        // SAFETY: cleanup of the test-local var set above
+        unsafe { std::env::remove_var("ROLTER_TEST_3097_SECRET") };
     }
 
     /// One route's unsendable header must not 500 `/internal/snapshot` for

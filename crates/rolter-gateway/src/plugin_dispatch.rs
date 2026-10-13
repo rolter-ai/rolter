@@ -257,9 +257,13 @@ async fn call_once(
         .header("X-Rolter-Trace-Id", envelope.trace_id)
         .json(envelope);
 
-    if let Some(WebhookAuth::Bearer { token_env }) = &plugin.auth {
-        if let Ok(token) = std::env::var(token_env) {
+    if let Some(auth @ WebhookAuth::Bearer { token_env }) = &plugin.auth {
+        // the plugin token is this purpose's documented credential; any other
+        // deployment secret a stored row names is not sent
+        if let Some(token) = auth.resolve_secret(&["ROLTER_PLUGIN_TOKEN"]) {
             req = req.bearer_auth(token);
+        } else if rolter_core::is_secret_unless_allowed(token_env, &["ROLTER_PLUGIN_TOKEN"]) {
+            tracing::warn!(env = %token_env, "plugin auth names a deployment secret and was not sent");
         }
     }
 
@@ -542,7 +546,7 @@ mod tests {
         use axum::routing::post;
         use axum::{Json, Router};
         // SAFETY: test-local env var, no concurrent access to this key elsewhere
-        unsafe { std::env::set_var("ROLTER_TEST_PLUGIN_TOKEN", "secret-token") };
+        unsafe { std::env::set_var("PLUGIN_TEST_BEARER_TOKEN", "secret-token") };
         let app = Router::new().route(
             "/hook",
             post(|headers: axum::http::HeaderMap| async move {
@@ -551,6 +555,57 @@ mod tests {
                     .and_then(|v| v.to_str().ok())
                     == Some("Bearer secret-token");
                 Json(serde_json::json!({"action": if saw_auth { "allow" } else { "block" }}))
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let mut p = plugin(
+            "audit",
+            format!("http://{addr}/hook"),
+            FailureMode::FailOpen,
+        );
+        p.auth = Some(WebhookAuth::Bearer {
+            token_env: "PLUGIN_TEST_BEARER_TOKEN".to_string(),
+        });
+        let metrics = Metrics::default();
+        let out = dispatch(
+            &[&p],
+            PluginStage::PreUpstream,
+            &metrics,
+            &crate::egress_client::testing::permissive(),
+            "gpt-4",
+            "route",
+            "trace",
+            &WebhookTenant::default(),
+            &mut Vec::new(),
+            &serde_json::json!({"messages": []}),
+        )
+        .await;
+        assert_eq!(
+            out,
+            DispatchOutcome::Allow(serde_json::json!({"messages": []}))
+        );
+        // SAFETY: cleanup of the test-local var set above
+        unsafe { std::env::remove_var("PLUGIN_TEST_BEARER_TOKEN") };
+    }
+
+    /// #3097: a stored row naming a `ROLTER_` secret must not send it out
+    #[tokio::test]
+    async fn a_deployment_secret_named_as_the_bearer_env_is_not_sent() {
+        use axum::routing::post;
+        use axum::{Json, Router};
+        // SAFETY: test-local env var, no concurrent access to this key elsewhere
+        unsafe { std::env::set_var("ROLTER_TEST_PLUGIN_TOKEN", "secret-token") };
+        let app = Router::new().route(
+            "/hook",
+            post(|headers: axum::http::HeaderMap| async move {
+                let saw_auth = headers
+                    .get(axum::http::header::AUTHORIZATION)
+                    .and_then(|v| v.to_str().ok())
+                    == Some("Bearer secret-token");
+                Json(serde_json::json!({"action": if saw_auth { "block" } else { "allow" }}))
             }),
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
