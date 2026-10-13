@@ -26,6 +26,15 @@ describe("classifyLoadError", () => {
     expect(classifyLoadError(new ApiError("forbidden", 403))).toBe("forbidden");
   });
 
+  // #2713: a slow read is not a dead store, and the fix differs (narrow the range)
+  it("reads an analytics timeout apart from any other 5xx, and keeps retry", () => {
+    const timeout = new ApiError("analytics query timed out", 504, "analytics_query_timeout");
+    expect(classifyLoadError(timeout)).toBe("queryTimeout");
+    expect(isRetryable("queryTimeout")).toBe(true);
+    expect(classifyLoadError(new ApiError("down", 502, "analytics_query_failed"))).toBe("server");
+    expect(classifyLoadError(new ApiError("gateway timeout", 504))).toBe("server");
+  });
+
   it("reads a 5xx as the server failing", () => {
     expect(classifyLoadError(new ApiError("boom", 500))).toBe("server");
     expect(classifyLoadError(new ApiError("boom", 503))).toBe("server");
@@ -110,6 +119,7 @@ describe("errors.load copy", () => {
     "openMode",
     "noStore",
     "unreachable",
+    "queryTimeout",
     "server",
     "unknown",
   ];

@@ -90,7 +90,7 @@ await step("E3.1", "Playground answers without any key handling", async () => {
     const a = await page.locator("main").innerText();
     return a.length > text.length && !/ASSISTANT\s*\n\s*…/i.test(a) ? a : null;
   }, 25000).catch(async () => await page.locator("main").innerText());
-  return after.length > text.length ? ["pass", "an answer streamed in"] : ["fail", "no answer appeared"];
+  return after.length > text.length ? ["pass", "the whole answer appeared"] : ["fail", "no answer appeared"];
 }, page);
 
 await step("E3.2", "OpenAI dialect from code", async () => {

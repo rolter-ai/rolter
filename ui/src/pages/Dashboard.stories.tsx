@@ -648,6 +648,33 @@ const failing = recording(
   ),
 );
 
+const timedOut = recording(
+  scoped(async (input, init) =>
+    analyticsRefused(input)
+      ? json(
+          { error: { message: "analytics query timed out", code: "analytics_query_timeout" } },
+          504,
+        )
+      : loaded(input, init),
+  ),
+);
+
+/**
+ * Every analytics read ran past the request timeout (#2713): the store is up, so
+ * the one alert says the query took too long and to narrow the range, not that
+ * the store failed.
+ */
+export const QueryTimeout: Story = {
+  render: () => render(timedOut.stub),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectLoadError(canvasElement, /took too long/i);
+    await waitFor(() => expect(canvas.getAllByRole("alert")).toHaveLength(1));
+    await expect(canvas.getByRole("alert")).not.toHaveTextContent(/failed to return/i);
+    await expect(canvas.getByRole("button", { name: "Try again" })).toBeVisible();
+  },
+};
+
 /**
  * A first read that fails stays failed until someone retries it. Polling a
  * query that never held data sends it back to pending on every refetch, which

@@ -425,6 +425,28 @@ export const Error_: Story = {
   },
 };
 
+// a read past the request timeout is a busy store, not a dead one (#2713)
+export const QueryTimeout: Story = {
+  render: () => (
+    <Harness
+      fetchStub={scoped(async () =>
+        json(
+          { error: { message: "analytics query timed out", code: "analytics_query_timeout" } },
+          504,
+        ),
+      )}
+    >
+      <Health />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectLoadError(canvasElement, /health rollups took too long/i);
+    const canvas = within(canvasElement);
+    await expect(canvas.queryByText(/failed to return/i)).toBeNull();
+    await expect(canvas.getAllByRole("button", { name: /try again/i }).length).toBeGreaterThan(0);
+  },
+};
+
 // retrying a 403 cannot work, so LoadError withholds the button and says who can
 export const Forbidden: Story = {
   render: () => (
