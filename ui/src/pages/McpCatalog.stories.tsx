@@ -926,11 +926,14 @@ const clears = recording(
   }),
 );
 export const AuthClearCredentialConfirms: Story = {
+  beforeEach: recordUxEvents,
   render: () => {
     clearedOnce = false;
     return (
       <Harness fetchStub={clears.stub}>
-        <McpCatalog />
+        <UxScreenProvider screen="mcp-catalog">
+          <McpCatalog />
+        </UxScreenProvider>
       </Harness>
     );
   },
@@ -945,6 +948,9 @@ export const AuthClearCredentialConfirms: Story = {
     clears.expectNotSent("PUT", "/auth");
 
     const again = within(await within(document.body).findByRole("dialog"));
+    // the confirmation hid the sheet without ending the form (#3043): the
+    // operator never left it, so neither the open nor the cancel is an abandon
+    expectNoUxEvent("form_abandon", "mcp-server");
     await userEvent.click(again.getByRole("button", { name: "Clear stored credential" }));
     await confirmDestructive(/cannot be read back/, "Clear credential");
     await waitFor(() =>

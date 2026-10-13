@@ -66,7 +66,12 @@ interface RouteTraffic {
   errors: number;
 }
 
-/** the rollup keys on the public model name; a route nothing called has no row */
+/**
+ * the rollup keys on the public model name and is org-wide: the dashboard
+ * filters carry no project or route id (#3036), so two projects that define a
+ * route with one model name read the same pooled figure. The card says so in
+ * its line; a route nothing called has no row
+ */
 function trafficFor(rows: AnalyticsByModelRow[], model: string): RouteTraffic {
   const row = rows.find((r) => r.model === model);
   return { requests: Number(row?.requests ?? 0), errors: Number(row?.errors ?? 0) };

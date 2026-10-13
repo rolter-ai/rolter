@@ -1214,7 +1214,8 @@ function ServerSheet({
           this component, so a cancelled confirmation lands back on the same form */}
       <EditorSheet
         name="mcp-server"
-        open={!confirming}
+        open
+        suspended={confirming !== null}
         onOpenChange={(open) => !open && onClose()}
         title={
           initial ? t("pages.mcpCatalog.dialog.titleEdit") : t("pages.mcpCatalog.dialog.titleAdd")
