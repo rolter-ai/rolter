@@ -215,8 +215,16 @@ const CHECKS: &[Check] = &[
     with_exempt(
         "### \\[\\[providers\\]\\]",
         "ProviderConfig",
-        &[BY_THE_STORE],
+        &[
+            BY_THE_STORE,
+            ("kv_events", OWN_HEADING),
+            ("lmcache", OWN_HEADING),
+            ("api_keys", OWN_HEADING),
+        ],
     ),
+    plain("#### \\[\\[providers.api_keys\\]\\]", "ApiKeyConfig"),
+    plain("#### \\[providers.kv_events\\]", "KvEventsConfig"),
+    plain("#### \\[providers.lmcache\\]", "LmCacheConfig"),
     with_exempt(
         "### \\[\\[provider_groups\\]\\]",
         "ProviderGroupConfig",
@@ -239,7 +247,13 @@ const CHECKS: &[Check] = &[
     plain("#### \\[\\[routes.targets\\]\\]", "Target"),
     plain("#### \\[routes.param_policy\\]", "ParamPolicy"),
     plain("#### \\[\\[routes.variants\\]\\]", "Variant"),
-    plain("#### \\[routes.advanced\\]", "AdvancedModelConfig"),
+    with_exempt(
+        "#### \\[routes.advanced\\]",
+        "AdvancedModelConfig",
+        &[("limits", OWN_HEADING), ("visibility", OWN_HEADING)],
+    ),
+    plain("##### \\[routes.advanced.limits\\]", "ModelLimits"),
+    plain("##### \\[routes.advanced.visibility\\]", "ModelVisibility"),
     plain("##### \\[routes.advanced.guardrails\\]", "RouteGuardrails"),
     plain("#### \\[routes.cache\\]", "RouteCache"),
     plain("##### \\[routes.cache.semantic\\]", "SemanticCacheConfig"),
