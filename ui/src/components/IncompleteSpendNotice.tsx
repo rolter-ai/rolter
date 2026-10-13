@@ -1,5 +1,6 @@
 import { CircleDollarSign } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { Link } from "react-router";
 
 /**
  * Says that a spend figure is a floor rather than a total (#969).
@@ -36,7 +37,13 @@ export function IncompleteSpendNotice({
         <span className="font-medium text-foreground">
           {t("pages.dashboard.unpriced.title", { count: requests })}
         </span>{" "}
-        {t("pages.dashboard.unpriced.body", { count: models })}
+        {t("pages.dashboard.unpriced.body", { count: models })}{" "}
+        <Link
+          to="/pricing-overrides"
+          className="rounded-sm font-medium text-foreground underline underline-offset-2 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        >
+          {t("pages.dashboard.unpriced.link")}
+        </Link>
       </p>
     </div>
   );

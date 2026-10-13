@@ -285,7 +285,8 @@
       "projectSettings": "project settings",
       "preferences": "your preferences",
       "yourProfile": "your profile",
-      "auditLogExport": "the audit log export"
+      "auditLogExport": "the audit log export",
+      "unpricedModels": "unpriced models"
     },
     "requestFailed": "request failed: {{status}}",
     "gateway": {
@@ -665,7 +666,8 @@
         "title_one": "{{count}} request in this window is unpriced.",
         "title_other": "{{count}} requests in this window are unpriced.",
         "body_one": "They ran against {{count}} model with no price set, so spend below is a floor, not a total. Set a price to include them.",
-        "body_other": "They ran against {{count}} models with no price set, so spend below is a floor, not a total. Set prices to include them."
+        "body_other": "They ran against {{count}} models with no price set, so spend below is a floor, not a total. Set prices to include them.",
+        "link": "See which models"
       },
       "spendChartAria": "Spend, {{window}}",
       "noAnalytics": {
@@ -912,11 +914,6 @@
       "deleteAria": "Delete the price for {{model}}",
       "summary_one": "{{count}} model · per-million-token pricing · currency set per model",
       "summary_other": "{{count}} models · per-million-token pricing · currency set per model",
-      "inPrice": "in {{value}} {{currency}}/Mtok",
-      "outPrice": "out {{value}} {{currency}}/Mtok",
-      "cachedPrice": "cached {{value}} {{currency}}/Mtok",
-      "cacheWritePrice": "5 minute cache write {{value}} {{currency}}/Mtok",
-      "cacheWrite1hPrice": "1 hour cache write {{value}} {{currency}}/Mtok",
       "edit": "Edit",
       "editTitle": "Edit {{model}}",
       "editSubtitle": "Prices are per million tokens (Mtok); saving upserts by model name.",
@@ -947,6 +944,30 @@
         "deleteTitle": "Delete the price for {{model}}?",
         "deleteBody": "Cost accounting for this model falls back to no known price.",
         "deleteConfirm": "Delete price"
+      },
+      "columns": {
+        "model": "Model",
+        "input": "Input",
+        "output": "Output",
+        "cached": "Cached input",
+        "cacheWrite": "Cache write (5 min)",
+        "cacheWrite1h": "Cache write (1 hour)",
+        "currency": "Currency"
+      },
+      "searchPlaceholder": "Search models",
+      "noMatchTitle": "No prices match",
+      "noMatchBody": "No model price matches the search.",
+      "unpriced": {
+        "title_one": "{{count}} model has traffic and no price",
+        "title_other": "{{count}} models have traffic and no price",
+        "body": "Seen in the last 7 days. Their spend is missing from totals and budgets until a price is set.",
+        "tableLabel": "Models with unpriced traffic",
+        "requests": "Unpriced requests",
+        "addAria": "Add a price for {{model}}"
+      },
+      "noAnalytics": {
+        "title": "Unpriced traffic needs ClickHouse",
+        "body": "This control plane runs without <0>CLICKHOUSE_URL</0>, or is older than the endpoint this list reads, so it cannot say which models carry traffic with no price. Models can still be priced below."
       }
     },
     "playground": {

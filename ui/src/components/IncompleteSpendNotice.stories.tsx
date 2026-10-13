@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react";
+import { MemoryRouter } from "react-router";
 import { expect } from "storybook/test";
 
 import { resolveColorToken } from "@/lib/story-tokens";
@@ -21,6 +22,14 @@ function channelsOf(color: string): { r: number; g: number; b: number; a: number
 const meta = {
   title: "Components/IncompleteSpendNotice",
   component: IncompleteSpendNotice,
+  // the notice links to the pricing screen
+  decorators: [
+    (Story) => (
+      <MemoryRouter>
+        <Story />
+      </MemoryRouter>
+    ),
+  ],
 } satisfies Meta<typeof IncompleteSpendNotice>;
 
 export default meta;
@@ -35,6 +44,15 @@ export const ManyUnpriced: Story = {
     // "floor, not a total" is the load-bearing phrase — it is what stops an
     // operator reading the number as final
     await expect(notice).toHaveTextContent(/floor, not a total/);
+  },
+};
+
+/** #2102: the notice names the models by pointing at the screen that lists them. */
+export const LinksToPricing: Story = {
+  args: { requests: 132, models: 8 },
+  play: async ({ canvas }) => {
+    const link = await canvas.findByRole("link", { name: "See which models" });
+    await expect(link).toHaveAttribute("href", "/pricing-overrides");
   },
 };
 

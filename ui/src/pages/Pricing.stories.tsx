@@ -8,6 +8,8 @@ import {
   clickWhenEnabled,
   confirmDestructive,
   expectEmptyState,
+  expectAnalyticsUnavailable,
+  expectListTable,
   expectLoadError,
   expectNoFalseEmpty,
   expectNoUxEvent,
@@ -29,6 +31,7 @@ import {
   type Recorder,
 } from "./story-harness";
 import type { CurrencySettings, ModelPriceRow } from "@/lib/api";
+import ru from "@/lib/i18n/locales/ru.json";
 import { UxScreenProvider } from "@/lib/ux-react";
 
 const price = (
@@ -79,7 +82,16 @@ const NARROWED: CurrencySettings = {
   rates: { USD: 1 },
 };
 
-const withCurrency = (settings: CurrencySettings, prices = PRICES) =>
+/** a by-model rollup row; the traffic a price is picked from, and what is unpriced */
+const traffic = (model: string, unpriced = 0) => ({
+  model,
+  requests: 40,
+  unpriced_requests: unpriced,
+});
+
+const SEEN_IN_TRAFFIC = [traffic("gpt-4o"), traffic("llama-3-70b")];
+
+const withCurrency = (settings: CurrencySettings, prices = PRICES, seen = SEEN_IN_TRAFFIC) =>
   routes([
     ["/api/v1/currency", () => settings],
     [
@@ -90,10 +102,7 @@ const withCurrency = (settings: CurrencySettings, prices = PRICES) =>
       ],
     ],
     // seen in traffic: one that is also a route, one that is not
-    [
-      "/api/v1/analytics/by-model",
-      () => ({ data: [{ model: "gpt-4o" }, { model: "llama-3-70b" }] }),
-    ],
+    ["/api/v1/analytics/by-model", () => ({ data: seen })],
     ["/model-prices", () => prices],
   ]);
 
@@ -116,13 +125,217 @@ export const Loaded: Story = {
     // every price converts, so nothing is flagged
     await expect(await canvas.findByText("gpt-4o")).toBeInTheDocument();
     await expect(canvas.queryByText(/no conversion rate/i)).not.toBeInTheDocument();
+    await expectListTable(canvasElement, "Pricing Overrides");
+    // nothing carries unpriced traffic, so there is no list of it
+    await expect(canvas.queryByRole("table", { name: "Models with unpriced traffic" })).toBeNull();
+  },
+};
+
+const rowOf = async (canvasElement: HTMLElement, model: string) =>
+  within((await within(canvasElement).findByText(model)).closest<HTMLElement>('[role="row"]')!);
+
+/**
+ * #2097: a price is a figure in a column, in mono, written the way the
+ * dashboard's locale writes a number, with the currency in a column of its own.
+ */
+export const ShowsPricesAsFigures: Story = {
+  render: () => (
+    <Harness fetchStub={withCurrency(CONFIGURED)}>
+      <Pricing />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const row = await rowOf(canvasElement, "gpt-4o");
+    const input = row.getByText("2.50");
+    await expect(input).toHaveClass("font-mono");
+    await expect(input).toHaveClass("text-right");
+    await expect(row.getByText("10.00")).toBeInTheDocument();
+    await expect(row.getByText("1.25")).toBeInTheDocument();
+    await expect(row.getByText("USD")).toBeInTheDocument();
+    // no rate set for the cache writes
+    await expect(row.getAllByText("—")).toHaveLength(2);
+  },
+};
+
+/** #2097: the same figures in `ru` follow the dashboard's decimal comma */
+export const ReadsInRussian: Story = {
+  globals: { locale: "ru" },
+  render: () => (
+    <Harness fetchStub={withCurrency(CONFIGURED)}>
+      <Pricing />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const row = await rowOf(canvasElement, "gpt-4o");
+    await expect(row.getByText("2,50")).toBeVisible();
+    await expect(row.getByText("10,00")).toBeVisible();
+    await expect(row.queryByText("2.50")).toBeNull();
+    await expect(
+      within(canvasElement).getByRole("columnheader", { name: ru.pages.pricing.columns.input }),
+    ).toBeVisible();
+  },
+};
+
+const modelOrder = (canvasElement: HTMLElement) =>
+  [...canvasElement.querySelectorAll('[role="table"] [role="row"] [role="cell"]:first-child')].map(
+    (cell) => cell.textContent?.split(/\s/)[0],
+  );
+
+/** #2097: any price column sorts the catalog, and a second press reverses it */
+export const SortsByAPrice: Story = {
+  render: () => (
+    <Harness
+      fetchStub={withCurrency(CONFIGURED, [
+        { ...price("cheap", "USD"), output_per_mtok: "0.60" },
+        { ...price("dear", "USD"), output_per_mtok: "60.00" },
+        { ...price("middling", "USD"), output_per_mtok: "10.00" },
+      ])}
+    >
+      <Pricing />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText("cheap");
+    const header = canvas.getByRole("columnheader", { name: "Output" });
+    await userEvent.click(within(header).getByRole("button"));
+    await waitFor(() => expect(header).toHaveAttribute("aria-sort", "ascending"));
+    await expect(modelOrder(canvasElement)).toEqual(["cheap", "middling", "dear"]);
+    await userEvent.click(within(header).getByRole("button"));
+    await waitFor(() => expect(header).toHaveAttribute("aria-sort", "descending"));
+    await expect(modelOrder(canvasElement)).toEqual(["dear", "middling", "cheap"]);
+  },
+};
+
+/** #2097: typing narrows the catalog by model name, and a miss says so */
+export const FiltersByModelName: Story = {
+  render: () => (
+    <Harness fetchStub={withCurrency(CONFIGURED)}>
+      <Pricing />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText("gpt-4o");
+    const search = canvas.getByRole("searchbox", { name: "Search models" });
+    await userEvent.type(search, "claude");
+    await waitFor(() => expect(canvas.queryByText("gpt-4o")).toBeNull());
+    await expect(canvas.getByText("claude-sonnet")).toBeInTheDocument();
+    await userEvent.clear(search);
+    await userEvent.type(search, "nothing-like-this");
+    await expect(await canvas.findByText("No prices match")).toBeVisible();
+    await userEvent.click(canvas.getByRole("button", { name: "Clear filters" }));
+    await expect(await canvas.findByText("gpt-4o")).toBeInTheDocument();
   },
 };
 
 /**
- * A price that sets a cache-write rate says so on its card, and one that does
- * not stays as it was: with no rate, written tokens are priced at the input
- * rate, which is nothing worth a badge (#2876).
+ * #2102: models that carried traffic with no price row are listed with their
+ * request count, and "Add price" opens the sheet with the model filled in. A
+ * model that already has a price is not listed, however the window saw it.
+ */
+export const ListsModelsWithUnpricedTraffic: Story = {
+  render: () => (
+    <Harness
+      fetchStub={withCurrency(CONFIGURED, PRICES, [
+        traffic("llama-3-70b", 1280),
+        traffic("qwen-max", 42),
+        // priced since: the window saw it unpriced, the catalog now has it
+        traffic("gpt-4o", 7),
+        traffic("claude-sonnet", 0),
+      ])}
+    >
+      <Pricing />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectListTable(canvasElement, "Models with unpriced traffic");
+    const list = within(await canvas.findByRole("table", { name: "Models with unpriced traffic" }));
+    await expect(list.getByText("llama-3-70b")).toBeInTheDocument();
+    await expect(list.getByText("1,280")).toBeInTheDocument();
+    await expect(list.getByText("qwen-max")).toBeInTheDocument();
+    await expect(list.queryByText("gpt-4o")).toBeNull();
+    await expect(
+      canvas.getByRole("heading", { name: "2 models have traffic and no price" }),
+    ).toBeVisible();
+    await clickWhenEnabled(canvasElement, "Add a price for qwen-max");
+    const form = within(sheet());
+    await waitFor(() =>
+      expect(form.getByRole("combobox", { name: "Model name" })).toHaveValue("qwen-max"),
+    );
+    await expect(form.getByLabelText("Input price per Mtok")).toHaveValue(null);
+  },
+};
+
+/** #2102: with every model priced the list is not drawn at all */
+export const NoUnpricedTraffic: Story = {
+  render: () => (
+    <Harness
+      fetchStub={withCurrency(CONFIGURED, PRICES, [traffic("gpt-4o"), traffic("mistral-large")])}
+    >
+      <Pricing />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText("gpt-4o");
+    await expect(canvas.queryByText(/have traffic and no price/)).toBeNull();
+    await expect(canvas.queryByText(/Unpriced traffic needs ClickHouse/)).toBeNull();
+  },
+};
+
+/**
+ * #2102: a deployment with no analytics store cannot name its unpriced models,
+ * and says so rather than leaving an absent list to read as "nothing missing".
+ * The catalog below still works.
+ */
+export const UnpricedTrafficNeedsAnalytics: Story = {
+  render: () => (
+    <Harness
+      fetchStub={scoped(async (input, init) =>
+        String(input).includes("/analytics/")
+          ? json({ error: { message: "no clickhouse_url" } }, 503)
+          : withCurrency(CONFIGURED)(input, init),
+      )}
+    >
+      <Pricing />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const panel = await expectAnalyticsUnavailable(
+      canvasElement,
+      "Unpriced traffic needs ClickHouse",
+      "no clickhouse_url",
+    );
+    await expect(panel).toHaveTextContent(/Models can still be priced below/);
+    await expect(await within(canvasElement).findByText("gpt-4o")).toBeInTheDocument();
+  },
+};
+
+/** #2102: any other failure of the traffic read is an alert, with a retry */
+export const UnpricedTrafficReadFails: Story = {
+  render: () => (
+    <Harness
+      fetchStub={scoped(async (input, init) =>
+        String(input).includes("/analytics/")
+          ? json({ error: { message: "boom" } }, 500)
+          : withCurrency(CONFIGURED)(input, init),
+      )}
+    >
+      <Pricing />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectLoadError(canvasElement, /failed to return unpriced models/i);
+    await expect(await within(canvasElement).findByText("gpt-4o")).toBeInTheDocument();
+  },
+};
+
+/**
+ * A price that sets a cache-write rate shows it in that column, and one that
+ * does not shows a dash: with no rate, written tokens are priced at the input
+ * rate, which is nothing worth a figure (#2876).
  */
 export const ShowsTheCacheWriteRate: Story = {
   render: () => (
@@ -132,17 +345,16 @@ export const ShowsTheCacheWriteRate: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(await canvas.findByText("claude-sonnet")).toBeInTheDocument();
-    const badges = canvas.getAllByText(/cache write /);
-    await expect(badges).toHaveLength(1);
-    await expect(badges[0]).toHaveTextContent("5 minute cache write 3.750000 USD/Mtok");
+    await canvas.findByText("claude-sonnet");
+    await expect(canvas.getAllByText("3.75")).toHaveLength(1);
+    const row = await rowOf(canvasElement, "claude-sonnet");
+    await expect(row.getByText("3.75")).toBeInTheDocument();
   },
 };
 
 /**
- * The 1 hour write rate has a badge of its own, told apart from the 5 minute
- * one by its name, and a card that sets neither shows neither (#2902). A price
- * with only a 1 hour rate shows that badge alone.
+ * The 1 hour write rate has a column of its own, told apart from the 5 minute
+ * one by its header, and a row that sets neither shows a dash in both (#2902).
  */
 export const ShowsTheOneHourCacheWriteRate: Story = {
   render: () => (
@@ -152,26 +364,23 @@ export const ShowsTheOneHourCacheWriteRate: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const card = async (model: string) => within((await canvas.findByText(model)).parentElement!);
-
-    const both = await card("claude-opus");
-    await expect(both.getByText(/^5 minute cache write /)).toHaveTextContent(
-      "5 minute cache write 3.750000 USD/Mtok",
-    );
-    await expect(both.getByText(/^1 hour cache write /)).toHaveTextContent(
-      "1 hour cache write 6.000000 USD/Mtok",
-    );
-
-    const alone = await card("claude-haiku");
-    await expect(alone.getByText(/^1 hour cache write /)).toHaveTextContent(
-      "1 hour cache write 2.000000 USD/Mtok",
-    );
-    await expect(alone.queryByText(/^5 minute cache write /)).toBeNull();
-
-    // a price that never set the 1 hour rate does not claim one
-    const plain = await card("claude-sonnet");
-    await expect(plain.getByText(/^5 minute cache write /)).toBeInTheDocument();
-    await expect(plain.queryByText(/1 hour cache write/)).toBeNull();
+    await canvas.findByText("claude-opus");
+    const columns = canvas.getAllByRole("columnheader").map((h) => h.textContent);
+    const five = columns.indexOf("Cache write (5 min)");
+    const hour = columns.indexOf("Cache write (1 hour)");
+    await expect(five).toBeGreaterThan(0);
+    await expect(hour).toBe(five + 1);
+    const cell = async (model: string, index: number) => {
+      const row = (await canvas.findByText(model)).closest<HTMLElement>('[role="row"]')!;
+      return within(row).getAllByRole("cell")[index].textContent;
+    };
+    await expect(await cell("claude-opus", five)).toBe("3.75");
+    await expect(await cell("claude-opus", hour)).toBe("6.00");
+    // a price with only a 1 hour rate leaves the 5 minute column bare
+    await expect(await cell("claude-haiku", five)).toBe("—");
+    await expect(await cell("claude-haiku", hour)).toBe("2.00");
+    // and a price that never set the 1 hour rate does not claim one
+    await expect(await cell("claude-sonnet", hour)).toBe("—");
   },
 };
 

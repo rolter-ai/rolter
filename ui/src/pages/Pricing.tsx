@@ -1,22 +1,41 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
 import { CircleDollarSign, Plus } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
-import { CardStack } from "@/components/ui/card";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { GatedButton } from "@/components/GatedButton";
 import { DeleteIconButton } from "@/components/ui/delete-icon-button";
 import { LoadError } from "@/components/LoadError";
-import { CardGridSkeleton } from "@/components/LoadingState";
+import { ListSkeleton } from "@/components/LoadingState";
+import { AnalyticsUnavailable } from "@/components/AnalyticsUnavailable";
+import { SampledLogNotice } from "@/components/SampledLogNotice";
 import { EditorSheet } from "@/components/EditorSheet";
-import { ListSummary, PageBody, Toolbar } from "@/components/screen";
-import { Badge } from "@/components/ui/badge";
+import {
+  ListActionsHeader,
+  ListCell,
+  ListEmptyRow,
+  ListHeader,
+  ListHeaderCell,
+  ListLoadingRow,
+  ListRow,
+  ListSummary,
+  ListTable,
+  PageBody,
+  SearchInput,
+  SortLabel,
+  STICKY_ACTIONS,
+  Toolbar,
+  primaryColumn,
+  useSort,
+} from "@/components/screen";
+import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Combobox, type ComboboxOption } from "@/components/ui/combobox";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import {
+  AnalyticsUnavailableError,
   deleteModelPrice,
   fetchAnalyticsByModel,
   fetchCurrencySettings,
@@ -31,10 +50,35 @@ import { cacheWrite1hPatch, cacheWritePatch } from "@/lib/cache-write-rate";
 import { useErrorVisibility } from "@/lib/error-visibility";
 import { errorText } from "@/lib/error-copy";
 import { useToast } from "@/lib/toast";
+import { useFormat } from "@/lib/i18n/format";
+import { windowBounds } from "@/lib/time-window";
 import { useFieldErrors } from "@/lib/use-field-errors";
 import { useScreenReady } from "@/lib/ux-react";
 
 const PRICES_QUERY_KEY = ["model-prices"];
+
+/**
+ * The rates a price row can carry, one table column each. A new kind of price
+ * (a per-image or per-second rate) is one more entry here plus its catalog keys:
+ * the header, the sort and the cell are all read from this list.
+ */
+const PRICE_COLUMNS = [
+  { col: "input", field: "input_per_mtok" },
+  { col: "output", field: "output_per_mtok" },
+  { col: "cached", field: "cached_input_per_mtok" },
+  { col: "cacheWrite", field: "cache_write_per_mtok" },
+  { col: "cacheWrite1h", field: "cache_write_1h_per_mtok" },
+] as const satisfies readonly { col: string; field: keyof ModelPriceRow }[];
+
+type PriceColumn = (typeof PRICE_COLUMNS)[number]["col"];
+type PriceSortColumn = "model" | "currency" | PriceColumn;
+
+const GRID = `${primaryColumn(1.5)} repeat(${PRICE_COLUMNS.length}, minmax(5.5rem, 1fr)) 5rem 168px`;
+const UNPRICED_GRID = `${primaryColumn(1.5)} minmax(7rem, 0.6fr) 168px`;
+
+// the window the unpriced list reads: long enough to catch a model that is
+// called a few times a week, short enough that a model priced since is gone
+const UNPRICED_WINDOW = "7d";
 
 // global model pricing catalog — no org/team/project scoping. upsert is
 // keyed on `model`, so add and edit share one dialog/mutation.
@@ -72,13 +116,43 @@ export default function Pricing() {
 
   const [editOpen, setEditOpen] = React.useState(false);
   const [editTarget, setEditTarget] = React.useState<ModelPriceRow | null>(null);
+  // the model an "Add price" from the unpriced list opens the sheet with
+  const [seedModel, setSeedModel] = React.useState("");
+  const [search, setSearch] = React.useState("");
+  const { sort, cycle, apply } = useSort<PriceSortColumn>();
+  const fmt = useFormat();
   const [deleteTarget, setDeleteTarget] = React.useState<ModelPriceRow | null>(null);
   // model prices are deployment-wide, so a row control is the superadmin's
   // exactly as the add button is (#1258)
 
+  const q = search.trim().toLowerCase();
+  const matched = (prices.data ?? []).filter((p) => !q || p.model.toLowerCase().includes(q));
+  const rows = apply<ModelPriceRow>(matched, {
+    model: (p) => p.model,
+    currency: (p) => p.currency,
+    ...(Object.fromEntries(
+      // a rate that is not set sorts below every rate that is
+      PRICE_COLUMNS.map(({ col, field }) => [col, (p: ModelPriceRow) => Number(p[field] ?? -1)]),
+    ) as Record<PriceColumn, (p: ModelPriceRow) => number>),
+  });
+  // a rate as the dashboard's locale writes a number; `—` where none is set
+  const priceText = (value: string | null | undefined) => {
+    if (value == null || value === "") return "—";
+    const n = Number(value);
+    return Number.isFinite(n)
+      ? fmt.number(n, { minimumFractionDigits: 2, maximumFractionDigits: 6 })
+      : value;
+  };
+
   return (
     <PageBody>
       <Toolbar>
+        <SearchInput
+          placeholder={t("pages.pricing.searchPlaceholder")}
+          aria-label={t("pages.pricing.searchPlaceholder")}
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+        />
         <ListSummary data={prices.data}>
           {(rows) => t("pages.pricing.summary", { count: rows.length })}
         </ListSummary>
@@ -91,6 +165,7 @@ export default function Pricing() {
           className="ml-auto"
           onClick={() => {
             setEditTarget(null);
+            setSeedModel("");
             setEditOpen(true);
           }}
         >
@@ -99,7 +174,15 @@ export default function Pricing() {
         </GatedButton>
       </Toolbar>
 
-      {prices.isLoading && <CardGridSkeleton cards={4} height={152} min={300} />}
+      <UnpricedModels
+        priced={prices}
+        onAdd={(model) => {
+          setEditTarget(null);
+          setSeedModel(model);
+          setEditOpen(true);
+        }}
+      />
+
       {prices.error && (
         <LoadError
           error={prices.error}
@@ -108,78 +191,58 @@ export default function Pricing() {
           target="model-prices"
         />
       )}
-      {!prices.isLoading && prices.data?.length === 0 && (
-        <EmptyState
-          uxTarget="model-prices"
-          icon={<CircleDollarSign />}
-          title={t("pages.pricing.emptyTitle")}
-          description={t("pages.pricing.emptyBody")}
-          actions={
-            <GatedButton
-              gate="model_price:update"
-              control="price-new-empty"
-              onClick={() => {
-                setEditTarget(null);
-                setEditOpen(true);
-              }}
-            >
-              {t("pages.pricing.emptyAction")}
-            </GatedButton>
-          }
-        />
-      )}
 
-      <div className="grid gap-3.5 [grid-template-columns:repeat(auto-fill,minmax(min(300px,100%),1fr))]">
-        {prices.data?.map((price) => (
-          <CardStack key={price.id}>
-            <div className="truncate font-mono text-sm font-semibold">{price.model}</div>
-            <div className="flex flex-wrap gap-1.5">
-              <Badge tone="outline">
-                {t("pages.pricing.inPrice", {
-                  value: price.input_per_mtok,
-                  currency: price.currency,
-                })}
-              </Badge>
-              <Badge tone="outline">
-                {t("pages.pricing.outPrice", {
-                  value: price.output_per_mtok,
-                  currency: price.currency,
-                })}
-              </Badge>
-              {price.cached_input_per_mtok && (
-                <Badge tone="neutral">
-                  {t("pages.pricing.cachedPrice", {
-                    value: price.cached_input_per_mtok,
-                    currency: price.currency,
+      <ListTable label={t("screens.pricing-overrides.title")} minWidth={1180}>
+        <ListHeader grid={GRID}>
+          <SortLabel
+            label={t("pages.pricing.columns.model")}
+            col="model"
+            sort={sort}
+            onCycle={(c) => cycle(c as PriceSortColumn)}
+          />
+          {PRICE_COLUMNS.map(({ col }) => (
+            <SortLabel
+              key={col}
+              label={t(`pages.pricing.columns.${col}`)}
+              col={col}
+              sort={sort}
+              onCycle={(c) => cycle(c as PriceSortColumn)}
+              justify="flex-end"
+            />
+          ))}
+          <SortLabel
+            label={t("pages.pricing.columns.currency")}
+            col="currency"
+            sort={sort}
+            onCycle={(c) => cycle(c as PriceSortColumn)}
+          />
+          <ListActionsHeader className={STICKY_ACTIONS.header} />
+        </ListHeader>
+        <ListLoadingRow read={prices}>
+          <ListSkeleton rows={5} className="p-3" />
+        </ListLoadingRow>
+        {rows.map((price) => (
+          <ListRow key={price.id} grid={GRID}>
+            <ListCell className="flex min-w-0 flex-col gap-1">
+              <span className="truncate font-mono text-sm font-semibold">{price.model}</span>
+              {!isConvertible(currency.data, price.currency) && (
+                <span className="text-xs text-[color:var(--status-warning-text)]">
+                  {t("pages.pricing.unconvertible", {
+                    code: price.currency,
+                    base: currency.data?.base ?? "",
                   })}
-                </Badge>
+                </span>
               )}
-              {price.cache_write_per_mtok && (
-                <Badge tone="neutral">
-                  {t("pages.pricing.cacheWritePrice", {
-                    value: price.cache_write_per_mtok,
-                    currency: price.currency,
-                  })}
-                </Badge>
-              )}
-              {price.cache_write_1h_per_mtok && (
-                <Badge tone="neutral">
-                  {t("pages.pricing.cacheWrite1hPrice", {
-                    value: price.cache_write_1h_per_mtok,
-                    currency: price.currency,
-                  })}
-                </Badge>
-              )}
-            </div>
-            {!isConvertible(currency.data, price.currency) && (
-              <p className="text-xs text-[color:var(--status-warning-text)]">
-                {t("pages.pricing.unconvertible", {
-                  code: price.currency,
-                  base: currency.data?.base ?? "",
-                })}
-              </p>
-            )}
-            <div className="flex justify-end gap-2 border-t border-[color:var(--border-subtle)] pt-2.5">
+            </ListCell>
+            {PRICE_COLUMNS.map(({ col, field }) => (
+              <ListCell key={col} className="text-right font-mono text-sm tabular-nums">
+                {priceText(price[field])}
+              </ListCell>
+            ))}
+            <ListCell className="font-mono text-xs text-[color:var(--text-secondary)]">
+              {price.currency}
+            </ListCell>
+            <ListCell className={`flex items-center justify-end gap-2 ${STICKY_ACTIONS.cell}`}>
               <GatedButton
                 gate="model_price:update"
                 control="price-edit"
@@ -187,6 +250,7 @@ export default function Pricing() {
                 variant="outline"
                 aria-label={t("pages.pricing.editAria", { model: price.model })}
                 onClick={() => {
+                  setSeedModel("");
                   setEditTarget(price);
                   setEditOpen(true);
                 }}
@@ -200,15 +264,53 @@ export default function Pricing() {
                 pending={removePrice.isPending && deleteTarget?.model === price.model}
                 onClick={() => setDeleteTarget(price)}
               />
-            </div>
-          </CardStack>
+            </ListCell>
+          </ListRow>
         ))}
-      </div>
+        {/* "no prices" and "nothing matched the search" are different answers:
+            one wants a price added, the other wants the search cleared */}
+        <ListEmptyRow read={prices} rows={rows.length}>
+          {q ? (
+            <EmptyState
+              uxTarget="model-prices"
+              icon={<CircleDollarSign />}
+              title={t("pages.pricing.noMatchTitle")}
+              description={t("pages.pricing.noMatchBody")}
+              actions={
+                <Button variant="outline" onClick={() => setSearch("")}>
+                  {t("common.clearFilters")}
+                </Button>
+              }
+            />
+          ) : (
+            <EmptyState
+              uxTarget="model-prices"
+              icon={<CircleDollarSign />}
+              title={t("pages.pricing.emptyTitle")}
+              description={t("pages.pricing.emptyBody")}
+              actions={
+                <GatedButton
+                  gate="model_price:update"
+                  control="price-new-empty"
+                  onClick={() => {
+                    setEditTarget(null);
+                    setSeedModel("");
+                    setEditOpen(true);
+                  }}
+                >
+                  {t("pages.pricing.emptyAction")}
+                </GatedButton>
+              }
+            />
+          )}
+        </ListEmptyRow>
+      </ListTable>
 
       <UpsertPriceDialog
         open={editOpen}
         onOpenChange={setEditOpen}
         existing={editTarget}
+        seedModel={seedModel}
         currency={currency.data}
         onDone={invalidate}
       />
@@ -248,6 +350,97 @@ export default function Pricing() {
   );
 }
 
+/**
+ * The models that carried traffic with no price row (#2102): the reason this
+ * screen exists, so it names them rather than leaving the reader to find the
+ * flag row by row in LLM Logs. The count is the by-model rollup's
+ * `unpriced_requests`, which the control plane scales by each row's sample
+ * weight. A model priced since the window began is left out, and the list is
+ * absent when nothing is unpriced.
+ */
+function UnpricedModels({
+  priced,
+  onAdd,
+}: {
+  priced: UseQueryResult<ModelPriceRow[]>;
+  onAdd: (model: string) => void;
+}) {
+  const { t } = useTranslation();
+  const fmt = useFormat();
+  const traffic = useQuery({
+    queryKey: ["analytics", "by-model", "unpriced", UNPRICED_WINDOW],
+    queryFn: () => fetchAnalyticsByModel(windowBounds(UNPRICED_WINDOW)),
+    retry: false,
+  });
+  const pricedModels = new Set((priced.data ?? []).map((p) => p.model));
+  const rows = (traffic.data ?? [])
+    .map((r) => ({ model: r.model, requests: Number(r.unpriced_requests) }))
+    .filter((r) => r.model && r.requests > 0 && !pricedModels.has(r.model))
+    .sort((a, b) => b.requests - a.requests);
+
+  // without ClickHouse there is no traffic to name; say so rather than let an
+  // absent list read as "nothing is missing"
+  if (traffic.error instanceof AnalyticsUnavailableError) {
+    return <AnalyticsUnavailable error={traffic.error} i18nKey="pages.pricing.noAnalytics" />;
+  }
+  if (traffic.error) {
+    return (
+      // load-error-allow: the read only decorates the catalog below, which owns the region's empty state
+      <LoadError
+        error={traffic.error}
+        resource={t("errors.resources.unpricedModels")}
+        onRetry={() => traffic.refetch()}
+        target="unpriced-models"
+      />
+    );
+  }
+  if (traffic.isLoading || priced.isLoading) {
+    return <ListSkeleton rows={2} className="p-3" />;
+  }
+  if (rows.length === 0) return null;
+
+  return (
+    <section aria-labelledby="unpriced-models" className="flex flex-col gap-2">
+      <div>
+        <h2 id="unpriced-models" className="text-sm font-semibold">
+          {t("pages.pricing.unpriced.title", { count: rows.length })}
+        </h2>
+        <p className="text-xs text-muted-foreground">{t("pages.pricing.unpriced.body")}</p>
+      </div>
+      <SampledLogNotice kind="figures" />
+      <ListTable label={t("pages.pricing.unpriced.tableLabel")} minWidth={560}>
+        <ListHeader grid={UNPRICED_GRID}>
+          <ListHeaderCell>{t("pages.pricing.columns.model")}</ListHeaderCell>
+          <ListHeaderCell className="text-right">
+            {t("pages.pricing.unpriced.requests")}
+          </ListHeaderCell>
+          <ListActionsHeader className={STICKY_ACTIONS.header} />
+        </ListHeader>
+        {rows.map((r) => (
+          <ListRow key={r.model} grid={UNPRICED_GRID}>
+            <ListCell className="truncate font-mono text-sm font-semibold">{r.model}</ListCell>
+            <ListCell className="text-right font-mono text-sm tabular-nums">
+              {fmt.number(r.requests)}
+            </ListCell>
+            <ListCell className={`flex items-center justify-end ${STICKY_ACTIONS.cell}`}>
+              <GatedButton
+                gate="model_price:update"
+                control="price-add-unpriced"
+                size="sm"
+                variant="outline"
+                aria-label={t("pages.pricing.unpriced.addAria", { model: r.model })}
+                onClick={() => onAdd(r.model)}
+              >
+                {t("pages.pricing.emptyAction")}
+              </GatedButton>
+            </ListCell>
+          </ListRow>
+        ))}
+      </ListTable>
+    </section>
+  );
+}
+
 /** the fields of the price form, for the errors a refused save puts on screen */
 type PriceField =
   "model" | "input" | "output" | "cached" | "cacheWrite" | "cacheWrite1h" | "currency";
@@ -267,12 +460,15 @@ function UpsertPriceDialog({
   open,
   onOpenChange,
   existing,
+  seedModel,
   currency: settings,
   onDone,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   existing: ModelPriceRow | null;
+  /** the model a new price opens with, from the unpriced list; empty for a blank form */
+  seedModel: string;
   currency: CurrencySettings | undefined;
   onDone: () => void;
 }) {
@@ -333,7 +529,7 @@ function UpsertPriceDialog({
   React.useEffect(() => {
     if (open) {
       visibility.reset();
-      setModel(existing?.model ?? "");
+      setModel(existing?.model ?? seedModel);
       setInputPerMtok(existing?.input_per_mtok ?? "");
       setOutputPerMtok(existing?.output_per_mtok ?? "");
       setCachedInputPerMtok(existing?.cached_input_per_mtok ?? "");
@@ -342,7 +538,7 @@ function UpsertPriceDialog({
       fields.clear();
       setCurrency(existing?.currency ?? baseCurrency);
     }
-  }, [open, existing]);
+  }, [open, existing, seedModel]);
 
   // a price is valid when it was typed and is a number of 0 or more
   const priceError = (value: string) =>
@@ -414,7 +610,7 @@ function UpsertPriceDialog({
   const shown = fields.errorOf;
 
   const dirty =
-    model.trim() !== (existing?.model ?? "") ||
+    model.trim() !== (existing?.model ?? seedModel) ||
     inputPerMtok !== (existing?.input_per_mtok ?? "") ||
     outputPerMtok !== (existing?.output_per_mtok ?? "") ||
     cachedInputPerMtok !== (existing?.cached_input_per_mtok ?? "") ||
