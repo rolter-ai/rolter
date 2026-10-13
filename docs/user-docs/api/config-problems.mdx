@@ -20,6 +20,8 @@ curl -H "Authorization: Bearer $ROLTER_SESSION_TOKEN" \
 Any signed-in caller may read it, and so may the admin token. The names and reasons are the
 deployment's topology and carry no credentials.
 
+A caller reads only the lines about rows it can see: those of the organizations and projects it holds a role in, plus lines about the deployment as a whole. A superadmin, the admin token and open mode read every line, and rows from `rolter.toml` belong to the deployment. The `omitted` entries are cut the same way and their `index` counts the list `GET /api/v1/config` returns to that caller.
+
 ## Response
 
 ```json

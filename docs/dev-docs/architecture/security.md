@@ -501,11 +501,15 @@ A store that cannot be read is a `500` with the redacted `{"error": {"message": 
 
 `GET /api/v1/config` answers a signed-in caller of any role (or the admin
 token, or anyone in open mode) and nobody else, and lists only the providers,
-routes and provider groups of the organizations and projects that caller can see
-(#3094; a superadmin, the admin token and open mode see all, a file-defined row
-with no tenancy is everyone's). `GET /api/v1/config/problems` renumbers its
-`omitted` records to match that shorter list, but its sentences still name every
-tenant's entries (#3100). See [The public route
+routes, provider groups, budgets and rate limits of the organizations and
+projects that caller can see (#3094, #3100; a superadmin, the admin token and
+open mode see all, a file-defined row with no tenancy is everyone's, and a
+budget or rate limit is read by the rule `GET /api/v1/budgets` applies to its
+scope). `GET /api/v1/config/problems` renumbers its `omitted` records to match
+that shorter list and keeps only the sentences the same sanitize reports for the
+config cut to the caller's rows, plus the store's lines about the deployment or
+a row the caller sees (`ConfigStore::load_problem_records` names each line's
+owner). See [The public route
 allowlist](#the-public-route-allowlist-1840). It serves the dashboard's config
 screen. It serializes the same `GatewayConfig` the store loads for the gateway's
 `/internal/snapshot`, and on a Postgres store holding `ROLTER_KEK` that load has

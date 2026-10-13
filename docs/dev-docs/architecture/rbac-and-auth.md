@@ -256,9 +256,15 @@ The write path keeps the snapshot inside that rule:
 The dashboard never sees `tenancy`: `redact_config_for_dashboard` clears it
 along with the credentials, and drops the database key records, which name
 every key's org, team, project and creator. `GET /api/v1/config` still needs a
-session of any role (#1840), but lists only the providers, routes and groups of
-the organizations and projects the caller can see (#3094); the tenancy is
-read for that before it is cleared.
+session of any role (#1840), but lists only the providers, routes, groups, budgets and rate limits of
+the organizations and projects the caller can see (#3094, #3100); the tenancy is
+read for that before it is cleared. A budget or rate limit has no tenancy, so
+its scope is resolved to the org or project it sits under; an id that is not a
+uuid came from `rolter.toml` and stays visible. `GET /api/v1/config/problems`
+applies the same cut to its sentences: the sanitize runs on the full config and
+on the caller's cut, and only lines both runs produce are kept, so a line about
+another tenant's row (or one that only breaks together with it) never appears.
+The store's own lines carry a `ProblemOwner` (deployment, tenant or scope).
 
 ### One org never reaches another (#1844, #1845)
 

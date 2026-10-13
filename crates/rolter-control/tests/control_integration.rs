@@ -26016,6 +26016,221 @@ async fn the_routes_list_embeds_targets_and_complexity_within_the_callers_scope(
     assert_eq!(busy_model["route_targets"][0]["model"], "gpt-x");
 }
 
+/// #3100: the budgets and rate limits of `GET /api/v1/config`, and the lines of
+/// `GET /api/v1/config/problems`, carry other tenants' scope ids, limits and
+/// provider names. A caller reads those of the organizations they hold a role
+/// in, a superadmin reads all, and a lone org sees what it always did.
+#[tokio::test]
+async fn the_config_budgets_limits_and_problems_show_only_the_callers_organizations() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app =
+        rolter_control::test_app_with_admin_token(pool.clone(), Some(admin_token().to_string()))
+            .await
+            .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    async fn post_as(client: &reqwest::Client, url: String, body: Value) -> Value {
+        let response = client
+            .post(url)
+            .bearer_auth(admin_token())
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        let status = response.status();
+        let json: Value = response.json().await.unwrap();
+        assert!(status.is_success(), "{status}: {json}");
+        json
+    }
+    async fn get_as(client: &reqwest::Client, url: String, token: &str) -> Value {
+        let response = client.get(url).bearer_auth(token).send().await.unwrap();
+        assert_eq!(response.status().as_u16(), 200);
+        response.json().await.unwrap()
+    }
+    fn scope_ids(rows: &Value) -> Vec<String> {
+        let mut out: Vec<String> = rows
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["id"].as_str().unwrap().to_string())
+            .collect();
+        out.sort();
+        out
+    }
+    fn sorted(mut ids: Vec<String>) -> Vec<String> {
+        ids.sort();
+        ids
+    }
+
+    // per org: an org budget and limit, a project budget and limit, a provider
+    // whose api_base is malformed, and a budget period nothing recognises
+    struct Tenant {
+        org: String,
+        project: String,
+        sentinel: String,
+    }
+    let mut tenants = Vec::new();
+    for slug in ["limit-a", "limit-b"] {
+        let org = post_as(
+            &client,
+            format!("{base}/api/v1/orgs"),
+            json!({"name": slug, "slug": slug}),
+        )
+        .await;
+        let org_id = org["id"].as_str().unwrap().to_string();
+        let team = post_as(
+            &client,
+            format!("{base}/api/v1/orgs/{org_id}/teams"),
+            json!({"name": "core"}),
+        )
+        .await;
+        let project = post_as(
+            &client,
+            format!(
+                "{base}/api/v1/teams/{}/projects",
+                team["id"].as_str().unwrap()
+            ),
+            json!({"name": "main"}),
+        )
+        .await;
+        let project_id = project["id"].as_str().unwrap().to_string();
+        for (kind, scope_id) in [("org", &org_id), ("project", &project_id)] {
+            post_as(
+                &client,
+                format!("{base}/api/v1/budgets"),
+                json!({"scope_type": kind, "scope_id": scope_id, "limit_usd": "10"}),
+            )
+            .await;
+            post_as(
+                &client,
+                format!("{base}/api/v1/rate-limits"),
+                json!({"scope_type": kind, "scope_id": scope_id, "rpm": 60}),
+            )
+            .await;
+        }
+        let sentinel = format!("{slug}-upstream");
+        post_as(
+            &client,
+            format!("{base}/api/v1/orgs/{org_id}/providers"),
+            json!({"name": sentinel, "kind": "openai_compatible", "api_base": "http://127.0.0.1:9"}),
+        )
+        .await;
+        sqlx::query("update providers set api_base = 'not-a-url' where name = $1")
+            .bind(&sentinel)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "insert into budgets (scope_type, scope_id, limit_usd, period)
+             values ('team', $1, 25, '7d')",
+        )
+        .bind(team["id"].as_str().unwrap().parse::<uuid::Uuid>().unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+        tenants.push(Tenant {
+            org: org_id,
+            project: project_id,
+            sentinel,
+        });
+    }
+    let org_a: uuid::Uuid = tenants[0].org.parse().unwrap();
+    let org_b: uuid::Uuid = tenants[1].org.parse().unwrap();
+    let project_a: uuid::Uuid = tenants[0].project.parse().unwrap();
+
+    let member_a = seed_user(&pool, "limit-member-a@example.com", false).await;
+    seed_membership(&pool, member_a, Some(org_a), None, None, "viewer").await;
+    let member_a_token = seed_session(&pool, member_a, "limitmembera").await;
+    let member_b = seed_user(&pool, "limit-member-b@example.com", false).await;
+    seed_membership(&pool, member_b, Some(org_b), None, None, "viewer").await;
+    let member_b_token = seed_session(&pool, member_b, "limitmemberb").await;
+    let project_member = seed_user(&pool, "limit-project@example.com", false).await;
+    seed_membership(&pool, project_member, None, None, Some(project_a), "viewer").await;
+    let project_token = seed_session(&pool, project_member, "limitproject").await;
+    let nobody = seed_user(&pool, "limit-nobody@example.com", false).await;
+    let nobody_token = seed_session(&pool, nobody, "limitnobody").await;
+
+    let config_url = format!("{base}/api/v1/config");
+    let problems_url = format!("{base}/api/v1/config/problems");
+    let ids_of = |tenant: &Tenant| vec![tenant.org.clone(), tenant.project.clone()];
+
+    // the superadmin sees both orgs: four budgets (org, project, and the team
+    // one written by hand) per the two tenants, and every problem line
+    let config = get_as(&client, config_url.clone(), admin_token()).await;
+    assert_eq!(config["budgets"].as_array().unwrap().len(), 6, "{config}");
+    assert_eq!(
+        config["rate_limits"].as_array().unwrap().len(),
+        4,
+        "{config}"
+    );
+    let problems = get_as(&client, problems_url.clone(), admin_token()).await;
+    let text = problems.to_string();
+    for tenant in &tenants {
+        assert!(text.contains(&tenant.sentinel), "{text}");
+    }
+
+    // (token, tenant it may read in full, tenant it must not read at all)
+    for (token, mine, theirs) in [
+        (&member_a_token, &tenants[0], &tenants[1]),
+        (&member_b_token, &tenants[1], &tenants[0]),
+    ] {
+        let config = get_as(&client, config_url.clone(), token).await;
+        // org + project + team budget; org + project limits
+        assert_eq!(config["budgets"].as_array().unwrap().len(), 3, "{config}");
+        let limits = scope_ids(&config["rate_limits"]);
+        assert_eq!(limits, sorted(ids_of(mine)), "{config}");
+        let problems = get_as(&client, problems_url.clone(), token).await;
+        let text = format!("{config}{problems}");
+        for id in ids_of(theirs) {
+            assert!(!text.contains(&id), "{id} leaked: {text}");
+        }
+        assert!(!text.contains(&theirs.sentinel), "{text}");
+        let lines = problems["problems"].as_array().unwrap();
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.as_str().unwrap().contains(&mine.sentinel)),
+            "the caller's own problems stay: {problems}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.as_str().unwrap().contains("period '7d'")),
+            "{problems}"
+        );
+    }
+
+    // a role on one project reads its own rows and the org and team above it,
+    // which throttle its keys (#2527), and nothing of the other org
+    let config = get_as(&client, config_url.clone(), &project_token).await;
+    assert_eq!(
+        scope_ids(&config["rate_limits"]),
+        sorted(ids_of(&tenants[0])),
+        "{config}"
+    );
+    assert_eq!(config["budgets"].as_array().unwrap().len(), 3, "{config}");
+    let text = config.to_string();
+    for id in ids_of(&tenants[1]) {
+        assert!(!text.contains(&id), "{id} leaked: {text}");
+    }
+    let problems = get_as(&client, problems_url.clone(), &project_token).await;
+    assert!(
+        !problems.to_string().contains(&tenants[1].sentinel),
+        "{problems}"
+    );
+
+    // no role anywhere, no tenant rows
+    let config = get_as(&client, config_url, &nobody_token).await;
+    assert_eq!(config["budgets"], json!([]), "{config}");
+    assert_eq!(config["rate_limits"], json!([]), "{config}");
+    let problems = get_as(&client, problems_url, &nobody_token).await;
+    assert_eq!(problems["problems"], json!([]), "{problems}");
+}
+
 /// #3094: `/api/v1/models` and `/api/v1/config` list the merged store, which
 /// holds every organization's rows. A caller sees the rows of the organizations
 /// and projects they hold a role in, a superadmin sees all, and the
