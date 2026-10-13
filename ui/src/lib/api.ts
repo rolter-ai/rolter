@@ -4609,6 +4609,77 @@ export const updateGuardrailProvider = (id: string, body: GuardrailProviderInput
 export const deleteGuardrailProvider = (id: string) =>
   sendJson<void>("DELETE", `/api/v1/guardrails/providers/${id}`);
 
+/** a draft rule and the text to run it on; nothing is saved (#2159) */
+export interface GuardrailRuleTestInput {
+  builtin: GuardrailRuleRow["builtin"];
+  pattern: string | null;
+  stage: GuardrailRuleRow["stage"];
+  action: GuardrailRuleRow["action"];
+  replacement: string | null;
+  include_system: boolean;
+  /** treat the sample as a system message, which a rule skips unless it opts in */
+  system: boolean;
+  sample: string;
+}
+
+export interface GuardrailRuleTestResult {
+  outcome: "no_match" | "annotated" | "redacted" | "blocked" | "skipped";
+  /** why the rule did not look at the sample, for `skipped` */
+  skip?: "system_message" | "over_scan_budget";
+  /** every match, even when `spans` is capped */
+  match_count: number;
+  /** UTF-16 offsets into the sample, so they index a JS string as they are */
+  spans: { start: number; end: number }[];
+  /** the sample after redaction, for `redacted` */
+  redacted?: string;
+}
+
+/** a draft provider; the control plane sends one sample envelope to it (#2265) */
+export interface GuardrailProviderTestInput {
+  url: string;
+  stage: GuardrailProviderRow["stage"];
+  timeout_ms: number;
+  max_body_bytes: number;
+  auth_kind: GuardrailProviderRow["auth_kind"];
+  auth_env: string | null;
+  /** the user message sent; the server uses a fixed sentence when absent */
+  sample?: string;
+  /** call without the credential, which the control plane may not hold */
+  skip_credential?: boolean;
+}
+
+export type GuardrailProviderTestErrorKind =
+  | "egress_denied"
+  | "credential_unset"
+  | "timeout"
+  | "connection"
+  | "tls"
+  | "http_status"
+  | "unparsable"
+  | "response_too_large"
+  | "other";
+
+export interface GuardrailProviderTestResult {
+  /** a decision came back; otherwise `error` says why not */
+  ok: boolean;
+  decision?: {
+    action: "allow" | "block" | "transform" | "annotate";
+    reason?: string;
+    content?: unknown;
+    annotations?: unknown;
+  };
+  error?: { kind: GuardrailProviderTestErrorKind; message: string };
+  credential: "not_configured" | "sent" | "skipped" | "unset";
+  http_status?: number;
+  latency_ms: number;
+  truncated: boolean;
+}
+
+export const testGuardrailRule = (body: GuardrailRuleTestInput) =>
+  sendJson<GuardrailRuleTestResult>("POST", "/api/v1/guardrails/rules/test", body);
+export const testGuardrailProvider = (body: GuardrailProviderTestInput) =>
+  sendJson<GuardrailProviderTestResult>("POST", "/api/v1/guardrails/providers/test", body);
+
 /**
  * A dashboard UX event (#805).
  *

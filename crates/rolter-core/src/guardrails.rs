@@ -571,6 +571,143 @@ impl CompiledGuardrails {
     }
 }
 
+/// Most match spans a dry run reports. The count is exact; only the list is
+/// capped, so a sample full of matches cannot balloon the response.
+pub const MAX_DRY_RUN_SPANS: usize = 200;
+
+/// What a rule would do to a sample, as the request path would decide it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DryRunOutcome {
+    /// nothing matched; the sample is forwarded unchanged
+    NoMatch,
+    /// the rule matched and only tallied it; the sample is forwarded unchanged
+    Annotated,
+    /// the rule matched and rewrote the sample
+    Redacted,
+    /// the rule matched and would reject the whole request
+    Blocked,
+    /// the rule would not look at this sample at all; see [`DryRunSkip`]
+    Skipped,
+}
+
+/// Why a dry run did not scan the sample.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DryRunSkip {
+    /// the sample was marked as a system message and the rule has
+    /// `include_system` off
+    SystemMessage,
+    /// the sample is longer than the per-request scan budget, so the request
+    /// path would leave it unscanned
+    OverScanBudget,
+}
+
+/// One match, in UTF-16 code units so a browser can index its own string with
+/// the numbers as they are.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct DryRunSpan {
+    pub start: usize,
+    pub end: usize,
+}
+
+/// The result of running one unsaved rule against a sample.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DryRun {
+    pub outcome: DryRunOutcome,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skip: Option<DryRunSkip>,
+    /// total matches, even when `spans` is capped
+    pub match_count: usize,
+    pub spans: Vec<DryRunSpan>,
+    /// the sample after redaction; present only for [`DryRunOutcome::Redacted`]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub redacted: Option<String>,
+}
+
+/// Evaluate one rule against `text` with the matcher the gateway runs.
+///
+/// The rule goes through the same validation and compilation as a stored one,
+/// so a pattern the gateway would refuse is refused here with the same
+/// message. `Err` carries those problems. The outcome comes from the request
+/// path's own scan (`scan_segment` or `scan_output`), so the two cannot
+/// disagree; only the spans are computed separately, since a scan reports
+/// counts and never positions. Nothing here logs or retains `text`.
+pub fn dry_run_rule(
+    rule: &GuardrailRule,
+    text: &str,
+    is_system: bool,
+) -> Result<DryRun, Vec<String>> {
+    let config = GuardrailsConfig {
+        enabled: true,
+        rules: vec![rule.clone()],
+        ..GuardrailsConfig::default()
+    };
+    let problems = config.validate();
+    if !problems.is_empty() {
+        return Err(problems);
+    }
+    let Some(compiled_rule) = CompiledRule::from_config(rule) else {
+        return Err(vec!["the rule could not be compiled".to_string()]);
+    };
+    let guard = CompiledGuardrails::from_config(&config);
+
+    let skip = if rule.stage == GuardStage::PreCall && is_system && !rule.include_system {
+        Some(DryRunSkip::SystemMessage)
+    } else if text.len() > guard.scan_budget() {
+        Some(DryRunSkip::OverScanBudget)
+    } else {
+        None
+    };
+    if skip.is_some() {
+        return Ok(DryRun {
+            outcome: DryRunOutcome::Skipped,
+            skip,
+            match_count: 0,
+            spans: Vec::new(),
+            redacted: None,
+        });
+    }
+
+    let mut budget = guard.scan_budget();
+    let mut report = GuardrailReport::default();
+    let selection = RuleSelection::default();
+    let scanned = match rule.stage {
+        GuardStage::PreCall => {
+            guard.scan_segment_with(text, is_system, &mut budget, &mut report, &selection)
+        }
+        GuardStage::PostCall => guard.scan_output(text, &mut budget, &mut report, &selection),
+    };
+
+    let mut spans = Vec::new();
+    let mut match_count = 0;
+    let (mut utf16, mut last_byte) = (0usize, 0usize);
+    for found in compiled_rule.regex.find_iter(text) {
+        match_count += 1;
+        if spans.len() < MAX_DRY_RUN_SPANS {
+            utf16 += text[last_byte..found.start()].encode_utf16().count();
+            let start = utf16;
+            utf16 += text[found.start()..found.end()].encode_utf16().count();
+            last_byte = found.end();
+            spans.push(DryRunSpan { start, end: utf16 });
+        }
+    }
+
+    let (outcome, redacted) = match scanned {
+        ScanOutcome::Blocked(_) => (DryRunOutcome::Blocked, None),
+        ScanOutcome::Redacted(out) => (DryRunOutcome::Redacted, Some(out)),
+        ScanOutcome::Unchanged if report.matched() => (DryRunOutcome::Annotated, None),
+        ScanOutcome::Unchanged => (DryRunOutcome::NoMatch, None),
+    };
+    Ok(DryRun {
+        outcome,
+        skip: None,
+        match_count,
+        spans,
+        redacted,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -945,5 +1082,104 @@ mod tests {
             g.scan_segment("a@b.com", false, &mut budget, &mut report),
             ScanOutcome::Unchanged
         );
+    }
+
+    fn draft(pattern: &str, action: GuardAction) -> GuardrailRule {
+        GuardrailRule {
+            name: "draft".to_string(),
+            builtin: None,
+            pattern: Some(pattern.to_string()),
+            stage: GuardStage::PreCall,
+            action,
+            replacement: None,
+            include_system: false,
+        }
+    }
+
+    #[test]
+    fn dry_run_reports_each_action_like_the_request_path() {
+        let text = "mail a@b.io and c@d.io today";
+        let mut email = rule("email", BuiltinRule::Email, GuardAction::Redact);
+        let run = dry_run_rule(&email, text, false).unwrap();
+        assert_eq!(run.outcome, DryRunOutcome::Redacted);
+        assert_eq!(run.match_count, 2);
+        assert_eq!(
+            run.spans,
+            vec![
+                DryRunSpan { start: 5, end: 11 },
+                DryRunSpan { start: 16, end: 22 }
+            ]
+        );
+        assert_eq!(
+            run.redacted.as_deref(),
+            Some("mail [REDACTED:EMAIL] and [REDACTED:EMAIL] today")
+        );
+
+        email.action = GuardAction::Block;
+        let run = dry_run_rule(&email, text, false).unwrap();
+        assert_eq!(run.outcome, DryRunOutcome::Blocked);
+        assert!(run.redacted.is_none());
+
+        email.action = GuardAction::Annotate;
+        let run = dry_run_rule(&email, text, false).unwrap();
+        assert_eq!(run.outcome, DryRunOutcome::Annotated);
+        assert!(run.redacted.is_none());
+
+        let run = dry_run_rule(&email, "nothing here", false).unwrap();
+        assert_eq!(run.outcome, DryRunOutcome::NoMatch);
+        assert_eq!(run.match_count, 0);
+    }
+
+    #[test]
+    fn dry_run_spans_count_utf16_units() {
+        // the emoji is one char, four utf-8 bytes and two utf-16 units
+        let run =
+            dry_run_rule(&draft("secret", GuardAction::Annotate), "😀 secret", false).unwrap();
+        assert_eq!(run.spans, vec![DryRunSpan { start: 3, end: 9 }]);
+    }
+
+    #[test]
+    fn dry_run_refuses_what_validation_refuses() {
+        let problems = dry_run_rule(&draft("[", GuardAction::Block), "x", false).unwrap_err();
+        assert!(problems.join(" ").contains("invalid or unbounded pattern"));
+        let mut both = draft("x", GuardAction::Block);
+        both.builtin = Some(BuiltinRule::Email);
+        assert!(dry_run_rule(&both, "x", false).is_err());
+    }
+
+    #[test]
+    fn dry_run_skips_system_text_unless_the_rule_opts_in() {
+        let mut rule = draft("secret", GuardAction::Block);
+        let run = dry_run_rule(&rule, "secret", true).unwrap();
+        assert_eq!(run.outcome, DryRunOutcome::Skipped);
+        assert_eq!(run.skip, Some(DryRunSkip::SystemMessage));
+        rule.include_system = true;
+        let run = dry_run_rule(&rule, "secret", true).unwrap();
+        assert_eq!(run.outcome, DryRunOutcome::Blocked);
+    }
+
+    #[test]
+    fn dry_run_skips_text_past_the_scan_budget() {
+        let text = "x".repeat(DEFAULT_MAX_SCAN_BYTES + 1);
+        let run = dry_run_rule(&draft("x", GuardAction::Block), &text, false).unwrap();
+        assert_eq!(run.outcome, DryRunOutcome::Skipped);
+        assert_eq!(run.skip, Some(DryRunSkip::OverScanBudget));
+    }
+
+    #[test]
+    fn dry_run_caps_the_span_list_but_not_the_count() {
+        let text = "x ".repeat(MAX_DRY_RUN_SPANS + 50);
+        let run = dry_run_rule(&draft("x", GuardAction::Annotate), &text, false).unwrap();
+        assert_eq!(run.match_count, MAX_DRY_RUN_SPANS + 50);
+        assert_eq!(run.spans.len(), MAX_DRY_RUN_SPANS);
+    }
+
+    #[test]
+    fn dry_run_applies_the_post_call_stage_to_output() {
+        let mut post = draft("secret", GuardAction::Redact);
+        post.stage = GuardStage::PostCall;
+        // system exemption is an input-side rule and does not apply to output
+        let run = dry_run_rule(&post, "a secret", true).unwrap();
+        assert_eq!(run.outcome, DryRunOutcome::Redacted);
     }
 }

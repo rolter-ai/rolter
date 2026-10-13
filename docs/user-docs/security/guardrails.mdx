@@ -14,6 +14,14 @@ Rules run by ascending position, after any rules defined in the `[[guardrails.ru
 
 Choose `annotate` to count a match without changing traffic, `block` to reject matching traffic, or `redact` to replace matches. System messages are excluded unless **Inspect system messages** is enabled. A paused rule stays stored and ordered but does not enter gateway snapshots.
 
+### Try a rule before you publish it
+
+The rule dialog has a **Try it on a sample** panel. Paste some text, optionally mark it as a system message, and select **Run test**. The control plane runs the draft exactly as filled in, with the same matcher and the same pattern limits the gateway uses, and answers with what would happen: no match, annotated, redacted (with the redacted text), would block, or not scanned (a system message the rule does not inspect, or a sample longer than the gateway scans per request). Each match is marked in the sample. A pattern the gateway would refuse comes back with the gateway's message, so you learn that before publishing.
+
+The test does not save or publish anything, and the sample is not logged or stored. It runs one rule on its own, so it does not show how rules combine: rules run in position order, a block ends the scan, and a redact rule hides its matches from the rules after it. A sample is limited to 64 KiB. Testing needs the same access as editing a rule.
+
+The detector and action pickers describe what each choice does. `payment_card` matches any run of 13 to 19 digits and does not check the card number, so a 13-digit timestamp matches too; `phone` matches 8 to 20 digits.
+
 A response rule that blocks runs after the provider has generated and billed the answer. The caller gets a `403 guardrail_blocked`, but the request is still billed and counts toward budgets. Its log row is marked `withheld` and names the rule, and the blocked text is never stored. See [Withheld responses](/observability/logs-and-cost#withheld-responses).
 
 A response rule (stage **Before response**) needs the whole answer, so it cannot act on a streamed one. The deployment-wide `streaming_post_call` setting in the `[guardrails]` block of `rolter.toml` ([reference](/configuration/config-file)) decides what happens instead:
@@ -106,7 +114,15 @@ Activating a provider asks for confirmation. The **Activate provider** switch na
 
 Pausing the active provider asks too. Saving it with **Activate provider** turned off opens a dialog that names it and says no external guardrail checks requests afterwards, since no other provider takes its place. When a config-file webhook is enabled, the dialog says that webhook stays in force instead, and pausing changes nothing for traffic.
 
-The dashboard cannot send a test request to a provider yet, so check that the service answers before you activate a fail-closed provider.
+### Test a provider before you activate it
+
+The provider dialog has a **Send a test envelope** panel. It works on the form as filled in, so you can test before the first save. The control plane sends the same JSON envelope the gateway sends before a request (`direction: "request"`, a user message holding your sample, or a short harmless sentence when you leave it empty) to the URL, with the provider's timeout (at most 10 seconds) and body cap. It makes one attempt, with no retries, so a flaky service shows up as a failure rather than being retried away.
+
+The answer is always a result, never a server error: the decision (allow, block with its reason, transform or annotate) with the round-trip time, or the kind of failure: refused by the egress policy, credential variable not set, timeout, connection failed, TLS failed, a non-2xx status, an answer that is not a decision, or an answer over 1 MiB. Unlike the gateway, the test does not read an answer it cannot parse as allow; it reports it, because that is how a broken endpoint looks like a healthy one. For a failure, the dialog also says what the provider's failure policy does to live traffic.
+
+The call obeys the same [egress policy](/configuration/egress) as saving does, checked before connecting and again on the addresses the name resolves to, and does not follow redirects. The response body is never shown on an error status, because an endpoint can echo the credential it just rejected.
+
+Credentials are read from the **control plane's** environment, while production gateways read them from their own. If the variable named in **Secret environment variable** is not set on the control plane, the test says so and does not call the service; this says nothing about the gateways. Either set it on the control plane for the test, or turn on **Send without the credential**. A variable that holds a control-plane secret (`ROLTER_KEK`, `ROLTER_DATABASE_URL` and the like) is refused with a `400`, so a test URL cannot be used to send one out. Testing needs the same access as editing a provider.
 
 Rolter stores only an environment variable name for bearer or shared-secret authentication. Put the secret value in every gateway's environment; it is never returned by the control-plane API.
 
@@ -120,11 +136,17 @@ Creating, editing, enabling, or deleting a registry entry increments `config_ver
 
 ## API endpoints
 
-| Method          | Endpoint                            | Purpose                     |
-| --------------- | ----------------------------------- | --------------------------- |
-| `GET`, `POST`   | `/api/v1/guardrails/rules`          | List or create rules        |
-| `PUT`, `DELETE` | `/api/v1/guardrails/rules/{id}`     | Update or delete a rule     |
-| `GET`, `POST`   | `/api/v1/guardrails/providers`      | List or register providers  |
-| `PUT`, `DELETE` | `/api/v1/guardrails/providers/{id}` | Update or delete a provider |
+| Method          | Endpoint                            | Purpose                                    |
+| --------------- | ----------------------------------- | ------------------------------------------ |
+| `GET`, `POST`   | `/api/v1/guardrails/rules`          | List or create rules                       |
+| `PUT`, `DELETE` | `/api/v1/guardrails/rules/{id}`     | Update or delete a rule                    |
+| `GET`, `POST`   | `/api/v1/guardrails/providers`      | List or register providers                 |
+| `PUT`, `DELETE` | `/api/v1/guardrails/providers/{id}` | Update or delete a provider                |
+| `POST`          | `/api/v1/guardrails/rules/test`     | Run an unsaved rule on text                |
+| `POST`          | `/api/v1/guardrails/providers/test` | Send an unsaved provider a sample envelope |
 
-Every mutation is audit logged. Provider bodies accept `auth_kind` as `none`, `bearer`, or `shared_secret`; `auth_env` is required for the latter two and contains only the environment variable name.
+Every mutation is audit logged. The two `test` endpoints write nothing and are not audit logged; they need `guardrail_rule:update` and `guardrail_provider:update`.
+
+`POST /api/v1/guardrails/rules/test` takes `sample` plus the rule fields (`builtin` or `pattern`, `stage`, `action`, `replacement`, `include_system`) and `system` (treat the sample as a system message). It returns `outcome` (`no_match`, `annotated`, `redacted`, `blocked` or `skipped`, with `skip` saying why), `match_count`, `spans` (UTF-16 offsets into the sample, at most 200) and `redacted`. An invalid rule or a sample over 64 KiB is a `400`.
+
+`POST /api/v1/guardrails/providers/test` takes `url` plus `stage`, `timeout_ms`, `max_body_bytes`, `auth_kind`, `auth_env`, an optional `sample` and `skip_credential`. It returns `ok`, `decision` or `error` (`kind` and `message`), `credential` (`not_configured`, `sent`, `skipped` or `unset`), `http_status`, `latency_ms` and `truncated`. Only a malformed draft is a `400`; a refused address or a failing service is a `200` with `ok: false`. Provider bodies accept `auth_kind` as `none`, `bearer`, or `shared_secret`; `auth_env` is required for the latter two and contains only the environment variable name.

@@ -2100,7 +2100,7 @@
       "sourceBuiltin": "Built-in detector",
       "sourcePattern": "Custom regex",
       "fieldPosition": "Position",
-      "positionHint": "Lower positions run first.",
+      "positionHint": "Lower positions run first. A redact rule hides its matches from the rules after it.",
       "orderLabel": "Rules in the order they run",
       "fieldDetector": "Detector",
       "detectorEmail": "Email address",
@@ -2161,6 +2161,42 @@
         "heading": "Config-file rules",
         "intro": "Defined as <0>[[guardrails.rules]]</0> in the control plane's config file. They run before the rules above, in file order, and change only when the file does.",
         "readOnly": "Read-only · config file"
+      },
+      "detectorHint": {
+        "email": "Matches name@domain.tld shaped text.",
+        "phone": "Matches any 8 to 20 digits with spaces, dots or hyphens between them, with an optional leading +.",
+        "apiToken": "Matches sk-, ghp_, AKIA and xox key shapes, not every secret.",
+        "paymentCard": "Matches any run of 13 to 19 digits, with or without spaces and hyphens. It does not check the card number, so a 13-digit timestamp matches too."
+      },
+      "actionHint": {
+        "annotate": "Forwards the request unchanged and records the rule's name on the request log. The count shows on this rule's card.",
+        "block": "Rejects the whole request with guardrail_blocked before it reaches the provider.",
+        "redact": "Replaces each match with the token below and forwards the rest."
+      },
+      "trial": {
+        "title": "Try it on a sample",
+        "intro": "Runs this draft, as filled in above, with the gateway's own matcher. Nothing is saved or logged.",
+        "fieldSample": "Sample text",
+        "samplePlaceholder": "Paste text a request might carry",
+        "system": "Treat as a system message",
+        "systemHint": "A rule skips system messages unless it inspects them.",
+        "run": "Run test",
+        "highlightLabel": "Sample with matches marked",
+        "redactedLabel": "Text after redaction",
+        "spansCapped": "Showing the first {{shown}} matches.",
+        "matches_one": "{{count}} match",
+        "matches_other": "{{count}} matches",
+        "outcome": {
+          "noMatch": "No match, forwarded unchanged",
+          "annotated": "Annotated, forwarded unchanged",
+          "redacted": "Redacted",
+          "blocked": "Would block",
+          "skipped": "Not scanned"
+        },
+        "skip": {
+          "systemMessage": "The rule does not inspect system messages. Turn on “Inspect system messages” to include them.",
+          "overScanBudget": "The sample is longer than the gateway scans per request, so it would be left as it is."
+        }
       }
     },
     "guardrailOutcomes": {
@@ -2293,7 +2329,49 @@
       "activateHintSelf": "This provider is active. Turning it off pauses it, and no other provider takes its place.",
       "failOpenWarning": "Fail-open favors availability: traffic continues if this provider times out or errors.",
       "publishing": "Publishing…",
-      "save": "Save provider"
+      "save": "Save provider",
+      "trial": {
+        "title": "Send a test envelope",
+        "intro": "The control plane sends the gateway's request envelope with a sample message to the address above, under the egress policy. Nothing is saved.",
+        "fieldSample": "Sample message",
+        "samplePlaceholder": "Leave empty to send a short harmless sentence",
+        "skipCredential": "Send without the credential",
+        "skipCredentialHint": "Gateways read the variable from their own environment, which the control plane may not share.",
+        "run": "Send test",
+        "failedBadge": "No decision",
+        "latency": "{{ms}} ms round trip",
+        "reason": "Reason: {{reason}}",
+        "contentLabel": "Content the provider would return",
+        "annotationsLabel": "Annotations from the provider",
+        "truncated": "The sample was cut to the body cap.",
+        "decision": {
+          "allow": "Allow",
+          "block": "Block",
+          "transform": "Transform",
+          "annotate": "Annotate"
+        },
+        "credential": {
+          "notConfigured": "No credential is configured.",
+          "sent": "The credential was read from the control plane's environment and sent.",
+          "skipped": "The call was made without the credential."
+        },
+        "error": {
+          "egressDenied": "The egress policy refuses this address",
+          "credentialUnset": "Credential not available here",
+          "timeout": "No answer within the timeout",
+          "connection": "Could not connect",
+          "tls": "TLS failed",
+          "httpStatus": "The provider answered with an error status",
+          "unparsable": "The answer is not a decision",
+          "responseTooLarge": "The answer is too large",
+          "other": "The call failed"
+        },
+        "effect": {
+          "allow": "On live traffic the gateway reads this as allow.",
+          "failOpen": "On live traffic this failure lets the request through (fail open).",
+          "failClosed": "On live traffic this failure rejects the request (fail closed)."
+        }
+      }
     },
     "adaptiveDashboard": {
       "reportingGateways_one": "{{count}} reporting gateway",

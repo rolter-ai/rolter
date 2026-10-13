@@ -113,7 +113,7 @@ impl ProviderBody {
     }
 }
 
-fn parse_builtin(value: Option<&str>) -> ApiResult<Option<BuiltinRule>> {
+pub(crate) fn parse_builtin(value: Option<&str>) -> ApiResult<Option<BuiltinRule>> {
     match value {
         None => Ok(None),
         Some("email") => Ok(Some(BuiltinRule::Email)),
@@ -200,6 +200,41 @@ fn validate_rule(body: &RuleBody) -> ApiResult<()> {
     }
 }
 
+/// The webhook credential a provider row names, shared by save and test so the
+/// two cannot disagree on which pairs are valid.
+pub(crate) fn parse_webhook_auth(
+    auth_kind: &str,
+    auth_env: Option<&str>,
+) -> ApiResult<Option<WebhookAuth>> {
+    Ok(match (auth_kind, auth_env) {
+        ("none", None) => None,
+        ("bearer", Some(value)) => Some(WebhookAuth::Bearer {
+            token_env: value.to_string(),
+        }),
+        ("shared_secret", Some(value)) => Some(WebhookAuth::SharedSecret {
+            secret_env: value.to_string(),
+        }),
+        ("none", Some(_)) => {
+            return Err(invalid_field(
+                "auth_env",
+                "auth_env must be empty when auth_kind is none",
+            ))
+        }
+        ("bearer" | "shared_secret", None) => {
+            return Err(invalid_field(
+                "auth_env",
+                "auth_env is required for the selected auth_kind",
+            ));
+        }
+        _ => {
+            return Err(invalid_field(
+                "auth_kind",
+                "auth_kind must be none, bearer or shared_secret",
+            ))
+        }
+    })
+}
+
 fn validate_provider(body: &ProviderBody) -> ApiResult<()> {
     if body.name.trim().is_empty() {
         return Err(invalid_field("name", "name must not be empty"));
@@ -236,33 +271,7 @@ fn validate_provider(body: &ProviderBody) -> ApiResult<()> {
             ))
         }
     };
-    let auth = match (body.auth_kind.as_str(), body.auth_env.as_deref()) {
-        ("none", None) => None,
-        ("bearer", Some(value)) => Some(WebhookAuth::Bearer {
-            token_env: value.to_string(),
-        }),
-        ("shared_secret", Some(value)) => Some(WebhookAuth::SharedSecret {
-            secret_env: value.to_string(),
-        }),
-        ("none", Some(_)) => {
-            return Err(invalid_field(
-                "auth_env",
-                "auth_env must be empty when auth_kind is none",
-            ))
-        }
-        ("bearer" | "shared_secret", None) => {
-            return Err(invalid_field(
-                "auth_env",
-                "auth_env is required for the selected auth_kind",
-            ));
-        }
-        _ => {
-            return Err(invalid_field(
-                "auth_kind",
-                "auth_kind must be none, bearer or shared_secret",
-            ))
-        }
-    };
+    let auth = parse_webhook_auth(&body.auth_kind, body.auth_env.as_deref())?;
     let problems = GuardrailWebhookConfig {
         enabled: body.enabled,
         url: body.url.clone(),

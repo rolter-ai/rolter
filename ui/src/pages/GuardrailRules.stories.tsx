@@ -1241,3 +1241,183 @@ export const OutcomesFailed: Story = {
     await expect(card.getByText("enforced", { exact: true })).toBeVisible();
   },
 };
+
+const isRuleTrial = (input: RequestInfo | URL) =>
+  new URL(String(input), "http://localhost").pathname === "/api/v1/guardrails/rules/test";
+
+/** the dialog, open on a new rule, with its trial panel expanded */
+async function openTrial(canvasElement: HTMLElement) {
+  await userEvent.click(await within(canvasElement).findByRole("button", { name: /add rule/i }));
+  const dialog = within(await within(document.body).findByRole("dialog"));
+  await userEvent.click(dialog.getByRole("button", { name: "Try it on a sample" }));
+  return dialog;
+}
+
+const trials = recording(
+  withPolicy(async (input) =>
+    isRuleTrial(input)
+      ? json({
+          outcome: "redacted",
+          match_count: 1,
+          spans: [{ start: 9, end: 15 }],
+          redacted: "write to [REDACTED:EMAIL] now",
+        })
+      : json(RULES),
+  ),
+);
+
+/**
+ * The draft is run on a sample before it is published (#2159): the match is
+ * marked in the sample and the redacted text is shown, and the request carries
+ * the draft as it is filled in, not a stored row.
+ */
+export const TriesADraftOnASample: Story = {
+  render: () => <Harness fetchStub={trials.stub} />,
+  play: async ({ canvasElement }) => {
+    const dialog = await openTrial(canvasElement);
+    // no sample, nothing to run
+    await expect(dialog.getByRole("button", { name: "Run test" })).toBeDisabled();
+    await userEvent.type(dialog.getByLabelText("Sample text"), "write to a@b.io now");
+    await userEvent.click(dialog.getByRole("button", { name: "Run test" }));
+
+    const result = await dialog.findByRole("status");
+    await expect(within(result).getByText("Redacted")).toBeVisible();
+    await expect(within(result).getByText("1 match")).toBeVisible();
+    await expect(within(result).getByText("a@b.io").tagName).toBe("MARK");
+    await expect(within(result).getByText(/write to \[REDACTED:EMAIL\] now/)).toBeVisible();
+
+    const sent = await trials.expectSentBody<Record<string, unknown>>("POST", "/rules/test");
+    await expect(sent).toMatchObject({
+      builtin: "email",
+      pattern: null,
+      action: "redact",
+      stage: "pre_call",
+      system: false,
+      sample: "write to a@b.io now",
+    });
+    // nothing was published
+    await expect(
+      trials.calls.filter((call) => call.method === "POST" && !call.url.endsWith("/rules/test")),
+    ).toHaveLength(0);
+
+    // changing the draft retires an answer that no longer describes it
+    await userEvent.type(dialog.getByLabelText("Sample text"), "!");
+    await waitFor(() => expect(dialog.queryByRole("status")).toBeNull());
+  },
+};
+
+/** a sample the rule does not match says so, and a system sample says it was not scanned */
+export const SaysWhenARuleDoesNotMatch: Story = {
+  render: () => {
+    let n = 0;
+    return (
+      <Harness
+        fetchStub={withPolicy(async (input) => {
+          if (!isRuleTrial(input)) return json(RULES);
+          n += 1;
+          return n === 1
+            ? json({ outcome: "no_match", match_count: 0, spans: [] })
+            : json({
+                outcome: "skipped",
+                skip: "system_message",
+                match_count: 0,
+                spans: [],
+              });
+        })}
+      />
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const dialog = await openTrial(canvasElement);
+    await userEvent.type(dialog.getByLabelText("Sample text"), "nothing sensitive");
+    await userEvent.click(dialog.getByRole("button", { name: "Run test" }));
+    const result = await dialog.findByRole("status");
+    await expect(within(result).getByText("No match, forwarded unchanged")).toBeVisible();
+    await expect(within(result).getByText("0 matches")).toBeVisible();
+
+    await userEvent.click(dialog.getByRole("switch", { name: "Treat as a system message" }));
+    await userEvent.click(dialog.getByRole("button", { name: "Run test" }));
+    await expect(await dialog.findByText("Not scanned")).toBeVisible();
+    await expect(dialog.getByText(/does not inspect system messages/)).toBeVisible();
+  },
+};
+
+/** the server's own message for a pattern the gateway would refuse, beside the panel */
+export const TrialShowsAnInvalidPattern: Story = {
+  render: () => (
+    <Harness
+      fetchStub={withPolicy(async (input) =>
+        isRuleTrial(input)
+          ? json(
+              {
+                error: {
+                  message: "guardrail rule 'draft' has an invalid or unbounded pattern: unclosed",
+                },
+              },
+              400,
+            )
+          : json(RULES),
+      )}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const dialog = await openTrial(canvasElement);
+    await pickOption(dialog.getByLabelText("Source"), "Custom regex");
+    await userEvent.type(dialog.getByLabelText("Regular expression"), "[[");
+    await userEvent.type(dialog.getByLabelText("Sample text"), "anything");
+    await userEvent.click(dialog.getByRole("button", { name: "Run test" }));
+    await expect(await dialog.findByRole("alert")).toHaveTextContent(/invalid or unbounded/);
+    await expect(dialog.queryByRole("status")).toBeNull();
+  },
+};
+
+/** the picker lines say what each choice does, and move with the choice */
+export const PickersSayWhatTheyDo: Story = {
+  render: () => <Harness fetchStub={withPolicy(async () => json(RULES))} />,
+  play: async ({ canvasElement }) => {
+    await userEvent.click(await within(canvasElement).findByRole("button", { name: /add rule/i }));
+    const dialog = within(await within(document.body).findByRole("dialog"));
+    await expect(dialog.getByLabelText("Detector")).toHaveAccessibleDescription(/name@domain\.tld/);
+    await pickOption(dialog.getByLabelText("Detector"), "Payment card");
+    await expect(dialog.getByLabelText("Detector")).toHaveAccessibleDescription(
+      /does not check the card number/,
+    );
+    await pickOption(dialog.getByLabelText("Action"), "Annotate only");
+    await expect(dialog.getByLabelText("Action")).toHaveAccessibleDescription(
+      /records the rule's name on the request log/,
+    );
+  },
+};
+
+/** the panel in Russian, with the plural the count needs */
+export const TrialInRussian: Story = {
+  globals: { locale: "ru" },
+  render: () => (
+    <Harness
+      fetchStub={withPolicy(async (input) =>
+        isRuleTrial(input)
+          ? json({
+              outcome: "blocked",
+              match_count: 2,
+              spans: [
+                { start: 0, end: 1 },
+                { start: 2, end: 3 },
+              ],
+            })
+          : json(RULES),
+      )}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const copy = ru.pages.guardrailRules;
+    // the locale decorator switches language from an effect, after first paint
+    const add = await within(canvasElement).findByRole("button", { name: copy.addRule });
+    await userEvent.click(add);
+    const dialog = within(await within(document.body).findByRole("dialog"));
+    await userEvent.click(dialog.getByRole("button", { name: copy.trial.title }));
+    await userEvent.type(dialog.getByLabelText(copy.trial.fieldSample), "a b");
+    await userEvent.click(dialog.getByRole("button", { name: copy.trial.run }));
+    await waitFor(() => expect(dialog.getByText("2 совпадения")).toBeVisible());
+    await expect(dialog.getByText(copy.trial.outcome.blocked)).toBeVisible();
+  },
+};
