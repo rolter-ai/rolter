@@ -319,6 +319,130 @@ export async function chatCompletion(
   });
 }
 
+/** The token counts the gateway reports for a reply, when it reports them. */
+export interface ChatUsage {
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  total_tokens?: number;
+}
+
+/** What a finished chat stream leaves behind besides the text it delivered. */
+export interface ChatStreamResult {
+  text: string;
+  /** from the final chunk (`stream_options.include_usage`); null when the gateway sent none */
+  usage: ChatUsage | null;
+  /** milliseconds from sending the request to the end of the stream */
+  elapsedMs: number;
+}
+
+/** One `data:` payload of the chat stream, as far as the dashboard reads it. */
+interface ChatChunk {
+  choices?: { delta?: { content?: string | null }; finish_reason?: string | null }[];
+  usage?: ChatUsage | null;
+  error?: { message?: string };
+}
+
+/**
+ * Ask for a chat completion as a server-sent event stream and hand the text to
+ * `onText` as it arrives (#3096).
+ *
+ * `onText` receives the whole reply so far, not the new piece, so a caller that
+ * renders it needs no accumulator of its own. The call counts as in flight from
+ * the request until the stream ends or is aborted, not only until the headers
+ * arrive, because the key is in use for all of it (#2758). Aborting `signal`
+ * rejects with the abort error; what had arrived is already with `onText`.
+ *
+ * A stream that ends without its `[DONE]` or a finish reason was cut short and
+ * rejects with a {@link GatewayError}, as does an `error` object the gateway
+ * sends in place of a chunk. A gateway that answers with plain JSON, whatever
+ * `stream` said, is read as the whole reply in one piece.
+ */
+export async function streamChatCompletion(
+  model: string,
+  messages: ChatMessage[],
+  onText: (text: string) => void,
+  signal?: AbortSignal,
+): Promise<ChatStreamResult> {
+  return tracked(async () => {
+    const started = performance.now();
+    const res = await fetch(`${GW_BASE}/v1/chat/completions`, {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({
+        model,
+        messages,
+        stream: true,
+        stream_options: { include_usage: true },
+      }),
+      signal,
+    });
+    if (!res.ok) throw await gwError(res);
+    const elapsed = () => Math.round(performance.now() - started);
+
+    if (!res.body || (res.headers.get("content-type") ?? "").includes("application/json")) {
+      const body = (await res.json()) as {
+        choices?: { message?: { content?: string } }[];
+        usage?: ChatUsage | null;
+      };
+      const text = body.choices?.[0]?.message?.content ?? "";
+      onText(text);
+      return { text, usage: body.usage ?? null, elapsedMs: elapsed() };
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let text = "";
+    let usage: ChatUsage | null = null;
+    let finished = false;
+
+    // one event is the lines up to a blank line; only its `data:` lines matter
+    const take = (event: string) => {
+      const data = event
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith("data:"))
+        .map((line) => line.slice(5).trimStart())
+        .join("\n");
+      if (!data) return;
+      if (data === "[DONE]") {
+        finished = true;
+        return;
+      }
+      let chunk: ChatChunk;
+      try {
+        chunk = JSON.parse(data) as ChatChunk;
+      } catch {
+        return;
+      }
+      if (chunk.error) {
+        throw new GatewayError(
+          chunk.error.message ?? i18n.t("errors.gateway.streamEnded"),
+          res.status,
+        );
+      }
+      if (chunk.usage) usage = chunk.usage;
+      const choice = chunk.choices?.[0];
+      if (choice?.finish_reason) finished = true;
+      const piece = choice?.delta?.content;
+      if (piece) {
+        text += piece;
+        onText(text);
+      }
+    };
+
+    for (;;) {
+      const { done, value } = await reader.read();
+      buffer += decoder.decode(value, { stream: !done });
+      const events = buffer.split(/\r?\n\r?\n/);
+      buffer = done ? "" : (events.pop() ?? "");
+      for (const event of events) take(event);
+      if (done) break;
+    }
+    if (!finished) throw new GatewayError(i18n.t("errors.gateway.streamEnded"), res.status);
+    return { text, usage, elapsedMs: elapsed() };
+  });
+}
+
 export async function embed(
   model: string,
   input: string[],

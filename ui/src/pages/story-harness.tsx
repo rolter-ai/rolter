@@ -92,6 +92,33 @@ export function scoped(handler: FetchStub): FetchStub {
 export const pending: FetchStub = scoped(() => new Promise<Response>(() => {}));
 
 /**
+ * A server-sent event answer the story feeds by hand: `send` writes one event
+ * (an object becomes its JSON, `"[DONE]"` goes out as it is), `end` closes the
+ * stream and `fail` breaks it the way a dropped connection does. Pass the
+ * request's `signal` so an abort errors the body the way a real fetch does.
+ * Events written before the response is handed over are delivered first.
+ */
+export function eventStream(signal?: AbortSignal | null) {
+  const encoder = new TextEncoder();
+  let controller!: ReadableStreamDefaultController<Uint8Array>;
+  const body = new ReadableStream<Uint8Array>({
+    start(c) {
+      controller = c;
+      signal?.addEventListener("abort", () => c.error(new DOMException("aborted", "AbortError")));
+    },
+  });
+  return {
+    response: new Response(body, { status: 200, headers: { "Content-Type": "text/event-stream" } }),
+    send: (event: unknown) =>
+      controller.enqueue(
+        encoder.encode(`data: ${event === "[DONE]" ? event : JSON.stringify(event)}\n\n`),
+      ),
+    end: () => controller.close(),
+    fail: () => controller.error(new TypeError("network error")),
+  };
+}
+
+/**
  * Route by URL fragment. Entries are matched in order, so a longer path can be
  * listed before the prefix it shares.
  */

@@ -290,6 +290,7 @@
     "requestFailed": "request failed: {{status}}",
     "gateway": {
       "unauthorized": "unauthorized — set a valid virtual key",
+      "streamEnded": "the stream ended before the reply was complete",
       "requestFailed": "gateway request failed: {{status}}"
     },
     "api": {
@@ -981,6 +982,13 @@
       "messagePlaceholder": "Message…",
       "messageAria": "Message to {{model}}",
       "replyAnnounce": "{{model}} replied: {{reply}}",
+      "replyStoppedAnnounce": "{{model}} stopped.",
+      "stop": "Stop {{model}}",
+      "replyStopped": "stopped",
+      "replyInterrupted": "interrupted",
+      "replyTokens_one": "{{n}} token",
+      "replyTokens_other": "{{n}} tokens",
+      "replyTime": "{{seconds}} s",
       "roles": {
         "user": "You",
         "assistant": "Assistant"

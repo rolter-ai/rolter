@@ -8,6 +8,7 @@ import {
   Harness,
   NEEDS_MEMBER,
   clickWhenEnabled,
+  eventStream,
   expectAllowed,
   expectLoadError,
   expectRefused,
@@ -20,7 +21,11 @@ import {
   type StoryRole,
   withDocsBase,
 } from "./story-harness";
-import { setKeyPropagationForTests, setPlaygroundKey } from "@/lib/gateway";
+import {
+  getGatewayCallsInFlight,
+  setKeyPropagationForTests,
+  setPlaygroundKey,
+} from "@/lib/gateway";
 import en from "@/lib/i18n/locales/en.json";
 import ru from "@/lib/i18n/locales/ru.json";
 import { atMobile, expectNoHorizontalOverflow } from "@/lib/story-viewport";
@@ -119,11 +124,40 @@ interface ChatRequest {
   model: string;
   messages: { role: string; content: unknown }[];
   stream?: boolean;
+  stream_options?: { include_usage?: boolean };
 }
 
-/** The body the gateway answers a non-streaming chat completion with. */
-const completion = (text: string) =>
-  json({ choices: [{ index: 0, message: { role: "assistant", content: text } }] });
+/** One chunk of the stream the gateway answers a chat completion with. */
+const chunk = (content: string) => ({
+  choices: [{ index: 0, delta: { content }, finish_reason: null }],
+});
+
+/** The chunk that closes the reply, and the one after it that carries the token counts. */
+const FINISH = { choices: [{ index: 0, delta: {}, finish_reason: "stop" }] };
+const usage = (completionTokens: number) => ({
+  choices: [],
+  usage: {
+    prompt_tokens: 4,
+    completion_tokens: completionTokens,
+    total_tokens: completionTokens + 4,
+  },
+});
+
+/**
+ * A chat answer streamed the way the gateway sends it (#3096): the text in
+ * small pieces, a finish, the usage chunk, `[DONE]`. One token per piece, so
+ * the figure the screen shows is the number of pieces.
+ */
+const completion = (text: string) => {
+  const stream = eventStream();
+  const pieces = text.match(/[\s\S]{1,8}/g) ?? [];
+  for (const piece of pieces) stream.send(chunk(piece));
+  stream.send(FINISH);
+  stream.send(usage(pieces.length));
+  stream.send("[DONE]");
+  stream.end();
+  return stream.response;
+};
 
 const CHAT_PATH = "/gw/v1/chat/completions";
 const IMAGE_PATH = "/gw/v1/images/generations";
@@ -192,7 +226,11 @@ interface Upstream {
    */
   gateway?: (n: number) => Response;
   /** The gateway's answer to its `n`th chat completion (from zero). */
-  chat?: (request: ChatRequest, n: number) => Response | Promise<Response>;
+  chat?: (
+    request: ChatRequest,
+    n: number,
+    signal?: AbortSignal | null,
+  ) => Response | Promise<Response>;
   /** The gateway's answer to its `n`th image generation (from zero). */
   image?: (request: ImageRequest, n: number) => Response | Promise<Response>;
   /** The gateway's answer to its `n`th embeddings request (from zero). */
@@ -249,7 +287,7 @@ function deployment(
       return gateway(gatewayCalls++);
     }
     if (url.includes(CHAT_PATH)) {
-      return chat(JSON.parse(String(init?.body ?? "{}")) as ChatRequest, chatCalls++);
+      return chat(JSON.parse(String(init?.body ?? "{}")) as ChatRequest, chatCalls++, init?.signal);
     }
     if (url.includes(IMAGE_PATH)) {
       return image(JSON.parse(String(init?.body ?? "{}")) as ImageRequest, imageCalls++);
@@ -1019,7 +1057,12 @@ export const ReplyIsLabelledAndAnnounced: Story = {
     await expect(region).not.toHaveTextContent("Hello there");
 
     await expect(chatsIn(replied.calls)).toEqual([
-      { model: "minicpm5-1b", messages: [{ role: "user", content: "Hello there" }], stream: false },
+      {
+        model: "minicpm5-1b",
+        messages: [{ role: "user", content: "Hello there" }],
+        stream: true,
+        stream_options: { include_usage: true },
+      },
     ]);
     await expect(composer).toHaveValue("");
   },
@@ -1193,6 +1236,192 @@ export const FailedSendKeepsADraftTypedWhileWaiting: Story = {
 };
 
 /**
+ * The reply is drawn as it arrives and read out once it is whole (#3096).
+ *
+ * Mid-stream the piece that has come is on screen, Send has become Stop, the
+ * thread is marked busy, and the live region is still empty: no piece is
+ * announced. The call is in flight for all of it, and ends with the stream.
+ * The final chunk's usage is printed under the reply.
+ */
+let live: ReturnType<typeof eventStream>;
+const streaming = recording(
+  deployment(async () => json(minted()), undefined, undefined, {
+    chat: (_, __, signal) => {
+      live = eventStream(signal);
+      return live.response;
+    },
+  }),
+);
+
+export const StreamsTheReplyAsItArrives: Story = {
+  render: () => <Screen fetchStub={streaming.stub} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const composer = await readyComposer(canvas);
+    const thread = within(canvas.getByRole("region", { name: "Conversation with minicpm5-1b" }));
+    await sendMessage(canvas, composer, "Say hello");
+
+    await canvas.findByRole("button", { name: "Stop minicpm5-1b" });
+    await expect(canvas.queryByRole("button", { name: SEND })).toBeNull();
+    await expect(getGatewayCallsInFlight()).toBe(1);
+    await expect(thread.getByText("…")).toBeVisible();
+
+    live.send(chunk("Good"));
+    await thread.findByText("Good");
+    await expect(thread.queryByText("…")).toBeNull();
+    await expect(
+      canvas.getByRole("region", { name: "Conversation with minicpm5-1b" }),
+    ).toHaveAttribute("aria-busy", "true");
+    live.send(chunk(" day"));
+    await thread.findByText("Good day");
+    // still streaming: nothing read out, no usage yet, the call still counted
+    await expect(canvas.queryByText(/ replied: /)).toBeNull();
+    await expect(thread.queryByText(/tokens?$/)).toBeNull();
+    await expect(getGatewayCallsInFlight()).toBe(1);
+
+    live.send(FINISH);
+    live.send(usage(12));
+    live.send("[DONE]");
+    live.end();
+
+    const announcement = await canvas.findByText("minicpm5-1b replied: Good day");
+    await expect(announcement.closest("[aria-live]")).toHaveAttribute("aria-live", "polite");
+    await expect(canvas.getAllByText(/ replied: /)).toHaveLength(1);
+    await thread.findByText(/^12 tokens · /);
+    await waitFor(() => expect(getGatewayCallsInFlight()).toBe(0));
+    await readyComposer(canvas);
+    await expect(canvas.queryByRole("button", { name: "Stop minicpm5-1b" })).toBeNull();
+    await expect(canvas.queryByRole("alert")).toBeNull();
+  },
+};
+
+/**
+ * Stop cancels the request and keeps what had arrived (#3096): the partial
+ * reply stays in the thread marked as stopped, no error is shown, the abort
+ * reaches the request, and Send is back. Escape in the composer does the same.
+ */
+let aborted = false;
+const stopping = recording(
+  deployment(async () => json(minted()), undefined, undefined, {
+    chat: (_, __, signal) => {
+      aborted = false;
+      signal?.addEventListener("abort", () => {
+        aborted = true;
+      });
+      live = eventStream(signal);
+      return live.response;
+    },
+  }),
+);
+
+export const StopKeepsWhatHadArrived: Story = {
+  render: () => <Screen fetchStub={stopping.stub} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const composer = await readyComposer(canvas);
+    const thread = within(canvas.getByRole("region", { name: "Conversation with minicpm5-1b" }));
+    await sendMessage(canvas, composer, "Write a long story");
+    await canvas.findByRole("button", { name: "Stop minicpm5-1b" });
+    live.send(chunk("Once upon"));
+    await thread.findByText("Once upon");
+
+    await userEvent.click(canvas.getByRole("button", { name: "Stop minicpm5-1b" }));
+    await readyComposer(canvas);
+    await expect(aborted).toBe(true);
+    await expect(thread.getByText("Once upon")).toBeVisible();
+    await expect(thread.getByText("stopped")).toBeVisible();
+    await expect(canvas.queryByRole("alert")).toBeNull();
+    await expect(getGatewayCallsInFlight()).toBe(0);
+    await canvas.findByText("minicpm5-1b stopped.");
+    // the question was answered as far as it got, so it is not put back to retype
+    await expect(composer).toHaveValue("");
+
+    // Escape stops too
+    await userEvent.type(composer, "again");
+    await userEvent.click(canvas.getByRole("button", { name: SEND }));
+    await canvas.findByRole("button", { name: "Stop minicpm5-1b" });
+    live.send(chunk("Second"));
+    await thread.findByText("Second");
+    await userEvent.type(composer, "{Escape}");
+    await readyComposer(canvas);
+    await expect(thread.getAllByText("stopped")).toHaveLength(2);
+    await expect(chatsIn(stopping.calls)[1].messages).toEqual([
+      { role: "user", content: "Write a long story" },
+      { role: "assistant", content: "Once upon" },
+      { role: "user", content: "again" },
+    ]);
+  },
+};
+
+/**
+ * Stopping before the first piece has nothing to keep: the thread goes back to
+ * what it was and the message returns to the composer, the way a failed send
+ * does, but with no error, since the operator chose it (#3096).
+ */
+export const StopBeforeTheFirstPieceRestoresTheDraft: Story = {
+  render: () => <Screen fetchStub={stopping.stub} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const composer = await readyComposer(canvas);
+    const thread = within(canvas.getByRole("region", { name: "Conversation with minicpm5-1b" }));
+    await sendMessage(canvas, composer, "slow question");
+    await userEvent.click(await canvas.findByRole("button", { name: "Stop minicpm5-1b" }));
+    await readyComposer(canvas);
+    await expect(composer).toHaveValue("slow question");
+    await expect(thread.queryByText("slow question")).toBeNull();
+    await expect(thread.queryByText("…")).toBeNull();
+    await expect(canvas.queryByRole("alert")).toBeNull();
+    await expect(getGatewayCallsInFlight()).toBe(0);
+  },
+};
+
+/**
+ * A stream that breaks after some text keeps that text, marks it interrupted
+ * and says why in the alert (#3096); one that breaks before any text is the
+ * ordinary failed send and puts the message back.
+ */
+export const ErrorMidStreamKeepsThePartialReply: Story = {
+  render: () => <Screen fetchStub={stopping.stub} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const composer = await readyComposer(canvas);
+    const thread = within(canvas.getByRole("region", { name: "Conversation with minicpm5-1b" }));
+    await sendMessage(canvas, composer, "tell me");
+    await canvas.findByRole("button", { name: "Stop minicpm5-1b" });
+    live.send(chunk("Half an ans"));
+    await thread.findByText("Half an ans");
+    live.send({ error: { message: "upstream connection reset" } });
+    live.end();
+
+    const alert = await canvas.findByRole("alert");
+    await expect(alert).toHaveTextContent("upstream connection reset");
+    await expect(thread.getByText("Half an ans")).toBeVisible();
+    await expect(thread.getByText("interrupted")).toBeVisible();
+    await expect(canvas.queryByText(/ replied: /)).toBeNull();
+    await readyComposer(canvas);
+    await expect(getGatewayCallsInFlight()).toBe(0);
+  },
+};
+
+export const DroppedConnectionBeforeAnyTextIsAFailedSend: Story = {
+  render: () => <Screen fetchStub={stopping.stub} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const composer = await readyComposer(canvas);
+    const thread = within(canvas.getByRole("region", { name: "Conversation with minicpm5-1b" }));
+    await sendMessage(canvas, composer, "hello?");
+    await canvas.findByRole("button", { name: "Stop minicpm5-1b" });
+    live.fail();
+
+    await canvas.findByRole("alert");
+    await readyComposer(canvas);
+    await expect(composer).toHaveValue("hello?");
+    await expect(thread.queryByText("hello?")).toBeNull();
+    await expect(thread.queryByText("…")).toBeNull();
+  },
+};
+
+/**
  * Every send carries the column's whole thread, not only the newest line
  * (#2058). The second request holds the first question, its answer and the new
  * question, in order, so the model answers the conversation the column shows.
@@ -1224,7 +1453,8 @@ export const SendsTheWholeConversation: Story = {
         { role: "assistant", content: "Nice to meet you, Anya." },
         { role: "user", content: "what is my name?" },
       ],
-      stream: false,
+      stream: true,
+      stream_options: { include_usage: true },
     });
   },
 };

@@ -45,7 +45,7 @@ is the finding.
 
 | #    | step                                             | where                                                           | expect                                          | status   |
 | ---- | ------------------------------------------------ | --------------------------------------------------------------- | ----------------------------------------------- | -------- |
-| E3.1 | from the Playground, with no key handling at all | **Playground** (mints a 30-minute session key for the project)  | an answer, shown whole once it is complete      | verified |
+| E3.1 | from the Playground, with no key handling at all | **Playground** (mints a 30-minute session key for the project)  | an answer, streamed                             | verified |
 | E3.2 | from code, OpenAI dialect                        | OpenAI SDK with `base_url=<gateway>/v1`, `api_key=<key>`        | the same answer; `x-request-id` on the response | verified |
 | E3.3 | from code, Anthropic dialect                     | Anthropic SDK with `base_url=<gateway>`, the key as `x-api-key` | the same model family through `/v1/messages`    | verified |
 | E3.4 | streaming, embeddings                            | `stream: true`; `/v1/embeddings` on `text-embedding`            | SSE chunks; vectors                             | verified |
