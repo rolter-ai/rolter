@@ -246,8 +246,8 @@ pub struct RequestLog {
     #[serde(skip_serializing_if = "String::is_empty")]
     pub lifecycle_operation: String,
     /// What each guardrail did to this request, as `<action>:<rule>` entries
-    /// (`blocked`, `redacted`, `annotated`) and the bare `provider_blocked` /
-    /// `provider_transformed` for the guardrail provider (#2158). Rule names
+    /// (`blocked`, `redacted`, `annotated`) and `provider_blocked:<name>` /
+    /// `provider_transformed:<name>` for the guardrail provider (#2158, #3038). Rule names
     /// only, never the matched text. Not serialized when empty, so a request no
     /// guardrail touched is byte for byte what it was before the column, and a
     /// ClickHouse without `clickhouse/018_guardrail_events.sql` keeps accepting

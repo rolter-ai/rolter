@@ -229,3 +229,110 @@ async fn a_post_call_block_names_the_rule_on_the_withheld_row() {
     assert_eq!(row["withheld"], 1, "{row}");
     assert_eq!(row["guardrail_events"], json!(["blocked:email"]), "{row}");
 }
+
+/// Runs one request against `config` and returns the status and the one row.
+async fn run_with(config: GatewayConfig, clickhouse: &Rows, prompt: &str) -> (u16, Value) {
+    let response = ask(&config, prompt).await;
+    let status = response.status().as_u16();
+    let _ = response.bytes().await.unwrap();
+    (status, clickhouse.only_row().await)
+}
+
+#[tokio::test]
+async fn a_pre_call_block_keeps_the_redactions_applied_before_it() {
+    let rows = Rows::default();
+    let clickhouse = rows.serve().await;
+    let up = upstream().await;
+    let mut config = config(up, clickhouse, GuardStage::PreCall, GuardAction::Redact);
+    config.guardrails.rules.push(GuardrailRule {
+        name: "card".to_string(),
+        builtin: Some(BuiltinRule::PaymentCard),
+        pattern: None,
+        stage: GuardStage::PreCall,
+        action: GuardAction::Block,
+        replacement: None,
+        include_system: false,
+    });
+    let (status, row) = run_with(
+        config,
+        &rows,
+        "mail zed@secret.example card 4111 1111 1111 1111",
+    )
+    .await;
+    assert_eq!(status, 400);
+    assert_eq!(
+        row["guardrail_events"],
+        json!(["blocked:card", "redacted:email"]),
+        "{row}"
+    );
+}
+
+async fn webhook(decision: Value) -> SocketAddr {
+    serve(Router::new().route(
+        "/check",
+        post(move || {
+            let decision = decision.clone();
+            async move { Json(decision) }
+        }),
+    ))
+    .await
+}
+
+fn named_webhook(url: String, name: Option<&str>) -> rolter_core::GuardrailWebhookConfig {
+    let mut value = json!({"enabled": true, "url": url, "failure_mode": "fail_closed"});
+    if let Some(name) = name {
+        value["name"] = json!(name);
+    }
+    serde_json::from_value(value).unwrap()
+}
+
+#[tokio::test]
+async fn a_provider_block_names_the_provider_and_keeps_earlier_redactions() {
+    let rows = Rows::default();
+    let clickhouse = rows.serve().await;
+    let up = upstream().await;
+    let guard = webhook(json!({"action": "block"})).await;
+    let mut config = config(up, clickhouse, GuardStage::PreCall, GuardAction::Redact);
+    config.guardrail_webhook = named_webhook(format!("http://{guard}/check"), Some("Prod guard"));
+    let (status, row) = run_with(config, &rows, "mail zed@secret.example").await;
+    assert_eq!(status, 400);
+    assert_eq!(
+        row["guardrail_events"],
+        json!(["redacted:email", "provider_blocked:Prod guard"]),
+        "{row}"
+    );
+}
+
+#[tokio::test]
+async fn a_provider_transform_names_the_provider() {
+    let rows = Rows::default();
+    let clickhouse = rows.serve().await;
+    let up = upstream().await;
+    let guard = webhook(json!({"action": "transform", "content": "hi"})).await;
+    let mut config = config(up, clickhouse, GuardStage::PreCall, GuardAction::Redact);
+    config.guardrail_webhook = named_webhook(format!("http://{guard}/check"), Some("Prod guard"));
+    let (status, row) = run_with(config, &rows, "hello").await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        row["guardrail_events"],
+        json!(["provider_transformed:Prod guard"]),
+        "{row}"
+    );
+}
+
+#[tokio::test]
+async fn a_provider_without_a_name_records_the_bare_action() {
+    let rows = Rows::default();
+    let clickhouse = rows.serve().await;
+    let up = upstream().await;
+    let guard = webhook(json!({"action": "block"})).await;
+    let mut config = config(up, clickhouse, GuardStage::PreCall, GuardAction::Redact);
+    config.guardrail_webhook = named_webhook(format!("http://{guard}/check"), None);
+    let (status, row) = run_with(config, &rows, "hello").await;
+    assert_eq!(status, 400);
+    assert_eq!(
+        row["guardrail_events"],
+        json!(["provider_blocked"]),
+        "{row}"
+    );
+}

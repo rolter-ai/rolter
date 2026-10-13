@@ -615,8 +615,8 @@ const INVOCATIONS_QUERY: &[QueryParam] = &[
         "guardrail",
         "string",
         "only requests a guardrail acted on, named as the guardrails rollup does: \
-         `blocked:<rule>`, `redacted:<rule>`, `annotated:<rule>`, `provider_blocked` or \
-         `provider_transformed`; omit for every request",
+         `blocked:<rule>`, `redacted:<rule>`, `annotated:<rule>`, `provider_blocked:<provider>`, \
+         `provider_transformed:<provider>` (the bare forms for unnamed rows); omit for every request",
     ),
     QueryParam::new("limit", "integer", "page size, 1..=200; defaults to 50"),
     QueryParam::new(
@@ -1897,7 +1897,8 @@ fn operations() -> Vec<Op> {
                 "What each guardrail did to requests in the window: one row per `action` and `rule` \
                  with the number of `requests` it acted on. `action` is `blocked`, `redacted` or \
                  `annotated` for a rule (named in `rule`), and `provider_blocked` or \
-                 `provider_transformed` with an empty `rule` for the active guardrail provider. \
+                 `provider_transformed` for a guardrail provider, with its name in `rule` (empty \
+                 for rows written before the name was recorded). \
                  `recorded` is `false` when the ClickHouse table lacks \
                  `clickhouse/018_guardrail_events.sql`, in which case `data` is empty",
             )

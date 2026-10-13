@@ -71,6 +71,12 @@ impl WebhookAuth {
 pub struct GuardrailWebhookConfig {
     #[serde(default)]
     pub enabled: bool,
+    /// Label recorded with this provider's outcomes on the request log
+    /// (`provider_blocked:<name>`), so a count follows the provider that
+    /// produced it after the active one changes. The registry fills it from the
+    /// row's name; empty records the bare action.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
     /// http(s) endpoint the gateway POSTs the contract envelope to
     #[serde(default)]
     pub url: String,
@@ -102,6 +108,7 @@ impl Default for GuardrailWebhookConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            name: String::new(),
             url: String::new(),
             stage: WebhookStage::default(),
             timeout_ms: DEFAULT_TIMEOUT_MS,
@@ -217,6 +224,7 @@ mod tests {
     fn disabled_config_is_never_a_problem() {
         let cfg = GuardrailWebhookConfig {
             enabled: false,
+            name: String::new(),
             url: String::new(),
             timeout_ms: 0,
             ..GuardrailWebhookConfig::default()

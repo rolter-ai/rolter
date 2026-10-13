@@ -400,7 +400,7 @@ Six fields of a row come from ClickHouse files that an existing deployment appli
 | `guardrail_events`      | array  | `018_guardrail_events.sql`    | `[]`                            |
 | `plugin_events`         | array  | `019_plugin_events.sql`       | `[]`                            |
 
-`guardrail_events` lists what each guardrail did to the request, as `<action>:<rule name>` entries (`blocked:`, `redacted:` or `annotated:`) and `provider_blocked` / `provider_transformed` for the guardrail provider; it is empty for a request no guardrail touched. See [What each rule did](/security/guardrails#what-each-rule-did).
+`guardrail_events` lists what each guardrail did to the request, as `<action>:<rule name>` entries (`blocked:`, `redacted:` or `annotated:`) and `provider_blocked:<provider name>` / `provider_transformed:<provider name>` for the guardrail provider (the bare `provider_blocked` / `provider_transformed` on rows that predate the name, or for a provider with none); it is empty for a request no guardrail touched. See [What each rule did](/security/guardrails#what-each-rule-did).
 
 `plugin_events` lists what each plugin did to the request, as `<outcome>:<slug>` entries (`allowed`, `blocked`, `transformed` or `annotated`) and `error:<slug>:<kind>` for a call that got no verdict; it is empty for a request no plugin was consulted on. See [What each plugin did](/configuration/plugins#what-each-plugin-did).
 

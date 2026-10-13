@@ -2168,6 +2168,7 @@
       "none": "No matches in the last 7 days.",
       "loading": "Counting matches…",
       "failed": "Could not load match counts.",
+      "unnamed": "Recorded without a provider name",
       "viewAria": "{{total}} requests {{action}}, open in LLM Logs",
       "notRecorded": "Match counts are not being kept. Apply clickhouse/018_guardrail_events.sql to the ClickHouse database to record what each rule blocks, redacts and annotates.",
       "actions": {

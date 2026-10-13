@@ -197,37 +197,58 @@ impl<'a> Scan<'a> {
     }
 }
 
+/// A pre-call block: the rule that refused the request, and what the rules
+/// that ran before it had done to the same request.
+///
+/// The report matters because an earlier rule may already have redacted the
+/// content, and the request log should still say so (#3038).
+#[derive(Debug)]
+pub struct InputBlocked {
+    pub rule: String,
+    pub report: GuardrailReport,
+}
+
 /// Apply pre-call guardrails to a parsed request body for the given API path.
 ///
-/// Returns `Err(rule_name)` when a rule blocks the request. On `Ok`, the body may
-/// have been mutated in place (redactions); `report.redactions > 0` signals the
-/// caller should re-serialize before forwarding.
+/// Returns `Err` when a rule blocks the request, carrying the rule name and the
+/// report gathered up to that point. On `Ok`, the body may have been mutated in
+/// place (redactions); `report.redactions > 0` signals the caller should
+/// re-serialize before forwarding.
 pub fn apply_input(
     guardrails: &CompiledGuardrails,
     selection: &RuleSelection,
     path: &str,
     body: &mut Value,
-) -> Result<GuardrailReport, String> {
+) -> Result<GuardrailReport, Box<InputBlocked>> {
     let mut scan = Scan::new(guardrails, selection, GuardStage::PreCall);
 
-    match path {
-        // OpenAI chat + Responses share the `messages` shape; Responses also
-        // accepts a bare `input` string/array
-        "/v1/chat/completions" | "/v1/responses" => {
-            scan.messages(body)?;
-            scan.field(body, "input", false)?;
+    let walked = (|| -> Result<(), String> {
+        match path {
+            // OpenAI chat + Responses share the `messages` shape; Responses also
+            // accepts a bare `input` string/array
+            "/v1/chat/completions" | "/v1/responses" => {
+                scan.messages(body)?;
+                scan.field(body, "input", false)?;
+            }
+            // legacy text completions carry a `prompt` string or array of strings
+            "/v1/completions" => scan.field(body, "prompt", false)?,
+            // Anthropic Messages: a top-level `system` plus user/assistant `messages`
+            "/v1/messages" => {
+                scan.field(body, "system", true)?;
+                scan.messages(body)?;
+            }
+            _ => {}
         }
-        // legacy text completions carry a `prompt` string or array of strings
-        "/v1/completions" => scan.field(body, "prompt", false)?,
-        // Anthropic Messages: a top-level `system` plus user/assistant `messages`
-        "/v1/messages" => {
-            scan.field(body, "system", true)?;
-            scan.messages(body)?;
-        }
-        _ => {}
-    }
+        Ok(())
+    })();
 
-    Ok(scan.report)
+    match walked {
+        Ok(()) => Ok(scan.report),
+        Err(rule) => Err(Box::new(InputBlocked {
+            rule,
+            report: scan.report,
+        })),
+    }
 }
 
 /// Apply post-call guardrails to a buffered, non-streaming response body.
@@ -433,8 +454,10 @@ mod tests {
                 &RuleSelection::default(),
                 "/v1/chat/completions",
                 &mut blocked
-            ),
-            Err("card".to_string())
+            )
+            .unwrap_err()
+            .rule,
+            "card"
         );
 
         let mut allowed = body();
@@ -476,8 +499,10 @@ mod tests {
                 &selection(&g, &["email"], &[]),
                 "/v1/chat/completions",
                 &mut body
-            ),
-            Err("card".to_string()),
+            )
+            .unwrap_err()
+            .rule,
+            "card",
             "disabling email must not disable card"
         );
     }
@@ -590,7 +615,7 @@ mod tests {
             &mut body,
         )
         .unwrap_err();
-        assert_eq!(err, "card");
+        assert_eq!(err.rule, "card");
     }
 
     #[test]
