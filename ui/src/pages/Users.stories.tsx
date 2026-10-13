@@ -3601,3 +3601,120 @@ export const ResetPasswordIsNotOfferedForADeactivatedAccount: Story = {
     ).toBeNull();
   },
 };
+
+// ---------------------------------------------------------------------------
+// #3127: narrow the list to a team or a project, from the screen or a link
+
+/** the picker above the table, which keeps its own name rather than the placeholder */
+const scopeFilter = (canvas: ReturnType<typeof within>) =>
+  canvas.getByRole("combobox", { name: "Filter by team or project" });
+
+/** a team's people include the people of its projects; an org-wide grant is no team's */
+export const FiltersToATeamFromTheScreen: Story = {
+  render: () => (
+    <Harness fetchStub={loaded}>
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("ada@example.com")).toBeInTheDocument();
+    await waitFor(() => expect(scopeFilter(canvas)).toBeEnabled());
+    await pickOption(scopeFilter(canvas), "Platform");
+    // grace holds a role on the team, former on one of its projects
+    await waitFor(() => expect(canvas.queryByText("ada@example.com")).toBeNull());
+    await expect(canvas.getByText("grace@example.com")).toBeVisible();
+    await expect(canvas.getByText("former@example.com")).toBeVisible();
+  },
+};
+
+export const FiltersToAProject: Story = {
+  render: () => (
+    <Harness fetchStub={loaded}>
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("ada@example.com")).toBeInTheDocument();
+    await waitFor(() => expect(scopeFilter(canvas)).toBeEnabled());
+    await pickOption(scopeFilter(canvas), /^Gateway/);
+    await waitFor(() => expect(canvas.queryByText("grace@example.com")).toBeNull());
+    await expect(canvas.getByText("former@example.com")).toBeVisible();
+  },
+};
+
+/** a link from the team sheet lands on the team's people, with the picker showing it */
+export const OpensOnTheTeamAnAddressNames: Story = {
+  render: () => (
+    <Harness fetchStub={loaded} route="/gov-users?team=team-1">
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("grace@example.com")).toBeVisible();
+    await expect(canvas.queryByText("ada@example.com")).toBeNull();
+    await waitFor(() => expect(scopeFilter(canvas)).toHaveValue("Platform"));
+  },
+};
+
+/** nobody holds a role in the team: the empty state names the filter and clears it */
+export const ATeamWithNoPeopleShowsTheNoMatchState: Story = {
+  render: () => (
+    <Harness
+      fetchStub={routes([
+        ["/memberships", () => []],
+        ["/users", () => USERS],
+      ])}
+      route="/gov-users?team=team-1"
+    >
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("No users match")).toBeVisible();
+    await userEvent.click(canvas.getByRole("button", { name: "Clear filters" }));
+    await expect(await canvas.findByText("ada@example.com")).toBeVisible();
+  },
+};
+
+/** an id the organization does not have says so rather than listing nobody without a reason */
+export const AnUnknownTeamIdIsNamed: Story = {
+  render: () => (
+    <Harness fetchStub={loaded} route="/gov-users?team=no-such-team">
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("No such team or project")).toBeVisible();
+    await expect(canvas.getByText(/no-such-team/)).toBeVisible();
+    await expect(canvas.queryByText("ada@example.com")).toBeNull();
+    await userEvent.click(canvas.getByRole("button", { name: "Clear filters" }));
+    await expect(await canvas.findByText("ada@example.com")).toBeVisible();
+  },
+};
+
+/** the list does not show everyone as a match while the memberships the filter needs are in flight */
+export const TheFilterHoldsBackWhileMembershipsLoad: Story = {
+  render: () => (
+    <Harness
+      fetchStub={scoped(async (input) => {
+        const url = String(input);
+        if (url.includes("/memberships")) return new Promise<Response>(() => {});
+        return json(url.includes("/users") ? USERS : []);
+      })}
+      route="/gov-users?team=team-1"
+    >
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectSkeleton(canvasElement);
+    await expect(canvas.queryByText("ada@example.com")).toBeNull();
+    await expect(canvas.queryByText("No users match")).toBeNull();
+  },
+};

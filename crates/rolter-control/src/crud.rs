@@ -53,7 +53,7 @@ pub fn router() -> Router<ControlState> {
             "/api/v1/orgs/{org_id}/teams",
             get(list_teams).post(create_team),
         )
-        .route("/api/v1/teams/{id}", delete(delete_team))
+        .route("/api/v1/teams/{id}", put(update_team).delete(delete_team))
         .route(
             "/api/v1/teams/{team_id}/projects",
             get(list_projects).post(create_project),
@@ -2267,6 +2267,40 @@ async fn create_team(
         "team",
         team.id,
         serde_json::json!({"name": team.name}),
+    )
+    .await;
+    Ok(Json(team))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UpdateTeam {
+    name: String,
+}
+
+/// Rename a team. Decided at the team's own scope, so a team admin renames
+/// their team while creating and deleting one stay the org admin's.
+async fn update_team(
+    principal: Principal,
+    State(state): State<ControlState>,
+    Path(id): Path<Uuid>,
+    SafeJson(body): SafeJson<UpdateTeam>,
+) -> ApiResult<Json<Team>> {
+    let chain = ScopeChain::from_team(pool(&state), id).await?;
+    authorize(&state, &principal, chain, cap!("team", Update)).await?;
+    let name = body.name.trim();
+    require_non_empty(name, "name")?;
+    let repo = TeamRepo(pool(&state));
+    let before = repo.get(id).await?;
+    let team = repo.rename(id, name).await?;
+    log_audit(
+        &state,
+        &principal,
+        chain.org,
+        "team.update",
+        "team",
+        id,
+        serde_json::json!({"old_name": before.name, "new_name": team.name}),
     )
     .await;
     Ok(Json(team))

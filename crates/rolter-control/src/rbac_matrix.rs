@@ -160,9 +160,10 @@ const CAPABILITIES: &[Capability] = &[
         scope: "org",
         read: VIEWER,
         create: ADMIN,
-        update: NA,
+        update: ADMIN,
         delete: ADMIN,
-        action_scopes: NONE,
+        // a rename is decided at the team, so its own admin may rename it
+        action_scopes: &[(Action::Update, "team")],
     },
     Capability {
         resource: "project",

@@ -327,6 +327,20 @@ impl TeamRepo<'_> {
         .map_err(store_err)
     }
 
+    /// Rename a team. A name another team of the org holds is `AlreadyExists`.
+    pub async fn rename(&self, id: Uuid, name: &str) -> Result<Team> {
+        sqlx::query_as(
+            "update teams set name = $2 where id = $1
+             returning id, org_id, name, created_at",
+        )
+        .bind(id)
+        .bind(name)
+        .fetch_optional(self.0)
+        .await
+        .map_err(store_err)?
+        .ok_or_else(|| Error::NotFound(format!("team {id}")))
+    }
+
     pub async fn delete(&self, id: Uuid) -> Result<()> {
         let res = sqlx::query("delete from teams where id = $1")
             .bind(id)

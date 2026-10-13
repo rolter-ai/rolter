@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
+import { useSearchParams } from "react-router";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { GatedButton } from "@/components/GatedButton";
@@ -56,7 +57,7 @@ import {
 } from "@/components/SubjectProfiles";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Combobox } from "@/components/ui/combobox";
+import { Combobox, type ComboboxOption } from "@/components/ui/combobox";
 import { Segmented } from "@/components/ui/segmented";
 import { SecretRevealDialog } from "@/components/ui/secret-reveal";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -99,8 +100,18 @@ import {
   sameScope,
 } from "@/lib/role-grants";
 import { roleLabel } from "@/lib/roles";
+import { type ReadState } from "@/lib/read-state";
 import { useScope } from "@/lib/scope";
 import { useToast } from "@/lib/toast";
+import {
+  filterValue,
+  parseFilterValue,
+  readUserScopeFilter,
+  scopeExists,
+  usersInScope,
+  writeUserScopeFilter,
+  type UserScopeFilter,
+} from "@/lib/user-scope-filter";
 import { useScreenReady } from "@/lib/ux-react";
 
 // admin surface for the user/team lifecycle (ROL-223): invite people into the
@@ -169,6 +180,12 @@ export default function Users() {
   const [deleteTarget, setDeleteTarget] = React.useState<UserRow | null>(null);
   const [resetTarget, setResetTarget] = React.useState<UserRow | null>(null);
   const [search, setSearch] = React.useState("");
+  // the team or project the list is narrowed to lives in the URL, so a link
+  // (the team sheet's) can land on a team's people and a reload keeps it (#3127)
+  const [params, setParams] = useSearchParams();
+  const scopeFilter = readUserScopeFilter(params);
+  const setScopeFilter = (next: UserScopeFilter | null) =>
+    setParams((current) => writeUserScopeFilter(current, next), { replace: true });
   const [statusTab, setStatusTab] = React.useState<"all" | "active" | "deactivated">("all");
 
   // group role grants by user for per-row rendering
@@ -211,8 +228,41 @@ export default function Users() {
     },
   });
 
+  const orgTeams = orgScope.byTeam.map((entry) => entry.team);
+  const orgProjects = orgScope.byTeam.flatMap((entry) => entry.projects);
+  // the scope is known once both org-scope reads and the memberships answered;
+  // before that the list holds back rather than showing everyone as a match
+  const scopeReady = !scopeFilter || (!!memberships.data && !orgScope.isLoading && !orgScope.error);
+  const scopeMissing =
+    !!scopeFilter && scopeReady && !scopeExists(scopeFilter, orgTeams, orgProjects);
+  const inScope =
+    scopeFilter && scopeReady && !scopeMissing && memberships.data
+      ? usersInScope(scopeFilter, memberships.data, orgProjects)
+      : undefined;
+  const scopeOptions: ComboboxOption[] = [
+    ...orgTeams.map((team) => ({
+      value: filterValue({ kind: "team", id: team.id }),
+      label: team.name,
+      group: t("pages.users.scopeFilterTeams"),
+    })),
+    ...orgProjects.map((project) => ({
+      value: filterValue({ kind: "project", id: project.id }),
+      label: project.name,
+      description: project.team_name,
+      group: t("pages.users.scopeFilterProjects"),
+    })),
+  ];
+  // the list read the table states: the users, plus what the scope filter needs
+  const listRead: ReadState = {
+    isPending:
+      users.isPending || (!!scopeFilter && !scopeReady && !orgScope.error && !memberships.error),
+    isSuccess: users.isSuccess && scopeReady,
+    fetchStatus: users.fetchStatus,
+  };
+
   const q = search.trim().toLowerCase();
   const rows = (users.data ?? []).filter((u) => {
+    if (scopeFilter && (!inScope || !inScope.has(u.id))) return false;
     const active = !u.deactivated_at;
     if (statusTab === "active" && !active) return false;
     if (statusTab === "deactivated" && active) return false;
@@ -227,10 +277,11 @@ export default function Users() {
     deactivated: users.data.filter((u) => !!u.deactivated_at).length,
   };
 
-  const filtersActive = !!q || statusTab !== "all";
+  const filtersActive = !!q || statusTab !== "all" || !!scopeFilter;
   const clearFilters = () => {
     setSearch("");
     setStatusTab("all");
+    setScopeFilter(null);
   };
 
   const statusLabels = {
@@ -264,6 +315,16 @@ export default function Users() {
           }))}
           onChange={setStatusTab}
         />
+        <Combobox
+          aria-label={t("pages.users.scopeFilterAria")}
+          className="w-full sm:w-[240px]"
+          options={scopeOptions}
+          value={scopeMissing ? "" : filterValue(scopeFilter)}
+          onChange={(picked) => setScopeFilter(parseFilterValue(picked))}
+          placeholder={t("pages.users.scopeFilterAll")}
+          clearable
+          disabled={!orgId}
+        />
         <GatedButton
           gate="invitation:create"
           control="user-invite"
@@ -284,9 +345,9 @@ export default function Users() {
           description={scopeMessage ?? t("pages.users.noOrgBody")}
         />
       )}
-      {(users.error || memberships.error) && (
+      {!!(users.error || memberships.error || (scopeFilter && orgScope.error)) && (
         <LoadError
-          error={users.error ?? memberships.error}
+          error={users.error ?? memberships.error ?? orgScope.error}
           resource={t("errors.resources.users")}
           onRetry={() => {
             users.refetch();
@@ -305,7 +366,7 @@ export default function Users() {
           <ListHeaderCell>{t("pages.users.colCreated")}</ListHeaderCell>
           <ListActionsHeader />
         </ListHeader>
-        <ListLoadingRow read={users}>
+        <ListLoadingRow read={listRead}>
           <ListSkeleton rows={4} className="p-3" />
         </ListLoadingRow>
         {rows.map((user) => {
@@ -441,12 +502,24 @@ export default function Users() {
             </ListRow>
           );
         })}
-        <ListEmptyRow read={users} rows={rows.length}>
+        <ListEmptyRow read={listRead} rows={rows.length}>
           <EmptyState
             uxTarget="users"
             icon={<UsersRound />}
-            title={filtersActive ? t("pages.users.noMatchTitle") : t("pages.users.emptyTitle")}
-            description={filtersActive ? t("pages.users.noMatchBody") : t("pages.users.emptyBody")}
+            title={
+              scopeMissing
+                ? t("pages.users.scopeUnknownTitle")
+                : filtersActive
+                  ? t("pages.users.noMatchTitle")
+                  : t("pages.users.emptyTitle")
+            }
+            description={
+              scopeMissing
+                ? t("pages.users.scopeUnknownBody", { id: scopeFilter?.id ?? "" })
+                : filtersActive
+                  ? t("pages.users.noMatchBody")
+                  : t("pages.users.emptyBody")
+            }
             actions={
               filtersActive ? (
                 <Button variant="outline" onClick={clearFilters}>
