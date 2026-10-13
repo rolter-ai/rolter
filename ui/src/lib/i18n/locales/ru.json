@@ -179,7 +179,8 @@
       "opensInNewTab": "{{label}} (откроется в новой вкладке)",
       "whichKey": "Какой ключ мне нужен?",
       "virtualKeys": "О виртуальных ключах",
-      "cacheAwareRouting": "О маршрутизации с учётом кэша"
+      "cacheAwareRouting": "О маршрутизации с учётом кэша",
+      "logSettings": "О настройках лога"
     }
   },
   "errors": {
@@ -3957,7 +3958,12 @@
         "retentionDays": "Срок хранения должен быть целым числом дней от 1 до 3650.",
         "payloadRetentionHours": "Срок хранения тел должен быть целым числом часов от 1 до 8760.",
         "payloadOutlivesLog": "Тела не могут храниться дольше самого лога."
-      }
+      },
+      "noAnalytics": {
+        "title": "Лог никуда не пишется: нет ClickHouse",
+        "body": "У этого control plane нет ClickHouse, поэтому ни один запрос не попадает в лог. Доля выборки, сохранение тел и сроки хранения всё равно сохраняются и начнут действовать, когда появится ClickHouse: задайте <0>CLICKHOUSE_URL</0> (ключ clickhouse_url в файле конфигурации) и перезапустите control plane."
+      },
+      "updatedAt": "Изменено {{when}}"
     },
     "clientSettings": {
       "exampleRequest": "Пример запроса",

@@ -8,6 +8,14 @@ Request logging is governed by one deployment-wide policy, edited from **Observa
 
 ---
 
+## Without ClickHouse
+
+Sampling, payload capture and both retention windows act on rows written to ClickHouse. A control plane started without `clickhouse_url` (the `CLICKHOUSE_URL` environment variable) writes no log, so none of them has anything to act on. **Logs Settings** says so at the top of the screen, names that setting and links this page. The controls stay editable: the policy is stored and applies from the first row once ClickHouse is added and the control plane restarted.
+
+The dashboard reads this from the analytics endpoints, which answer `503` when no ClickHouse is configured.
+
+---
+
 ## Sampling
 
 `sample_rate` is the fraction of requests written to the log, from `0` to `1`. The dashboard shows it as a percentage. Lowering it cuts what lands in the log store on a high-volume deployment, and it cuts the raw row count read back out of that store by the same share.
