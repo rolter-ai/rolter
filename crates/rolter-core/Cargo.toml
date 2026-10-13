@@ -54,6 +54,8 @@ otlp = [
 # prints a secret from the environment in `--help`. Enabled by the binary
 # crates' dev-dependencies, so it is test support and never in a release build
 cli-guard = ["dep:clap"]
+# `rolter_core::shutdown`: the SIGINT/SIGTERM future both planes drain on (#2378)
+shutdown = ["dep:tokio"]
 
 [dev-dependencies]
 criterion.workspace = true

@@ -813,10 +813,15 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     // the only client identity the failed-login throttle can trust (#1079)
     let app = app.into_make_service_with_connect_info::<SocketAddr>();
 
+    let shutdown = shutdown_channel();
     let Some(internal_addr) = args.internal_addr else {
-        axum::serve(listener, app)
-            .with_graceful_shutdown(shutdown_signal())
-            .await?;
+        drain_within(
+            axum::serve(listener, app).with_graceful_shutdown(stop_requested(shutdown.clone())),
+            shutdown,
+            SHUTDOWN_DRAIN_GRACE,
+            "control",
+        )
+        .await?;
         return Ok(());
     };
 
@@ -827,50 +832,82 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     // degraded (no config propagation, or no dashboard), so exit rather than
     // limp on with half a control plane
     tokio::try_join!(
-        async {
-            axum::serve(listener, app)
-                .with_graceful_shutdown(shutdown_signal())
-                .await
-        },
-        async {
+        drain_within(
+            axum::serve(listener, app).with_graceful_shutdown(stop_requested(shutdown.clone())),
+            shutdown.clone(),
+            SHUTDOWN_DRAIN_GRACE,
+            "control",
+        ),
+        drain_within(
             axum::serve(internal_listener, internal)
-                .with_graceful_shutdown(shutdown_signal())
-                .await
-        },
+                .with_graceful_shutdown(stop_requested(shutdown.clone())),
+            shutdown,
+            SHUTDOWN_DRAIN_GRACE,
+            "internal",
+        ),
     )?;
     Ok(())
 }
 
-/// Resolve once the process receives a shutdown signal (Ctrl-C on all
-/// platforms, or `SIGTERM` on Unix, which is what orchestrators send).
+/// How long the control plane waits, after a shutdown signal, for in-flight
+/// requests to finish before it drops what is left (#2378).
 ///
-/// Every caller installs its own listener; tokio broadcasts a signal to all of
-/// them, so this coexists with the gateway's own handler when both planes share
-/// a process under `rolter easy-up`.
-async fn shutdown_signal() {
-    let ctrl_c = async {
-        let _ = tokio::signal::ctrl_c().await;
-    };
+/// Without a bound one stuck long-lived request (a slow SSE, a hung export)
+/// held the process, and `easy-up` with it, open until `SIGKILL`. Ten seconds
+/// matches the gateway's realtime grace and fits inside the 30 seconds an
+/// orchestrator usually allows.
+pub const SHUTDOWN_DRAIN_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
 
-    #[cfg(unix)]
-    let terminate = async {
-        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
-            Ok(mut sig) => {
-                sig.recv().await;
-            }
-            Err(err) => {
-                tracing::warn!(%err, "failed to install SIGTERM handler");
+/// Run `serve` until it finishes, but give up `grace` after `shutdown` flips to
+/// `true`: connections still open then are dropped with a warning.
+///
+/// `serve` is expected to be a server already wired to the same `shutdown`
+/// channel through `with_graceful_shutdown`, so it starts draining at the same
+/// moment this starts the clock.
+async fn drain_within<F>(
+    serve: F,
+    mut shutdown: tokio::sync::watch::Receiver<bool>,
+    grace: std::time::Duration,
+    what: &str,
+) -> std::io::Result<()>
+where
+    F: std::future::IntoFuture<Output = std::io::Result<()>>,
+{
+    tokio::select! {
+        result = serve.into_future() => result,
+        () = async {
+            // a closed channel means the signal task is gone, so wait forever
+            // rather than dropping the server for no reason
+            if shutdown.wait_for(|stop| *stop).await.is_err() {
                 std::future::pending::<()>().await;
             }
+            tokio::time::sleep(grace).await;
+        } => {
+            tracing::warn!(
+                grace_secs = grace.as_secs_f64(),
+                server = what,
+                "connections still open after the shutdown grace; dropping them"
+            );
+            Ok(())
         }
-    };
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-
-    tokio::select! {
-        _ = ctrl_c => tracing::info!("received ctrl-c, draining"),
-        _ = terminate => tracing::info!("received SIGTERM, draining"),
     }
+}
+
+/// A future that resolves once `shutdown` flips to `true`.
+async fn stop_requested(mut shutdown: tokio::sync::watch::Receiver<bool>) {
+    // an error means the sender is gone, which also ends the wait
+    let _ = shutdown.wait_for(|stop| *stop).await;
+}
+
+/// Flip a channel to `true` when the process receives a shutdown signal, so
+/// every listener drains off the one signal handler.
+fn shutdown_channel() -> tokio::sync::watch::Receiver<bool> {
+    let (tx, rx) = tokio::sync::watch::channel(false);
+    tokio::spawn(async move {
+        rolter_core::shutdown::shutdown_signal().await;
+        let _ = tx.send(true);
+    });
+    rx
 }
 
 /// Everything the API did not match falls through to the built SPA.
@@ -4579,5 +4616,71 @@ mod help_tests {
     fn secret_env_values_stay_out_of_help() {
         let checked = rolter_core::cli_guard::assert_secret_envs_hidden(&crate::Args::command());
         assert!(checked > 0, "the walk found no secret-looking env flags");
+    }
+}
+
+#[cfg(test)]
+mod shutdown_drain_tests {
+    use std::time::Duration;
+
+    use tokio::io::AsyncWriteExt;
+
+    use super::{drain_within, stop_requested};
+
+    /// a request that never answers must not hold the process past the grace
+    /// once the shutdown signal has fired (#2378)
+    #[tokio::test]
+    async fn a_stuck_request_does_not_hold_exit_past_the_grace() {
+        let app = axum::Router::new().route(
+            "/stuck",
+            axum::routing::get(|| async {
+                std::future::pending::<()>().await;
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        let serve = drain_within(
+            axum::serve(listener, app).with_graceful_shutdown(stop_requested(rx.clone())),
+            rx,
+            Duration::from_millis(200),
+            "test",
+        );
+        let server = tokio::spawn(serve);
+
+        let mut conn = tokio::net::TcpStream::connect(addr).await.unwrap();
+        conn.write_all(b"GET /stuck HTTP/1.1\r\nHost: x\r\n\r\n")
+            .await
+            .unwrap();
+        // let the handler start so the connection is in flight
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            !server.is_finished(),
+            "the server stopped before the signal"
+        );
+
+        tx.send(true).unwrap();
+        let outcome = tokio::time::timeout(Duration::from_secs(5), server).await;
+        let joined = outcome.expect("the drain outlived its grace");
+        joined.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_idle_server_exits_at_once_without_waiting_out_the_grace() {
+        let app = axum::Router::new();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        let server = tokio::spawn(drain_within(
+            axum::serve(listener, app).with_graceful_shutdown(stop_requested(rx.clone())),
+            rx,
+            Duration::from_secs(60),
+            "test",
+        ));
+        tx.send(true).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("an idle server should not wait out the grace")
+            .unwrap()
+            .unwrap();
     }
 }

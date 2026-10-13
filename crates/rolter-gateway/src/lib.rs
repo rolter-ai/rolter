@@ -324,7 +324,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     let closing = realtime.realtime_sessions.clone();
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {
-            shutdown_signal().await;
+            rolter_core::shutdown::shutdown_signal().await;
             // an upgraded socket is outside axum's drain, so realtime sessions
             // start closing now, alongside the http requests it does wait for
             closing.close();
@@ -481,31 +481,6 @@ const REALTIME_DRAIN_GRACE: std::time::Duration = std::time::Duration::from_secs
 /// grace and this still fit inside the 30 seconds an orchestrator usually allows
 /// before `SIGKILL`.
 const SINK_DRAIN_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
-
-/// Resolve once the process receives a shutdown signal (Ctrl-C on all platforms,
-/// or `SIGTERM` on Unix — the signal orchestrators send on rollout/scale-down).
-async fn shutdown_signal() {
-    let ctrl_c = async {
-        let _ = tokio::signal::ctrl_c().await;
-    };
-
-    #[cfg(unix)]
-    let terminate = async {
-        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
-            Ok(mut sig) => {
-                sig.recv().await;
-            }
-            Err(err) => tracing::warn!(%err, "failed to install SIGTERM handler"),
-        }
-    };
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-
-    tokio::select! {
-        _ = ctrl_c => tracing::info!("received ctrl-c, draining"),
-        _ = terminate => tracing::info!("received SIGTERM, draining"),
-    }
-}
 
 /// Log that a datastore endpoint is in use, with the credentials in its url
 /// masked (#2406). Every startup line that names one goes through here.

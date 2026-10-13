@@ -346,6 +346,10 @@ pub(crate) async fn authorize(
     chain: ScopeChain,
     requirement: Requirement,
 ) -> ApiResult<()> {
+    #[cfg(debug_assertions)]
+    if let Some(problem) = crate::rbac_matrix::guard_shape_mismatch(requirement, chain) {
+        panic!("{problem}");
+    }
     let user = match principal {
         Principal::Superadmin { .. } => return Ok(()),
         Principal::User(user) => user,
@@ -461,6 +465,10 @@ impl ScopeFilter {
     /// and grants already loaded, for a caller that asks about several kinds
     /// of resource in one request
     pub(crate) fn allows_as(&self, chain: ScopeChain, requirement: Requirement) -> bool {
+        #[cfg(debug_assertions)]
+        if let Some(problem) = crate::rbac_matrix::guard_shape_mismatch(requirement, chain) {
+            panic!("{problem}");
+        }
         if self.superadmin {
             return true;
         }
