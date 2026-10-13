@@ -156,7 +156,7 @@ describe("PAGE_A11Y_STORY_ID", () => {
     // fixture — and with it its own `expectRules` claim — still fails. That
     // only holds while the pattern names every such file
     const titles = pageStoryTitles();
-    expect(titles).toEqual(["Screens/Login", "Shell/App"]);
+    expect(titles).toEqual(["Screens/AcceptInvite", "Screens/Login", "Shell/App"]);
     for (const title of titles) {
       expect(PAGE_A11Y_STORY_ID.test(`${titleToId(title)}--default`)).toBe(true);
     }

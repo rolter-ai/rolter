@@ -18,7 +18,9 @@ someone else holding their credential — usually in a chat log.
    treatment sessions and virtual keys get, so a database dump alone yields no
    usable link.
 2. `GET /api/v1/invitations/accept/{token}` — unauthenticated preview returning
-   the org name, the invited email, the role, the expiry, and `has_account`
+   the org name, the invited email, the role, the scope it applies at
+   (`scope_type` of `org`, `team` or `project`, plus the team or project's
+   `scope_name`), the expiry, and `has_account`
    (whether an account already exists under that email, so the accept screen
    knows whether to ask for a password). Nothing else: a link that leaked
    should not also leak a directory.

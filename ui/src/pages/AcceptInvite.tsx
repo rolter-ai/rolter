@@ -4,10 +4,14 @@ import { Trans, useTranslation } from "react-i18next";
 import { useNavigate } from "react-router";
 
 import { AuthCard } from "@/components/ui/auth-card";
+import { LocalePicker } from "@/components/LocalePicker";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { Field } from "@/components/ui/field";
+import { FieldError } from "@/components/ui/field-error";
+import { PasswordInput } from "@/components/ui/password-input";
 import {
   acceptInvitation,
+  ApiError,
   isInvitationSignInRequired,
   previewInvitation,
   type InvitationPreview,
@@ -16,6 +20,7 @@ import {
 import { useAuth } from "@/lib/auth";
 import { useDocumentTitle } from "@/lib/document-title";
 import { describeError, type ErrorCopy } from "@/lib/error-copy";
+import { useFormat } from "@/lib/i18n/format";
 import { roleLabel } from "@/lib/roles";
 
 // the invitee may have no account yet, so this screen renders outside the
@@ -25,10 +30,18 @@ export default function AcceptInvite({ token }: { token: string }) {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const { signIn } = useAuth();
+  const fmt = useFormat();
   const [invite, setInvite] = useState<InvitationPreview | null>(null);
   const [error, setError] = useState<ErrorCopy | null>(null);
   const [pw, setPw] = useState("");
   const [confirm, setConfirm] = useState("");
+  // the rules are said once the person has moved on from a field (or, for the
+  // confirmation, typed as much as the password), not on the first keystroke
+  const [pwBlurred, setPwBlurred] = useState(false);
+  const [confirmBlurred, setConfirmBlurred] = useState(false);
+  // a refusal retrying cannot fix: the button stays off and the way on is the
+  // sign-in page (#2067)
+  const [refused, setRefused] = useState(false);
   const [pending, setPending] = useState(false);
   // accepted, but the invitee has to sign in for a session: an existing
   // account, or a new one its org requires a second factor from
@@ -56,6 +69,11 @@ export default function AcceptInvite({ token }: { token: string }) {
   }, [token]);
 
   const submit = async () => {
+    if (!invite?.has_account && (pw.length < 8 || confirm !== pw)) {
+      setPwBlurred(true);
+      setConfirmBlurred(true);
+      return;
+    }
     setPending(true);
     setError(null);
     try {
@@ -72,7 +90,20 @@ export default function AcceptInvite({ token }: { token: string }) {
       // against a token that had just been consumed
       navigate("/dashboard", { replace: true });
     } catch (e) {
-      setError(describeError(e, t));
+      if (e instanceof ApiError && e.status === 401) {
+        // used, revoked or expired between opening the link and submitting it
+        setRefused(true);
+        setError({ message: t("pages.acceptInvite.errors.spent") });
+      } else if (e instanceof ApiError && e.status === 403) {
+        setRefused(true);
+        setError({ message: t("pages.acceptInvite.errors.deactivated") });
+      } else if (e instanceof ApiError && e.status === 429 && e.retryAfterSeconds) {
+        setError({
+          message: t("pages.acceptInvite.errors.wait", { count: Math.ceil(e.retryAfterSeconds) }),
+        });
+      } else {
+        setError(describeError(e, t));
+      }
     } finally {
       setPending(false);
     }
@@ -81,8 +112,20 @@ export default function AcceptInvite({ token }: { token: string }) {
   // the role by the name the inviter picked it under in the invite dialog, not
   // the id the control plane stores (#2813)
   const role = invite ? roleLabel(t, invite.role) : "";
-  const mismatch = confirm.length > 0 && confirm !== pw;
-  const ready = invite?.has_account ? !pending : pw.length >= 8 && !mismatch && !pending;
+  const tooShort = pw.length < 8;
+  const mismatch =
+    confirm !== pw && (confirmBlurred || (confirm.length > 0 && confirm.length >= pw.length));
+  const grants = invite
+    ? t(
+        invite.scope_type === "project"
+          ? "pages.acceptInvite.grantsProject"
+          : invite.scope_type === "team"
+            ? "pages.acceptInvite.grantsTeam"
+            : "pages.acceptInvite.grantsOrg",
+        { role, org: invite.org_name, scope: invite.scope_name },
+      )
+    : "";
+  const toSignIn = () => navigate("/", { replace: true });
 
   return (
     <AuthCard
@@ -113,71 +156,84 @@ export default function AcceptInvite({ token }: { token: string }) {
       }
       descriptionRole={signInReason != null ? "status" : undefined}
     >
+      {invite == null && error != null && (
+        <Button
+          type="button"
+          onClick={toSignIn}
+          className="w-full bg-brand-folk text-white hover:bg-brand-press"
+        >
+          {t("pages.acceptInvite.signIn")} <ArrowRight className="h-4 w-4" />
+        </Button>
+      )}
       {invite != null &&
         (signInReason != null ? (
           // the invitation is spent; what is left is the ordinary sign-in,
           // which the shell shows at any path once there is no session
           <Button
             type="button"
-            onClick={() => navigate("/", { replace: true })}
+            onClick={toSignIn}
             className="w-full bg-brand-folk text-white hover:bg-brand-press"
           >
             {t("pages.acceptInvite.toSignIn")} <ArrowRight className="h-4 w-4" />
           </Button>
         ) : (
           <form
+            noValidate
             className="flex flex-col gap-4"
             onSubmit={(e) => {
               e.preventDefault();
               void submit();
             }}
           >
+            <p className="text-sm text-muted-foreground">
+              {grants} {t("pages.acceptInvite.expires", { date: fmt.dateTime(invite.expires_at) })}
+            </p>
             {!invite.has_account && (
               <>
-                <label className="flex flex-col gap-1.5 text-sm">
-                  <span className="text-muted-foreground">{t("pages.acceptInvite.password")}</span>
-                  <Input
-                    type="password"
+                <Field
+                  label={t("pages.acceptInvite.password")}
+                  hint={t("pages.acceptInvite.passwordHint")}
+                  error={
+                    pwBlurred && tooShort ? t("pages.acceptInvite.passwordTooShort") : undefined
+                  }
+                >
+                  <PasswordInput
                     name="new-password"
                     required
-                    minLength={8}
                     value={pw}
                     onChange={(e) => setPw(e.target.value)}
+                    onBlur={() => setPwBlurred(true)}
                     autoComplete="new-password"
                   />
-                </label>
-                <label className="flex flex-col gap-1.5 text-sm">
-                  <span className="text-muted-foreground">{t("pages.acceptInvite.confirm")}</span>
-                  <Input
-                    type="password"
+                </Field>
+                <Field
+                  label={t("pages.acceptInvite.confirm")}
+                  error={mismatch ? t("pages.acceptInvite.mismatch") : undefined}
+                >
+                  <PasswordInput
                     name="confirm-password"
                     required
-                    aria-invalid={mismatch || undefined}
                     value={confirm}
                     onChange={(e) => setConfirm(e.target.value)}
+                    onBlur={() => setConfirmBlurred(true)}
                     autoComplete="new-password"
                   />
-                </label>
+                </Field>
               </>
             )}
-            {mismatch && (
-              <p role="alert" className="text-xs text-[color:var(--status-danger-text)]">
-                {t("pages.acceptInvite.mismatch")}
-              </p>
-            )}
             {error != null && (
-              <p role="alert" className="text-xs text-[color:var(--status-danger-text)]">
-                {error.message}
+              <div className="flex flex-col gap-1">
+                <FieldError id="accept-error" error={error.message} />
                 {error.detail && (
-                  <span className="mt-1 block break-words font-mono text-[color:var(--text-subtle)]">
+                  <span className="break-words font-mono text-xs text-[color:var(--text-subtle)]">
                     {error.detail}
                   </span>
                 )}
-              </p>
+              </div>
             )}
             <Button
               type="submit"
-              disabled={!ready}
+              disabled={pending || refused}
               className="w-full bg-brand-folk text-white hover:bg-brand-press"
             >
               {pending ? (
@@ -195,8 +251,16 @@ export default function AcceptInvite({ token }: { token: string }) {
                 </>
               )}
             </Button>
+            {refused && (
+              <Button type="button" variant="outline" onClick={toSignIn} className="w-full">
+                {t("pages.acceptInvite.signIn")}
+              </Button>
+            )}
           </form>
         ))}
+      <div className="flex justify-center">
+        <LocalePicker />
+      </div>
     </AuthCard>
   );
 }

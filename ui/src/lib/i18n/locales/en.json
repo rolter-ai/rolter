@@ -34,7 +34,10 @@
       "tooManyAttempts_wait_one": "Too many failed attempts. Try again in {{count}} second.",
       "tooManyAttempts_wait_other": "Too many failed attempts. Try again in {{count}} seconds.",
       "unavailable": "The control plane could not be reached. Check that it is running and try again.",
-      "unexpected": "Sign-in failed: {{message}}"
+      "unexpected": "Sign-in failed: {{message}}",
+      "resetHelp": "Forgotten your password? An administrator of this deployment can send you a link to set a new one.",
+      "lockedHelp": "If you have forgotten the password, waiting will not help: an administrator of this deployment can send you a link to set a new one.",
+      "passwordLoginDisabledNoSso": "Password sign-in is turned off for this organization, and no single sign-on is set up here. Ask an administrator of this deployment."
     },
     "mfa": {
       "title": "Two-factor authentication",
@@ -45,12 +48,13 @@
       "attemptsLeft_other": "That code was not accepted — check the clock on your device. {{count}} attempts left before this sign-in starts over.",
       "verify": "Verify",
       "verifying": "Verifying…",
-      "back": "Sign in as someone else",
+      "back": "Back to the password",
       "errors": {
         "spent": "Too many wrong codes. Sign in with your password again to get a new prompt.",
         "expired": "That prompt expired. Sign in with your password again.",
         "enrolmentRequired": "Your organization requires a second factor, and this control plane cannot set one up because it has no encryption key configured. An operator has to set ROLTER_KEK, or an administrator has to relax the policy, before you can sign in."
-      }
+      },
+      "stuckHelp": "A recovery code works in the same field. If you no longer have your authenticator, whoever runs this deployment can reset the second factor."
     },
     "enrol": {
       "title": "Set up two-factor authentication",
@@ -1382,14 +1386,14 @@
       }
     },
     "acceptInvite": {
-      "invalidLink": "This invitation link is not valid. It may have been used, revoked, or expired — ask whoever invited you for a new one.",
+      "invalidLink": "This invitation link is not valid. It may have been used, revoked or expired. If you already accepted it, sign in; otherwise ask whoever invited you for a new link.",
       "checking": "Checking your invitation…",
       "fallbackTitle": "Invitation",
       "title": "Join {{org}}",
       "genericTitle": "Invitation",
       "intro": "You were invited as <strong>{{email}}</strong> with the <strong>{{role}}</strong> role. Choose a password — only you will know it.",
       "existingIntro": "You were invited as <strong>{{email}}</strong> with the <strong>{{role}}</strong> role. That address already has a rolter account, so there is no password to choose: accepting adds the role to it, and you then sign in as usual.",
-      "password": "Password (at least 8 characters)",
+      "password": "Password",
       "confirm": "Confirm password",
       "mismatch": "The two passwords do not match.",
       "creating": "Creating account…",
@@ -1397,7 +1401,20 @@
       "accept": "Accept invitation",
       "doneExisting": "The {{role}} role in {{org}} is now on your account. Sign in with your usual password to continue.",
       "doneSecondFactor": "Your account is ready. {{org}} requires a second factor, so sign in with the password you just chose and set one up.",
-      "toSignIn": "Continue to sign in"
+      "toSignIn": "Continue to sign in",
+      "passwordHint": "At least 8 characters.",
+      "passwordTooShort": "Use at least 8 characters.",
+      "grantsOrg": "This gives you the {{role}} role across {{org}}.",
+      "grantsTeam": "This gives you the {{role}} role on the team {{scope}} in {{org}}.",
+      "grantsProject": "This gives you the {{role}} role on the project {{scope}} in {{org}}.",
+      "expires": "The link works until {{date}}.",
+      "signIn": "Go to sign in",
+      "errors": {
+        "spent": "This invitation was already used, was revoked or has expired. If you already accepted it, sign in; otherwise ask whoever invited you for a new link.",
+        "deactivated": "This account has been deactivated, so it cannot take the invitation. Ask an administrator of this deployment.",
+        "wait_one": "Too many attempts. Try again in {{count}} second.",
+        "wait_other": "Too many attempts. Try again in {{count}} seconds."
+      }
     },
     "resetPassword": {
       "title": "Reset your password",

@@ -32,7 +32,7 @@ use uuid::Uuid;
 
 use rolter_store::postgres::models::{Invitation, User};
 use rolter_store::postgres::repo::{
-    InvitationRepo, MembershipRepo, OrgRepo, SessionRepo, UserRepo,
+    InvitationRepo, MembershipRepo, OrgRepo, ProjectRepo, SessionRepo, TeamRepo, UserRepo,
 };
 
 use crate::auth::{generate_session_token, session_pepper};
@@ -228,6 +228,13 @@ struct InvitationPreview {
     org_name: String,
     email: String,
     role: String,
+    /// where the role applies: `org`, `team` or `project`. The link's holder is
+    /// granted exactly this scope by accepting, so naming it tells them nothing
+    /// the token does not already give them
+    scope_type: &'static str,
+    /// the name of the team or project when the scope is not the org
+    #[serde(skip_serializing_if = "Option::is_none")]
+    scope_name: Option<String>,
     expires_at: chrono::DateTime<Utc>,
     /// an account already exists under this email, so accepting adds the role
     /// to it and the invitee then signs in as usual, rather than choosing a
@@ -250,10 +257,20 @@ async fn preview(
         .find_by_email(&invitation.email)
         .await?
         .is_some();
+    let (scope_type, scope_name) = match (invitation.project_id, invitation.team_id) {
+        (Some(id), _) => (
+            "project",
+            Some(ProjectRepo(pool(&state)).get(id).await?.name),
+        ),
+        (None, Some(id)) => ("team", Some(TeamRepo(pool(&state)).get(id).await?.name)),
+        (None, None) => ("org", None),
+    };
     Ok(Json(InvitationPreview {
         org_name: org.name,
         email: invitation.email,
         role: invitation.role,
+        scope_type,
+        scope_name,
         expires_at: invitation.expires_at,
         has_account,
     }))

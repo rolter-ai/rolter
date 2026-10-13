@@ -12207,6 +12207,10 @@ async fn invitations_onboard_accounts_once_and_expire_closed() {
     assert_eq!(preview["email"], "ada@example.com");
     assert_eq!(preview["role"], "admin");
     assert_eq!(preview["has_account"], false, "nobody holds this email yet");
+    // the scope the link grants is named, so an invitee can tell a team admin
+    // from an org admin
+    assert_eq!(preview["scope_type"], "team");
+    assert_eq!(preview["scope_name"], "Platform");
 
     // a made-up token is refused, and so is a short password
     let unknown = client

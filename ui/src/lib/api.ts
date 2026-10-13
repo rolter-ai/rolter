@@ -2933,6 +2933,9 @@ export interface InvitationPreview {
   org_name: string;
   email: string;
   role: Role;
+  /** where the role applies; a team or project invitation also carries `scope_name` */
+  scope_type: "org" | "team" | "project";
+  scope_name?: string;
   expires_at: string;
   /**
    * An account already exists under this email. Accepting then adds the role
