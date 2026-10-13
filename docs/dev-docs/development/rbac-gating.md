@@ -51,11 +51,22 @@ handler side (#2377): in a debug build `authorize` and `ScopeFilter::allows_as`
 panic when the chain they are handed has a different depth (org, org + team, full)
 than the row's declared `scope`. Every integration test that reaches a guard
 therefore exercises it, and a handler that guards a `team` row at `ScopeChain::org`
-fails its own test. The rows whose records live at several scopes (`provider`,
-`provider_group`, `budget`, `rate_limit`, see below) may guard at a shallower chain
-than declared, never a deeper one; that list is `MULTI_SCOPE` in `rbac_matrix.rs`. Guards that already differed when the
-check landed (`project`, `team:delete`, `membership`, `user`, `invitation:create`) are
-listed in `KNOWN_DRIFT` beside it, to be removed as #3074 fixes each.
+fails its own test. The rows whose records live at several scopes (`provider`, `provider_group`, `budget`,
+`rate_limit`, and `membership` and `invitation`, see below) may guard at a shallower
+chain than declared, never a deeper one; that list is `MULTI_SCOPE` in `rbac_matrix.rs`.
+A role is granted, and an invitation sent, at the scope it names, so those two rows
+declare `project` and a team admin is told `membership:create` when asked at their
+team (#3074). Deleting a team is an org admin's like creating one, and deleting a
+project is a team admin's: the admin of the team or project itself is refused (#3074).
+
+Four reads still guard deeper than their row declares, as `(resource, action, depth)`
+entries in `KNOWN_DRIFT`: `project:read` at the org and at a project, `user:read` at
+a team and at a project. A listing answers with the rows the caller reaches through
+a team or project role (#1846, #1850), so each row is decided at its own scope.
+Declaring the deeper scope for the whole row would make `effective` promise
+`project:create` or `user:create` to a team or project admin the guard refuses, and
+the dashboard mirrors one scope per row (`chainAt`), so they stay listed until a row
+can declare a scope per action.
 
 No `deployment` row takes a scoped role (`deployment_rows_name_no_role` asserts it),
 so keeping the whole chain for them in `chain_at` decides nothing: their authority is

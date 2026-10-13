@@ -24589,6 +24589,182 @@ async fn a_routes_strategy_targets_and_weights_change_in_one_update() {
     assert_eq!(status, 404);
 }
 
+/// #3074: a guard names the scope its `CAPABILITIES` row declares. Deleting a
+/// project is a team admin's, as creating one is, and deleting a team is an org
+/// admin's; the admin of the project or team itself is refused. Granting a role
+/// and inviting stay a team admin's inside their own team, and `effective`
+/// now says so.
+#[tokio::test]
+async fn guards_follow_the_scope_their_capability_row_declares() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("drift".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let call = |method: reqwest::Method, path: String, token: String, body: Value| {
+        let client = client.clone();
+        let base = base.clone();
+        async move {
+            let resp = client
+                .request(method, format!("{base}{path}"))
+                .bearer_auth(token)
+                .json(&body)
+                .send()
+                .await
+                .unwrap();
+            let status = resp.status().as_u16();
+            (status, resp.json::<Value>().await.unwrap_or(Value::Null))
+        }
+    };
+    let admin = |method: reqwest::Method, path: String, body: Value| {
+        call(method, path, "drift".to_string(), body)
+    };
+
+    let (_, org) = admin(
+        reqwest::Method::POST,
+        "/api/v1/orgs".into(),
+        json!({"name": "Acme", "slug": "acme"}),
+    )
+    .await;
+    let org_id: uuid::Uuid = org["id"].as_str().unwrap().parse().unwrap();
+    let (_, team) = admin(
+        reqwest::Method::POST,
+        format!("/api/v1/orgs/{org_id}/teams"),
+        json!({"name": "core"}),
+    )
+    .await;
+    let team_id: uuid::Uuid = team["id"].as_str().unwrap().parse().unwrap();
+    let mut projects = Vec::new();
+    for name in ["one", "two"] {
+        let (_, project) = admin(
+            reqwest::Method::POST,
+            format!("/api/v1/teams/{team_id}/projects"),
+            json!({"name": name}),
+        )
+        .await;
+        projects.push(
+            project["id"]
+                .as_str()
+                .unwrap()
+                .parse::<uuid::Uuid>()
+                .unwrap(),
+        );
+    }
+
+    let team_admin = seed_user(&pool, "team-admin@acme.test", false).await;
+    seed_membership(&pool, team_admin, None, Some(team_id), None, "admin").await;
+    let team_admin = seed_session(&pool, team_admin, "drift_team_admin").await;
+    let project_admin = seed_user(&pool, "project-admin@acme.test", false).await;
+    seed_membership(&pool, project_admin, None, None, Some(projects[0]), "admin").await;
+    let project_admin = seed_session(&pool, project_admin, "drift_project_admin").await;
+    let org_admin = seed_user(&pool, "org-admin@acme.test", false).await;
+    seed_membership(&pool, org_admin, Some(org_id), None, None, "admin").await;
+    let org_admin = seed_session(&pool, org_admin, "drift_org_admin").await;
+
+    // project:delete is a team row: its own admin is refused, the team's is not
+    let project_path = format!("/api/v1/projects/{}", projects[0]);
+    let (status, body) = call(
+        reqwest::Method::DELETE,
+        project_path.clone(),
+        project_admin,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(
+        status, 403,
+        "a project admin cannot delete the project: {body}"
+    );
+    let (status, body) = call(
+        reqwest::Method::DELETE,
+        project_path,
+        team_admin.clone(),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, 204, "a team admin deletes a project: {body:?}");
+
+    // team:delete is an org row: the team's admin is refused, the org's is not
+    let team_path = format!("/api/v1/teams/{team_id}");
+    let (status, body) = call(
+        reqwest::Method::DELETE,
+        team_path.clone(),
+        team_admin.clone(),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, 403, "a team admin cannot delete the team: {body}");
+
+    // granting and inviting stay a team admin's inside their team
+    let invitee = seed_user(&pool, "invitee@acme.test", false).await;
+    let (status, body) = call(
+        reqwest::Method::POST,
+        format!("/api/v1/orgs/{org_id}/memberships"),
+        team_admin.clone(),
+        json!({"user_id": invitee, "scope_type": "team", "scope_id": team_id, "role": "viewer"}),
+    )
+    .await;
+    assert_eq!(status, 200, "a team admin grants in their team: {body}");
+    let (status, body) = call(
+        reqwest::Method::POST,
+        format!("/api/v1/orgs/{org_id}/invitations"),
+        team_admin.clone(),
+        json!({"email": "new@acme.test", "role": "viewer", "scope_type": "team", "scope_id": team_id}),
+    )
+    .await;
+    assert_eq!(status, 200, "a team admin invites into their team: {body}");
+    let (status, body) = call(
+        reqwest::Method::POST,
+        format!("/api/v1/orgs/{org_id}/memberships"),
+        team_admin.clone(),
+        json!({"user_id": invitee, "scope_type": "org", "scope_id": org_id, "role": "viewer"}),
+    )
+    .await;
+    assert_eq!(status, 403, "but not in the org above: {body}");
+
+    // the advisory answer follows the guard: asked at the team, a team admin is
+    // told they may grant and invite there, and asked at the org, they are not
+    let allowed = |body: &Value| -> Vec<String> {
+        body["allowed"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect()
+    };
+    let (status, at_team) = call(
+        reqwest::Method::GET,
+        format!("/api/v1/rbac/effective?org_id={org_id}&team_id={team_id}"),
+        team_admin.clone(),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, 200, "{at_team}");
+    for pair in [
+        "membership:create",
+        "membership:delete",
+        "invitation:create",
+    ] {
+        assert!(allowed(&at_team).contains(&pair.to_string()), "{pair}");
+    }
+    let (_, at_org) = call(
+        reqwest::Method::GET,
+        format!("/api/v1/rbac/effective?org_id={org_id}"),
+        team_admin,
+        Value::Null,
+    )
+    .await;
+    for pair in ["membership:create", "invitation:create", "team:delete"] {
+        assert!(!allowed(&at_org).contains(&pair.to_string()), "{pair}");
+    }
+
+    let (status, body) = call(reqwest::Method::DELETE, team_path, org_admin, Value::Null).await;
+    assert_eq!(status, 204, "the org admin deletes the team: {body:?}");
+}
+
 /// #2235: editing a route's strategy and targets takes `route:update`, the
 /// project admin's capability, like every other route write. A project member
 /// can read the route but not change it.
