@@ -71,7 +71,8 @@
           "action": "read",
           "minimum_role": "viewer",
           "superadmin_only": false,
-          "authenticated_only": false
+          "authenticated_only": false,
+          "scope": "project"
         },
         {
           "action": "create",
@@ -641,7 +642,8 @@
           "action": "read",
           "minimum_role": "viewer",
           "superadmin_only": false,
-          "authenticated_only": false
+          "authenticated_only": false,
+          "scope": "project"
         },
         {
           "action": "create",

@@ -2,6 +2,7 @@ import { describe, it, expect } from "bun:test";
 
 import {
   ACTIONS,
+  scopeOf,
   CAPABILITIES,
   allowedFor,
   chainAt,
@@ -170,17 +171,18 @@ describe("each capability decided at its own scope", () => {
     for (const ms of levels) {
       const allowed = allowedAt(ms);
       for (const c of CAPABILITIES) {
-        const guard: ScopeChain =
-          c.scope === "org"
-            ? ORG_ONLY
-            : c.scope === "team"
-              ? { orgId: "o", teamId: "t", projectId: null }
-              : CHAIN;
-        const role = resolveRole(ms, guard);
         for (const action of ACTIONS) {
           const authority = c[action];
           if (authority === null || authority === "superadmin" || authority === "authenticated")
             continue;
+          const scope = scopeOf(c, action);
+          const guard: ScopeChain =
+            scope === "org"
+              ? ORG_ONLY
+              : scope === "team"
+                ? { orgId: "o", teamId: "t", projectId: null }
+                : CHAIN;
+          const role = resolveRole(ms, guard);
           const decided = role !== null && rank[role] >= rank[authority];
           expect([`${c.resource}:${action}`, has(allowed, `${c.resource}:${action}`)]).toEqual([
             `${c.resource}:${action}`,
@@ -189,6 +191,24 @@ describe("each capability decided at its own scope", () => {
         }
       }
     }
+  });
+});
+
+describe("an action that names a scope of its own", () => {
+  it("is decided there while the row's other actions stay at the row's scope", () => {
+    // a project admin reaches the project list, and is not promised a create
+    // that the team-scoped guard refuses (#3107)
+    const projectAdmin: Membership[] = [{ role: "admin", projectId: "p" }];
+    const allowed = allowedAt(projectAdmin);
+    expect(allowed).toContain("project:read");
+    expect(allowed).not.toContain("project:create");
+    expect(allowed).toContain("user:read");
+    expect(allowed).not.toContain("user:create");
+    const project = CAPABILITIES.find((c) => c.resource === "project");
+    expect(project && [scopeOf(project, "read"), scopeOf(project, "create")]).toEqual([
+      "project",
+      "team",
+    ]);
   });
 });
 

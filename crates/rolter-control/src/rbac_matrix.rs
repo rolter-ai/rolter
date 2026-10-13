@@ -118,7 +118,17 @@ struct Capability {
     create: Option<Authority>,
     update: Option<Authority>,
     delete: Option<Authority>,
+    /// actions that are decided at another scope than `scope`, which stays the
+    /// default for every action not listed. A listing answers with the rows the
+    /// caller reaches through a team or project role (#1846, #1850), so its
+    /// read is decided deeper than the row's writes; declaring the deeper
+    /// scope for the whole row would promise `project:create` to a project
+    /// admin whom the guard refuses (#3107)
+    action_scopes: &'static [(Action, &'static str)],
 }
+
+/// every action is decided at the row's `scope`
+const NONE: &[(Action, &str)] = &[];
 
 const VIEWER: Option<Authority> = Some(Authority::Role(Role::Viewer));
 const MEMBER: Option<Authority> = Some(Authority::Role(Role::Member));
@@ -143,6 +153,7 @@ const CAPABILITIES: &[Capability] = &[
         create: SUPER,
         update: NA,
         delete: ADMIN,
+        action_scopes: NONE,
     },
     Capability {
         resource: "team",
@@ -151,6 +162,7 @@ const CAPABILITIES: &[Capability] = &[
         create: ADMIN,
         update: NA,
         delete: ADMIN,
+        action_scopes: NONE,
     },
     Capability {
         resource: "project",
@@ -159,6 +171,9 @@ const CAPABILITIES: &[Capability] = &[
         create: ADMIN,
         update: NA,
         delete: ADMIN,
+        // the list shows every project the caller reaches through an org, team
+        // or project role, each decided at its own scope (#1846)
+        action_scopes: &[(Action::Read, "project")],
     },
     // a project's own settings, apart from the project row (#1820). Today that
     // is who may read the bodies payload capture stored for its traffic, which
@@ -170,6 +185,7 @@ const CAPABILITIES: &[Capability] = &[
         create: NA,
         update: ADMIN,
         delete: NA,
+        action_scopes: NONE,
     },
     // a provider or group may be scoped to one project of an org (#1919), whose
     // admin then manages it. The scope is `project` so the advisory answer
@@ -183,6 +199,7 @@ const CAPABILITIES: &[Capability] = &[
         create: ADMIN,
         update: ADMIN,
         delete: ADMIN,
+        action_scopes: NONE,
     },
     Capability {
         resource: "plugin",
@@ -191,6 +208,7 @@ const CAPABILITIES: &[Capability] = &[
         create: ADMIN,
         update: ADMIN,
         delete: ADMIN,
+        action_scopes: NONE,
     },
     Capability {
         resource: "provider_group",
@@ -199,6 +217,7 @@ const CAPABILITIES: &[Capability] = &[
         create: ADMIN,
         update: ADMIN,
         delete: ADMIN,
+        action_scopes: NONE,
     },
     // provider uptime, MTTR and failure timeline (#1820): whoever may read a
     // provider may read how it has been behaving
@@ -209,6 +228,7 @@ const CAPABILITIES: &[Capability] = &[
         create: NA,
         update: NA,
         delete: NA,
+        action_scopes: NONE,
     },
     Capability {
         // a label on a provider, provider group or route. its own capability
@@ -220,6 +240,7 @@ const CAPABILITIES: &[Capability] = &[
         create: ADMIN,
         update: ADMIN,
         delete: ADMIN,
+        action_scopes: NONE,
     },
     Capability {
         // a label on a model. models live in the deployment-wide pricing
@@ -231,6 +252,7 @@ const CAPABILITIES: &[Capability] = &[
         create: SUPER,
         update: SUPER,
         delete: SUPER,
+        action_scopes: NONE,
     },
     Capability {
         resource: "route",
@@ -239,6 +261,7 @@ const CAPABILITIES: &[Capability] = &[
         create: ADMIN,
         update: ADMIN,
         delete: ADMIN,
+        action_scopes: NONE,
     },
     Capability {
         resource: "virtual_key",
@@ -247,6 +270,7 @@ const CAPABILITIES: &[Capability] = &[
         create: ADMIN,
         update: ADMIN,
         delete: ADMIN,
+        action_scopes: NONE,
     },
     // a key a user mints for themself in a project they belong to: `member`,
     // not `admin`, so read-only viewers still cannot mint one
@@ -257,6 +281,7 @@ const CAPABILITIES: &[Capability] = &[
         create: MEMBER,
         update: NA,
         delete: NA,
+        action_scopes: NONE,
     },
     // request logs and the usage, spend and attribution rollups over them
     // (#1820). A user reads the rows of the orgs, teams and projects they hold
@@ -268,6 +293,7 @@ const CAPABILITIES: &[Capability] = &[
         create: NA,
         update: NA,
         delete: NA,
+        action_scopes: NONE,
     },
     // the request and response bodies payload capture stored with those rows
     // (#1820): the most sensitive thing the logs hold, so a member's by
@@ -280,6 +306,7 @@ const CAPABILITIES: &[Capability] = &[
         create: NA,
         update: NA,
         delete: NA,
+        action_scopes: NONE,
     },
     // budgets and rate limits attach to any scope, so the scope is `project`:
     // the read answer reaches a project member, who may see the caps that
@@ -293,6 +320,7 @@ const CAPABILITIES: &[Capability] = &[
         create: ADMIN,
         update: ADMIN,
         delete: ADMIN,
+        action_scopes: NONE,
     },
     Capability {
         resource: "rate_limit",
@@ -301,6 +329,7 @@ const CAPABILITIES: &[Capability] = &[
         create: ADMIN,
         update: ADMIN,
         delete: ADMIN,
+        action_scopes: NONE,
     },
     // the pricing catalog and the effective model list are global (unscoped),
     // so their mutations are superadmin-only. their reads are every
@@ -314,6 +343,7 @@ const CAPABILITIES: &[Capability] = &[
         create: NA,
         update: SUPER,
         delete: SUPER,
+        action_scopes: NONE,
     },
     Capability {
         // any signed-in caller may ask, and is answered with the rows of the
@@ -326,6 +356,7 @@ const CAPABILITIES: &[Capability] = &[
         create: NA,
         update: NA,
         delete: SUPER,
+        action_scopes: NONE,
     },
     // the running version and the latest stable release (#902): a fact about
     // the deployment, carrying no tenant's data, so any authenticated caller
@@ -337,6 +368,7 @@ const CAPABILITIES: &[Capability] = &[
         create: NA,
         update: NA,
         delete: NA,
+        action_scopes: NONE,
     },
     // which subsystems this build marks experimental (#1385): a fact about the
     // code, identical for every caller, and read by the nav rail every signed-in
@@ -348,6 +380,7 @@ const CAPABILITIES: &[Capability] = &[
         create: NA,
         update: NA,
         delete: NA,
+        action_scopes: NONE,
     },
     // the control plane's own public base URL (#2083): the SSO redirect uri,
     // the SSO login url and the SCIM base url are all built from it, and it is
@@ -361,6 +394,7 @@ const CAPABILITIES: &[Capability] = &[
         create: NA,
         update: NA,
         delete: NA,
+        action_scopes: NONE,
     },
     // an account changing its own local password (#2804). It is every signed-in
     // account's to do, a viewer or one with no membership included: the route
@@ -374,6 +408,7 @@ const CAPABILITIES: &[Capability] = &[
         create: NA,
         update: ANYONE,
         delete: NA,
+        action_scopes: NONE,
     },
     Capability {
         resource: "business_unit",
@@ -382,6 +417,7 @@ const CAPABILITIES: &[Capability] = &[
         create: ADMIN,
         update: ADMIN,
         delete: ADMIN,
+        action_scopes: NONE,
     },
     Capability {
         resource: "customer",
@@ -390,6 +426,7 @@ const CAPABILITIES: &[Capability] = &[
         create: ADMIN,
         update: ADMIN,
         delete: ADMIN,
+        action_scopes: NONE,
     },
     Capability {
         resource: "prompt_template",
@@ -398,6 +435,7 @@ const CAPABILITIES: &[Capability] = &[
         create: ADMIN,
         update: ADMIN,
         delete: ADMIN,
+        action_scopes: NONE,
     },
     Capability {
         resource: "skill",
@@ -406,6 +444,7 @@ const CAPABILITIES: &[Capability] = &[
         create: ADMIN,
         update: ADMIN,
         delete: ADMIN,
+        action_scopes: NONE,
     },
     // account lifecycle vs. role assignment are split by authority: inviting a
     // user into an org is an org admin's, but editing or deleting the global
@@ -418,6 +457,9 @@ const CAPABILITIES: &[Capability] = &[
         create: ADMIN,
         update: SUPER,
         delete: SUPER,
+        // the list shows the members a caller reaches through a team or
+        // project role, each row decided at its own scope (#1850)
+        action_scopes: &[(Action::Read, "project")],
     },
     Capability {
         resource: "membership",
@@ -428,6 +470,7 @@ const CAPABILITIES: &[Capability] = &[
         // old one in a single statement, so it takes the same admin bar (#2310)
         update: ADMIN,
         delete: ADMIN,
+        action_scopes: NONE,
     },
     // issuing a reset link for a member's password. Only the issuing is a
     // capability: redeeming the link is public, its token being the credential.
@@ -440,6 +483,7 @@ const CAPABILITIES: &[Capability] = &[
         create: ADMIN,
         update: NA,
         delete: NA,
+        action_scopes: NONE,
     },
     // listing provisioning tokens is an admin read: the rows name the IdPs a
     // tenant trusts, which is not viewer-grade information
@@ -450,6 +494,7 @@ const CAPABILITIES: &[Capability] = &[
         create: ADMIN,
         update: NA,
         delete: ADMIN,
+        action_scopes: NONE,
     },
     // a group mapping is a way to grant a role, so it needs the same admin bar
     // as granting one directly — the rule sso_group_mapping already follows
@@ -460,6 +505,7 @@ const CAPABILITIES: &[Capability] = &[
         create: ADMIN,
         update: NA,
         delete: ADMIN,
+        action_scopes: NONE,
     },
     Capability {
         resource: "mcp_server",
@@ -468,6 +514,7 @@ const CAPABILITIES: &[Capability] = &[
         create: ADMIN,
         update: ADMIN,
         delete: ADMIN,
+        action_scopes: NONE,
     },
     Capability {
         resource: "mcp_tool_group",
@@ -476,6 +523,7 @@ const CAPABILITIES: &[Capability] = &[
         create: ADMIN,
         update: ADMIN,
         delete: ADMIN,
+        action_scopes: NONE,
     },
     Capability {
         resource: "mcp_settings",
@@ -484,6 +532,7 @@ const CAPABILITIES: &[Capability] = &[
         create: NA,
         update: ADMIN,
         delete: NA,
+        action_scopes: NONE,
     },
     // the OAuth client rolter presents to an MCP server's authorization
     // server. registering one decides which external host receives a consent
@@ -496,6 +545,7 @@ const CAPABILITIES: &[Capability] = &[
         create: NA,
         update: ADMIN,
         delete: ADMIN,
+        action_scopes: NONE,
     },
     // a grant or session belongs to a user: an org admin sees and revokes any,
     // a member only their own — so the read/revoke floor is a viewer
@@ -513,6 +563,7 @@ const CAPABILITIES: &[Capability] = &[
         create: MEMBER,
         update: NA,
         delete: VIEWER,
+        action_scopes: NONE,
     },
     Capability {
         resource: "mcp_oauth_session",
@@ -521,6 +572,7 @@ const CAPABILITIES: &[Capability] = &[
         create: MEMBER,
         update: MEMBER,
         delete: VIEWER,
+        action_scopes: NONE,
     },
     // configurable rbac (#534). Defining a role or a profile is a way to grant
     // authority, so it takes the same admin bar as granting one directly;
@@ -533,6 +585,7 @@ const CAPABILITIES: &[Capability] = &[
         create: ADMIN,
         update: ADMIN,
         delete: ADMIN,
+        action_scopes: NONE,
     },
     Capability {
         resource: "access_profile",
@@ -541,6 +594,7 @@ const CAPABILITIES: &[Capability] = &[
         create: ADMIN,
         update: ADMIN,
         delete: ADMIN,
+        action_scopes: NONE,
     },
     Capability {
         resource: "access_profile_assignment",
@@ -549,6 +603,7 @@ const CAPABILITIES: &[Capability] = &[
         create: ADMIN,
         update: NA,
         delete: ADMIN,
+        action_scopes: NONE,
     },
     Capability {
         resource: "audit_log",
@@ -557,6 +612,7 @@ const CAPABILITIES: &[Capability] = &[
         create: NA,
         update: NA,
         delete: NA,
+        action_scopes: NONE,
     },
     // org-less account events belong to no org, so no org read returns them
     Capability {
@@ -566,6 +622,7 @@ const CAPABILITIES: &[Capability] = &[
         create: NA,
         update: NA,
         delete: NA,
+        action_scopes: NONE,
     },
     // every account in the deployment, not one org's people: the deployment-wide
     // audit log names an actor from any org (#2871)
@@ -576,6 +633,7 @@ const CAPABILITIES: &[Capability] = &[
         create: NA,
         update: NA,
         delete: NA,
+        action_scopes: NONE,
     },
     Capability {
         resource: "invitation",
@@ -584,6 +642,7 @@ const CAPABILITIES: &[Capability] = &[
         create: ADMIN,
         update: NA,
         delete: ADMIN,
+        action_scopes: NONE,
     },
     // single sign-on: registering an identity provider or mapping its groups to
     // roles is a way to grant roles, so it needs the same admin bar as granting
@@ -597,6 +656,7 @@ const CAPABILITIES: &[Capability] = &[
         // out of service, which is the same grant as registering one (#1233)
         update: ADMIN,
         delete: ADMIN,
+        action_scopes: NONE,
     },
     Capability {
         resource: "sso_group_mapping",
@@ -605,6 +665,7 @@ const CAPABILITIES: &[Capability] = &[
         create: ADMIN,
         update: NA,
         delete: ADMIN,
+        action_scopes: NONE,
     },
     Capability {
         resource: "org_auth_policy",
@@ -613,6 +674,7 @@ const CAPABILITIES: &[Capability] = &[
         create: NA,
         update: ADMIN,
         delete: NA,
+        action_scopes: NONE,
     },
     // deployment-wide policy: no tenancy scope exists to be a member of, so
     // these are the admin token's (or a superadmin's) alone
@@ -623,6 +685,7 @@ const CAPABILITIES: &[Capability] = &[
         create: NA,
         update: SUPER,
         delete: NA,
+        action_scopes: NONE,
     },
     Capability {
         resource: "runtime_policy",
@@ -631,6 +694,7 @@ const CAPABILITIES: &[Capability] = &[
         create: NA,
         update: SUPER,
         delete: NA,
+        action_scopes: NONE,
     },
     Capability {
         resource: "logging_settings",
@@ -639,6 +703,7 @@ const CAPABILITIES: &[Capability] = &[
         create: NA,
         update: SUPER,
         delete: NA,
+        action_scopes: NONE,
     },
     Capability {
         resource: "compatibility_policy",
@@ -647,6 +712,7 @@ const CAPABILITIES: &[Capability] = &[
         create: NA,
         update: SUPER,
         delete: NA,
+        action_scopes: NONE,
     },
     Capability {
         resource: "client_settings",
@@ -655,6 +721,7 @@ const CAPABILITIES: &[Capability] = &[
         create: NA,
         update: SUPER,
         delete: NA,
+        action_scopes: NONE,
     },
     Capability {
         resource: "model_defaults",
@@ -663,6 +730,7 @@ const CAPABILITIES: &[Capability] = &[
         create: NA,
         update: SUPER,
         delete: NA,
+        action_scopes: NONE,
     },
     Capability {
         resource: "adaptive_routing_policy",
@@ -671,6 +739,7 @@ const CAPABILITIES: &[Capability] = &[
         create: NA,
         update: SUPER,
         delete: NA,
+        action_scopes: NONE,
     },
     Capability {
         resource: "guardrail_rule",
@@ -679,6 +748,7 @@ const CAPABILITIES: &[Capability] = &[
         create: SUPER,
         update: SUPER,
         delete: SUPER,
+        action_scopes: NONE,
     },
     Capability {
         resource: "guardrail_provider",
@@ -687,6 +757,7 @@ const CAPABILITIES: &[Capability] = &[
         create: SUPER,
         update: SUPER,
         delete: SUPER,
+        action_scopes: NONE,
     },
     Capability {
         // read-only: the data plane writes it over the internal channel, and
@@ -697,6 +768,7 @@ const CAPABILITIES: &[Capability] = &[
         create: NA,
         update: NA,
         delete: NA,
+        action_scopes: NONE,
     },
     Capability {
         resource: "cluster_node",
@@ -705,6 +777,7 @@ const CAPABILITIES: &[Capability] = &[
         create: NA,
         update: SUPER,
         delete: SUPER,
+        action_scopes: NONE,
     },
     Capability {
         resource: "security_settings",
@@ -713,6 +786,7 @@ const CAPABILITIES: &[Capability] = &[
         create: NA,
         update: SUPER,
         delete: NA,
+        action_scopes: NONE,
     },
     // the configuration export spans every org's providers, groups and routes
     // in one document (#1082), so there is no tenancy scope narrow enough to
@@ -724,6 +798,7 @@ const CAPABILITIES: &[Capability] = &[
         create: NA,
         update: NA,
         delete: NA,
+        action_scopes: NONE,
     },
     // outbound telemetry export is a deployment-wide egress decision, so it
     // sits at the same level as the security settings above rather than being
@@ -735,6 +810,7 @@ const CAPABILITIES: &[Capability] = &[
         create: SUPER,
         update: SUPER,
         delete: SUPER,
+        action_scopes: NONE,
     },
     Capability {
         resource: "alert_channel",
@@ -743,6 +819,7 @@ const CAPABILITIES: &[Capability] = &[
         create: SUPER,
         update: SUPER,
         delete: SUPER,
+        action_scopes: NONE,
     },
     Capability {
         resource: "alert_rule",
@@ -751,6 +828,7 @@ const CAPABILITIES: &[Capability] = &[
         create: SUPER,
         update: SUPER,
         delete: SUPER,
+        action_scopes: NONE,
     },
     // notification history is append-only; "create" is asking the deployment to
     // evaluate a rule now, which can emit one
@@ -761,6 +839,7 @@ const CAPABILITIES: &[Capability] = &[
         create: SUPER,
         update: NA,
         delete: NA,
+        action_scopes: NONE,
     },
     // MCP tool-call telemetry: written by the gateway, so only a superadmin
     // (or the admin token) creates a row. Reads follow the request log
@@ -774,10 +853,20 @@ const CAPABILITIES: &[Capability] = &[
         create: SUPER,
         update: NA,
         delete: NA,
+        action_scopes: NONE,
     },
 ];
 
 impl Capability {
+    /// the scope `action` is decided at: its own when the row declares one,
+    /// else the row's
+    fn scope_of(&self, action: Action) -> &'static str {
+        self.action_scopes
+            .iter()
+            .find(|(declared, _)| *declared == action)
+            .map_or(self.scope, |(_, scope)| scope)
+    }
+
     const fn authority(&self, action: Action) -> Option<Authority> {
         match action {
             Action::Read => self.read,
@@ -847,22 +936,6 @@ const MULTI_SCOPE: &[&str] = &[
     "invitation",
 ];
 
-/// Reads that guard deeper than their row declares, as `(resource, action,
-/// depth)`: a listing answers with the rows the caller reaches through a team
-/// or project role (#1846, #1850), so each row is decided at its own scope
-/// while the row's other actions stay where they are. Declaring the deeper
-/// scope for the whole row would make `effective` promise `project:create` and
-/// `user:create` to a team or project admin whom the guard refuses, and the
-/// dashboard mirrors one scope per row, so these stay listed until a row can
-/// declare a scope per action (#3074).
-#[cfg(debug_assertions)]
-const KNOWN_DRIFT: &[(&str, &str, u8)] = &[
-    ("project", "read", 1),
-    ("project", "read", 3),
-    ("user", "read", 2),
-    ("user", "read", 3),
-];
-
 /// How many levels of the org, team, project chain a guard names.
 #[cfg(debug_assertions)]
 fn chain_depth(chain: ScopeChain) -> u8 {
@@ -897,18 +970,23 @@ pub(crate) fn guard_shape_mismatch(requirement: Requirement, chain: ScopeChain) 
     let cap = CAPABILITIES
         .iter()
         .find(|cap| cap.resource == requirement.resource)?;
-    let declared = scope_depth(cap.scope)?;
+    let scope = cap.scope_of(requirement.action);
+    let declared = scope_depth(scope)?;
     let used = chain_depth(chain);
-    let multi = MULTI_SCOPE.contains(&cap.resource);
-    let agrees = used == declared
-        || (multi && used >= 1 && used < declared)
-        || KNOWN_DRIFT.contains(&(cap.resource, action_key(requirement.action), used));
+    // an action with a scope of its own is a listing that decides each row at
+    // the row's scope, so it may also ask at a shallower chain
+    let multi = MULTI_SCOPE.contains(&cap.resource)
+        || cap
+            .action_scopes
+            .iter()
+            .any(|(action, _)| *action == requirement.action);
+    let agrees = used == declared || (multi && used >= 1 && used < declared);
     (!agrees).then(|| {
         format!(
             "guard on {}:{} uses a chain {used} levels deep but CAPABILITIES declares scope {:?} ({declared} levels)",
             cap.resource,
             action_key(requirement.action),
-            cap.scope
+            scope
         )
     })
 }
@@ -948,6 +1026,10 @@ struct ActionView {
     superadmin_only: bool,
     /// no membership required: any authenticated caller may perform it
     authenticated_only: bool,
+    /// the scope this action is decided at when it is not the resource's
+    /// `scope`; absent for every action that follows its row
+    #[serde(skip_serializing_if = "Option::is_none")]
+    scope: Option<&'static str>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1118,6 +1200,11 @@ fn resource_view(cap: &Capability) -> ResourceView {
                     },
                     superadmin_only: authority == Authority::Superadmin,
                     authenticated_only: authority == Authority::Authenticated,
+                    scope: cap
+                        .action_scopes
+                        .iter()
+                        .find(|(declared, _)| *declared == action)
+                        .map(|(_, scope)| *scope),
                 })
             })
             .collect(),
@@ -1298,11 +1385,11 @@ fn allowed_for(
 ) -> Vec<String> {
     let mut allowed = Vec::new();
     for cap in CAPABILITIES {
-        let at = chain_at(cap.scope, chain);
         for action in Action::ALL {
             let Some(authority) = cap.authority(action) else {
                 continue;
             };
+            let at = chain_at(cap.scope_of(action), chain);
             let permitted = match authority {
                 // deployment-wide policy is never reachable through a custom
                 // role, so the grants are not consulted here
@@ -1369,6 +1456,44 @@ mod tests {
         let provider = requirement_for("provider", Action::Read);
         assert!(guard_shape_mismatch(provider, chain_of(1)).is_none());
         assert!(guard_shape_mismatch(provider, chain_of(3)).is_none());
+    }
+
+    #[test]
+    fn a_listing_read_declares_its_own_scope_and_the_writes_keep_the_row() {
+        // the project and user lists decide each row at its own scope (#1846,
+        // #1850) while their writes stay where the row declares (#3107)
+        for (resource, row) in [("project", "team"), ("user", "org")] {
+            let cap = CAPABILITIES
+                .iter()
+                .find(|cap| cap.resource == resource)
+                .expect("the row exists");
+            assert_eq!(cap.scope, row);
+            assert_eq!(cap.scope_of(Action::Read), "project");
+            for action in [Action::Create, Action::Update, Action::Delete] {
+                assert_eq!(cap.scope_of(action), row);
+            }
+            let read = requirement_for(resource, Action::Read);
+            for depth in 1..=3 {
+                assert!(guard_shape_mismatch(read, chain_of(depth)).is_none());
+            }
+        }
+        // the write is still refused at the deeper chain the read now allows
+        let create = requirement_for("project", Action::Create);
+        assert!(guard_shape_mismatch(create, chain_of(3)).is_some());
+        assert!(guard_shape_mismatch(create, chain_of(2)).is_none());
+    }
+
+    #[test]
+    fn a_project_admin_is_told_the_lists_and_not_the_writes() {
+        let c = chain();
+        let ms = [membership(None, None, c.project, "admin")];
+        let allowed = allowed_for(false, &ms, &[], c);
+        for pair in ["project:read", "user:read"] {
+            assert!(allowed.contains(&pair.to_string()), "{pair}");
+        }
+        for pair in ["project:create", "project:delete", "user:create"] {
+            assert!(!allowed.contains(&pair.to_string()), "{pair}");
+        }
     }
 
     #[test]
@@ -1592,18 +1717,18 @@ mod tests {
                     let allowed = allowed_for(false, &ms, g, c);
                     for cap in CAPABILITIES {
                         // what the route's guard passes to `authorize`
-                        let guard = match cap.scope {
-                            "org" => ScopeChain::org(c.org.unwrap_or_default()),
-                            "team" => ScopeChain {
-                                org: c.org,
-                                team: c.team,
-                                project: None,
-                            },
-                            _ => c,
-                        };
                         for action in Action::ALL {
                             let Some(authority) = cap.authority(action) else {
                                 continue;
+                            };
+                            let guard = match cap.scope_of(action) {
+                                "org" => ScopeChain::org(c.org.unwrap_or_default()),
+                                "team" => ScopeChain {
+                                    org: c.org,
+                                    team: c.team,
+                                    project: None,
+                                },
+                                _ => c,
                             };
                             let Authority::Role(required) = authority else {
                                 continue;
@@ -2032,13 +2157,19 @@ mod tests {
         };
         CAPABILITIES
             .iter()
-            .map(|cap| {
-                let at = chain_at(cap.scope, whole);
+            .flat_map(|cap| {
+                Action::ALL
+                    .into_iter()
+                    .map(|action| cap.scope_of(action))
+                    .collect::<Vec<_>>()
+            })
+            .map(|scope| {
+                let at = chain_at(scope, whole);
                 let cleared = [("org", at.org), ("team", at.team), ("project", at.project)]
                     .into_iter()
                     .filter_map(|(field, id)| id.is_none().then_some(field))
                     .collect();
-                (cap.scope, cleared)
+                (scope, cleared)
             })
             .collect()
     }

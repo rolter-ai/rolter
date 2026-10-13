@@ -59,14 +59,20 @@ declare `project` and a team admin is told `membership:create` when asked at the
 team (#3074). Deleting a team is an org admin's like creating one, and deleting a
 project is a team admin's: the admin of the team or project itself is refused (#3074).
 
-Four reads still guard deeper than their row declares, as `(resource, action, depth)`
-entries in `KNOWN_DRIFT`: `project:read` at the org and at a project, `user:read` at
-a team and at a project. A listing answers with the rows the caller reaches through
-a team or project role (#1846, #1850), so each row is decided at its own scope.
-Declaring the deeper scope for the whole row would make `effective` promise
-`project:create` or `user:create` to a team or project admin the guard refuses, and
-the dashboard mirrors one scope per row (`chainAt`), so they stay listed until a row
-can declare a scope per action.
+A row may declare a scope per action (#3107). `scope` stays the default for every
+action; `action_scopes` on the `Capability` lists the ones decided elsewhere, and
+the matrix publishes such an action's own `scope` next to its `minimum_role`
+(absent for an action that follows its row, so an older client reads the same
+payload). `project:read` and `user:read` declare `project`: a listing answers with
+the rows the caller reaches through a team or project role (#1846, #1850), so each
+row is decided at its own scope, while `project:create` and `user:create` keep the
+row's `team` and `org`. `effective` therefore tells a project admin the lists and
+not the creates, as the guard does. An action with a scope of its own may also guard
+at a shallower chain, like the `MULTI_SCOPE` rows, because the list asks at the org
+or team first and filters below it. The dashboard mirrors this with `scopeOf` and
+`actionScopes` in `ui/src/lib/rbac-capabilities.ts`, and the artifact check refuses
+an action scope that `chain_at` has no rule for. The debug guard-chain check has no
+exceptions left.
 
 No `deployment` row takes a scoped role (`deployment_rows_name_no_role` asserts it),
 so keeping the whole chain for them in `chain_at` decides nothing: their authority is

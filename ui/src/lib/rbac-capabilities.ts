@@ -35,6 +35,8 @@ export interface CapabilityRow {
   create: Authority | null;
   update: Authority | null;
   delete: Authority | null;
+  /** the actions decided at another scope than `scope`, which is the default for the rest */
+  actionScopes: Partial<Record<RbacAction, string>>;
 }
 
 const ROLES = snapshot.roles as RbacRoleView[];
@@ -62,8 +64,12 @@ export const CAPABILITIES: CapabilityRow[] = RESOURCES.map(({ resource, scope, a
     create: null,
     update: null,
     delete: null,
+    actionScopes: {},
   };
-  for (const view of actions) row[view.action] = authorityOf(view);
+  for (const view of actions) {
+    row[view.action] = authorityOf(view);
+    if (view.scope) row.actionScopes[view.action] = view.scope;
+  }
   return row;
 });
 
@@ -184,21 +190,27 @@ function permits(authority: Authority, role: Role | null, superadmin: boolean): 
   return superadmin || (role !== null && RANK[role] >= RANK[authority]);
 }
 
+/** The scope an action is decided at: its own when the row declares one, else the row's. */
+export function scopeOf(capability: CapabilityRow, action: RbacAction): string {
+  return capability.actionScopes[action] ?? capability.scope;
+}
+
 /**
  * The `resource:action` pairs `holder` may perform.
  *
  * The port of `allowed_for` — default-deny, table order, each row decided at
- * the part of the chain its `scope` names (#2376), and an action the table
+ * the part of the chain its scope names (#2376), a row's own or its action's (#3107), and an action the table
  * does not define for a resource is absent for everyone.
  */
 export function allowedFor(holder: Holder, superadmin = false): string[] {
   const { memberships, chain } = callerOf(holder);
   const allowed: string[] = [];
   for (const capability of CAPABILITIES) {
-    const role = resolveRole(memberships, chainAt(capability.scope, chain));
     for (const action of ACTIONS) {
       const authority = capability[action];
-      if (authority && permits(authority, role, superadmin)) {
+      if (!authority) continue;
+      const role = resolveRole(memberships, chainAt(scopeOf(capability, action), chain));
+      if (permits(authority, role, superadmin)) {
         allowed.push(`${capability.resource}:${action}`);
       }
     }
