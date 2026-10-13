@@ -26,7 +26,7 @@ docker compose -f docker/docker-compose.yml -f docker/docker-compose.team.yml \
                --env-file .env up -d --wait
 ```
 
-It takes the values `rolter init` writes plus `ROLTER_PG_PASSWORD`, `ROLTER_REDIS_PASSWORD` and `ROLTER_CLICKHOUSE_PASSWORD` (`ROLTER_PG_USER` and `ROLTER_CLICKHOUSE_USER` default to `rolter`), and every required one is a `${VAR:?}`, so `up` stops on the first missing value and names it (`required variable ROLTER_KEK is missing a value`). The message after `:?` is left empty on purpose: GitGuardian flagged a hint there, beside a variable called `*_PASSWORD` or `*_TOKEN`, as a hardcoded password.
+It takes the values `rolter init --env-only --compose` writes: the five shared secrets, `ROLTER_PG_PASSWORD`, `ROLTER_REDIS_PASSWORD` and `ROLTER_CLICKHOUSE_PASSWORD` (each 256 bits of hex, so URL-safe), and the in-network connection URLs `ROLTER_COMPOSE_DATABASE_URL`, `ROLTER_COMPOSE_REDIS_URL` and `ROLTER_COMPOSE_CLICKHOUSE_URL` built from them. The compose file reads each URL whole instead of spelling `scheme://user:${PASSWORD}@host` itself, which is the line shape GitGuardian reported as five secrets (#2424). `init` writes the user `rolter` into the URLs, which is the default of `ROLTER_PG_USER` and `ROLTER_CLICKHOUSE_USER`; changing either means changing the matching URL too. Every required value is a `${VAR:?}`, so `up` stops on the first missing value and names it (`required variable ROLTER_KEK is missing a value`). The message after `:?` is left empty on purpose: GitGuardian flagged a hint there, beside a variable called `*_PASSWORD` or `*_TOKEN`, as a hardcoded password.
 
 What it changes:
 
@@ -46,7 +46,7 @@ docker compose -f docker/docker-compose.yml -f docker/docker-compose.team.yml \
 
 `--env-file` is a flag of `docker compose`, not of `run`. `check_exposure` reads `ROLTER_CONTROL_HOST` and warns on `0.0.0.0`, and inside the container that is always `0.0.0.0`, so preflight gets the published address instead, which makes `ROLTER_CONTROL_HOST=0.0.0.0` in the env file fail the strict check, as it should.
 
-Known gap: `rolter init` does not write the three datastore passwords (#2413). The startup log no longer carries them: every datastore URL the control plane and gateway print goes through `rolter_core::redact` (#2406, see [Security](../architecture/security.md)).
+The startup log no longer carries them: every datastore URL the control plane and gateway print goes through `rolter_core::redact` (#2406, see [Security](../architecture/security.md)).
 
 ClickHouse runs with `nofile` at `${CLICKHOUSE_NOFILE:-262144}`. Where the
 container runtime cannot grant that much (rootless Docker or Podman, sandboxed

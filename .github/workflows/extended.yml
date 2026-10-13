@@ -123,7 +123,9 @@ jobs:
       postgres:
         image: postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
         env:
-          POSTGRES_PASSWORD: postgres
+          # the service lives for one job on a runner nothing else reaches, so it
+          # takes the connection without a password rather than carrying one
+          POSTGRES_HOST_AUTH_METHOD: trust
           POSTGRES_DB: rolter_test
         ports:
           - 5432:5432
@@ -142,7 +144,7 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     env:
-      ROLTER_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/rolter_test
+      ROLTER_TEST_DATABASE_URL: postgres://postgres@localhost:5432/rolter_test
       ROLTER_TEST_REDIS_URL: redis://localhost:6379/
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

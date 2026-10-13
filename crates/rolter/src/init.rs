@@ -92,6 +92,12 @@ pub struct InitArgs {
     /// write only the environment file, leaving the gateway config alone
     #[arg(long)]
     pub env_only: bool,
+
+    /// also write what the compose team stack (`docker/docker-compose.team.yml`)
+    /// reads beyond the secrets above: a password for each datastore and the
+    /// in-network connection URL built from it (#2413)
+    #[arg(long)]
+    pub compose: bool,
 }
 
 /// A freshly generated secret, hex-encoded.
@@ -180,6 +186,10 @@ fn render_env(args: &InitArgs, secrets: &Secrets) -> String {
         args.clickhouse_url.as_deref().unwrap_or("")
     ));
 
+    if let Some(compose) = &secrets.compose {
+        render_compose(&mut out, compose);
+    }
+
     out.push_str("# listeners\n");
     out.push_str("ROLTER_HOST=0.0.0.0\nROLTER_PORT=4000\n");
     match args.profile {
@@ -200,6 +210,48 @@ fn render_env(args: &InitArgs, secrets: &Secrets) -> String {
     out
 }
 
+/// The compose team stack's block of the environment file.
+///
+/// The URLs are written whole, next to the passwords they contain, so the
+/// committed compose file never spells a credential-shaped `scheme://user:@host`
+/// line of its own (#2424). The user names are the stack's defaults.
+fn render_compose(out: &mut String, c: &ComposeSecrets) {
+    out.push_str(
+        "# compose team stack (docker/docker-compose.team.yml). the passwords are hex so\n\
+         # they can sit inside the urls below without percent-encoding. a volume keeps the\n\
+         # credentials it was first created with: changing a password here does not\n\
+         # change it in a datastore that already exists.\n",
+    );
+    out.push_str(&format!("ROLTER_PG_PASSWORD={}\n", c.pg_password));
+    out.push_str(&format!("ROLTER_REDIS_PASSWORD={}\n", c.redis_password));
+    out.push_str(&format!(
+        "ROLTER_CLICKHOUSE_PASSWORD={}\n",
+        c.clickhouse_password
+    ));
+    out.push_str(&format!(
+        "ROLTER_COMPOSE_DATABASE_URL=postgres://{COMPOSE_USER}:{}@postgres:5432/rolter\n",
+        c.pg_password
+    ));
+    out.push_str(&format!(
+        "ROLTER_COMPOSE_REDIS_URL=redis://:{}@redis:6379\n",
+        c.redis_password
+    ));
+    out.push_str(&format!(
+        "ROLTER_COMPOSE_CLICKHOUSE_URL=http://{COMPOSE_USER}:{}@clickhouse:8123\n\n",
+        c.clickhouse_password
+    ));
+}
+
+/// The user the compose team stack creates in postgres and clickhouse.
+const COMPOSE_USER: &str = "rolter";
+
+/// The compose team stack's datastore passwords.
+struct ComposeSecrets {
+    pg_password: String,
+    redis_password: String,
+    clickhouse_password: String,
+}
+
 /// The generated secrets, kept together so the renderer cannot silently reuse
 /// one value in two places.
 struct Secrets {
@@ -208,11 +260,17 @@ struct Secrets {
     internal_token: String,
     key_pepper: String,
     session_pepper: String,
+    compose: Option<ComposeSecrets>,
 }
 
 impl Secrets {
-    fn generate() -> Self {
+    fn generate(compose: bool) -> Self {
         Self {
+            compose: compose.then(|| ComposeSecrets {
+                pg_password: secret(),
+                redis_password: secret(),
+                clickhouse_password: secret(),
+            }),
             kek: secret(),
             admin_token: secret(),
             internal_token: secret(),
@@ -310,7 +368,7 @@ fn write_file(path: &Path, contents: &str, force: bool) -> anyhow::Result<()> {
 }
 
 pub async fn run(args: InitArgs) -> anyhow::Result<()> {
-    let secrets = Secrets::generate();
+    let secrets = Secrets::generate(args.compose);
     let env = render_env(&args, &secrets);
 
     if args.print {
@@ -334,6 +392,13 @@ pub async fn run(args: InitArgs) -> anyhow::Result<()> {
         println!("wrote {}", path.display());
     }
     println!();
+    if args.compose {
+        println!(
+            "compose: `docker compose -f docker/docker-compose.yml -f docker/docker-compose.team.yml \
+             --env-file {} up -d`\n",
+            env_path.display()
+        );
+    }
     match args.profile {
         Profile::Production => {
             println!(
@@ -341,7 +406,8 @@ pub async fn run(args: InitArgs) -> anyhow::Result<()> {
                  anything. It validates exactly what this generated, so a passing check means \
                  the deployment will not start degraded."
             );
-            if args.database_url.is_none() {
+            // the compose stack builds its own urls, so a blank one is not a gap there
+            if args.database_url.is_none() && !args.compose {
                 println!(
                     "\nROLTER_DATABASE_URL is blank. Fill it in, or inject it from your \
                      platform's secret store — `rolter check` treats it as fatal, because \
@@ -373,6 +439,7 @@ mod tests {
             print: false,
             force: false,
             env_only: false,
+            compose: false,
         }
     }
 
@@ -383,6 +450,7 @@ mod tests {
             internal_token: "internal".to_string(),
             key_pepper: "pepper".to_string(),
             session_pepper: "session-pepper".to_string(),
+            compose: None,
         }
     }
 
@@ -406,7 +474,7 @@ mod tests {
 
     #[test]
     fn generated_secrets_are_distinct_and_full_length() {
-        let s = Secrets::generate();
+        let s = Secrets::generate(false);
         let all = [
             &s.kek,
             &s.admin_token,
@@ -431,9 +499,88 @@ mod tests {
         }
     }
 
+    fn compose_args() -> InitArgs {
+        InitArgs {
+            compose: true,
+            ..args(Profile::Production)
+        }
+    }
+
+    fn compose_value<'a>(env: &'a str, var: &str) -> &'a str {
+        // the names are given without the prefix: a whole `"ROLTER_…"` literal
+        // would read as a variable the binaries consume (env_var_names.rs)
+        let prefix = format!("ROLTER_{var}=");
+        env.lines()
+            .find_map(|l| l.strip_prefix(&prefix))
+            .unwrap_or_else(|| panic!("{var} missing from:\n{env}"))
+    }
+
+    #[test]
+    fn compose_writes_distinct_url_safe_passwords_and_the_urls_built_from_them() {
+        let env = render_env(&compose_args(), &Secrets::generate(true));
+        let pg = compose_value(&env, "PG_PASSWORD");
+        let redis = compose_value(&env, "REDIS_PASSWORD");
+        let ch = compose_value(&env, "CLICKHOUSE_PASSWORD");
+        for password in [pg, redis, ch] {
+            assert_eq!(password.len(), SECRET_BYTES * 2);
+            assert!(password.chars().all(|c| c.is_ascii_hexdigit()));
+        }
+        assert!(pg != redis && redis != ch && pg != ch, "shared password");
+        assert_eq!(
+            compose_value(&env, "COMPOSE_DATABASE_URL"),
+            format!("postgres://rolter:{pg}@postgres:5432/rolter")
+        );
+        assert_eq!(
+            compose_value(&env, "COMPOSE_REDIS_URL"),
+            format!("redis://:{redis}@redis:6379")
+        );
+        assert_eq!(
+            compose_value(&env, "COMPOSE_CLICKHOUSE_URL"),
+            format!("http://rolter:{ch}@clickhouse:8123")
+        );
+    }
+
+    #[test]
+    fn without_compose_no_datastore_password_is_written() {
+        let env = render_env(&args(Profile::Production), &Secrets::generate(false));
+        assert!(!env.contains("_PASSWORD"), "{env}");
+        assert!(!env.contains("COMPOSE_"), "{env}");
+    }
+
+    #[test]
+    fn the_compose_block_does_not_break_the_preflight_gate() {
+        use std::collections::HashMap;
+
+        struct GeneratedEnv(HashMap<String, String>);
+        impl crate::preflight::Env for GeneratedEnv {
+            fn get(&self, key: &str) -> Option<String> {
+                self.0.get(key).cloned().filter(|v| !v.trim().is_empty())
+            }
+        }
+
+        let mut a = compose_args();
+        a.database_url = Some("postgres://user:pw@db:5432/rolter".to_string());
+        a.redis_url = Some("redis://cache:6379".to_string());
+        a.clickhouse_url = Some("http://clickhouse:8123".to_string());
+        let rendered = render_env(&a, &Secrets::generate(true));
+        let parsed: HashMap<String, String> = rendered
+            .lines()
+            .filter(|l| !l.trim_start().starts_with('#') && l.contains('='))
+            .filter_map(|l| l.split_once('='))
+            .map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))
+            .collect();
+        let findings =
+            crate::preflight::run_checks(&GeneratedEnv(parsed), crate::preflight::Role::Control);
+        assert!(
+            findings.is_empty(),
+            "{:?}",
+            findings.iter().map(|f| &f.title).collect::<Vec<_>>()
+        );
+    }
+
     #[test]
     fn two_runs_never_produce_the_same_secret() {
-        assert_ne!(Secrets::generate().kek, Secrets::generate().kek);
+        assert_ne!(Secrets::generate(false).kek, Secrets::generate(false).kek);
     }
 
     #[test]
@@ -583,7 +730,7 @@ mod tests {
         a.database_url = Some("postgres://user:pw@db:5432/rolter".to_string());
         a.redis_url = Some("redis://cache:6379".to_string());
         a.clickhouse_url = Some("http://clickhouse:8123".to_string());
-        let rendered = render_env(&a, &Secrets::generate());
+        let rendered = render_env(&a, &Secrets::generate(false));
 
         // parse it back the way a shell or container runtime would
         let parsed: HashMap<String, String> = rendered
@@ -613,7 +760,7 @@ mod tests {
             }
         }
 
-        let rendered = render_env(&args(Profile::Local), &Secrets::generate());
+        let rendered = render_env(&args(Profile::Local), &Secrets::generate(false));
         let parsed: HashMap<String, String> = rendered
             .lines()
             .filter(|l| !l.trim_start().starts_with('#') && l.contains('='))

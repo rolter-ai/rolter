@@ -106,15 +106,10 @@ The team stack layers `docker/docker-compose.team.yml` over the same file. It cl
 
 <Steps>
   <Step title="Generate the secrets">
-    `rolter init` writes the five values the control plane and gateway share (install it with `uv tool install rolter`, see [Installation](/installation)). The three datastore passwords are not part of it yet ([#2413](https://github.com/rolter-ai/rolter/issues/2413)), so append them:
+    `rolter init` writes the five values the control plane and gateway share (install it with `uv tool install rolter`, see [Installation](/installation)). Add `--compose` and it also writes the three datastore passwords and the connection URLs built from them. This is the one command a fresh clone needs before `docker compose up`:
 
     ```bash
-    rolter init --env-only
-    cat >> .env <<EOF
-    ROLTER_PG_PASSWORD=$(openssl rand -hex 24)
-    ROLTER_REDIS_PASSWORD=$(openssl rand -hex 24)
-    ROLTER_CLICKHOUSE_PASSWORD=$(openssl rand -hex 24)
-    EOF
+    rolter init --env-only --compose
     ```
 
     | Variable | What it does |
@@ -124,9 +119,10 @@ The team stack layers `docker/docker-compose.team.yml` over the same file. It cl
     | `ROLTER_INTERNAL_TOKEN` | What the gateway presents to fetch its configuration |
     | `ROLTER_KEY_PEPPER` | Peppers virtual-key digests. The control plane and the gateway must hold the same value |
     | `ROLTER_SESSION_PEPPER` | Peppers the digests of sign-in sessions, invitations, SCIM tokens and recovery codes |
-    | `ROLTER_PG_PASSWORD`, `ROLTER_REDIS_PASSWORD`, `ROLTER_CLICKHOUSE_PASSWORD` | Datastore credentials. They end up inside connection URLs, so use hex |
+    | `ROLTER_PG_PASSWORD`, `ROLTER_REDIS_PASSWORD`, `ROLTER_CLICKHOUSE_PASSWORD` | Datastore credentials, generated as hex so they sit inside URLs unescaped |
+    | `ROLTER_COMPOSE_DATABASE_URL`, `ROLTER_COMPOSE_REDIS_URL`, `ROLTER_COMPOSE_CLICKHOUSE_URL` | The in-network connection URLs with those passwords in them. The compose file reads them whole, so it carries no credential of its own |
 
-    `ROLTER_PG_USER` and `ROLTER_CLICKHOUSE_USER` default to `rolter`. `ROLTER_CONTROL_HOST` is the address the control plane is published on, `127.0.0.1` in the file `rolter init` writes.
+    `--compose` writes the user `rolter` into the URLs, which is also the default of `ROLTER_PG_USER` and `ROLTER_CLICKHOUSE_USER`. If you set either to another name, change the user in the matching URL too. Without `--compose` you write all six values yourself. `ROLTER_CONTROL_HOST` is the address the control plane is published on, `127.0.0.1` in the file `rolter init` writes.
 
     Keep `.env` out of version control and somewhere it outlives a restart. A new KEK strands every stored provider key, and a new pepper invalidates the keys or sessions issued under the old one. The datastore passwords are set when a volume is first created, so changing one in `.env` later does not change it inside an existing database.
 
