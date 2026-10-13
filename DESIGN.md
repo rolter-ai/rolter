@@ -388,14 +388,18 @@ is state to show.
 
 ### Buttons
 
-- **Shape:** gently rounded (8px), 36px tall; `sm` is 32px with 12px text.
+- **Shape:** gently rounded (8px), 36px tall; `sm` is 32px with 12px text. Under
+  `@media (pointer: coarse)` every size reaches a 44px floor (`pointer-coarse:h-11`, and `w-11` on
+  `icon`); desktop density does not change (#2040).
 - **Primary:** Near White fill with Graphite text. The default action button is neutral, not red.
 - **Brand:** Folk Red fill with white text, hovering to `red-accent-press`. Reserved for the one
   action a screen exists for, such as signing in, accepting an invite or turning on two-factor.
   It is hand-written at each call site today rather than a `Button` variant (#1993).
 - **Outline / Ghost:** Graphite or transparent with Near White text, hovering to the Zinc Band.
 - **Destructive:** a Folk Red surface; its confirm lives in `ConfirmDialog`.
-- **Focus:** a 1px `focus-ring` ring on `:focus-visible`; disabled drops to 50% opacity.
+- **Focus:** a 1px `focus-ring` ring on `:focus-visible`; disabled drops to 50% opacity. Under
+  `forced-colors: active` box-shadows are stripped, so `index.css` puts a 2px `CanvasText` outline
+  on every `:focus-visible` element (#1999).
 
 ### Chips
 

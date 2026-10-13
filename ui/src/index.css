@@ -265,6 +265,15 @@
     font-size: 0.8125rem; /* 13px compact default */
     -webkit-font-smoothing: antialiased;
   }
+  /* forced colors (Windows High Contrast) strips box-shadow, which is how every
+     control here draws its focus ring (#1999). put a real outline back, over the
+     `outline-none` those controls carry; the system colour is the user's own */
+  @media (forced-colors: active) {
+    :focus-visible {
+      outline: 2px solid CanvasText !important;
+      outline-offset: 2px !important;
+    }
+  }
   /* selection takes the design pair instead of the UA highlight (#2419). set on
      the root so every element's highlight inherits it, including the coloured
      tokens inside .rl-code */

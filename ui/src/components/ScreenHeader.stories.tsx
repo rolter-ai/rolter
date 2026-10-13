@@ -1,4 +1,4 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import type { Meta, StoryObj } from "@storybook/react";
 import { useMemo, type ReactNode } from "react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
@@ -36,12 +36,23 @@ function StalledRefresh({ children }: { children: ReactNode }) {
   return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
 }
 
+// a query that is always in flight: the polling screen the refresh button must not
+// mistake for the reader's own request (#1997)
+function BackgroundFetch() {
+  const poll = useQuery({
+    queryKey: ["story-poll"],
+    queryFn: () => new Promise<never>(() => {}),
+  });
+  return <p data-testid="poll">{poll.isFetching ? "polling" : "idle"}</p>;
+}
+
 function HeaderStory({
   title,
   subtitle,
   gateway = "ready",
   fetchStub,
   pendingRefresh = false,
+  background = false,
   onOpenNav,
 }: {
   title: string;
@@ -51,6 +62,8 @@ function HeaderStory({
   /** replaces the whole stub, for a story that records what was sent */
   fetchStub?: FetchStub;
   pendingRefresh?: boolean;
+  /** a screen query that is fetching on its own, as a polling screen does */
+  background?: boolean;
   onOpenNav?: () => void;
 }) {
   // the header asks for nothing but the gateway, so every other request hangs
@@ -58,6 +71,7 @@ function HeaderStory({
   const header = <ScreenHeader title={title} subtitle={subtitle} onOpenNav={onOpenNav} />;
   return (
     <Harness fetchStub={stub}>
+      {background && <BackgroundFetch />}
       {pendingRefresh ? <StalledRefresh>{header}</StalledRefresh> : header}
     </Harness>
   );
@@ -316,6 +330,19 @@ export const Refreshing: Story = {
     await expect(busyRefresh).toBeDisabled();
     await expect(busyRefresh).toHaveAttribute("aria-busy", "true");
     await expect(busyRefresh.querySelector("svg")).toHaveClass("motion-safe:animate-spin");
+  },
+};
+
+/** A screen's own background refetch is not a refresh the reader asked for. */
+export const BackgroundFetchLeavesRefreshIdle: Story = {
+  render: (args) => <HeaderStory {...args} background />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByTestId("poll")).toHaveTextContent("polling"));
+    const refresh = canvas.getByRole("button", { name: "Refresh data" });
+    await expect(refresh).toBeEnabled();
+    await expect(refresh).not.toHaveAttribute("aria-busy", "true");
+    await expect(refresh.querySelector("svg")).not.toHaveClass("motion-safe:animate-spin");
   },
 };
 

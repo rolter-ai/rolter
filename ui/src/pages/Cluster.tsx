@@ -18,10 +18,10 @@ import {
   setClusterNodeDrain,
   type ClusterNodeRow,
 } from "@/lib/api";
+import { RelativeTime } from "@/components/RelativeTime";
 import { errorText } from "@/lib/error-copy";
 import { useFormat } from "@/lib/i18n/format";
 import { useToast } from "@/lib/toast";
-import { useNow } from "@/lib/use-now";
 import { useScreenReady } from "@/lib/ux-react";
 
 // nodes fall out of the liveness window in under a minute, so the inventory is
@@ -68,8 +68,8 @@ function ClusterScreen() {
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
   // `nodes` is the query the user is actually waiting on for this screen
   useScreenReady(!nodes.isLoading);
-  // one clock for every relative timestamp, so the rows do not drift apart
-  const now = useNow(1000);
+  // the relative timestamps tick inside `RelativeTime`, a leaf, so this screen
+  // does not re-render every second to move them (#1997)
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ["cluster-nodes"] });
 
@@ -139,7 +139,9 @@ function ClusterScreen() {
       width: "1%",
       align: "right",
       render: (_v, row) => (
-        <span title={fmt.dateTime(row.last_seen_at)}>{fmt.relative(row.last_seen_at, now)}</span>
+        <span title={fmt.dateTime(row.last_seen_at)}>
+          <RelativeTime at={row.last_seen_at} />
+        </span>
       ),
     },
     {

@@ -14,6 +14,8 @@ import type { Meta, StoryObj } from "@storybook/react";
 import * as React from "react";
 import { expect, fn, userEvent, waitFor, within } from "storybook/test";
 
+import { contrastRatio } from "@/lib/contrast";
+
 import { LocalePicker } from "@/components/LocalePicker";
 import { MenuItem, MenuSeparator } from "./menu";
 import {
@@ -164,6 +166,82 @@ export const DraggedWide: Story = {
     // Enter returns the rail to the shipped default from either bound
     await userEvent.keyboard("{Enter}");
     await expectWidth(nav, 232);
+  },
+};
+
+/**
+ * A fast drag is one render per frame, not one per `pointermove` (#1997).
+ * Forty moves land inside one frame; the commit count is read by a Profiler.
+ */
+export const DragRendersOncePerFrame: Story = {
+  args: resizable("drag-frames"),
+  render: (args) => {
+    const commits = React.useRef(0);
+    const out = React.useRef<HTMLDivElement>(null);
+    return (
+      <div ref={out} data-commits="0">
+        <React.Profiler
+          id="nav"
+          onRender={() => {
+            commits.current += 1;
+            out.current?.setAttribute("data-commits", String(commits.current));
+          }}
+        >
+          <NavSidebar {...args} />
+        </React.Profiler>
+      </div>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const nav = canvasElement.querySelector("nav") as HTMLElement;
+    const handle = within(canvasElement).getByRole("separator", { name: /resize/i });
+    const commits = () =>
+      Number(canvasElement.querySelector("[data-commits]")?.getAttribute("data-commits"));
+    const frame = () => new Promise((r) => requestAnimationFrame(() => r(null)));
+    await expectWidth(nav, 232);
+    handle.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, clientX: 256 }));
+    await frame();
+    await frame();
+    const before = commits();
+    const left = nav.getBoundingClientRect().left;
+    // moves arrive faster than frames: each one is its own task, as a real
+    // pointer's are, so React cannot fold them into a single event's batch
+    let frames = 0;
+    let running = true;
+    const count = () => {
+      frames += 1;
+      if (running) requestAnimationFrame(count);
+    };
+    requestAnimationFrame(count);
+    for (let i = 1; i <= 40; i++) {
+      document.dispatchEvent(new PointerEvent("pointermove", { clientX: left + 232 + i }));
+      await new Promise((r) => setTimeout(r, 0));
+    }
+    await frame();
+    await frame();
+    running = false;
+    // at most one render per frame that went by, and far fewer than the 40 moves
+    await expect(commits() - before).toBeLessThanOrEqual(frames + 1);
+    await expect(commits() - before).toBeLessThan(40);
+    // the last position wins
+    await expect(handle).toHaveAttribute("aria-valuenow", String(272));
+    document.dispatchEvent(new PointerEvent("pointerup"));
+    await expectWidth(nav, 272);
+  },
+};
+
+/** The splitter's focus mark clears the 3:1 non-text floor on the rail (#1999). */
+export const SplitterFocusMarkClearsContrast: Story = {
+  args: resizable("contrast"),
+  play: async ({ canvasElement }) => {
+    const nav = canvasElement.querySelector("nav") as HTMLElement;
+    const handle = within(canvasElement).getByRole("separator", { name: /resize/i });
+    handle.focus();
+    await waitFor(() => expect(getComputedStyle(handle, "::after").opacity).toBe("1"));
+    const mark = getComputedStyle(handle, "::after").backgroundColor;
+    await expect(contrastRatio(mark, getComputedStyle(nav).backgroundColor)).toBeGreaterThanOrEqual(
+      3,
+    );
   },
 };
 

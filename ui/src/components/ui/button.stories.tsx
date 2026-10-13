@@ -1,6 +1,7 @@
 import type { Meta, StoryObj } from "@storybook/react";
 import { expect, fn, userEvent, within } from "storybook/test";
 
+import { mediaDeclarations, resolvePx } from "@/lib/story-css";
 import { Button } from "./button";
 
 const meta = {
@@ -64,5 +65,75 @@ export const DisabledSwallowsClick: Story = {
     // still never fires on a disabled control
     await userEvent.click(button, { pointerEventsCheck: 0 });
     await expect(args.onClick).not.toHaveBeenCalled();
+  },
+};
+
+// the story browser has a fine pointer, so desktop density is read for real
+// and the coarse floor is read from the stylesheet the build emitted (#2040)
+export const DesktopDensityIsUnchanged: Story = {
+  render: () => (
+    <div className="flex items-center gap-3">
+      <Button>Default</Button>
+      <Button size="sm">Small</Button>
+      <Button size="icon" aria-label="Icon" />
+    </div>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(
+      canvas.getByRole("button", { name: "Default" }).getBoundingClientRect().height,
+    ).toBe(36);
+    await expect(canvas.getByRole("button", { name: "Small" }).getBoundingClientRect().height).toBe(
+      32,
+    );
+    await expect(canvas.getByRole("button", { name: "Icon" }).getBoundingClientRect().height).toBe(
+      36,
+    );
+  },
+};
+
+/**
+ * Under `@media (pointer: coarse)` every size reaches 44px. A story cannot make
+ * its browser coarse, so this reads the rule the build emitted and draws what it
+ * declares.
+ */
+export const CoarsePointerReaches44px: Story = {
+  render: () => (
+    <div className="flex items-center gap-3">
+      <Button>Default</Button>
+      <Button size="sm">Small</Button>
+      <Button size="lg">Large</Button>
+      <Button size="icon" aria-label="Icon" />
+    </div>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const coarse = /pointer:\s*coarse/;
+    const height = mediaDeclarations(coarse, /pointer-coarse\\:h-11$/);
+    await expect(height).not.toBeNull();
+    await expect(resolvePx(height?.height ?? "")).toBe(44);
+    const width = mediaDeclarations(coarse, /pointer-coarse\\:w-11$/);
+    await expect(resolvePx(width?.width ?? "")).toBe(44);
+    for (const name of ["Default", "Small", "Large", "Icon"]) {
+      await expect(canvas.getByRole("button", { name })).toHaveClass("pointer-coarse:h-11");
+    }
+    await expect(canvas.getByRole("button", { name: "Icon" })).toHaveClass("pointer-coarse:w-11");
+  },
+};
+
+/**
+ * Forced colors strips the box-shadow the ring is drawn with, so the shipped
+ * stylesheet puts an outline back on every focused control (#1999).
+ */
+export const FocusSurvivesForcedColors: Story = {
+  play: async ({ canvasElement }) => {
+    const button = within(canvasElement).getByRole("button", { name: "Save changes" });
+    await userEvent.tab();
+    await expect(button).toHaveFocus();
+    const forced = mediaDeclarations(/forced-colors:\s*active/, ":focus-visible");
+    await expect(forced).not.toBeNull();
+    await expect(forced?.getPropertyValue("outline")).toMatch(/canvastext/i);
+    await expect(forced?.getPropertyPriority("outline")).toBe("important");
+    await expect(forced?.getPropertyValue("outline-offset")).toBe("2px");
   },
 };
