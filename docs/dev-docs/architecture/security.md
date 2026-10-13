@@ -291,10 +291,10 @@ request, fail-open lets it through. Each has a gateway test.
 | plugin `endpoint`                                                            | `require_allowed_egress` (400); `operator_url_problems`           | `EgressClient` before each call; snapshot keeps it and reports it                 |
 | guardrail provider test (`POST /api/v1/guardrails/providers/test`)           | `check_url` on the draft url (a result, not a 400)                | `rolter-control` `egress_client::builder`, no redirects                           |
 
-#### Guardrail trials run on the control plane (#2159, #2265)
+#### Guardrail trials run on the control plane (#2159, #2265, #3084)
 
-`crates/rolter-control/src/guardrail_trial.rs` serves two dry runs for the
-guardrail dialogs. Both take an unsaved draft, write nothing, and are gated by
+`crates/rolter-control/src/guardrail_trial.rs` serves three dry runs for the
+guardrail screens. Both take an unsaved draft, write nothing, and are gated by
 the matching `update` capability (`guardrail_rule:update`,
 `guardrail_provider:update`) rather than a capability of their own: the rule
 trial is read-only, but the provider trial makes the control plane egress and
@@ -305,6 +305,20 @@ reveals whether a credential variable is set, which is a mutation-level power.
   path's own `scan_segment` / `scan_output`, so the answer cannot drift from
   the gateway's. Spans are computed beside the scan and returned in UTF-16
   units. The sample is capped at 64 KiB, never logged, never audited.
+- The policy trial (`POST /api/v1/guardrails/policy/test`) runs the whole
+  effective rule set through `rolter_core::dry_run_policy`. The rule list is
+  what `ConfigStore::load` returns, the list `/internal/snapshot` serves: the
+  config-file rules first (`ConfigStore::file_guardrail_rules` says how many
+  lead the list), then the enabled dashboard rules. A draft is slotted among the
+  dashboard rules by `(position, name)`, as the store orders them on load, and
+  replaces a saved rule of the same name; a name a config-file rule holds is a
+  400, since the file wins that collision. The per-rule steps come from
+  `scan_stage_traced`, the loop `scan_segment` and `scan_output` themselves run,
+  so a redaction feeding a later rule, a block ending the scan and the
+  system-message and scan-budget exemptions cannot drift from the request path.
+  Route overrides are not applied. A draft turns a disabled policy on in the
+  answer, because saving a dashboard rule does. Same cap, no logging and
+  capability as the rule trial.
 - The provider trial sends the gateway's `WebhookRequest` envelope once (no
   retries), with the timeout capped at 10 s and the body bounded by
   `max_body_bytes` the way `consult_pre_call` bounds it. It reads at most 1 MiB

@@ -26,6 +26,7 @@ import {
   RULE_ACTIONS,
   useGuardrailOutcomes,
 } from "@/components/GuardrailOutcomes";
+import { GuardrailPolicyTrial } from "@/components/GuardrailPolicyTrial";
 import { GuardrailRuleTrial } from "@/components/GuardrailRuleTrial";
 import { LoadError } from "@/components/LoadError";
 import { superadminOnly } from "@/components/ForbiddenScreen";
@@ -220,6 +221,7 @@ function GuardrailRulesScreen() {
   useScreenReady(!loading);
   const [editing, setEditing] = React.useState<GuardrailRuleRow | null | undefined>();
   const fileHeadingId = React.useId();
+  const [policyTrialOpen, setPolicyTrialOpen] = React.useState(false);
 
   // a change to a row changes the effective policy too, and the cards need both
   const refresh = () => {
@@ -322,13 +324,23 @@ function GuardrailRulesScreen() {
             {t("pages.guardrailRules.intro")}
           </p>
         </div>
-        <GatedButton
-          gate="guardrail_rule:create"
-          control="guardrail-rule-new"
-          onClick={() => setEditing(null)}
-        >
-          <Plus className="h-4 w-4" aria-hidden /> {t("pages.guardrailRules.addRule")}
-        </GatedButton>
+        <div className="flex flex-wrap gap-2">
+          <GatedButton
+            gate="guardrail_rule:update"
+            control="guardrail-policy-trial-open"
+            variant="outline"
+            onClick={() => setPolicyTrialOpen(true)}
+          >
+            {t("pages.guardrailRules.policyTrial.open")}
+          </GatedButton>
+          <GatedButton
+            gate="guardrail_rule:create"
+            control="guardrail-rule-new"
+            onClick={() => setEditing(null)}
+          >
+            <Plus className="h-4 w-4" aria-hidden /> {t("pages.guardrailRules.addRule")}
+          </GatedButton>
+        </div>
       </div>
 
       {/* the cards list what is stored; these two say it is not what runs */}
@@ -563,6 +575,21 @@ function GuardrailRulesScreen() {
           });
         }}
       />
+
+      <Dialog open={policyTrialOpen} onOpenChange={setPolicyTrialOpen} size="lg">
+        <DialogHeader>
+          <DialogTitle>{t("pages.guardrailRules.policyTrial.title")}</DialogTitle>
+          <DialogDescription>{t("pages.guardrailRules.policyTrial.intro")}</DialogDescription>
+        </DialogHeader>
+        <DialogBody>
+          <GuardrailPolicyTrial />
+        </DialogBody>
+        <DialogFooter>
+          <Button variant="ghost" onClick={() => setPolicyTrialOpen(false)}>
+            {t("common.close")}
+          </Button>
+        </DialogFooter>
+      </Dialog>
 
       <RuleDialog
         key={editing?.id ?? (editing === null ? "new" : "closed")}

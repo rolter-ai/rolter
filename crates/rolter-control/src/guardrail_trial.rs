@@ -1,7 +1,7 @@
-//! Try a guardrail rule or provider on a sample before it goes live (#2159,
-//! #2265).
+//! Try a guardrail rule, the whole rule set, or a provider on a sample before
+//! it goes live (#2159, #2265, #3084).
 //!
-//! Both endpoints take an *unsaved* draft, so the dashboard can test before the
+//! The rule and provider endpoints take an *unsaved* draft, so the dashboard can test before the
 //! first save, and neither writes anything. They are gated like the matching
 //! update (`guardrail_rule:update`, `guardrail_provider:update`): the rule trial
 //! is read-only but the provider trial makes the control plane egress and
@@ -11,7 +11,9 @@
 //! an audit entry. The rule trial runs the gateway's own matcher
 //! ([`rolter_core::dry_run_rule`]); the provider trial sends the envelope the
 //! gateway sends, through the same egress policy the control plane applies to
-//! every other operator-supplied URL.
+//! every other operator-supplied URL. The policy trial runs the effective rule
+//! set (config-file rules, then the enabled dashboard rules) in order through
+//! the same scan, optionally with an unsaved draft slotted in at a position.
 
 use std::time::{Duration, Instant};
 
@@ -22,11 +24,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use rolter_core::{
-    DryRun, GuardAction, GuardStage, GuardrailRule, GuardrailWebhookConfig, WebhookAuth,
-    WebhookDecision, WebhookRequest, WebhookStage, WebhookTenant,
+    DryRun, DryRunOutcome, GuardAction, GuardStage, GuardrailRule, GuardrailWebhookConfig,
+    GuardrailsConfig, PolicyRun, PolicyStep, WebhookAuth, WebhookDecision, WebhookRequest,
+    WebhookStage, WebhookTenant,
 };
+use rolter_store::postgres::repo::GuardrailRepo;
 
-use crate::crud::{invalid_field, ApiResult, SafeJson};
+use crate::crud::{invalid_field, pool, ApiResult, SafeJson};
 use crate::guardrails::{parse_builtin, parse_webhook_auth};
 use crate::rbac::{authorize_superadmin, Principal};
 use crate::rbac_matrix::superadmin_cap;
@@ -56,11 +60,13 @@ const DEFAULT_SAMPLE: &str = "Hello, this is a harmless test message from the ro
 pub(crate) fn router() -> Router<ControlState> {
     Router::new()
         .route("/api/v1/guardrails/rules/test", post(test_rule))
+        .route("/api/v1/guardrails/policy/test", post(test_policy))
         .route("/api/v1/guardrails/providers/test", post(test_provider))
 }
 
+/// The fields of a rule under trial, shared by the single-rule and policy trials.
 #[derive(Debug, Deserialize)]
-struct RuleTestBody {
+struct RuleFields {
     #[serde(default)]
     builtin: Option<String>,
     #[serde(default)]
@@ -73,6 +79,12 @@ struct RuleTestBody {
     replacement: Option<String>,
     #[serde(default)]
     include_system: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct RuleTestBody {
+    #[serde(flatten)]
+    fields: RuleFields,
     /// treat the sample as a system message, which a rule skips unless it
     /// opts in with `include_system`
     #[serde(default)]
@@ -98,18 +110,9 @@ fn check_sample(sample: &str) -> ApiResult<()> {
     Ok(())
 }
 
-impl RuleTestBody {
-    fn rule(&self) -> ApiResult<GuardrailRule> {
-        let stage = match self.stage.as_str() {
-            "pre_call" => GuardStage::PreCall,
-            "post_call" => GuardStage::PostCall,
-            _ => {
-                return Err(invalid_field(
-                    "stage",
-                    "stage must be pre_call or post_call",
-                ))
-            }
-        };
+impl RuleFields {
+    fn rule(&self, name: &str) -> ApiResult<GuardrailRule> {
+        let stage = parse_stage(&self.stage)?;
         let action = match self.action.as_str() {
             "annotate" => GuardAction::Annotate,
             "block" => GuardAction::Block,
@@ -122,7 +125,7 @@ impl RuleTestBody {
             }
         };
         Ok(GuardrailRule {
-            name: "draft".to_string(),
+            name: name.to_string(),
             builtin: parse_builtin(self.builtin.as_deref())?,
             pattern: self.pattern.clone().filter(|p| !p.is_empty()),
             stage,
@@ -131,6 +134,23 @@ impl RuleTestBody {
             replacement: self.replacement.clone().filter(|t| !t.trim().is_empty()),
             include_system: self.include_system,
         })
+    }
+}
+
+fn parse_stage(stage: &str) -> ApiResult<GuardStage> {
+    match stage {
+        "pre_call" => Ok(GuardStage::PreCall),
+        "post_call" => Ok(GuardStage::PostCall),
+        _ => Err(invalid_field(
+            "stage",
+            "stage must be pre_call or post_call",
+        )),
+    }
+}
+
+impl RuleTestBody {
+    fn rule(&self) -> ApiResult<GuardrailRule> {
+        self.fields.rule("draft")
     }
 }
 
@@ -147,6 +167,166 @@ async fn test_rule(
         invalid_field("pattern", problems.join("; "))
     })?;
     Ok(Json(run))
+}
+
+/// An unsaved rule to slot into the policy.
+#[derive(Debug, Deserialize)]
+struct PolicyDraft {
+    /// a dashboard rule with this name is replaced by the draft, which is how
+    /// an edit is tried; a config-file rule's name is refused, since the file
+    /// wins that collision in the real policy
+    #[serde(default)]
+    name: Option<String>,
+    /// where the draft runs among the dashboard rules, as on save: ascending
+    /// position, ties by name. Config-file rules always run before all of them
+    #[serde(default)]
+    position: i32,
+    #[serde(flatten)]
+    fields: RuleFields,
+}
+
+#[derive(Debug, Deserialize)]
+struct PolicyTestBody {
+    #[serde(default = "default_pre_call")]
+    stage: String,
+    #[serde(default)]
+    system: bool,
+    #[serde(default)]
+    draft: Option<PolicyDraft>,
+    sample: String,
+}
+
+/// Where a rule in the policy comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum RuleSource {
+    /// the bootstrap config file; immutable at runtime and run first
+    File,
+    /// a saved, enabled dashboard rule
+    Dashboard,
+    /// the unsaved draft under trial
+    Draft,
+}
+
+#[derive(Debug, Serialize)]
+struct PolicyTestStep {
+    #[serde(flatten)]
+    step: PolicyStep,
+    source: RuleSource,
+}
+
+/// [`PolicyRun`] with each step labelled by where its rule comes from.
+#[derive(Debug, Serialize)]
+struct PolicyTestResult {
+    outcome: DryRunOutcome,
+    steps: Vec<PolicyTestStep>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    blocked_by: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    redacted: Option<String>,
+}
+
+async fn test_policy(
+    principal: Principal,
+    State(state): State<ControlState>,
+    SafeJson(body): SafeJson<PolicyTestBody>,
+) -> ApiResult<Json<PolicyTestResult>> {
+    // the same gate as the single-rule trial: read-only, but it names every
+    // rule of the policy, which only the roles that edit rules may see
+    authorize_superadmin(&principal, superadmin_cap!("guardrail_rule", Update))?;
+    check_sample(&body.sample)?;
+    let stage = parse_stage(&body.stage)?;
+
+    let draft = match &body.draft {
+        Some(draft) => {
+            let name = draft.name.as_deref().map(str::trim).unwrap_or_default();
+            let rule = draft
+                .fields
+                .rule(if name.is_empty() { "draft" } else { name })?;
+            let problems = GuardrailsConfig {
+                enabled: true,
+                rules: vec![rule.clone()],
+                ..GuardrailsConfig::default()
+            }
+            .validate();
+            if !problems.is_empty() {
+                return Err(invalid_field("pattern", problems.join("; ")));
+            }
+            Some((rule, draft.position))
+        }
+        None => None,
+    };
+
+    // the rule list the snapshot hands the gateway, so the answer is what the
+    // fleet runs rather than a second reading of the tables
+    let effective = state.store.load().await?.guardrails;
+    let file_count = state
+        .store
+        .file_guardrail_rules()
+        .min(effective.rules.len());
+    let positions: std::collections::HashMap<String, i32> = GuardrailRepo(pool(&state))
+        .list_rules()
+        .await?
+        .into_iter()
+        .map(|row| (row.name, row.position))
+        .collect();
+
+    let mut config = GuardrailsConfig {
+        // a saved dashboard rule switches the policy on, so a draft is tried
+        // as it would run once saved
+        enabled: effective.enabled || draft.is_some(),
+        max_scan_bytes: effective.max_scan_bytes,
+        streaming_post_call: effective.streaming_post_call,
+        rules: Vec::with_capacity(effective.rules.len() + 1),
+    };
+    let mut sources = Vec::with_capacity(effective.rules.len() + 1);
+    let mut dashboard: Vec<(GuardrailRule, i32, RuleSource)> = Vec::new();
+    for (index, rule) in effective.rules.into_iter().enumerate() {
+        if index < file_count {
+            config.rules.push(rule);
+            sources.push(RuleSource::File);
+        } else {
+            let position = positions.get(&rule.name).copied().unwrap_or(0);
+            dashboard.push((rule, position, RuleSource::Dashboard));
+        }
+    }
+    if let Some((rule, position)) = draft {
+        let name = rule.name.trim().to_string();
+        if config.rules.iter().any(|r| r.name.trim() == name) {
+            return Err(invalid_field(
+                "name",
+                format!("a config-file rule is already named '{name}' and wins that name"),
+            ));
+        }
+        dashboard.retain(|(r, _, _)| r.name.trim() != name);
+        let at = dashboard
+            .iter()
+            .position(|(r, p, _)| (*p, r.name.as_str()) > (position, rule.name.as_str()))
+            .unwrap_or(dashboard.len());
+        dashboard.insert(at, (rule, position, RuleSource::Draft));
+    }
+    for (rule, _, source) in dashboard {
+        config.rules.push(rule);
+        sources.push(source);
+    }
+
+    let PolicyRun {
+        outcome,
+        steps,
+        blocked_by,
+        redacted,
+    } = rolter_core::dry_run_policy(&config, stage, &body.sample, body.system);
+    let steps = steps
+        .into_iter()
+        .zip(sources)
+        .map(|(step, source)| PolicyTestStep { step, source })
+        .collect();
+    Ok(Json(PolicyTestResult {
+        outcome,
+        steps,
+        blocked_by,
+        redacted,
+    }))
 }
 
 #[derive(Debug, Deserialize)]

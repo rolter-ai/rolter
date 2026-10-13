@@ -9,8 +9,11 @@ import { CodeBlock } from "@/components/ui/code-block";
 import { Field } from "@/components/ui/field";
 import { SwitchRow } from "@/components/ui/switch-row";
 import { Textarea } from "@/components/ui/textarea";
+import { PolicyTrace } from "@/components/GuardrailPolicyTrial";
 import {
+  testGuardrailPolicy,
   testGuardrailRule,
+  type GuardrailPolicyTestInput,
   type GuardrailRuleInput,
   type GuardrailRuleTestInput,
   type GuardrailRuleTestResult,
@@ -64,6 +67,7 @@ export function GuardrailRuleTrial({ draft }: { draft: GuardrailRuleInput }) {
   const [sample, setSample] = React.useState("");
   const [system, setSystem] = React.useState(false);
   const run = useMutation({ mutationFn: testGuardrailRule });
+  const inPolicy = useMutation({ mutationFn: testGuardrailPolicy });
 
   const body: GuardrailRuleTestInput = {
     builtin: draft.source_type === "builtin" ? draft.builtin : null,
@@ -83,6 +87,26 @@ export function GuardrailRuleTrial({ draft }: { draft: GuardrailRuleInput }) {
     run.data && JSON.stringify(run.variables) === JSON.stringify(body) ? run.data : undefined;
   const failed =
     run.isError && JSON.stringify(run.variables) === JSON.stringify(body) ? run.error : undefined;
+
+  // the same draft, slotted into the whole policy at its position (#3084)
+  const policyBody: GuardrailPolicyTestInput = {
+    sample,
+    stage: draft.stage,
+    system,
+    draft: {
+      name: draft.name.trim() || null,
+      position: draft.position,
+      builtin: body.builtin,
+      pattern: body.pattern,
+      stage: draft.stage,
+      action: draft.action,
+      replacement: draft.replacement,
+      include_system: draft.include_system,
+    },
+  };
+  const policyAsked = JSON.stringify(inPolicy.variables) === JSON.stringify(policyBody);
+  const policyCurrent = inPolicy.data && policyAsked ? inPolicy.data : undefined;
+  const policyFailed = inPolicy.isError && policyAsked ? inPolicy.error : undefined;
 
   return (
     <div className="space-y-3">
@@ -113,7 +137,23 @@ export function GuardrailRuleTrial({ draft }: { draft: GuardrailRuleInput }) {
           {run.isPending && <Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" />}
           {t("pages.guardrailRules.trial.run")}
         </GatedButton>
+        <GatedButton
+          gate="guardrail_rule:update"
+          control="guardrail-rule-trial-in-policy"
+          variant="outline"
+          disabled={!ready || inPolicy.isPending}
+          onClick={() => inPolicy.mutate(policyBody)}
+        >
+          {inPolicy.isPending && <Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" />}
+          {t("pages.guardrailRules.policyTrial.runDraft")}
+        </GatedButton>
       </div>
+      {policyFailed && (
+        <p role="alert" className="text-xs text-[color:var(--status-danger-text)]">
+          {errorText(policyFailed, t)}
+        </p>
+      )}
+      {policyCurrent && <PolicyTrace result={policyCurrent} />}
       {failed && (
         <p role="alert" className="text-xs text-[color:var(--status-danger-text)]">
           {errorText(failed, t)}

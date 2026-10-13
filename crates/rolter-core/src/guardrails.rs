@@ -515,6 +515,24 @@ impl CompiledGuardrails {
         report: &mut GuardrailReport,
         selection: &RuleSelection,
     ) -> ScanOutcome {
+        self.scan_stage_traced(text, stage, is_system, budget, report, selection, None)
+    }
+
+    /// [`Self::scan_stage`], optionally recording one [`PolicyStep`] per rule
+    /// it walks. The trace is how a dry run reports each rule from the very
+    /// loop the request path runs; with `None` (every real request) the only
+    /// cost is a branch on a rule that matched.
+    #[allow(clippy::too_many_arguments)]
+    fn scan_stage_traced(
+        &self,
+        text: &str,
+        stage: GuardStage,
+        is_system: bool,
+        budget: &mut usize,
+        report: &mut GuardrailReport,
+        selection: &RuleSelection,
+        mut trace: Option<&mut Vec<PolicyStep>>,
+    ) -> ScanOutcome {
         if !self.enabled || *budget == 0 || text.len() > *budget {
             if text.len() > *budget {
                 *budget = 0;
@@ -525,26 +543,43 @@ impl CompiledGuardrails {
 
         let mut current = std::borrow::Cow::Borrowed(text);
         for (idx, rule) in self.rules.iter().enumerate() {
-            if rule.stage != stage {
-                continue;
-            }
-            if !selection.allows(idx) {
-                continue;
-            }
-            if is_system && !rule.include_system {
+            let skip = if rule.stage != stage {
+                Some(DryRunSkip::OtherStage)
+            } else if !selection.allows(idx) {
+                // a route override; a dry run never carries one, so the label
+                // only has to be truthful that the rule did not run
+                Some(DryRunSkip::OtherStage)
+            } else if is_system && !rule.include_system {
+                Some(DryRunSkip::SystemMessage)
+            } else {
+                None
+            };
+            if let Some(skip) = skip {
+                if let Some(trace) = trace.as_deref_mut() {
+                    trace.push(PolicyStep::skipped(rule, skip));
+                }
                 continue;
             }
             let count = rule.regex.find_iter(&current).count();
             if count == 0 {
+                if let Some(trace) = trace.as_deref_mut() {
+                    trace.push(PolicyStep::evaluated(rule, DryRunOutcome::NoMatch, 0));
+                }
                 continue;
             }
             report.record(&rule.name, count);
             match rule.action {
                 GuardAction::Annotate => {
                     GuardrailReport::note(&mut report.annotated_by, &rule.name);
+                    if let Some(trace) = trace.as_deref_mut() {
+                        trace.push(PolicyStep::evaluated(rule, DryRunOutcome::Annotated, count));
+                    }
                 }
                 GuardAction::Block => {
                     report.blocked_by = Some(rule.name.clone());
+                    if let Some(trace) = trace.as_deref_mut() {
+                        trace.push(PolicyStep::evaluated(rule, DryRunOutcome::Blocked, count));
+                    }
                     return ScanOutcome::Blocked(rule.name.clone());
                 }
                 GuardAction::Redact => {
@@ -555,6 +590,9 @@ impl CompiledGuardrails {
                         .replace_all(&current, rule.token.as_str())
                         .into_owned();
                     current = std::borrow::Cow::Owned(replaced);
+                    if let Some(trace) = trace.as_deref_mut() {
+                        trace.push(PolicyStep::evaluated(rule, DryRunOutcome::Redacted, count));
+                    }
                 }
             }
         }
@@ -601,6 +639,17 @@ pub enum DryRunSkip {
     /// the sample is longer than the per-request scan budget, so the request
     /// path would leave it unscanned
     OverScanBudget,
+    /// a policy dry run only: the rule belongs to the other stage (or a
+    /// route override turned it off), so it does not run on this sample
+    OtherStage,
+    /// a policy dry run only: an earlier rule blocked the request, so the
+    /// scan never reached this one
+    AfterBlock,
+    /// a policy dry run only: the guardrails switch is off, so no rule runs
+    PolicyDisabled,
+    /// a policy dry run only: the rule does not compile, so the gateway drops
+    /// it when it builds the policy
+    NotCompiled,
 }
 
 /// One match, in UTF-16 code units so a browser can index its own string with
@@ -706,6 +755,163 @@ pub fn dry_run_rule(
         spans,
         redacted,
     })
+}
+
+/// What one rule did at its place in a policy dry run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PolicyStep {
+    pub rule: String,
+    pub stage: GuardStage,
+    pub action: GuardAction,
+    pub outcome: DryRunOutcome,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skip: Option<DryRunSkip>,
+    /// matches against the text as this rule saw it, which is after the
+    /// redactions of every earlier rule
+    pub match_count: usize,
+}
+
+impl PolicyStep {
+    fn skipped(rule: &CompiledRule, skip: DryRunSkip) -> Self {
+        Self {
+            rule: rule.name.clone(),
+            stage: rule.stage,
+            action: rule.action,
+            outcome: DryRunOutcome::Skipped,
+            skip: Some(skip),
+            match_count: 0,
+        }
+    }
+
+    fn evaluated(rule: &CompiledRule, outcome: DryRunOutcome, match_count: usize) -> Self {
+        Self {
+            rule: rule.name.clone(),
+            stage: rule.stage,
+            action: rule.action,
+            outcome,
+            skip: None,
+            match_count,
+        }
+    }
+
+    fn unreached(rule: &GuardrailRule, skip: DryRunSkip) -> Self {
+        Self {
+            rule: rule.name.trim().to_string(),
+            stage: rule.stage,
+            action: rule.action,
+            outcome: DryRunOutcome::Skipped,
+            skip: Some(skip),
+            match_count: 0,
+        }
+    }
+}
+
+/// The result of running a whole rule set against a sample.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PolicyRun {
+    /// the verdict on the sample: `blocked` if any rule blocked, `redacted` if
+    /// the text changed, `annotated` if only tallies were left, `skipped` if no
+    /// rule looked at it, otherwise `no_match`
+    pub outcome: DryRunOutcome,
+    /// one entry per rule, in the order the scan walks them
+    pub steps: Vec<PolicyStep>,
+    /// the rule that rejected the request
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blocked_by: Option<String>,
+    /// the sample after every redaction; present only when it changed
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub redacted: Option<String>,
+}
+
+/// Run every rule of `config` against `text` at `stage`, in order, with the
+/// scan the gateway runs on a request.
+///
+/// The steps come from [`CompiledGuardrails`]' own scan loop, so redactions
+/// feeding later rules, a block ending the scan and the system-message and
+/// scan-budget exemptions cannot drift from the request path. Route overrides
+/// are not applied: the answer is for the policy, not for one route. Nothing
+/// here logs or retains `text`.
+pub fn dry_run_policy(
+    config: &GuardrailsConfig,
+    stage: GuardStage,
+    text: &str,
+    is_system: bool,
+) -> PolicyRun {
+    // the gateway drops a rule that does not compile, so the trace has to line
+    // up the surviving rules with the configured ones by hand
+    let compiled: Vec<Option<CompiledRule>> =
+        config.rules.iter().map(CompiledRule::from_config).collect();
+    let guard = CompiledGuardrails {
+        enabled: config.enabled,
+        max_scan_bytes: config.max_scan_bytes.unwrap_or(DEFAULT_MAX_SCAN_BYTES),
+        streaming_post_call: config.streaming_post_call,
+        rules: compiled.iter().flatten().cloned().collect(),
+    };
+
+    let mut trace = Vec::new();
+    let mut budget = guard.scan_budget();
+    let mut report = GuardrailReport::default();
+    let scanned = guard.scan_stage_traced(
+        text,
+        stage,
+        is_system,
+        &mut budget,
+        &mut report,
+        &RuleSelection::default(),
+        Some(&mut trace),
+    );
+
+    // a scan that bailed out before its loop recorded nothing; say why
+    let blanket = if !config.enabled {
+        Some(DryRunSkip::PolicyDisabled)
+    } else if text.len() > guard.scan_budget() {
+        Some(DryRunSkip::OverScanBudget)
+    } else {
+        None
+    };
+    let mut walked = trace.into_iter();
+    let mut blocked = false;
+    let steps: Vec<PolicyStep> = config
+        .rules
+        .iter()
+        .zip(&compiled)
+        .map(|(rule, compiled)| {
+            if compiled.is_none() {
+                return PolicyStep::unreached(rule, DryRunSkip::NotCompiled);
+            }
+            if let Some(skip) = blanket {
+                return PolicyStep::unreached(rule, skip);
+            }
+            if blocked {
+                return PolicyStep::unreached(rule, DryRunSkip::AfterBlock);
+            }
+            match walked.next() {
+                Some(step) => {
+                    blocked = step.outcome == DryRunOutcome::Blocked;
+                    step
+                }
+                None => PolicyStep::unreached(rule, DryRunSkip::AfterBlock),
+            }
+        })
+        .collect();
+
+    let (outcome, blocked_by, redacted) = match scanned {
+        ScanOutcome::Blocked(rule) => (DryRunOutcome::Blocked, Some(rule), None),
+        ScanOutcome::Redacted(out) => (DryRunOutcome::Redacted, None, Some(out)),
+        ScanOutcome::Unchanged if report.matched() => (DryRunOutcome::Annotated, None, None),
+        ScanOutcome::Unchanged
+            if !steps.is_empty() && steps.iter().all(|s| s.outcome == DryRunOutcome::Skipped) =>
+        {
+            (DryRunOutcome::Skipped, None, None)
+        }
+        ScanOutcome::Unchanged => (DryRunOutcome::NoMatch, None, None),
+    };
+    PolicyRun {
+        outcome,
+        steps,
+        blocked_by,
+        redacted,
+    }
 }
 
 #[cfg(test)]
@@ -1181,5 +1387,113 @@ mod tests {
         // system exemption is an input-side rule and does not apply to output
         let run = dry_run_rule(&post, "a secret", true).unwrap();
         assert_eq!(run.outcome, DryRunOutcome::Redacted);
+    }
+
+    fn policy(rules: Vec<GuardrailRule>) -> GuardrailsConfig {
+        GuardrailsConfig {
+            enabled: true,
+            rules,
+            ..GuardrailsConfig::default()
+        }
+    }
+
+    #[test]
+    fn policy_dry_run_feeds_redactions_to_later_rules() {
+        // the redact rule hides the email, so the block rule behind it has
+        // nothing left to match
+        let config = policy(vec![
+            rule("mask", BuiltinRule::Email, GuardAction::Redact),
+            rule("deny", BuiltinRule::Email, GuardAction::Block),
+        ]);
+        let run = dry_run_policy(&config, GuardStage::PreCall, "mail a@b.io", false);
+        assert_eq!(run.outcome, DryRunOutcome::Redacted);
+        assert_eq!(run.steps[0].outcome, DryRunOutcome::Redacted);
+        assert_eq!(run.steps[0].match_count, 1);
+        assert_eq!(run.steps[1].outcome, DryRunOutcome::NoMatch);
+        assert_eq!(run.redacted.as_deref(), Some("mail [REDACTED:EMAIL]"));
+        assert_eq!(run.blocked_by, None);
+    }
+
+    #[test]
+    fn policy_dry_run_stops_at_the_first_block() {
+        let config = policy(vec![
+            rule("deny", BuiltinRule::Email, GuardAction::Block),
+            rule("mask", BuiltinRule::Email, GuardAction::Redact),
+        ]);
+        let run = dry_run_policy(&config, GuardStage::PreCall, "a@b.io", false);
+        assert_eq!(run.outcome, DryRunOutcome::Blocked);
+        assert_eq!(run.blocked_by.as_deref(), Some("deny"));
+        assert_eq!(run.steps[1].outcome, DryRunOutcome::Skipped);
+        assert_eq!(run.steps[1].skip, Some(DryRunSkip::AfterBlock));
+        assert_eq!(run.redacted, None);
+    }
+
+    #[test]
+    fn policy_dry_run_agrees_with_the_request_path_scan() {
+        let config = policy(vec![
+            rule("note", BuiltinRule::Phone, GuardAction::Annotate),
+            rule("mask", BuiltinRule::Email, GuardAction::Redact),
+        ]);
+        let text = "call +1 415 555 0100 or a@b.io";
+        let run = dry_run_policy(&config, GuardStage::PreCall, text, false);
+        let guard = CompiledGuardrails::from_config(&config);
+        let mut report = GuardrailReport::default();
+        let mut budget = guard.scan_budget();
+        let scanned = guard.scan_segment(text, false, &mut budget, &mut report);
+        assert_eq!(
+            scanned,
+            ScanOutcome::Redacted(run.redacted.clone().unwrap())
+        );
+        assert_eq!(
+            run.steps.iter().map(|s| s.match_count).sum::<usize>(),
+            report.hits.iter().map(|(_, n)| n).sum::<usize>()
+        );
+    }
+
+    #[test]
+    fn policy_dry_run_labels_why_a_rule_did_not_run() {
+        let mut post = rule("out", BuiltinRule::Email, GuardAction::Redact);
+        post.stage = GuardStage::PostCall;
+        let config = policy(vec![
+            post,
+            rule("deny", BuiltinRule::Email, GuardAction::Block),
+        ]);
+        let run = dry_run_policy(&config, GuardStage::PreCall, "a@b.io", true);
+        assert_eq!(run.steps[0].skip, Some(DryRunSkip::OtherStage));
+        assert_eq!(run.steps[1].skip, Some(DryRunSkip::SystemMessage));
+        assert_eq!(run.outcome, DryRunOutcome::Skipped);
+
+        let mut off = config.clone();
+        off.enabled = false;
+        let run = dry_run_policy(&off, GuardStage::PreCall, "a@b.io", false);
+        assert!(run
+            .steps
+            .iter()
+            .all(|s| s.skip == Some(DryRunSkip::PolicyDisabled)));
+
+        let text = "x".repeat(DEFAULT_MAX_SCAN_BYTES + 1);
+        let run = dry_run_policy(&config, GuardStage::PreCall, &text, false);
+        assert_eq!(run.steps[1].skip, Some(DryRunSkip::OverScanBudget));
+    }
+
+    #[test]
+    fn policy_dry_run_lines_steps_up_when_a_rule_does_not_compile() {
+        let mut broken = rule("broken", BuiltinRule::Email, GuardAction::Block);
+        broken.builtin = None;
+        broken.pattern = Some("[".to_string());
+        let config = policy(vec![
+            broken,
+            rule("mask", BuiltinRule::Email, GuardAction::Redact),
+        ]);
+        let run = dry_run_policy(&config, GuardStage::PreCall, "a@b.io", false);
+        assert_eq!(run.steps[0].skip, Some(DryRunSkip::NotCompiled));
+        assert_eq!(run.steps[1].outcome, DryRunOutcome::Redacted);
+    }
+
+    #[test]
+    fn an_empty_policy_matches_nothing() {
+        let run = dry_run_policy(&policy(Vec::new()), GuardStage::PreCall, "x", false);
+        assert_eq!(run.outcome, DryRunOutcome::NoMatch);
+        assert!(run.steps.is_empty());
     }
 }

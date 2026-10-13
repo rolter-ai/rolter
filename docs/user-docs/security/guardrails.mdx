@@ -18,7 +18,13 @@ Choose `annotate` to count a match without changing traffic, `block` to reject m
 
 The rule dialog has a **Try it on a sample** panel. Paste some text, optionally mark it as a system message, and select **Run test**. The control plane runs the draft exactly as filled in, with the same matcher and the same pattern limits the gateway uses, and answers with what would happen: no match, annotated, redacted (with the redacted text), would block, or not scanned (a system message the rule does not inspect, or a sample longer than the gateway scans per request). Each match is marked in the sample. A pattern the gateway would refuse comes back with the gateway's message, so you learn that before publishing.
 
-The test does not save or publish anything, and the sample is not logged or stored. It runs one rule on its own, so it does not show how rules combine: rules run in position order, a block ends the scan, and a redact rule hides its matches from the rules after it. A sample is limited to 64 KiB. Testing needs the same access as editing a rule.
+The test does not save or publish anything, and the sample is not logged or stored. It runs one rule on its own. To see how it combines with the rest, select **Run in the whole policy** in the same panel. A sample is limited to 64 KiB. Testing needs the same access as editing a rule.
+
+### Try the whole policy
+
+Rules do not act alone. Config-file rules run first, then the enabled dashboard rules by position. A block ends the scan, and a redact rule hides its matches from the rules after it, so an earlier redaction can stop a later block rule from firing. **Try the policy** at the top of the Guardrail Rules screen runs a sample through all of it with the gateway's own scan and lists every rule in the order it runs: where it comes from (config file, dashboard or draft), what it did, and why it did not act when it was skipped (other stage, system message, an earlier block, guardrails off). Below the list is the verdict and the text that would be forwarded after every redaction. Pick **Request** or **Response** to try the pre-call or the post-call rules.
+
+**Run in the whole policy** in the rule dialog does the same with the rule you are editing slotted in at its position. If a saved rule has the same name, the draft takes its place. Route overrides are not applied; the answer is for the policy, not for one route. Like the single-rule test, it saves nothing, logs nothing and needs the access that editing a rule needs.
 
 The detector and action pickers describe what each choice does. `payment_card` matches any run of 13 to 19 digits and does not check the card number, so a 13-digit timestamp matches too; `phone` matches 8 to 20 digits.
 
@@ -144,12 +150,15 @@ Creating, editing, enabling, or deleting a registry entry increments `config_ver
 | `GET`, `POST`   | `/api/v1/guardrails/providers`      | List or register providers                    |
 | `PUT`, `DELETE` | `/api/v1/guardrails/providers/{id}` | Update or delete a provider                   |
 | `POST`          | `/api/v1/guardrails/rules/test`     | Run an unsaved rule on text                   |
+| `POST`          | `/api/v1/guardrails/policy/test`    | Run the whole policy on text                  |
 | `POST`          | `/api/v1/guardrails/providers/test` | Send an unsaved provider a sample envelope    |
 
 `GET /api/v1/guardrails/effective` is superadmin-only and returns what the gateways run: `guardrails` (the feature flag), `streaming_post_call`, `rules`, and `webhook` (`null` when none is on). Each rule carries `source` (`file` or `registry`), `rule_id` (the dashboard row behind a registry rule) and `overrides` (the enabled dashboard row a config-file rule displaced). The webhook has `source` (`file`, `registry` or `none`), `provider_id` (the registry provider in force) and `overrides` (the enabled provider an enabled config-file webhook displaced).
 
-Every mutation is audit logged. The two `test` endpoints write nothing and are not audit logged; they need `guardrail_rule:update` and `guardrail_provider:update`.
+Every mutation is audit logged. The `test` endpoints write nothing and are not audit logged; the rule and policy ones need `guardrail_rule:update`, the provider one `guardrail_provider:update`.
 
 `POST /api/v1/guardrails/rules/test` takes `sample` plus the rule fields (`builtin` or `pattern`, `stage`, `action`, `replacement`, `include_system`) and `system` (treat the sample as a system message). It returns `outcome` (`no_match`, `annotated`, `redacted`, `blocked` or `skipped`, with `skip` saying why), `match_count`, `spans` (UTF-16 offsets into the sample, at most 200) and `redacted`. An invalid rule or a sample over 64 KiB is a `400`.
+
+`POST /api/v1/guardrails/policy/test` takes `sample`, `stage` (`pre_call` by default, or `post_call`), `system` and an optional `draft`: the rule fields above plus `name` (default `draft`) and `position`. It returns `outcome`, `blocked_by`, `redacted` (the text after every redaction, only when it changed) and `steps`, one per rule in run order, each with `rule`, `source` (`file`, `dashboard` or `draft`), `stage`, `action`, `outcome`, `match_count` (against the text as that rule saw it) and, for `skipped`, `skip` (`system_message`, `over_scan_budget`, `other_stage`, `after_block`, `policy_disabled` or `not_compiled`). A draft named like a config-file rule, an invalid draft or a sample over 64 KiB is a `400`.
 
 `POST /api/v1/guardrails/providers/test` takes `url` plus `stage`, `timeout_ms`, `max_body_bytes`, `auth_kind`, `auth_env`, an optional `sample` and `skip_credential`. It returns `ok`, `decision` or `error` (`kind` and `message`), `credential` (`not_configured`, `sent`, `skipped` or `unset`), `http_status`, `latency_ms` and `truncated`. Only a malformed draft is a `400`; a refused address or a failing service is a `200` with `ok: false`. Provider bodies accept `auth_kind` as `none`, `bearer`, or `shared_secret`; `auth_env` is required for the latter two and contains only the environment variable name.

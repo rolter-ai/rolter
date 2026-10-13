@@ -66,9 +66,9 @@ pub use guardrail_webhook::{
     WebhookStage, WebhookTenant,
 };
 pub use guardrails::{
-    dry_run_rule, BuiltinRule, CompiledGuardrails, DryRun, DryRunOutcome, DryRunSkip, DryRunSpan,
-    GuardAction, GuardStage, GuardrailReport, GuardrailRule, GuardrailsConfig, ScanOutcome,
-    StreamingPostCall, MAX_DRY_RUN_SPANS,
+    dry_run_policy, dry_run_rule, BuiltinRule, CompiledGuardrails, DryRun, DryRunOutcome,
+    DryRunSkip, DryRunSpan, GuardAction, GuardStage, GuardrailReport, GuardrailRule,
+    GuardrailsConfig, PolicyRun, PolicyStep, ScanOutcome, StreamingPostCall, MAX_DRY_RUN_SPANS,
 };
 pub use node_identity::{node_id, node_identity, NodeIdSource, NodeIdentity};
 pub use pii_sanitizer::{

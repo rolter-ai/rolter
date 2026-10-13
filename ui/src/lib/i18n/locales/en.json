@@ -2227,6 +2227,44 @@
           "systemMessage": "The rule does not inspect system messages. Turn on “Inspect system messages” to include them.",
           "overScanBudget": "The sample is longer than the gateway scans per request, so it would be left as it is."
         }
+      },
+      "policyTrial": {
+        "open": "Try the policy",
+        "title": "Try the whole policy on a sample",
+        "intro": "Runs every rule that is on, in the order the gateway runs them: config-file rules first, then dashboard rules by position. Nothing is saved or logged.",
+        "stage": "Stage",
+        "stageRequest": "Request",
+        "stageResponse": "Response",
+        "run": "Run policy",
+        "runDraft": "Run in the whole policy",
+        "traceLabel": "Rules in the order they run",
+        "finalLabel": "Text forwarded after every redaction",
+        "noRules": "No rules are on, so nothing would act on the sample.",
+        "verdict": {
+          "noMatch": "No rule acted, forwarded unchanged",
+          "annotated": "Annotated, forwarded unchanged",
+          "redacted": "Redacted, then forwarded",
+          "blocked": "Blocked by {{rule}}",
+          "skipped": "No rule looked at the sample"
+        },
+        "step": {
+          "noMatch": "No match",
+          "annotated": "Annotated",
+          "redacted": "Redacted",
+          "blocked": "Blocks",
+          "skipped": "Skipped"
+        },
+        "source": {
+          "file": "Config file",
+          "dashboard": "Dashboard",
+          "draft": "Draft"
+        },
+        "skip": {
+          "otherStage": "Runs on the other stage.",
+          "afterBlock": "Not reached: an earlier rule blocked the request.",
+          "policyDisabled": "Guardrails are off, so no rule runs.",
+          "notCompiled": "The pattern does not compile, so the gateway drops this rule."
+        }
       }
     },
     "guardrailOutcomes": {
