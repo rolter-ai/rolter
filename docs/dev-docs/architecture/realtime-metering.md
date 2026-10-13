@@ -100,6 +100,27 @@ both counts. There is no setting that turns metering off.
 The snapshot is read per flush, so a price, budget or limit edited mid-session
 applies from the next flush on.
 
+## Plugin calls on a session
+
+`pre_upstream` plugins are consulted for a session's text events (`ContentPolicy::client_event`), but a
+session is one connection and its rows are per turn, so a call has no row of its own to leave
+`plugin_events` on (#3071). The policy tallies each call into a `PluginCalls` (a `parking_lot` mutex around
+a count per `<outcome>:<slug>` entry, held for a push or a drain and never across an await) that it shares
+with the session's `SessionMeter`. The meter takes the tally when it writes rows:
+
+- a flush with turns puts it on the first turn's row, so the calls that preceded a response sit on the
+  response they shaped; a flush with no turns leaves it for the next one
+- `finish` puts what is left on the first row of a response the end cut short, and when there is none
+  writes one more row (`<id>:<n>`, status `200`, no tokens, through `log_recorded_attempt`, so it never
+  counts against a target's health) so a session whose events were all refused is not invisible
+
+Entries are expanded to one per call, because the Plugins rollup counts entries, not tallies. That is
+bounded by the text events a client sends, each of which already cost an HTTP round trip to the plugin.
+The extra row is the price of not losing those calls; it counts as a request in analytics with zero
+tokens. Per turn was chosen over one summary row per session because the session row would have to wait
+for the close, and a session that never closes cleanly (a dropped network, a crash) would lose its calls.
+Tests: `crates/rolter-gateway/tests/realtime_metering.rs`.
+
 ## A budget that runs out mid-session
 
 The meter re-reads the budgets on every tick, not only after this session

@@ -272,6 +272,7 @@ fn validate_provider(body: &ProviderBody) -> ApiResult<()> {
         failure_mode,
         max_body_bytes: body.max_body_bytes as usize,
         auth,
+        ..Default::default()
     }
     .validate();
     // as above: the joined text cannot name one field, so the endpoint stands in

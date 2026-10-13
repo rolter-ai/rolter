@@ -242,7 +242,10 @@ pub async fn realtime(
         &trace_id,
         &state.side_client,
     );
+    let plugin_calls = crate::realtime_metering::PluginCalls::default();
+    let policy = policy.map(|policy| policy.recording_plugin_calls(plugin_calls.clone()));
     let meter = SessionMeter {
+        plugin_calls,
         state: state.clone(),
         scope,
         model: query.model,
