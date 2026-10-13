@@ -13,6 +13,7 @@ import { GatewayError } from "@/lib/gateway";
 /** the `code`s the control plane sends that the dashboard has a sentence for */
 export const KNOWN_ERROR_CODES = [
   "analytics_query_failed",
+  "analytics_query_timeout",
   "internal",
   "invalid_body",
   "invalid_credentials",

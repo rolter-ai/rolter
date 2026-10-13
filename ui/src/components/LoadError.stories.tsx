@@ -109,6 +109,25 @@ export const ServerError: Story = {
   },
 };
 
+/**
+ * ClickHouse answered too slowly (`504 analytics_query_timeout`, #2713): it is
+ * not down, so the copy says to narrow the range, and a retry is offered.
+ */
+export const QueryTimeout: Story = {
+  args: {
+    error: new ApiError("analytics query timed out", 504, "analytics_query_timeout"),
+    onRetry: fn(),
+  },
+  play: async ({ canvas, args }) => {
+    const alert = await canvas.findByRole("alert");
+    await expect(alert).toHaveTextContent(/took too long/);
+    await expect(alert).toHaveTextContent(/Narrow the time range/);
+    await expect(alert).not.toHaveTextContent(/failed to return/);
+    await userEvent.click(canvas.getByRole("button", { name: /try again/i }));
+    await expect(args.onRetry).toHaveBeenCalled();
+  },
+};
+
 /** An unanticipated status still says something true rather than guessing. */
 export const UnknownStatus: Story = {
   args: { error: new ApiError("I'm a teapot", 418), onRetry: fn() },
@@ -145,6 +164,7 @@ export const EveryKind: Story = {
         new ApiError("no session", 401, "open_mode_no_session"),
         new ApiError("no such endpoint: /api/v1/orgs", 404, "no_such_endpoint"),
         new TypeError("Failed to fetch"),
+        new ApiError("analytics query timed out", 504, "analytics_query_timeout"),
         new ApiError("database connection pool exhausted", 500),
         new ApiError("I'm a teapot", 418),
       ].map((error, i) => (
@@ -154,7 +174,7 @@ export const EveryKind: Story = {
   ),
   play: async ({ canvas }) => {
     const alerts = await canvas.findAllByRole("alert");
-    await expect(alerts).toHaveLength(7);
+    await expect(alerts).toHaveLength(8);
     for (const alert of alerts) {
       // no unresolved interpolation anywhere on screen, in either half
       await expect(alert.textContent).not.toContain("{{");

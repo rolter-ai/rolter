@@ -305,6 +305,28 @@ export const Error_: Story = {
   },
 };
 
+// a read past the request timeout is a busy store, not a dead one (#2713)
+export const QueryTimeout: Story = {
+  render: () => (
+    <Harness
+      fetchStub={scoped(async () =>
+        json(
+          { error: { message: "analytics query timed out", code: "analytics_query_timeout" } },
+          504,
+        ),
+      )}
+    >
+      <McpLogs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectLoadError(canvasElement, /MCP tool-call logs took too long/i);
+    const canvas = within(canvasElement);
+    await expect(canvas.queryByText(/failed to return/i)).toBeNull();
+    await expect(canvas.getAllByRole("button", { name: /try again/i }).length).toBeGreaterThan(0);
+  },
+};
+
 // MCP logs are a deployment-scope read, so a non-superadmin gets 403 — and the
 // screen now names who can widen the role instead of printing a grey sentence
 export const Forbidden: Story = {

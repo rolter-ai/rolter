@@ -37,6 +37,12 @@ export type LoadErrorKind =
   | "noStore"
   /** the request never got an answer — wrong URL, down, CORS, offline */
   | "unreachable"
+  /**
+   * ClickHouse is up but the read ran past the control plane's request timeout
+   * (`504 analytics_query_timeout`, #2475). A narrower range can succeed, which
+   * "the store is down" never suggests (#2713)
+   */
+  | "queryTimeout"
   /** the control plane answered, and the answer was a failure */
   | "server"
   /** answered with something we did not anticipate */
@@ -59,6 +65,7 @@ export function classifyLoadError(error: unknown): LoadErrorKind {
   // connected" rule below: the control plane did answer, and with a 503 or a 404
   if (error instanceof AnalyticsUnavailableError) return "server";
   if (!(error instanceof ApiError)) return "unreachable";
+  if (error.code === "analytics_query_timeout") return "queryTimeout";
   if (error.status === 401) return "unauthenticated";
   if (error.status === 403) return "forbidden";
   if (error.status >= 500) return "server";
@@ -73,7 +80,9 @@ export function classifyLoadError(error: unknown): LoadErrorKind {
  * failure was transient when it was a permission or a deployment setting.
  */
 export function isRetryable(kind: LoadErrorKind): boolean {
-  return kind === "unreachable" || kind === "server" || kind === "unknown";
+  return (
+    kind === "unreachable" || kind === "queryTimeout" || kind === "server" || kind === "unknown"
+  );
 }
 
 /** Whether the operator's route out of this is the sign-in screen. */

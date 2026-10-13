@@ -61,6 +61,17 @@ a config-file-only deployment answers Users, Keys, Providers and every settings
 screen with the API's JSON 404. That is the deployment's shape, not a wrong URL
 and not a failure a retry can change (#1204).
 
+## A slow analytics read is not an outage
+
+A ClickHouse read that runs past the control plane's request timeout answers
+`504` with the `analytics_query_timeout` code (#2475); any other ClickHouse
+failure is `502 analytics_query_failed`. `classifyLoadError` reads the code into
+the `queryTimeout` kind, so every screen that renders `LoadError` for an
+analytics read (the dashboard, logs, health, MCP logs, usage) says "took too
+long, narrow the time range" and keeps the retry, where `server` says the
+control plane failed. The store is reachable in the first case, so a screen
+branches on nothing: the shared component does it (#2713).
+
 ## No analytics store is not a load error
 
 A control plane with no ClickHouse is a deployment shape rolter supports, so

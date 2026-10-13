@@ -416,6 +416,26 @@ export const Loading: Story = {
 
 const failing = recording(refusing());
 
+/** a read past the request timeout is a busy store, not a dead one (#2713) */
+export const QueryTimeout: Story = {
+  render: () => (
+    <Harness
+      fetchStub={scoped(async () =>
+        json(
+          { error: { message: "analytics query timed out", code: "analytics_query_timeout" } },
+          504,
+        ),
+      )}
+    >
+      <Logs pollMs={FAST_POLL_MS} />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectLoadError(canvasElement, /request logs took too long/i);
+    await expect(within(canvasElement).queryByText(/failed to return/i)).toBeNull();
+  },
+};
+
 /**
  * #1984: a first load that fails stays failed until someone retries it. The
  * feed used to go on polling, and a query that never held data goes back to

@@ -167,6 +167,8 @@ When every read fails at once, because the control plane is down or ClickHouse r
 
 If a refresh fails after a card has shown data, the card keeps what it has and says so underneath it, in red: _Refresh failed at 15:34:56, retrying_, until a refresh succeeds. The Recent requests card says it in its label instead, where **Live** gives way to the same sentence. **Live** is only shown while the last read of the card succeeded: while the first read is still out, the label reads **Loading**, and if it fails, the label reads _Load failed at 15:34:56_.
 
+A screen that reads analytics tells a slow query from an unavailable store. When ClickHouse does not answer within the control plane's 15-second limit, the error says the query took too long and suggests a narrower time range, with **Try again**. Any other ClickHouse failure keeps the generic "failed to return" message.
+
 LLM Logs says **Streaming** only after a read that succeeded. While the first page loads, its toolbar says it is loading, and when a read fails it gives the time of the failure instead. If the very first read fails, the screen stops refreshing and keeps the error on screen until you press **Try again**. If a later refresh fails while rows are already showing, the rows stay, and the toolbar reads _Refresh failed at 15:34:56, retrying_ until a refresh succeeds or you pause the stream.
 
 ## The gateway status in the header

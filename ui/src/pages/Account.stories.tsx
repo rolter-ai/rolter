@@ -558,6 +558,31 @@ export const KeyRowAtMobileInRussian: Story = {
   },
 };
 
+/** a usage read past the request timeout says the query was slow, not that the store is down (#2713) */
+export const UsageTimedOut: Story = {
+  render: () => (
+    <Harness
+      fetchStub={account(
+        () => json(KEYS),
+        () =>
+          json(
+            { error: { message: "analytics query timed out", code: "analytics_query_timeout" } },
+            504,
+          ),
+      )}
+    >
+      <Account />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("my laptop")).toBeInTheDocument();
+    await expectLoadError(canvasElement, /your usage took too long/i);
+    await expect(canvas.queryByText(/failed to return/i)).toBeNull();
+    await expect(canvas.getByRole("button", { name: /try again/i })).toBeVisible();
+  },
+};
+
 /**
  * A usage query that fails for any other reason used to fall through to "no
  * usage in the last 7 days" on every card — a failure dressed as a quiet week.

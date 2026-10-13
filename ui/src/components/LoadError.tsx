@@ -2,6 +2,7 @@ import {
   DatabaseZap,
   KeyRound,
   PlugZap,
+  TimerOff,
   RefreshCw,
   ServerCrash,
   ShieldAlert,
@@ -20,6 +21,7 @@ const ICONS: Record<LoadErrorKind, typeof KeyRound> = {
   openMode: ShieldAlert,
   noStore: DatabaseZap,
   unreachable: PlugZap,
+  queryTimeout: TimerOff,
   server: ServerCrash,
   unknown: ServerCrash,
 };

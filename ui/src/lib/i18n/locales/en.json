@@ -194,6 +194,10 @@
         "title": "The control plane failed to return {{resource}}",
         "body": "It answered, and the answer was an error. Its own message is below; the server logs will have more."
       },
+      "queryTimeout": {
+        "title": "The query for {{resource}} took too long",
+        "body": "The analytics store is reachable but did not answer within the control plane's time limit. Narrow the time range, or try again in a moment."
+      },
       "unknown": {
         "title": "Could not load {{resource}}",
         "body": "The control plane rejected the request for a reason the dashboard does not recognise. Its own message is below."
@@ -297,6 +301,7 @@
       "generic": "The server rejected this request.",
       "invalidFieldNamed": "The value of {{field}} is not accepted. Correct it and try again.",
       "codes": {
+        "analytics_query_timeout": "The analytics query took too long. Narrow the time range and try again.",
         "analytics_query_failed": "The analytics query failed.",
         "internal": "The control plane hit an internal error.",
         "invalid_body": "The request was not valid JSON for this action. Reload the page and try again.",
