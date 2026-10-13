@@ -828,6 +828,7 @@ function RuleDialog({
           {t("common.cancel")}
         </Button>
         <Button disabled={!valid || pending} onClick={() => onSave(ruleBody(form))}>
+          {pending && <Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" aria-hidden />}
           {pending ? t("pages.guardrailRules.publishing") : t("pages.guardrailRules.publish")}
         </Button>
       </DialogFooter>

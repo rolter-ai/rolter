@@ -57,3 +57,8 @@
 
 **Learning:** Hand-rolled icon buttons using GatedButton with Trash2 and Loader2 manually recreate button styling and pending state checks, missing standard design system traits like hover border states (hover:border-[color:var(--status-danger)]).
 **Action:** Replace custom gated icon delete buttons on list/card items with DeleteIconButton from @/components/ui/delete-icon-button.
+
+## 2026-10-12 - Inline Loading Spinners on Guardrail Dialog Submit Buttons
+
+**Learning:** Form dialog submit buttons in `GuardrailProviders.tsx` and `GuardrailRules.tsx` changed label text to `publishing` during async save mutations but lacked inline `<Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" aria-hidden />` icons.
+**Action:** Always pair `disabled={pending}` submit buttons in form dialogs with an inline `<Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" aria-hidden />` icon alongside translated pending text for explicit visual feedback.
