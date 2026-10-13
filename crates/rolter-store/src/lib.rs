@@ -23,6 +23,36 @@ pub mod postgres;
 #[cfg(feature = "postgres")]
 pub use postgres::PostgresConfigStore;
 
+/// Whose row a line of [`ConfigStore::load_problems`] is about.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProblemOwner {
+    /// a deployment-wide setting, or a row no tenant owns: everyone may read it
+    Deployment,
+    /// a row owned by an organization, or by one project of it
+    Tenant(rolter_core::Tenancy),
+    /// a budget or rate limit, named by the scope it caps
+    Scope {
+        scope: rolter_core::BudgetScope,
+        id: String,
+    },
+}
+
+/// One line of [`ConfigStore::load_problems`] and the row it is about.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigProblem {
+    pub message: String,
+    pub owner: ProblemOwner,
+}
+
+impl ConfigProblem {
+    pub fn deployment(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            owner: ProblemOwner::Deployment,
+        }
+    }
+}
+
 /// Read/write access to the gateway configuration.
 #[async_trait]
 pub trait ConfigStore: Send + Sync {
@@ -58,6 +88,19 @@ pub trait ConfigStore: Send + Sync {
     /// Empty for a store with no free-text rows to misread.
     async fn load_problems(&self) -> Result<Vec<String>> {
         Ok(Vec::new())
+    }
+
+    /// [`load_problems`](Self::load_problems) with the owner of each sentence,
+    /// so the problems endpoint can show a caller only the lines about rows it
+    /// may see (#3100). A store that does not know whose a line is keeps the
+    /// default, which reads every line of `load_problems` as the deployment's.
+    async fn load_problem_records(&self) -> Result<Vec<ConfigProblem>> {
+        Ok(self
+            .load_problems()
+            .await?
+            .into_iter()
+            .map(ConfigProblem::deployment)
+            .collect())
     }
 
     /// How many of the guardrail rules [`load`](Self::load) returns come from
@@ -382,6 +425,10 @@ impl ConfigStore for MergedConfigStore {
 
     async fn load_problems(&self) -> Result<Vec<String>> {
         self.inner.load_problems().await
+    }
+
+    async fn load_problem_records(&self) -> Result<Vec<ConfigProblem>> {
+        self.inner.load_problem_records().await
     }
 }
 

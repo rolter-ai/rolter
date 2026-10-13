@@ -2225,11 +2225,15 @@ async fn get_config_problems(
     // an unreadable store must not render as "no problems"
     let mut config = match state.store.load().await {
         Ok(config) => config,
-        Err(error) => return Ok(Json(unloadable_config_problems(&state, &error).await?)),
+        Err(error) => {
+            return Ok(Json(
+                unloadable_config_problems(&state, &session, &error).await?,
+            ))
+        }
     };
     // positions are read before the sanitize drops rows, as the records' are
     #[cfg(feature = "postgres")]
-    let visibility = {
+    let (visibility, mut view) = {
         let mut view = tenant_view::TenantView::load(&state, session.principal.as_ref())
             .await
             .map_err(|err| {
@@ -2239,30 +2243,77 @@ async fn get_config_problems(
                 );
                 StoreReadError
             })?;
-        tenant_view::ConfigVisibility::compute(&state, &mut view, &config).await
+        let visibility = tenant_view::ConfigVisibility::compute(&state, &mut view, &config).await;
+        (visibility, view)
     };
+    // what the caller may read is what the sanitize says about the config cut
+    // to its rows: a sentence of the full run that the cut run does not repeat
+    // is about a row it cannot see, or about one it only breaks together with
+    // a hidden one (#3100)
+    #[cfg(feature = "postgres")]
+    let seen_problems = (!view.sees_everything()).then(|| {
+        let mut seen = config.clone();
+        visibility.retain(&mut seen);
+        snapshot_problems(&state, &mut seen).0
+    });
+    let (mut problems, omitted) = snapshot_problems(&state, &mut config);
+    #[cfg(feature = "postgres")]
+    let omitted = visibility.renumber(omitted);
+    #[cfg(feature = "postgres")]
+    if let Some(seen) = seen_problems {
+        problems = common_lines(problems, seen);
+    }
     #[cfg(not(feature = "postgres"))]
     let _ = session;
+    // rows the loader could only serve by guessing, such as a budget period it
+    // does not recognise and enforces as monthly (#1902). the snapshot carries
+    // the guess, not the row, so only the store can say where one was made
+    match state.store.load_problem_records().await {
+        #[cfg(feature = "postgres")]
+        Ok(guessed) => problems.extend(view.visible_problems(&state, guessed).await),
+        #[cfg(not(feature = "postgres"))]
+        Ok(guessed) => problems.extend(guessed.into_iter().map(|p| p.message)),
+        Err(error) => tracing::warn!(%error, "could not list rows the config loader misread"),
+    }
+    Ok(Json(json!({ "problems": problems, "omitted": omitted })))
+}
+
+/// The problem lines and omitted records the snapshot computes for `config`,
+/// including the structural ones that stop it reaching a gateway at all.
+fn snapshot_problems(
+    state: &ControlState,
+    config: &mut GatewayConfig,
+) -> (Vec<String>, Vec<rolter_core::OmittedEntry>) {
     let SnapshotReport {
         mut problems,
         omitted,
         ..
-    } = sanitize_snapshot(&state, &mut config);
-    #[cfg(feature = "postgres")]
-    let omitted = visibility.renumber(omitted);
+    } = sanitize_snapshot(state, config);
     // structural problems never reach a gateway at all — the snapshot refuses
     // outright — so an operator needs to see those here too, not just in a log
     if let Err(fatal) = config.validate_snapshot() {
         problems.extend(fatal);
     }
-    // rows the loader could only serve by guessing, such as a budget period it
-    // does not recognise and enforces as monthly (#1902). the snapshot carries
-    // the guess, not the row, so only the store can say where one was made
-    match state.store.load_problems().await {
-        Ok(guessed) => problems.extend(guessed),
-        Err(error) => tracing::warn!(%error, "could not list rows the config loader misread"),
+    (problems, omitted)
+}
+
+/// The lines of `all` that `seen` also has, with multiplicity and in the order
+/// of `all`: two tenants' identical lines leave one for a caller who sees one.
+#[cfg(feature = "postgres")]
+fn common_lines(all: Vec<String>, seen: Vec<String>) -> Vec<String> {
+    let mut left: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for line in seen {
+        *left.entry(line).or_default() += 1;
     }
-    Ok(Json(json!({ "problems": problems, "omitted": omitted })))
+    all.into_iter()
+        .filter(|line| match left.get_mut(line) {
+            Some(count) if *count > 0 => {
+                *count -= 1;
+                true
+            }
+            _ => false,
+        })
+        .collect()
 }
 
 /// The answer of [`get_config_problems`] when the config cannot be loaded at all.
@@ -2281,11 +2332,39 @@ async fn get_config_problems(
 /// must not read as "no problems".
 async fn unloadable_config_problems(
     state: &ControlState,
+    session: &session_guard::AnySession,
     error: &rolter_core::Error,
 ) -> Result<Value, StoreReadError> {
     tracing::error!(%error, "failed to load config for a dashboard read");
-    match state.store.load_problems().await {
-        Ok(mut explained) if !explained.is_empty() => {
+    let explained = match state.store.load_problem_records().await {
+        #[cfg(feature = "postgres")]
+        Ok(records) => {
+            let mut view = tenant_view::TenantView::load(state, session.principal.as_ref())
+                .await
+                .map_err(|err| {
+                    tracing::error!(
+                        ?err,
+                        "failed to resolve the caller's scope for the problems"
+                    );
+                    StoreReadError
+                })?;
+            // the deployment-level cause is shown even when every line about
+            // a tenant's row is hidden, so the emptiness test is on the store
+            let had_any = !records.is_empty();
+            (had_any, view.visible_problems(state, records).await)
+        }
+        #[cfg(not(feature = "postgres"))]
+        Ok(records) => {
+            let _ = session;
+            (
+                !records.is_empty(),
+                records.into_iter().map(|p| p.message).collect(),
+            )
+        }
+        Err(_) => (false, Vec::new()),
+    };
+    match explained {
+        (true, mut explained) => {
             // static on purpose: the cause is the line above it, and a driver
             // error never reaches this body
             explained.push(

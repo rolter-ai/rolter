@@ -1703,7 +1703,7 @@ fn price_from_row(row: &ModelPrice) -> std::result::Result<ModelPriceConfig, Str
 /// The fallback stays for rows written before the control plane checked the
 /// value (#1902): failing the load would withhold every tenant's config over
 /// one row, and moving an existing budget onto another window is not a guess
-/// to make on the operator's behalf. [`unrecognised_budget_periods`] is what
+/// to make on the operator's behalf. [`unrecognised_budget_period`] is what
 /// says it happened.
 fn parse_period(period: &str) -> BudgetPeriod {
     BudgetPeriod::parse(period).unwrap_or(BudgetPeriod::Monthly)
@@ -1715,22 +1715,17 @@ fn parse_period(period: &str) -> BudgetPeriod {
 /// Worded like the other lines `GET /api/v1/config/problems` reports, naming
 /// the row by id and scope, since two budgets on one scope differ by nothing
 /// else an operator can search for.
-fn unrecognised_budget_periods(rows: &[Budget]) -> Vec<String> {
+fn unrecognised_budget_period(row: &Budget) -> String {
     let accepted = BudgetPeriod::SPELLINGS
         .iter()
         .map(|(spelling, _)| *spelling)
         .collect::<Vec<_>>()
         .join(", ");
-    rows.iter()
-        .filter(|row| BudgetPeriod::parse(&row.period).is_none())
-        .map(|row| {
-            format!(
-                "budget '{}' on {} '{}' has period '{}', which the gateway does not \
-                 recognise, so it is enforced as a monthly cap; set it to one of {accepted}",
-                row.id, row.scope_type, row.scope_id, row.period
-            )
-        })
-        .collect()
+    format!(
+        "budget '{}' on {} '{}' has period '{}', which the gateway does not \
+         recognise, so it is enforced as a monthly cap; set it to one of {accepted}",
+        row.id, row.scope_type, row.scope_id, row.period
+    )
 }
 
 /// Map the `budgets.unpriced_policy` column to an [`UnpricedPolicy`] override.
@@ -1898,6 +1893,16 @@ impl ConfigStore for PostgresConfigStore {
     }
 
     async fn load_problems(&self) -> Result<Vec<String>> {
+        Ok(self
+            .load_problem_records()
+            .await?
+            .into_iter()
+            .map(|problem| problem.message)
+            .collect())
+    }
+
+    async fn load_problem_records(&self) -> Result<Vec<crate::ConfigProblem>> {
+        use crate::{ConfigProblem, ProblemOwner};
         let budgets: Vec<Budget> = sqlx::query_as(
             "select id, scope_type, scope_id, limit_usd::text as limit_usd, period,
                     unpriced_policy, created_at
@@ -1906,36 +1911,73 @@ impl ConfigStore for PostgresConfigStore {
         .fetch_all(&self.pool)
         .await
         .map_err(store_err)?;
-        let mut problems = unrecognised_budget_periods(&budgets);
+        let mut problems: Vec<ConfigProblem> = budgets
+            .iter()
+            .filter(|row| BudgetPeriod::parse(&row.period).is_none())
+            .map(|row| ConfigProblem {
+                message: unrecognised_budget_period(row),
+                owner: match BudgetScope::from_scope_type(&row.scope_type) {
+                    Some(scope) => ProblemOwner::Scope {
+                        scope,
+                        id: row.scope_id.to_string(),
+                    },
+                    // a scope the gateway does not enforce names no tenant
+                    None => ProblemOwner::Deployment,
+                },
+            })
+            .collect();
         let prices = repo::ModelPriceRepo(&self.pool).list().await?;
-        problems.extend(prices.iter().filter_map(|row| price_from_row(row).err()));
+        // prices are deployment-wide: the table has no owner
+        problems.extend(
+            prices
+                .iter()
+                .filter_map(|row| price_from_row(row).err())
+                .map(ConfigProblem::deployment),
+        );
         // a route left out because its settings would not parse, which the
         // snapshot cannot say since it never sees the row (#2938)
-        problems.extend(
-            self.enabled_route_rows()
-                .await?
-                .iter()
-                .filter_map(|row| route_settings_from_row(row).err()),
-        );
+        problems.extend(self.enabled_route_rows().await?.iter().filter_map(|row| {
+            route_settings_from_row(row)
+                .err()
+                .map(|message| ConfigProblem {
+                    message,
+                    owner: ProblemOwner::Tenant(rolter_core::Tenancy {
+                        org_id: row.org_id.to_string(),
+                        project_id: Some(row.project_id.to_string()),
+                    }),
+                })
+        }));
         // the security gate and the egress pools (#2943). a gate that cannot be
         // read makes `load` fail outright, so this is the one place an operator
         // can read why
         problems.extend(
-            required_headers_from_value(&self.load_security_policy().await?.required_headers).err(),
+            required_headers_from_value(&self.load_security_policy().await?.required_headers)
+                .err()
+                .map(ConfigProblem::deployment),
         );
         problems.extend(
-            injected_headers_from_value(&self.load_client_settings().await?.injected_headers).1,
+            injected_headers_from_value(&self.load_client_settings().await?.injected_headers)
+                .1
+                .into_iter()
+                .map(ConfigProblem::deployment),
         );
-        let proxies: Vec<(String, serde_json::Value)> =
-            sqlx::query_as("select name, egress_proxies from providers order by name")
-                .fetch_all(&self.pool)
-                .await
-                .map_err(store_err)?;
-        problems.extend(
-            proxies
-                .iter()
-                .filter_map(|(name, value)| egress_proxies_from_value(name, value).err()),
-        );
+        let proxies: Vec<(String, Uuid, Option<Uuid>, serde_json::Value)> = sqlx::query_as(
+            "select name, org_id, project_id, egress_proxies from providers order by name",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(store_err)?;
+        problems.extend(proxies.iter().filter_map(|(name, org, project, value)| {
+            egress_proxies_from_value(name, value)
+                .err()
+                .map(|message| ConfigProblem {
+                    message,
+                    owner: ProblemOwner::Tenant(rolter_core::Tenancy {
+                        org_id: org.to_string(),
+                        project_id: project.map(|p| p.to_string()),
+                    }),
+                })
+        }));
         Ok(problems)
     }
 }
