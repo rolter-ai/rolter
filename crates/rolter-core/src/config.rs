@@ -2134,8 +2134,9 @@ impl VirtualKeyRecord {
     }
 }
 
-/// Per-model token pricing. Rates are `currency` per million tokens (matching
-/// the `model_prices` catalog).
+/// Per-model pricing. Token rates are `currency` per million tokens (matching
+/// the `model_prices` catalog); the unit rates price the requests a provider
+/// bills by the image, the minute of audio or the character instead (#2937).
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ModelPriceConfig {
     /// public model name this price applies to
@@ -2177,11 +2178,49 @@ pub struct ModelPriceConfig {
     /// reports the split (`usage.cache_creation`) has tokens to charge at it
     #[serde(default, with = "rust_decimal::serde::float_option")]
     pub cache_write_1h_per_mtok: Option<Decimal>,
+    /// price of one generated image (`/v1/images/generations`), for a model
+    /// the provider bills per image (#2937). The count is the `data` array of
+    /// the response, or the request's `n` when the response does not carry one.
+    /// Added to the token cost, so a model that reports tokens as well (the
+    /// `gpt-image` family) sets only the rate the provider actually bills.
+    /// `None` charges nothing for images
+    #[serde(default, with = "rust_decimal::serde::float_option")]
+    pub image_per_unit: Option<Decimal>,
+    /// price of one minute of input audio (`/v1/audio/transcriptions`,
+    /// `/v1/audio/translations`), for a model billed by the minute (#2937).
+    /// The minutes are the duration the response states (`verbose_json`'s
+    /// `duration`, or a `usage` of type `duration`); a response that states
+    /// none is recorded as unknown usage instead of free
+    #[serde(default, with = "rust_decimal::serde::float_option")]
+    pub audio_input_per_minute: Option<Decimal>,
+    /// price per million characters of text to synthesise
+    /// (`/v1/audio/speech`), for a text-to-speech model billed that way
+    /// (#2937). The characters are counted from the request's `input`, since
+    /// the audio that comes back is binary and states no length
+    #[serde(default, with = "rust_decimal::serde::float_option")]
+    pub speech_per_mchar: Option<Decimal>,
     /// currency the rates above are denominated in. An open code — ISO-4217
     /// today, a crypto or custom settlement unit tomorrow — resolved against
     /// [`crate::CurrencyConfig`]'s rate table, never against a fixed enum
     #[serde(default = "crate::currency::default_base_currency")]
     pub currency: String,
+}
+
+impl Default for ModelPriceConfig {
+    fn default() -> Self {
+        Self {
+            model: String::new(),
+            input_per_mtok: Decimal::ZERO,
+            output_per_mtok: Decimal::ZERO,
+            cached_input_per_mtok: None,
+            cache_write_per_mtok: None,
+            cache_write_1h_per_mtok: None,
+            image_per_unit: None,
+            audio_input_per_minute: None,
+            speech_per_mchar: None,
+            currency: crate::currency::default_base_currency(),
+        }
+    }
 }
 
 impl ModelPriceConfig {
@@ -2198,6 +2237,9 @@ impl ModelPriceConfig {
             ("cached_input_per_mtok", self.cached_input_per_mtok),
             ("cache_write_per_mtok", self.cache_write_per_mtok),
             ("cache_write_1h_per_mtok", self.cache_write_1h_per_mtok),
+            ("image_per_unit", self.image_per_unit),
+            ("audio_input_per_minute", self.audio_input_per_minute),
+            ("speech_per_mchar", self.speech_per_mchar),
         ]
         .into_iter()
         .filter_map(|(field, rate)| {
@@ -2249,6 +2291,30 @@ impl ModelPriceConfig {
             / Decimal::from(1_000_000u32)
     }
 
+    /// Cost of the non-token units a request used, in this price's currency
+    /// (#2937), or `None` when the request's kind has no rate set.
+    ///
+    /// `None` is "this price says nothing about this request's unit", which the
+    /// caller reads together with whether the response reported tokens: only
+    /// a request with neither is unpriced. A rate that is set with a count of
+    /// zero is `Some(0)`, a priced request that cost nothing.
+    pub fn unit_cost(&self, units: &BilledUnits) -> Option<Decimal> {
+        let minute = Decimal::from(60u32);
+        let million = Decimal::from(1_000_000u32);
+        match *units {
+            BilledUnits::TokensOnly => None,
+            BilledUnits::Images(count) => {
+                self.image_per_unit.map(|rate| rate * Decimal::from(count))
+            }
+            BilledUnits::AudioSeconds(seconds) => self
+                .audio_input_per_minute
+                .map(|rate| rate * seconds / minute),
+            BilledUnits::SpeechChars(chars) => self
+                .speech_per_mchar
+                .map(|rate| rate * Decimal::from(chars) / million),
+        }
+    }
+
     /// [`Self::cost`] under its former name, from when every price was assumed
     /// to be USD. It is not USD unless [`Self::currency`] says so, and it prices
     /// no cache write: a caller that has the counts calls [`Self::cost`].
@@ -2256,6 +2322,22 @@ impl ModelPriceConfig {
     pub fn cost_usd(&self, prompt: u32, completion: u32, cached_input: u32) -> Decimal {
         self.cost(prompt, completion, cached_input, 0, 0)
     }
+}
+
+/// The non-token quantity a request is billed by, read from the request and
+/// its response (#2937). Which variant a request carries follows its endpoint,
+/// so a request with none of these (chat, embeddings) prices by tokens alone.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum BilledUnits {
+    /// the endpoint bills by tokens only
+    #[default]
+    TokensOnly,
+    /// generated images
+    Images(u32),
+    /// seconds of input audio; `Decimal` so a fractional duration is exact
+    AudioSeconds(Decimal),
+    /// characters of text sent to a text-to-speech model
+    SpeechChars(u64),
 }
 
 /// The scope level a [`BudgetConfig`] applies to. Matched against the request's
@@ -7064,6 +7146,9 @@ mod tests {
             cached_input_per_mtok: None,
             cache_write_per_mtok: None,
             cache_write_1h_per_mtok: None,
+            image_per_unit: None,
+            audio_input_per_minute: None,
+            speech_per_mchar: None,
             currency: "USD".to_string(),
         };
         // 1000 * 2.5/1e6 + 500 * 10/1e6 = 0.0025 + 0.005 = 0.0075, and now
@@ -7085,6 +7170,9 @@ mod tests {
             cached_input_per_mtok: None,
             cache_write_per_mtok: None,
             cache_write_1h_per_mtok: None,
+            image_per_unit: None,
+            audio_input_per_minute: None,
+            speech_per_mchar: None,
             currency: "USD".to_string(),
         };
         // one million of each: 0.1 + 0.2, which in f64 is 0.30000000000000004
@@ -7112,6 +7200,9 @@ mod tests {
             cached_input_per_mtok: None,
             cache_write_per_mtok: None,
             cache_write_1h_per_mtok: None,
+            image_per_unit: None,
+            audio_input_per_minute: None,
+            speech_per_mchar: None,
             currency: "ETH".to_string(),
         };
         assert_eq!(price.input_per_mtok, one_wei);
@@ -7142,6 +7233,9 @@ mod tests {
             cached_input_per_mtok: Some(d("1.25")),
             cache_write_per_mtok: None,
             cache_write_1h_per_mtok: None,
+            image_per_unit: None,
+            audio_input_per_minute: None,
+            speech_per_mchar: None,
             currency: "USD".to_string(),
         };
         let json = serde_json::to_value(&price).expect("serializes");
@@ -7231,6 +7325,9 @@ mod tests {
             cached_input_per_mtok: Some(d("0.5")),
             cache_write_per_mtok: None,
             cache_write_1h_per_mtok: None,
+            image_per_unit: None,
+            audio_input_per_minute: None,
+            speech_per_mchar: None,
             currency: "USD".to_string(),
         };
         // 600 fresh * 2 + 400 cached * 0.5 = 1200 + 200 = 1400 / 1e6
@@ -7245,6 +7342,9 @@ mod tests {
             cached_input_per_mtok: Some(d("0.3")),
             cache_write_per_mtok: Some(d("3.75")),
             cache_write_1h_per_mtok: None,
+            image_per_unit: None,
+            audio_input_per_minute: None,
+            speech_per_mchar: None,
             currency: "USD".to_string(),
         }
     }
@@ -7323,6 +7423,9 @@ mod tests {
     fn one_hour_priced() -> ModelPriceConfig {
         ModelPriceConfig {
             cache_write_1h_per_mtok: Some(d("6.0")),
+            image_per_unit: None,
+            audio_input_per_minute: None,
+            speech_per_mchar: None,
             ..write_priced()
         }
     }
@@ -7411,6 +7514,9 @@ mod tests {
             cached_input_per_mtok: None,
             cache_write_per_mtok: None,
             cache_write_1h_per_mtok: None,
+            image_per_unit: None,
+            audio_input_per_minute: None,
+            speech_per_mchar: None,
             currency: "EUR".to_string(),
         });
         let problems = config.validate().unwrap_err();
@@ -7440,6 +7546,9 @@ mod tests {
             cached_input_per_mtok: None,
             cache_write_per_mtok: None,
             cache_write_1h_per_mtok: None,
+            image_per_unit: None,
+            audio_input_per_minute: None,
+            speech_per_mchar: None,
             currency: "usd".to_string(),
         });
         let problems = config.validate().err().unwrap_or_default();
@@ -7457,6 +7566,9 @@ mod tests {
             cached_input_per_mtok: cached.map(d),
             cache_write_per_mtok: None,
             cache_write_1h_per_mtok: None,
+            image_per_unit: None,
+            audio_input_per_minute: None,
+            speech_per_mchar: None,
             currency: "USD".to_string(),
         }
     }
@@ -7483,6 +7595,71 @@ mod tests {
         free.cache_write_per_mtok = Some(d("0"));
         free.cache_write_1h_per_mtok = Some(d("0"));
         assert!(free.rate_problems().is_empty());
+    }
+
+    #[test]
+    fn a_negative_unit_rate_is_named_by_its_field() {
+        let mut price = price_with("dall-e-3", "0", None);
+        price.image_per_unit = Some(d("-0.04"));
+        price.audio_input_per_minute = Some(d("-0.006"));
+        price.speech_per_mchar = Some(d("-15"));
+        let problems = price.rate_problems();
+        assert_eq!(problems.len(), 3, "{problems:?}");
+        assert!(problems[0].starts_with("image_per_unit is -0.04"));
+        assert!(problems[1].starts_with("audio_input_per_minute is -0.006"));
+        assert!(problems[2].starts_with("speech_per_mchar is -15"));
+    }
+
+    /// #2937: a unit rate prices its own unit and nothing else, and a price
+    /// that sets no rate for the request's unit says nothing about it.
+    #[test]
+    fn unit_cost_prices_each_unit_at_its_own_rate() {
+        let price = ModelPriceConfig {
+            image_per_unit: Some(d("0.04")),
+            audio_input_per_minute: Some(d("0.006")),
+            speech_per_mchar: Some(d("15")),
+            ..Default::default()
+        };
+        assert_eq!(price.unit_cost(&BilledUnits::Images(3)), Some(d("0.12")));
+        // 90 seconds is a minute and a half
+        assert_eq!(
+            price.unit_cost(&BilledUnits::AudioSeconds(d("90"))),
+            Some(d("0.009"))
+        );
+        assert_eq!(
+            price.unit_cost(&BilledUnits::SpeechChars(20)),
+            Some(d("0.0003"))
+        );
+        // zero units at a set rate is a priced request that cost nothing
+        assert_eq!(price.unit_cost(&BilledUnits::Images(0)), Some(d("0")));
+        assert_eq!(price.unit_cost(&BilledUnits::TokensOnly), None);
+
+        let tokens_only = price_with("gpt-4o", "2.5", None);
+        assert_eq!(tokens_only.unit_cost(&BilledUnits::Images(3)), None);
+        assert_eq!(
+            tokens_only.unit_cost(&BilledUnits::AudioSeconds(d("90"))),
+            None
+        );
+        assert_eq!(tokens_only.unit_cost(&BilledUnits::SpeechChars(20)), None);
+    }
+
+    /// A snapshot from a control plane that predates the unit rates still
+    /// parses, and the rates cross as JSON numbers like their neighbours.
+    #[test]
+    fn unit_rates_default_to_unset_and_round_trip_as_numbers() {
+        let older: ModelPriceConfig =
+            serde_json::from_str(r#"{"model":"m","input_per_mtok":1.0}"#).unwrap();
+        assert_eq!(older.image_per_unit, None);
+        assert_eq!(older.audio_input_per_minute, None);
+        assert_eq!(older.speech_per_mchar, None);
+        let price = ModelPriceConfig {
+            image_per_unit: Some(d("0.04")),
+            ..older
+        };
+        let json = serde_json::to_value(&price).unwrap();
+        assert_eq!(json["image_per_unit"], 0.04);
+        let back: ModelPriceConfig = serde_json::from_value(json).unwrap();
+        assert_eq!(back.image_per_unit, Some(d("0.04")));
     }
 
     // #2889: the control plane refuses a negative rate on write, but a row

@@ -401,6 +401,12 @@ pub struct ModelPrice {
     /// rate for input tokens written to the 1 hour prompt cache (#2891); `None`
     /// means `cache_write_per_mtok`
     pub cache_write_1h_per_mtok: Option<String>,
+    /// price of one generated image (#2937); `None` charges nothing for images
+    pub image_per_unit: Option<String>,
+    /// price of one minute of input audio (#2937)
+    pub audio_input_per_minute: Option<String>,
+    /// price per million characters of text-to-speech input (#2937)
+    pub speech_per_mchar: Option<String>,
     pub currency: String,
     pub created_at: DateTime<Utc>,
 }

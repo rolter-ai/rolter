@@ -748,6 +748,18 @@ Define per-model token pricing so Rolter can compute a `cost_usd` value on every
   USD per million input tokens written to the provider's 1 hour prompt cache, for a provider that reports the split and bills it apart from the 5 minute cache (Anthropic). When omitted, falls back to `cache_write_per_mtok`, and from there to `input_per_mtok`. See [Cache writes](/observability/logs-and-cost#cache-writes).
 </ParamField>
 
+<ParamField path="image_per_unit" type="float">
+  Price of one generated image on `/v1/images/generations`, in `currency`, for a model the provider bills per image. The count is the length of the response's `data` array, or the request's `n` when the response has none. The cost is added to the token cost of the same request. When omitted, an image request that reports no tokens is logged `unpriced`. See [Images, audio and speech](/observability/logs-and-cost#images-audio-and-speech).
+</ParamField>
+
+<ParamField path="audio_input_per_minute" type="float">
+  Price of one minute of input audio on `/v1/audio/transcriptions` and `/v1/audio/translations`, in `currency`. The minutes are the duration the response states: `duration` in a `verbose_json` answer, or a `usage` object of type `duration`. A response that states none is logged with `usage_unknown = 1` and no cost. When omitted, such a request that reports no tokens is logged `unpriced`.
+</ParamField>
+
+<ParamField path="speech_per_mchar" type="float">
+  Price per million characters of text sent to `/v1/audio/speech`, in `currency`. The characters are counted from the request's `input`, because the audio that comes back states no length. When omitted, a speech request is logged `unpriced`.
+</ParamField>
+
 <ParamField path="currency" default="USD" type="string">
   The currency the rates above are written in. It defaults to `USD`, not to the `base` of `[currency]`, so on a deployment whose base is another currency set it on every price or add a `USD` rate. A currency with no rate in `[currency]` is a config error.
 </ParamField>
@@ -760,6 +772,14 @@ output_per_mtok = 10.0
 cached_input_per_mtok = 1.25
 cache_write_per_mtok = 3.125
 cache_write_1h_per_mtok = 5.0
+
+# a model billed by the image, the minute or the character: token rates of 0,
+# and the unit rate its provider charges
+[[model_prices]]
+model = "dall-e-3"
+input_per_mtok = 0
+output_per_mtok = 0
+image_per_unit = 0.04
 ```
 
 ---

@@ -48,9 +48,24 @@ const price = (
   cached_input_per_mtok: "1.25",
   cache_write_per_mtok: cacheWrite,
   cache_write_1h_per_mtok: cacheWrite1h,
+  image_per_unit: null,
+  audio_input_per_minute: null,
+  speech_per_mchar: null,
   currency,
   created_at: "2026-07-01T00:00:00Z",
 });
+
+const MEDIA_PRICES: ModelPriceRow[] = [
+  {
+    ...price("dall-e-3", "USD"),
+    input_per_mtok: "0.000000",
+    output_per_mtok: "0.000000",
+    cached_input_per_mtok: null,
+    image_per_unit: "0.040000",
+    audio_input_per_minute: "0.006000",
+    speech_per_mchar: "15.000000",
+  },
+];
 
 const PRICES: ModelPriceRow[] = [
   price("gpt-4o", "USD"),
@@ -152,8 +167,8 @@ export const ShowsPricesAsFigures: Story = {
     await expect(row.getByText("10.00")).toBeInTheDocument();
     await expect(row.getByText("1.25")).toBeInTheDocument();
     await expect(row.getByText("USD")).toBeInTheDocument();
-    // no rate set for the cache writes
-    await expect(row.getAllByText("—")).toHaveLength(2);
+    // no rate set for the cache writes or the image, audio and speech units
+    await expect(row.getAllByText("—")).toHaveLength(5);
   },
 };
 
@@ -1177,5 +1192,121 @@ export const DeleteRejectedByTheServer: Story = {
     await expectToast(canvasElement, /read-only while a restore runs/, "error");
     const dialog = within(await within(document.body).findByRole("dialog"));
     await expect(dialog.getByRole("alert")).toHaveTextContent("read-only while a restore runs");
+  },
+};
+
+const IMAGE = "Price per generated image (optional)";
+const AUDIO = "Price per minute of input audio (optional)";
+const SPEECH = "Price per million characters of speech input (optional)";
+
+/** A price that sets unit rates shows them in their own columns (#2937). */
+export const ShowsTheUnitRatesInTheirColumns: Story = {
+  render: () => (
+    <Harness fetchStub={withCurrency(CONFIGURED, MEDIA_PRICES)}>
+      <Pricing />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("Image")).toBeInTheDocument();
+    await expect(canvas.getByText("Audio (per minute)")).toBeInTheDocument();
+    await expect(canvas.getByText("Speech (per Mchar)")).toBeInTheDocument();
+    await expect(canvas.getByText("0.04")).toBeInTheDocument();
+    await expect(canvas.getByText("15.00")).toBeInTheDocument();
+  },
+};
+
+/**
+ * The form opens on the three unit rates and a save that touched none names
+ * none, so the control plane keeps what it holds (#2937).
+ */
+let keepsUnitRates: Recorder;
+export const LeavesTheUnitRatesAloneWhenUntouched: Story = {
+  render: () => {
+    keepsUnitRates = pricesWithSave(MEDIA_PRICES);
+    return (
+      <Harness fetchStub={keepsUnitRates.stub}>
+        <Toasted>
+          <Pricing />
+        </Toasted>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, "Edit the price for dall-e-3");
+    const form = within(sheet());
+    await expect(await form.findByLabelText(IMAGE)).toHaveValue(0.04);
+    await expect(form.getByLabelText(AUDIO)).toHaveValue(0.006);
+    await expect(form.getByLabelText(SPEECH)).toHaveValue(15);
+    const input = form.getByLabelText("Input price per Mtok");
+    await userEvent.clear(input);
+    await userEvent.type(input, "1");
+    await userEvent.click(form.getByRole("button", { name: "Save" }));
+
+    const body = await keepsUnitRates.expectSentBody<Record<string, unknown>>(
+      "PUT",
+      "/model-prices",
+    );
+    await expect(body).not.toHaveProperty("image_per_unit");
+    await expect(body).not.toHaveProperty("audio_input_per_minute");
+    await expect(body).not.toHaveProperty("speech_per_mchar");
+  },
+};
+
+/** Editing and emptying a unit input sends its own key: a value, or null to clear. */
+let editsUnitRates: Recorder;
+export const SendsEachUnitRateUnderItsOwnKey: Story = {
+  render: () => {
+    editsUnitRates = pricesWithSave(MEDIA_PRICES);
+    return (
+      <Harness fetchStub={editsUnitRates.stub}>
+        <Toasted>
+          <Pricing />
+        </Toasted>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, "Edit the price for dall-e-3");
+    const form = within(sheet());
+    const image = await form.findByLabelText(IMAGE);
+    await userEvent.clear(image);
+    await userEvent.type(image, "0.08");
+    await userEvent.clear(form.getByLabelText(SPEECH));
+    await userEvent.click(form.getByRole("button", { name: "Save" }));
+
+    const body = await editsUnitRates.expectSentBody<Record<string, unknown>>(
+      "PUT",
+      "/model-prices",
+    );
+    await expect(body).toHaveProperty("image_per_unit", "0.08");
+    await expect(body).toHaveProperty("speech_per_mchar", null);
+    await expect(body).not.toHaveProperty("audio_input_per_minute");
+  },
+};
+
+/** A unit rate that is not a number of 0 or more is refused at its own field. */
+let refusesUnitRate: Recorder;
+export const RefusesAnInvalidUnitRate: Story = {
+  render: () => {
+    refusesUnitRate = pricesWithSave();
+    return (
+      <Harness fetchStub={refusesUnitRate.stub}>
+        <Toasted>
+          <Pricing />
+        </Toasted>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, "Edit the price for gpt-4o");
+    const form = within(sheet());
+    const image = await form.findByLabelText(IMAGE);
+    await userEvent.type(image, "-1");
+    await userEvent.click(form.getByRole("button", { name: "Save" }));
+    await expect(image).toHaveAttribute("aria-invalid", "true");
+    await expect(image).toHaveAccessibleDescription("Enter a price of 0 or more.");
+    refusesUnitRate.expectNotSent("PUT", "/model-prices");
+    await expect(form.getByLabelText(AUDIO)).toBeValid();
   },
 };

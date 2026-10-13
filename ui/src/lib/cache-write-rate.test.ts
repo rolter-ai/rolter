@@ -1,6 +1,12 @@
 import { describe, expect, test } from "bun:test";
 
-import { cacheWrite1hPatch, cacheWritePatch } from "@/lib/cache-write-rate";
+import {
+  audioInputPatch,
+  cacheWrite1hPatch,
+  cacheWritePatch,
+  imagePatch,
+  speechPatch,
+} from "@/lib/cache-write-rate";
 
 describe("cacheWritePatch", () => {
   test("sends nothing for an input nobody touched, so the stored rate is kept", () => {
@@ -50,5 +56,17 @@ describe("cacheWrite1hPatch", () => {
     expect(JSON.stringify({ ...cacheWritePatch("3", ""), ...cacheWrite1hPatch("", "6") })).toBe(
       '{"cache_write_per_mtok":"3","cache_write_1h_per_mtok":null}',
     );
+  });
+});
+
+describe("unit rate patches (#2937)", () => {
+  test("each names its own key, sends nothing untouched and null when emptied", () => {
+    expect(imagePatch("", "")).toEqual({});
+    expect(imagePatch("0.04", "")).toEqual({ image_per_unit: "0.04" });
+    expect(imagePatch("", "0.040000")).toEqual({ image_per_unit: null });
+    expect(audioInputPatch("0.006000", "0.006000")).toEqual({});
+    expect(audioInputPatch("0.01", "0.006000")).toEqual({ audio_input_per_minute: "0.01" });
+    expect(speechPatch("", "15.000000")).toEqual({ speech_per_mchar: null });
+    expect(JSON.stringify(speechPatch("", "15"))).toBe('{"speech_per_mchar":null}');
   });
 });

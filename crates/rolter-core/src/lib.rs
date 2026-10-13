@@ -41,17 +41,17 @@ pub use config::{
 };
 pub use config::{
     AdaptiveRoutingConfig, AdvancedModelConfig, ApiKeyConfig, BackpressurePolicy,
-    BalancingStrategy, BreakerConfig, BudgetConfig, BudgetPeriod, BudgetScope, CacheConfig,
-    ClientConfig, CompatibilityConfig, CooldownConfig, EgressPolicy, FeatureFlagsConfig,
-    GatewayConfig, GroupMember, HealthConfig, KvEventsConfig, LmCacheConfig, LoggingConfig,
-    McpAuthKind, McpOAuthSessionConfig, McpServerConfig, MetricsScrapeConfig, ModelDefaultsConfig,
-    ModelLimits, ModelPriceConfig, ModelRoute, ModelVisibility, OverrideMode, ParamPolicy,
-    PayloadCaptureConfig, ProviderConfig, ProviderGroupConfig, ProviderKind, QueueConfig,
-    RateLimitConfig, RealtimeConfig, ResponsesConfig, RetryConfig, RoleProfile, RouteCache,
-    SecurityPolicyConfig, SemanticCacheConfig, ServerConfig, Target, Tenancy, TimeoutConfig,
-    TlsConfig, UnpricedPolicy, UsageRecordingConfig, Variant, VirtualKeyConfig, VirtualKeyRecord,
-    MAX_EXPLORATION_RATIO, MAX_ROUTE_RETRIES, MAX_ROUTE_THROUGHPUT, MCP_TRANSPORTS,
-    PUBLIC_EXAMPLE_KEY, RESERVED_PATHS, RESERVED_ROUTE_HEADERS,
+    BalancingStrategy, BilledUnits, BreakerConfig, BudgetConfig, BudgetPeriod, BudgetScope,
+    CacheConfig, ClientConfig, CompatibilityConfig, CooldownConfig, EgressPolicy,
+    FeatureFlagsConfig, GatewayConfig, GroupMember, HealthConfig, KvEventsConfig, LmCacheConfig,
+    LoggingConfig, McpAuthKind, McpOAuthSessionConfig, McpServerConfig, MetricsScrapeConfig,
+    ModelDefaultsConfig, ModelLimits, ModelPriceConfig, ModelRoute, ModelVisibility, OverrideMode,
+    ParamPolicy, PayloadCaptureConfig, ProviderConfig, ProviderGroupConfig, ProviderKind,
+    QueueConfig, RateLimitConfig, RealtimeConfig, ResponsesConfig, RetryConfig, RoleProfile,
+    RouteCache, SecurityPolicyConfig, SemanticCacheConfig, ServerConfig, Target, Tenancy,
+    TimeoutConfig, TlsConfig, UnpricedPolicy, UsageRecordingConfig, Variant, VirtualKeyConfig,
+    VirtualKeyRecord, MAX_EXPLORATION_RATIO, MAX_ROUTE_RETRIES, MAX_ROUTE_THROUGHPUT,
+    MCP_TRANSPORTS, PUBLIC_EXAMPLE_KEY, RESERVED_PATHS, RESERVED_ROUTE_HEADERS,
 };
 pub use config::{OmittedEntry, OmittedKind, SnapshotReport};
 pub use config_lint::{unknown_keys, UnknownKey};

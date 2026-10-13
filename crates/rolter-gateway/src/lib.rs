@@ -64,6 +64,7 @@ mod sink_drain;
 mod state;
 mod status_page;
 mod trace;
+mod unit_billing;
 mod upstream_failure;
 mod upstream_metrics;
 mod usage_recording;

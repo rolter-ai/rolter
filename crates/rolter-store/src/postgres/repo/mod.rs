@@ -3621,6 +3621,17 @@ impl RateLimitRepo<'_> {
 /// The pricing catalog (usd per million tokens), keyed by public model name.
 pub struct ModelPriceRepo<'a>(pub &'a PgPool);
 
+/// The non-token rates of a model price (#2937), each tri-state like the cache
+/// write rates: `None` keeps the stored rate, `Some(None)` clears it and
+/// `Some(Some(rate))` sets it. The default keeps all three, which is what a
+/// client that predates them means by a body without them.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct UnitRates<'a> {
+    pub image_per_unit: Option<Option<&'a str>>,
+    pub audio_input_per_minute: Option<Option<&'a str>>,
+    pub speech_per_mchar: Option<Option<&'a str>>,
+}
+
 impl ModelPriceRepo<'_> {
     pub async fn list(&self) -> Result<Vec<ModelPrice>> {
         sqlx::query_as(
@@ -3630,6 +3641,9 @@ impl ModelPriceRepo<'_> {
                     cached_input_per_mtok::text as cached_input_per_mtok,
                     cache_write_per_mtok::text as cache_write_per_mtok,
                     cache_write_1h_per_mtok::text as cache_write_1h_per_mtok,
+                    image_per_unit::text as image_per_unit,
+                    audio_input_per_minute::text as audio_input_per_minute,
+                    speech_per_mchar::text as speech_per_mchar,
                     currency, created_at
              from model_prices order by model",
         )
@@ -3657,22 +3671,60 @@ impl ModelPriceRepo<'_> {
         cache_write_1h_per_mtok: Option<Option<&str>>,
         currency: &str,
     ) -> Result<ModelPrice> {
+        self.upsert_with_units(
+            model,
+            input_per_mtok,
+            output_per_mtok,
+            cached_input_per_mtok,
+            cache_write_per_mtok,
+            cache_write_1h_per_mtok,
+            UnitRates::default(),
+            currency,
+        )
+        .await
+    }
+
+    /// [`Self::upsert`] that also sets the non-token rates (#2937), which keep
+    /// their stored value unless `units` names them.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn upsert_with_units(
+        &self,
+        model: &str,
+        input_per_mtok: &str,
+        output_per_mtok: &str,
+        cached_input_per_mtok: Option<&str>,
+        cache_write_per_mtok: Option<Option<&str>>,
+        cache_write_1h_per_mtok: Option<Option<&str>>,
+        units: UnitRates<'_>,
+        currency: &str,
+    ) -> Result<ModelPrice> {
         let mut tx = self.0.begin().await.map_err(store_err)?;
         let row = sqlx::query_as(
             "insert into model_prices
                     (model, input_per_mtok, output_per_mtok, cached_input_per_mtok,
-                     cache_write_per_mtok, cache_write_1h_per_mtok, currency)
-             values ($1, $2::numeric, $3::numeric, $4::numeric, $5::numeric, $6::numeric, $7)
+                     cache_write_per_mtok, cache_write_1h_per_mtok,
+                     image_per_unit, audio_input_per_minute, speech_per_mchar, currency)
+             values ($1, $2::numeric, $3::numeric, $4::numeric, $5::numeric, $6::numeric,
+                     $7::numeric, $8::numeric, $9::numeric, $10)
              on conflict (model) do update
                 set input_per_mtok = excluded.input_per_mtok,
                     output_per_mtok = excluded.output_per_mtok,
                     cached_input_per_mtok = excluded.cached_input_per_mtok,
-                    cache_write_per_mtok = case when $8::boolean
+                    cache_write_per_mtok = case when $11::boolean
                         then excluded.cache_write_per_mtok
                         else model_prices.cache_write_per_mtok end,
-                    cache_write_1h_per_mtok = case when $9::boolean
+                    cache_write_1h_per_mtok = case when $12::boolean
                         then excluded.cache_write_1h_per_mtok
                         else model_prices.cache_write_1h_per_mtok end,
+                    image_per_unit = case when $13::boolean
+                        then excluded.image_per_unit
+                        else model_prices.image_per_unit end,
+                    audio_input_per_minute = case when $14::boolean
+                        then excluded.audio_input_per_minute
+                        else model_prices.audio_input_per_minute end,
+                    speech_per_mchar = case when $15::boolean
+                        then excluded.speech_per_mchar
+                        else model_prices.speech_per_mchar end,
                     currency = excluded.currency
              returning id, model,
                        input_per_mtok::text as input_per_mtok,
@@ -3680,6 +3732,9 @@ impl ModelPriceRepo<'_> {
                        cached_input_per_mtok::text as cached_input_per_mtok,
                        cache_write_per_mtok::text as cache_write_per_mtok,
                        cache_write_1h_per_mtok::text as cache_write_1h_per_mtok,
+                       image_per_unit::text as image_per_unit,
+                       audio_input_per_minute::text as audio_input_per_minute,
+                       speech_per_mchar::text as speech_per_mchar,
                        currency, created_at",
         )
         .bind(model)
@@ -3688,9 +3743,15 @@ impl ModelPriceRepo<'_> {
         .bind(cached_input_per_mtok)
         .bind(cache_write_per_mtok.flatten())
         .bind(cache_write_1h_per_mtok.flatten())
+        .bind(units.image_per_unit.flatten())
+        .bind(units.audio_input_per_minute.flatten())
+        .bind(units.speech_per_mchar.flatten())
         .bind(currency)
         .bind(cache_write_per_mtok.is_some())
         .bind(cache_write_1h_per_mtok.is_some())
+        .bind(units.image_per_unit.is_some())
+        .bind(units.audio_input_per_minute.is_some())
+        .bind(units.speech_per_mchar.is_some())
         .fetch_one(&mut *tx)
         .await
         .map_err(store_err)?;
@@ -6461,6 +6522,86 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(config.model_prices[0].cache_write_1h_per_mtok, None);
+    }
+
+    /// The unit rates (#2937) are kept by an upsert that does not name them, set
+    /// and cleared one at a time by one that does, and a negative one is refused
+    /// by the database.
+    #[tokio::test]
+    async fn a_price_keeps_its_unit_rates_unless_told_otherwise() {
+        if !super::super::test_database::is_configured() {
+            eprintln!("skipping: {} not set", super::super::test_database::URL_ENV);
+            return;
+        }
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
+        let prices = ModelPriceRepo(&pool);
+
+        let set = prices
+            .upsert_with_units(
+                "media",
+                "0",
+                "0",
+                None,
+                None,
+                None,
+                UnitRates {
+                    image_per_unit: Some(Some("0.04")),
+                    audio_input_per_minute: Some(Some("0.006")),
+                    speech_per_mchar: Some(Some("15")),
+                },
+                "USD",
+            )
+            .await
+            .unwrap();
+        assert_eq!(set.image_per_unit.as_deref(), Some("0.040000"));
+        assert_eq!(set.speech_per_mchar.as_deref(), Some("15.000000"));
+
+        // the plain upsert names none of them
+        let kept = prices
+            .upsert("media", "1", "2", None, None, None, "USD")
+            .await
+            .unwrap();
+        assert_eq!(kept.input_per_mtok, "1.000000");
+        assert_eq!(kept.image_per_unit.as_deref(), Some("0.040000"));
+        assert_eq!(kept.audio_input_per_minute.as_deref(), Some("0.006000"));
+        assert_eq!(kept.speech_per_mchar.as_deref(), Some("15.000000"));
+
+        let cleared = prices
+            .upsert_with_units(
+                "media",
+                "1",
+                "2",
+                None,
+                None,
+                None,
+                UnitRates {
+                    image_per_unit: Some(None),
+                    ..UnitRates::default()
+                },
+                "USD",
+            )
+            .await
+            .unwrap();
+        assert_eq!(cleared.image_per_unit, None);
+        assert_eq!(cleared.speech_per_mchar.as_deref(), Some("15.000000"));
+
+        let negative = prices
+            .upsert_with_units(
+                "media",
+                "1",
+                "2",
+                None,
+                None,
+                None,
+                UnitRates {
+                    speech_per_mchar: Some(Some("-1")),
+                    ..UnitRates::default()
+                },
+                "USD",
+            )
+            .await;
+        assert!(negative.is_err(), "a negative rate must be refused");
     }
 
     /// The column carries the same floor as the others (0084): a negative rate

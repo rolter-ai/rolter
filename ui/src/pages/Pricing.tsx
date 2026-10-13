@@ -46,7 +46,13 @@ import {
   type CurrencySettings,
   type ModelPriceRow,
 } from "@/lib/api";
-import { cacheWrite1hPatch, cacheWritePatch } from "@/lib/cache-write-rate";
+import {
+  audioInputPatch,
+  cacheWrite1hPatch,
+  cacheWritePatch,
+  imagePatch,
+  speechPatch,
+} from "@/lib/cache-write-rate";
 import { useErrorVisibility } from "@/lib/error-visibility";
 import { errorText } from "@/lib/error-copy";
 import { useToast } from "@/lib/toast";
@@ -68,6 +74,9 @@ const PRICE_COLUMNS = [
   { col: "cached", field: "cached_input_per_mtok" },
   { col: "cacheWrite", field: "cache_write_per_mtok" },
   { col: "cacheWrite1h", field: "cache_write_1h_per_mtok" },
+  { col: "image", field: "image_per_unit" },
+  { col: "audio", field: "audio_input_per_minute" },
+  { col: "speech", field: "speech_per_mchar" },
 ] as const satisfies readonly { col: string; field: keyof ModelPriceRow }[];
 
 type PriceColumn = (typeof PRICE_COLUMNS)[number]["col"];
@@ -443,7 +452,16 @@ function UnpricedModels({
 
 /** the fields of the price form, for the errors a refused save puts on screen */
 type PriceField =
-  "model" | "input" | "output" | "cached" | "cacheWrite" | "cacheWrite1h" | "currency";
+  | "model"
+  | "input"
+  | "output"
+  | "cached"
+  | "cacheWrite"
+  | "cacheWrite1h"
+  | "image"
+  | "audio"
+  | "speech"
+  | "currency";
 
 /**
  * The rate inputs a rejected save can be pinned to (#2902). A negative or
@@ -451,9 +469,12 @@ type PriceField =
  * plane knows is a rate the stored column cannot hold, so that refusal is placed
  * on its input instead of surfacing as a toast.
  */
-const WIRE_FIELDS: Record<string, "cacheWrite" | "cacheWrite1h"> = {
+const WIRE_FIELDS: Record<string, "cacheWrite" | "cacheWrite1h" | "image" | "audio" | "speech"> = {
   cache_write_per_mtok: "cacheWrite",
   cache_write_1h_per_mtok: "cacheWrite1h",
+  image_per_unit: "image",
+  audio_input_per_minute: "audio",
+  speech_per_mchar: "speech",
 };
 
 function UpsertPriceDialog({
@@ -482,6 +503,11 @@ function UpsertPriceDialog({
   const [cachedInputPerMtok, setCachedInputPerMtok] = React.useState("");
   const [cacheWritePerMtok, setCacheWritePerMtok] = React.useState("");
   const [cacheWrite1hPerMtok, setCacheWrite1hPerMtok] = React.useState("");
+  // the rates for requests billed by the image, the minute or the character
+  // (#2937); empty is "no such rate", which a save leaves as it was
+  const [imagePerUnit, setImagePerUnit] = React.useState("");
+  const [audioPerMinute, setAudioPerMinute] = React.useState("");
+  const [speechPerMchar, setSpeechPerMchar] = React.useState("");
   const baseCurrency = settings?.base ?? "USD";
   const [currency, setCurrency] = React.useState(baseCurrency);
   const visibility = useErrorVisibility<PriceField>();
@@ -489,6 +515,9 @@ function UpsertPriceDialog({
   const writeIds = {
     cacheWrite: `${idBase}-cache-write`,
     cacheWrite1h: `${idBase}-cache-write-1h`,
+    image: `${idBase}-image`,
+    audio: `${idBase}-audio`,
+    speech: `${idBase}-speech`,
   };
 
   // names worth offering: the routes the gateway serves and the models seen in
@@ -535,6 +564,9 @@ function UpsertPriceDialog({
       setCachedInputPerMtok(existing?.cached_input_per_mtok ?? "");
       setCacheWritePerMtok(existing?.cache_write_per_mtok ?? "");
       setCacheWrite1hPerMtok(existing?.cache_write_1h_per_mtok ?? "");
+      setImagePerUnit(existing?.image_per_unit ?? "");
+      setAudioPerMinute(existing?.audio_input_per_minute ?? "");
+      setSpeechPerMchar(existing?.speech_per_mchar ?? "");
       fields.clear();
       setCurrency(existing?.currency ?? baseCurrency);
     }
@@ -555,12 +587,26 @@ function UpsertPriceDialog({
     cached: cachedInputPerMtok.trim() ? priceError(cachedInputPerMtok) : undefined,
     cacheWrite: cacheWritePerMtok.trim() ? priceError(cacheWritePerMtok) : undefined,
     cacheWrite1h: cacheWrite1hPerMtok.trim() ? priceError(cacheWrite1hPerMtok) : undefined,
+    image: imagePerUnit.trim() ? priceError(imagePerUnit) : undefined,
+    audio: audioPerMinute.trim() ? priceError(audioPerMinute) : undefined,
+    speech: speechPerMchar.trim() ? priceError(speechPerMchar) : undefined,
     currency: currency.trim() ? undefined : t("pages.pricing.currencyRequired"),
   };
   const fields = useFieldErrors<PriceField>({
-    order: ["model", "input", "output", "cached", "cacheWrite", "cacheWrite1h", "currency"],
+    order: [
+      "model",
+      "input",
+      "output",
+      "cached",
+      "cacheWrite",
+      "cacheWrite1h",
+      "image",
+      "audio",
+      "speech",
+      "currency",
+    ],
     wire: WIRE_FIELDS,
-    idOf: (field) => (field === "cacheWrite" || field === "cacheWrite1h" ? writeIds[field] : field),
+    idOf: (field) => (field in writeIds ? writeIds[field as keyof typeof writeIds] : field),
     local: errors,
     // a field's error waits for a refused save, so the form opens with none
     shows: visibility.shows,
@@ -577,6 +623,11 @@ function UpsertPriceDialog({
         // it was edited, a value to set it and null to clear it (#2876)
         ...cacheWritePatch(cacheWritePerMtok, existing?.cache_write_per_mtok ?? ""),
         ...cacheWrite1hPatch(cacheWrite1hPerMtok, existing?.cache_write_1h_per_mtok ?? ""),
+        // the unit rates are kept by a save that leaves them out, like the
+        // cache-write rates (#2937)
+        ...imagePatch(imagePerUnit, existing?.image_per_unit ?? ""),
+        ...audioInputPatch(audioPerMinute, existing?.audio_input_per_minute ?? ""),
+        ...speechPatch(speechPerMchar, existing?.speech_per_mchar ?? ""),
         currency,
       }),
     onSuccess: () => {
@@ -616,6 +667,9 @@ function UpsertPriceDialog({
     cachedInputPerMtok !== (existing?.cached_input_per_mtok ?? "") ||
     cacheWritePerMtok !== (existing?.cache_write_per_mtok ?? "") ||
     cacheWrite1hPerMtok !== (existing?.cache_write_1h_per_mtok ?? "") ||
+    imagePerUnit !== (existing?.image_per_unit ?? "") ||
+    audioPerMinute !== (existing?.audio_input_per_minute ?? "") ||
+    speechPerMchar !== (existing?.speech_per_mchar ?? "") ||
     currency !== (existing?.currency ?? baseCurrency);
 
   return (
@@ -729,6 +783,63 @@ function UpsertPriceDialog({
               fields.edit("cacheWrite1h");
             }}
             placeholder={t("pages.pricing.cacheWrite1hPlaceholder")}
+          />
+        </Field>
+        <Field
+          label={t("pages.pricing.imageInputPrice")}
+          hint={t("pages.pricing.imageUnit", { currency })}
+          info={t("pages.pricing.imageInfo")}
+          error={shown("image")}
+        >
+          <Input
+            id={writeIds.image}
+            type="number"
+            min={0}
+            step="0.000001"
+            value={imagePerUnit}
+            onChange={(e) => {
+              setImagePerUnit(e.target.value);
+              fields.edit("image");
+            }}
+            placeholder={t("pages.pricing.unitPlaceholder")}
+          />
+        </Field>
+        <Field
+          label={t("pages.pricing.audioInputPrice")}
+          hint={t("pages.pricing.audioUnit", { currency })}
+          info={t("pages.pricing.audioInfo")}
+          error={shown("audio")}
+        >
+          <Input
+            id={writeIds.audio}
+            type="number"
+            min={0}
+            step="0.000001"
+            value={audioPerMinute}
+            onChange={(e) => {
+              setAudioPerMinute(e.target.value);
+              fields.edit("audio");
+            }}
+            placeholder={t("pages.pricing.unitPlaceholder")}
+          />
+        </Field>
+        <Field
+          label={t("pages.pricing.speechInputPrice")}
+          hint={t("pages.pricing.speechUnit", { currency })}
+          info={t("pages.pricing.speechInfo")}
+          error={shown("speech")}
+        >
+          <Input
+            id={writeIds.speech}
+            type="number"
+            min={0}
+            step="0.000001"
+            value={speechPerMchar}
+            onChange={(e) => {
+              setSpeechPerMchar(e.target.value);
+              fields.edit("speech");
+            }}
+            placeholder={t("pages.pricing.unitPlaceholder")}
           />
         </Field>
         <Field

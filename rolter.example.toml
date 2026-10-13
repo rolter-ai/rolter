@@ -380,6 +380,7 @@ disabled = false # revoke without deleting
 
 # --- per-model token pricing (usd per million tokens) ---
 # drives cost_usd on each request log; models without a price log cost 0.
+# images, transcriptions and speech are priced by their unit (see the *_per_unit rates below)
 # every rate is a number of zero or more: a negative rate is refused at startup
 # [[model_prices]]
 # model = "gpt-4o"
@@ -393,6 +394,16 @@ disabled = false # revoke without deleting
 #                                # provider's 1 hour cache, which anthropic bills above
 #                                # the 5 minute one and reports apart; defaults to
 #                                # cache_write_per_mtok
+# image_per_unit = 0.04          # optional; one generated image, for a model billed per
+#                                # image. added to the token cost of the same request
+# audio_input_per_minute = 0.006 # optional; one minute of audio sent to a transcription or
+#                                # translation model; the minutes are the duration the
+#                                # response states (verbose_json)
+# speech_per_mchar = 15.0        # optional; per million characters of text sent to a
+#                                # text-to-speech model, counted from the request's input
+# the three unit rates above are what openai's pricing page lists for dall-e-3 (standard
+# 1024x1024), whisper-1 and tts-1 (https://openai.com/api/pricing/). they are examples:
+# rolter ships no price list, so check your provider's before relying on one
 # currency = "USD"               # optional; defaults to USD, not to the base below, so
 #                                # a deployment whose base is another currency needs a USD
 #                                # rate under [currency] or a currency on every price

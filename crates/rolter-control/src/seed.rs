@@ -48,7 +48,7 @@ use argon2::Argon2;
 use rolter_core::{BalancingStrategy, GatewayConfig, PromptTemplate, ProviderKind};
 use rolter_store::postgres::repo::{
     LoggingSettingsRepo, ModelPriceRepo, OrgRepo, ProjectRepo, ProviderGroupRepo, ProviderRepo,
-    RouteRepo, RouteTargetRepo, TeamRepo,
+    RouteRepo, RouteTargetRepo, TeamRepo, UnitRates,
 };
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -797,7 +797,7 @@ async fn import_model_prices(pool: &PgPool, config: &GatewayConfig) -> anyhow::R
         // the column is `numeric`, so the rate crosses as text rather than
         // through a float bind that would round it on the way in
         prices
-            .upsert(
+            .upsert_with_units(
                 &price.model,
                 &price.input_per_mtok.to_string(),
                 &price.output_per_mtok.to_string(),
@@ -816,6 +816,19 @@ async fn import_model_prices(pool: &PgPool, config: &GatewayConfig) -> anyhow::R
                         .map(|v| v.to_string())
                         .as_deref(),
                 ),
+                // and the unit rates (#2937)
+                UnitRates {
+                    image_per_unit: Some(price.image_per_unit.map(|v| v.to_string()).as_deref()),
+                    audio_input_per_minute: Some(
+                        price
+                            .audio_input_per_minute
+                            .map(|v| v.to_string())
+                            .as_deref(),
+                    ),
+                    speech_per_mchar: Some(
+                        price.speech_per_mchar.map(|v| v.to_string()).as_deref(),
+                    ),
+                },
                 &price.currency,
             )
             .await?;
@@ -1256,6 +1269,76 @@ weight = 1
         let (five_minute, one_hour) = stored().await;
         assert_eq!(five_minute.as_deref(), Some("3.750000"));
         assert_eq!(one_hour, None);
+    }
+
+    /// #2937: the unit rates follow the file as the cache write rates do, and a
+    /// negative one refuses the whole import.
+    #[tokio::test]
+    async fn the_unit_rates_follow_the_import_file() {
+        let Some(db) = scratch_db().await else {
+            return;
+        };
+        let pool = db.pool().clone();
+        let (org_id, project_id) = bootstrap_org(&pool).await;
+        let dir = tempdir("unit-rates");
+        let path = dir.join("rolter.toml");
+        let prices = rolter_store::postgres::repo::ModelPriceRepo(&pool);
+        let stored = || async {
+            let price = prices
+                .list()
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|price| price.model == "media")
+                .expect("the price must have been imported");
+            (
+                price.image_per_unit,
+                price.audio_input_per_minute,
+                price.speech_per_mchar,
+            )
+        };
+
+        std::fs::write(
+            &path,
+            "[[model_prices]]\nmodel = \"media\"\ninput_per_mtok = 0\noutput_per_mtok = 0\n\
+             image_per_unit = 0.04\naudio_input_per_minute = 0.006\nspeech_per_mchar = 15\n",
+        )
+        .unwrap();
+        import_bootstrap_toml(&pool, org_id, project_id, &path)
+            .await
+            .unwrap();
+        let (image, audio, speech) = stored().await;
+        assert_eq!(image.as_deref(), Some("0.040000"));
+        assert_eq!(audio.as_deref(), Some("0.006000"));
+        assert_eq!(speech.as_deref(), Some("15.000000"));
+
+        // the file is the desired state: a key it drops is cleared
+        std::fs::write(
+            &path,
+            "[[model_prices]]\nmodel = \"media\"\ninput_per_mtok = 0\noutput_per_mtok = 0\n\
+             image_per_unit = 0.04\n",
+        )
+        .unwrap();
+        import_bootstrap_toml(&pool, org_id, project_id, &path)
+            .await
+            .unwrap();
+        let (image, audio, speech) = stored().await;
+        assert_eq!(image.as_deref(), Some("0.040000"));
+        assert_eq!((audio, speech), (None, None));
+
+        std::fs::write(
+            &path,
+            "[[model_prices]]\nmodel = \"media\"\ninput_per_mtok = 0\noutput_per_mtok = 0\n\
+             speech_per_mchar = -1\n",
+        )
+        .unwrap();
+        let refused = import_bootstrap_toml(&pool, org_id, project_id, &path)
+            .await
+            .unwrap_err();
+        assert!(
+            refused.to_string().contains("speech_per_mchar"),
+            "{refused}"
+        );
     }
 
     /// #927: a re-import of an edited file used to log `imported provider` and

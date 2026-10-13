@@ -219,6 +219,50 @@ The prompt total holds every token class once, so each token is charged at one r
 - **Setting it in the dashboard.** The **Pricing** screen has a _5 minute cache-write price per Mtok (optional)_ field and a _1 hour cache-write price per Mtok (optional)_ field beside the cached-input one, and a price that sets either shows a `5 minute cache write` or `1 hour cache write` badge on its card. The first field is `cache_write_per_mtok`: Anthropic's 5 minute cache, and the writes of any other provider that reports a write count. The second is `cache_write_1h_per_mtok`, which only an Anthropic provider uses. The **5 minute cache-write** and **1 hour cache-write** inputs in a model's **Pricing override** section edit the same two rates; they are saved with the price, so they need the input or output rate too. Leave the 5 minute field empty to price writes at the input rate, and the 1 hour field empty to price those writes at the 5 minute rate. Emptying a rate that was set clears it, and saving a price without touching a field keeps the rate the price holds, so a rate set over the API or by an import survives an edit of something else. A rate the control plane refuses (one above 999999.999999) is shown at its own field. Earlier releases showed the model sheet's input but stored its value on the route, where nothing read it: a rate entered there never changed a cost, and the field now reads and writes the price instead, so enter it again if you relied on it.
 - **Setting it over the API.** The rates are stored with the rest of the price row as `cache_write_per_mtok` and `cache_write_1h_per_mtok`. A `PUT /api/v1/model-prices` that leaves either field out keeps the stored rate, so a client that has never heard of it cannot reset one. `null` clears `cache_write_per_mtok` back to the input rate and `cache_write_1h_per_mtok` back to `cache_write_per_mtok`. This differs from the other rates, which a `PUT` replaces. Re-importing a `rolter.toml` with `rolter-seed --import` follows the file instead: a price without the key has no write rate afterwards.
 
+### Images, audio and speech
+
+Some models are billed by something other than tokens: an image by the image, a transcription by the minute of audio, a text-to-speech request by the character of input. A price row carries a rate for each, in the row's `currency`, beside the token rates:
+
+```toml rolter.toml
+[[model_prices]]
+model = "dall-e-3"
+input_per_mtok = 0
+output_per_mtok = 0
+image_per_unit = 0.04
+
+[[model_prices]]
+model = "whisper-1"
+input_per_mtok = 0
+output_per_mtok = 0
+audio_input_per_minute = 0.006
+
+[[model_prices]]
+model = "tts-1"
+input_per_mtok = 0
+output_per_mtok = 0
+speech_per_mchar = 15.0
+```
+
+The rates above are what OpenAI's [pricing page](https://openai.com/api/pricing/) lists for those three models. They are examples: Rolter ships no price list, so check your provider's before relying on one.
+
+Which rate a request uses follows its endpoint, and the count comes from the request or the response:
+
+| Endpoint                                             | Rate                     | Count                                                                                                                |
+| ---------------------------------------------------- | ------------------------ | -------------------------------------------------------------------------------------------------------------------- |
+| `/v1/images/generations`                             | `image_per_unit`         | the length of the response's `data` array; the request's `n` (default 1) when the response has none                  |
+| `/v1/audio/transcriptions`, `/v1/audio/translations` | `audio_input_per_minute` | the duration the response states, in seconds: `duration` of a `verbose_json` answer, or a `usage` of type `duration` |
+| `/v1/audio/speech`                                   | `speech_per_mchar`       | the characters (not bytes) of the request's `input`                                                                  |
+
+How it combines and what it records:
+
+- **Added to the token cost.** A model that reports tokens as well (`gpt-image-1` does) is charged both: the tokens at the token rates and the images at `image_per_unit`. Set only the rate your provider actually bills; leave the other unset. A unit rate never replaces a token rate and a token rate never replaces a unit rate.
+- **Token rates are still required.** A price row must name `input_per_mtok` and `output_per_mtok`, so a model billed only by the unit takes `0` for both. Zero is a rate, not a missing one.
+- **Unset means `unpriced`.** An image, transcription or speech request that reports no tokens on a price with no rate for its unit is logged `unpriced = 1` with `cost_usd = 0`, the same as a model with no price row. Before this, such a request on a row that priced only tokens was logged as priced and free.
+- **A duration that is not stated is unknown, not free.** A transcription returned as `json`, `text`, `srt` or `vtt` carries no duration. With `audio_input_per_minute` set, the row is logged `usage_unknown = 1` and `cost_usd = 0`. Ask for `verbose_json`, or use a model that reports its audio duration in `usage`, to have it priced.
+- **Failed requests cost nothing.** A request the upstream refused records no unit cost. A response a guardrail or plugin withheld after the provider produced it is still billed: images by `n`, speech by its input, a transcription not at all (its duration was in the body that was withheld).
+- **Budgets count it.** `cost_usd` is the figure budgets add, so unit-priced requests advance an org, team, project, key, business-unit or customer budget exactly as token-priced ones do, and a rate in another currency is converted to the base first.
+- **Setting it.** The **Pricing** screen has an _image_, an _audio minute_ and a _speech character_ field, and a price that sets one shows a badge on its card. Over the API the rates are `image_per_unit`, `audio_input_per_minute` and `speech_per_mchar` on `PUT /api/v1/model-prices`, with the same rule as the cache-write rates: a body that leaves one out keeps the stored rate, `null` clears it. The model sheet's pricing section does not edit them yet, and saving it leaves them as they are.
+
 ### Prices are yours, not ours
 
 Rolter ships no pricing catalog and never fetches one. Every rate comes from

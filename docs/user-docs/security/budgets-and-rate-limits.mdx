@@ -38,6 +38,18 @@ Before budgets can track spend, Rolter needs to know the cost of each model's to
   Cost per million input tokens written to the provider's 1 hour prompt cache, for a provider that reports the split (Anthropic). Defaults to `cache_write_per_mtok` when omitted, and from there to `input_per_mtok`. See [Cache writes](/observability/logs-and-cost#cache-writes).
 </ParamField>
 
+<ParamField path="image_per_unit" type="float">
+  Cost of one generated image, for a model billed per image. Added to the request's token cost, and counted against budgets like it. See [Images, audio and speech](/observability/logs-and-cost#images-audio-and-speech).
+</ParamField>
+
+<ParamField path="audio_input_per_minute" type="float">
+  Cost of one minute of input audio on a transcription or translation. Read from the duration the response states.
+</ParamField>
+
+<ParamField path="speech_per_mchar" type="float">
+  Cost per million characters of text sent to a text-to-speech model, counted from the request's `input`.
+</ParamField>
+
 <ParamField path="currency" type="string" default="USD">
   Currency the rates above are denominated in. Any code works — ISO-4217, a crypto unit, an internal credit — as long as `[currency.rates]` can convert it to the base currency.
 </ParamField>
