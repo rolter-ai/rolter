@@ -11,7 +11,6 @@ import {
   RotateCcw,
   Settings2,
   ShieldCheck,
-  Trash2,
 } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
@@ -56,6 +55,7 @@ import { Segmented } from "@/components/ui/segmented";
 import { Skeleton } from "@/components/ui/skeleton";
 import { FieldDiff, TextDiff } from "@/components/ui/text-diff";
 import { Textarea } from "@/components/ui/textarea";
+import { DeleteIconButton } from "@/components/ui/delete-icon-button";
 import {
   createSkill,
   createSkillVersion,
@@ -786,15 +786,12 @@ function SkillWorkbench({
               )}{" "}
               {skill.retired_at ? t("pages.skillsRepo.restore") : t("pages.skillsRepo.retire")}
             </GatedButton>
-            <GatedButton
+            <DeleteIconButton
               gate="skill:delete"
               control="skill-delete"
-              variant="ghost"
-              aria-label={t("pages.skillsRepo.deleteAction", { name: skill.name })}
+              label={t("pages.skillsRepo.deleteAction", { name: skill.name })}
               onClick={onDelete}
-            >
-              <Trash2 className="h-4 w-4" />
-            </GatedButton>
+            />
             {baseVersion && liveVersion && !selectedPublished && (
               <CompareButton live={liveVersion.version} onClick={onCompare} />
             )}
