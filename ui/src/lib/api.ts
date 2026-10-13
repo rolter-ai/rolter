@@ -2247,6 +2247,15 @@ export function fetchBudgets(scopeType: string, scopeId: string): Promise<Budget
   );
 }
 
+/**
+ * Every budget in the org the caller may read, at any scope (#2093). Each row
+ * carries its own `scope_type` and `scope_id`; the rows are the ones the
+ * per-scope read would have answered, never more.
+ */
+export function fetchOrgBudgets(orgId: string): Promise<BudgetRow[]> {
+  return getJson<BudgetRow[]>(`/api/v1/orgs/${encodeURIComponent(orgId)}/budgets`);
+}
+
 /// how the control plane answered a spend read (#2091)
 export type BudgetSpendStatus = "ok" | "not_configured" | "unavailable";
 
@@ -2324,6 +2333,11 @@ export function fetchRateLimits(scopeType: string, scopeId: string): Promise<Rat
   return getJson<RateLimitRow[]>(
     `/api/v1/rate-limits?scope_type=${encodeURIComponent(scopeType)}&scope_id=${encodeURIComponent(scopeId)}`,
   );
+}
+
+/** Every rate limit in the org the caller may read, at any scope; see `fetchOrgBudgets`. */
+export function fetchOrgRateLimits(orgId: string): Promise<RateLimitRow[]> {
+  return getJson<RateLimitRow[]>(`/api/v1/orgs/${encodeURIComponent(orgId)}/rate-limits`);
 }
 
 export function createRateLimit(input: CreateRateLimitInput): Promise<RateLimitRow> {

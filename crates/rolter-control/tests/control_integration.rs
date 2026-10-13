@@ -22085,6 +22085,158 @@ async fn a_project_viewer_reads_the_caps_of_their_own_scope_chain_only() {
     }
 }
 
+/// The org-wide cap lists answer with the rows the caller may read, decided
+/// row by row exactly as the per-scope read is: a project viewer gets their
+/// project, its team and the org, an org admin gets everything in the org, and
+/// another org's caps and a caller with no role in the org are never shown.
+#[tokio::test]
+async fn the_org_wide_cap_lists_apply_the_per_scope_read_rule_to_each_row() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("caps".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let mut orgs = Vec::new();
+    for slug in ["acme", "globex"] {
+        let id: uuid::Uuid =
+            sqlx::query_scalar("insert into orgs (name, slug) values ($1, $1) returning id")
+                .bind(slug)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        orgs.push(id);
+    }
+    let mut teams = Vec::new();
+    for (org, name) in [(orgs[0], "core"), (orgs[0], "other"), (orgs[1], "away")] {
+        let id: uuid::Uuid =
+            sqlx::query_scalar("insert into teams (org_id, name) values ($1, $2) returning id")
+                .bind(org)
+                .bind(name)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        teams.push(id);
+    }
+    let mut projects = Vec::new();
+    for (team, name) in [(teams[0], "one"), (teams[0], "two"), (teams[1], "three")] {
+        let id: uuid::Uuid =
+            sqlx::query_scalar("insert into projects (team_id, name) values ($1, $2) returning id")
+                .bind(team)
+                .bind(name)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        projects.push(id);
+    }
+    let unit: uuid::Uuid = sqlx::query_scalar(
+        "insert into business_units (org_id, slug, name) values ($1, 'ops', 'Ops') returning id",
+    )
+    .bind(orgs[0])
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let scopes = [
+        ("org", orgs[0]),
+        ("team", teams[0]),
+        ("team", teams[1]),
+        ("project", projects[0]),
+        ("project", projects[1]),
+        ("project", projects[2]),
+        ("business_unit", unit),
+        ("org", orgs[1]),
+        ("team", teams[2]),
+    ];
+    for (scope_type, scope_id) in scopes {
+        sqlx::query(
+            "insert into budgets (scope_type, scope_id, limit_usd, period)
+             values ($1, $2, '10', 'monthly')",
+        )
+        .bind(scope_type)
+        .bind(scope_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("insert into rate_limits (scope_type, scope_id, rpm) values ($1, $2, 60)")
+            .bind(scope_type)
+            .bind(scope_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    let viewer = seed_user(&pool, "viewer@acme.test", false).await;
+    seed_membership(&pool, viewer, None, None, Some(projects[0]), "viewer").await;
+    let viewer_token = seed_session(&pool, viewer, "caps_viewer").await;
+    let admin = seed_user(&pool, "admin@acme.test", false).await;
+    seed_membership(&pool, admin, Some(orgs[0]), None, None, "admin").await;
+    let admin_token = seed_session(&pool, admin, "caps_admin").await;
+
+    let get = |token: String, path: String| {
+        let (client, base) = (client.clone(), base.clone());
+        async move {
+            let resp = client
+                .get(format!("{base}{path}"))
+                .bearer_auth(token)
+                .send()
+                .await
+                .unwrap();
+            let status = resp.status().as_u16();
+            (status, resp.json::<Value>().await.unwrap_or(Value::Null))
+        }
+    };
+    let scope_ids = |rows: &Value| -> std::collections::BTreeSet<String> {
+        rows.as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["scope_id"].as_str().unwrap().to_string())
+            .collect()
+    };
+
+    for resource in ["budgets", "rate-limits"] {
+        let path = format!("/api/v1/orgs/{}/{resource}", orgs[0]);
+
+        let (status, rows) = get(viewer_token.clone(), path.clone()).await;
+        assert_eq!(status, 200, "{resource}: {rows}");
+        let want: std::collections::BTreeSet<String> = [orgs[0], teams[0], projects[0]]
+            .iter()
+            .map(|id| id.to_string())
+            .collect();
+        assert_eq!(scope_ids(&rows), want, "{resource} for a project viewer");
+
+        let (status, rows) = get(admin_token.clone(), path.clone()).await;
+        assert_eq!(status, 200, "{resource}: {rows}");
+        let want: std::collections::BTreeSet<String> = [
+            orgs[0],
+            teams[0],
+            teams[1],
+            projects[0],
+            projects[1],
+            projects[2],
+            unit,
+        ]
+        .iter()
+        .map(|id| id.to_string())
+        .collect();
+        assert_eq!(scope_ids(&rows), want, "{resource} for an org admin");
+
+        // no role anywhere in the other org
+        let (status, _) = get(
+            viewer_token.clone(),
+            format!("/api/v1/orgs/{}/{resource}", orgs[1]),
+        )
+        .await;
+        assert_eq!(
+            status, 403,
+            "{resource} in an org the caller has no role in"
+        );
+    }
+}
+
 /// A project's members see the providers and groups of their project plus the
 /// org-wide ones, never another project's; a project admin may create and
 /// delete their own project's, but widening to the org, another project, or

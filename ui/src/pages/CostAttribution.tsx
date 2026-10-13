@@ -1,11 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Building2, WalletCards } from "lucide-react";
+import { Building2, Plus, WalletCards } from "lucide-react";
 import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { Link } from "react-router";
 
 import { AnalyticsUnavailable } from "@/components/AnalyticsUnavailable";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { EditorSheet } from "@/components/EditorSheet";
 import { GatedButton } from "@/components/GatedButton";
 import { LoadError } from "@/components/LoadError";
 import { LoadingRegion, TableSkeleton } from "@/components/LoadingState";
@@ -13,13 +14,11 @@ import { SampledLogNotice } from "@/components/SampledLogNotice";
 import { PageBody } from "@/components/screen";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { Combobox } from "@/components/ui/combobox";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Sheet, SheetActions, SheetBody, SheetFooter, SheetHeader } from "@/components/ui/sheet";
 import {
   AnalyticsUnavailableError,
   createBusinessUnit,
@@ -144,120 +143,87 @@ function slugErrorFor(form: EditorState, original: string | null): string | unde
   return undefined;
 }
 
+/** the fields of the editor sheet; the sheet's own chrome is `EditorSheet`'s */
 function Editor({
   kind,
   form,
   setForm,
   original,
+  effectiveSlug,
+  slugError,
   units,
-  onClose,
-  onSubmit,
-  pending,
-  error,
 }: {
   kind: "unit" | "customer";
   form: EditorState;
   setForm: (f: EditorState) => void;
   original: string | null;
+  effectiveSlug: string;
+  slugError?: string;
   units: BusinessUnitRow[];
-  onClose: () => void;
-  onSubmit: () => void;
-  pending: boolean;
-  error?: string;
 }) {
   const { t } = useTranslation();
-  // the validator names a catalog key rather than carrying english copy
-  const slugErrorKey = slugErrorFor(form, original);
-  const slugError = slugErrorKey ? t(slugErrorKey) : undefined;
-  const effectiveSlug = form.slug.trim() || slugify(form.name);
   return (
     <>
-      <SheetHeader
-        title={t(
-          form.id
-            ? kind === "unit"
-              ? "pages.costAttribution.editor.editUnit"
-              : "pages.costAttribution.editor.editCustomer"
-            : kind === "unit"
-              ? "pages.costAttribution.editor.newUnit"
-              : "pages.costAttribution.editor.newCustomer",
-        )}
-        subtitle={effectiveSlug || "—"}
-        onClose={onClose}
-      />
-      <SheetBody>
-        <Field label={t("pages.costAttribution.editor.name")}>
-          <Input
-            aria-label={t("pages.costAttribution.editor.name")}
-            value={form.name}
-            onChange={(e) => setForm({ ...form, name: e.target.value })}
-            placeholder={t(
-              kind === "unit"
-                ? "pages.costAttribution.editor.unitNamePlaceholder"
-                : "pages.costAttribution.editor.customerNamePlaceholder",
-            )}
+      <Field label={t("pages.costAttribution.editor.name")}>
+        <Input
+          aria-label={t("pages.costAttribution.editor.name")}
+          value={form.name}
+          onChange={(e) => setForm({ ...form, name: e.target.value })}
+          placeholder={t(
+            kind === "unit"
+              ? "pages.costAttribution.editor.unitNamePlaceholder"
+              : "pages.costAttribution.editor.customerNamePlaceholder",
+          )}
+        />
+      </Field>
+      <Field
+        label={t("pages.costAttribution.editor.slug")}
+        hint={t("pages.costAttribution.editor.slugHint")}
+        error={slugError}
+      >
+        <Input
+          aria-label={t("pages.costAttribution.editor.slug")}
+          className="font-mono text-xs"
+          value={form.slug}
+          onChange={(e) => setForm({ ...form, slug: e.target.value })}
+          placeholder={slugify(form.name) || "acme-corp"}
+        />
+      </Field>
+      {original && effectiveSlug !== original && (
+        <label className="flex items-center gap-2 text-xs text-muted-foreground">
+          <Checkbox
+            aria-label={t("pages.costAttribution.editor.allowSlugChange")}
+            checked={form.allowSlugChange}
+            onChange={(e) => setForm({ ...form, allowSlugChange: e.target.checked })}
           />
-        </Field>
+          <Trans
+            i18nKey="pages.costAttribution.editor.renameSlug"
+            values={{ slug: original }}
+            components={[<span key="slug" className="font-mono text-foreground" />]}
+          />
+        </label>
+      )}
+      {kind === "customer" && (
         <Field
-          label={t("pages.costAttribution.editor.slug")}
-          hint={t("pages.costAttribution.editor.slugHint")}
-          error={slugError}
+          label={t("pages.costAttribution.editor.businessUnit")}
+          hint={t("pages.costAttribution.editor.businessUnitHint")}
         >
-          <Input
-            aria-label={t("pages.costAttribution.editor.slug")}
-            className="font-mono text-xs"
-            value={form.slug}
-            onChange={(e) => setForm({ ...form, slug: e.target.value })}
-            placeholder={slugify(form.name) || "acme-corp"}
+          <Combobox
+            aria-label={t("pages.costAttribution.editor.businessUnit")}
+            value={form.businessUnitId}
+            onChange={(businessUnitId) => setForm({ ...form, businessUnitId })}
+            options={[
+              {
+                value: UNASSIGNED,
+                label: t("pages.costAttribution.editor.unassignedOption"),
+              },
+              ...units
+                .filter((u) => !u.retired_at || u.id === form.businessUnitId)
+                .map((u) => ({ value: u.id, label: u.name })),
+            ]}
           />
         </Field>
-        {original && effectiveSlug !== original && (
-          <label className="flex items-center gap-2 text-xs text-muted-foreground">
-            <Checkbox
-              aria-label={t("pages.costAttribution.editor.allowSlugChange")}
-              checked={form.allowSlugChange}
-              onChange={(e) => setForm({ ...form, allowSlugChange: e.target.checked })}
-            />
-            <Trans
-              i18nKey="pages.costAttribution.editor.renameSlug"
-              values={{ slug: original }}
-              components={[<span key="slug" className="font-mono text-foreground" />]}
-            />
-          </label>
-        )}
-        {kind === "customer" && (
-          <Field
-            label={t("pages.costAttribution.editor.businessUnit")}
-            hint={t("pages.costAttribution.editor.businessUnitHint")}
-          >
-            <Combobox
-              aria-label={t("pages.costAttribution.editor.businessUnit")}
-              value={form.businessUnitId}
-              onChange={(businessUnitId) => setForm({ ...form, businessUnitId })}
-              options={[
-                {
-                  value: UNASSIGNED,
-                  label: t("pages.costAttribution.editor.unassignedOption"),
-                },
-                ...units
-                  .filter((u) => !u.retired_at || u.id === form.businessUnitId)
-                  .map((u) => ({ value: u.id, label: u.name })),
-              ]}
-            />
-          </Field>
-        )}
-        {error && <p className="text-xs text-[color:var(--status-danger-text)]">{error}</p>}
-      </SheetBody>
-      <SheetFooter>
-        <SheetActions>
-          <Button variant="outline" onClick={onClose}>
-            {t("common.cancel")}
-          </Button>
-          <Button disabled={!form.name.trim() || !!slugError || pending} onClick={onSubmit}>
-            {form.id ? t("common.save") : t("common.create")}
-          </Button>
-        </SheetActions>
-      </SheetFooter>
+      )}
     </>
   );
 }
@@ -334,7 +300,7 @@ function SpendStrip({
   const share = total > 0 ? unattributed / total : 0;
 
   return (
-    <div className="flex flex-wrap items-end gap-x-10 gap-y-3 rounded-[10px] border border-[color:var(--border-default)] bg-card px-4 py-3">
+    <div className="flex flex-wrap items-start gap-x-10 gap-y-3 rounded-[10px] border border-[color:var(--border-default)] bg-card px-4 py-3">
       <SpendFigure
         label={labels[window]}
         value={fmt.currency(total, currency)}
@@ -461,7 +427,10 @@ function CardSpend({
         {fmt.currency(num(row.cost_usd), currency)}
       </span>
       <span className="text-xs text-muted-foreground">
-        {t("pages.costAttribution.cardRequests", { count: num(row.requests) })}
+        {t("pages.costAttribution.cardRequests", {
+          count: num(row.requests),
+          formatted: fmt.number(num(row.requests)),
+        })}
       </span>
     </div>
   );
@@ -485,6 +454,9 @@ function AttributionScreen<T extends BusinessUnitRow | CustomerRow>({
   deleteError,
   resetDelete,
   mutating,
+  saving,
+  saveError,
+  resetSave,
   mutationError,
   disabled,
   spendWindow,
@@ -513,7 +485,14 @@ function AttributionScreen<T extends BusinessUnitRow | CustomerRow>({
   deleting: boolean;
   deleteError?: unknown;
   resetDelete: () => void;
+  /** any write in flight, which holds the row controls */
   mutating: boolean;
+  /** the create or edit in flight, which the sheet's Save reports */
+  saving: boolean;
+  /** why the last create or edit was refused; it is the sheet's to show, not the toolbar's */
+  saveError?: Error;
+  resetSave: () => void;
+  /** why the last retire or restore was refused */
   mutationError?: Error;
   disabled: boolean;
   /** the window the strip and every card report over */
@@ -532,6 +511,8 @@ function AttributionScreen<T extends BusinessUnitRow | CustomerRow>({
   const windowOptions = useTimeWindowOptions();
   const [open, setOpen] = React.useState(false);
   const [form, setForm] = React.useState<EditorState>(blank);
+  // what the form opened with, so closing it with a draft in it can ask first
+  const [seed, setSeed] = React.useState<EditorState>(blank);
   const [editing, setEditing] = React.useState<T | null>(null);
   // retiring is the reversible option and deleting is not, so the two must not
   // sit one indistinguishable click apart
@@ -541,23 +522,48 @@ function AttributionScreen<T extends BusinessUnitRow | CustomerRow>({
     setDeleteTarget(row);
   };
 
+  // a refusal for the last draft must not greet the next one opened
   const startCreate = () => {
+    resetSave();
     setEditing(null);
     setForm(blank());
+    setSeed(blank());
     setOpen(true);
   };
   const startEdit = (row: T) => {
+    resetSave();
     setEditing(row);
-    setForm({
+    const opened: EditorState = {
       id: row.id,
       name: row.name,
       slug: row.slug,
       allowSlugChange: false,
       businessUnitId:
         "business_unit_id" in row && row.business_unit_id ? row.business_unit_id : UNASSIGNED,
-    });
+    };
+    setForm(opened);
+    setSeed(opened);
     setOpen(true);
   };
+  const dirty =
+    form.name !== seed.name ||
+    form.slug !== seed.slug ||
+    form.allowSlugChange !== seed.allowSlugChange ||
+    form.businessUnitId !== seed.businessUnitId;
+  // the validator names a catalog key rather than carrying english copy
+  const original = editing?.slug ?? null;
+  const slugErrorKey = slugErrorFor(form, original);
+  const slugError = slugErrorKey ? t(slugErrorKey) : undefined;
+  const effectiveSlug = form.slug.trim() || slugify(form.name);
+  const editorTitle = t(
+    form.id
+      ? kind === "unit"
+        ? "pages.costAttribution.editor.editUnit"
+        : "pages.costAttribution.editor.editCustomer"
+      : kind === "unit"
+        ? "pages.costAttribution.editor.newUnit"
+        : "pages.costAttribution.editor.newCustomer",
+  );
 
   // a noun cannot be interpolated into a sentence frame and still decline, so
   // each kind names its own key (docs/dev-docs/development/i18n.md)
@@ -573,6 +579,16 @@ function AttributionScreen<T extends BusinessUnitRow | CustomerRow>({
   const deleteGate: Capability = kind === "unit" ? "business_unit:delete" : "customer:delete";
   const unitName = (id: string | null) => units.find((u) => u.id === id)?.name ?? null;
   const spendById = new Map(spend.map((row) => [row.id, row]));
+  // the biggest spenders first, which is the order a chargeback is read in.
+  // until the rollup has answered there is nothing to rank by, and the roster
+  // keeps the order the control plane gave it
+  const ranked = spendRead.isSuccess
+    ? [...rows].sort(
+        (a, b) =>
+          num(spendById.get(b.id)?.cost_usd) - num(spendById.get(a.id)?.cost_usd) ||
+          a.name.localeCompare(b.name),
+      )
+    : rows;
 
   if (isLoading) {
     return (
@@ -625,7 +641,8 @@ function AttributionScreen<T extends BusinessUnitRow | CustomerRow>({
             disabled={disabled}
             onClick={startCreate}
           >
-            + {t(createKey)}
+            <Plus className="h-4 w-4" />
+            {t(createKey)}
           </GatedButton>
         </div>
       </div>
@@ -662,13 +679,14 @@ function AttributionScreen<T extends BusinessUnitRow | CustomerRow>({
               disabled={disabled}
               onClick={startCreate}
             >
-              + {t(createKey)}
+              <Plus className="h-4 w-4" />
+              {t(createKey)}
             </GatedButton>
           }
         />
       ) : (
         <div className="grid gap-3.5 [grid-template-columns:repeat(auto-fill,minmax(min(300px,100%),1fr))]">
-          {rows.map((row) => {
+          {ranked.map((row) => {
             const assigned = "business_unit_id" in row ? unitName(row.business_unit_id) : null;
             return (
               <div
@@ -760,7 +778,12 @@ function AttributionScreen<T extends BusinessUnitRow | CustomerRow>({
       <ConfirmDialog
         name="cost-attribution-delete"
         open={!!deleteTarget}
-        onOpenChange={(o) => !o && setDeleteTarget(null)}
+        onOpenChange={(o) => {
+          if (o) return;
+          setDeleteTarget(null);
+          // a refusal shown in the dialog is not left behind on the toolbar
+          resetDelete();
+        }}
         title={t("pages.costAttribution.confirm.title", { name: deleteTarget?.name })}
         description={t(
           kind === "unit"
@@ -773,26 +796,38 @@ function AttributionScreen<T extends BusinessUnitRow | CustomerRow>({
         onConfirm={() => deleteTarget && onDelete(deleteTarget, () => setDeleteTarget(null))}
       />
 
-      <Sheet open={open} onOpenChange={setOpen}>
-        <Editor
-          kind={kind}
-          form={form}
-          setForm={setForm}
-          original={editing?.slug ?? null}
-          units={units}
-          onClose={() => setOpen(false)}
-          pending={mutating}
-          error={mutationError?.message}
-          onSubmit={() => {
-            // closing here unconditionally threw the draft away whenever the
-            // control plane refused the save — the name, the slug and the
-            // slug-change acknowledgement the operator ticked on purpose (#1626)
-            const close = () => setOpen(false);
-            if (editing) onUpdate(form, editing, close);
-            else onCreate(form, close);
-          }}
-        />
-      </Sheet>
+      <EditorSheet
+        name={`${kind === "unit" ? "business-unit" : "customer"}-${form.id ? "edit" : "create"}`}
+        open={open}
+        onOpenChange={setOpen}
+        title={editorTitle}
+        subtitle={effectiveSlug || "—"}
+        dirty={dirty}
+        errorMessage={saveError?.message}
+        saveLabel={form.id ? t("common.save") : t("common.create")}
+        canSave={!!form.name.trim() && !slugError}
+        saving={saving}
+        onSave={() => {
+          // closing here unconditionally threw the draft away whenever the
+          // control plane refused the save — the name, the slug and the
+          // slug-change acknowledgement the operator ticked on purpose (#1626)
+          const close = () => setOpen(false);
+          if (editing) onUpdate(form, editing, close);
+          else onCreate(form, close);
+        }}
+      >
+        <div className="space-y-3">
+          <Editor
+            kind={kind}
+            form={form}
+            setForm={setForm}
+            original={original}
+            effectiveSlug={effectiveSlug}
+            slugError={slugError}
+            units={units}
+          />
+        </div>
+      </EditorSheet>
     </PageBody>
   );
 }
@@ -909,9 +944,13 @@ export function BusinessUnits() {
       onRetry={() => void units.refetch()}
       disabled={!orgId}
       mutating={create.isPending || update.isPending || retire.isPending || remove.isPending}
-      mutationError={
-        (create.error ?? update.error ?? retire.error ?? remove.error) as Error | undefined
-      }
+      saving={create.isPending || update.isPending}
+      saveError={(create.error ?? update.error) as Error | undefined}
+      resetSave={() => {
+        create.reset();
+        update.reset();
+      }}
+      mutationError={(retire.error ?? remove.error) as Error | undefined}
       onCreate={(form, onSuccess) => create.mutate(form, { onSuccess })}
       onUpdate={(form, row, onSuccess) => update.mutate({ form, row }, { onSuccess })}
       onRetire={(row, retired) => retire.mutate({ row, retired })}
@@ -1051,9 +1090,13 @@ export function Customers() {
       onRetry={() => void customers.refetch()}
       disabled={!orgId}
       mutating={create.isPending || update.isPending || retire.isPending || remove.isPending}
-      mutationError={
-        (create.error ?? update.error ?? retire.error ?? remove.error) as Error | undefined
-      }
+      saving={create.isPending || update.isPending}
+      saveError={(create.error ?? update.error) as Error | undefined}
+      resetSave={() => {
+        create.reset();
+        update.reset();
+      }}
+      mutationError={(retire.error ?? remove.error) as Error | undefined}
       onCreate={(form, onSuccess) => create.mutate(form, { onSuccess })}
       onUpdate={(form, row, onSuccess) => update.mutate({ form, row }, { onSuccess })}
       onRetire={(row, retired) => retire.mutate({ row, retired })}

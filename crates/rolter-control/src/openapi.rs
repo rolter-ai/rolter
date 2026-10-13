@@ -1434,6 +1434,12 @@ fn operations() -> Vec<Op> {
             )
             .query(SCOPE_QUERY)
             .ok(Payload::Ref("BudgetSpendReport")),
+            Op::get(
+                "/api/v1/orgs/{org_id}/budgets",
+                "listOrgBudgets",
+                "List every spend budget in this organization the caller may read, at any scope",
+            )
+            .ok(Payload::List("Budget")),
             Op::post("/api/v1/budgets", "createBudget", "Create a spend budget")
                 .body(Payload::Ref("CreateBudget"))
                 .ok(Payload::Ref("Budget")),
@@ -1452,6 +1458,12 @@ fn operations() -> Vec<Op> {
             Op::get("/api/v1/rate-limits", "listRateLimits", "List rate limits")
                 .query(SCOPE_QUERY)
                 .ok(Payload::List("RateLimit")),
+            Op::get(
+                "/api/v1/orgs/{org_id}/rate-limits",
+                "listOrgRateLimits",
+                "List every rate limit in this organization the caller may read, at any scope",
+            )
+            .ok(Payload::List("RateLimit")),
             Op::post(
                 "/api/v1/rate-limits",
                 "createRateLimit",
