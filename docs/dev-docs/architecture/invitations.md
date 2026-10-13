@@ -160,6 +160,16 @@ session goes through with `mfa_enrol_by`, as on a sign-in.
 A missing or too-short password for a new account is refused with `400` before
 the invitation is claimed, so the link stays usable.
 
+## Naming the sender
+
+`GET /api/v1/orgs/{org_id}/invitations` returns each row with `invited_by` (the
+sender's account id, null for the admin token or a deleted sender) and
+`invited_by_email`, resolved in the same query by a left join on `users`
+(`InvitationRepo::list`). The address does not depend on which users the caller
+may list: a team admin's users list holds only their own teams, but the
+invitation row is already visible to them, so the sender is too. The field is
+set on the list only; `create` and `revoke` return it null.
+
 ## Relationship to single sign-on
 
 Invitations and [single sign-on](sso.md) co-exist; neither requires the other.

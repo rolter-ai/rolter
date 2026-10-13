@@ -60,6 +60,8 @@ mod ingest_failure;
 mod invitations;
 #[cfg(feature = "postgres")]
 mod labels;
+#[cfg(feature = "postgres")]
+mod password_reset;
 // not reachable from any sign-in route yet (#1826); see the module docs
 #[cfg(feature = "postgres")]
 mod expiry_sweep;
@@ -1173,6 +1175,7 @@ fn build_app_with(state: ControlState, mount_internal: bool) -> Router {
             .merge(auth_policy::router())
             .merge(mfa::router())
             .merge(invitations::router())
+            .merge(password_reset::router())
             .merge(crud::router())
             .merge(me::router())
             .merge(plugins::router())

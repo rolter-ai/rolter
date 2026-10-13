@@ -420,8 +420,22 @@ const CAPABILITIES: &[Capability] = &[
         scope: "org",
         read: VIEWER,
         create: ADMIN,
-        update: NA,
+        // changing a grant's role is granting the new role and revoking the
+        // old one in a single statement, so it takes the same admin bar (#2310)
+        update: ADMIN,
         delete: ADMIN,
+    },
+    // issuing a reset link for a member's password. Only the issuing is a
+    // capability: redeeming the link is public, its token being the credential.
+    // Org admins reach accounts that belong to their org alone; a superadmin
+    // reaches any (#2240)
+    Capability {
+        resource: "password_reset",
+        scope: "org",
+        read: NA,
+        create: ADMIN,
+        update: NA,
+        delete: NA,
     },
     // listing provisioning tokens is an admin read: the rows name the IdPs a
     // tenant trusts, which is not viewer-grade information
@@ -1768,6 +1782,7 @@ mod tests {
         ("me_saved_views.rs", include_str!("me_saved_views.rs")),
         ("mfa.rs", include_str!("mfa.rs")),
         ("open_mode.rs", include_str!("open_mode.rs")),
+        ("password_reset.rs", include_str!("password_reset.rs")),
         ("openapi.rs", include_str!("openapi.rs")),
         ("proxy.rs", include_str!("proxy.rs")),
         ("plugins.rs", include_str!("plugins.rs")),

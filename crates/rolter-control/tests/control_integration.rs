@@ -22240,6 +22240,509 @@ async fn operator_written_urls_the_egress_policy_denies_are_refused_at_save() {
     .await;
 }
 
+// ---------------------------------------------------------------------------
+// people management: change a role, name an invitation's sender, reset a
+// password (#2310, #2325, #2240)
+// ---------------------------------------------------------------------------
+
+/// Give an existing account a local password. The id comes from `seed_user`
+/// rather than from a function that takes a password, so the scanners that
+/// follow a password into a request url do not mistake an account id for one.
+async fn set_local_password(pool: &sqlx::PgPool, account: uuid::Uuid, password: &str) {
+    use argon2::password_hash::PasswordHasher;
+    let hash = argon2::Argon2::default()
+        .hash_password(password.as_bytes())
+        .unwrap()
+        .to_string();
+    sqlx::query("update users set password_hash = $2 where id = $1")
+        .bind(account)
+        .bind(&hash)
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+/// An app with the admin token configured and one org, `acme`.
+async fn people_fixture(pool: &sqlx::PgPool) -> (String, uuid::Uuid) {
+    let app =
+        rolter_control::test_app_with_admin_token(pool.clone(), Some(admin_token().to_string()))
+            .await
+            .unwrap();
+    let addr = serve(app).await;
+    let base = format!("http://{addr}");
+    let org: Value = reqwest::Client::new()
+        .post(format!("{base}/api/v1/orgs"))
+        .bearer_auth(admin_token())
+        .json(&json!({"name": "Acme", "slug": "acme"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    (base, org["id"].as_str().unwrap().parse().unwrap())
+}
+
+#[tokio::test]
+async fn a_membership_role_changes_in_one_request_and_is_audited() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let (base, org_id) = people_fixture(&pool).await;
+    let client = reqwest::Client::new();
+
+    let admin = seed_user(&pool, "admin@example.com", false).await;
+    let other_admin = seed_user(&pool, "other-admin@example.com", false).await;
+    let member = seed_user(&pool, "member@example.com", false).await;
+    let admin_token_ = seed_session(&pool, admin, "role_admin").await;
+    let member_token = seed_session(&pool, member, "role_member").await;
+    seed_membership(&pool, admin, Some(org_id), None, None, "admin").await;
+    seed_membership(&pool, member, Some(org_id), None, None, "member").await;
+    let grant = grant_id(&pool, member, org_id).await;
+    let put = |token: &str, id: uuid::Uuid, body: Value| {
+        client
+            .put(format!("{base}/api/v1/memberships/{id}"))
+            .bearer_auth(token)
+            .json(&body)
+            .send()
+    };
+
+    // a member cannot change anyone's role
+    let res = put(&member_token, grant, json!({"role": "admin"}))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 403);
+
+    // a bad role and an unknown field are refused without touching the row
+    let res = put(&admin_token_, grant, json!({"role": "owner"}))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 400);
+    let res = put(
+        &admin_token_,
+        grant,
+        json!({"role": "viewer", "org_id": org_id}),
+    )
+    .await
+    .unwrap();
+    assert!(res.status().is_client_error());
+    let res = put(
+        &admin_token_,
+        uuid::Uuid::new_v4(),
+        json!({"role": "viewer"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(res.status(), 404);
+
+    let res = put(&admin_token_, grant, json!({"role": "viewer"}))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["role"], "viewer", "{body}");
+    assert_eq!(body["id"], grant.to_string(), "the grant keeps its id");
+    let detail: Value = sqlx::query_scalar(
+        "select detail from audit_log where action = 'membership.update' and target_id = $1",
+    )
+    .bind(grant)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(detail["old_role"], "member", "{detail}");
+    assert_eq!(detail["new_role"], "viewer", "{detail}");
+
+    // the same role again is a no-op with no second audit row
+    let res = put(&admin_token_, grant, json!({"role": "viewer"}))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let rows: i64 = sqlx::query_scalar(
+        "select count(*) from audit_log where action = 'membership.update' and target_id = $1",
+    )
+    .bind(grant)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(rows, 1);
+
+    // the org's only admin cannot be demoted, a second admin lifts that, and
+    // the superadmin may always repair the org
+    let admin_grant = grant_id(&pool, admin, org_id).await;
+    let res = put(&admin_token_, admin_grant, json!({"role": "member"}))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 409);
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "last_org_admin", "{body}");
+    seed_membership(&pool, other_admin, Some(org_id), None, None, "admin").await;
+    let res = put(&admin_token_, admin_grant, json!({"role": "member"}))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let other_grant = grant_id(&pool, other_admin, org_id).await;
+    let res = put(admin_token(), other_grant, json!({"role": "member"}))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+}
+
+#[tokio::test]
+async fn an_invitation_names_its_sender_to_a_caller_who_cannot_list_them() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let (base, org_id) = people_fixture(&pool).await;
+    let client = reqwest::Client::new();
+
+    let team: uuid::Uuid =
+        sqlx::query_scalar("insert into teams (org_id, name) values ($1, 'core') returning id")
+            .bind(org_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let org_admin = seed_user(&pool, "boss@example.com", false).await;
+    let team_admin = seed_user(&pool, "lead@example.com", false).await;
+    seed_membership(&pool, org_admin, Some(org_id), None, None, "admin").await;
+    seed_membership(&pool, team_admin, None, Some(team), None, "admin").await;
+    let org_token = seed_session(&pool, org_admin, "inv_org").await;
+    let team_token = seed_session(&pool, team_admin, "inv_team").await;
+
+    for (token, email, scope) in [
+        (&org_token, "by-boss@example.com", json!({})),
+        (
+            &team_token,
+            "by-lead@example.com",
+            json!({"scope_type": "team", "scope_id": team}),
+        ),
+    ] {
+        let mut body = json!({"email": email, "role": "member"});
+        body.as_object_mut()
+            .unwrap()
+            .extend(scope.as_object().unwrap().clone());
+        let res = client
+            .post(format!("{base}/api/v1/orgs/{org_id}/invitations"))
+            .bearer_auth(token)
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200);
+    }
+    // sent with the admin token: names nobody
+    let res = client
+        .post(format!("{base}/api/v1/orgs/{org_id}/invitations"))
+        .bearer_auth(admin_token())
+        .json(&json!({"email": "by-token@example.com", "role": "member"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+
+    let list = |token: String| {
+        let client = client.clone();
+        let url = format!("{base}/api/v1/orgs/{org_id}/invitations");
+        async move {
+            let rows: Value = client
+                .get(url)
+                .bearer_auth(token)
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            rows
+        }
+    };
+    let sender = |rows: &Value, email: &str| -> Value {
+        rows.as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["email"] == email)
+            .unwrap_or_else(|| panic!("{email} missing from {rows}"))["invited_by_email"]
+            .clone()
+    };
+
+    let all = list(org_token).await;
+    assert_eq!(sender(&all, "by-boss@example.com"), "boss@example.com");
+    assert_eq!(sender(&all, "by-lead@example.com"), "lead@example.com");
+    assert_eq!(sender(&all, "by-token@example.com"), Value::Null);
+
+    // the team admin sees only their team's invitation, and still sees who sent it
+    let own = list(team_token).await;
+    assert_eq!(own.as_array().unwrap().len(), 1, "{own}");
+    assert_eq!(sender(&own, "by-lead@example.com"), "lead@example.com");
+
+    // a sender who was deleted reads as null rather than a stale address
+    sqlx::query("delete from users where id = $1")
+        .bind(org_admin)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let after = list(admin_token().to_string()).await;
+    assert_eq!(sender(&after, "by-boss@example.com"), Value::Null);
+}
+
+#[tokio::test]
+async fn an_administrator_resets_a_members_password_with_a_one_time_link() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let (base, org_id) = people_fixture(&pool).await;
+    let client = reqwest::Client::new();
+
+    let old_password = random_password();
+    let new_password = random_password();
+    let admin = seed_user(&pool, "admin@example.com", false).await;
+    let member = seed_user(&pool, "member@example.com", false).await;
+    set_local_password(&pool, member, &old_password).await;
+    seed_membership(&pool, admin, Some(org_id), None, None, "admin").await;
+    seed_membership(&pool, member, Some(org_id), None, None, "member").await;
+    let admin_session = seed_session(&pool, admin, "reset_admin").await;
+    let member_session = seed_session(&pool, member, "reset_member").await;
+    let url = format!("{base}/api/v1/orgs/{org_id}/users/{member}/password-reset");
+
+    // a member cannot reset anyone
+    let res = client
+        .post(&url)
+        .bearer_auth(&member_session)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 403);
+
+    let res = client
+        .post(&url)
+        .bearer_auth(&admin_session)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let issued: Value = res.json().await.unwrap();
+    let token = issued["token"].as_str().unwrap().to_string();
+    assert!(token.starts_with("rolter_reset_"), "{issued}");
+    assert_eq!(issued["sessions_revoked"], 1, "{issued}");
+    assert!(issued["reset_url"].as_str().unwrap().ends_with(&token));
+    assert!(
+        issued["reset"].get("token_hash").is_none(),
+        "the digest never leaves the server: {issued}"
+    );
+
+    // the member's live session is gone; the old password still signs in
+    let res = client
+        .get(format!("{base}/api/v1/auth/me"))
+        .bearer_auth(&member_session)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 401);
+    assert_eq!(
+        login_status(&client, &base, "member@example.com", &old_password).await,
+        200
+    );
+
+    // the audit row names the issuer and never the token
+    let detail: Value = sqlx::query_scalar(
+        "select detail from audit_log where action = 'user.password_reset' and target_id = $1",
+    )
+    .bind(member)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(detail["sessions_revoked"], 1, "{detail}");
+    assert!(!detail.to_string().contains(&token), "{detail}");
+
+    // a second reset replaces the first: only the newest link works
+    let res = client
+        .post(&url)
+        .bearer_auth(&admin_session)
+        .send()
+        .await
+        .unwrap();
+    let second: Value = res.json().await.unwrap();
+    let second_token = second["token"].as_str().unwrap().to_string();
+    let res = client
+        .get(format!("{base}/api/v1/password-reset/{token}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 401);
+
+    // preview names the address; a too-short password does not spend the link
+    let preview: Value = client
+        .get(format!("{base}/api/v1/password-reset/{second_token}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(preview["email"], "member@example.com");
+    let res = client
+        .post(format!("{base}/api/v1/password-reset/{second_token}"))
+        .json(&json!({"password": "short"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 400);
+
+    // an armed factor and a half-finished sign-in: redeeming ends the sign-in
+    // and leaves the factor, so the new password alone still opens nothing
+    sqlx::query(
+        "insert into user_totp_factors (user_id, secret_ciphertext, secret_nonce, confirmed_at)
+         values ($1, '\\x00', '\\x00', now())",
+    )
+    .bind(member)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "insert into mfa_challenges (user_id, token_hash, expires_at)
+         values ($1, 'half-finished', now() + interval '5 minutes')",
+    )
+    .bind(member)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let res = client
+        .post(format!("{base}/api/v1/password-reset/{second_token}"))
+        .json(&json!({"password": new_password}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let done: Value = res.json().await.unwrap();
+    assert_eq!(done["sign_in_required"], true, "{done}");
+    assert!(done.get("token").is_none(), "redeeming signs nobody in");
+    let factors: i64 =
+        sqlx::query_scalar("select count(*) from user_totp_factors where user_id = $1")
+            .bind(member)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(factors, 1, "a reset never clears the second factor");
+    let challenges: i64 =
+        sqlx::query_scalar("select count(*) from mfa_challenges where user_id = $1")
+            .bind(member)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(challenges, 0, "a sign-in begun with the old password ends");
+
+    // single use
+    let res = client
+        .post(format!("{base}/api/v1/password-reset/{second_token}"))
+        .json(&json!({"password": random_password()}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 401);
+
+    assert_eq!(
+        login_status(&client, &base, "member@example.com", &old_password).await,
+        401
+    );
+    assert_eq!(
+        login_status(&client, &base, "member@example.com", &new_password).await,
+        200
+    );
+}
+
+#[tokio::test]
+async fn a_password_reset_respects_who_may_reach_which_account() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let (base, org_id) = people_fixture(&pool).await;
+    let client = reqwest::Client::new();
+    let other_org: uuid::Uuid =
+        sqlx::query_scalar("insert into orgs (name, slug) values ('Other', 'other') returning id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let team: uuid::Uuid =
+        sqlx::query_scalar("insert into teams (org_id, name) values ($1, 'core') returning id")
+            .bind(org_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+    let admin = seed_user(&pool, "admin@example.com", false).await;
+    let team_admin = seed_user(&pool, "lead@example.com", false).await;
+    let sso_only = seed_user(&pool, "sso@example.com", false).await;
+    let shared = seed_user(&pool, "shared@example.com", false).await;
+    let root = seed_user(&pool, "root@example.com", true).await;
+    let gone = seed_user(&pool, "gone@example.com", false).await;
+    for account in [shared, root, gone] {
+        set_local_password(&pool, account, &random_password()).await;
+    }
+    for user in [sso_only, shared, root, gone] {
+        seed_membership(&pool, user, Some(org_id), None, None, "member").await;
+    }
+    seed_membership(&pool, shared, Some(other_org), None, None, "member").await;
+    seed_membership(&pool, admin, Some(org_id), None, None, "admin").await;
+    seed_membership(&pool, team_admin, None, Some(team), None, "admin").await;
+    sqlx::query("update users set deactivated_at = now() where id = $1")
+        .bind(gone)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let admin_session = seed_session(&pool, admin, "reach_admin").await;
+    let team_session = seed_session(&pool, team_admin, "reach_team").await;
+
+    let reset = |token: &str, org: uuid::Uuid, member_id: uuid::Uuid| {
+        client
+            .post(format!(
+                "{base}/api/v1/orgs/{org}/users/{member_id}/password-reset"
+            ))
+            .bearer_auth(token.to_string())
+            .send()
+    };
+
+    // a team admin does not manage org members' credentials
+    assert_eq!(
+        reset(&team_session, org_id, shared).await.unwrap().status(),
+        403
+    );
+    // an org admin: not their own account, not a superadmin, not an account
+    // that also belongs to another org, not an sso-only or deactivated one
+    for (target, expected) in [
+        (admin, 400),
+        (root, 403),
+        (shared, 403),
+        (sso_only, 400),
+        (gone, 400),
+    ] {
+        let res = reset(&admin_session, org_id, target).await.unwrap();
+        assert_eq!(res.status(), expected, "target {target}");
+    }
+    // naming another org in the path does not widen the caller's reach: they
+    // hold no admin role there
+    assert_eq!(
+        reset(&admin_session, other_org, shared)
+            .await
+            .unwrap()
+            .status(),
+        403
+    );
+
+    // a superadmin reaches the shared account and another superadmin
+    assert_eq!(
+        reset(admin_token(), org_id, shared).await.unwrap().status(),
+        200
+    );
+    assert_eq!(
+        reset(admin_token(), org_id, root).await.unwrap().status(),
+        200
+    );
+    let unknown = reset(admin_token(), org_id, uuid::Uuid::new_v4())
+        .await
+        .unwrap();
+    assert_eq!(unknown.status(), 404);
+}
+
 async fn grant_id(pool: &sqlx::PgPool, holder: uuid::Uuid, org: uuid::Uuid) -> uuid::Uuid {
     sqlx::query_scalar("select id from memberships where user_id = $1 and org_id = $2")
         .bind(holder)

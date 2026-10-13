@@ -157,6 +157,7 @@ const INVITATIONS: Invitation[] = [
     team_id: null,
     project_id: "project-1",
     invited_by: "user-1",
+    invited_by_email: "ada@example.com",
     expires_at: inDays(5),
     accepted_at: null,
     revoked_at: null,
@@ -170,6 +171,7 @@ const INVITATIONS: Invitation[] = [
     team_id: "team-1",
     project_id: null,
     invited_by: "user-2",
+    invited_by_email: "grace@example.com",
     expires_at: inDays(2),
     accepted_at: null,
     revoked_at: null,
@@ -183,6 +185,7 @@ const INVITATIONS: Invitation[] = [
     team_id: null,
     project_id: null,
     invited_by: null,
+    invited_by_email: null,
     expires_at: inDays(6),
     accepted_at: null,
     revoked_at: null,
@@ -196,6 +199,7 @@ const INVITATIONS: Invitation[] = [
     team_id: null,
     project_id: null,
     invited_by: "user-9",
+    invited_by_email: "dana@elsewhere.example",
     expires_at: "2026-01-10T00:00:00Z",
     accepted_at: null,
     revoked_at: null,
@@ -209,6 +213,7 @@ const INVITATIONS: Invitation[] = [
     team_id: "team-1",
     project_id: null,
     invited_by: "user-1",
+    invited_by_email: "ada@example.com",
     expires_at: inDays(3),
     accepted_at: "2026-09-26T00:00:00Z",
     revoked_at: null,
@@ -222,6 +227,7 @@ const INVITATIONS: Invitation[] = [
     team_id: null,
     project_id: "project-1",
     invited_by: "user-1",
+    invited_by_email: "ada@example.com",
     expires_at: inDays(4),
     accepted_at: null,
     revoked_at: "2026-09-26T00:00:00Z",
@@ -946,6 +952,7 @@ function directory(
   answers: {
     onDelete?: (id: string) => Promise<Response | null> | Response | null;
     onPost?: () => Promise<Response | null> | Response | null;
+    onPut?: (id: string) => Promise<Response | null> | Response | null;
     /** grants held on top of `MEMBERSHIPS` */
     extra?: MembershipRow[];
   } = {},
@@ -961,6 +968,16 @@ function directory(
       if (refused) return refused;
       grants = grants.filter((g) => g.id !== revoked[1]);
       return json(null, 204);
+    }
+    if (method === "PUT" && revoked) {
+      const refused = await answers.onPut?.(revoked[1]);
+      if (refused) return refused;
+      const grant = grants.find((g) => g.id === revoked[1]);
+      if (!grant) return json({ error: { message: "not found" } }, 404);
+      const { role } = JSON.parse(String(init?.body)) as { role: string };
+      const updated = { ...grant, role };
+      grants = grants.map((g) => (g.id === grant.id ? updated : g));
+      return json(updated);
     }
     if (method === "POST" && url.includes("/memberships")) {
       const refused = await answers.onPost?.();
@@ -1109,13 +1126,13 @@ export const RevokeRefusedByTheServer: Story = {
 };
 
 /**
- * A role changes in one confirmed step. The control plane has no update for a
- * membership, so the new role is granted first and the old one revoked after:
- * at one scope the higher role applies, so the moment both exist grants
- * nothing beyond one of the two, and the person is never without a role.
+ * A role changes in one confirmed step and one request: `PUT /memberships/{id}`
+ * with the new role, no grant and no revoke. The control plane updates the row
+ * in a single statement, so the person is never without a role and never holds
+ * two.
  */
 let changes: Recorder;
-export const ChangesARoleGrantingFirst: Story = {
+export const ChangesARoleInOneRequest: Story = {
   render: () => {
     changes = recording(directory());
     return (
@@ -1144,17 +1161,10 @@ export const ChangesARoleGrantingFirst: Story = {
     await userEvent.click(within(list).getByRole("option", { name: "Viewer" }));
     await userEvent.click(dialog.getByRole("button", { name: "Change role" }));
 
-    const body = await changes.expectSentBody("POST", "/orgs/org-1/memberships");
-    await expect(body).toEqual({
-      user_id: "user-2",
-      scope_type: "team",
-      scope_id: "team-1",
-      role: "viewer",
-    });
-    await changes.expectSent("DELETE", "/memberships/m-2");
+    const body = await changes.expectSentBody("PUT", "/memberships/m-2");
+    await expect(body).toEqual({ role: "viewer" });
     await expect(changes.calls.filter((c) => c.method !== "GET").map((c) => c.method)).toEqual([
-      "POST",
-      "DELETE",
+      "PUT",
     ]);
     await expectSheetClosed();
     await expectToast(canvasElement, /grace@example\.com is now Viewer on the Platform team/);
@@ -1169,24 +1179,23 @@ export const ChangesARoleGrantingFirst: Story = {
 };
 
 /**
- * The grant landed and the revoke did not. The dialog says the state the
- * person is in, both roles and which one applies meanwhile, keeps the control
- * plane's message, and its confirm becomes a retry of the revoke alone: the
- * grant is never sent twice.
+ * The change is refused: the dialog stays open with the control plane's
+ * message, the row keeps its role, and the same confirm sends it again. There
+ * is no half-applied state to explain.
  */
-let partial: Recorder;
-let failedRevokes = 0;
-export const ChangeWhoseRevokeFailsSaysSoAndRetries: Story = {
+let refusedChange: Recorder;
+let failedChanges = 0;
+export const ChangeThatFailsLeavesTheRoleAsItWas: Story = {
   render: () => {
-    failedRevokes = 0;
-    partial = recording(
+    failedChanges = 0;
+    refusedChange = recording(
       directory({
-        onDelete: () =>
-          failedRevokes++ === 0 ? json({ error: { message: "store unavailable" } }, 500) : null,
+        onPut: () =>
+          failedChanges++ === 0 ? json({ error: { message: "store unavailable" } }, 500) : null,
       }),
     );
     return (
-      <Harness fetchStub={partial.stub}>
+      <Harness fetchStub={refusedChange.stub}>
         <Users />
       </Harness>
     );
@@ -1198,28 +1207,45 @@ export const ChangeWhoseRevokeFailsSaysSoAndRetries: Story = {
     await pickOption(dialog.getByLabelText("New role"), "Viewer");
     await userEvent.click(dialog.getByRole("button", { name: "Change role" }));
 
-    await waitFor(() =>
-      expect(
-        dialog.getByText(
-          "Viewer was granted, but Member could not be revoked. grace@example.com holds both roles on the Platform team, and Member applies there until Member is revoked.",
-        ),
-      ).toBeVisible(),
-    );
-    await expect(dialog.getByRole("alert")).toHaveTextContent("store unavailable");
-    // the row shows the state the person is in: both grants
-    await waitFor(() =>
-      expect(
-        canvas.getByRole("button", {
-          name: "Revoke Viewer on the Platform team from grace@example.com",
-        }),
-      ).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(dialog.getByRole("alert")).toHaveTextContent("store unavailable"));
+    await expect(canvas.getByRole("button", { name: CHANGE_GRACE })).toBeInTheDocument();
 
-    await userEvent.click(dialog.getByRole("button", { name: "Retry revoking Member" }));
+    await userEvent.click(dialog.getByRole("button", { name: "Change role" }));
     await expectSheetClosed();
-    await expect(partial.calls.filter((c) => c.method === "POST")).toHaveLength(1);
-    await expect(partial.calls.filter((c) => c.method === "DELETE")).toHaveLength(2);
-    await waitFor(() => expect(canvas.queryByRole("button", { name: REVOKE_GRACE })).toBeNull());
+    await expect(refusedChange.calls.filter((c) => c.method === "PUT")).toHaveLength(2);
+    await expect(refusedChange.calls.filter((c) => c.method === "POST")).toHaveLength(0);
+    await expect(refusedChange.calls.filter((c) => c.method === "DELETE")).toHaveLength(0);
+  },
+};
+
+/**
+ * A person who already holds the picked role at that scope through another
+ * grant has the grant being changed revoked, since updating it would only
+ * duplicate the other.
+ */
+let duplicateChange: Recorder;
+export const ChangeToARoleAlreadyHeldRevokesInstead: Story = {
+  render: () => {
+    duplicateChange = recording(
+      directory({
+        extra: [{ ...MEMBERSHIPS[1], id: "m-dup", role: "viewer" }],
+      }),
+    );
+    return (
+      <Harness fetchStub={duplicateChange.stub}>
+        <Users />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: CHANGE_GRACE }));
+    const dialog = within(await confirmation());
+    await pickOption(dialog.getByLabelText("New role"), "Viewer");
+    await userEvent.click(dialog.getByRole("button", { name: "Change role" }));
+    await duplicateChange.expectSent("DELETE", "/memberships/m-2");
+    await expectSheetClosed();
+    await expect(duplicateChange.calls.filter((c) => c.method === "PUT")).toHaveLength(0);
   },
 };
 
@@ -1312,13 +1338,13 @@ export const RevokeRefusedAsTheLastAdmin: Story = {
 };
 
 /**
- * A role change on the last admin grant lands its grant half and is refused on
- * the revoke half: the dialog is in its partial state and carries the same
- * message instead of the raw one.
+ * Demoting the last admin grant is refused with the stable `last_org_admin`
+ * code: the dialog stays open and says why in the dashboard's words, and the
+ * row keeps its role.
  */
-export const ChangeOfTheLastAdminIsRefusedAfterTheGrant: Story = {
+export const ChangeOfTheLastAdminIsRefused: Story = {
   render: () => (
-    <Harness fetchStub={directory({ extra: [GRACE_ORG_ADMIN], onDelete: lastAdminRefusal })}>
+    <Harness fetchStub={directory({ extra: [GRACE_ORG_ADMIN], onPut: lastAdminRefusal })}>
       <Users />
     </Harness>
   ),
@@ -1329,14 +1355,12 @@ export const ChangeOfTheLastAdminIsRefusedAfterTheGrant: Story = {
     await pickOption(dialog.getByLabelText("New role"), "Member");
     await userEvent.click(dialog.getByRole("button", { name: "Change role" }));
     await waitFor(() =>
-      expect(
-        dialog.getByText(/Member was granted, but Admin could not be revoked\./),
-      ).toBeVisible(),
+      expect(dialog.getByRole("alert")).toHaveTextContent(
+        "This is the organization's last admin grant. Grant admin to another person first, or ask a superadmin.",
+      ),
     );
-    await expect(dialog.getByRole("alert")).toHaveTextContent(
-      "This is the organization's last admin grant. Grant admin to another person first, or ask a superadmin.",
-    );
-    await expect(dialog.getByRole("button", { name: "Retry revoking Admin" })).toBeVisible();
+    await expect(within(document.body).getByRole("dialog")).toBeInTheDocument();
+    await expect(canvas.getByRole("button", { name: CHANGE_ADA })).toBeInTheDocument();
   },
 };
 
@@ -1728,7 +1752,7 @@ export const AnUncopiedInviteLinkAsksBeforeClosing: Story = {
 /**
  * The pending section lists what has neither been accepted nor revoked: the
  * address, the role by its translated name, the scope by name, who sent it
- * (resolved through the users list, never a uuid) and the expiry through
+ * (the address the control plane resolved, never a uuid) and the expiry through
  * `fmt`. The accepted and the revoked invitation are not listed, and an
  * expired one is, marked, since it still holds its address.
  */
@@ -1746,11 +1770,9 @@ export const PendingInvitationsAreListed: Story = {
 
     const row = (email: string) =>
       within(section.getByText(email).closest('[role="row"]') as HTMLElement);
-    // the rows land with the invitations read, but the sender column is drawn
-    // from the users read and the scope column from the org's teams and
-    // projects, each a skeleton until its own read answers. under load either
-    // can land a commit after the rows, so wait for both before reading a row
-    await expect(await row("newcomer@example.com").findByText("ada@example.com")).toBeVisible();
+    // the sender comes on the row itself (#2325); the scope column is drawn
+    // from the org's teams and projects, a skeleton until that read answers
+    await expect(row("newcomer@example.com").getByText("ada@example.com")).toBeVisible();
     await expect(await row("newcomer@example.com").findByText("Gateway")).toBeVisible();
     await expect(row("newcomer@example.com").getByText("Member")).toBeVisible();
     await expect(
@@ -1762,8 +1784,9 @@ export const PendingInvitationsAreListed: Story = {
     await expect(row("everyone@example.com").getByText("Viewer")).toBeVisible();
     await expect(row("everyone@example.com").getByText("Whole organization")).toBeVisible();
     await expect(row("everyone@example.com").getByText("not recorded")).toBeVisible();
-    // a sender this account cannot name is unknown, not a uuid
-    await expect(row("stale@example.com").getByText("unknown")).toBeVisible();
+    // a sender outside the users list is still named, since the control plane
+    // resolves the address: it is no longer "unknown"
+    await expect(row("stale@example.com").getByText("dana@elsewhere.example")).toBeVisible();
     await expect(row("stale@example.com").getByText("Expired")).toBeVisible();
     await expect(
       row("stale@example.com").getByText(expiryDate("2026-01-10T00:00:00Z")),
@@ -1796,10 +1819,8 @@ let operatorReads: Recorder;
 /**
  * An invitation a superadmin sent from an account that holds no role anywhere
  * names them. The control plane records the signed-in account whichever kind of
- * principal it is (#2813), and the screen resolves the id through the users
- * list, where that account is only present because a superadmin asks for the
- * accounts no org lists (#2804). The row shows the address, never "not
- * recorded", which is for the admin token.
+ * principal it is (#2813) and returns its address on the row (#2325). The row
+ * shows the address, never "not recorded", which is for the admin token.
  */
 export const PendingInvitationSentByASuperadminNamesThem: Story = {
   render: () => {
@@ -1809,6 +1830,7 @@ export const PendingInvitationSentByASuperadminNamesThem: Story = {
         id: "inv-operator",
         email: "from-operator@example.com",
         invited_by: OPERATOR.id,
+        invited_by_email: OPERATOR.email,
       },
       INVITATIONS[2],
     ];
@@ -3385,5 +3407,180 @@ export const ProfileAssignmentRefusedToAViewer: Story = {
     await canvas.findByText("grace@example.com");
     await expectRefused(canvasElement, "Assign an access profile to grace@example.com");
     await expectRefused(canvasElement, "Remove Support engineers from grace@example.com");
+  },
+};
+
+/**
+ * The sender is named by the row itself, so a caller whose users list is
+ * refused (a team admin reads only the people in their own teams) still sees
+ * who sent each invitation (#2325).
+ */
+export const PendingInvitationsNameTheirSenderWithoutTheUsersList: Story = {
+  render: () => (
+    <Harness
+      fetchStub={scoped(async (input) => {
+        const url = String(input);
+        if (url.includes("/invitations")) return json(INVITATIONS);
+        if (url.includes("/memberships")) return json(MEMBERSHIPS);
+        if (url.includes("/users")) return json({ error: { message: "forbidden" } }, 403);
+        return json([]);
+      })}
+    >
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const section = within(await pendingSection(canvasElement));
+    const row = (email: string) =>
+      within(section.getByText(email).closest('[role="row"]') as HTMLElement);
+    await expect(await section.findByText("lead@example.com")).toBeVisible();
+    await expect(row("lead@example.com").getByText("grace@example.com")).toBeVisible();
+    await expect(row("stale@example.com").getByText("dana@elsewhere.example")).toBeVisible();
+    await expect(row("everyone@example.com").getByText("not recorded")).toBeVisible();
+  },
+};
+
+// ------------------------------------------ an administrator resets a password (#2240)
+
+const RESET_URL = "https://rolter.local/reset-password/rolter_reset_one-time";
+const RESET_GRACE = "Reset the password of grace@example.com";
+
+/** the control plane's answer to an issued reset */
+const issuedReset = (sessions: number) => () =>
+  json({
+    reset: { id: "reset-1", user_id: "user-2", expires_at: inDays(1) },
+    token: "rolter_reset_one-time",
+    reset_url: RESET_URL,
+    sessions_revoked: sessions,
+  });
+
+/**
+ * A reset asks first, saying what it does: a one-time link and never a
+ * password, the open sessions end now, the old password and any second factor
+ * stay. A cancel sends nothing.
+ */
+let resetCancelled: Recorder;
+export const ResetPasswordAsksBeforeIssuingAndCancelSendsNothing: Story = {
+  render: () => {
+    resetCancelled = recording(directory());
+    return (
+      <Harness fetchStub={resetCancelled.stub}>
+        <Users />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: RESET_GRACE }));
+    const dialog = within(await confirmation());
+    await waitFor(() =>
+      expect(
+        dialog.getByRole("heading", { name: "Reset the password of grace@example.com?" }),
+      ).toBeVisible(),
+    );
+    await waitFor(() => expect(dialog.getByText(/one-time link, never a password/)).toBeVisible());
+    await waitFor(() => expect(dialog.getByText(/any second factor stays in place/)).toBeVisible());
+    await cancelConfirmation();
+    await expect(resetCancelled.calls.filter((c) => c.method === "POST")).toHaveLength(0);
+  },
+};
+
+/**
+ * Confirming issues the link: the request names the org and the member, the
+ * link is shown once in the shared reveal dialog with how many sessions ended,
+ * and closing it asks first because nobody has copied it.
+ */
+let resetIssued: Recorder;
+export const ResetPasswordIssuesAOneTimeLink: Story = {
+  render: () => {
+    resetIssued = recording(
+      scoped(async (input, init) => {
+        const url = String(input);
+        if (init?.method === "POST" && url.includes("/password-reset")) return issuedReset(2)();
+        if (url.includes("/invitations")) return json([]);
+        return url.includes("/memberships") ? json(MEMBERSHIPS) : json(USERS);
+      }),
+    );
+    return (
+      <Harness fetchStub={resetIssued.stub}>
+        <Toasted>
+          <Users />
+        </Toasted>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: RESET_GRACE }));
+    const dialog = within(await confirmation());
+    await userEvent.click(dialog.getByRole("button", { name: "Issue reset link" }));
+    await resetIssued.expectSent("POST", "/orgs/org-1/users/user-2/password-reset");
+
+    const reveal = within(await confirmation());
+    await waitFor(() => expect(reveal.getByText(RESET_URL)).toBeVisible());
+    await expect(reveal.getByRole("heading", { name: "Password reset link" })).toBeVisible();
+    await expect(reveal.getByText("2 open sessions of theirs were signed out.")).toBeVisible();
+    await expectToast(canvasElement, /Reset link issued for grace@example\.com/);
+
+    // not copied: closing asks first, and keeping it open leaves the link
+    await userEvent.click(reveal.getByRole("button", { name: "Done" }));
+    await answerSecretClosePrompt(false);
+    await expect(reveal.getByText(RESET_URL)).toBeVisible();
+    await userEvent.click(reveal.getByRole("button", { name: "Done" }));
+    await answerSecretClosePrompt(true);
+    await expectSheetClosed();
+  },
+};
+
+/**
+ * The control plane refuses (an account that signs in through single sign-on
+ * has no password to reset): the dialog stays open with its message and no link
+ * is shown.
+ */
+export const ResetPasswordRefusedKeepsTheDialogOpen: Story = {
+  render: () => (
+    <Harness
+      fetchStub={scoped(async (input, init) => {
+        const url = String(input);
+        if (init?.method === "POST" && url.includes("/password-reset")) {
+          return json(
+            {
+              error: {
+                message: "the account has no local password; it signs in through single sign-on",
+              },
+            },
+            400,
+          );
+        }
+        if (url.includes("/invitations")) return json([]);
+        return url.includes("/memberships") ? json(MEMBERSHIPS) : json(USERS);
+      })}
+    >
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: RESET_GRACE }));
+    const dialog = within(await confirmation());
+    await userEvent.click(dialog.getByRole("button", { name: "Issue reset link" }));
+    await waitFor(() => expect(dialog.getByRole("alert")).toHaveTextContent(/no local password/));
+    await expect(within(document.body).queryByText(RESET_URL)).toBeNull();
+  },
+};
+
+/** A deactivated account has nothing to reset: the row offers no reset action. */
+export const ResetPasswordIsNotOfferedForADeactivatedAccount: Story = {
+  render: () => (
+    <Harness fetchStub={loaded}>
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByRole("button", { name: RESET_GRACE })).toBeVisible();
+    await expect(
+      canvas.queryByRole("button", { name: "Reset the password of former@example.com" }),
+    ).toBeNull();
   },
 };

@@ -680,7 +680,25 @@
           "authenticated_only": false
         },
         {
+          "action": "update",
+          "minimum_role": "admin",
+          "superadmin_only": false,
+          "authenticated_only": false
+        },
+        {
           "action": "delete",
+          "minimum_role": "admin",
+          "superadmin_only": false,
+          "authenticated_only": false
+        }
+      ]
+    },
+    {
+      "resource": "password_reset",
+      "scope": "org",
+      "actions": [
+        {
+          "action": "create",
           "minimum_role": "admin",
           "superadmin_only": false,
           "authenticated_only": false

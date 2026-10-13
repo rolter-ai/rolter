@@ -1,0 +1,101 @@
+---
+title: "Managing members with the Rolter control plane API"
+sidebarTitle: "Members and password reset"
+description: "Change a role grant in one request with PUT /api/v1/memberships/{id}, read who sent each invitation from invited_by_email, and reset a member's password with a one-time link."
+---
+
+Three control-plane calls manage people who already have an account. Each is
+published in `GET /openapi.json` and in the capability matrix at
+`GET /api/v1/rbac/matrix`.
+
+## Change a role grant
+
+`PUT /api/v1/memberships/{id}` changes the role of one grant in a single
+statement.
+
+```bash
+curl -X PUT "$ROLTER_URL/api/v1/memberships/$GRANT_ID" \
+  -H "Authorization: Bearer $ROLTER_SESSION_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"role": "viewer"}'
+```
+
+| Field  | Type   | Meaning                                      |
+| ------ | ------ | -------------------------------------------- |
+| `role` | string | one of `admin`, `member`, `viewer`; required |
+
+No other field is accepted. The scope of a grant cannot change: revoke it and
+grant a new one for that.
+
+- Authorized as `membership:update` (admin) at the grant's own scope, the way a
+  revoke is. A caller who is admin only of a team cannot change a grant on the
+  organization.
+- Answers `200` with the updated grant, `400` for an unknown role, `404` for an
+  unknown grant.
+- Demoting the organization's last active org-scoped `admin` grant is refused
+  with `409` and the stable code `last_org_admin`, exactly as revoking it is. A
+  superadmin is exempt.
+- Writes one `membership.update` audit entry carrying `user_id`, `old_role` and
+  `new_role`. Sending the grant's current role changes nothing and writes no
+  entry.
+- A grant created by an SSO group mapping or SCIM becomes `manual`, so the next
+  reconcile does not undo the edit.
+
+## See who sent an invitation
+
+`GET /api/v1/orgs/{org_id}/invitations` returns `invited_by_email` on each row
+next to `invited_by`. The control plane resolves it, so it is present whichever
+users the caller may list: a team admin sees who sent an invitation into their
+team even when the sender is an org admin they cannot list. It is `null` when
+the invitation was sent with the admin token or its sender's account was deleted
+(in which case `invited_by` is `null` too). Only the list carries it; creating or
+revoking an invitation returns it as `null`.
+
+## Reset a member's password
+
+`POST /api/v1/orgs/{org_id}/users/{id}/password-reset` issues a one-time link
+for a member. The request has no body.
+
+```bash
+curl -X POST "$ROLTER_URL/api/v1/orgs/$ORG_ID/users/$MEMBER_ID/password-reset" \
+  -H "Authorization: Bearer $ROLTER_SESSION_TOKEN"
+```
+
+The response carries `token` and `reset_url` **once**; only a peppered digest of
+the token is stored. `reset` is the row (`id`, `user_id`, `created_by`,
+`expires_at`, `created_at`) and `sessions_revoked` is how many of the member's
+sessions ended. rolter does not send email: hand the link to the member.
+
+An administrator never sees or chooses the password. The member opens
+`reset_url`, a page of the dashboard, and sets their own:
+
+- `GET /api/v1/password-reset/{token}` previews the address the link is for;
+- `POST /api/v1/password-reset/{token}` with `{"password": "..."}` stores it.
+
+Both are unauthenticated (the token is the credential), throttled like a
+password sign-in, and answer `401` for a link that is spent, replaced, expired
+or wrong. Redeeming is single-use even under a race, ends every session of the
+account again and **signs nobody in**: the member signs in normally, so an
+armed second factor still applies. A reset never clears a second factor.
+
+Issuing a link:
+
+- needs `password_reset:create` (admin) at the organization in the path. Below a
+  superadmin the member must belong to that organization alone and must not be a
+  superadmin, otherwise `403`: the link lets its holder choose a password for the
+  whole account;
+- is refused with `400` for your own account (use [Change your
+  password](/api/change-password)), an account with no local password (single
+  sign-on, LDAP) and a deactivated account; `404` when the member holds no role
+  in the organization;
+- ends the member's sessions and pending second-factor sign-ins at once, and
+  replaces the account's earlier link;
+- leaves the old password valid until the link is used; deactivate the account
+  to cut it off sooner;
+- writes a `user.password_reset` audit entry in the organization (issuer,
+  member, sessions ended, the replaced link; never the token) and, when the link
+  is used, a `user.password_reset_complete` entry against the account;
+- expires after 24 hours.
+
+See [Roles and permissions](/security/rbac#resetting-a-password) for the
+dashboard side.
