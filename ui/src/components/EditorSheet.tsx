@@ -31,6 +31,12 @@ export interface EditorSheetProps {
    */
   name: string;
   open: boolean;
+  /**
+   * Hide the sheet without ending the form: a confirmation opened over it keeps
+   * the drafts and the telemetry's open state, so the sheet going out of sight
+   * is not an abandon (#3043). `open` stays true throughout.
+   */
+  suspended?: boolean;
   onOpenChange: (open: boolean) => void;
   title: string;
   subtitle: string;
@@ -57,6 +63,7 @@ export interface EditorSheetProps {
 export function EditorSheet({
   name,
   open,
+  suspended = false,
   onOpenChange,
   title,
   subtitle,
@@ -104,7 +111,7 @@ export function EditorSheet({
   };
 
   return (
-    <Sheet open={open} onOpenChange={onOpenChange} onDismiss={guard}>
+    <Sheet open={open && !suspended} onOpenChange={onOpenChange} onDismiss={guard}>
       <SheetHeader title={title} subtitle={subtitle} onClose={close} closeDisabled={locked} />
       <SheetBody>{children}</SheetBody>
       <SheetFooter>

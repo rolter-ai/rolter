@@ -110,6 +110,32 @@ const KEYS: VirtualKeyRow[] = [
   },
 ];
 
+/**
+ * The gateway's counters for whichever budgets a story serves (#3027). The
+ * screen reads `/budgets/spend` beside the list, so a stub that answers
+ * `/budgets` alone renders the "spend unavailable" note instead of the state
+ * the story names. A budget the shared fixture has no counter for reads as
+ * comfortably inside its cap.
+ */
+function spendFor(budgets: BudgetRow[]): BudgetSpendReport {
+  return {
+    status: "ok",
+    budgets: budgets.map(
+      (budget) =>
+        SPEND.budgets.find((entry) => entry.id === budget.id) ?? {
+          id: budget.id,
+          spent_usd: "10.0000",
+          resets_at: "2026-08-01T00:00:00Z",
+        },
+    ),
+  };
+}
+
+/** answers a `url.includes("/budgets")` branch: the counters for the spend path, the rows otherwise */
+function budgetRead(url: string, budgets: BudgetRow[]) {
+  return json(url.includes("/budgets/spend") ? spendFor(budgets) : budgets);
+}
+
 // the screen resolves virtual keys for its scope picker before either list, so
 // the longer fragment has to be matched ahead of the shared prefix
 const loaded = routes([
@@ -120,6 +146,7 @@ const loaded = routes([
 ]);
 const empty = routes([
   ["/virtual-keys", () => KEYS],
+  ["/budgets/spend", () => spendFor([])],
   ["/budgets", () => []],
   ["/rate-limits", () => []],
 ]);
@@ -275,7 +302,7 @@ export const CreatesABudget: Story = {
         const url = String(input);
         if (init?.method === "POST") return json(BUDGETS[0], 201);
         if (url.includes("/virtual-keys")) return json(KEYS);
-        if (url.includes("/budgets")) return json(BUDGETS);
+        if (url.includes("/budgets")) return budgetRead(url, BUDGETS);
         return json(RATE_LIMITS);
       })}
     >
@@ -309,7 +336,7 @@ export const BudgetCreateRejectedByTheServer: Story = {
           return json({ error: { message: "this project already has a 30d budget" } }, 409);
         }
         if (url.includes("/virtual-keys")) return json(KEYS);
-        if (url.includes("/budgets")) return json(BUDGETS);
+        if (url.includes("/budgets")) return budgetRead(url, BUDGETS);
         return json(RATE_LIMITS);
       })}
     >
@@ -427,7 +454,7 @@ export const ThePeriodIsPickedFromTheWindowsTheGatewayHas: Story = {
         const url = String(input);
         if (init?.method === "POST") return json({ ...BUDGETS[1], id: "budget-3" }, 201);
         if (url.includes("/virtual-keys")) return json(KEYS);
-        if (url.includes("/budgets")) return json(BUDGETS);
+        if (url.includes("/budgets")) return budgetRead(url, BUDGETS);
         return json(RATE_LIMITS);
       }),
     );
@@ -512,7 +539,7 @@ export const AnUnrecognisedPeriodIsFlaggedAndHasToBeReplaced: Story = {
         const url = String(input);
         if (init?.method === "PATCH") return json({ ...MISREAD, period: "monthly" });
         if (url.includes("/virtual-keys")) return json(KEYS);
-        if (url.includes("/budgets")) return json([...BUDGETS, MISREAD]);
+        if (url.includes("/budgets")) return budgetRead(url, [...BUDGETS, MISREAD]);
         return json(RATE_LIMITS);
       }),
     );
@@ -589,7 +616,7 @@ export const CreatesARateLimit: Story = {
         const url = String(input);
         if (init?.method === "POST") return json(RATE_LIMITS[0], 201);
         if (url.includes("/virtual-keys")) return json(KEYS);
-        if (url.includes("/budgets")) return json(BUDGETS);
+        if (url.includes("/budgets")) return budgetRead(url, BUDGETS);
         return json(RATE_LIMITS);
       })}
     >
@@ -620,7 +647,7 @@ function editable(): Recorder {
       }
       if (init?.method === "PATCH") return json({ ...RATE_LIMITS[0], rpm: null });
       if (url.includes("/virtual-keys")) return json(KEYS);
-      if (url.includes("/budgets")) return json(BUDGETS);
+      if (url.includes("/budgets")) return budgetRead(url, BUDGETS);
       return json(RATE_LIMITS);
     }),
   );
@@ -763,7 +790,7 @@ export const ARefusedEditKeepsTheSheetOpen: Story = {
           );
         }
         if (url.includes("/virtual-keys")) return json(KEYS);
-        if (url.includes("/budgets")) return json(BUDGETS);
+        if (url.includes("/budgets")) return budgetRead(url, BUDGETS);
         return json(RATE_LIMITS);
       }),
     );
@@ -825,7 +852,8 @@ export const ABudgetDeleteIsConfirmedFirst: Story = {
           });
         }
         if (url.includes("/virtual-keys")) return json(KEYS);
-        if (url.includes("/budgets")) return json(budgetDeleted ? BUDGETS.slice(1) : BUDGETS);
+        if (url.includes("/budgets"))
+          return budgetRead(url, budgetDeleted ? BUDGETS.slice(1) : BUDGETS);
         return json(RATE_LIMITS);
       }),
     );
@@ -901,7 +929,7 @@ export const ARateLimitDeleteIsConfirmedFirst: Story = {
           return new Response(null, { status: 204 });
         }
         if (url.includes("/virtual-keys")) return json(KEYS);
-        if (url.includes("/budgets")) return json(BUDGETS);
+        if (url.includes("/budgets")) return budgetRead(url, BUDGETS);
         return json(rateLimitDeleted ? RATE_LIMITS.slice(1) : RATE_LIMITS);
       }),
     );
@@ -962,7 +990,7 @@ export const ARefusedBudgetDeleteKeepsTheDialogOpen: Story = {
           return json({ error: { message: "the store is read-only while a restore runs" } }, 409);
         }
         if (url.includes("/virtual-keys")) return json(KEYS);
-        if (url.includes("/budgets")) return json(BUDGETS);
+        if (url.includes("/budgets")) return budgetRead(url, BUDGETS);
         return json(RATE_LIMITS);
       })}
     >
@@ -1020,6 +1048,7 @@ export const TheBudgetFormNamesTheSettlementCurrency: Story = {
       fetchStub={routes([
         ["/api/v1/currency", () => ({ base: "EUR", codes: ["EUR"], rates: {} })],
         ["/virtual-keys", () => KEYS],
+        ["/budgets/spend", () => spendFor(BUDGETS)],
         ["/budgets", () => BUDGETS],
         ["/rate-limits", () => RATE_LIMITS],
       ])}
@@ -1112,7 +1141,7 @@ const keyReadFails = scoped(async (input) => {
     keyReads += 1;
     return keyReadsFail ? json(KEY_READ_FAILED, 500) : json(KEYS);
   }
-  if (url.includes("/budgets")) return json(BUDGETS);
+  if (url.includes("/budgets")) return budgetRead(url, BUDGETS);
   return json(RATE_LIMITS);
 });
 
@@ -1202,7 +1231,7 @@ const pickerReadStub = (path: string, how: "fail" | "pend") =>
         ? json({ error: { message: "store unavailable" } }, 500)
         : new Promise<Response>(() => {});
     }
-    if (url.includes("/budgets")) return json(BUDGETS);
+    if (url.includes("/budgets")) return budgetRead(url, BUDGETS);
     return json(RATE_LIMITS);
   });
 
@@ -1271,6 +1300,7 @@ export const PeriodsAreNamedAndAnUnknownOneIsKeptAsStored: Story = {
     <Harness
       fetchStub={routes([
         ["/virtual-keys", () => KEYS],
+        ["/budgets/spend", () => spendFor(PERIOD_BUDGETS)],
         ["/budgets", () => PERIOD_BUDGETS],
         ["/rate-limits", () => RATE_LIMITS],
       ])}
@@ -1343,7 +1373,7 @@ const deleteNeverAnswers = scoped(async (input, init) => {
   const url = String(input);
   if (init?.method === "DELETE") return new Promise<Response>(() => {});
   if (url.includes("/virtual-keys")) return json(KEYS);
-  if (url.includes("/budgets")) return json(BUDGETS);
+  if (url.includes("/budgets")) return budgetRead(url, BUDGETS);
   return json(RATE_LIMITS);
 });
 
@@ -1464,6 +1494,7 @@ export const AFailedReadCanBeRetried: Story = {
       scoped(async (input) => {
         const url = String(input);
         if (url.includes("/virtual-keys")) return json(KEYS);
+        if (url.includes("/budgets/spend")) return budgetRead(url, BUDGETS);
         if (url.includes("/budgets")) {
           attempts += 1;
           return attempts === 1
@@ -1558,6 +1589,24 @@ export const RefusedToAMember: Story = {
   },
 };
 
+const MIXED_BUDGETS: BudgetRow[] = [
+  { ...BUDGETS[0], limit_usd: "500.00" },
+  {
+    ...BUDGETS[0],
+    id: "budget-team",
+    scope_type: "team",
+    scope_id: "team-1",
+    limit_usd: "900.00",
+  },
+  {
+    ...BUDGETS[0],
+    id: "budget-org",
+    scope_type: "org",
+    scope_id: "org-1",
+    limit_usd: "2000.00",
+  },
+];
+
 // a cap is checked at the scope it throttles, so a project admin's answer at
 // their project says nothing about the team or the org above it (#2529): the
 // project's caps are theirs, the others name the role they take
@@ -1567,26 +1616,8 @@ export const ProjectAdminOnAMixOfProjectTeamAndOrgCaps: Story = {
       role={adminOfProject("project-1")}
       fetchStub={routes([
         ["/virtual-keys", () => KEYS],
-        [
-          "/budgets",
-          () => [
-            { ...BUDGETS[0], limit_usd: "500.00" },
-            {
-              ...BUDGETS[0],
-              id: "budget-team",
-              scope_type: "team",
-              scope_id: "team-1",
-              limit_usd: "900.00",
-            },
-            {
-              ...BUDGETS[0],
-              id: "budget-org",
-              scope_type: "org",
-              scope_id: "org-1",
-              limit_usd: "2000.00",
-            },
-          ],
-        ],
+        ["/budgets/spend", () => spendFor(MIXED_BUDGETS)],
+        ["/budgets", () => MIXED_BUDGETS],
         [
           "/rate-limits",
           () => [

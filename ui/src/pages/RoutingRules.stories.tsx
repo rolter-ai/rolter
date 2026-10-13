@@ -249,11 +249,11 @@ export const RouteTraffic: Story = {
     const canvas = within(canvasElement);
     const gpt = await card(canvas, "gpt-4o");
     await expect(await gpt.findByTestId("route-traffic")).toHaveTextContent(
-      "1,240 requests in the last 24 h · 2.5% errors",
+      "1,240 requests for this model name, org-wide, in the last 24 h · 2.5% errors",
     );
     const claude = await card(canvas, "claude-sonnet");
     await expect(await claude.findByTestId("route-traffic")).toHaveTextContent(
-      "No requests in the last 24 h",
+      "No requests for this model name, org-wide, in the last 24 h",
     );
     const tryIt = gpt.getByRole("link", { name: "Try gpt-4o in the Playground" });
     await expect(tryIt).toHaveAttribute("href", "/playground?model=gpt-4o");
@@ -280,7 +280,7 @@ export const TrafficLoading: Story = {
     await expect(await canvas.findByText("gpt-4o")).toBeInTheDocument();
     await expect((await canvas.findAllByTestId("route-traffic-loading")).length).toBe(2);
     await expect(canvas.queryByTestId("route-traffic")).toBeNull();
-    await expect(canvas.queryByText(/No requests in the last/)).toBeNull();
+    await expect(canvas.queryByText(/No requests for this model name/)).toBeNull();
   },
 };
 
@@ -309,7 +309,7 @@ export const TrafficNeedsClickHouse: Story = {
       "analytics store not configured",
     );
     await expect(canvas.queryAllByTestId("route-traffic")).toHaveLength(0);
-    await expect(canvas.queryByText(/No requests in the last/)).toBeNull();
+    await expect(canvas.queryByText(/No requests for this model name/)).toBeNull();
     // the cards still render, and the playground link does not need analytics
     await expect(
       canvas.getByRole("link", { name: "Try gpt-4o in the Playground" }),
