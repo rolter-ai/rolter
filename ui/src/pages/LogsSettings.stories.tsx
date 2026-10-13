@@ -3,6 +3,7 @@ import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import LogsSettings from "./LogsSettings";
 import {
+  expectAnalyticsUnavailable,
   expectForbidden,
   expectSkeleton,
   expectToast,
@@ -428,5 +429,119 @@ export const RefusedToAViewer: Story = {
   render: () => <Harness fetchStub={async () => json(BASE)} role="viewer" />,
   play: async ({ canvasElement }) => {
     await expectForbidden(canvasElement);
+  },
+};
+
+// the analytics reads the screen probes with: a control plane with no
+// `clickhouse_url` answers 503 on every one of them
+const NO_CLICKHOUSE = "analytics unavailable: no clickhouse_url configured";
+
+const withoutClickHouse: FetchStub = async (input) =>
+  String(input).includes("/api/v1/analytics/")
+    ? json({ error: { message: NO_CLICKHOUSE } }, 503)
+    : json(BASE);
+
+const withClickHouse: FetchStub = async (input) =>
+  String(input).includes("/api/v1/analytics/") ? json({ data: [] }) : json(BASE);
+
+/**
+ * #2092: with no ClickHouse nothing receives the log, and the screen says so.
+ *
+ * Every control only acts on rows written to ClickHouse, so a deployment
+ * without one used to show them as live. The notice names the setting, says
+ * the values are still stored, and is a calm `status` rather than an alert;
+ * the controls stay editable and a save still goes through.
+ */
+export const NoClickHouseSaysNothingReceivesTheLog: Story = {
+  // no toaster here: its empty live region is an alert, and the story asserts
+  // that nothing on the screen is one
+  render: () => (
+    <ScreenHarness fetchStub={withoutClickHouse}>
+      <LogsSettings />
+    </ScreenHarness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const panel = await expectAnalyticsUnavailable(
+      canvasElement,
+      "No ClickHouse receives the log",
+      NO_CLICKHOUSE,
+    );
+    await expect(panel).toHaveTextContent(/still saved and apply once ClickHouse is added/);
+    await expect(panel).toHaveTextContent(/clickhouse_url/);
+    const rate = await canvas.findByLabelText("Sample rate percent");
+    await expect(rate).toBeEnabled();
+    await expect(canvas.getByLabelText("Retention days")).toBeEnabled();
+    await expect(canvas.getByRole("switch", { name: /capture/i })).toBeEnabled();
+  },
+};
+
+// the settings are stored whether or not anything is listening
+export const NoClickHouseStillSaves: Story = {
+  render: () => {
+    const stub: FetchStub = async (input, init) => {
+      if (init?.method === "PUT") return json({ ...BASE, ...JSON.parse(String(init.body)) });
+      return withoutClickHouse(input, init);
+    };
+    return <Harness fetchStub={stub} />;
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const rate = await canvas.findByLabelText("Sample rate percent");
+    await userEvent.clear(rate);
+    await userEvent.type(rate, "10");
+    await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
+    await expectToast(canvasElement, /logs settings updated/i);
+  },
+};
+
+// a control plane that has ClickHouse, or one whose probe fails for another
+// reason, says nothing: only the 503 is a statement about the deployment
+export const WithClickHouseThereIsNoNotice: Story = {
+  render: () => <Harness fetchStub={withClickHouse} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByLabelText("Sample rate percent");
+    await waitFor(() => expect(canvas.queryByText("No ClickHouse receives the log")).toBeNull());
+  },
+};
+
+/**
+ * #2094: the three capture filters sit inside the capture section, so they go
+ * dead with its switch rather than reading as separate top-level settings.
+ */
+export const CaptureFiltersLiveInsideTheCaptureSection: Story = {
+  render: () => <Harness fetchStub={withClickHouse} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const heading = await canvas.findByRole("heading", { name: "Capture request payloads" });
+    const section = heading.closest("section")!;
+    for (const name of [
+      "Redacted fields",
+      "Capture only these models",
+      "Capture only these virtual keys",
+    ]) {
+      await expect(within(section).getByLabelText(name)).toBeEnabled();
+    }
+    await userEvent.click(canvas.getByRole("switch", { name: "Capture request payloads" }));
+    await expect(within(section).getByLabelText("Redacted fields")).toBeDisabled();
+    // the other switch is a panel of its own with the same treatment
+    await expect(canvas.getByRole("heading", { name: "Dashboard usage events" })).toBeVisible();
+  },
+};
+
+/**
+ * #2094: the screen says when the policy last changed, and Save stays disabled
+ * until something is edited.
+ */
+export const SaveWaitsForAnEdit: Story = {
+  render: () => <Harness fetchStub={withClickHouse} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const save = await canvas.findByRole("button", { name: "Save changes" });
+    await expect(canvas.getByText(/Last changed/)).toBeVisible();
+    await expect(save).toBeDisabled();
+    await userEvent.type(canvas.getByLabelText("Sample rate percent"), "5");
+    await waitFor(() => expect(save).toBeEnabled());
   },
 };

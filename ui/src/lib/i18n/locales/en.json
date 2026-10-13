@@ -167,7 +167,8 @@
       "opensInNewTab": "{{label}} (opens in a new tab)",
       "whichKey": "Which key do I need?",
       "virtualKeys": "About virtual keys",
-      "cacheAwareRouting": "About cache-aware routing"
+      "cacheAwareRouting": "About cache-aware routing",
+      "logSettings": "About log settings"
     }
   },
   "errors": {
@@ -3747,7 +3748,12 @@
         "retentionDays": "Retention must be a whole number of days between 1 and 3650.",
         "payloadRetentionHours": "Payload retention must be a whole number of hours between 1 and 8760.",
         "payloadOutlivesLog": "Payload retention cannot outlive log retention."
-      }
+      },
+      "noAnalytics": {
+        "title": "No ClickHouse receives the log",
+        "body": "This control plane has no ClickHouse, so no request is written to the log. Sample rate, payload capture and retention are still saved and apply once ClickHouse is added: set <0>CLICKHOUSE_URL</0> (the clickhouse_url key in the config file) and restart the control plane."
+      },
+      "updatedAt": "Last changed {{when}}"
     },
     "clientSettings": {
       "exampleRequest": "Example request",

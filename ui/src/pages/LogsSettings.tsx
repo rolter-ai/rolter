@@ -4,17 +4,25 @@ import { AlertTriangle } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
+import { AnalyticsUnavailable } from "@/components/AnalyticsUnavailable";
+import { DocsLink } from "@/components/DocsLink";
 import { superadminOnly } from "@/components/ForbiddenScreen";
 import { LoadError } from "@/components/LoadError";
 import { PanelSkeleton } from "@/components/LoadingState";
+import { Field } from "@/components/ui/field";
 import { FieldError } from "@/components/ui/field-error";
 import { Input } from "@/components/ui/input";
 import { SaveBar } from "@/components/ui/save-bar";
 import { SettingsPanel } from "@/components/ui/settings-panel";
 import { Switch } from "@/components/ui/switch";
-import { SwitchRow } from "@/components/ui/switch-row";
 import { Textarea } from "@/components/ui/textarea";
-import { fetchLoggingSettings, updateLoggingSettings, type LoggingSettingsDto } from "@/lib/api";
+import {
+  AnalyticsUnavailableError,
+  fetchAnalyticsSummary,
+  fetchLoggingSettings,
+  updateLoggingSettings,
+  type LoggingSettingsDto,
+} from "@/lib/api";
 import { useFormat } from "@/lib/i18n/format";
 import { errorText } from "@/lib/error-copy";
 import { parseSamplingPercent, sampleShare, samplingPercentText } from "@/lib/sampling";
@@ -122,10 +130,22 @@ function LogsSettingsScreen() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const toast = useToast();
+  const format = useFormat();
   const settings = useQuery({
     queryKey: ["logging-settings"],
     queryFn: fetchLoggingSettings,
     retry: false,
+  });
+
+  // whether anything receives the log. there is no flag for it: the analytics
+  // reads answer 503 when the control plane has no clickhouse_url, which is the
+  // signal every other screen reads (#2092). a one-hour summary is the cheapest
+  // read; any other failure says nothing about the deployment, so no notice
+  const analytics = useQuery({
+    queryKey: ["logging-settings", "analytics-probe"],
+    queryFn: () => fetchAnalyticsSummary({ since: new Date(Date.now() - 3_600_000).toISOString() }),
+    retry: false,
+    staleTime: 60_000,
   });
 
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
@@ -225,9 +245,18 @@ function LogsSettingsScreen() {
     fields.edit(key);
   };
   const capture = form.captureEnabled;
+  const dirty =
+    JSON.stringify(form) !== JSON.stringify(fromDto(settings.data as LoggingSettingsDto));
+  const changedAt = settings.data ? new Date(settings.data.updated_at) : null;
 
   return (
     <SettingsBody>
+      {analytics.error instanceof AnalyticsUnavailableError && (
+        <div className="flex flex-col gap-2">
+          <AnalyticsUnavailable error={analytics.error} i18nKey="pages.logsSettings.noAnalytics" />
+          <DocsLink page="logSettings" label={t("docs.link.logSettings")} />
+        </div>
+      )}
       <SettingsPanel
         title={t("pages.logsSettings.sampleRate")}
         description={<span id={sampleHintId}>{t("pages.logsSettings.sampleRateHint")}</span>}
@@ -296,36 +325,34 @@ function LogsSettingsScreen() {
             onChange={(e) => edit("maxBytes", e.target.value)}
           />
           <FieldError id={fields.errorId("maxBytes")} error={fields.errorOf("maxBytes")} />
-          <span className="text-[0.6875rem] text-[color:var(--text-subtle)]">
+          <span className="text-xs text-[color:var(--text-subtle)]">
             {t("pages.logsSettings.maxBytesHint")}
           </span>
         </div>
+        {/* these only narrow what the switch captures, so they sit inside it
+            and go dead with it (#2094) */}
+        <FilterField
+          label={t("pages.logsSettings.redacted")}
+          hint={t("pages.logsSettings.redactedHint")}
+          value={form.redactFields}
+          placeholder={t("pages.logsSettings.redactedPlaceholder")}
+          onChange={(v) => set({ redactFields: v })}
+        />
+        <FilterField
+          label={t("pages.logsSettings.onlyModels")}
+          hint={t("pages.logsSettings.onlyModelsHint")}
+          value={form.models}
+          placeholder={t("pages.logsSettings.onlyModelsPlaceholder")}
+          onChange={(v) => set({ models: v })}
+        />
+        <FilterField
+          label={t("pages.logsSettings.onlyKeys")}
+          hint={t("pages.logsSettings.onlyKeysHint")}
+          value={form.virtualKeyIds}
+          placeholder="0b7f1e2a-1c3d-4e5f-8a9b-0c1d2e3f4a5b"
+          onChange={(v) => set({ virtualKeyIds: v })}
+        />
       </SettingsPanel>
-
-      <ListCard
-        title={t("pages.logsSettings.redacted")}
-        desc={t("pages.logsSettings.redactedHint")}
-        value={form.redactFields}
-        placeholder={t("pages.logsSettings.redactedPlaceholder")}
-        disabled={!capture}
-        onChange={(v) => set({ redactFields: v })}
-      />
-      <ListCard
-        title={t("pages.logsSettings.onlyModels")}
-        desc={t("pages.logsSettings.onlyModelsHint")}
-        value={form.models}
-        placeholder={t("pages.logsSettings.onlyModelsPlaceholder")}
-        disabled={!capture}
-        onChange={(v) => set({ models: v })}
-      />
-      <ListCard
-        title={t("pages.logsSettings.onlyKeys")}
-        desc={t("pages.logsSettings.onlyKeysHint")}
-        value={form.virtualKeyIds}
-        placeholder="0b7f1e2a-1c3d-4e5f-8a9b-0c1d2e3f4a5b"
-        disabled={!capture}
-        onChange={(v) => set({ virtualKeyIds: v })}
-      />
 
       <SettingsPanel
         title={t("pages.logsSettings.retention")}
@@ -376,17 +403,29 @@ function LogsSettingsScreen() {
       </SettingsPanel>
 
       {/* the deployment-level opt-out for the UX stream. before #1748 it was a
-          toml-only key that a postgres-backed control plane never read */}
-      <SwitchRow
+          toml-only key that a postgres-backed control plane never read. a
+          panel with its switch in the header, like capture above (#2094) */}
+      <SettingsPanel
         title={t("pages.logsSettings.uiEvents")}
-        hint={t("pages.logsSettings.uiEventsHint")}
-        checked={form.uiEvents}
-        onChange={(v) => set({ uiEvents: v })}
+        description={t("pages.logsSettings.uiEventsHint")}
+        action={
+          <Switch
+            checked={form.uiEvents}
+            aria-label={t("pages.logsSettings.uiEvents")}
+            onCheckedChange={(v) => set({ uiEvents: v })}
+          />
+        }
       />
 
       <SaveBar
         invalid={fields.invalid.length}
         pending={save.isPending}
+        disabled={!dirty}
+        status={
+          changedAt && !Number.isNaN(changedAt.getTime())
+            ? t("pages.logsSettings.updatedAt", { when: format.dateTime(changedAt) })
+            : undefined
+        }
         onSave={() => fields.submit(() => save.mutate(form))}
       />
     </SettingsBody>
@@ -439,32 +478,28 @@ function SampledLogWarning({ id, rate }: { id: string; rate: number | null }) {
   );
 }
 
-function ListCard({
-  title,
-  desc,
+function FilterField({
+  label,
+  hint,
   value,
   placeholder,
-  disabled,
   onChange,
 }: {
-  title: string;
-  desc: string;
+  label: string;
+  hint: string;
   value: string;
   placeholder: string;
-  disabled: boolean;
   onChange: (v: string) => void;
 }) {
   return (
-    <SettingsPanel title={title} description={desc} dimmed={disabled}>
+    <Field label={label} hint={hint} className="w-full">
       <Textarea
         className="min-h-[64px] w-full font-mono text-xs"
         value={value}
-        disabled={disabled}
-        aria-label={title}
         placeholder={placeholder}
         onChange={(e) => onChange(e.target.value)}
       />
-    </SettingsPanel>
+    </Field>
   );
 }
 
