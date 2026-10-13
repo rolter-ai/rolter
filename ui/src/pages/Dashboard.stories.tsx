@@ -457,12 +457,16 @@ export const ChecklistSitsBelowTheFiguresWhenServing: Story = {
   render: () => render(withRecent(MOBILE_ROWS), "admin"),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const checklist = await canvas.findByText(en.pages.gettingStarted.subtitle);
-    const figures = await canvas.findByTestId("dashboard-figures");
     await canvas.findAllByText(fmt.number(132));
-    await expect(
-      figures.compareDocumentPosition(checklist) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
+    // the card remounts below the figures once traffic arrives, so read both
+    // nodes afresh on every attempt rather than holding one found earlier
+    await waitFor(() => {
+      const checklist = canvas.getByText(en.pages.gettingStarted.subtitle);
+      const figures = canvas.getByTestId("dashboard-figures");
+      expect(
+        figures.compareDocumentPosition(checklist) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+    });
   },
 };
 
