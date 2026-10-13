@@ -1,12 +1,13 @@
-import { ArrowRight, Eye, EyeOff, Loader2 } from "lucide-react";
+import { ArrowRight, Loader2 } from "lucide-react";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { LocalePicker } from "@/components/LocalePicker";
 import { AuthCard } from "@/components/ui/auth-card";
 import { FormSkeleton } from "@/components/LoadingState";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { PasswordInput } from "@/components/ui/password-input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Field } from "@/components/ui/field";
 import {
@@ -27,6 +28,7 @@ import { useAuth } from "@/lib/auth";
 import { useDocumentTitle } from "@/lib/document-title";
 import { useFormat } from "@/lib/i18n/format";
 import { useToast } from "@/lib/toast";
+import { cn } from "@/lib/utils";
 
 /**
  * The enrolment step a `required_*` policy sends an unenrolled member through
@@ -79,12 +81,14 @@ export default function Login() {
   // operator of a real deployment as if it were a login
   const [email, setEmail] = useState("");
   const [pw, setPw] = useState("");
-  const [show, setShow] = useState(false);
   const [pending, setPending] = useState(false);
   // what this deployment offers. null while unknown; the permissive shape is
   // assumed on failure so an api hiccup never hides the only way in
   const [methods, setMethods] = useState<AuthMethods | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // a refusal is the sentence plus, where there is one, what the person can do
+  // about it: a self-hosted product has no vendor to call, so the way out is
+  // whoever runs this deployment (#2070)
+  const [error, setError] = useState<LoginError | null>(null);
   // this control plane serves no auth endpoints at all — it is running in open
   // mode with no store, so `/api/v1/auth/*` is not even mounted. That is the
   // one case the email-only gate exists for, and it is identifiable up front
@@ -173,7 +177,7 @@ export default function Login() {
 
   const leaveEnrolment = useCallback((reason: string | null) => {
     setEnrolment(null);
-    setError(reason);
+    setError(reason ? { message: reason } : null);
   }, []);
 
   useEffect(() => {
@@ -210,7 +214,7 @@ export default function Login() {
     const timer = setTimeout(
       () => {
         setChallenge(null);
-        setError(t("auth.mfa.errors.expired"));
+        setError({ message: t("auth.mfa.errors.expired") });
       },
       Math.max(left, 0),
     );
@@ -260,7 +264,7 @@ export default function Login() {
         // deployment, discovered late
         signIn(addr);
       } else {
-        setError(loginErrorMessage(err, t));
+        setError(loginError(err, t, providers.length > 0));
       }
     } finally {
       setPending(false);
@@ -291,17 +295,22 @@ export default function Login() {
         // the budget is in the message rather than under the field: `Field`
         // shows an error *instead of* its hint, so a count that lived in the
         // hint would be hidden by the very rejection that changed it
-        setError(t("auth.mfa.attemptsLeft", { count: left }));
+        setError({
+          message: t("auth.mfa.attemptsLeft", { count: left }),
+          help: t("auth.mfa.stuckHelp"),
+        });
       } else if (err instanceof ApiError && err.status === 401) {
         setChallenge(null);
-        setError(t("auth.mfa.errors.spent"));
+        setError({ message: t("auth.mfa.errors.spent") });
       } else {
-        setError(loginErrorMessage(err, t));
+        setError(loginError(err, t, providers.length > 0));
       }
     } finally {
       setPending(false);
     }
   };
+
+  const errorId = "login-error";
 
   return (
     // AuthCard owns the <main> landmark and the h1: signed out there is no
@@ -353,7 +362,7 @@ export default function Login() {
           <Field
             label={t("auth.mfa.codeLabel")}
             hint={t("auth.mfa.codeHint")}
-            error={error ?? undefined}
+            error={error ? [error.message, error.help].filter(Boolean).join(" ") : undefined}
           >
             <Input
               name="one-time-code"
@@ -410,8 +419,7 @@ export default function Login() {
             void submit();
           }}
         >
-          <label className="flex flex-col gap-1.5 text-sm">
-            <span className="text-muted-foreground">{t("auth.email")}</span>
+          <Field label={t("auth.email")}>
             <Input
               type="email"
               name="email"
@@ -420,37 +428,30 @@ export default function Login() {
               required
               value={email}
               onChange={(e) => setEmail(e.target.value)}
+              aria-invalid={error ? true : undefined}
+              aria-describedby={error ? errorId : undefined}
             />
-          </label>
-          <label className="flex flex-col gap-1.5 text-sm">
-            <span className="text-muted-foreground">{t("auth.password")}</span>
-            <span className="relative block">
-              <Input
-                type={show ? "text" : "password"}
-                name="password"
-                autoComplete="current-password"
-                required
-                value={pw}
-                onChange={(e) => setPw(e.target.value)}
-                className="pr-10"
-              />
-              <button
-                type="button"
-                onClick={() => setShow((s) => !s)}
-                aria-label={show ? t("auth.hidePassword") : t("auth.showPassword")}
-                className="absolute right-1.5 top-1/2 inline-flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-sm text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-              >
-                {show ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-              </button>
-            </span>
-          </label>
+          </Field>
+          <Field label={t("auth.password")}>
+            <PasswordInput
+              name="password"
+              autoComplete="current-password"
+              required
+              value={pw}
+              onChange={(e) => setPw(e.target.value)}
+              aria-invalid={error ? true : undefined}
+              aria-describedby={error ? errorId : undefined}
+            />
+          </Field>
           {error && (
-            <p
+            <div
+              id={errorId}
               role="alert"
-              className="rounded-md border border-[color:var(--status-danger)]/40 bg-destructive/10 px-3 py-2 text-sm text-[color:var(--status-danger-text)]"
+              className="flex flex-col gap-1 rounded-md border border-[color:var(--status-danger)]/40 bg-destructive/10 px-3 py-2 text-sm text-[color:var(--status-danger-text)]"
             >
-              {error}
-            </p>
+              <p>{error.message}</p>
+              {error.help && <p className="text-xs">{error.help}</p>}
+            </div>
           )}
           <Button
             type="submit"
@@ -479,11 +480,19 @@ export default function Login() {
         >
           {/* one button per configured identity provider. a deployment with
                 no IdP registered gets none, and never learns sso exists */}
-          {providers.map((p) => (
+          {providers.map((p, i) => (
             <a
               key={p.slug}
               href={p.start_url}
-              className="inline-flex h-9 items-center justify-center rounded-md border text-sm text-muted-foreground transition-colors hover:text-foreground"
+              // with no password form, signing in is the one action this screen
+              // exists for, so the first provider is the brand button (DESIGN.md)
+              className={cn(
+                buttonVariants({ variant: "outline" }),
+                "w-full text-muted-foreground hover:text-foreground",
+                !showPassword &&
+                  i === 0 &&
+                  "border-transparent bg-brand-folk text-white hover:bg-brand-press hover:text-white",
+              )}
             >
               {t("auth.continueWith", { provider: p.name })}
             </a>
@@ -504,42 +513,60 @@ export default function Login() {
   );
 }
 
+/** a refusal: what happened, and what the person can do about it (#2070) */
+interface LoginError {
+  message: string;
+  help?: string;
+}
+
+type Translate = (key: string, options?: Record<string, unknown>) => string;
+
 /**
  * One message per reason the control plane can refuse a sign-in. Branching on
  * `code` rather than the message keeps the wording free to be reworded and
  * translated on both sides independently.
+ *
+ * `hasSso` is whether a provider button is on screen: "use single sign-on
+ * below" points at nothing on a deployment with none.
  */
-function loginErrorMessage(
-  err: unknown,
-  t: (key: string, options?: Record<string, unknown>) => string,
-): string {
+function loginError(err: unknown, t: Translate, hasSso: boolean): LoginError {
   if (!(err instanceof ApiError)) {
     // never reached the control plane: a network failure, or it is down
-    return t("auth.errors.unavailable");
+    return { message: t("auth.errors.unavailable") };
   }
   switch (err.code) {
     case "invalid_credentials":
-      return t("auth.errors.invalidCredentials");
+      return { message: t("auth.errors.invalidCredentials"), help: t("auth.errors.resetHelp") };
     case "password_login_disabled":
-      return t("auth.errors.passwordLoginDisabled");
+      return {
+        message: t(
+          hasSso ? "auth.errors.passwordLoginDisabled" : "auth.errors.passwordLoginDisabledNoSso",
+        ),
+      };
     case "mfa_enrolment_required":
       // the password was right and the org demands a factor this account has
       // none of — and this control plane cannot enrol one, since it has no key
       // to seal the secret with. Any other deployment walks the user through
       // enrolment instead (#1852). Nothing to retype, and the remedy is an
       // operator's, so it must not read like a mistyped password (#1078)
-      return t("auth.mfa.errors.enrolmentRequired");
+      return { message: t("auth.mfa.errors.enrolmentRequired") };
     case "too_many_attempts":
       // the lock carries how long it lasts; saying so beats making the user
-      // guess, and beats making them poll to find out
-      return err.retryAfterSeconds && err.retryAfterSeconds > 0
-        ? t("auth.errors.tooManyAttempts_wait", {
-            count: Math.ceil(err.retryAfterSeconds),
-          })
-        : t("auth.errors.tooManyAttempts");
+      // guess, and beats making them poll to find out. waiting only helps a
+      // typo, so the way out for a forgotten password is said as well
+      return {
+        message:
+          err.retryAfterSeconds && err.retryAfterSeconds > 0
+            ? t("auth.errors.tooManyAttempts_wait", { count: Math.ceil(err.retryAfterSeconds) })
+            : t("auth.errors.tooManyAttempts"),
+        help: t("auth.errors.lockedHelp"),
+      };
     default:
-      return err.status >= 500
-        ? t("auth.errors.unavailable")
-        : t("auth.errors.unexpected", { message: err.message });
+      return {
+        message:
+          err.status >= 500
+            ? t("auth.errors.unavailable")
+            : t("auth.errors.unexpected", { message: err.message }),
+      };
   }
 }

@@ -75,7 +75,13 @@ export const WrongPassword: Story = {
   play: async ({ canvasElement }) => {
     await signIn(canvasElement);
     const canvas = within(canvasElement);
-    await expect(await canvas.findByRole("alert")).toHaveTextContent(/do not match an account/i);
+    const alert = await canvas.findByRole("alert");
+    await expect(alert).toHaveTextContent(/do not match an account/i);
+    // a self-hosted product has no vendor line: the way out is named (#2070)
+    await expect(alert).toHaveTextContent(/administrator of this deployment can send you a link/i);
+    // and the fields point at the reason rather than leaving it a loose box
+    await expect(canvas.getByLabelText(/^email/i)).toHaveAccessibleDescription(/do not match/i);
+    await expect(canvas.getByLabelText(/^password/i)).toBeInvalid();
     // and crucially: the form is still on screen. the old code would have
     // navigated away, having "signed in" with no session
     await expect(canvas.getByRole("button", { name: /sign in/i })).toBeVisible();
@@ -92,9 +98,10 @@ export const OrgRequiresSso: Story = {
   ),
   play: async ({ canvasElement }) => {
     await signIn(canvasElement);
-    await expect(await within(canvasElement).findByRole("alert")).toHaveTextContent(
-      /single sign-on/i,
-    );
+    const alert = await within(canvasElement).findByRole("alert");
+    // no provider button is on this screen, so the copy must not point at one
+    await expect(alert).toHaveTextContent(/no single sign-on is set up here/i);
+    await expect(alert).not.toHaveTextContent(/use single sign-on below/i);
   },
 };
 
@@ -109,7 +116,10 @@ export const LockedOut: Story = {
   play: async ({ canvasElement }) => {
     await signIn(canvasElement);
     // the lock is a clock: the wait it carries is rendered, not swallowed
-    await expect(await within(canvasElement).findByRole("alert")).toHaveTextContent(/90 seconds/i);
+    const alert = await within(canvasElement).findByRole("alert");
+    await expect(alert).toHaveTextContent(/90 seconds/i);
+    // waiting only helps a typo (#2070)
+    await expect(alert).toHaveTextContent(/waiting will not help/i);
   },
 };
 
@@ -421,6 +431,11 @@ export const AWrongCodeSpendsOneOfThree: Story = {
     );
     // the field is cleared and still there: the challenge survives a miss
     await expect(canvas.getByLabelText(/authentication code/i)).toHaveValue("");
+    // the recovery-code hint is replaced by the error, so the error says it (#2070)
+    await expect(canvas.getByRole("alert")).toHaveTextContent(
+      /recovery code works in the same field.*reset the second factor/i,
+    );
+    await expect(canvas.getByRole("button", { name: /back to the password/i })).toBeVisible();
     await submitCode(canvasElement, "123456");
   },
 };
@@ -1106,5 +1121,98 @@ export const SsoErrorUnknownProviderIsNotRendered: Story = {
     await expect(await canvas.findByRole("alert")).toHaveTextContent(SSO_MESSAGES.idp_error);
     await expect(canvas.queryByText(/evil/)).toBeNull();
     await expect(canvas.queryByText(/identity provider:/i)).toBeNull();
+  },
+};
+
+// --- the first impression (#2071) ------------------------------------------
+
+const OKTA = { slug: "okta", name: "Okta", start_url: "/api/v1/auth/sso/okta" };
+
+function methodsOnly(methods: { password: boolean; sso: (typeof OKTA)[] }): FetchStub {
+  return async (input) => (String(input).includes("/auth/methods") ? json(methods) : json({}));
+}
+
+/** What a signed-out visitor sees first: the card, the two fields, one button. */
+export const IdleCard: Story = {
+  render: () => (
+    <Harness fetchStub={methodsOnly(METHODS)}>
+      <AuthProvider>
+        <Login />
+      </AuthProvider>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByLabelText(/^email/i)).toBeVisible();
+    await expect(canvas.getByLabelText(/^password/i)).toBeVisible();
+    await expect(canvas.getByRole("button", { name: /^sign in$/i })).toBeVisible();
+    await expect(canvas.queryByRole("alert")).not.toBeInTheDocument();
+    await expect(canvas.queryByRole("link", { name: /continue with/i })).not.toBeInTheDocument();
+  },
+};
+
+/** A password form beside an identity provider: the provider stays the quiet alternative. */
+export const PasswordAndProvider: Story = {
+  render: () => (
+    <Harness fetchStub={methodsOnly({ password: true, sso: [OKTA] })}>
+      <AuthProvider>
+        <Login />
+      </AuthProvider>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const link = await canvas.findByRole("link", { name: /continue with okta/i });
+    await expect(canvas.getByLabelText(/^password/i)).toBeVisible();
+    await expect(link).not.toHaveClass("bg-brand-folk");
+  },
+};
+
+/** With no password form the first provider is the one action the screen is for. */
+export const SsoOnlyProviderIsTheBrandButton: Story = {
+  render: () => (
+    <Harness fetchStub={methodsOnly({ password: false, sso: [OKTA] })}>
+      <AuthProvider>
+        <Login />
+      </AuthProvider>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const link = await within(canvasElement).findByRole("link", { name: /continue with okta/i });
+    await expect(link).toHaveClass("bg-brand-folk");
+    // keyboard focus is drawn with the focus-ring token, not the browser default
+    await expect(link).toHaveClass("focus-visible:ring-1");
+  },
+};
+
+/** No password and no provider: the card says so, and offers nothing to press. */
+export const NoLoginMethod: Story = {
+  render: () => (
+    <Harness fetchStub={methodsOnly({ password: false, sso: [] })}>
+      <AuthProvider>
+        <Login />
+      </AuthProvider>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText(/no login method is enabled/i)).toBeVisible();
+    await expect(canvas.queryByRole("button", { name: /^sign in$/i })).not.toBeInTheDocument();
+  },
+};
+
+/** The footer line is translated, "self-hosted" included. */
+export const SelfHostedLineInRussian: Story = {
+  render: () => (
+    <Harness fetchStub={methodsOnly(METHODS)}>
+      <AuthProvider>
+        <Login />
+      </AuthProvider>
+    </Harness>
+  ),
+  globals: { locale: "ru" },
+  play: async ({ canvasElement }) => {
+    const line = await within(canvasElement).findByText(/сессии не покидают эту установку/);
+    await expect(line).not.toHaveTextContent(/self-hosted/i);
   },
 };

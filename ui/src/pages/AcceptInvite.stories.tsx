@@ -6,6 +6,7 @@ import { expect, userEvent, waitFor, within } from "storybook/test";
 import AcceptInvite from "./AcceptInvite";
 import { Harness, json, recording, type FetchStub } from "./story-harness";
 import { AuthProvider } from "@/lib/auth";
+import { withPageA11y } from "@/lib/story-a11y";
 
 const TOKEN = "inv_2f9c41";
 
@@ -13,6 +14,7 @@ const PREVIEW = {
   org_name: "Acme",
   email: "anya@acme.co",
   role: "admin",
+  scope_type: "org",
   expires_at: "2026-09-30T00:00:00Z",
   has_account: false,
 };
@@ -74,7 +76,8 @@ const blankTitle = () => {
 const meta = {
   title: "Screens/AcceptInvite",
   component: AcceptInvite,
-  parameters: { layout: "fullscreen" },
+  // signed out this is a whole page, so it is gated on its landmark and heading (#2069)
+  parameters: { layout: "fullscreen", ...withPageA11y },
   args: { token: TOKEN },
 } satisfies Meta<typeof AcceptInvite>;
 
@@ -150,31 +153,118 @@ export const InvalidLink: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(await canvas.findByText(/This invitation link is not valid/)).toBeVisible();
-    await expect(canvas.queryByRole("button")).not.toBeInTheDocument();
+    // a heading and a way on: someone who already accepted lands here from their mail
+    await expect(canvas.getByRole("heading", { level: 1 })).toBeVisible();
+    await expect(canvas.getByRole("main")).toBeVisible();
+    await expect(canvas.getByRole("button", { name: /go to sign in/i })).toBeVisible();
+    await expect(canvas.queryByLabelText(/^Password/)).not.toBeInTheDocument();
     // a dead link names no org, so the tab falls back to the plain noun
     await expect(document.title).toBe("Invitation · rolter");
   },
 };
 
-/** Under eight characters is refused by the field, before the round trip. */
+/**
+ * The length rule is a hint under the field that becomes the error once the
+ * person leaves it, and the button is not silently off.
+ */
 export const PasswordTooShort: Story = {
   render: () => <Stage stub={invite(() => json(PREVIEW))} />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await userEvent.type(await canvas.findByLabelText(/^Password/), "short");
-    await expect(canvas.getByRole("button", { name: /accept invitation/i })).toBeDisabled();
+    const password = await canvas.findByLabelText(/^Password/);
+    await expect(password).toHaveAccessibleDescription("At least 8 characters.");
+    await userEvent.type(password, "short");
+    // still typing: no error yet
+    await expect(canvas.queryByRole("alert")).not.toBeInTheDocument();
+    await userEvent.tab();
+    await expect(await canvas.findByRole("alert")).toHaveTextContent("Use at least 8 characters.");
+    await expect(password).toHaveAccessibleDescription("Use at least 8 characters.");
+    await expect(canvas.getByRole("button", { name: /accept invitation/i })).toBeEnabled();
   },
 };
 
-/** The two boxes disagree: said here rather than after the account is created. */
+/** The two boxes disagree: said once the confirmation is as long as the password. */
 export const PasswordsDoNotMatch: Story = {
   render: () => <Stage stub={invite(() => json(PREVIEW))} />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.type(await canvas.findByLabelText(/^Password/), "correct-horse");
-    await userEvent.type(canvas.getByLabelText(/confirm password/i), "correct-hors");
-    await expect(canvas.getByRole("alert")).toHaveTextContent(/do not match/);
-    await expect(canvas.getByRole("button", { name: /accept invitation/i })).toBeDisabled();
+    const confirm = canvas.getByLabelText(/confirm password/i);
+    await userEvent.type(confirm, "correct-hors");
+    // not on the first keystrokes
+    await expect(canvas.queryByRole("alert")).not.toBeInTheDocument();
+    await userEvent.type(confirm, "x");
+    await expect(await canvas.findByRole("alert")).toHaveTextContent(/do not match/);
+    await expect(confirm).toBeInvalid();
+    await expect(confirm).toHaveAccessibleDescription(/do not match/);
+    // a mismatch never reaches the server
+    await userEvent.click(canvas.getByRole("button", { name: /accept invitation/i }));
+    calls.expectNotSent("POST", "/accept");
+  },
+};
+
+/** The same toggle as sign-in, so a typo is checkable before it becomes the password. */
+export const PasswordCanBeShown: Story = {
+  render: () => <Stage stub={invite(() => json(PREVIEW))} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const password = await canvas.findByLabelText(/^Password/);
+    await expect(password).toHaveAttribute("type", "password");
+    await userEvent.click(canvas.getAllByRole("button", { name: /show password/i })[0]);
+    await expect(password).toHaveAttribute("type", "text");
+  },
+};
+
+/** An org-wide invitation says so, and when the link stops working. */
+export const NamesTheOrgScopeAndExpiry: Story = {
+  render: () => <Stage stub={invite(() => json(PREVIEW))} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText(/gives you the Admin role across Acme\./)).toBeVisible();
+    await expect(canvas.getByText(/The link works until/)).toBeVisible();
+  },
+};
+
+/** A team invitation is not an org one: the team is named. */
+export const NamesATeamScope: Story = {
+  render: () => (
+    <Stage stub={invite(() => json({ ...PREVIEW, scope_type: "team", scope_name: "Platform" }))} />
+  ),
+  play: async ({ canvasElement }) => {
+    await expect(
+      await within(canvasElement).findByText(/Admin role on the team Platform in Acme\./),
+    ).toBeVisible();
+  },
+};
+
+/** A project-admin invite must not read like org admin. */
+export const NamesAProjectScope: Story = {
+  render: () => (
+    <Stage
+      stub={invite(() => json({ ...PREVIEW, scope_type: "project", scope_name: "Gateway" }))}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    await expect(
+      await within(canvasElement).findByText(/Admin role on the project Gateway in Acme\./),
+    ).toBeVisible();
+  },
+};
+
+/** The scope sentence in Russian, in the dashboard's own role word. */
+export const NamesAProjectScopeInRussian: Story = {
+  render: () => (
+    <Stage
+      stub={invite(() =>
+        json({ ...PREVIEW, role: "member", scope_type: "project", scope_name: "Gateway" }),
+      )}
+    />
+  ),
+  globals: { locale: "ru" },
+  play: async ({ canvasElement }) => {
+    await expect(
+      await within(canvasElement).findByText(/роль «Участник» в проекте Gateway организации Acme/),
+    ).toBeVisible();
   },
 };
 
@@ -217,6 +307,102 @@ export const AcceptRejected: Story = {
     await waitFor(() => expect(canvas.getByText(/already been accepted/)).toBeVisible());
     // the form stays, because a different link can still be pasted into it
     await expect(canvas.getByLabelText(/^Password/)).toBeVisible();
+  },
+};
+
+/** fills the form and submits, for a refusal story */
+const submitEn = async (canvasElement: HTMLElement) => {
+  const canvas = within(canvasElement);
+  await userEvent.type(await canvas.findByLabelText(/^Password/), "correct-horse");
+  await userEvent.type(canvas.getByLabelText(/confirm password/i), "correct-horse");
+  await userEvent.click(canvas.getByRole("button", { name: /accept invitation/i }));
+  return canvas;
+};
+
+/**
+ * A link spent, revoked or expired between opening and submitting answers 401.
+ * The control plane's "missing or invalid credentials" is not what is said; and
+ * since retrying cannot help, the button goes off and sign-in is offered.
+ */
+export const LinkSpentBetweenOpeningAndSubmitting: Story = {
+  render: () => (
+    <Stage
+      stub={invite(
+        () => json(PREVIEW),
+        () => json({ error: { message: "missing or invalid credentials" } }, 401),
+      )}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = await submitEn(canvasElement);
+    await expect(await canvas.findByRole("alert")).toHaveTextContent(
+      /already used, was revoked or has expired/,
+    );
+    await expect(canvas.queryByText(/missing or invalid credentials/)).not.toBeInTheDocument();
+    await expect(canvas.getByRole("button", { name: /accept invitation/i })).toBeDisabled();
+    await expect(canvas.getByRole("button", { name: /go to sign in/i })).toBeVisible();
+  },
+};
+
+/** A deactivated account answers 403; "insufficient role" means nothing to an invitee. */
+export const DeactivatedAccount: Story = {
+  render: () => (
+    <Stage
+      stub={invite(
+        () => json(PREVIEW),
+        () => json({ error: { message: "insufficient role for this resource" } }, 403),
+      )}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = await submitEn(canvasElement);
+    await expect(await canvas.findByRole("alert")).toHaveTextContent(/has been deactivated/);
+    await expect(canvas.queryByText(/insufficient role/)).not.toBeInTheDocument();
+    await expect(canvas.getByRole("button", { name: /accept invitation/i })).toBeDisabled();
+    await expect(canvas.getByRole("button", { name: /go to sign in/i })).toBeVisible();
+  },
+};
+
+/** A throttled token says how long to wait, and the button stays: waiting does fix this. */
+export const ThrottledWithAWait: Story = {
+  render: () => (
+    <Stage
+      stub={invite(
+        () => json(PREVIEW),
+        () =>
+          new Response(
+            JSON.stringify({ error: { message: "slow down", code: "too_many_attempts" } }),
+            {
+              status: 429,
+              headers: { "Content-Type": "application/json", "Retry-After": "45" },
+            },
+          ),
+      )}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = await submitEn(canvasElement);
+    await expect(await canvas.findByRole("alert")).toHaveTextContent(/Try again in 45 seconds/);
+    await expect(canvas.getByRole("button", { name: /accept invitation/i })).toBeEnabled();
+  },
+};
+
+/** The control plane cannot be reached: said in the dashboard's words, retry stays open. */
+export const ControlPlaneUnreachable: Story = {
+  render: () => (
+    <Stage
+      stub={invite(
+        () => json(PREVIEW),
+        () => {
+          throw new TypeError("network error");
+        },
+      )}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = await submitEn(canvasElement);
+    await expect(await canvas.findByRole("alert")).toHaveTextContent(/could not reach the server/i);
+    await expect(canvas.getByRole("button", { name: /accept invitation/i })).toBeEnabled();
   },
 };
 
