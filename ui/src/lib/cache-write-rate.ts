@@ -59,3 +59,29 @@ export function audioInputPatch(
 export function speechPatch(typed: string, seeded: string): { speech_per_mchar?: string | null } {
   return ratePatch("speech_per_mchar", typed, seeded);
 }
+
+/**
+ * The rates for the audio tokens of a realtime or audio model (#1882), kept,
+ * cleared and set like the rest. Empty prices those tokens at the matching
+ * text rate.
+ */
+export function audioInputTokenPatch(
+  typed: string,
+  seeded: string,
+): { audio_input_per_mtok?: string | null } {
+  return ratePatch("audio_input_per_mtok", typed, seeded);
+}
+
+export function audioOutputTokenPatch(
+  typed: string,
+  seeded: string,
+): { audio_output_per_mtok?: string | null } {
+  return ratePatch("audio_output_per_mtok", typed, seeded);
+}
+
+export function cachedAudioPatch(
+  typed: string,
+  seeded: string,
+): { cached_audio_input_per_mtok?: string | null } {
+  return ratePatch("cached_audio_input_per_mtok", typed, seeded);
+}

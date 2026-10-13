@@ -296,6 +296,15 @@ fn render_model_prices(out: &mut String, config: &GatewayConfig) {
         if let Some(rate) = price.speech_per_mchar {
             key(out, "speech_per_mchar", &rate);
         }
+        if let Some(rate) = price.audio_input_per_mtok {
+            key(out, "audio_input_per_mtok", &rate);
+        }
+        if let Some(rate) = price.audio_output_per_mtok {
+            key(out, "audio_output_per_mtok", &rate);
+        }
+        if let Some(rate) = price.cached_audio_input_per_mtok {
+            key(out, "cached_audio_input_per_mtok", &rate);
+        }
         key(out, "currency", &price.currency);
     }
 }
@@ -626,6 +635,43 @@ models = ["gpt-4o"]
         assert_eq!(
             back.model_prices[0].image_per_unit,
             config.model_prices[0].image_per_unit
+        );
+    }
+
+    /// #1882: the audio token rates leave with their price, and only when set.
+    #[test]
+    fn audio_rates_are_exported_only_when_they_are_set() {
+        let mut config = GatewayConfig::from_toml_str(FIXTURE).expect("the fixture must parse");
+        let rendered = render(&config);
+        for key in [
+            "audio_input_per_mtok",
+            "audio_output_per_mtok",
+            "cached_audio_input_per_mtok",
+        ] {
+            assert!(!rendered.contains(key), "{key}: {rendered}");
+        }
+
+        let price = &mut config.model_prices[0];
+        price.audio_input_per_mtok = Some(rust_decimal::Decimal::new(32, 0));
+        price.audio_output_per_mtok = Some(rust_decimal::Decimal::new(64, 0));
+        price.cached_audio_input_per_mtok = Some(rust_decimal::Decimal::new(4, 1));
+        let rendered = render(&config);
+        assert!(
+            rendered.contains("audio_input_per_mtok = \"32\"\n"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("audio_output_per_mtok = \"64\"\n"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("cached_audio_input_per_mtok = \"0.4\"\n"),
+            "{rendered}"
+        );
+        let back = GatewayConfig::from_toml_str(&rendered).expect("the export must parse");
+        assert_eq!(
+            back.model_prices[0].cached_audio_input_per_mtok,
+            config.model_prices[0].cached_audio_input_per_mtok
         );
     }
 

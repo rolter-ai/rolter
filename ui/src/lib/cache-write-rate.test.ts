@@ -2,6 +2,9 @@ import { describe, expect, test } from "bun:test";
 
 import {
   audioInputPatch,
+  audioInputTokenPatch,
+  audioOutputTokenPatch,
+  cachedAudioPatch,
   cacheWrite1hPatch,
   cacheWritePatch,
   imagePatch,
@@ -68,5 +71,16 @@ describe("unit rate patches (#2937)", () => {
     expect(audioInputPatch("0.01", "0.006000")).toEqual({ audio_input_per_minute: "0.01" });
     expect(speechPatch("", "15.000000")).toEqual({ speech_per_mchar: null });
     expect(JSON.stringify(speechPatch("", "15"))).toBe('{"speech_per_mchar":null}');
+  });
+});
+
+describe("audio token rate patches (#1882)", () => {
+  test("each names its own key, sends nothing untouched and null when emptied", () => {
+    expect(audioInputTokenPatch("", "")).toEqual({});
+    expect(audioInputTokenPatch("32", "")).toEqual({ audio_input_per_mtok: "32" });
+    expect(audioOutputTokenPatch("", "64.000000")).toEqual({ audio_output_per_mtok: null });
+    expect(cachedAudioPatch("0.400000", "0.400000")).toEqual({});
+    expect(cachedAudioPatch("0.5", "0.400000")).toEqual({ cached_audio_input_per_mtok: "0.5" });
+    expect(JSON.stringify(audioOutputTokenPatch("", "64"))).toBe('{"audio_output_per_mtok":null}');
   });
 });

@@ -404,6 +404,16 @@ disabled = false # revoke without deleting
 # the three unit rates above are what openai's pricing page lists for dall-e-3 (standard
 # 1024x1024), whisper-1 and tts-1 (https://openai.com/api/pricing/). they are examples:
 # rolter ships no price list, so check your provider's before relying on one
+# audio_input_per_mtok = 32.0   # optional; per million audio input tokens, for a realtime or
+#                                # audio model that bills the audio it is sent apart from the
+#                                # text. the response's usage says how many tokens were audio;
+#                                # defaults to input_per_mtok
+# audio_output_per_mtok = 64.0   # optional; per million audio output tokens; defaults to
+#                                # output_per_mtok
+# cached_audio_input_per_mtok = 0.4  # optional; per million cached audio input tokens;
+#                                # defaults to cached_input_per_mtok, then to the audio input
+#                                # rate. the three audio rates above are illustrative figures,
+#                                # not a provider's price list
 # currency = "USD"               # optional; defaults to USD, not to the base below, so
 #                                # a deployment whose base is another currency needs a USD
 #                                # rate under [currency] or a currency on every price

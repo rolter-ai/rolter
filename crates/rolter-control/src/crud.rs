@@ -5828,6 +5828,17 @@ struct UpsertModelPrice {
     /// tri-state
     #[serde(default, deserialize_with = "explicit_null")]
     speech_per_mchar: Option<Option<String>>,
+    /// price per million audio input tokens (#1882), same tri-state: `null`
+    /// clears it back to the text input rate
+    #[serde(default, deserialize_with = "explicit_null")]
+    audio_input_per_mtok: Option<Option<String>>,
+    /// price per million audio output tokens (#1882), same tri-state: `null`
+    /// clears it back to the text output rate
+    #[serde(default, deserialize_with = "explicit_null")]
+    audio_output_per_mtok: Option<Option<String>>,
+    /// price per million cached audio input tokens (#1882), same tri-state
+    #[serde(default, deserialize_with = "explicit_null")]
+    cached_audio_input_per_mtok: Option<Option<String>>,
     #[serde(default = "default_currency")]
     currency: String,
 }
@@ -5900,6 +5911,12 @@ async fn upsert_model_price(
         (&body.image_per_unit, "image_per_unit"),
         (&body.audio_input_per_minute, "audio_input_per_minute"),
         (&body.speech_per_mchar, "speech_per_mchar"),
+        (&body.audio_input_per_mtok, "audio_input_per_mtok"),
+        (&body.audio_output_per_mtok, "audio_output_per_mtok"),
+        (
+            &body.cached_audio_input_per_mtok,
+            "cached_audio_input_per_mtok",
+        ),
     ] {
         if let Some(Some(rate)) = rate {
             require_rate(rate, field)?;
@@ -5922,6 +5939,15 @@ async fn upsert_model_price(
                         .as_ref()
                         .map(Option::as_deref),
                     speech_per_mchar: body.speech_per_mchar.as_ref().map(Option::as_deref),
+                    audio_input_per_mtok: body.audio_input_per_mtok.as_ref().map(Option::as_deref),
+                    audio_output_per_mtok: body
+                        .audio_output_per_mtok
+                        .as_ref()
+                        .map(Option::as_deref),
+                    cached_audio_input_per_mtok: body
+                        .cached_audio_input_per_mtok
+                        .as_ref()
+                        .map(Option::as_deref),
                 },
                 &body.currency,
             )

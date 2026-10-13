@@ -525,6 +525,85 @@ would skip every check above.
 - Each event has its own scan-byte budget (`max_scan_bytes`); an event larger
   than it is passed unscanned, as a body is on the HTTP path.
 
+## Audio and text tokens (#1882)
+
+A `response.done` usage reports `input_tokens` and `output_tokens` as totals and
+names the audio share of each: `input_token_details.audio_tokens`,
+`output_token_details.audio_tokens`, and for the cache hits
+`input_token_details.cached_tokens_details.audio_tokens` (OpenAI's Realtime
+server events reference, the `RealtimeResponse.usage` schema). `realtime_usage`
+reads them into `Usage::audio_input`, `audio_output` and `audio_cache_read`
+through `logging::audio_usage`, the one reader the HTTP path shares for the
+Chat Completions spelling (`prompt_tokens_details.audio_tokens`,
+`completion_tokens_details.audio_tokens`) and a token-billed transcription's
+`input_token_details`.
+
+`Usage::cost` calls `ModelPriceConfig::cost_with_audio`, which every priced
+path now goes through (`UsageLoggingStream::finalize` for HTTP, `turn_row` for a
+session), so a row, a budget counter and a `tpm` window see one figure:
+
+- The audio counts are shares of the totals, like the cached counts, so a token
+  is priced once. The prompt splits into audio and text; cache hits are taken out
+  of each side, writes out of the text side.
+- `audio_input_per_mtok` and `audio_output_per_mtok` fall back to the text rates,
+  so a row that sets neither prices a response as before (a test pins the
+  figure). `cached_audio_input_per_mtok` falls back to `cached_input_per_mtok`
+  and then to the audio input rate: a provider's cache discount is one figure
+  when the row states one, and the full audio rate when it does not.
+- A cache hit the provider does not split is text, bounded by the text part of
+  the prompt; the rest of it is priced as fresh audio rather than invented as a
+  discount.
+- A count larger than its total is clamped to it.
+
+The rates are the `model_prices` columns of migration `0092`, carried through
+the control API, seed, config export and OpenAPI like the unit rates, tri-state
+on `UnitRates` so an older client cannot reset them, and converted with the
+other rates when the base currency differs (`to_base_currency`).
+
+## Input-audio transcription (#1883)
+
+With `input_audio_transcription` on, the upstream runs a second model over the
+caller's audio and bills it as that model, not as the session's. Its usage is on
+`conversation.item.input_audio_transcription.completed`, in two shapes (the
+`TranscriptTextUsageTokens` and `TranscriptTextUsageDuration` schemas):
+
+```json
+{"usage": {"type": "tokens", "input_tokens": 13, "output_tokens": 9, "total_tokens": 22,
+           "input_token_details": {"text_tokens": 3, "audio_tokens": 10}}}
+{"usage": {"type": "duration", "seconds": 30}}
+```
+
+`TurnTracker::observe` recognises the event (by its leading `type`, or by the
+frame scan every other event falls back to) and returns a `Turn` marked with a
+`Transcription`. It goes through the same channel, flush and budget write as a
+response turn and becomes a row of its own: `request_id` `<id>:<n>`, `stream = 0`,
+`model` the transcription model, no latency.
+
+The model is whatever the session last named. `TurnTracker::observe_client` reads
+the client's `session.update` and `transcription_session.update`, and `observe`
+reads the server's `session.created`, `session.updated` and
+`transcription_session.updated`, so the server's echo overrides a client update it
+rejected. Both spellings are read: `session.audio.input.transcription.model` and
+the beta `session.input_audio_transcription.model`; a `transcription` of `null`
+clears it and an update that names no model keeps the last one. A client frame
+whose `type` is not its leading key (an SDK that sorts its keys writes it last) is
+searched for the event name only when it is at most 64 KiB, so audio frames are
+never parsed. The name is the caller's and is capped at 128 bytes.
+
+The row is priced against `snap.prices[<transcription model>]`, not the
+session's price:
+
+| Usage    | Cost                                                          | `unpriced`                          |
+| -------- | ------------------------------------------------------------- | ----------------------------------- |
+| tokens   | `Usage::cost`, audio input at `audio_input_per_mtok` when set | no price row                        |
+| duration | `unit_cost(AudioSeconds)` at `audio_input_per_minute`         | no price row, or no per-minute rate |
+| none     | 0, with `usage_unknown = 1`                                   | no price row                        |
+
+A model never named leaves `unpriced = 1` and the session's model on the row, so
+the spend that cannot be priced is visible rather than free. The row's tokens count
+against `tpm` like a response's. A `.failed` transcription event bills nothing and
+is not read.
+
 ## What is not metered
 
 These are tracked rather than silently missing:
@@ -537,13 +616,18 @@ These are tracked rather than silently missing:
   `realtime` still carries its [stability marker](../development/stability-markers.md):
   its note names the gaps that remain (the PII sanitizer, which fails closed
   but does not run, and `pre_route` / `post_response` plugins), and the dashboard's translated notes follow it.
-- Audio and text tokens are priced at the same rate, because a price row has one
-  input and one output rate (#1882).
-- Input-audio transcription runs a second model whose usage arrives on
-  `conversation.item.input_audio_transcription.completed`, which the meter does
-  not read yet (#1883).
+- A transcription session (`?intent=transcription`) has no response model to
+  price. Its events are metered as transcription turns, and the session's model
+  is the row's `model` only when no transcription model was named.
 
 ## Tests
+
+`crates/rolter-gateway/tests/realtime_audio_pricing.rs` drives sessions against a
+mock upstream that reports an audio and text split and transcription events:
+audio rates priced per modality, a row with no audio rates priced as before, a
+split-less response ignoring the audio rates, the budget charged the audio cost
+(Redis-gated), and a transcription priced by tokens, by the minute, unpriced
+(no row, no rate, no model named) and unknown (no usage).
 
 `crates/rolter-gateway/tests/realtime_metering.rs` drives real sessions against
 a mock Realtime upstream: a completed turn is logged with its usage and cost, a

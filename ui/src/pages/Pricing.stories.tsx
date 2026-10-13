@@ -167,8 +167,8 @@ export const ShowsPricesAsFigures: Story = {
     await expect(row.getByText("10.00")).toBeInTheDocument();
     await expect(row.getByText("1.25")).toBeInTheDocument();
     await expect(row.getByText("USD")).toBeInTheDocument();
-    // no rate set for the cache writes or the image, audio and speech units
-    await expect(row.getAllByText("—")).toHaveLength(5);
+    // no rate set for the cache writes, the image, audio and speech units, or the audio tokens
+    await expect(row.getAllByText("—")).toHaveLength(8);
   },
 };
 
@@ -1308,5 +1308,134 @@ export const RefusesAnInvalidUnitRate: Story = {
     await expect(image).toHaveAccessibleDescription("Enter a price of 0 or more.");
     refusesUnitRate.expectNotSent("PUT", "/model-prices");
     await expect(form.getByLabelText(AUDIO)).toBeValid();
+  },
+};
+
+const AUDIO_PRICES: ModelPriceRow[] = [
+  {
+    ...price("gpt-realtime", "USD"),
+    input_per_mtok: "4.000000",
+    output_per_mtok: "16.000000",
+    cached_input_per_mtok: "0.400000",
+    audio_input_per_mtok: "32.000000",
+    audio_output_per_mtok: "64.000000",
+    cached_audio_input_per_mtok: null,
+  },
+];
+
+const AUDIO_IN = "Audio input price per Mtok (optional)";
+const AUDIO_OUT = "Audio output price per Mtok (optional)";
+const CACHED_AUDIO = "Cached audio input price per Mtok (optional)";
+
+/** A price that sets audio token rates shows them in their own columns (#1882). */
+export const ShowsTheAudioTokenRatesInTheirColumns: Story = {
+  render: () => (
+    <Harness fetchStub={withCurrency(CONFIGURED, AUDIO_PRICES)}>
+      <Pricing />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("Audio input")).toBeInTheDocument();
+    await expect(canvas.getByText("Audio output")).toBeInTheDocument();
+    await expect(canvas.getByText("Cached audio input")).toBeInTheDocument();
+    await expect(canvas.getByText("32.00")).toBeInTheDocument();
+    await expect(canvas.getByText("64.00")).toBeInTheDocument();
+  },
+};
+
+/**
+ * The form opens on the audio token rates and a save that touched none names
+ * none, so the control plane keeps what it holds (#1882).
+ */
+let keepsAudioRates: Recorder;
+export const LeavesTheAudioTokenRatesAloneWhenUntouched: Story = {
+  render: () => {
+    keepsAudioRates = pricesWithSave(AUDIO_PRICES);
+    return (
+      <Harness fetchStub={keepsAudioRates.stub}>
+        <Toasted>
+          <Pricing />
+        </Toasted>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, "Edit the price for gpt-realtime");
+    const form = within(sheet());
+    await expect(await form.findByLabelText(AUDIO_IN)).toHaveValue(32);
+    await expect(form.getByLabelText(AUDIO_OUT)).toHaveValue(64);
+    await expect(form.getByLabelText(CACHED_AUDIO)).toHaveValue(null);
+    const input = form.getByLabelText("Input price per Mtok");
+    await userEvent.clear(input);
+    await userEvent.type(input, "5");
+    await userEvent.click(form.getByRole("button", { name: "Save" }));
+
+    const body = await keepsAudioRates.expectSentBody<Record<string, unknown>>(
+      "PUT",
+      "/model-prices",
+    );
+    await expect(body).not.toHaveProperty("audio_input_per_mtok");
+    await expect(body).not.toHaveProperty("audio_output_per_mtok");
+    await expect(body).not.toHaveProperty("cached_audio_input_per_mtok");
+  },
+};
+
+/** Editing and emptying an audio input sends its own key: a value, or null to clear. */
+let editsAudioRates: Recorder;
+export const SendsEachAudioTokenRateUnderItsOwnKey: Story = {
+  render: () => {
+    editsAudioRates = pricesWithSave(AUDIO_PRICES);
+    return (
+      <Harness fetchStub={editsAudioRates.stub}>
+        <Toasted>
+          <Pricing />
+        </Toasted>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, "Edit the price for gpt-realtime");
+    const form = within(sheet());
+    const audioIn = await form.findByLabelText(AUDIO_IN);
+    await userEvent.clear(audioIn);
+    await userEvent.type(audioIn, "40");
+    await userEvent.clear(form.getByLabelText(AUDIO_OUT));
+    await userEvent.type(form.getByLabelText(CACHED_AUDIO), "0.5");
+    await userEvent.click(form.getByRole("button", { name: "Save" }));
+
+    const body = await editsAudioRates.expectSentBody<Record<string, unknown>>(
+      "PUT",
+      "/model-prices",
+    );
+    await expect(body).toHaveProperty("audio_input_per_mtok", "40");
+    await expect(body).toHaveProperty("audio_output_per_mtok", null);
+    await expect(body).toHaveProperty("cached_audio_input_per_mtok", "0.5");
+  },
+};
+
+/** An audio token rate that is not a number of 0 or more is refused at its own field. */
+let refusesAudioRate: Recorder;
+export const RefusesAnInvalidAudioTokenRate: Story = {
+  render: () => {
+    refusesAudioRate = pricesWithSave();
+    return (
+      <Harness fetchStub={refusesAudioRate.stub}>
+        <Toasted>
+          <Pricing />
+        </Toasted>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, "Edit the price for gpt-4o");
+    const form = within(sheet());
+    const audioIn = await form.findByLabelText(AUDIO_IN);
+    await userEvent.type(audioIn, "-1");
+    await userEvent.click(form.getByRole("button", { name: "Save" }));
+    await expect(audioIn).toHaveAttribute("aria-invalid", "true");
+    await expect(audioIn).toHaveAccessibleDescription("Enter a price of 0 or more.");
+    refusesAudioRate.expectNotSent("PUT", "/model-prices");
+    await expect(form.getByLabelText(AUDIO_OUT)).toBeValid();
   },
 };

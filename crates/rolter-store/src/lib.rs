@@ -558,6 +558,9 @@ mod tests {
             image_per_unit: None,
             audio_input_per_minute: None,
             speech_per_mchar: None,
+            audio_input_per_mtok: None,
+            audio_output_per_mtok: None,
+            cached_audio_input_per_mtok: None,
             currency: "USD".to_string(),
         }
     }

@@ -1689,6 +1689,12 @@ fn price_from_row(row: &ModelPrice) -> std::result::Result<ModelPriceConfig, Str
         image_per_unit: optional("image_per_unit", &row.image_per_unit)?,
         audio_input_per_minute: optional("audio_input_per_minute", &row.audio_input_per_minute)?,
         speech_per_mchar: optional("speech_per_mchar", &row.speech_per_mchar)?,
+        audio_input_per_mtok: optional("audio_input_per_mtok", &row.audio_input_per_mtok)?,
+        audio_output_per_mtok: optional("audio_output_per_mtok", &row.audio_output_per_mtok)?,
+        cached_audio_input_per_mtok: optional(
+            "cached_audio_input_per_mtok",
+            &row.cached_audio_input_per_mtok,
+        )?,
         // the column has always existed and the dashboard has always written
         // it; it just never reached the config (#650), so every non-USD price
         // was charged as if it were USD

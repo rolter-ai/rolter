@@ -3512,6 +3512,18 @@ fn governance_schemas(p: &Prim) -> Value {
                     "type": ["string", "null"],
                     "description": "price per million characters of text sent to a text-to-speech model, counted from the request's input; null charges nothing for speech"
                 },
+                "audio_input_per_mtok": {
+                    "type": ["string", "null"],
+                    "description": "price per million audio input tokens, for a realtime or audio model that bills audio apart from text; null charges them at input_per_mtok"
+                },
+                "audio_output_per_mtok": {
+                    "type": ["string", "null"],
+                    "description": "price per million audio output tokens; null charges them at output_per_mtok"
+                },
+                "cached_audio_input_per_mtok": {
+                    "type": ["string", "null"],
+                    "description": "price per million cached audio input tokens; null charges them at cached_input_per_mtok when that is set, otherwise at the audio input rate"
+                },
                 "currency": string,
                 "created_at": timestamp
             }
@@ -3552,6 +3564,18 @@ fn governance_schemas(p: &Prim) -> Value {
                 "speech_per_mchar": {
                     "type": ["string", "null"],
                     "description": "price per million characters of text-to-speech input, a number from 0 up to 999999.999999. Omit to leave the stored rate unchanged, send null to clear it"
+                },
+                "audio_input_per_mtok": {
+                    "type": ["string", "null"],
+                    "description": "price per million audio input tokens, a number from 0 up to 999999.999999. Omit to leave the stored rate unchanged, send null to clear it (those tokens are then priced at input_per_mtok). Same rule as cache_write_per_mtok, so a client that predates the field cannot reset it"
+                },
+                "audio_output_per_mtok": {
+                    "type": ["string", "null"],
+                    "description": "price per million audio output tokens, a number from 0 up to 999999.999999. Omit to leave the stored rate unchanged, send null to clear it (those tokens are then priced at output_per_mtok)"
+                },
+                "cached_audio_input_per_mtok": {
+                    "type": ["string", "null"],
+                    "description": "price per million cached audio input tokens, a number from 0 up to 999999.999999. Omit to leave the stored rate unchanged, send null to clear it (those tokens are then priced at cached_input_per_mtok, or the audio input rate when that is unset)"
                 },
                 "currency": {"type": "string", "default": "USD"}
             },

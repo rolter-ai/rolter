@@ -438,6 +438,55 @@ async fn a_chat_request_is_untouched_by_the_unit_rates() {
     assert_eq!(row["unpriced"], 0, "{row}");
 }
 
+/// #1882: an audio chat model reports the audio share of its tokens under
+/// `prompt_tokens_details` / `completion_tokens_details`, and each is charged at
+/// the row's audio rate: 4 text x 1 + 6 audio x 10 + 1 text out x 2 + 9 audio
+/// out x 20.
+#[tokio::test]
+async fn a_chat_audio_model_is_priced_by_modality() {
+    let row = exchange(
+        "up-chat-audio",
+        Some(json!({
+            "input_per_mtok": 1_000_000, "output_per_mtok": 2_000_000,
+            "audio_input_per_mtok": 10_000_000, "audio_output_per_mtok": 20_000_000
+        })),
+        Answer {
+            content_type: "application/json",
+            body: r#"{"id":"c","model":"test-model","choices":[{"index":0,"message":{"role":"assistant","content":"pong"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":10,"total_tokens":20,"prompt_tokens_details":{"audio_tokens":6,"text_tokens":4},"completion_tokens_details":{"audio_tokens":9,"text_tokens":1}}}"#,
+        },
+        Call::Json(
+            "/v1/chat/completions",
+            json!({"model": "test-model", "messages": [{"role": "user", "content": "ping"}]}),
+        ),
+    )
+    .await;
+    assert_eq!(row["cost_usd"], 4.0 + 60.0 + 2.0 + 180.0, "{row}");
+    assert_eq!(row["unpriced"], 0, "{row}");
+}
+
+/// #1882: a token-billed transcription model (`gpt-4o-transcribe`) reports its
+/// audio and text input apart in `usage.input_token_details`, and the audio is
+/// charged at the audio rate: 3 text x 2 + 10 audio x 6 + 9 out x 10.
+#[tokio::test]
+async fn a_token_billed_transcription_is_priced_by_modality() {
+    let row = exchange(
+        "up-transcribe-tokens",
+        Some(json!({
+            "input_per_mtok": 2_000_000, "output_per_mtok": 10_000_000,
+            "audio_input_per_mtok": 6_000_000
+        })),
+        Answer {
+            content_type: "application/json",
+            body: r#"{"text":"hi","usage":{"type":"tokens","input_tokens":13,"input_token_details":{"text_tokens":3,"audio_tokens":10},"output_tokens":9,"total_tokens":22}}"#,
+        },
+        Call::Upload("/v1/audio/transcriptions"),
+    )
+    .await;
+    assert_eq!(row["cost_usd"], 156.0, "{row}");
+    assert_eq!(row["unpriced"], 0, "{row}");
+    assert_eq!(row["usage_unknown"], 0, "{row}");
+}
+
 fn redis_url() -> Option<String> {
     let url = std::env::var("ROLTER_TEST_REDIS_URL").ok()?;
     (!url.is_empty()).then_some(url)

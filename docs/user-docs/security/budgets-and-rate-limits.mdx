@@ -50,6 +50,18 @@ Before budgets can track spend, Rolter needs to know the cost of each model's to
   Cost per million characters of text sent to a text-to-speech model, counted from the request's `input`.
 </ParamField>
 
+<ParamField path="audio_input_per_mtok" type="float">
+  Price per million audio input tokens, for a realtime or audio model that bills the audio it is sent apart from the text. The share of the prompt that is audio is the one the response's usage names (see [Audio and text tokens](/observability/logs-and-cost#audio-and-text-tokens)). Defaults to `input_per_mtok`.
+</ParamField>
+
+<ParamField path="audio_output_per_mtok" type="float">
+  Price per million audio output tokens. Defaults to `output_per_mtok`.
+</ParamField>
+
+<ParamField path="cached_audio_input_per_mtok" type="float">
+  Price per million cached audio input tokens, for a provider that says how many of its cache hits were audio (a realtime session does). Defaults to `cached_input_per_mtok`, and from there to the audio input rate.
+</ParamField>
+
 <ParamField path="currency" type="string" default="USD">
   Currency the rates above are denominated in. Any code works — ISO-4217, a crypto unit, an internal credit — as long as `[currency.rates]` can convert it to the base currency.
 </ParamField>
