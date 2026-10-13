@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { HeartPulse } from "lucide-react";
+import { AlertTriangle, HeartPulse } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { Overline } from "@/components/ui/overline";
@@ -27,7 +27,21 @@ import {
   type SlaState,
 } from "@/lib/route-targets";
 import { cn } from "@/lib/utils";
+import { useNow } from "@/lib/use-now";
 import { useScreenReady } from "@/lib/ux-react";
+
+// the rollups are hourly buckets over a 7-day window, so a minute-level poll
+// buys nothing; the interval pauses in a hidden tab (react-query's default)
+const REFETCH_MS = 30_000;
+// a provider that has reported nothing for this long is quiet enough to say so:
+// several probe sweeps, and long enough that a lull in passive traffic is not
+const STALE_AFTER_MS = 15 * 60 * 1000;
+
+/** when a rollup row last saw an event, in ms; the zone-less ClickHouse form is read as UTC */
+function eventAt(row: UptimeRow): number | undefined {
+  const at = bucketStart(row.last_event);
+  return Number.isNaN(at) ? undefined : at;
+}
 
 /** the status fill for a state's dots and border */
 const SLA_FILL: Record<SlaState, string> = {
@@ -61,8 +75,8 @@ function useSourceLabel(): (source: string) => string {
             source;
 }
 
-function pct(fmt: Formatters, v: number): string {
-  return fmt.percent(v, 2);
+function pct(fmt: Formatters, v: number | undefined): string {
+  return v === undefined ? "—" : fmt.percent(v, 2);
 }
 
 function mttrLabel(fmt: Formatters, seconds: number | undefined): string {
@@ -89,7 +103,10 @@ interface ProviderGroup {
 }
 
 interface Headline {
-  uptime: number;
+  /** undefined when no event was observed: a figure nobody measured is not shown */
+  uptime: number | undefined;
+  /** the newest event behind the card, in ms */
+  lastEvent: number | undefined;
   events: number;
   failures: number;
   burn: number;
@@ -109,7 +126,8 @@ function headline(group: ProviderGroup): Headline {
   const row = group.overall;
   if (row) {
     return {
-      uptime: row.uptime,
+      uptime: row.events === 0 ? undefined : row.uptime,
+      lastEvent: eventAt(row),
       events: row.events,
       failures: row.errors + row.timeouts,
       burn: row.error_budget_burn,
@@ -122,6 +140,7 @@ function headline(group: ProviderGroup): Headline {
   let ok = 0;
   let failures = 0;
   let burn = 0;
+  let lastEvent: number | undefined;
   const sources = new Set<string>();
   for (const t of group.targets) {
     events += t.events;
@@ -130,10 +149,14 @@ function headline(group: ProviderGroup): Headline {
     // the budget is per target, so the card reports the worst one rather than
     // an average that would hide it
     burn = Math.max(burn, t.error_budget_burn);
+    const at = eventAt(t);
+    if (at !== undefined) lastEvent = Math.max(lastEvent ?? at, at);
     for (const s of t.sources ?? []) sources.add(s);
   }
   return {
-    uptime: events === 0 ? 1 : ok / events,
+    // no events is no data, not a perfect score
+    uptime: events === 0 ? undefined : ok / events,
+    lastEvent,
     events,
     failures,
     burn,
@@ -160,8 +183,9 @@ function groupByProvider(rows: UptimeRow[]): ProviderGroup[] {
   }
   const groups = [...byProvider.values()];
   for (const group of groups) group.targets.sort((a, b) => a.uptime - b.uptime);
-  // worst first, the same intent as the server's `order by uptime asc`
-  groups.sort((a, b) => headline(a).uptime - headline(b).uptime);
+  // worst first, the same intent as the server's `order by uptime asc`; a
+  // provider with nothing measured goes last
+  groups.sort((a, b) => (headline(a).uptime ?? 2) - (headline(b).uptime ?? 2));
   return groups;
 }
 
@@ -304,6 +328,36 @@ function Timeline({
   );
 }
 
+/**
+ * When a provider last reported, relative to the screen's clock. The uptime
+ * figure is a 7-day window, so it says nothing about whether the provider is
+ * still reporting; this does. Past `STALE_AFTER_MS` it takes the warning tone
+ * and different words, so the state is not carried by colour alone.
+ */
+function LastEvent({ at, now }: { at: number | undefined; now: number }) {
+  const { t } = useTranslation();
+  const fmt = useFormat();
+  if (at === undefined) {
+    return <span className="text-xs text-muted-foreground">{t("pages.health.noEvents")}</span>;
+  }
+  const stale = now - at > STALE_AFTER_MS;
+  const when = fmt.relative(at, now);
+  return (
+    <span
+      data-testid="health-last-event"
+      data-stale={stale || undefined}
+      title={fmt.dateTime(at)}
+      className={cn(
+        "inline-flex items-center gap-1 text-xs",
+        stale ? "text-[color:var(--status-warning-text)]" : "text-muted-foreground",
+      )}
+    >
+      {stale && <AlertTriangle aria-hidden className="h-3 w-3 flex-none" />}
+      {t(stale ? "pages.health.lastEventStale" : "pages.health.lastEvent", { when })}
+    </span>
+  );
+}
+
 function SlaPill({ state }: { state: SlaState }) {
   const label = useSlaLabel();
   return (
@@ -328,11 +382,13 @@ function TargetRow({
   mttr,
   buckets,
   state,
+  now,
 }: {
   row: UptimeRow;
   mttr: MttrRow | undefined;
   buckets: TimelineRow[];
   state: SlaState;
+  now: number;
 }) {
   const { t } = useTranslation();
   const fmt = useFormat();
@@ -356,7 +412,7 @@ function TargetRow({
       <Timeline buckets={buckets} className="h-4 w-20 flex-none" />
       <span className="w-16 flex-none text-right font-mono text-xs">
         <span className="sr-only">{t("pages.health.uptimeShort")} </span>
-        {pct(fmt, row.uptime)}
+        {pct(fmt, row.events === 0 ? undefined : row.uptime)}
       </span>
       <span className="w-24 flex-none text-right font-mono text-xs text-[color:var(--text-subtle)]">
         {t("pages.health.failuresShort", { count: row.errors + row.timeouts })}
@@ -364,6 +420,9 @@ function TargetRow({
       {/* a bare "42s" says nothing, so the figure names itself */}
       <span className="w-28 flex-none text-right font-mono text-xs text-[color:var(--text-subtle)]">
         {t("pages.health.mttr")} {mttrLabel(fmt, mttr?.mttr_seconds)}
+      </span>
+      <span className="w-40 flex-none text-right">
+        <LastEvent at={eventAt(row)} now={now} />
       </span>
     </div>
   );
@@ -375,16 +434,27 @@ export default function Health() {
   const uptime = useQuery({
     queryKey: ["health-uptime", SLA],
     queryFn: () => fetchUptime(SLA),
+    refetchInterval: REFETCH_MS,
   });
 
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
   // `uptime` is the query the user is actually waiting on for this screen
   useScreenReady(!uptime.isLoading);
-  const mttr = useQuery({ queryKey: ["health-mttr"], queryFn: fetchMttr });
+  const mttr = useQuery({
+    queryKey: ["health-mttr"],
+    queryFn: fetchMttr,
+    refetchInterval: REFETCH_MS,
+  });
   const timeline = useQuery({
     queryKey: ["health-timeline"],
     queryFn: () => fetchHealthTimeline("hour"),
+    refetchInterval: REFETCH_MS,
   });
+  // one clock for every relative time on the screen, so "3 minutes ago" keeps
+  // ageing between refetches and the cards do not drift apart
+  const now = useNow(30_000);
+  // the page is as fresh as its oldest read; shown only once all three answered
+  const updatedAt = Math.min(uptime.dataUpdatedAt, mttr.dataUpdatedAt, timeline.dataUpdatedAt);
 
   const isLoading = uptime.isLoading || mttr.isLoading || timeline.isLoading;
   const error = uptime.error || mttr.error || timeline.error;
@@ -408,6 +478,14 @@ export default function Health() {
         <span className="text-sm text-muted-foreground">
           {t("pages.health.subtitle", { sla: pct(fmt, SLA) })}
         </span>
+        {updatedAt > 0 && (
+          <span
+            data-testid="health-updated"
+            className="ml-auto text-xs text-[color:var(--text-subtle)]"
+          >
+            {t("pages.health.updatedAt", { time: fmt.time(updatedAt) })}
+          </span>
+        )}
       </div>
       {isLoading && <CardGridSkeleton cards={4} height={218} min={340} />}
       {error && (
@@ -501,6 +579,7 @@ export default function Health() {
                   <Timeline buckets={headBuckets} detail />
                 </div>
               </div>
+              <LastEvent at={head.lastEvent} now={now} />
               <div className="grid grid-cols-1 gap-2.5 border-t sm:grid-cols-3 border-[color:var(--border-subtle)] pt-3">
                 <Stat label={t("pages.health.failures")} value={fmt.number(head.failures)} />
                 <Stat
@@ -524,6 +603,7 @@ export default function Health() {
                         mttr={mttrByTarget.get(key(group.provider, row.target_id))}
                         buckets={timelineByTarget.get(key(group.provider, row.target_id)) ?? []}
                         state={targetState(row)}
+                        now={now}
                       />
                     ))}
                   </div>

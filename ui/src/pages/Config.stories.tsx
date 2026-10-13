@@ -196,6 +196,29 @@ export const Loaded: Story = {
   },
 };
 
+// forty sections in one list want a filter: a section is found by its name or
+// by anything written inside it, and the count says how many survived (#2087)
+export const FilterSections: Story = {
+  render: () => <Stage fetchStub={loaded} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const filter = await canvas.findByRole("searchbox", {
+      name: "Filter sections by name or content",
+    });
+    await userEvent.type(filter, "ttl");
+    // `ttl_secs` sits inside `cache`, so the section is found by its content
+    await expect(await canvas.findByText("1 of 4 sections match")).toBeVisible();
+    await expect(canvas.getByText("cache")).toBeVisible();
+    await expect(canvas.queryByText("server")).toBeNull();
+    await userEvent.clear(filter);
+    await userEvent.type(filter, "nothing-like-this");
+    await expect(await canvas.findByText(/No section is called or contains/)).toBeVisible();
+    await expect(canvas.queryByText("cache")).toBeNull();
+    // the tables above are not a section and stay whatever is typed
+    await expect(canvas.getByRole("table", { name: "Providers" })).toBeVisible();
+  },
+};
+
 // the display name follows the dashboard's language, the id never leaks through
 export const KindNamesInRussian: Story = {
   globals: { locale: "ru" },
@@ -535,7 +558,7 @@ export const ExportFails: Story = {
     const names: string[] = [];
     await captureDownload(names, async () => {
       await userEvent.click(await canvas.findByRole("button", { name: "Export rolter.toml" }));
-      await expectToast(canvasElement, /Could not export the configuration export/, "error");
+      await expectToast(canvasElement, /Could not export the configuration(?! export)/, "error");
     });
     await expect(names).toHaveLength(0);
   },

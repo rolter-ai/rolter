@@ -365,6 +365,61 @@ export const SlaStates: Story = {
   },
 };
 
+// a 7-day uptime says nothing about whether a provider is still reporting:
+// the card and each target say when the last event arrived, a stale one takes
+// the warning tone and different words, and a provider that never reported
+// shows no uptime at all rather than a perfect one (#2118)
+const agoIso = (ms: number) => new Date(Date.now() - ms).toISOString();
+const STALE_UPTIME: UptimeRow[] = [
+  { ...uptimeRow("fresh", "fresh", 100, 0, ["probe"]), last_event: agoIso(2 * 60 * 1000) },
+  { ...uptimeRow("gone", "gone", 100, 0, ["probe"]), last_event: agoIso(3 * 60 * 60 * 1000) },
+  {
+    ...uptimeRow("silent", "gpt-4o", 0, 0, ["passive"]),
+    grain: "target",
+    uptime: 1,
+    failure_rate: 0,
+    error_budget_burn: 0,
+    last_event: "",
+  },
+];
+
+export const StaleProvider: Story = {
+  render: () => (
+    <Harness
+      fetchStub={routes([
+        ["/health/uptime", () => ({ data: STALE_UPTIME })],
+        ["/health/mttr", () => ({ data: [] })],
+        ["/health/timeline", () => ({ data: [] })],
+      ])}
+    >
+      <Health />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getAllByTestId(/^health-card-/)).toHaveLength(3));
+    // the page says when it last asked, and the header refresh re-reads it
+    await expect(canvas.getByTestId("health-updated")).toHaveTextContent(/^Updated /);
+
+    const fresh = within(canvas.getByTestId("health-card-fresh"));
+    await expect(fresh.getByTestId("health-last-event")).toHaveTextContent(/^Last event 2 min/);
+    await expect(fresh.getByTestId("health-last-event")).not.toHaveAttribute("data-stale");
+
+    const gone = within(canvas.getByTestId("health-card-gone"));
+    await expect(gone.getByTestId("health-last-event")).toHaveTextContent(/^Stale: last event 3 h/);
+    await expect(gone.getByTestId("health-last-event")).toHaveAttribute("data-stale", "true");
+    await expect(getComputedStyle(gone.getByTestId("health-last-event")).color).toBe(
+      resolveColorToken("--status-warning-text"),
+    );
+
+    // zero events: no uptime figure, and no claim about a last event
+    const silent = within(canvas.getByTestId("health-card-silent"));
+    await expect(silent.queryByText("100.00%")).toBeNull();
+    await expect(silent.getAllByText("—").length).toBeGreaterThan(0);
+    await expect(silent.getAllByText("No events yet").length).toBeGreaterThan(0);
+  },
+};
+
 // the timeline read fails while uptime succeeds: the grid still renders under
 // the error, and must not claim "no events" beside non-zero counts
 export const TimelineFailed: Story = {

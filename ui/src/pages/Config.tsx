@@ -1,5 +1,6 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import type { TFunction } from "i18next";
+import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { AlertTriangle, ArrowRight, Download, RefreshCw, ShieldCheck } from "lucide-react";
 import { Link, useNavigate } from "react-router";
@@ -17,6 +18,7 @@ import {
   ListRow,
   ListTable,
   primaryColumn,
+  SearchInput,
 } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
 import { CodeBlock } from "@/components/ui/code-block";
@@ -39,6 +41,7 @@ import { useCan } from "@/lib/can";
 import { gatewayPickup, type Pickup } from "@/lib/gateway-pickup";
 import { providerKindName } from "@/lib/provider-kinds";
 import { useToast } from "@/lib/toast";
+import { cn } from "@/lib/utils";
 import type { ReadState } from "@/lib/read-state";
 import { useScreenReady } from "@/lib/ux-react";
 
@@ -79,10 +82,10 @@ export default function Config() {
     : "";
 
   return (
-    <div className="grid items-start gap-4 p-[22px] xl:grid-cols-[1.5fr_1fr]">
+    <div className="flex flex-col gap-4 p-[22px]">
       <div className="flex min-w-0 flex-col gap-3">
+        {/* the shell's header already names the screen, so this row is only its summary */}
         <div className="flex flex-wrap items-center gap-2.5">
-          <h2 className="text-base font-medium">{t("pages.config.heading")}</h2>
           <span className="font-mono text-xs text-[color:var(--text-subtle)]">{summary}</span>
           <div className="ml-auto flex flex-wrap items-center gap-2.5">
             {/* only a caller who may read the inventory is told about it, and
@@ -93,7 +96,7 @@ export default function Config() {
           </div>
         </div>
         <div className="inline-flex items-center gap-2 rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] px-3 py-2 text-xs text-muted-foreground">
-          <ShieldCheck className="h-3.5 w-3.5 flex-none text-[color:var(--red-folk-text)]" />
+          <ShieldCheck className="h-3.5 w-3.5 flex-none text-[color:var(--text-subtle)]" />
           <span>
             <Trans
               i18nKey="pages.config.readOnlyNotice"
@@ -148,29 +151,33 @@ export default function Config() {
         {cfg && <AllSections config={cfg} />}
       </div>
 
-      <div className="flex flex-col gap-3">
-        <h2 className="text-base font-medium">{t("pages.config.related.title")}</h2>
-        <RelatedLink
-          to="/feature-flags"
-          title={t("pages.config.related.featureFlags.title")}
-          desc={t("pages.config.related.featureFlags.desc")}
-        />
-        <RelatedLink
-          to="/client-settings"
-          title={t("pages.config.related.clientSettings.title")}
-          desc={t("pages.config.related.clientSettings.desc")}
-        />
-        <RelatedLink
-          to="/model-settings"
-          title={t("pages.config.related.modelSettings.title")}
-          desc={t("pages.config.related.modelSettings.desc")}
-        />
-        <RelatedLink
-          to="/performance"
-          title={t("pages.config.related.performance.title")}
-          desc={t("pages.config.related.performance.desc")}
-        />
-      </div>
+      {/* four short links sit in a row under the tables rather than taking a
+          column of the page from them */}
+      <section className="flex flex-col gap-2">
+        <h3 className="text-sm font-medium">{t("pages.config.related.title")}</h3>
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <RelatedLink
+            to="/feature-flags"
+            title={t("pages.config.related.featureFlags.title")}
+            desc={t("pages.config.related.featureFlags.desc")}
+          />
+          <RelatedLink
+            to="/client-settings"
+            title={t("pages.config.related.clientSettings.title")}
+            desc={t("pages.config.related.clientSettings.desc")}
+          />
+          <RelatedLink
+            to="/model-settings"
+            title={t("pages.config.related.modelSettings.title")}
+            desc={t("pages.config.related.modelSettings.desc")}
+          />
+          <RelatedLink
+            to="/performance"
+            title={t("pages.config.related.performance.title")}
+            desc={t("pages.config.related.performance.desc")}
+          />
+        </div>
+      </section>
     </div>
   );
 }
@@ -530,13 +537,13 @@ function RelatedLink({ to, title, desc }: { to: string; title: string; desc: str
   return (
     <Link
       to={to}
-      className="group flex items-center gap-3 rounded-[10px] border border-[color:var(--border-default)] bg-card px-4 py-3.5 transition-colors hover:border-[color:var(--red-folk)]"
+      className="group flex items-center gap-3 rounded-[10px] border border-[color:var(--border-default)] bg-card px-4 py-3.5 transition-colors hover:border-[color:var(--border-strong)]"
     >
       <div className="min-w-0 flex-1">
         <div className="text-sm">{title}</div>
         <div className="text-xs text-muted-foreground">{desc}</div>
       </div>
-      <ArrowRight className="h-4 w-4 flex-none text-[color:var(--text-subtle)] transition-colors group-hover:text-[color:var(--red-folk-text)]" />
+      <ArrowRight className="h-4 w-4 flex-none text-[color:var(--text-subtle)] transition-colors group-hover:text-foreground" />
     </Link>
   );
 }
@@ -553,8 +560,16 @@ const HIDDEN = new Set(["db_virtual_keys", "mcp_oauth_sessions"]);
 
 function AllSections({ config }: { config: GatewayConfigDto }) {
   const { t } = useTranslation();
+  const [search, setSearch] = React.useState("");
   const sections = Object.entries(config).filter(([key]) => !TABLED.has(key) && !HIDDEN.has(key));
   const json = JSON.stringify(config, null, 2);
+  // a section is found by its name or by anything written in it, so `retry`
+  // reaches the section that holds a retry setting as well as one called that
+  const q = search.trim().toLowerCase();
+  const shown = sections.filter(
+    ([key, value]) =>
+      q === "" || key.toLowerCase().includes(q) || JSON.stringify(value).toLowerCase().includes(q),
+  );
   return (
     <section className="flex flex-col gap-2">
       <div className="flex items-center gap-2">
@@ -565,8 +580,28 @@ function AllSections({ config }: { config: GatewayConfigDto }) {
         <CopyButton className="ml-auto" value={json} label={t("pages.config.allSections.copy")} />
       </div>
       <p className="text-xs text-muted-foreground">{t("pages.config.allSections.body")}</p>
-      <div className="overflow-hidden rounded-[10px] border border-[color:var(--border-subtle)]">
-        {sections.map(([key, value]) => (
+      <SearchInput
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+        placeholder={t("pages.config.allSections.search")}
+      />
+      {q !== "" && (
+        <p role="status" className="text-xs text-muted-foreground">
+          {shown.length === 0
+            ? t("pages.config.allSections.noMatch", { query: search.trim() })
+            : t("pages.config.allSections.matching", {
+                shown: shown.length,
+                total: sections.length,
+              })}
+        </p>
+      )}
+      <div
+        className={cn(
+          "overflow-hidden rounded-[10px] border border-[color:var(--border-subtle)]",
+          shown.length === 0 && "hidden",
+        )}
+      >
+        {shown.map(([key, value]) => (
           <details
             key={key}
             className="group border-b border-[color:var(--border-subtle)] last:border-b-0"
