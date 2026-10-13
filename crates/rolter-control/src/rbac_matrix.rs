@@ -417,7 +417,7 @@ const CAPABILITIES: &[Capability] = &[
     },
     Capability {
         resource: "membership",
-        scope: "org",
+        scope: "project",
         read: VIEWER,
         create: ADMIN,
         // changing a grant's role is granting the new role and revoking the
@@ -575,7 +575,7 @@ const CAPABILITIES: &[Capability] = &[
     },
     Capability {
         resource: "invitation",
-        scope: "org",
+        scope: "project",
         read: ADMIN,
         create: ADMIN,
         update: NA,
@@ -828,30 +828,35 @@ pub(crate) const fn requirement_for(resource: &'static str, action: Action) -> R
 /// Resources whose rows live at more than one scope, so the table declares the
 /// deepest one and a guard may check a shallower chain for a row that sits
 /// higher up (an org-wide provider is an org admin's, #1919; a budget is
-/// checked at its own scope, #2527). Anything else must guard at exactly the
-/// scope its row declares.
+/// checked at its own scope, #2527). A role is granted at the scope it is
+/// granted for, so `membership` and `invitation` guard at the target's own
+/// scope: a team admin grants in their team and a project admin in their
+/// project (#3074). Anything else must guard at exactly the scope its row
+/// declares.
 #[cfg(debug_assertions)]
-const MULTI_SCOPE: &[&str] = &["provider", "provider_group", "budget", "rate_limit"];
+const MULTI_SCOPE: &[&str] = &[
+    "provider",
+    "provider_group",
+    "budget",
+    "rate_limit",
+    "membership",
+    "invitation",
+];
 
-/// Guards that already use a chain depth their row does not declare, found when
-/// the check was added and left as they are: changing one changes who is
-/// authorized, which a hygiene check must not do. Each `(resource, depth)` is
-/// one extra depth accepted; the list is meant to shrink to nothing (#3074).
+/// Reads that guard deeper than their row declares, as `(resource, action,
+/// depth)`: a listing answers with the rows the caller reaches through a team
+/// or project role (#1846, #1850), so each row is decided at its own scope
+/// while the row's other actions stay where they are. Declaring the deeper
+/// scope for the whole row would make `effective` promise `project:create` and
+/// `user:create` to a team or project admin whom the guard refuses, and the
+/// dashboard mirrors one scope per row, so these stay listed until a row can
+/// declare a scope per action (#3074).
 #[cfg(debug_assertions)]
-const KNOWN_DRIFT: &[(&str, u8)] = &[
-    // the project list guards at the org, a single project at the project
-    ("project", 1),
-    ("project", 3),
-    // deleting a team guards at the team
-    ("team", 2),
-    // granting a role in a team guards at that team
-    ("membership", 2),
-    // the member listings filter each row at its own scope
-    ("membership", 3),
-    ("user", 2),
-    ("user", 3),
-    ("invitation", 2),
-    ("invitation", 3),
+const KNOWN_DRIFT: &[(&str, &str, u8)] = &[
+    ("project", "read", 1),
+    ("project", "read", 3),
+    ("user", "read", 2),
+    ("user", "read", 3),
 ];
 
 /// How many levels of the org, team, project chain a guard names.
@@ -893,7 +898,7 @@ pub(crate) fn guard_shape_mismatch(requirement: Requirement, chain: ScopeChain) 
     let multi = MULTI_SCOPE.contains(&cap.resource);
     let agrees = used == declared
         || (multi && used >= 1 && used < declared)
-        || KNOWN_DRIFT.contains(&(cap.resource, used));
+        || KNOWN_DRIFT.contains(&(cap.resource, action_key(requirement.action), used));
     (!agrees).then(|| {
         format!(
             "guard on {}:{} uses a chain {used} levels deep but CAPABILITIES declares scope {:?} ({declared} levels)",
@@ -1360,6 +1365,23 @@ mod tests {
         let provider = requirement_for("provider", Action::Read);
         assert!(guard_shape_mismatch(provider, chain_of(1)).is_none());
         assert!(guard_shape_mismatch(provider, chain_of(3)).is_none());
+    }
+
+    #[test]
+    fn a_role_is_granted_and_invited_at_the_target_scope() {
+        for resource in ["membership", "invitation"] {
+            let create = requirement_for(resource, Action::Create);
+            for depth in 1..=3 {
+                assert!(guard_shape_mismatch(create, chain_of(depth)).is_none());
+            }
+        }
+        // team and project deletes sit at exactly the scope their row declares
+        let project = requirement_for("project", Action::Delete);
+        assert!(guard_shape_mismatch(project, chain_of(2)).is_none());
+        assert!(guard_shape_mismatch(project, chain_of(3)).is_some());
+        let team = requirement_for("team", Action::Delete);
+        assert!(guard_shape_mismatch(team, chain_of(1)).is_none());
+        assert!(guard_shape_mismatch(team, chain_of(2)).is_some());
     }
 
     #[test]

@@ -2257,7 +2257,14 @@ async fn delete_team(
 ) -> ApiResult<StatusCode> {
     let chain = ScopeChain::from_team(pool(&state), id).await?;
     let org_id = chain.org;
-    authorize(&state, &principal, chain, cap!("team", Delete)).await?;
+    // `team` rows are org-scoped, like creating one: an admin of the team
+    // itself does not delete it (#3074)
+    let org_chain = ScopeChain {
+        team: None,
+        project: None,
+        ..chain
+    };
+    authorize(&state, &principal, org_chain, cap!("team", Delete)).await?;
     let project_ids: Vec<Uuid> = ProjectRepo(pool(&state))
         .list(id)
         .await?
@@ -2387,7 +2394,13 @@ async fn delete_project(
 ) -> ApiResult<StatusCode> {
     let chain = ScopeChain::from_project(pool(&state), id).await?;
     let org_id = chain.org;
-    authorize(&state, &principal, chain, cap!("project", Delete)).await?;
+    // `project` rows are team-scoped, like creating one: an admin of the
+    // project itself does not delete it (#3074)
+    let team_chain = ScopeChain {
+        project: None,
+        ..chain
+    };
+    authorize(&state, &principal, team_chain, cap!("project", Delete)).await?;
     require_no_scoped_resources(&state, &[id], "project").await?;
     ProjectRepo(pool(&state)).delete(id).await?;
     log_audit(

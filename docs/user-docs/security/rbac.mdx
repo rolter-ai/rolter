@@ -149,7 +149,7 @@ Keys and routes declared in the gateway's own config file belong to the deployme
 
 ## What each person can list
 
-Lists answer with what you can reach instead of refusing outright. A project member who holds no role at the team or org still sees their own team and project in the scope switcher, and the dashboard opens on their project; a team admin sees and manages the people, memberships and invitations of their own team.
+Lists answer with what you can reach instead of refusing outright. A project member who holds no role at the team or org still sees their own team and project in the scope switcher, and the dashboard opens on their project; a team admin sees and manages the people, memberships and invitations of their own team. Deleting a team takes an organization admin, as creating one does, and deleting a project takes an admin of its team; the admin of the team or project being deleted is refused with `403`.
 
 | List                                     | A role at the level above          | A role only further down                                   |
 | ---------------------------------------- | ---------------------------------- | ---------------------------------------------------------- |

@@ -665,7 +665,7 @@
     },
     {
       "resource": "membership",
-      "scope": "org",
+      "scope": "project",
       "actions": [
         {
           "action": "read",
@@ -1031,7 +1031,7 @@
     },
     {
       "resource": "invitation",
-      "scope": "org",
+      "scope": "project",
       "actions": [
         {
           "action": "read",
