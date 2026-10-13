@@ -72,7 +72,7 @@
     },
     "enrolBy": {
       "title": "Two-factor authentication is required from {{date}}",
-      "detail": "Your organization requires it. Set it up under Account before then — after that date, signing in asks you to set it up first."
+      "detail": "Your organization requires it. Set it up under Account & keys before then — after that date, signing in asks you to set it up first."
     }
   },
   "common": {
@@ -640,7 +640,10 @@
           "title": "Point a client at Rolter",
           "body": "The base URL and a virtual key are all any OpenAI-compatible client needs."
         }
-      }
+      },
+      "progress": "{{done}} of {{total}} · Next: {{next}}",
+      "showSteps": "Show steps",
+      "hideSteps": "Hide steps"
     },
     "dashboard": {
       "statRequests": "Requests (24h)",
@@ -1403,11 +1406,7 @@
         "deleteBody": "<0>{{prefix}}</0> stops authenticating immediately, so every client still sending it is refused. This cannot be undone.",
         "deleteConfirm": "Delete key"
       },
-      "cacheModes": {
-        "inherit": "inherit",
-        "off": "off",
-        "on": "on"
-      }
+      "exportCsvFiltered": "Export matching keys as CSV"
     },
     "acceptInvite": {
       "invalidLink": "This invitation link is not valid. It may have been used, revoked or expired. If you already accepted it, sign in; otherwise ask whoever invited you for a new link.",
@@ -4627,7 +4626,7 @@
     },
     "api-keys": {
       "title": "Account & keys",
-      "subtitle": "Your profile, how you sign in, and the virtual keys you call the gateway with."
+      "subtitle": "Your profile, password, two-factor authentication and the virtual keys you call the gateway with."
     },
     "performance": {
       "title": "Performance Tuning",
@@ -4917,10 +4916,10 @@
     "modelsEmpty": "No routes in this project yet",
     "modelsEmptyBody": "Nothing to tick until this project has a route. Type a model address below to allow it anyway.",
     "modelsPlaceholder": "gpt-4o, claude-sonnet",
-    "nameHint": "required — the secret is shown once, so this is how you will recognise the key later",
+    "nameHint": "Required. The secret is shown once, so this is how you will recognise the key later.",
     "nameTooLong": "At most {{max}} characters",
     "expiry": "Expires",
-    "expiryHint": "the key stops authenticating on this date; rotate or mint a new one before then",
+    "expiryHint": "The key stops authenticating on this date. Rotate or mint a new one before then.",
     "expiryNever": "Never expires",
     "expiryNeverWarning": "This key will work until someone revokes it. Prefer a finite lifetime for anything that reaches a paid provider.",
     "expiryDays_one": "In {{count}} day",
@@ -4940,7 +4939,7 @@
     },
     "cache": "Response cache",
     "cacheHint": "Inherit uses the route setting; the deployment-wide cache switch still applies.",
-    "cacheInherit": "Inherit route setting",
+    "cacheInherit": "Inherit",
     "cacheOff": "Off",
     "cacheOn": "On",
     "providers": "Provider allow-list (optional)",

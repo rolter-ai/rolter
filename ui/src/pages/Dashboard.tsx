@@ -316,6 +316,13 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
       ? t("pages.dashboard.live")
       : t("pages.dashboard.feed.loading");
 
+  // a filtered zero is the filter's, not a first run with nothing served yet
+  const requestsServed = summary.isSuccess && !filtered ? num(summary.data?.requests) : undefined;
+  // with traffic the telemetry leads and the checklist sits under it; without,
+  // the checklist is what there is to look at
+  const served = (requestsServed ?? 0) > 0;
+  const gettingStarted = <GettingStarted requests={requestsServed} />;
+
   return (
     <PageBody className="gap-[18px]">
       <div className="flex flex-wrap items-center gap-2">
@@ -360,10 +367,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
           </Button>
         </section>
       )}
-      {/* a filtered zero is the filter's, not a first run with nothing served yet */}
-      <GettingStarted
-        requests={summary.isSuccess && !filtered ? num(summary.data?.requests) : undefined}
-      />
+      {!served && gettingStarted}
       <div data-testid="dashboard-figures">
         <CardRead
           read={summary}
@@ -429,6 +433,8 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
         requests={num(summary.data?.unpriced_requests)}
         models={num(summary.data?.unpriced_models)}
       />
+
+      {served && gettingStarted}
 
       <div className="grid gap-3.5 xl:grid-cols-[1.6fr_1fr]">
         <Card data-testid="dashboard-spend">

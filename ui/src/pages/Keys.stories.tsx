@@ -323,6 +323,74 @@ export const Forbidden: Story = {
   },
 };
 
+/** the file the export button hands over, read back from the Blob it made */
+const exported: { name: string; text: Promise<string> }[] = [];
+
+/** stands in for the download: records the file name and the Blob's text */
+function captureDownloads() {
+  exported.length = 0;
+  const blobs = new Map<string, Blob>();
+  const create = URL.createObjectURL;
+  const revoke = URL.revokeObjectURL;
+  const click = HTMLAnchorElement.prototype.click;
+  URL.createObjectURL = (blob) => {
+    const url = `blob:story-${blobs.size}`;
+    blobs.set(url, blob as Blob);
+    return url;
+  };
+  URL.revokeObjectURL = () => {};
+  HTMLAnchorElement.prototype.click = function () {
+    exported.push({ name: this.download, text: (blobs.get(this.href) as Blob).text() });
+  };
+  return () => {
+    URL.createObjectURL = create;
+    URL.revokeObjectURL = revoke;
+    HTMLAnchorElement.prototype.click = click;
+  };
+}
+
+const AWKWARD: VirtualKeyRow[] = [
+  { ...KEYS[0], id: "vk-a", name: "billing, eu", key_prefix: "sk-rolter-aaa" },
+  { ...KEYS[0], id: "vk-b", name: '=HYPERLINK("http://x")', key_prefix: "sk-rolter-bbb" },
+  { ...KEYS[0], id: "vk-c", name: "plain", key_prefix: "sk-rolter-ccc" },
+];
+
+/**
+ * The export writes a real CSV: a name with a comma stays one column, a quote is
+ * doubled, and a name a spreadsheet would run as a formula is written as text.
+ * With a search active it exports only those rows, and the button and the file
+ * name say so (#2057).
+ */
+export const ExportQuotesAndNamesItsRows: Story = {
+  beforeEach: captureDownloads,
+  render: () => (
+    <Harness fetchStub={withKeys(AWKWARD)}>
+      <Keys />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText("plain");
+    await userEvent.click(canvas.getByRole("button", { name: en.pages.virtualKeys.exportCsv }));
+    await expect(exported[0]?.name).toBe("virtual-keys.csv");
+    const lines = (await exported[0].text).trimEnd().split("\r\n");
+    await expect(lines).toHaveLength(4);
+    await expect(lines[1]).toMatch(/^"billing, eu",sk-rolter-aaa,/);
+    await expect(lines[2]).toMatch(/^"'=HYPERLINK\(""http:\/\/x""\)",sk-rolter-bbb,/);
+
+    await userEvent.type(
+      canvas.getByPlaceholderText(en.pages.virtualKeys.searchPlaceholder),
+      "plain",
+    );
+    await waitFor(() => expect(canvas.queryByText("billing, eu")).toBeNull());
+    await userEvent.click(
+      canvas.getByRole("button", { name: en.pages.virtualKeys.exportCsvFiltered }),
+    );
+    await expect(exported[1]?.name).toBe("virtual-keys-filtered.csv");
+    await expect((await exported[1].text).trimEnd().split("\r\n")).toHaveLength(2);
+  },
+};
+
 const MINTED_KEY = "sk-rolter-plaintext-shown-once";
 
 /** a control plane that answers a mint with the plaintext key */

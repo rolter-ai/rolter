@@ -1076,7 +1076,7 @@ export const KeyNamesKeepTheirColumnAt1024: Story = keysKeepTheirNames("en");
 export const KeyNamesKeepTheirColumnAt1024InRussian: Story = keysKeepTheirNames("ru");
 
 /**
- * The cache policy of a key is a combobox in the row, and "наследовать" was cut
+ * The cache policy of a key is a combobox in the row, and "Наследовать" was cut
  * to "насле…" in it: the table was already at its floor and the column took
  * what the others left. The control now holds its longest value in full, in
  * either language, so the word the row means is the word on screen.
@@ -1104,7 +1104,7 @@ function keysShowTheirCachePolicy(locale: "en" | "ru") {
         });
       for (const name of ["Playground", "ci-nightly-regression-runner-eu-west"]) {
         const cache = await policy(name);
-        const value = cat.pages.virtualKeys.cacheModes.inherit;
+        const value = cat.keyMint.cacheInherit;
         await expect(cache).toHaveValue(value);
         // the text is whole inside the field: nothing runs past its padding box
         await expect(cache.scrollWidth).toBeLessThanOrEqual(cache.clientWidth + 1);

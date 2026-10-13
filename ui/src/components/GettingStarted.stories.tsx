@@ -233,21 +233,96 @@ export const AnAdminGetsTheSavedBaseUrl: Story = {
   },
 };
 
+/** a provider and a route exist, the key does not: two of four steps once the call is made */
+const keyMissing: FetchStub = routes([
+  ["/providers", () => [PROVIDER]],
+  ["/routes", () => [ROUTE]],
+  ["/virtual-keys", () => []],
+]);
+
+const primaryLink = (canvas: ReturnType<typeof within>, action: string) =>
+  canvas.getByRole("link", { name: new RegExp(action) });
+
 /**
- * The state is the rows, not a local checklist: with a provider, a route and a
- * key in the store, three steps read as done without anything having been
- * ticked here. This is what "another admin did the work" looks like on reload.
+ * The state is the rows, not a local checklist: with a provider and a route in
+ * the store, two steps read as done without anything having been ticked here.
+ * This is what "another admin did the work" looks like on reload. Once any
+ * step is done the card is one line, and the steps open from it.
  */
 export const StepsFollowTheRealRows: Story = {
-  render: () => render(configured),
+  render: () => render(keyMissing),
   play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(
+      await canvas.findByRole("button", { name: en.pages.gettingStarted.showSteps }),
+    );
     await waitFor(() =>
       expect(state(canvasElement, "provider")).toBe(en.pages.gettingStarted.done),
     );
     await expect(state(canvasElement, "route")).toBe(en.pages.gettingStarted.done);
-    await expect(state(canvasElement, "key")).toBe(en.pages.gettingStarted.done);
+    await expect(state(canvasElement, "key")).toBe(en.pages.gettingStarted.todo);
     // no traffic yet, so the one step the operator has not done is still open
     await expect(state(canvasElement, "call")).toBe(en.pages.gettingStarted.todo);
+  },
+};
+
+/**
+ * Any step done collapses the card to one line: how far along, and which step
+ * is next, with the one primary button the strip carries. The steps and the
+ * request snippet stay a click away.
+ */
+export const CollapsesToAProgressStripOnceAStepIsDone: Story = {
+  render: () => render(keyMissing),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    // the call step is the first undone one: 2 of 4 are done, the Playground is next
+    await expect(
+      await canvas.findByText(`2 of 4 · Next: ${en.pages.gettingStarted.steps.call.action}`),
+    ).toBeVisible();
+    await expect(canvas.queryByText(en.pages.gettingStarted.subtitle)).toBeNull();
+    await expect(canvas.queryByRole("region", { name: /Request/ })).toBeNull();
+    await expect(primaryLink(canvas, en.pages.gettingStarted.steps.call.action).className).toMatch(
+      /bg-primary/,
+    );
+
+    await userEvent.click(canvas.getByRole("button", { name: en.pages.gettingStarted.showSteps }));
+    await expect(await canvas.findByText(en.pages.gettingStarted.subtitle)).toBeVisible();
+    // only the next undone step is primary; a done step has no button at all
+    await expect(
+      canvas.queryByRole("link", {
+        name: new RegExp(en.pages.gettingStarted.steps.provider.action),
+      }),
+    ).toBeNull();
+    await expect(primaryLink(canvas, en.pages.gettingStarted.steps.call.action).className).toMatch(
+      /bg-primary/,
+    );
+    await expect(
+      primaryLink(canvas, en.pages.gettingStarted.steps.key.action).className,
+    ).not.toMatch(/bg-primary/);
+    const hide = canvas.getByRole("button", { name: en.pages.gettingStarted.hideSteps });
+    await userEvent.click(hide);
+    await waitFor(() => expect(canvas.queryByText(en.pages.gettingStarted.subtitle)).toBeNull());
+  },
+};
+
+/** nothing done yet: the whole card, with the first step primary and the rest outlined */
+export const OnlyTheNextStepIsPrimary: Story = {
+  render: () => render(empty),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText(en.pages.gettingStarted.subtitle)).toBeVisible();
+    await waitFor(() => primaryLink(canvas, en.pages.gettingStarted.steps.call.action));
+    await expect(
+      canvas.queryByRole("button", { name: en.pages.gettingStarted.showSteps }),
+    ).toBeNull();
+    await expect(primaryLink(canvas, en.pages.gettingStarted.steps.call.action).className).toMatch(
+      /bg-primary/,
+    );
+    for (const step of ["provider", "route", "key"] as const) {
+      await expect(
+        primaryLink(canvas, en.pages.gettingStarted.steps[step].action).className,
+      ).not.toMatch(/bg-primary/);
+    }
   },
 };
 
@@ -433,27 +508,56 @@ export const DismissedAndReopened: Story = {
   },
 };
 
+const gone = async (canvasElement: HTMLElement) => {
+  const canvas = within(canvasElement);
+  await waitFor(() => expect(canvas.queryByText(en.pages.gettingStarted.subtitle)).toBeNull());
+  await expect(canvas.queryByRole("button", { name: en.pages.gettingStarted.dismiss })).toBeNull();
+  await expect(canvas.queryByText(/ of 4 · /)).toBeNull();
+  // and no way back either: there is nothing left to come back to
+  await expect(canvas.queryByRole("button", { name: en.pages.gettingStarted.reopen })).toBeNull();
+};
+
 /**
- * Traffic alone is not enough to retire it — one `fake-llm` call in the
- * Playground is step one of four — but traffic on a deployment that has a
- * provider is a deployment past its first run, and the card leaves.
+ * A provider, a route and a key are everything the checklist asks for, so the
+ * card leaves with them, whatever the traffic says.
  */
 export const RetiresOnceConfiguredAndServing: Story = {
   render: () => render(configured, { requests: 132 }),
+  play: async ({ canvasElement }) => gone(canvasElement),
+};
+
+/** a quiet day on a configured deployment does not bring the card back (#1977) */
+export const StaysRetiredOnAQuietDay: Story = {
+  render: () => render(configured, { requests: 0 }),
+  play: async ({ canvasElement }) => gone(canvasElement),
+};
+
+/**
+ * No analytics store means no request count at all, and the card still retires:
+ * it reads rows, not traffic (#1977).
+ */
+export const RetiresWithoutAnalytics: Story = {
+  render: () => render(configured),
+  play: async ({ canvasElement }) => gone(canvasElement),
+};
+
+/** traffic with no provider is a deployment on the built-in model only: it stays */
+export const StaysWithTrafficAndNoProvider: Story = {
+  render: () => render(empty, { requests: 132 }),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await waitFor(() => expect(canvas.queryByText(en.pages.gettingStarted.subtitle)).toBeNull());
     await expect(
-      canvas.queryByRole("button", { name: en.pages.gettingStarted.dismiss }),
-    ).toBeNull();
-    // and no way back either: there is nothing left to come back to
-    await expect(canvas.queryByRole("button", { name: en.pages.gettingStarted.reopen })).toBeNull();
+      await canvas.findByText(`1 of 4 · Next: ${en.pages.gettingStarted.steps.provider.action}`),
+    ).toBeVisible();
   },
 };
 
 export const StaysWhileOnlyTheBuiltInModelWasCalled: Story = {
   render: () => render(empty, { requests: 3 }),
   play: async ({ canvasElement }) => {
+    await userEvent.click(
+      await within(canvasElement).findByRole("button", { name: en.pages.gettingStarted.showSteps }),
+    );
     await waitFor(() => expect(state(canvasElement, "call")).toBe(en.pages.gettingStarted.done));
     await expect(state(canvasElement, "provider")).toBe(en.pages.gettingStarted.todo);
   },

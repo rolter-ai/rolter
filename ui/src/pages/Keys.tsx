@@ -75,6 +75,7 @@ import {
   type ProviderRow,
   type VirtualKeyRow,
 } from "@/lib/api";
+import { csvLine } from "@/lib/csv";
 import { useFormat } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
 import { describeError, errorText } from "@/lib/error-copy";
@@ -175,26 +176,28 @@ export default function Keys() {
   const customerName = (id: string | null | undefined) =>
     customers.data?.find((c) => c.id === id)?.name;
 
+  // the search narrows what is exported, and the button and the file name say so
+  const filtered = q !== "";
   const exportCsv = () => {
     const lines = [
       "name,key_prefix,models,providers,business_unit,customer,disabled,expires_at",
       ...rows.map((k) =>
-        [
-          k.name ?? "",
+        csvLine([
+          k.name,
           k.key_prefix,
           k.models.join("|"),
           (k.providers ?? []).join("|"),
-          unitName(k.business_unit_id) ?? "",
-          customerName(k.customer_id) ?? "",
+          unitName(k.business_unit_id),
+          customerName(k.customer_id),
           k.disabled,
-          k.expires_at ?? "",
-        ].join(","),
+          k.expires_at,
+        ]),
       ),
     ];
-    const blob = new Blob([lines.join("\n")], { type: "text/csv" });
+    const blob = new Blob([lines.join("\r\n") + "\r\n"], { type: "text/csv" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = "virtual-keys.csv";
+    a.download = filtered ? "virtual-keys-filtered.csv" : "virtual-keys.csv";
     a.click();
     URL.revokeObjectURL(a.href);
   };
@@ -224,7 +227,7 @@ export default function Keys() {
           {/* a list that has not loaded exports a header line and no rows,
               which reads as a project with no keys (#2056) */}
           <Button variant="outline" disabled={!keys.isSuccess} onClick={exportCsv}>
-            {t("pages.virtualKeys.exportCsv")}
+            {t(filtered ? "pages.virtualKeys.exportCsvFiltered" : "pages.virtualKeys.exportCsv")}
           </Button>
           <GatedButton
             gate="virtual_key:create"
@@ -343,9 +346,9 @@ export default function Keys() {
                   setCache.mutate({ id: key.id, cache: parseCacheMode(picked) })
                 }
                 options={[
-                  { value: "inherit", label: t("pages.virtualKeys.cacheModes.inherit") },
-                  { value: "off", label: t("pages.virtualKeys.cacheModes.off") },
-                  { value: "on", label: t("pages.virtualKeys.cacheModes.on") },
+                  { value: "inherit", label: t("keyMint.cacheInherit") },
+                  { value: "off", label: t("keyMint.cacheOff") },
+                  { value: "on", label: t("keyMint.cacheOn") },
                 ]}
               />
             </ListCell>
