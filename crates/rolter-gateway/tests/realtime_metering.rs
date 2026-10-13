@@ -1149,6 +1149,122 @@ async fn turn_tokens_fill_the_key_tpm_window() {
     );
 }
 
+/// The route's own caps, on a route owned by `org` so its Redis counters are
+/// this run's alone (#2936).
+fn with_route_limits(
+    mut config: GatewayConfig,
+    org: &str,
+    rpm: Option<u32>,
+    tpm: Option<u32>,
+    concurrency: Option<u32>,
+) -> GatewayConfig {
+    let route = &mut config.routes[0];
+    route.tenancy = Some(rolter_core::Tenancy {
+        org_id: org.to_string(),
+        project_id: None,
+    });
+    route.advanced.limits.rpm = rpm;
+    route.advanced.limits.tpm = tpm;
+    route.advanced.limits.concurrency = concurrency;
+    config
+}
+
+/// A route's `concurrency` holds a slot for as long as the session is open and
+/// frees it when the socket closes, with no Redis involved.
+#[tokio::test]
+async fn a_route_concurrency_cap_holds_for_the_life_of_a_session() {
+    let org = unique("org-route-conc");
+    let (upstream, sessions) = realtime_upstream(true).await;
+    let config = with_route_limits(config(upstream, None, &org), &org, None, None, Some(1));
+    let gw = gateway(&config, None).await;
+
+    let mut first = open(gw, KEY).await;
+    // another key of the same org: the cap is the route's, not the key's
+    let (status, body, retry_after) = refused(gw, OTHER_KEY).await;
+    assert_eq!(status, 429);
+    assert_eq!(body["error"]["code"], "rate_limit_exceeded", "{body}");
+    assert!(retry_after.is_some(), "a 429 says when to come back");
+    assert_eq!(sessions.load(Ordering::SeqCst), 1);
+
+    first.close(None).await.unwrap();
+    let mut reopened = None;
+    for _ in 0..100 {
+        match try_open(gw, OTHER_KEY).await {
+            Ok(client) => {
+                reopened = Some(client);
+                break;
+            }
+            Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
+        }
+    }
+    reopened
+        .expect("closing the session frees the slot")
+        .close(None)
+        .await
+        .unwrap();
+}
+
+/// Opening a session is one request against the route's `rpm`, whichever key
+/// opens it.
+#[tokio::test]
+async fn a_route_rpm_counts_every_keys_sessions() {
+    let Some(url) = redis_url() else {
+        eprintln!("ROLTER_TEST_REDIS_URL unset; skipping");
+        return;
+    };
+    let org = unique("org-route-rpm");
+    let (upstream, _) = realtime_upstream(true).await;
+    let config = with_route_limits(config(upstream, None, &org), &org, Some(1), None, None);
+    let gw = gateway(&config, Some(&url)).await;
+
+    let mut first = open(gw, KEY).await;
+    let (status, body, retry_after) = refused(gw, OTHER_KEY).await;
+    assert_eq!(status, 429);
+    assert!(
+        body["error"]["message"].as_str().unwrap().contains("rpm"),
+        "{body}"
+    );
+    assert!(retry_after.is_some());
+    first.close(None).await.unwrap();
+}
+
+/// A session's turns count against the route's `tpm` as they are metered.
+#[tokio::test]
+async fn turn_tokens_fill_the_route_tpm_window() {
+    let Some(url) = redis_url() else {
+        eprintln!("ROLTER_TEST_REDIS_URL unset; skipping");
+        return;
+    };
+    let org = unique("org-route-tpm");
+    let (upstream, _) = realtime_upstream(true).await;
+    let config = with_route_limits(config(upstream, None, &org), &org, None, Some(100), None);
+    let gw = gateway(&config, Some(&url)).await;
+
+    let mut client = open(gw, KEY).await;
+    run_turn(&mut client).await;
+    client.close(None).await.unwrap();
+
+    let mut refusal = None;
+    for _ in 0..100 {
+        match try_open(gw, OTHER_KEY).await {
+            Ok(mut admitted) => {
+                let _ = admitted.close(None).await;
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            Err(refused) => {
+                refusal = Some(refused);
+                break;
+            }
+        }
+    }
+    let (status, body, _) = refusal.expect("150 tokens against a 100 tpm cap refuse the route");
+    assert_eq!(status, 429);
+    assert!(
+        body["error"]["message"].as_str().unwrap().contains("tpm"),
+        "{body}"
+    );
+}
+
 // ── a real process: needs a unix signal ──────────────────────────────────────
 
 /// The drain above, through the binary: `SIGTERM` closes a live session with

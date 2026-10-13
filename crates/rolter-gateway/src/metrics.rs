@@ -15,6 +15,7 @@ const LATENCY_BUCKETS_MS: [u32; 13] = [1, 2, 5, 10, 25, 50, 100, 250, 500, 1000,
 const LABELLED_TARGET: &str = "rolter_target_requests_total";
 const LABELLED_VARIANT: &str = "rolter_variant_requests_total";
 const LABELLED_COMPLEXITY: &str = "rolter_complexity_route_requests_total";
+const LABELLED_ROUTE_LIMIT: &str = "rolter_route_limit_blocks_total";
 const LABELLED_REDIS_RECONNECTS: &str = "rolter_redis_reconnects_total";
 const LABELLED_REDIS_CONNECT_FAILURES: &str = "rolter_redis_connect_failures_total";
 const LABELLED_FAIL_OPEN: &str = "rolter_fail_open_total";
@@ -37,6 +38,10 @@ pub const LABELLED_FAMILIES: &[rolter_core::telemetry::LabelledFamily] = &[
     (
         LABELLED_COMPLEXITY,
         "complexity routing decisions by requested model, tier, selected route and outcome",
+    ),
+    (
+        LABELLED_ROUTE_LIMIT,
+        "requests refused by a route's own rpm, tpm or concurrency cap, per route and cap",
     ),
     (
         LABELLED_REDIS_RECONNECTS,
@@ -442,6 +447,9 @@ pub struct Metrics {
     /// complexity-policy selections keyed by (requested model, tier, selected
     /// route, outcome). Every label is configuration-bounded (16 tiers/route).
     by_complexity: DashMap<(String, String, String, String), AtomicU64>,
+    /// refusals by a route's own `advanced.limits` cap, keyed by (route, cap:
+    /// `rpm`, `tpm` or `concurrency`). The route label is configuration-bounded
+    by_route_limit: DashMap<(String, &'static str), AtomicU64>,
     /// queue depth, in-flight count and queue wait per provider name. Names
     /// come from the configured providers, so the label set is bounded by the
     /// config
@@ -539,6 +547,17 @@ impl Metrics {
                     "selected".to_string()
                 },
             ))
+            .or_default()
+            .fetch_add(1, Relaxed);
+    }
+
+    /// Record a request refused by `route`'s own `kind` cap (#2936). Also
+    /// counted in `rolter_rate_limit_blocks_total`, which stays the total of
+    /// every throughput refusal.
+    pub fn observe_route_limit(&self, route: &str, kind: &'static str) {
+        self.rate_limit_blocks_total.fetch_add(1, Relaxed);
+        self.by_route_limit
+            .entry((route.to_string(), kind))
             .or_default()
             .fetch_add(1, Relaxed);
     }
@@ -1032,6 +1051,14 @@ impl Metrics {
                 entry.value().load(Relaxed),
             ));
         }
+        for entry in self.by_route_limit.iter() {
+            let (route, kind) = entry.key();
+            out.push((
+                LABELLED_ROUTE_LIMIT,
+                vec![("route", route.clone()), ("kind", (*kind).to_string())],
+                entry.value().load(Relaxed),
+            ));
+        }
         for entry in self.by_provider.iter() {
             let load = entry.value();
             for (family, value) in [
@@ -1144,6 +1171,7 @@ impl Metrics {
         self.render_target_counters(&mut out);
         self.render_variant_counters(&mut out);
         self.render_complexity_counters(&mut out);
+        self.render_route_limit_counters(&mut out);
         self.render_provider_load(&mut out);
         self.render_redis(&mut out);
         out
@@ -1228,6 +1256,26 @@ impl Metrics {
                     entry.value().fail_open.load(Relaxed)
                 );
             }
+        }
+    }
+
+    /// Append the per-route refusal counter, one `{route,kind}` series per cap
+    /// that has refused something.
+    fn render_route_limit_counters(&self, out: &mut String) {
+        let name = LABELLED_ROUTE_LIMIT;
+        let _ = writeln!(
+            out,
+            "# HELP {name} requests refused by a route's own rpm, tpm or concurrency cap, per route and cap"
+        );
+        let _ = writeln!(out, "# TYPE {name} counter");
+        for entry in self.by_route_limit.iter() {
+            let (route, kind) = entry.key();
+            let route = escape_label(route);
+            let _ = writeln!(
+                out,
+                "{name}{{route=\"{route}\",kind=\"{kind}\"}} {}",
+                entry.value().load(Relaxed)
+            );
         }
     }
 
@@ -1403,6 +1451,7 @@ mod tests {
         m.observe_variant("gpt-4o", "b");
         m.observe_complexity("gpt-4o", "cheap", "mini", false);
         m.observe_complexity("gpt-4o", "cheap", "mini", true);
+        m.observe_route_limit("gpt-4o", "rpm");
         let _queued = QueuedGuard::new(m.provider_load("vllm"));
         let _inflight = QueuedGuard::new(m.provider_load("vllm")).picked();
         watch_all_redis_consumers(&m);
@@ -1466,9 +1515,11 @@ mod tests {
         m.observe_target("openai", "gpt-4o", true);
         m.observe_variant("gpt-4o", "b");
         m.observe_complexity("gpt-4o", "cheap", "mini", false);
+        m.observe_route_limit("gpt-4o", "tpm");
 
-        // one ok + one error per target, one per variant, one per complexity key
-        assert_eq!(m.labelled_for_export().len(), 2 + 1 + 1);
+        // one ok + one error per target, one per variant, one per complexity
+        // key, one per route cap that refused
+        assert_eq!(m.labelled_for_export().len(), 2 + 1 + 1 + 1);
     }
 
     /// Every family the exporter registers must be one the gateway actually
@@ -1479,6 +1530,7 @@ mod tests {
         m.observe_target("openai", "gpt-4o", true);
         m.observe_variant("gpt-4o", "b");
         m.observe_complexity("gpt-4o", "cheap", "mini", false);
+        m.observe_route_limit("gpt-4o", "concurrency");
         let _load = m.provider_load("vllm");
         watch_all_redis_consumers(&m);
 

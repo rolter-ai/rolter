@@ -1449,11 +1449,12 @@ export const OffersNoAdditionalFieldsSwitch: Story = {
 
 /**
  * A route that carries keys the gateway never read (#2924): a per-route
- * endpoint, an insecure-TLS switch, flat image and audio prices, and four
- * limits. The sheet offers none of them, and a save sheds them from the stored
+ * endpoint, an insecure-TLS switch, flat image and audio prices, and a context
+ * window. The sheet offers none of them, and a save sheds them from the stored
  * blob instead of copying them through, so the routes API stops reading back a
  * setting that looks like policy and does nothing. What the gateway does apply
- * (timeout, retries, headers, the guardrail selection) is kept.
+ * (timeout, retries, the throughput caps of #2936, headers, the guardrail
+ * selection) is kept.
  */
 const LEGACY_ROUTE: RouteRow = {
   ...ADVANCED_ROUTE,
@@ -1480,17 +1481,14 @@ export const ShedsTheSettingsTheGatewayNeverRead: Story = {
     const dialog = within(sheet());
     await seeded(dialog);
     await userEvent.click(dialog.getByRole("button", { name: "Limits & network" }));
-    // the three limits that apply are there, and none of what does not
+    // the limits that apply are there, and none of what does not
     await expect(dialog.getByLabelText("Timeout (ms)")).toHaveValue(30000);
     await expect(dialog.getByLabelText("Max retries")).toHaveValue(1);
     await expect(dialog.getByLabelText("Max output tokens")).toHaveValue(4096);
-    for (const gone of [
-      "Base URL override",
-      "Requests / min",
-      "Tokens / min",
-      "Max concurrency",
-      "Context window",
-    ]) {
+    await expect(dialog.getByLabelText("Requests per minute")).toHaveValue(600);
+    await expect(dialog.getByLabelText("Tokens per minute")).toHaveValue(90000);
+    await expect(dialog.getByLabelText("Concurrent requests")).toHaveValue(4);
+    for (const gone of ["Base URL override", "Context window"]) {
       await expect(dialog.queryByLabelText(gone)).not.toBeInTheDocument();
     }
     await expect(dialog.queryByText("Allow insecure TLS")).not.toBeInTheDocument();
@@ -1507,13 +1505,79 @@ export const ShedsTheSettingsTheGatewayNeverRead: Story = {
     for (const key of ["base_url", "insecure_tls", "pricing"]) {
       await expect(body.advanced).not.toHaveProperty(key);
     }
+    // the caps survive an edit of something else: re-saving must not reset a
+    // limit the operator set, and `context_window` is the one that is shed
     await expect(body.advanced.limits).toEqual({
       timeout_secs: 30,
       retries: 1,
       output_tokens: 4096,
+      rpm: 600,
+      tpm: 90000,
+      concurrency: 4,
     });
     await expect(body.advanced.headers).toEqual({ "X-Tenant": "beta" });
     await expect(body.advanced.guardrails).toEqual({ rules: ["pii-out"] });
+  },
+};
+
+/**
+ * A route's throughput caps are typed in the sheet and travel in the advanced
+ * blob (#2936). Blank is no cap and is not sent; a cleared field drops the cap
+ * from the stored blob.
+ */
+export const SavesTheThroughputCaps: Story = {
+  render: () => <Stage mode="edit" route={LEGACY_ROUTE} />,
+  play: async () => {
+    const dialog = within(sheet());
+    await seeded(dialog);
+    await userEvent.click(dialog.getByRole("button", { name: "Limits & network" }));
+    const rpm = dialog.getByLabelText("Requests per minute");
+    await userEvent.clear(rpm);
+    await userEvent.type(rpm, "120");
+    // clearing a cap removes it rather than sending a zero the backend refuses
+    await userEvent.clear(dialog.getByLabelText("Tokens per minute"));
+    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
+    const body = (await calls.expectSentBody("PUT", "/routes/route-1/advanced")) as {
+      advanced: { limits: Record<string, unknown> };
+    };
+    await expect(body.advanced.limits.rpm).toBe(120);
+    await expect(body.advanced.limits).not.toHaveProperty("tpm");
+    await expect(body.advanced.limits.concurrency).toBe(4);
+  },
+};
+
+/**
+ * A cap the control plane would refuse is said at its field before the save
+ * (#2936): zero would turn every request away, and blank is the way to say
+ * "no cap". Each message is stated once and the save puts focus on the field.
+ */
+export const ThroughputCapsOutOfRangeAreRefused: Story = {
+  render: () => <Stage mode="add" />,
+  play: async () => {
+    const dialog = within(sheet());
+    await seededBlank(dialog);
+    await userEvent.click(dialog.getByRole("button", { name: "Limits & network" }));
+    const rpm = dialog.getByLabelText("Requests per minute");
+    await userEvent.type(rpm, "0");
+    await expect(rpm).not.toHaveAttribute("aria-invalid");
+    await userEvent.tab();
+    await waitFor(() => expect(rpm).toHaveAttribute("aria-invalid", "true"));
+    await expect(rpm).toHaveAccessibleDescription(/whole number from 1 to 10000000/);
+    await expect(dialog.getAllByText(/whole number from 1 to 10000000/)).toHaveLength(1);
+    await userEvent.clear(rpm);
+    await userEvent.type(rpm, "10");
+    await userEvent.tab();
+    await waitFor(() => expect(rpm).not.toHaveAttribute("aria-invalid"));
+
+    const concurrency = dialog.getByLabelText("Concurrent requests");
+    await userEvent.type(concurrency, "1.5");
+    await userEvent.tab();
+    await waitFor(() => expect(concurrency).toHaveAttribute("aria-invalid", "true"));
+    await userEvent.type(dialog.getByLabelText("Route name"), "qwen-72b");
+    await pickOption(dialog.getByLabelText("Target 1 provider"), "vllm-cluster");
+    await userEvent.click(dialog.getByRole("button", { name: "Add route" }));
+    await waitFor(() => expect(concurrency).toHaveFocus());
+    calls.expectNotSent("POST", `/projects/${PROJECT.id}/routes`);
   },
 };
 

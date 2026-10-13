@@ -496,6 +496,9 @@ pub(crate) struct SessionMeter {
     pub(crate) key_digest: Option<String>,
     /// plugin calls the relay made, written onto the session's next row
     pub(crate) plugin_calls: PluginCalls,
+    /// the route's own `tpm` window, charged with the session's tokens like the
+    /// caller's (#2936)
+    pub(crate) route_tokens: Option<crate::rate_limits::RouteWindow>,
 }
 
 /// The relay's view of a running meter.
@@ -748,6 +751,9 @@ impl Runner {
             .rate_limiter
             .record_tokens(&snap.rate_limits, scope, tokens)
             .await;
+        if let Some(window) = &self.meter.route_tokens {
+            state.rate_limiter.record_route_tokens(window, tokens).await;
+        }
     }
 
     /// The last flush, plus a row for each response the end cut short.

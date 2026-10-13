@@ -150,6 +150,12 @@ interface ModelDraft {
     timeoutMs: string;
     retries: string;
     maxOutput: string;
+    /** requests per minute the route admits, across the fleet via Redis */
+    rpm: string;
+    /** tokens per minute the route admits, across the fleet via Redis */
+    tpm: string;
+    /** requests the route serves at once on each gateway replica */
+    concurrency: string;
   };
   headerMode: LockMode;
   headers: DraftHeader[];
@@ -271,6 +277,9 @@ function blankDraft(
       timeoutMs: "",
       retries: "",
       maxOutput: "",
+      rpm: "",
+      tpm: "",
+      concurrency: "",
     },
     headerMode: "manual",
     headers: [],
@@ -282,14 +291,20 @@ function blankDraft(
 /**
  * Keys a route's `advanced` blob used to carry and the gateway never read
  * (#2924): a per-route endpoint and an insecure-TLS switch, and flat image and
- * audio prices. A save sheds them from the stored blob; the limits that went the
- * same way (`rpm`, `tpm`, `concurrency`, `context_window`) drop out because the
- * limits object is rebuilt from the three that are applied.
+ * audio prices. A save sheds them from the stored blob; the `context_window`
+ * limit went the same way and drops out because the limits object is rebuilt
+ * from the ones the gateway applies. `rpm`, `tpm` and `concurrency` left with
+ * it and came back with a reader (#2936).
  */
 const RETIRED_ADVANCED_KEYS = ["base_url", "insecure_tls", "pricing"] as const;
 
 /** the most retries a route may ask for, which the control plane and gateway enforce */
 const MAX_ROUTE_RETRIES = 10;
+
+/** the largest `rpm` or `concurrency` the control plane accepts for a route (#2936) */
+const MAX_ROUTE_THROUGHPUT = 10_000_000;
+/** `tpm` is a u32 on the backend */
+const MAX_ROUTE_TPM = 4_294_967_295;
 
 /**
  * Seed the draft from a route's stored `advanced` blob (#1178).
@@ -332,6 +347,9 @@ function seedAdvanced(draft: ModelDraft, advanced: Record<string, unknown>) {
     typeof limits.timeout_secs === "number" ? String(limits.timeout_secs * 1000) : "";
   draft.net.retries = num(limits.retries);
   draft.net.maxOutput = num(limits.output_tokens);
+  draft.net.rpm = num(limits.rpm);
+  draft.net.tpm = num(limits.tpm);
+  draft.net.concurrency = num(limits.concurrency);
 
   const locked = new Set(strings(advanced.locked_headers));
   draft.headers = Object.entries(obj(advanced.headers)).map(([key, value]) => ({
@@ -411,12 +429,14 @@ function advancedToApi(
     .map(([key]) => key);
   put(out, "description", draft.description.trim() || undefined);
 
-  // rebuilt from the three limits the gateway applies, so the ones it never
-  // read (`rpm`, `tpm`, `concurrency`, `context_window`) drop out of a stored
-  // blob on the next save
+  // rebuilt from the limits the gateway applies, so one it never read
+  // (`context_window`) drops out of a stored blob on the next save
   const limits: Record<string, unknown> = {};
   put(limits, "retries", retries(draft.net.retries));
   put(limits, "output_tokens", limit(draft.net.maxOutput));
+  put(limits, "rpm", limit(draft.net.rpm));
+  put(limits, "tpm", limit(draft.net.tpm));
+  put(limits, "concurrency", limit(draft.net.concurrency));
   // the field is milliseconds and the backend stores whole seconds; a
   // sub-second timeout rounds up to 1 rather than to the 0 it would refuse
   const timeoutMs = Number(draft.net.timeoutMs);
@@ -945,6 +965,9 @@ type FieldKey =
   | "provider"
   | "weight"
   | "retries"
+  | "rpm"
+  | "tpm"
+  | "concurrency"
   | "param"
   | "header"
   | "cacheWrite"
@@ -1227,6 +1250,25 @@ export function ModelSheet({
     )
       ? t("modelSheet.errors.retries", { max: MAX_ROUTE_RETRIES })
       : "";
+  // blank means no cap; a cap is a whole number of at least 1, and the control
+  // plane refuses 0 and anything above its ceiling (#2936)
+  const capError = (typed: string, max: number, message: string) => {
+    const value = typed.trim();
+    if (readonly || value === "") return "";
+    const n = Number(value);
+    return Number.isInteger(n) && n >= 1 && n <= max ? "" : message;
+  };
+  const errRpm = capError(
+    draft.net.rpm,
+    MAX_ROUTE_THROUGHPUT,
+    t("modelSheet.errors.rpm", { max: MAX_ROUTE_THROUGHPUT }),
+  );
+  const errTpm = capError(draft.net.tpm, MAX_ROUTE_TPM, t("modelSheet.errors.tpm"));
+  const errConcurrency = capError(
+    draft.net.concurrency,
+    MAX_ROUTE_THROUGHPUT,
+    t("modelSheet.errors.concurrency", { max: MAX_ROUTE_THROUGHPUT }),
+  );
   const paramRowInvalid = (p: (typeof draft.params)[number]) =>
     p.custom && p.value.trim() !== "" && p.key.trim() === "";
   const headerRowInvalid = (h: (typeof draft.headers)[number]) =>
@@ -1254,6 +1296,9 @@ export function ModelSheet({
     provider: errProvider,
     weight: errWeight,
     retries: errRetries,
+    rpm: errRpm,
+    tpm: errTpm,
+    concurrency: errConcurrency,
     param: errParam,
     header: errHeader,
     cacheWrite: errCacheWrite,
@@ -1286,6 +1331,12 @@ export function ModelSheet({
     retriesHint: `${fid}-retries-hint`,
     retriesErr: `${fid}-retries-err`,
     maxOutputHint: `${fid}-max-output-hint`,
+    rpmHint: `${fid}-rpm-hint`,
+    rpmErr: `${fid}-rpm-err`,
+    tpmHint: `${fid}-tpm-hint`,
+    tpmErr: `${fid}-tpm-err`,
+    concurrencyHint: `${fid}-concurrency-hint`,
+    concurrencyErr: `${fid}-concurrency-err`,
     paramErr: `${fid}-param-err`,
     headerErr: `${fid}-header-err`,
     cacheWriteHint: `${fid}-cache-write-hint`,
@@ -2052,6 +2103,27 @@ export function ModelSheet({
               id: ids.maxOutputHint,
               text: t("modelSheet.net.maxOutputHint"),
             })}
+            {numInput(
+              "rpm",
+              t("modelSheet.net.rpm"),
+              "600",
+              { id: ids.rpmHint, text: t("modelSheet.net.rpmHint") },
+              { field: "rpm", errId: ids.rpmErr },
+            )}
+            {numInput(
+              "tpm",
+              t("modelSheet.net.tpm"),
+              "200000",
+              { id: ids.tpmHint, text: t("modelSheet.net.tpmHint") },
+              { field: "tpm", errId: ids.tpmErr },
+            )}
+            {numInput(
+              "concurrency",
+              t("modelSheet.net.concurrency"),
+              "8",
+              { id: ids.concurrencyHint, text: t("modelSheet.net.concurrencyHint") },
+              { field: "concurrency", errId: ids.concurrencyErr },
+            )}
           </div>
         </FormSection>
 

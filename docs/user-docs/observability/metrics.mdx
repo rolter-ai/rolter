@@ -375,13 +375,13 @@ the default.
 
 ### What is exported
 
-| Kind                | Metrics                                                                                                                                                                                                     | How                      |
-| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------ |
-| Counters and gauges | every `rolter_*_total`, `rolter_config_version`                                                                                                                                                             | observable               |
-| Process and runtime | `process.*`, `tokio.runtime.*`                                                                                                                                                                              | observable, OTLP only    |
-| Labelled counters   | `rolter_target_requests_total`, `rolter_variant_requests_total`, `rolter_complexity_route_requests_total`, `rolter_redis_reconnects_total`, `rolter_redis_connect_failures_total`, `rolter_fail_open_total` | observable               |
-| Labelled gauges     | `rolter_provider_queue_depth`, `rolter_provider_inflight`, `rolter_redis_connected`                                                                                                                         | observable               |
-| Histograms          | `rolter_request_latency_ms`, `rolter_request_ttft_ms`, `rolter_provider_queue_wait_ms`                                                                                                                      | recorded per measurement |
+| Kind                | Metrics                                                                                                                                                                                                                                        | How                      |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------ |
+| Counters and gauges | every `rolter_*_total`, `rolter_config_version`                                                                                                                                                                                                | observable               |
+| Process and runtime | `process.*`, `tokio.runtime.*`                                                                                                                                                                                                                 | observable, OTLP only    |
+| Labelled counters   | `rolter_target_requests_total`, `rolter_variant_requests_total`, `rolter_complexity_route_requests_total`, `rolter_route_limit_blocks_total`, `rolter_redis_reconnects_total`, `rolter_redis_connect_failures_total`, `rolter_fail_open_total` | observable               |
+| Labelled gauges     | `rolter_provider_queue_depth`, `rolter_provider_inflight`, `rolter_redis_connected`                                                                                                                                                            | observable               |
+| Histograms          | `rolter_request_latency_ms`, `rolter_request_ttft_ms`, `rolter_provider_queue_wait_ms`                                                                                                                                                         | recorded per measurement |
 
 Counters and gauges are **observable instruments**: nothing is pushed on the
 request path, and the SDK reads the same atomics on its own schedule

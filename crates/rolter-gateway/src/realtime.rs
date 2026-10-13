@@ -199,6 +199,12 @@ pub async fn realtime(
     if let Some(refusal) = rate_limit_refusal(&state, &snap, &scope).await {
         return refusal;
     }
+    // the route's own caps: a session is one request for `rpm` and holds one
+    // `concurrency` slot until it closes (#2936)
+    let route_permit = match crate::handlers::route_limit_refusal(&state, entry).await {
+        Ok(permit) => permit,
+        Err(refusal) => return *refusal,
+    };
 
     // realtime has no request body, so session affinity uses the caller-supplied
     // session id and strategy-aware balancing sees an empty prompt
@@ -246,6 +252,7 @@ pub async fn realtime(
     let policy = policy.map(|policy| policy.recording_plugin_calls(plugin_calls.clone()));
     let meter = SessionMeter {
         plugin_calls,
+        route_tokens: entry.throughput.clone(),
         state: state.clone(),
         scope,
         model: query.model,
@@ -269,6 +276,7 @@ pub async fn realtime(
     let tracked = state.realtime_sessions.tasks.token();
     ws.on_upgrade(move |socket| async move {
         let _tracked = tracked;
+        let _route_permit = route_permit;
         relay(socket, selected, meter, policy).await;
     })
     .into_response()

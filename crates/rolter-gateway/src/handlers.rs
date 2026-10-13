@@ -1463,6 +1463,65 @@ pub(crate) async fn rate_limit_refusal(
     Some(resp)
 }
 
+/// The route's own throughput stage (#2936): refuse with 429 and `Retry-After`
+/// when the route's `advanced.limits` caps are spent, else return the slot of
+/// its `concurrency` cap to hold for the request, if it sets one.
+///
+/// The caps are the route's, whoever calls: they sit on top of the caller's
+/// limits, which [`rate_limit_refusal`] has already admitted. `concurrency` is
+/// taken first and costs nothing to refuse; `rpm` and `tpm` follow, so a
+/// request turned away for want of a slot never takes an `rpm` slot. A request
+/// refused here has still taken one from the caller's own `rpm`.
+pub(crate) async fn route_limit_refusal(
+    state: &AppState,
+    entry: &crate::state::RouteEntry,
+) -> Result<Option<crate::route_limits::ConcurrencyPermit>, Box<Response>> {
+    let limits = &entry.route.advanced.limits;
+    // the common route sets no cap: nothing is looked up, allocated or counted
+    if limits.concurrency.is_none() && entry.throughput.is_none() {
+        return Ok(None);
+    }
+    let route = entry.route.model.as_str();
+    let mut permit = None;
+    if let Some(cap) = limits.concurrency {
+        let org = entry
+            .route
+            .tenancy
+            .as_ref()
+            .map_or("", |tenancy| tenancy.org_id.as_str());
+        permit = state.route_concurrency.try_acquire(org, route, cap);
+        if permit.is_none() {
+            state.metrics.observe_route_limit(route, "concurrency");
+            return Err(Box::new(route_limit_response(
+                format!("route '{route}' is serving its limit of {cap} concurrent requests"),
+                1,
+            )));
+        }
+    }
+    if let Some(window) = &entry.throughput {
+        if let Some(hit) = state.rate_limiter.check_route(window).await {
+            state.metrics.observe_route_limit(route, hit.kind);
+            return Err(Box::new(route_limit_response(
+                format!(
+                    "{} rate limit exceeded for route '{route}' (limit {}/min)",
+                    hit.kind, hit.limit
+                ),
+                hit.retry_after,
+            )));
+        }
+    }
+    Ok(permit)
+}
+
+fn route_limit_response(message: String, retry_after: u64) -> Response {
+    let mut resp = crate::error::ApiError::new(StatusCode::TOO_MANY_REQUESTS, message)
+        .with_code("rate_limit_exceeded")
+        .into_response();
+    resp.headers_mut()
+        .insert(header::RETRY_AFTER, HeaderValue::from(retry_after));
+    resp
+}
+
 async fn proxy(
     state: AppState,
     headers: HeaderMap,
@@ -1681,6 +1740,13 @@ async fn proxy(
             }
         }
     }
+
+    // the route's own caps, once the route is known to be the one that serves
+    // the request. the permit is held to the end of the response (#2936)
+    let mut route_permit = match route_limit_refusal(&state, entry).await {
+        Ok(permit) => permit,
+        Err(refusal) => return refuse.log(*refusal),
+    };
 
     // versioned prompt templates: render the immutable versions active for this
     // route and inject their decorator messages around the caller's own messages.
@@ -2139,7 +2205,8 @@ async fn proxy(
         state.rate_limiter.clone(),
         snap.rate_limits.clone(),
         scope.clone(),
-    );
+    )
+    .with_route(entry.throughput.clone());
     let price = snap.prices.get(&effective_model).cloned();
     // refuse before the upstream call when the operator will not serve traffic
     // they cannot account for (#974)
@@ -2382,7 +2449,7 @@ async fn proxy(
         last_attempt_recorded,
         last_error,
         last_status,
-        inflight_guard,
+        mut inflight_guard,
         variant: chosen_variant,
         provider_key_fingerprint: last_key_fingerprint,
         attempts,
@@ -2734,6 +2801,12 @@ async fn proxy(
             attempts,
         }
     };
+
+    // the slot rides on the guard, so a streamed response keeps it until its
+    // last byte; without a guard no response outlives this function
+    if let Some(guard) = inflight_guard.as_mut() {
+        guard.hold_route_permit(route_permit.take());
+    }
 
     let capture_payloads = payload_capture_enabled(&snap.logging.payload_capture, &model, &vk_id);
     // from here every arm answers the caller and logs its row: the streamed
@@ -3169,6 +3242,11 @@ async fn proxy_multipart(
     if let Err(denial) = authorize_route(vk.as_ref(), entry) {
         return refuse.log(denial.into_response());
     }
+    // the route's own caps, as on the JSON pipeline (#2936)
+    let mut route_permit = match route_limit_refusal(&state, entry).await {
+        Ok(permit) => permit,
+        Err(refusal) => return refuse.log(*refusal),
+    };
 
     let request_id = request_id.as_str().to_string();
     let trace_id = crate::trace::request_trace_id(&headers);
@@ -3186,7 +3264,8 @@ async fn proxy_multipart(
         state.rate_limiter.clone(),
         snap.rate_limits.clone(),
         scope.clone(),
-    );
+    )
+    .with_route(entry.throughput.clone());
     let price = snap.prices.get(&model).cloned();
     // see the chat path: refuse unaccountable traffic before spending upstream
     // tokens on it (#974)
@@ -3403,6 +3482,7 @@ async fn proxy_multipart(
                 if status < 400 {
                     guard.mark_ok();
                 }
+                guard.hold_route_permit(route_permit.take());
                 inflight_guard = Some(guard);
                 // transcription responses are JSON (or text), never SSE
                 outcome = Some((response, status, false));
@@ -5856,6 +5936,7 @@ mod tests {
         let entry = crate::state::RouteEntry {
             project_scope: None,
             overrides: Default::default(),
+            throughput: None,
             guardrails: Default::default(),
             balancer: rolter_balancer::build(route.strategy, &[]).into(),
             variant_balancers: vec![Box::new(Fixed(1))],
@@ -5869,6 +5950,7 @@ mod tests {
         let entry = crate::state::RouteEntry {
             project_scope: None,
             overrides: Default::default(),
+            throughput: None,
             guardrails: Default::default(),
             balancer: rolter_balancer::build(route.strategy, &[]).into(),
             variant_balancers: vec![Box::new(Fixed(9))],
@@ -5882,6 +5964,7 @@ mod tests {
         let entry = crate::state::RouteEntry {
             project_scope: None,
             overrides: Default::default(),
+            throughput: None,
             guardrails: Default::default(),
             balancer: rolter_balancer::build(route.strategy, &[]).into(),
             variant_balancers: Vec::new(),
@@ -5931,6 +6014,7 @@ mod tests {
         let entry = crate::state::RouteEntry {
             project_scope: None,
             overrides: Default::default(),
+            throughput: None,
             guardrails: Default::default(),
             balancer: rolter_balancer::build(route.strategy, &[]).into(),
             variant_balancers: vec![Box::new(cache_aware)],
@@ -6025,6 +6109,7 @@ mod tests {
         let entry = crate::state::RouteEntry {
             project_scope: None,
             overrides: Default::default(),
+            throughput: None,
             guardrails: Default::default(),
             balancer: rolter_balancer::build(route.strategy, &[1, 1]).into(),
             variant_balancers: Vec::new(),
@@ -6077,6 +6162,7 @@ mod tests {
         crate::state::RouteEntry {
             project_scope: None,
             overrides: Default::default(),
+            throughput: None,
             guardrails: Default::default(),
             balancer: rolter_balancer::build(route.strategy, &[1, 1, 1]).into(),
             variant_balancers: Vec::new(),
@@ -6198,6 +6284,7 @@ mod tests {
         let entry = crate::state::RouteEntry {
             project_scope: None,
             overrides: Default::default(),
+            throughput: None,
             guardrails: Default::default(),
             balancer: rolter_balancer::build(route.strategy, &[1, 1, 1, 1]).into(),
             variant_balancers: Vec::new(),
@@ -6242,6 +6329,7 @@ mod tests {
         let entry = crate::state::RouteEntry {
             project_scope: None,
             overrides: Default::default(),
+            throughput: None,
             guardrails: Default::default(),
             balancer: rolter_balancer::build(route.strategy, &[1, 1]).into(),
             variant_balancers: Vec::new(),
@@ -6289,6 +6377,7 @@ mod tests {
         let entry = crate::state::RouteEntry {
             project_scope: None,
             overrides: Default::default(),
+            throughput: None,
             guardrails: Default::default(),
             balancer: rolter_balancer::build(route.strategy, &[1, 1]).into(),
             variant_balancers: Vec::new(),
@@ -6334,6 +6423,7 @@ mod tests {
         let entry = crate::state::RouteEntry {
             project_scope: None,
             overrides: Default::default(),
+            throughput: None,
             guardrails: Default::default(),
             balancer: rolter_balancer::build(route.strategy, &[1, 1, 1]).into(),
             variant_balancers: Vec::new(),
@@ -6393,6 +6483,7 @@ mod tests {
         let entry = crate::state::RouteEntry {
             project_scope: None,
             overrides: Default::default(),
+            throughput: None,
             guardrails: Default::default(),
             balancer: rolter_balancer::build(route.strategy, &[1, 1]).into(),
             variant_balancers: Vec::new(),
@@ -6495,6 +6586,7 @@ mod tests {
         let entry = crate::state::RouteEntry {
             project_scope: None,
             overrides: Default::default(),
+            throughput: None,
             guardrails: Default::default(),
             balancer: rolter_balancer::build(route.strategy, &[1]).into(),
             variant_balancers: Vec::new(),
@@ -6550,6 +6642,7 @@ mod tests {
         let entry = crate::state::RouteEntry {
             project_scope: None,
             overrides: Default::default(),
+            throughput: None,
             guardrails: Default::default(),
             balancer: rolter_balancer::build(route.strategy, &[1, 1]).into(),
             variant_balancers: Vec::new(),

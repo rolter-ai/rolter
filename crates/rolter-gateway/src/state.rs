@@ -48,6 +48,9 @@ pub struct RouteEntry {
     /// (#2924). Empty for a synthetic `provider/model` entry, which has no
     /// route to read them from
     pub overrides: rolter_proxy::RouteOverrides,
+    /// the route's own `rpm` / `tpm` counters in Redis, keyed once here so the
+    /// request path formats no key; `None` when the route sets neither (#2936)
+    pub throughput: Option<crate::rate_limits::RouteWindow>,
 }
 
 impl RouteEntry {
@@ -510,6 +513,12 @@ impl Snapshot {
                 RouteEntry {
                     project_scope,
                     overrides: rolter_proxy::RouteOverrides::from_advanced(&route.advanced),
+                    throughput: crate::rate_limits::RouteWindow::new(
+                        route.tenancy.as_ref().map_or("", |t| t.org_id.as_str()),
+                        &route.model,
+                        route.advanced.limits.rpm,
+                        route.advanced.limits.tpm,
+                    ),
                     guardrails: compiled_guardrails.resolve_selection(&route.advanced.guardrails),
                     route: route.clone(),
                     balancer,
@@ -757,6 +766,7 @@ impl Snapshot {
         RouteEntry {
             project_scope,
             overrides: Default::default(),
+            throughput: None,
             route,
             balancer,
             variant_balancers: Vec::new(),
@@ -864,6 +874,9 @@ pub struct AppState {
     pub unpriced_warns: Arc<crate::budgets::UnpricedWarnLog>,
     /// enforces throughput caps against Redis; disabled when no redis url is set
     pub rate_limiter: RateLimiter,
+    /// per-route `concurrency` caps; counted in process, so they work without
+    /// redis and hold per gateway replica (#2936)
+    pub route_concurrency: crate::route_limits::RouteConcurrency,
     /// exact-match response cache against Redis; disabled when no redis url is
     /// set. The global master switch lives on the live snapshot's `cache` field
     pub response_cache: ResponseCache,
@@ -1040,6 +1053,7 @@ impl AppState {
             budgets,
             unpriced_warns: Arc::new(crate::budgets::UnpricedWarnLog::default()),
             rate_limiter,
+            route_concurrency: Default::default(),
             response_cache,
             response_registry: crate::response_registry::ResponseRegistry::new(&config.responses),
             cooldowns: crate::cooldowns::Cooldowns::new(),

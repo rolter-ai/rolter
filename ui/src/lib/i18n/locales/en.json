@@ -454,7 +454,13 @@
       "retries": "Max retries",
       "retriesHint": "Extra attempts on other targets after a failure; 0 = none. Blank = the gateway's retry setting.",
       "maxOutput": "Max output tokens",
-      "maxOutputHint": "Requests asking for more output tokens are refused. Blank = no cap."
+      "maxOutputHint": "Requests asking for more output tokens are refused. Blank = no cap.",
+      "rpm": "Requests per minute",
+      "rpmHint": "Most requests this model admits in a minute, counted across every caller and every gateway replica through Redis. The next one is refused with a 429. Not enforced without Redis. Blank = no cap.",
+      "tpm": "Tokens per minute",
+      "tpmHint": "Most tokens this model admits in a minute, counted from finished responses, so requests already in flight can pass it. Shared through Redis like the request cap; not enforced without it. Blank = no cap.",
+      "concurrency": "Concurrent requests",
+      "concurrencyHint": "Most requests this model serves at once on each gateway replica, a streamed response counted until it ends. The next one is refused with a 429. Works without Redis. Blank = no cap."
     },
     "headers": {
       "name": "Header name",
@@ -492,6 +498,9 @@
       "provider": "Pick a provider for every target. A target with none has nowhere to send requests.",
       "weight": "Weights are whole numbers, 1 or more.",
       "retries": "Retries are a whole number from 0 to {{max}}. Leave blank to use the gateway's setting.",
+      "rpm": "Requests per minute is a whole number from 1 to {{max}}. Leave blank for no cap.",
+      "tpm": "Tokens per minute is a whole number of 1 or more. Leave blank for no cap.",
+      "concurrency": "Concurrent requests is a whole number from 1 to {{max}}. Leave blank for no cap.",
       "param": "One or more custom parameters have a value but no name — name them or clear the value.",
       "header": "One or more custom headers have a value but no name — name them or clear the value.",
       "cacheWrite": "Enter a cache-write rate of 0 or more, or leave it empty to price writes at the input rate.",

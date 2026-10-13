@@ -135,26 +135,27 @@ where advanced -> 'limits' ? 'timeout_secs'
 
 A header that names a credential (`authorization`, `x-api-key`, `api-key`, `x-goog-api-key`) or the request's framing (`host`, `content-length`) is not sent. The snapshot leaves it out and `GET /api/v1/config/problems` names it; the route keeps serving. The credential belongs on the provider.
 
-**Settings that are gone.** `base_url`, `insecure_tls`, `pricing` and the `rpm`, `tpm`, `concurrency` and `context_window` limits never had an effect, and requests were served exactly as if they were not set. A route's `base_url` never redirected a request, and `insecure_tls = true` never turned off certificate verification. If you believed either, nothing changes on the wire, but the setting is gone: point a route at a second endpoint with a second provider, and trust a private CA with `[tls].ca_bundles` or the provider's `ca_bundles`. To list the routes that still carry one:
+**Settings that are gone.** `base_url`, `insecure_tls`, `pricing` and the `context_window` limit never had an effect, and requests were served exactly as if they were not set. A route's `base_url` never redirected a request, and `insecure_tls = true` never turned off certificate verification. If you believed either, nothing changes on the wire, but the setting is gone: point a route at a second endpoint with a second provider, and trust a private CA with `[tls].ca_bundles` or the provider's `ca_bundles`. To list the routes that still carry one:
 
 ```sql
 select model, advanced ->> 'base_url' as base_url, advanced ->> 'insecure_tls' as insecure_tls
 from routes
 where advanced ?| array['base_url', 'insecure_tls', 'pricing']
-   or advanced -> 'limits' ?| array['rpm', 'tpm', 'concurrency', 'context_window'];
+   or advanced -> 'limits' ? 'context_window';
 ```
 
 Nothing is migrated, and a stored value that is no longer read keeps loading without complaint. The routes API drops these keys from a write instead of refusing it, so an older client or script still saves. Saving a model's sheet in the dashboard sheds them from that route. To clear them all at once:
 
 ```sql
 update routes
-set advanced = (advanced - 'base_url' - 'insecure_tls' - 'pricing')
-               #- '{limits,rpm}' #- '{limits,tpm}' #- '{limits,concurrency}' #- '{limits,context_window}'
+set advanced = (advanced - 'base_url' - 'insecure_tls' - 'pricing') #- '{limits,context_window}'
 where advanced ?| array['base_url', 'insecure_tls', 'pricing']
-   or advanced -> 'limits' ?| array['rpm', 'tpm', 'concurrency', 'context_window'];
+   or advanced -> 'limits' ? 'context_window';
 ```
 
 A `rolter.toml` that sets any of them under `[routes.advanced]` still loads. `rolter check` and the gateway's startup log report each one as an unknown key.
+
+**Route limits.** `limits.rpm`, `limits.tpm` and `limits.concurrency` are enforced again, this time with a reader ([#2936](https://github.com/rolter-ai/rolter/issues/2936)): a request over a route's cap is refused with `429` and `Retry-After`. Migration `0090_clear_unread_route_limits.sql` removes the three keys from every stored route first, because a value typed into the old form while nothing read it would otherwise start refusing traffic on the day you deploy. A route that should be limited has to be given its cap again after the upgrade, from the model sheet or the routes API. A `rolter.toml` that sets them is read as written, so check a file you carried over from an older release. Enforcement needs a gateway that has the reader, so roll the gateways before you set a cap, or the cap is stored and not applied until they restart on the new version. `rpm` and `tpm` need `redis_url` to be enforced; `concurrency` does not. See [Route limits](/concepts/providers-and-routes#route-limits).
 
 ## Security and egress settings
 

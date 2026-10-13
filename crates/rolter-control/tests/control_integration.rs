@@ -333,8 +333,9 @@ async fn crud_create_round_trip_reflects_in_snapshot() {
     assert_eq!(route["advanced"]["headers"]["x-model-region"], "eu");
 }
 
-/// #2924: `base_url`, `insecure_tls`, `pricing` and four of the limits were
-/// stored and read by nothing, and are gone. A client that still sends them
+/// #2924: `base_url`, `insecure_tls`, `pricing` and `limits.context_window`
+/// were stored and read by nothing, and are gone (`rpm`, `tpm` and
+/// `concurrency` came back with a reader in #2936). A client that still sends them
 /// (an older dashboard, a script) is not refused: the keys are dropped before
 /// the blob is stored, so the routes API never reads one back as if it were
 /// policy, and what is left of the block is kept whole. A row written before
@@ -409,8 +410,7 @@ async fn retired_route_advanced_keys_are_accepted_and_dropped() {
         "base_url": "ftp://not-even-a-url",
         "insecure_tls": true,
         "pricing": {"cache_write_per_mtok": -1.0, "image_per_unit": -1.0},
-        "limits": {"rpm": 0, "tpm": 1, "concurrency": 2, "context_window": 3,
-                   "timeout_secs": 30, "retries": 0},
+        "limits": {"context_window": 3, "timeout_secs": 30, "retries": 0},
         "headers": {"x-model-region": "eu"}
     }))
     .await
@@ -422,12 +422,10 @@ async fn retired_route_advanced_keys_are_accepted_and_dropped() {
     for key in ["base_url", "insecure_tls", "pricing"] {
         assert!(advanced.get(key).is_none(), "{key} was stored: {saved}");
     }
-    for key in ["rpm", "tpm", "concurrency", "context_window"] {
-        assert!(
-            advanced["limits"].get(key).is_none(),
-            "limits.{key} was stored: {saved}"
-        );
-    }
+    assert!(
+        advanced["limits"].get("context_window").is_none(),
+        "limits.context_window was stored: {saved}"
+    );
     assert_eq!(advanced["limits"]["timeout_secs"], 30, "{saved}");
     assert_eq!(advanced["limits"]["retries"], 0, "{saved}");
     assert_eq!(advanced["headers"]["x-model-region"], "eu", "{saved}");
@@ -458,7 +456,7 @@ async fn retired_route_advanced_keys_are_accepted_and_dropped() {
             "base_url": "https://models.example/v1",
             "insecure_tls": true,
             "pricing": {"cache_write_per_mtok": 3.75, "image_per_unit": 0.04},
-            "limits": {"rpm": 60, "output_tokens": 2048, "timeout_secs": 45},
+            "limits": {"context_window": 8192, "output_tokens": 2048, "timeout_secs": 45},
             "visibility": {"minimum_role": "member"}
         }))
         .bind(uuid::Uuid::parse_str(route_id).unwrap())
@@ -484,6 +482,167 @@ async fn retired_route_advanced_keys_are_accepted_and_dropped() {
     assert_eq!(route["advanced"]["visibility"]["minimum_role"], "member");
     assert!(route["advanced"].get("base_url").is_none(), "{route}");
     assert!(route["advanced"].get("insecure_tls").is_none(), "{route}");
+}
+
+/// #2936: a route's `rpm`, `tpm` and `concurrency` are stored, validated,
+/// shipped in the snapshot and read back by the routes API. A write that
+/// omits them (an older dashboard) clears them with the rest of the block, as
+/// every other part of `advanced` does, and a cap of zero, which would refuse
+/// every request, is refused on write and pruned from a row written around the
+/// API rather than 500-ing `/internal/snapshot` for every tenant.
+#[tokio::test]
+async fn route_throughput_caps_round_trip_and_a_zero_one_is_pruned() {
+    skip_without_db!();
+    let (app, db) = fresh_app().await;
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    async fn post(client: &reqwest::Client, url: String, body: Value) -> Value {
+        let resp = client.post(&url).json(&body).send().await.unwrap();
+        let status = resp.status();
+        let json: Value = resp.json().await.unwrap();
+        assert!(status.is_success(), "POST {url} failed ({status}): {json}");
+        json
+    }
+
+    let org = post(
+        &client,
+        format!("{base}/api/v1/orgs"),
+        json!({"name": "Acme", "slug": "acme"}),
+    )
+    .await;
+    let org_id = org["id"].as_str().expect("org id");
+    let team = post(
+        &client,
+        format!("{base}/api/v1/orgs/{org_id}/teams"),
+        json!({"name": "Platform"}),
+    )
+    .await;
+    let team_id = team["id"].as_str().expect("team id");
+    let project = post(
+        &client,
+        format!("{base}/api/v1/teams/{team_id}/projects"),
+        json!({"name": "Gateway"}),
+    )
+    .await;
+    let project_id = project["id"].as_str().expect("project id");
+    let provider = post(
+        &client,
+        format!("{base}/api/v1/orgs/{org_id}/providers"),
+        json!({"name": "openai", "kind": "openai", "api_base": "https://api.openai.com"}),
+    )
+    .await;
+    let provider_id = provider["id"].as_str().expect("provider id");
+    let route = post(
+        &client,
+        format!("{base}/api/v1/projects/{project_id}/routes"),
+        json!({"model": "claude", "strategy": "round_robin"}),
+    )
+    .await;
+    let route_id = route["id"].as_str().expect("route id");
+    post(
+        &client,
+        format!("{base}/api/v1/routes/{route_id}/targets"),
+        json!({"provider_id": provider_id, "weight": 1}),
+    )
+    .await;
+    let put = |advanced: Value| {
+        client
+            .put(format!("{base}/api/v1/routes/{route_id}/advanced"))
+            .json(&json!({ "advanced": advanced }))
+            .send()
+    };
+    let snapshot_limits = || async {
+        let snap: Value = client
+            .get(format!("{base}/internal/snapshot"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let route = snap["config"]["routes"]
+            .as_array()
+            .expect("routes")
+            .iter()
+            .find(|r| r["model"] == "claude")
+            .unwrap_or_else(|| panic!("the route must be kept: {snap}"))
+            .clone();
+        route["advanced"]["limits"].clone()
+    };
+
+    let saved = put(json!({"limits": {"rpm": 60, "tpm": 90000, "concurrency": 4}}))
+        .await
+        .unwrap();
+    assert!(saved.status().is_success(), "{}", saved.status());
+    let saved: Value = saved.json().await.unwrap();
+    assert_eq!(saved["advanced"]["limits"]["rpm"], 60, "{saved}");
+    assert_eq!(saved["advanced"]["limits"]["tpm"], 90000, "{saved}");
+    assert_eq!(saved["advanced"]["limits"]["concurrency"], 4, "{saved}");
+    let limits = snapshot_limits().await;
+    assert_eq!(
+        (
+            limits["rpm"].clone(),
+            limits["tpm"].clone(),
+            limits["concurrency"].clone()
+        ),
+        (json!(60), json!(90000), json!(4)),
+        "the gateway must be handed the caps"
+    );
+
+    for (what, advanced) in [
+        ("a zero rpm", json!({"limits": {"rpm": 0}})),
+        ("a zero tpm", json!({"limits": {"tpm": 0}})),
+        ("a zero concurrency", json!({"limits": {"concurrency": 0}})),
+        ("a negative rpm", json!({"limits": {"rpm": -1}})),
+        (
+            "rpm past the ceiling",
+            json!({"limits": {"rpm": 10_000_001}}),
+        ),
+    ] {
+        let refused = put(advanced).await.unwrap();
+        assert!(
+            refused.status().is_client_error(),
+            "{what} should be refused, got {}",
+            refused.status()
+        );
+    }
+    // a refused write changes nothing
+    assert_eq!(snapshot_limits().await["rpm"], 60);
+
+    // a row written around the API with a zero cap serves without that cap
+    sqlx::query("update routes set advanced = $1 where id = $2")
+        .bind(json!({"limits": {"rpm": 0, "tpm": 500, "concurrency": 2}}))
+        .bind(uuid::Uuid::parse_str(route_id).unwrap())
+        .execute(db.pool())
+        .await
+        .unwrap();
+    let limits = snapshot_limits().await;
+    assert!(limits.get("rpm").is_none(), "{limits}");
+    assert_eq!(limits["tpm"], 500);
+    assert_eq!(limits["concurrency"], 2);
+    let problems: Value = client
+        .get(format!("{base}/api/v1/config/problems"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let problems = problems["problems"].to_string();
+    assert!(
+        problems.contains("route 'claude'") && problems.contains("limits.rpm must be between"),
+        "{problems}"
+    );
+
+    // an older client that sends a block without them clears them
+    let cleared = put(json!({"limits": {"timeout_secs": 30}})).await.unwrap();
+    let cleared: Value = cleared.json().await.unwrap();
+    assert!(
+        cleared["advanced"]["limits"].get("rpm").is_none(),
+        "{cleared}"
+    );
 }
 
 /// A header a route cannot send (a credential written by SQL around the API's
