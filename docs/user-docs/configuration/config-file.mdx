@@ -194,28 +194,6 @@ A base that would double the prefix is rejected on write rather than stored. The
   A pool of outbound proxy URLs that requests rotate through round-robin. When the list is empty, a legacy `egress_proxy` is used as a one-entry pool. Write an authenticated proxy as `${ENV_VAR}` so its credentials never appear in serialized configuration or database rows.
 </ParamField>
 
-<ParamField path="api_keys" type="array of tables">
-  Multiple weighted API keys for one provider. When present, this list takes precedence over the single `api_key`/`api_key_env` pair. Each entry accepts `key` (inline value), `env` (environment variable name — preferred), and `weight` (relative selection share, default `1`). Providers cap throughput per key, so rotating across keys multiplies your effective RPM/TPM and isolates a single revoked or throttled key from taking the whole provider down. On every request the gateway picks one key from the pool with probability proportional to its weight. A key that gets `429` or `401` upstream is parked on a cooldown and the request retries immediately on a sibling key — the target itself stays in rotation, and key cooldown trips are visible as `rolter_key_cooldowns_tripped_total` in `/metrics`.
-
-```toml
-[[providers]]
-name = "openai"
-kind = "openai"
-api_base = "https://api.openai.com"
-
-[[providers.api_keys]]
-env = "OPENAI_API_KEY_PRIMARY"
-weight = 3
-
-[[providers.api_keys]]
-env = "OPENAI_API_KEY_SECONDARY"
-```
-
-  <Note>
-    The Postgres-backed control plane stores one credential per provider. `rolter-seed --import` therefore keeps the **first** entry that names an `env` and logs a warning naming how many it dropped, and `rolter config export` writes that one back as `api_key_env`. Keep a multi-key pool in the file the gateway loads directly, not in a file you round-trip through the control plane.
-  </Note>
-</ParamField>
-
 <ParamField path="allow_custom_api_base" type="bool" default="false">
   Let this provider point at an `api_base` its kind would otherwise refuse. A hosted kind names one operator, so Rolter pins its base URL: an `openrouter` provider must be `https://openrouter.ai/api/v1`. That pin is what stops a config edit from sending an OpenRouter key to a host of the editor's choosing.
 
@@ -259,20 +237,68 @@ In the dashboard and API, the provider's `project_id` is the same scope. See [Pr
   Provider-specific list of PEM CA bundle file paths. When set, overrides the global `[tls].ca_bundles` setting for tls verification against this provider.
 </ParamField>
 
-<ParamField path="kv_events" type="table">
-  vLLM ZeroMQ KV-event subscription for the `precise_cache_aware` strategy, written as `[providers.kv_events]`. Keys: `endpoint` (required, e.g. `tcp://vllm-0:5557`), `topic` (default `kv-events`), `max_blocks` (resident block identities kept, default `1000000`) and `stale_secs` (telemetry older than this is ignored, default `30`). See [cache-aware routing](/concepts/cache-aware-routing).
-</ParamField>
-
-<ParamField path="lmcache" type="table">
-  LMCache controller signal for the `lmcache_aware` strategy, written as `[providers.lmcache]`. Keys: `endpoint` (required, an HTTP URL returning `{ "occupancy": 0..1, "cache_available": bool }`), `refresh_secs` (default `2`) and `stale_secs` (default `10`). See [cache-aware routing](/concepts/cache-aware-routing).
-</ParamField>
-
 <ParamField path="role_profile" type="string">
   How this provider handles instruction roles: `openai` keeps `developer` and `system` messages distinct, `system_only` lowers `developer` to `system`, and `anthropic` sends top-level `system` blocks. When omitted, native OpenAI keeps both roles, Anthropic uses top-level system blocks, and OpenAI-compatible providers use `system_only`.
 </ParamField>
 
 <ParamField path="model_role_profiles" type="table">
   Per-upstream-model overrides of `role_profile`, keyed by the upstream model id, e.g. `model_role_profiles = { "my-model" = "openai" }`. Use it for a custom chat template that explicitly supports the `developer` role.
+</ParamField>
+
+#### \[\[providers.api_keys\]\]
+
+Multiple weighted API keys for one provider. When present, this list takes precedence over the single `api_key`/`api_key_env` pair. Providers cap throughput per key, so rotating across keys multiplies your effective RPM/TPM and isolates a single revoked or throttled key from taking the whole provider down. On every request the gateway picks one key from the pool with probability proportional to its weight. A key that gets `429` or `401` upstream is parked on a cooldown and the request retries immediately on a sibling key; the target itself stays in rotation, and key cooldown trips are visible as `rolter_key_cooldowns_tripped_total` in `/metrics`.
+
+<ParamField path="key" type="string">
+  An inline API key. Use `env` instead wherever possible.
+</ParamField>
+
+<ParamField path="env" type="string">
+  The name of an environment variable to read the API key from.
+</ParamField>
+
+<ParamField path="weight" default="1" type="integer">
+  Relative selection share when balancing across keys.
+</ParamField>
+
+<Note>
+  The Postgres-backed control plane stores one credential per provider. `rolter-seed --import` therefore keeps the **first** entry that names an `env` and logs a warning naming how many it dropped, and `rolter config export` writes that one back as `api_key_env`. Keep a multi-key pool in the file the gateway loads directly, not in a file you round-trip through the control plane.
+</Note>
+
+#### \[providers.kv_events\]
+
+vLLM ZeroMQ KV-event subscription settings for the `precise_cache_aware` strategy. See [cache-aware routing](/concepts/cache-aware-routing).
+
+<ParamField path="endpoint" type="string" required>
+  Subscriber endpoint, e.g. `tcp://vllm-0:5557`.
+</ParamField>
+
+<ParamField path="topic" default="kv-events" type="string">
+  ZeroMQ topic name.
+</ParamField>
+
+<ParamField path="max_blocks" default="1000000" type="integer">
+  Maximum resident block identities kept.
+</ParamField>
+
+<ParamField path="stale_secs" default="30" type="integer">
+  Telemetry older than this in seconds is ignored.
+</ParamField>
+
+#### \[providers.lmcache\]
+
+LMCache controller signal settings for the `lmcache_aware` strategy. See [cache-aware routing](/concepts/cache-aware-routing).
+
+<ParamField path="endpoint" type="string" required>
+  HTTP URL returning `{ "occupancy": 0..1, "cache_available": bool }`.
+</ParamField>
+
+<ParamField path="refresh_secs" default="2" type="integer">
+  Interval between occupancy refreshes in seconds.
+</ParamField>
+
+<ParamField path="stale_secs" default="10" type="integer">
+  Telemetry older than this in seconds is ignored.
 </ParamField>
 
 ```toml
@@ -520,13 +546,6 @@ Catalog metadata and model-scoped policy for one route. The dashboard's model sh
   A note about the model for other operators. The dashboard and the routes API return it; it is never sent to API clients.
 </ParamField>
 
-<ParamField path="limits" type="table">
-  Per-route request settings, written as `[routes.advanced.limits]`. `timeout_secs` (integer, `1` and up) bounds the wait for the upstream's response headers and replaces `[timeouts]` `request_secs` for this route; a streamed body is not cut short. `retries` (integer, `0` to `10`) is the number of extra attempts and replaces `[retry]` `max_retries` for this route, and `0` turns retries off. `output_tokens` (integer) refuses a request whose `max_tokens`, `max_completion_tokens` or `max_output_tokens` is above it. An omitted key inherits the gateway setting.
-
-`rpm` and `tpm` (integers, `1` and up) cap the requests and the tokens per minute this route admits, counted in Redis across every caller and every gateway replica, and `concurrency` (integer, `1` to `10000000`) caps the requests it serves at once on each replica. A request over a cap is refused with `429` and `Retry-After`. Unlike the other keys these have no gateway-wide default: omitted means no cap. Without `redis_url`, `rpm` and `tpm` are not enforced and `concurrency` still is. A zero fails config validation, and a stored row that carries one is served without that cap and reported by `GET /api/v1/config/problems`. See [Route limits](/concepts/providers-and-routes#route-limits).
-
-</ParamField>
-
 <ParamField path="headers" type="table">
   Headers sent to the upstream on every call this route makes, none by default. A name must be a valid header name and a value visible ASCII on one line. `authorization`, `x-api-key`, `api-key`, `x-goog-api-key` and the headers that frame a request (`host`, `content-length`, `content-type`) are refused, because credentials belong on the provider. The routes API answers `400` for one, `rolter check` fails a file that sets one, and the gateway leaves it out and logs a config problem at startup.
 </ParamField>
@@ -535,12 +554,60 @@ Catalog metadata and model-scoped policy for one route. The dashboard's model sh
   Names from `headers` whose value replaces a caller's header of the same name. A caller's header reaches the upstream only if `[client]` `forwarded_headers` lists it. An unlocked route header is a default that a forwarded caller header replaces.
 </ParamField>
 
-<ParamField path="visibility" type="table">
-  Who may see and call the model, written as `[routes.advanced.visibility]`: `minimum_role` (string), `allowed_team_ids`, `allowed_key_ids` and `allowed_user_ids` (lists of ids), and `project_only` (boolean, default `false`; `true` serves the route only to keys minted in its own project). Keys from a config file carry no organization and are not narrowed.
-</ParamField>
-
 <ParamField path="guardrails" type="table">
   Per-route selection of guardrail rules, written as `[routes.advanced.guardrails]`. See below.
+</ParamField>
+
+##### \[routes.advanced.limits\]
+
+Per-route request limits. An omitted key inherits the gateway-wide default, except `rpm`, `tpm` and `concurrency` where omitted means no cap. See [Route limits](/concepts/providers-and-routes#route-limits). A request over an `rpm`, `tpm` or `concurrency` cap is refused with `429` and `Retry-After`. Without `redis_url`, `rpm` and `tpm` are not enforced and `concurrency` still is. A zero fails config validation, and a stored row that carries one is served without that cap and reported by `GET /api/v1/config/problems`.
+
+<ParamField path="timeout_secs" type="integer">
+  Response headers timeout in seconds (`1` and up); replaces `[timeouts]` `request_secs` for this route. A streamed body is not cut short.
+</ParamField>
+
+<ParamField path="retries" type="integer">
+  Extra attempts after the first (`0` to `10`); replaces `[retry]` `max_retries` for this route. `0` turns retries off.
+</ParamField>
+
+<ParamField path="output_tokens" type="integer">
+  Refuses a request whose `max_tokens`, `max_completion_tokens` or `max_output_tokens` is above this limit.
+</ParamField>
+
+<ParamField path="rpm" type="integer">
+  Requests per minute cap across all gateway replicas via Redis (`1` and up).
+</ParamField>
+
+<ParamField path="tpm" type="integer">
+  Tokens per minute cap across all gateway replicas via Redis (`1` and up).
+</ParamField>
+
+<ParamField path="concurrency" type="integer">
+  Maximum concurrent requests in flight per gateway replica (`1` to `10000000`). Works without Redis.
+</ParamField>
+
+##### \[routes.advanced.visibility\]
+
+Who may see and call the model. Keys from a config file carry no organization and are not narrowed.
+
+<ParamField path="minimum_role" type="string">
+  Minimum role required to access or see the model.
+</ParamField>
+
+<ParamField path="allowed_team_ids" default="[]" type="list">
+  Team IDs allowed to access the route.
+</ParamField>
+
+<ParamField path="allowed_key_ids" default="[]" type="list">
+  Virtual key IDs allowed to access the route.
+</ParamField>
+
+<ParamField path="allowed_user_ids" default="[]" type="list">
+  User IDs allowed to access the route.
+</ParamField>
+
+<ParamField path="project_only" default="false" type="boolean">
+  When `true`, serves the route only to keys minted in its own project.
 </ParamField>
 
 <Note>
