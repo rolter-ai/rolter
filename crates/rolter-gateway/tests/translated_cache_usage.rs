@@ -1146,7 +1146,7 @@ async fn qwen_stream_to_a_responses_client_carries_its_cache_write() {
 
 #[tokio::test]
 async fn xai_answer_to_a_chat_client_is_logged_with_its_reasoning() {
-    let (_, row) = exchange(
+    let (body, row) = exchange(
         "xai-chat-buffered",
         ProviderKind::Xai,
         Client::Chat,
@@ -1154,12 +1154,17 @@ async fn xai_answer_to_a_chat_client_is_logged_with_its_reasoning() {
         chat_completion_with(XAI_USAGE),
     )
     .await;
+    // shown the OpenAI convention: the reasoning is inside the completion (#3093)
+    let usage = shown_usage(&body);
+    assert_eq!(usage["completion_tokens"], 23, "usage shown to the client");
+    assert_eq!(usage["total_tokens"], 2023, "usage shown to the client");
+    assert_eq!(usage["completion_tokens_details"]["reasoning_tokens"], 20);
     assert_priced_with_the_thoughts(&row);
 }
 
 #[tokio::test]
 async fn xai_stream_to_a_chat_client_is_logged_with_its_reasoning() {
-    let (_, row) = exchange(
+    let (body, row) = exchange(
         "xai-chat-streamed",
         ProviderKind::Xai,
         Client::Chat,
@@ -1167,6 +1172,9 @@ async fn xai_stream_to_a_chat_client_is_logged_with_its_reasoning() {
         chat_stream_with(XAI_USAGE),
     )
     .await;
+    let usage = shown_usage(&body);
+    assert_eq!(usage["completion_tokens"], 23, "usage shown to the client");
+    assert_eq!(usage["completion_tokens_details"]["reasoning_tokens"], 20);
     assert_priced_with_the_thoughts(&row);
 }
 
@@ -1199,6 +1207,25 @@ async fn xai_stream_to_a_messages_client_counts_its_reasoning_once() {
     let usage = shown_usage(&body);
     assert_eq!(usage["output_tokens"], 23, "usage shown to the client");
     assert_no_reasoning_named(&usage);
+    assert_priced_with_the_thoughts(&row);
+}
+
+/// vertex ai names the thinking beside a short completion, like xAI, so its
+/// chat client is shown the same OpenAI shape and the row is unchanged (#3093)
+#[tokio::test]
+async fn vertex_answer_to_a_chat_client_is_shown_its_reasoning_inside_the_completion() {
+    let (body, row) = exchange(
+        "vertex-chat-shown",
+        ProviderKind::Vertex,
+        Client::Chat,
+        false,
+        chat_completion_with(VERTEX_COMPAT_USAGE),
+    )
+    .await;
+    let usage = shown_usage(&body);
+    assert_eq!(usage["completion_tokens"], 23, "usage shown to the client");
+    assert_eq!(usage["total_tokens"], 2023, "usage shown to the client");
+    assert_eq!(usage["completion_tokens_details"]["reasoning_tokens"], 20);
     assert_priced_with_the_thoughts(&row);
 }
 
@@ -1310,15 +1337,19 @@ async fn a_total_beyond_its_parts_is_left_alone_for_other_providers() {
 }
 
 #[tokio::test]
-async fn vertex_answer_to_a_chat_client_is_logged_with_its_thinking() {
-    let (_, row) = exchange(
-        "vertex-chat-buffered",
+async fn vertex_stream_to_a_chat_client_is_shown_its_reasoning_inside_the_completion() {
+    let (body, row) = exchange(
+        "vertex-chat-streamed",
         ProviderKind::Vertex,
         Client::Chat,
-        false,
-        chat_completion_with(VERTEX_COMPAT_USAGE),
+        true,
+        chat_stream_with(VERTEX_COMPAT_USAGE),
     )
     .await;
+    let usage = shown_usage(&body);
+    assert_eq!(usage["completion_tokens"], 23, "usage shown to the client");
+    assert_eq!(usage["completion_tokens_details"]["reasoning_tokens"], 20);
+    assert!(body.contains("data: [DONE]"));
     assert_priced_with_the_thoughts(&row);
 }
 
