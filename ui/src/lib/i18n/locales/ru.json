@@ -302,6 +302,7 @@
     "requestFailed": "запрос не удался: {{status}}",
     "gateway": {
       "unauthorized": "нет доступа — укажите действующий виртуальный ключ",
+      "streamEnded": "поток закончился раньше, чем ответ был получен целиком",
       "requestFailed": "запрос к шлюзу не удался: {{status}}"
     },
     "api": {
@@ -1039,6 +1040,15 @@
       "messagePlaceholder": "Сообщение…",
       "messageAria": "Сообщение модели {{model}}",
       "replyAnnounce": "Модель {{model}} ответила: {{reply}}",
+      "replyStoppedAnnounce": "Ответ модели {{model}} остановлен.",
+      "stop": "Остановить {{model}}",
+      "replyStopped": "остановлено",
+      "replyInterrupted": "прервано",
+      "replyTokens_one": "{{n}} токен",
+      "replyTokens_few": "{{n}} токена",
+      "replyTokens_many": "{{n}} токенов",
+      "replyTokens_other": "{{n}} токена",
+      "replyTime": "{{seconds}} с",
       "roles": {
         "user": "Вы",
         "assistant": "Ассистент"

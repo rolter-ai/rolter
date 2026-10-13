@@ -10,6 +10,7 @@ import {
   Play,
   Plus,
   Send,
+  Square,
   Trash2,
   Upload,
   Loader2,
@@ -47,7 +48,6 @@ import { useCan, useCapabilities } from "@/lib/can";
 import { describeError, type ErrorCopy } from "@/lib/error-copy";
 import {
   awaitingMintedKey,
-  chatCompletion,
   embed,
   fetchGatewayModels,
   generateImages,
@@ -56,6 +56,7 @@ import {
   keyPropagationDelay,
   realtimeUrl,
   setPlaygroundKey,
+  streamChatCompletion,
   subscribePlaygroundKey,
   synthesizeSpeech,
   transcribe,
@@ -886,6 +887,10 @@ interface Msg {
   /** the image a user turn carried, as the `data:` URL it was attached as */
   image?: string;
   pending?: boolean;
+  /** how a reply that did not finish ended: the operator stopped it, or the stream broke */
+  cutShort?: { byOperator: boolean };
+  /** what a finished reply cost, from the stream's last chunk and the clock */
+  stats?: { tokens?: number; ms: number };
 }
 
 /**
@@ -952,6 +957,22 @@ function ChatColumn({
   const fileRef = React.useRef<HTMLInputElement>(null);
   const composer = React.useRef<HTMLTextAreaElement>(null);
   const gate = React.useContext(SendGateContext);
+  const fmt = useFormat();
+  // the stream in flight, so Stop can cancel it and leaving the column does too (#3096)
+  const abort = React.useRef<AbortController | null>(null);
+  const stopped = React.useRef(false);
+  React.useEffect(() => () => abort.current?.abort(), []);
+  const stop = () => {
+    stopped.current = true;
+    abort.current?.abort();
+  };
+  // a reply growing under the reader follows its end, until they scroll away from it
+  const thread = React.useRef<HTMLDivElement>(null);
+  const pinned = React.useRef(true);
+  React.useLayoutEffect(() => {
+    const el = thread.current;
+    if (el && pinned.current) el.scrollTop = el.scrollHeight;
+  }, [msgs]);
 
   // the composer grows with the draft up to its max height, then scrolls. a
   // column under another mode tab measures 0 and is left as it was
@@ -995,29 +1016,63 @@ function ChatColumn({
     setError(null);
     setMsgs([...thread, { role: "assistant", text: "…", pending: true }]);
     setBusy(true);
+    const controller = new AbortController();
+    abort.current = controller;
+    stopped.current = false;
+    pinned.current = true;
+    // the reply is the last turn; the text so far is what survives a stop or a break
+    const reply = (patch: Omit<Msg, "role">) => (m: Msg[]) =>
+      m.map((msg, i) => (i === m.length - 1 ? { role: "assistant" as const, ...patch } : msg));
+    let received = "";
 
     try {
-      const reply = await chatCompletion(
+      const result = await streamChatCompletion(
         model,
         thread.map((m) => chatMessage(m, multimodal)),
+        (text) => {
+          received = text;
+          setMsgs(reply({ text }));
+        },
+        controller.signal,
       );
-      setMsgs((m) =>
-        m.map((msg, i) => (i === m.length - 1 ? { role: "assistant", text: reply } : msg)),
+      const tokens = result.usage?.completion_tokens ?? result.usage?.total_tokens;
+      setMsgs(
+        reply({
+          text: result.text,
+          stats: { ms: result.elapsedMs, ...(tokens === undefined ? {} : { tokens }) },
+        }),
       );
+      // read out once, whole, however many chunks it came in
       setAnnounced((a) => ({
         id: (a?.id ?? 0) + 1,
-        text: t("pages.playground.replyAnnounce", { model, reply }),
+        text: t("pages.playground.replyAnnounce", { model, reply: result.text }),
       }));
     } catch (e) {
-      // the thread goes back to what it was before the send, and the message
-      // back into the composer, so a retry is one more Send and the next turn
-      // never follows a question nobody answered. a draft typed while waiting
-      // stays, after the message it was meant to follow
-      setMsgs((m) => m.slice(0, -2));
-      setDraft((d) => (d.trim() ? `${turn.text}\n\n${d}` : turn.text));
-      setImage((i) => i ?? turn.image ?? null);
-      setError(describeError(e, t));
+      const wasStopped = stopped.current;
+      if (received) {
+        // what arrived stays, marked as cut short, and the turn stays answered
+        setMsgs(reply({ text: received, cutShort: { byOperator: wasStopped } }));
+        if (wasStopped) {
+          setAnnounced((a) => ({
+            id: (a?.id ?? 0) + 1,
+            text: t("pages.playground.replyStoppedAnnounce", { model }),
+          }));
+        } else {
+          setError(describeError(e, t));
+        }
+      } else {
+        // nothing came: the thread goes back to what it was before the send, and
+        // the message back into the composer, so a retry is one more Send and the
+        // next turn never follows a question nobody answered. a draft typed while
+        // waiting stays, after the message it was meant to follow
+        setMsgs((m) => m.slice(0, -2));
+        setDraft((d) => (d.trim() ? `${turn.text}\n\n${d}` : turn.text));
+        setImage((i) => i ?? turn.image ?? null);
+        // stopping before the first token is the operator's own act, not a failure
+        if (!wasStopped) setError(describeError(e, t));
+      }
     } finally {
+      if (abort.current === controller) abort.current = null;
       setBusy(false);
     }
   };
@@ -1092,8 +1147,14 @@ function ChatColumn({
           focusable child to carry the focus in. a region named for its column
           makes it one tab stop that says what it is */}
       <div
+        ref={thread}
+        onScroll={(e) => {
+          const el = e.currentTarget;
+          pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+        }}
         tabIndex={0}
         role="region"
+        aria-busy={busy}
         aria-label={t("pages.playground.threadAria", { model: who })}
         className="flex flex-1 flex-col gap-2.5 overflow-auto p-4 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring"
       >
@@ -1133,6 +1194,29 @@ function ChatColumn({
               <pre className="whitespace-pre-wrap break-words font-mono text-xs">{m.text}</pre>
             ) : (
               <Markdown source={m.text} />
+            )}
+            {(m.cutShort || m.stats) && (
+              <span className="font-mono text-[0.625rem] text-[color:var(--text-subtle)]">
+                {m.cutShort
+                  ? m.cutShort?.byOperator
+                    ? t("pages.playground.replyStopped")
+                    : t("pages.playground.replyInterrupted")
+                  : [
+                      m.stats?.tokens === undefined
+                        ? null
+                        : t("pages.playground.replyTokens", {
+                            count: m.stats.tokens,
+                            n: fmt.number(m.stats.tokens),
+                          }),
+                      t("pages.playground.replyTime", {
+                        seconds: fmt.number((m.stats?.ms ?? 0) / 1000, {
+                          maximumFractionDigits: 1,
+                        }),
+                      }),
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")}
+              </span>
             )}
             {/* marked while multimodal is on, which is when the next send carries it again */}
             {multimodal && m.image && (
@@ -1201,6 +1285,10 @@ function ChatColumn({
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {
+            if (e.key === "Escape" && busy) {
+              stop();
+              return;
+            }
             if (!isSendKey(e)) return;
             // held back or empty, Enter still must not land a newline in the box
             e.preventDefault();
@@ -1210,19 +1298,29 @@ function ChatColumn({
           aria-label={t("pages.playground.messageAria", { model: who })}
           className="max-h-32 min-h-8 flex-1 resize-none py-1 text-sm"
         />
-        <GatewayButton
-          size="icon"
-          className="h-8 w-8"
-          onClick={send}
-          disabled={busy}
-          aria-label={t("pages.playground.sendTo", { model: who })}
-        >
-          {busy ? (
-            <Loader2 className="h-4 w-4 motion-safe:animate-spin" />
-          ) : (
+        {busy ? (
+          /* stopping sends nothing, so a held gate does not hold it back */
+          <GatewayButton
+            hold={false}
+            size="icon"
+            variant="outline"
+            className="h-8 w-8"
+            onClick={stop}
+            aria-label={t("pages.playground.stop", { model: who })}
+            title={t("pages.playground.stop", { model: who })}
+          >
+            <Square className="h-3.5 w-3.5" />
+          </GatewayButton>
+        ) : (
+          <GatewayButton
+            size="icon"
+            className="h-8 w-8"
+            onClick={send}
+            aria-label={t("pages.playground.sendTo", { model: who })}
+          >
             <Send className="h-4 w-4" />
-          )}
-        </GatewayButton>
+          </GatewayButton>
+        )}
       </div>
     </div>
   );

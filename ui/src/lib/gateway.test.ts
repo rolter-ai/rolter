@@ -14,6 +14,7 @@ import {
   realtimeUrl,
   setKeyPropagationForTests,
   setPlaygroundKey,
+  streamChatCompletion,
   subscribePlaygroundKey,
   trackGatewaySession,
 } from "@/lib/gateway";
@@ -339,5 +340,126 @@ describe("gateway calls in flight", () => {
     release();
     release();
     expect(getGatewayCallsInFlight()).toBe(0);
+  });
+});
+
+/** A chat answer as server-sent events, cut into the pieces the network would deliver. */
+function sse(pieces: string[], hold?: Promise<void>): Response {
+  const encoder = new TextEncoder();
+  const body = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      for (const piece of pieces) controller.enqueue(encoder.encode(piece));
+      if (hold) await hold;
+      controller.close();
+    },
+  });
+  return new Response(body, { status: 200, headers: { "Content-Type": "text/event-stream" } });
+}
+
+const delta = (content: string) =>
+  `data: ${JSON.stringify({ choices: [{ delta: { content }, finish_reason: null }] })}\n\n`;
+
+describe("streamChatCompletion (#3096)", () => {
+  it("asks for a stream with usage and hands over the reply so far", async () => {
+    let sent: { stream?: boolean; stream_options?: unknown } = {};
+    globalThis.fetch = (async (_: RequestInfo | URL, init?: RequestInit) => {
+      sent = JSON.parse(String(init?.body));
+      return sse([
+        delta("Go"),
+        // an event split across two reads, and a CRLF-framed one
+        delta("od").slice(0, 20),
+        delta("od").slice(20),
+        `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\r\n\r\n`,
+        `data: ${JSON.stringify({ choices: [], usage: { completion_tokens: 2 } })}\n\n`,
+        "data: [DONE]\n\n",
+      ]);
+    }) as unknown as typeof fetch;
+    const seen: string[] = [];
+    const result = await streamChatCompletion("m", [], (t) => seen.push(t));
+    expect(sent.stream).toBe(true);
+    expect(sent.stream_options).toEqual({ include_usage: true });
+    expect(seen).toEqual(["Go", "Good"]);
+    expect(result.text).toBe("Good");
+    expect(result.usage?.completion_tokens).toBe(2);
+  });
+
+  it("counts as in flight until the stream ends, not until the headers arrive", async () => {
+    let end!: () => void;
+    const hold = new Promise<void>((resolve) => {
+      end = resolve;
+    });
+    globalThis.fetch = (async () =>
+      sse([delta("a"), "data: [DONE]\n\n"], hold)) as unknown as typeof fetch;
+    const done = streamChatCompletion("m", [], () => {});
+    await new Promise((r) => setTimeout(r, 10));
+    expect(getGatewayCallsInFlight()).toBe(1);
+    end();
+    await done;
+    expect(getGatewayCallsInFlight()).toBe(0);
+  });
+
+  it("rejects on an error object in the stream, keeping what had arrived", async () => {
+    globalThis.fetch = (async () =>
+      sse([
+        delta("partial"),
+        `data: ${JSON.stringify({ error: { message: "upstream broke" } })}\n\n`,
+      ])) as unknown as typeof fetch;
+    const seen: string[] = [];
+    await expect(streamChatCompletion("m", [], (t) => seen.push(t))).rejects.toThrow(
+      "upstream broke",
+    );
+    expect(seen).toEqual(["partial"]);
+    expect(getGatewayCallsInFlight()).toBe(0);
+  });
+
+  it("rejects a stream that ends before its finish", async () => {
+    globalThis.fetch = (async () => sse([delta("cut")])) as unknown as typeof fetch;
+    await expect(streamChatCompletion("m", [], () => {})).rejects.toBeInstanceOf(GatewayError);
+  });
+
+  it("rejects when aborted, keeps the reply so far and releases the call", async () => {
+    const controller = new AbortController();
+    globalThis.fetch = (async (_: RequestInfo | URL, init?: RequestInit) => {
+      // what the network does: an abort errors the body stream mid-read
+      const body = new ReadableStream<Uint8Array>({
+        start(c) {
+          c.enqueue(new TextEncoder().encode(delta("a")));
+          init?.signal?.addEventListener("abort", () =>
+            c.error(new DOMException("aborted", "AbortError")),
+          );
+        },
+      });
+      return new Response(body, { status: 200, headers: { "Content-Type": "text/event-stream" } });
+    }) as unknown as typeof fetch;
+    const seen: string[] = [];
+    const done = streamChatCompletion("m", [], (t) => seen.push(t), controller.signal);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(getGatewayCallsInFlight()).toBe(1);
+    controller.abort();
+    await expect(done).rejects.toMatchObject({ name: "AbortError" });
+    expect(seen).toEqual(["a"]);
+    expect(getGatewayCallsInFlight()).toBe(0);
+  });
+
+  it("reads a plain JSON answer as the whole reply", async () => {
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({
+          choices: [{ message: { content: "whole" } }],
+          usage: { total_tokens: 3 },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      )) as unknown as typeof fetch;
+    const result = await streamChatCompletion("m", [], () => {});
+    expect(result.text).toBe("whole");
+    expect(result.usage?.total_tokens).toBe(3);
+  });
+
+  it("throws the gateway's message for a refusal", async () => {
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ error: { message: "invalid api key" } }), {
+        status: 401,
+      })) as unknown as typeof fetch;
+    await expect(streamChatCompletion("m", [], () => {})).rejects.toThrow("invalid api key");
   });
 });
