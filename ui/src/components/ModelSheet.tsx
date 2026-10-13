@@ -58,7 +58,13 @@ import {
 } from "@/lib/api";
 import { errorText } from "@/lib/error-copy";
 import { readEffectivePolicy } from "@/lib/guardrail-policy";
-import { cacheWrite1hPatch, cacheWritePatch } from "@/lib/cache-write-rate";
+import {
+  audioInputPatch,
+  cacheWrite1hPatch,
+  cacheWritePatch,
+  imagePatch,
+  speechPatch,
+} from "@/lib/cache-write-rate";
 import { useErrorVisibility } from "@/lib/error-visibility";
 import { providersUsableFrom } from "@/lib/provider-scope";
 import type { RouteTargetView } from "@/lib/route-targets";
@@ -143,6 +149,9 @@ interface ModelDraft {
     output: string;
     cacheWrite: string;
     cacheWrite1h: string;
+    image: string;
+    audioInput: string;
+    speech: string;
     cacheRead: string;
     currency: string;
   };
@@ -270,6 +279,9 @@ function blankDraft(
       output: "",
       cacheWrite: "",
       cacheWrite1h: "",
+      image: "",
+      audioInput: "",
+      speech: "",
       cacheRead: "",
       currency: "USD",
     },
@@ -637,14 +649,33 @@ function paramsToApi(draft: ModelDraft): {
 interface SeededRates {
   cacheWrite: string;
   cacheWrite1h: string;
+  image: string;
+  audioInput: string;
+  speech: string;
 }
 
-/** what a save says about the two cache-write rates: only those that were edited (#2876, #2902) */
+/**
+ * what a save says about the rates the form does not always replace: the two
+ * cache-write rates (#2876, #2902) and the per-unit rates (#2937). Only those
+ * that were edited are named, so an input left alone keeps what is stored.
+ */
 function cacheWritePatches(draft: ModelDraft, seeded: SeededRates) {
   return {
     ...cacheWritePatch(draft.price.cacheWrite, seeded.cacheWrite),
     ...cacheWrite1hPatch(draft.price.cacheWrite1h, seeded.cacheWrite1h),
+    ...imagePatch(draft.price.image, seeded.image),
+    ...audioInputPatch(draft.price.audioInput, seeded.audioInput),
+    ...speechPatch(draft.price.speech, seeded.speech),
   };
+}
+
+/**
+ * Whether the draft carries a price row to write: a token rate, or a per-unit
+ * rate typed or already stored (a model billed by the image has no token rate).
+ */
+function pricesAnything(draft: ModelDraft) {
+  const p = draft.price;
+  return [p.input, p.output, p.image, p.audioInput, p.speech].some((v) => v.trim() !== "");
 }
 
 function buildPreview(
@@ -656,7 +687,7 @@ function buildPreview(
 ) {
   const { params, paramPolicy } = paramsToApi(draft);
   const publicName = draft.name.trim();
-  const hasPricing = draft.price.input.trim() !== "" || draft.price.output.trim() !== "";
+  const hasPricing = pricesAnything(draft);
   const obj = {
     route: { model: publicName || undefined, strategy: draft.strategy, enabled: draft.enabled },
     // an edit previews the list the update call will carry, stored models as stored
@@ -971,7 +1002,10 @@ type FieldKey =
   | "param"
   | "header"
   | "cacheWrite"
-  | "cacheWrite1h";
+  | "cacheWrite1h"
+  | "image"
+  | "audioInput"
+  | "speech";
 
 export interface ModelSheetProps {
   open: boolean;
@@ -1042,7 +1076,13 @@ export function ModelSheet({
   // the cache-write rates the price row opened with, so a save can tell an input
   // left alone (send nothing, the stored rate stays) from one that was emptied
   // (send null, which clears it) — see `cacheWritePatch` (#2876, #2902)
-  const seededRatesRef = React.useRef<SeededRates>({ cacheWrite: "", cacheWrite1h: "" });
+  const seededRatesRef = React.useRef<SeededRates>({
+    cacheWrite: "",
+    cacheWrite1h: "",
+    image: "",
+    audioInput: "",
+    speech: "",
+  });
 
   // data for edit-mode prefill
   const targets = useQuery({
@@ -1126,6 +1166,9 @@ export function ModelSheet({
         d.price.cacheRead = price.cached_input_per_mtok ?? "";
         d.price.cacheWrite = price.cache_write_per_mtok ?? "";
         d.price.cacheWrite1h = price.cache_write_1h_per_mtok ?? "";
+        d.price.image = price.image_per_unit ?? "";
+        d.price.audioInput = price.audio_input_per_minute ?? "";
+        d.price.speech = price.speech_per_mchar ?? "";
         d.price.currency = price.currency || "USD";
       }
     } else if (mode === "view" && configModel) {
@@ -1134,7 +1177,13 @@ export function ModelSheet({
       d.targets = [];
     }
     setDraft(d);
-    seededRatesRef.current = { cacheWrite: d.price.cacheWrite, cacheWrite1h: d.price.cacheWrite1h };
+    seededRatesRef.current = {
+      cacheWrite: d.price.cacheWrite,
+      cacheWrite1h: d.price.cacheWrite1h,
+      image: d.price.image,
+      audioInput: d.price.audioInput,
+      speech: d.price.speech,
+    };
     visibility.reset();
     setRefusal(null);
     setDupFrom("");
@@ -1288,6 +1337,14 @@ export function ModelSheet({
     draft.price.cacheWrite1h,
     t("modelSheet.errors.cacheWrite1h"),
   );
+  const unitRateError = (typed: string, modality: Modality) => {
+    if (readonly || draft.modality !== modality || typed.trim() === "") return "";
+    const rate = Number(typed);
+    return Number.isFinite(rate) && rate >= 0 ? "" : t("modelSheet.errors.unitRate");
+  };
+  const errImage = unitRateError(draft.price.image, "image");
+  const errAudioInput = unitRateError(draft.price.audioInput, "audio");
+  const errSpeech = unitRateError(draft.price.speech, "audio");
   const errParam = draft.params.some(paramRowInvalid) ? t("modelSheet.errors.param") : "";
   const errHeader = draft.headers.some(headerRowInvalid) ? t("modelSheet.errors.header") : "";
   const found: Record<FieldKey, string> = {
@@ -1303,6 +1360,9 @@ export function ModelSheet({
     header: errHeader,
     cacheWrite: errCacheWrite,
     cacheWrite1h: errCacheWrite1h,
+    image: errImage,
+    audioInput: errAudioInput,
+    speech: errSpeech,
   };
   const problems = (Object.keys(found) as FieldKey[]).filter((key) => found[key]);
   // what the sheet says under each field: its error, once it may be shown
@@ -1343,6 +1403,12 @@ export function ModelSheet({
     cacheWriteErr: `${fid}-cache-write-err`,
     cacheWrite1hHint: `${fid}-cache-write-1h-hint`,
     cacheWrite1hErr: `${fid}-cache-write-1h-err`,
+    imageHint: `${fid}-image-hint`,
+    imageErr: `${fid}-image-err`,
+    audioInputHint: `${fid}-audio-input-hint`,
+    audioInputErr: `${fid}-audio-input-err`,
+    speechHint: `${fid}-speech-hint`,
+    speechErr: `${fid}-speech-err`,
   };
 
   // -- persistence ----------------------------------------------------------
@@ -1371,7 +1437,7 @@ export function ModelSheet({
     mutationFn: async () => {
       setAdvancedRejected(false);
       const { params, paramPolicy } = paramsToApi(draft);
-      const hasPricing = draft.price.input.trim() !== "" || draft.price.output.trim() !== "";
+      const hasPricing = pricesAnything(draft);
       if (mode === "add") {
         // the strategy the operator picked, not the first one on the list:
         // every model used to be created `round_robin` (#1979)
@@ -1482,7 +1548,10 @@ export function ModelSheet({
         params: open.params || problems.includes("param"),
         headers: open.headers || problems.includes("header"),
         pricing:
-          open.pricing || problems.includes("cacheWrite") || problems.includes("cacheWrite1h"),
+          open.pricing ||
+          problems.some((p) =>
+            ["cacheWrite", "cacheWrite1h", "image", "audioInput", "speech"].includes(p),
+          ),
       }));
       return;
     }
@@ -1613,7 +1682,15 @@ export function ModelSheet({
   };
 
   const priceInput = (
-    key: "input" | "output" | "cacheWrite" | "cacheWrite1h" | "cacheRead",
+    key:
+      | "input"
+      | "output"
+      | "cacheWrite"
+      | "cacheWrite1h"
+      | "image"
+      | "audioInput"
+      | "speech"
+      | "cacheRead",
     label: string,
   ) => {
     // the cache-write rates are the price inputs that may stay empty on a priced
@@ -1635,7 +1712,15 @@ export function ModelSheet({
               hintId: ids.cacheWrite1hHint,
               errId: ids.cacheWrite1hErr,
             }
-          : null;
+          : key === "image" || key === "audioInput" || key === "speech"
+            ? {
+                field: key,
+                placeholder: t("modelSheet.pricing.unitPlaceholder"),
+                hint: t(`modelSheet.pricing.${key}Hint`),
+                hintId: ids[`${key}Hint`],
+                errId: ids[`${key}Err`],
+              }
+            : null;
     const writeError = write ? shownError(write.field) : "";
     return (
       <div className="space-y-1">
@@ -2030,9 +2115,6 @@ export function ModelSheet({
           className="space-y-3"
         >
           <p className="text-xs text-muted-foreground">{t("modelSheet.pricing.hint")}</p>
-          {!tokenPriced && (
-            <p className="text-xs text-muted-foreground">{t("modelSheet.pricing.tokensOnly")}</p>
-          )}
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             {tokenPriced && priceInput("input", t("modelSheet.pricing.input", { currency: cur }))}
             {draft.modality === "chat" && (
@@ -2044,6 +2126,14 @@ export function ModelSheet({
                   t("modelSheet.pricing.cacheWrite1h", { currency: cur }),
                 )}
                 {priceInput("cacheRead", t("modelSheet.pricing.cacheRead", { currency: cur }))}
+              </>
+            )}
+            {draft.modality === "image" &&
+              priceInput("image", t("modelSheet.pricing.image", { currency: cur }))}
+            {draft.modality === "audio" && (
+              <>
+                {priceInput("audioInput", t("modelSheet.pricing.audioInput", { currency: cur }))}
+                {priceInput("speech", t("modelSheet.pricing.speech", { currency: cur }))}
               </>
             )}
           </div>

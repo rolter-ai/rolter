@@ -5,6 +5,7 @@ import { expect, userEvent, waitFor, within } from "storybook/test";
 import ResetPassword from "./ResetPassword";
 import { Harness, json, recording, type FetchStub } from "./story-harness";
 import { AuthProvider } from "@/lib/auth";
+import { withPageA11y } from "@/lib/story-a11y";
 
 const TOKEN = "rolter_reset_2f9c41";
 
@@ -42,7 +43,7 @@ function Stage({ stub }: { stub: FetchStub }) {
 const meta = {
   title: "Screens/ResetPassword",
   component: ResetPassword,
-  parameters: { layout: "fullscreen" },
+  parameters: { layout: "fullscreen", ...withPageA11y },
   args: { token: TOKEN },
 } satisfies Meta<typeof ResetPassword>;
 
@@ -79,29 +80,66 @@ export const InvalidLink: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(await canvas.findByText(/This reset link is not valid/)).toBeVisible();
-    await expect(canvas.queryByRole("button")).not.toBeInTheDocument();
+    await expect(canvas.queryByRole("button", { name: /sign in/i })).not.toBeInTheDocument();
   },
 };
 
-/** Under eight characters is refused by the field, before the round trip. */
+/** Under eight characters: the rule is a hint while typing and an error once the field is left. */
 export const PasswordTooShort: Story = {
   render: () => <Stage stub={reset(() => json(PREVIEW))} />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await userEvent.type(await canvas.findByLabelText(/^New password/), "short");
-    await expect(canvas.getByRole("button", { name: /set new password/i })).toBeDisabled();
+    const field = await canvas.findByLabelText(/^New password/);
+    await expect(field).toHaveAccessibleDescription("At least 8 characters.");
+    await userEvent.type(field, "short");
+    await expect(field).not.toHaveAttribute("aria-invalid");
+    await userEvent.tab();
+    await waitFor(() => expect(field).toHaveAttribute("aria-invalid", "true"));
+    await expect(field).toHaveAccessibleDescription(/Use at least 8 characters/);
+    await userEvent.click(canvas.getByRole("button", { name: /set new password/i }));
+    calls.expectNotSent("POST", `/password-reset/${TOKEN}`);
   },
 };
 
-/** The two boxes disagree: said here rather than after the password is stored. */
+/** The two boxes disagree: said once the confirmation is as long as the password or left. */
 export const PasswordsDoNotMatch: Story = {
   render: () => <Stage stub={reset(() => json(PREVIEW))} />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.type(await canvas.findByLabelText(/^New password/), "correct-horse");
-    await userEvent.type(canvas.getByLabelText(/confirm password/i), "correct-hors");
-    await expect(canvas.getByRole("alert")).toHaveTextContent(/do not match/);
-    await expect(canvas.getByRole("button", { name: /set new password/i })).toBeDisabled();
+    const confirm = canvas.getByLabelText(/confirm password/i);
+    await userEvent.type(confirm, "correct");
+    await expect(confirm).not.toHaveAttribute("aria-invalid");
+    await userEvent.tab();
+    await waitFor(() => expect(confirm).toHaveAttribute("aria-invalid", "true"));
+    await expect(confirm).toHaveAccessibleDescription(/do not match/);
+    await userEvent.click(canvas.getByRole("button", { name: /set new password/i }));
+    calls.expectNotSent("POST", `/password-reset/${TOKEN}`);
+  },
+};
+
+/** The page offers the locale picker like the sign-in page, and a show-password toggle per field. */
+export const OffersLocalePickerAndToggles: Story = {
+  render: () => <Stage stub={reset(() => json(PREVIEW))} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByLabelText(/^New password/);
+    await expect(canvas.getAllByRole("button", { name: /show password/i })).toHaveLength(2);
+    await expect(canvas.getByRole("button", { name: "Change language" })).toBeVisible();
+  },
+};
+
+/** The same flow in Russian: hint, then error on leaving the field. */
+export const PasswordTooShortInRussian: Story = {
+  render: () => <Stage stub={reset(() => json(PREVIEW))} />,
+  globals: { locale: "ru" },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const field = await canvas.findByLabelText(/^Новый пароль/);
+    await expect(field).toHaveAccessibleDescription("Не короче 8 символов.");
+    await userEvent.type(field, "short");
+    await userEvent.tab();
+    await waitFor(() => expect(field).toHaveAccessibleDescription(/Нужно не меньше 8 символов/));
   },
 };
 
@@ -142,7 +180,9 @@ export const SpentLinkIsRefusedOnSubmit: Story = {
     await userEvent.type(await canvas.findByLabelText(/^New password/), "correct-horse");
     await userEvent.type(canvas.getByLabelText(/confirm password/i), "correct-horse");
     await userEvent.click(canvas.getByRole("button", { name: /set new password/i }));
-    await expect(await canvas.findByRole("alert")).toBeVisible();
+    await expect(await canvas.findByRole("alert")).toHaveTextContent(/not valid/);
     await expect(canvas.getByLabelText(/^New password/)).toBeVisible();
+    await expect(canvas.getByRole("button", { name: /set new password/i })).toBeDisabled();
+    await expect(canvas.getByRole("button", { name: /continue to sign in/i })).toBeVisible();
   },
 };

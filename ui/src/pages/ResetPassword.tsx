@@ -4,9 +4,17 @@ import { Trans, useTranslation } from "react-i18next";
 import { useNavigate } from "react-router";
 
 import { AuthCard } from "@/components/ui/auth-card";
+import { LocalePicker } from "@/components/LocalePicker";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { previewPasswordReset, redeemPasswordReset, type PasswordResetPreview } from "@/lib/api";
+import { Field } from "@/components/ui/field";
+import { FieldError } from "@/components/ui/field-error";
+import { PasswordInput } from "@/components/ui/password-input";
+import {
+  ApiError,
+  previewPasswordReset,
+  redeemPasswordReset,
+  type PasswordResetPreview,
+} from "@/lib/api";
 import { useDocumentTitle } from "@/lib/document-title";
 import { describeError, type ErrorCopy } from "@/lib/error-copy";
 
@@ -21,6 +29,13 @@ export default function ResetPassword({ token }: { token: string }) {
   const [error, setError] = useState<ErrorCopy | null>(null);
   const [pw, setPw] = useState("");
   const [confirm, setConfirm] = useState("");
+  // the rules are said once the person has moved on from a field (or, for the
+  // confirmation, typed as much as the password), not on the first keystroke
+  const [pwBlurred, setPwBlurred] = useState(false);
+  const [confirmBlurred, setConfirmBlurred] = useState(false);
+  // a link that was spent or expired between the preview and the submit:
+  // retrying cannot fix it, so the way on is the sign-in page
+  const [refused, setRefused] = useState(false);
   const [pending, setPending] = useState(false);
   const [done, setDone] = useState(false);
   useDocumentTitle(t("pages.resetPassword.title"));
@@ -38,20 +53,32 @@ export default function ResetPassword({ token }: { token: string }) {
   }, [token]);
 
   const submit = async () => {
+    if (pw.length < 8 || confirm !== pw) {
+      setPwBlurred(true);
+      setConfirmBlurred(true);
+      return;
+    }
     setPending(true);
     setError(null);
     try {
       await redeemPasswordReset(token, pw);
       setDone(true);
     } catch (e) {
-      setError(describeError(e, t));
+      if (e instanceof ApiError && e.status === 401) {
+        setRefused(true);
+        setError({ message: t("pages.resetPassword.invalidLink") });
+      } else {
+        setError(describeError(e, t));
+      }
     } finally {
       setPending(false);
     }
   };
 
-  const mismatch = confirm.length > 0 && confirm !== pw;
-  const ready = pw.length >= 8 && !mismatch && !pending;
+  const tooShort = pw.length < 8;
+  const mismatch =
+    confirm !== pw && (confirmBlurred || (confirm.length > 0 && confirm.length >= pw.length));
+  const toSignIn = () => navigate("/", { replace: true });
 
   return (
     <AuthCard
@@ -75,61 +102,60 @@ export default function ResetPassword({ token }: { token: string }) {
         (done ? (
           <Button
             type="button"
-            onClick={() => navigate("/", { replace: true })}
+            onClick={toSignIn}
             className="w-full bg-brand-folk text-white hover:bg-brand-press"
           >
             {t("pages.resetPassword.toSignIn")} <ArrowRight className="h-4 w-4" />
           </Button>
         ) : (
           <form
+            noValidate
             className="flex flex-col gap-4"
             onSubmit={(e) => {
               e.preventDefault();
               void submit();
             }}
           >
-            <label className="flex flex-col gap-1.5 text-sm">
-              <span className="text-muted-foreground">{t("pages.resetPassword.password")}</span>
-              <Input
-                type="password"
+            <Field
+              label={t("pages.resetPassword.password")}
+              hint={t("pages.resetPassword.passwordHint")}
+              error={pwBlurred && tooShort ? t("pages.resetPassword.passwordTooShort") : undefined}
+            >
+              <PasswordInput
                 name="new-password"
                 required
-                minLength={8}
                 value={pw}
                 onChange={(e) => setPw(e.target.value)}
+                onBlur={() => setPwBlurred(true)}
                 autoComplete="new-password"
               />
-            </label>
-            <label className="flex flex-col gap-1.5 text-sm">
-              <span className="text-muted-foreground">{t("pages.resetPassword.confirm")}</span>
-              <Input
-                type="password"
+            </Field>
+            <Field
+              label={t("pages.resetPassword.confirm")}
+              error={mismatch ? t("pages.resetPassword.mismatch") : undefined}
+            >
+              <PasswordInput
                 name="confirm-password"
                 required
-                aria-invalid={mismatch || undefined}
                 value={confirm}
                 onChange={(e) => setConfirm(e.target.value)}
+                onBlur={() => setConfirmBlurred(true)}
                 autoComplete="new-password"
               />
-            </label>
-            {mismatch && (
-              <p role="alert" className="text-xs text-[color:var(--status-danger-text)]">
-                {t("pages.resetPassword.mismatch")}
-              </p>
-            )}
+            </Field>
             {error != null && (
-              <p role="alert" className="text-xs text-[color:var(--status-danger-text)]">
-                {error.message}
+              <div className="flex flex-col gap-1">
+                <FieldError id="reset-error" error={error.message} />
                 {error.detail && (
-                  <span className="mt-1 block break-words font-mono text-[color:var(--text-subtle)]">
+                  <span className="break-words font-mono text-xs text-[color:var(--text-subtle)]">
                     {error.detail}
                   </span>
                 )}
-              </p>
+              </div>
             )}
             <Button
               type="submit"
-              disabled={!ready}
+              disabled={pending || refused}
               className="w-full bg-brand-folk text-white hover:bg-brand-press"
             >
               {pending ? (
@@ -143,8 +169,16 @@ export default function ResetPassword({ token }: { token: string }) {
                 </>
               )}
             </Button>
+            {refused && (
+              <Button type="button" variant="outline" onClick={toSignIn} className="w-full">
+                {t("pages.resetPassword.toSignIn")}
+              </Button>
+            )}
           </form>
         ))}
+      <div className="flex justify-center">
+        <LocalePicker />
+      </div>
     </AuthCard>
   );
 }
