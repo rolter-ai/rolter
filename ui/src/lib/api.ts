@@ -3173,6 +3173,8 @@ export interface RbacActionView {
   superadmin_only: boolean;
   /** no membership required: any authenticated caller may perform it */
   authenticated_only: boolean;
+  /** the scope this action is decided at when it differs from the resource's; absent otherwise */
+  scope?: string;
 }
 
 export interface RbacResourceView {

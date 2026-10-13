@@ -25259,6 +25259,160 @@ async fn guards_follow_the_scope_their_capability_row_declares() {
     assert_eq!(status, 204, "the org admin deletes the team: {body:?}");
 }
 
+/// #3107: the project and user lists declare their read at the project scope
+/// while their writes keep the row's. For every role at every membership
+/// level, `GET /api/v1/rbac/effective` asked at the whole chain answers each of
+/// the four pairs the way the guard does: the lists open exactly for the callers
+/// that reach a row, and the creates stay with the team and org admin.
+#[tokio::test]
+async fn effective_matches_the_guards_of_the_project_and_user_rows_for_every_role() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("peract".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let call = |method: reqwest::Method, path: String, token: String, body: Value| {
+        let client = client.clone();
+        let base = base.clone();
+        async move {
+            let resp = client
+                .request(method, format!("{base}{path}"))
+                .bearer_auth(token)
+                .json(&body)
+                .send()
+                .await
+                .unwrap();
+            let status = resp.status().as_u16();
+            (status, resp.json::<Value>().await.unwrap_or(Value::Null))
+        }
+    };
+    let admin = |method: reqwest::Method, path: String, body: Value| {
+        call(method, path, "peract".to_string(), body)
+    };
+
+    let (_, org) = admin(
+        reqwest::Method::POST,
+        "/api/v1/orgs".into(),
+        json!({"name": "Acme", "slug": "acme"}),
+    )
+    .await;
+    let org_id: uuid::Uuid = org["id"].as_str().unwrap().parse().unwrap();
+    let (_, team) = admin(
+        reqwest::Method::POST,
+        format!("/api/v1/orgs/{org_id}/teams"),
+        json!({"name": "core"}),
+    )
+    .await;
+    let team_id: uuid::Uuid = team["id"].as_str().unwrap().parse().unwrap();
+    let (_, project) = admin(
+        reqwest::Method::POST,
+        format!("/api/v1/teams/{team_id}/projects"),
+        json!({"name": "one"}),
+    )
+    .await;
+    let project_id: uuid::Uuid = project["id"].as_str().unwrap().parse().unwrap();
+
+    let effective_path =
+        format!("/api/v1/rbac/effective?org_id={org_id}&team_id={team_id}&project_id={project_id}");
+    let mut checked = 0;
+    for level in ["org", "team", "project"] {
+        for role in ["viewer", "member", "admin"] {
+            let label = format!("{role}-{level}");
+            let user = seed_user(&pool, &format!("{label}@acme.test"), false).await;
+            let (o, t, p) = match level {
+                "org" => (Some(org_id), None, None),
+                "team" => (None, Some(team_id), None),
+                _ => (None, None, Some(project_id)),
+            };
+            seed_membership(&pool, user, o, t, p, role).await;
+            let token = seed_session(&pool, user, &format!("peract_{label}")).await;
+
+            let (status, effective) = call(
+                reqwest::Method::GET,
+                effective_path.clone(),
+                token.clone(),
+                Value::Null,
+            )
+            .await;
+            assert_eq!(status, 200, "{label}: {effective}");
+            let told = |pair: &str| {
+                effective["allowed"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|v| v == pair)
+            };
+
+            let (status, body) = call(
+                reqwest::Method::GET,
+                format!("/api/v1/teams/{team_id}/projects"),
+                token.clone(),
+                Value::Null,
+            )
+            .await;
+            assert_eq!(
+                status == 200,
+                told("project:read"),
+                "{label} project:read: {body}"
+            );
+            let (status, body) = call(
+                reqwest::Method::GET,
+                format!("/api/v1/orgs/{org_id}/projects"),
+                token.clone(),
+                Value::Null,
+            )
+            .await;
+            assert_eq!(
+                status == 200,
+                told("project:read"),
+                "{label} org project:read: {body}"
+            );
+            let (status, body) = call(
+                reqwest::Method::POST,
+                format!("/api/v1/teams/{team_id}/projects"),
+                token.clone(),
+                json!({"name": format!("made-by-{label}")}),
+            )
+            .await;
+            assert_eq!(
+                status != 403,
+                told("project:create"),
+                "{label} project:create: {body}"
+            );
+            let (status, body) = call(
+                reqwest::Method::GET,
+                format!("/api/v1/orgs/{org_id}/users"),
+                token.clone(),
+                Value::Null,
+            )
+            .await;
+            assert_eq!(
+                status == 200,
+                told("user:read"),
+                "{label} user:read: {body}"
+            );
+            let (status, body) = call(
+                reqwest::Method::POST,
+                format!("/api/v1/orgs/{org_id}/users"),
+                token,
+                json!({"email": format!("made-by-{label}@acme.test"), "role": "viewer"}),
+            )
+            .await;
+            assert_eq!(
+                status != 403,
+                told("user:create"),
+                "{label} user:create: {body}"
+            );
+            checked += 1;
+        }
+    }
+    assert_eq!(checked, 9);
+}
+
 /// #2235: editing a route's strategy and targets takes `route:update`, the
 /// project admin's capability, like every other route write. A project member
 /// can read the route but not change it.

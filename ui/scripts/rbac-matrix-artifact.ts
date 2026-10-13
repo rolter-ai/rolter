@@ -58,9 +58,12 @@ export function parseMatrix(text: string, path: string): MatrixArtifact {
   if (unknown.length > 0) {
     throw new Error(`${path} clears chain fields it does not name: ${unknown.join(", ")}`);
   }
-  const unscoped = [...new Set(parsed.resources.map((r) => r.scope))].filter(
-    (scope) => !(scope in chainAt),
-  );
+  // an action may name a scope of its own (#3107), which needs a rule too
+  const usedScopes = parsed.resources.flatMap((r) => [
+    r.scope,
+    ...r.actions.flatMap((a) => (a.scope ? [a.scope] : [])),
+  ]);
+  const unscoped = [...new Set(usedScopes)].filter((scope) => !(scope in chainAt));
   if (unscoped.length > 0) {
     throw new Error(`${path} gives no \`chain_at\` rule for scope ${unscoped.join(", ")}`);
   }
