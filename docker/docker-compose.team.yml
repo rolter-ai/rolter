@@ -27,17 +27,22 @@
 #   a database or clickhouse volume keeps the credentials it was first created
 #   with, and the local stack's are `rolter`/`rolter` and none
 #
-# the env file needs these, and `rolter init --env-only` writes the first five:
+# the env file needs these, and `rolter init --env-only --compose` writes all of
+# them:
 #
 #   ROLTER_KEK ROLTER_ADMIN_TOKEN ROLTER_INTERNAL_TOKEN ROLTER_KEY_PEPPER
 #   ROLTER_SESSION_PEPPER
 #   ROLTER_PG_PASSWORD ROLTER_REDIS_PASSWORD ROLTER_CLICKHOUSE_PASSWORD
+#   ROLTER_COMPOSE_DATABASE_URL ROLTER_COMPOSE_REDIS_URL
+#   ROLTER_COMPOSE_CLICKHOUSE_URL
 #
-# the three datastore passwords end up inside connection URLs, so use hex
-# (`openssl rand -hex 24`) rather than anything that needs percent-encoding.
-# ROLTER_PG_USER and ROLTER_CLICKHOUSE_USER default to `rolter`. compose stops
-# at the first variable that is missing and says which, so a half-filled env
-# file fails at `up` and not at runtime.
+# the three URLs are the services' connection strings with the generated
+# password in them. they are read whole from the env file so this file never
+# spells a user:password@host line of its own (#2424). init writes the user
+# `rolter` into them; if you change ROLTER_PG_USER or ROLTER_CLICKHOUSE_USER
+# (both default to `rolter`), change the user in the matching URL too.
+# compose stops at the first variable that is missing and says which, so a
+# half-filled env file fails at `up` and not at runtime.
 name: rolter-team
 
 # what the control plane runs with, and what the preflight check is handed so it
@@ -49,9 +54,9 @@ x-rolter-control-env: &rolter-control-env
   ROLTER_INTERNAL_TOKEN: "${ROLTER_INTERNAL_TOKEN:?}"
   ROLTER_KEY_PEPPER: "${ROLTER_KEY_PEPPER:?}"
   ROLTER_SESSION_PEPPER: "${ROLTER_SESSION_PEPPER:?}"
-  ROLTER_DATABASE_URL: "postgres://${ROLTER_PG_USER:-rolter}:${ROLTER_PG_PASSWORD:?}@postgres:5432/rolter"
-  ROLTER_REDIS_URL: "redis://:${ROLTER_REDIS_PASSWORD:?}@redis:6379"
-  CLICKHOUSE_URL: "http://${ROLTER_CLICKHOUSE_USER:-rolter}:${ROLTER_CLICKHOUSE_PASSWORD:?}@clickhouse:8123"
+  ROLTER_DATABASE_URL: "${ROLTER_COMPOSE_DATABASE_URL:?}"
+  ROLTER_REDIS_URL: "${ROLTER_COMPOSE_REDIS_URL:?}"
+  CLICKHOUSE_URL: "${ROLTER_COMPOSE_CLICKHOUSE_URL:?}"
 
 services:
   postgres:
@@ -114,8 +119,8 @@ services:
       # key with its own, so a value that differs from the control plane's
       # rejects every key with 401
       ROLTER_KEY_PEPPER: "${ROLTER_KEY_PEPPER:?}"
-      ROLTER_REDIS_URL: "redis://:${ROLTER_REDIS_PASSWORD:?}@redis:6379"
-      CLICKHOUSE_URL: "http://${ROLTER_CLICKHOUSE_USER:-rolter}:${ROLTER_CLICKHOUSE_PASSWORD:?}@clickhouse:8123"
+      ROLTER_REDIS_URL: "${ROLTER_COMPOSE_REDIS_URL:?}"
+      CLICKHOUSE_URL: "${ROLTER_COMPOSE_CLICKHOUSE_URL:?}"
     depends_on:
       redis:
         condition: service_healthy

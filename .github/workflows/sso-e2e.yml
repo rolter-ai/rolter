@@ -13,12 +13,6 @@ on:
 permissions:
   contents: read
 
-env:
-  # throwaway AES-256-GCM envelope key for provider api_key sealing (base64 of a
-  # readable 32-byte phrase; matches integration/e2e/rolter_e2e/stack.py). never
-  # a real secret.
-  ROLTER_KEK: cm9sdGVyLWUyZS10ZXN0LWtlay1ub3Qtc2VjcmV0ISE=
-
 jobs:
   sso:
     name: sso + scim against keycloak
@@ -28,6 +22,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: generate a throwaway envelope key
+        # sealing provider api_keys needs a 32-byte base64 KEK; a fresh one per run
+        # keeps a key out of the repository and is all the stack needs
+        run: |
+          kek="$(openssl rand -base64 32)"
+          echo "::add-mask::${kek}"
+          echo "ROLTER_KEK=${kek}" >> "$GITHUB_ENV"
 
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:

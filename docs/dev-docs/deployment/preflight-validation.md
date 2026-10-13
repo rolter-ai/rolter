@@ -198,6 +198,7 @@ rolter init                                  # rolter.toml + .env, production pr
 rolter init --profile local                  # the loose defaults, for development
 rolter init --print                          # stdout only, for piping into a secret manager
 rolter init --env-only --database-url ...    # just the environment
+rolter init --env-only --compose             # plus the compose team stack's datastore passwords
 ```
 
 It generates five distinct secrets, each 256 bits from the system CSPRNG:
@@ -208,6 +209,14 @@ It generates five distinct secrets, each 256 bits from the system CSPRNG:
 - `ROLTER_KEY_PEPPER`, mixed into virtual-key digests
 - `ROLTER_SESSION_PEPPER`, mixed into the digests of sign-in sessions,
   invitation links, SCIM tokens and MFA recovery codes
+
+`--compose` adds what `docker/docker-compose.team.yml` reads beyond those:
+`ROLTER_PG_PASSWORD`, `ROLTER_REDIS_PASSWORD` and `ROLTER_CLICKHOUSE_PASSWORD`,
+three more distinct 256-bit hex values (hex, because they sit inside URLs), and
+the in-network URLs built from them, `ROLTER_COMPOSE_DATABASE_URL`,
+`ROLTER_COMPOSE_REDIS_URL` and `ROLTER_COMPOSE_CLICKHOUSE_URL`. The compose file
+takes each URL whole, so it holds no credential-shaped line for a secret scanner
+to report (#2424). The same no-overwrite and `0600` rules apply.
 
 They are distinct by construction and a test asserts it: reusing one value in
 two roles would mean a leaked admin token also decrypts every stored credential.
