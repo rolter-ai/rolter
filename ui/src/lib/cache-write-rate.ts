@@ -39,3 +39,23 @@ export function cacheWrite1hPatch(
 ): { cache_write_1h_per_mtok?: string | null } {
   return ratePatch("cache_write_1h_per_mtok", typed, seeded);
 }
+
+/**
+ * The rates for requests billed by something other than tokens (#2937). The
+ * control plane keeps each one when a save leaves it out, clears it on `null`
+ * and sets it on a string, exactly as it does the cache-write rates above.
+ */
+export function imagePatch(typed: string, seeded: string): { image_per_unit?: string | null } {
+  return ratePatch("image_per_unit", typed, seeded);
+}
+
+export function audioInputPatch(
+  typed: string,
+  seeded: string,
+): { audio_input_per_minute?: string | null } {
+  return ratePatch("audio_input_per_minute", typed, seeded);
+}
+
+export function speechPatch(typed: string, seeded: string): { speech_per_mchar?: string | null } {
+  return ratePatch("speech_per_mchar", typed, seeded);
+}

@@ -4723,6 +4723,9 @@ async fn unpriced_block_serves_a_model_that_has_a_price() {
         cached_input_per_mtok: None,
         cache_write_per_mtok: None,
         cache_write_1h_per_mtok: None,
+        image_per_unit: None,
+        audio_input_per_minute: None,
+        speech_per_mchar: None,
         currency: "USD".to_string(),
     });
     let gw = serve_gateway(&config).await;

@@ -1787,6 +1787,9 @@ function pricedAt(cacheWrite: string | null, cacheWrite1h: string | null = null)
     cached_input_per_mtok: "1.250000",
     cache_write_per_mtok: cacheWrite,
     cache_write_1h_per_mtok: cacheWrite1h,
+    image_per_unit: null,
+    audio_input_per_minute: null,
+    speech_per_mchar: null,
     currency: "USD",
     created_at: "2026-07-01T00:00:00Z",
   };

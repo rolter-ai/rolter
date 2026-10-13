@@ -3500,6 +3500,18 @@ fn governance_schemas(p: &Prim) -> Value {
                     "type": ["string", "null"],
                     "description": "rate for input tokens written to the provider's 1 hour prompt cache, for a provider that reports the split (Anthropic's usage.cache_creation); null prices them at cache_write_per_mtok, and from there at input_per_mtok"
                 },
+                "image_per_unit": {
+                    "type": ["string", "null"],
+                    "description": "price of one generated image, for a model billed per image; null charges nothing for images (a request that reports no tokens either is then logged unpriced)"
+                },
+                "audio_input_per_minute": {
+                    "type": ["string", "null"],
+                    "description": "price of one minute of input audio (transcriptions and translations), read from the duration the response states; null charges nothing for audio"
+                },
+                "speech_per_mchar": {
+                    "type": ["string", "null"],
+                    "description": "price per million characters of text sent to a text-to-speech model, counted from the request's input; null charges nothing for speech"
+                },
                 "currency": string,
                 "created_at": timestamp
             }
@@ -3528,6 +3540,18 @@ fn governance_schemas(p: &Prim) -> Value {
                 "cache_write_1h_per_mtok": {
                     "type": ["string", "null"],
                     "description": "rate for input tokens written to the provider's 1 hour prompt cache, a number from 0 up to 999999.999999. Omit to leave the stored rate unchanged, send null to clear it (those writes are then priced at cache_write_per_mtok). Same rule as cache_write_per_mtok, so a client that predates the field cannot reset it"
+                },
+                "image_per_unit": {
+                    "type": ["string", "null"],
+                    "description": "price of one generated image, a number from 0 up to 999999.999999. Omit to leave the stored rate unchanged, send null to clear it. Same rule as cache_write_per_mtok, so a client that predates the field cannot reset it"
+                },
+                "audio_input_per_minute": {
+                    "type": ["string", "null"],
+                    "description": "price of one minute of input audio, a number from 0 up to 999999.999999. Omit to leave the stored rate unchanged, send null to clear it"
+                },
+                "speech_per_mchar": {
+                    "type": ["string", "null"],
+                    "description": "price per million characters of text-to-speech input, a number from 0 up to 999999.999999. Omit to leave the stored rate unchanged, send null to clear it"
                 },
                 "currency": {"type": "string", "default": "USD"}
             },

@@ -2366,6 +2366,12 @@ export interface ModelPriceRow {
    * at the input rate
    */
   cache_write_1h_per_mtok: string | null;
+  /** the price of one generated image (#2937); `null` charges nothing for images */
+  image_per_unit: string | null;
+  /** the price of one minute of input audio, for transcriptions (#2937) */
+  audio_input_per_minute: string | null;
+  /** the price per million characters of text-to-speech input (#2937) */
+  speech_per_mchar: string | null;
   currency: string;
   created_at: string;
 }
@@ -2386,6 +2392,13 @@ export interface UpsertModelPriceInput {
    * back to that rate (#2902). Build it with `cacheWrite1hPatch()`.
    */
   cache_write_1h_per_mtok?: string | null;
+  /**
+   * Kept, cleared and set the same way as `cache_write_per_mtok` (#2937).
+   * Build them with `imagePatch()`, `audioInputPatch()` and `speechPatch()`.
+   */
+  image_per_unit?: string | null;
+  audio_input_per_minute?: string | null;
+  speech_per_mchar?: string | null;
   currency?: string;
 }
 

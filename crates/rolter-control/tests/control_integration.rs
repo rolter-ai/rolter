@@ -19049,6 +19049,85 @@ async fn a_model_price_carries_a_one_hour_cache_write_rate_an_older_client_canno
     assert!(price["cache_write_1h_per_mtok"].is_null(), "{price}");
 }
 
+/// #2937: the three unit rates follow the rule the cache-write rates do. A body
+/// that does not name them leaves them alone (the dashboard until its half
+/// landed, and every older client, sends exactly that), a bad value is refused
+/// with the field named, `null` clears one, and they reach the snapshot.
+#[tokio::test]
+async fn a_model_price_carries_unit_rates_an_older_client_cannot_reset() {
+    skip_without_db!();
+    let (app, _db) = fresh_app().await;
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let (status, set) = put_model_price(
+        &client,
+        &base,
+        json!({
+            "model": "media", "input_per_mtok": "0", "output_per_mtok": "0",
+            "image_per_unit": "0.04", "audio_input_per_minute": "0.006",
+            "speech_per_mchar": "15",
+        }),
+    )
+    .await;
+    assert!(status.is_success(), "{set}");
+    assert_eq!(set["image_per_unit"], "0.040000", "{set}");
+    let price = snapshot_price(&client, &base, "media").await;
+    assert_eq!(price["image_per_unit"], 0.04, "{price}");
+    assert_eq!(price["audio_input_per_minute"], 0.006, "{price}");
+    assert_eq!(price["speech_per_mchar"], 15.0, "{price}");
+
+    // a client that never heard of the fields replaces the rest of the row
+    let (status, kept) = put_model_price(
+        &client,
+        &base,
+        json!({"model": "media", "input_per_mtok": "1", "output_per_mtok": "2"}),
+    )
+    .await;
+    assert!(status.is_success(), "{kept}");
+    assert_eq!(kept["input_per_mtok"], "1.000000", "the rest is replaced");
+    assert_eq!(kept["image_per_unit"], "0.040000", "{kept}");
+    assert_eq!(kept["audio_input_per_minute"], "0.006000", "{kept}");
+    assert_eq!(kept["speech_per_mchar"], "15.000000", "{kept}");
+
+    for field in [
+        "image_per_unit",
+        "audio_input_per_minute",
+        "speech_per_mchar",
+    ] {
+        for bad in ["-1", "NaN", "inf", "1000000", "abc"] {
+            let (status, body) = put_model_price(
+                &client,
+                &base,
+                json!({
+                    "model": "media", "input_per_mtok": "1", "output_per_mtok": "2",
+                    field: bad,
+                }),
+            )
+            .await;
+            assert_eq!(status, 400, "{field} {bad:?} should be refused: {body}");
+            assert_eq!(body["error"]["field"], field, "{body}");
+        }
+    }
+
+    // clearing one is its own request and leaves the others
+    let (status, cleared) = put_model_price(
+        &client,
+        &base,
+        json!({
+            "model": "media", "input_per_mtok": "1", "output_per_mtok": "2",
+            "image_per_unit": null,
+        }),
+    )
+    .await;
+    assert!(status.is_success(), "{cleared}");
+    assert!(cleared["image_per_unit"].is_null(), "{cleared}");
+    assert_eq!(cleared["speech_per_mchar"], "15.000000", "{cleared}");
+    let price = snapshot_price(&client, &base, "media").await;
+    assert!(price["image_per_unit"].is_null(), "{price}");
+}
+
 /// The auto label the pricing catalog produces, and the fact that no request
 /// can edit, retract or impersonate one (#985).
 #[tokio::test]

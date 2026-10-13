@@ -34,7 +34,7 @@ use rolter_store::postgres::repo::{
     BusinessUnitRepo, CustomerRepo, LockoutGuard, MembershipRepo, MfaRepo, ModelPriceRepo, OrgRepo,
     ProjectRepo, PromptTemplateRepo, ProviderDeletion, ProviderGroupRepo, ProviderKeyRepo,
     ProviderRepo, RateLimitRepo, RouteRepo, RouteTargetRepo, RouteTargetSpec, RouteUpdate,
-    SessionRepo, SkillRepo, TeamRepo, UserRepo, VirtualKeyRepo,
+    SessionRepo, SkillRepo, TeamRepo, UnitRates, UserRepo, VirtualKeyRepo,
 };
 
 use crate::access_control::caller_policy;
@@ -5816,6 +5816,18 @@ struct UpsertModelPrice {
     /// clears it back to the 5 minute write rate
     #[serde(default, deserialize_with = "explicit_null")]
     cache_write_1h_per_mtok: Option<Option<String>>,
+    /// price of one generated image (#2937), tri-state like the cache write
+    /// rates: a client that predates the field replaces the row with a body
+    /// that never names it, and that must not clear a rate set since
+    #[serde(default, deserialize_with = "explicit_null")]
+    image_per_unit: Option<Option<String>>,
+    /// price of one minute of input audio (#2937), same tri-state
+    #[serde(default, deserialize_with = "explicit_null")]
+    audio_input_per_minute: Option<Option<String>>,
+    /// price per million characters of text-to-speech input (#2937), same
+    /// tri-state
+    #[serde(default, deserialize_with = "explicit_null")]
+    speech_per_mchar: Option<Option<String>>,
     #[serde(default = "default_currency")]
     currency: String,
 }
@@ -5884,16 +5896,33 @@ async fn upsert_model_price(
     if let Some(Some(write)) = &body.cache_write_1h_per_mtok {
         require_rate(write, "cache_write_1h_per_mtok")?;
     }
+    for (rate, field) in [
+        (&body.image_per_unit, "image_per_unit"),
+        (&body.audio_input_per_minute, "audio_input_per_minute"),
+        (&body.speech_per_mchar, "speech_per_mchar"),
+    ] {
+        if let Some(Some(rate)) = rate {
+            require_rate(rate, field)?;
+        }
+    }
     require_known_currency(&state, &body.currency)?;
     Ok(Json(
         ModelPriceRepo(pool(&state))
-            .upsert(
+            .upsert_with_units(
                 &body.model,
                 &body.input_per_mtok,
                 &body.output_per_mtok,
                 body.cached_input_per_mtok.as_deref(),
                 body.cache_write_per_mtok.as_ref().map(Option::as_deref),
                 body.cache_write_1h_per_mtok.as_ref().map(Option::as_deref),
+                UnitRates {
+                    image_per_unit: body.image_per_unit.as_ref().map(Option::as_deref),
+                    audio_input_per_minute: body
+                        .audio_input_per_minute
+                        .as_ref()
+                        .map(Option::as_deref),
+                    speech_per_mchar: body.speech_per_mchar.as_ref().map(Option::as_deref),
+                },
                 &body.currency,
             )
             .await?,

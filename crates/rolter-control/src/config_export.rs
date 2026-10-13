@@ -287,6 +287,15 @@ fn render_model_prices(out: &mut String, config: &GatewayConfig) {
         if let Some(write) = price.cache_write_1h_per_mtok {
             key(out, "cache_write_1h_per_mtok", &write);
         }
+        if let Some(rate) = price.image_per_unit {
+            key(out, "image_per_unit", &rate);
+        }
+        if let Some(rate) = price.audio_input_per_minute {
+            key(out, "audio_input_per_minute", &rate);
+        }
+        if let Some(rate) = price.speech_per_mchar {
+            key(out, "speech_per_mchar", &rate);
+        }
         key(out, "currency", &price.currency);
     }
 }
@@ -580,6 +589,44 @@ models = ["gpt-4o"]
         let rendered = render(&config);
         assert!(!rendered.contains("cache_write_1h_per_mtok"), "{rendered}");
         assert!(rendered.contains("cache_write_per_mtok"), "{rendered}");
+    }
+
+    /// #2937: the unit rates leave with their price, and only when set.
+    #[test]
+    fn unit_rates_are_exported_only_when_they_are_set() {
+        let mut config = GatewayConfig::from_toml_str(FIXTURE).expect("the fixture must parse");
+        let rendered = render(&config);
+        for key in [
+            "image_per_unit",
+            "audio_input_per_minute",
+            "speech_per_mchar",
+        ] {
+            assert!(!rendered.contains(key), "{key}: {rendered}");
+        }
+
+        let price = &mut config.model_prices[0];
+        price.image_per_unit = Some(rust_decimal::Decimal::new(4, 2));
+        price.audio_input_per_minute = Some(rust_decimal::Decimal::new(6, 3));
+        price.speech_per_mchar = Some(rust_decimal::Decimal::new(15, 0));
+        let rendered = render(&config);
+        assert!(
+            rendered.contains("image_per_unit = \"0.04\"\n"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("audio_input_per_minute = \"0.006\"\n"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("speech_per_mchar = \"15\"\n"),
+            "{rendered}"
+        );
+        // and what was written is a file the loader reads back
+        let back = GatewayConfig::from_toml_str(&rendered).expect("the export must parse");
+        assert_eq!(
+            back.model_prices[0].image_per_unit,
+            config.model_prices[0].image_per_unit
+        );
     }
 
     /// The one property that must never regress: `ConfigStore::load` hands the

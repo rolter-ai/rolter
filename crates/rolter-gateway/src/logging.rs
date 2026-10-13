@@ -263,6 +263,11 @@ pub struct RequestLog {
     /// every request no plugin saw
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub plugin_events: Vec<String>,
+    /// what the request is billed by besides tokens (#2937), known once the
+    /// request is parsed and finished off against the response when the stream
+    /// ends. Not a column: the cost it produces is
+    #[serde(skip)]
+    pub unit_basis: crate::unit_billing::UnitBasis,
     /// raw bodies are persisted in the short-retention `request_payloads`
     /// table, never in the primary metadata table
     #[serde(skip)]
@@ -329,6 +334,7 @@ impl Default for RequestLog {
             lifecycle_operation: String::new(),
             guardrail_events: Vec::new(),
             plugin_events: Vec::new(),
+            unit_basis: crate::unit_billing::UnitBasis::Tokens,
             request_payload: String::new(),
             response_payload: String::new(),
             capture_payloads: false,
@@ -950,7 +956,21 @@ impl UsageLoggingStream {
             .billed
             .take()
             .unwrap_or_else(|| parse_usage_with(self.is_sse, &self.buf, self.thinking));
-        log.usage_unknown = u8::from(upstream_answered && !usage.reported);
+        // a request billed by the image, the minute or the character is
+        // measured in those, so a provider that reports no tokens for it has
+        // not left its usage unknown when the count is read and has a rate
+        // (#2937)
+        let units = if upstream_answered {
+            log.unit_basis.units(&self.buf)
+        } else {
+            None
+        };
+        let unit_rate = self
+            .price
+            .as_ref()
+            .is_some_and(|price| log.unit_basis.has_rate(price));
+        let units_priced = unit_rate && units.is_some();
+        log.usage_unknown = u8::from(upstream_answered && !usage.reported && !units_priced);
         // an upstream error the caller received as it was. the status alone says
         // that it failed, not why; the body already sits in this buffer, so the
         // row can say what the upstream said at no extra cost (#2807)
@@ -1016,7 +1036,13 @@ impl UsageLoggingStream {
         // name predates non-USD support (#650)
         // a missing price is recorded as such rather than collapsing to a zero
         // that reads like a free request (#969)
-        log.unpriced = u8::from(self.price.is_none());
+        // the same goes for an image, audio or speech request that reports no
+        // tokens on a price with no rate for its unit: the row exists, but
+        // says nothing about what this request cost (#2937)
+        log.unpriced = u8::from(
+            self.price.is_none()
+                || (log.unit_basis.is_unit_billed() && !usage.reported && !unit_rate),
+        );
         // the cost is computed exactly (#967) and then narrowed to `f64` here,
         // because `request_logs.cost_usd` is a ClickHouse `Float64` and the
         // budget counter behind `record` below is a Redis `INCRBYFLOAT`.
@@ -1027,13 +1053,18 @@ impl UsageLoggingStream {
             .price
             .as_ref()
             .map(|p| {
+                // a unit rate adds to the token cost: a model that reports
+                // tokens and is billed per unit as well sets both rates, and a
+                // model billed one way leaves the other unset (#2937)
                 p.cost(
                     usage.prompt,
                     usage.completion,
                     usage.cache_read,
                     usage.cache_write,
                     usage.cache_write_1h,
-                )
+                ) + units
+                    .and_then(|units| p.unit_cost(&units))
+                    .unwrap_or_default()
             })
             .unwrap_or(rust_decimal::Decimal::ZERO);
         log.cost_usd = cost.to_f64().unwrap_or(0.0);
@@ -3489,6 +3520,9 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
             cached_input_per_mtok: None,
             cache_write_per_mtok: None,
             cache_write_1h_per_mtok: None,
+            image_per_unit: None,
+            audio_input_per_minute: None,
+            speech_per_mchar: None,
             currency: "USD".to_string(),
         });
         let mut wrapped = UsageLoggingStream::new(
