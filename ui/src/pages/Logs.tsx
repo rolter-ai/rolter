@@ -17,12 +17,8 @@ import { useTranslation } from "react-i18next";
 import { Link, useSearchParams } from "react-router";
 
 import { AnalyticsUnavailable } from "@/components/AnalyticsUnavailable";
-import {
-  FilterCheckList,
-  FilterPanel,
-  FilterSearchList,
-  FilterSection,
-} from "@/components/ui/filter-panel";
+import { FilterCheckList, FilterPanel, FilterSection } from "@/components/ui/filter-panel";
+import { RowFilterSections, useRowFilterData } from "@/components/RowFilters";
 import { LoadError } from "@/components/LoadError";
 import { SampledLogNotice } from "@/components/SampledLogNotice";
 import { SavedViews } from "@/components/SavedViews";
@@ -38,19 +34,15 @@ import { Segmented } from "@/components/ui/segmented";
 import { Sheet, SheetBody, SheetHeader } from "@/components/ui/sheet";
 import {
   AnalyticsUnavailableError,
-  fetchBusinessUnits,
-  fetchCustomers,
   fetchInvocationsPage,
   fetchLoggingSettings,
-  fetchModels,
   fetchVirtualKeys,
   type InvocationRow,
   type SavedViewFilters,
 } from "@/lib/api";
-import { useCan } from "@/lib/can";
 import type { CodeLanguage } from "@/lib/code";
+import { useCan } from "@/lib/can";
 import { useCurrencyCode } from "@/lib/currency";
-import { useScope } from "@/lib/scope";
 import { useFormat } from "@/lib/i18n/format";
 import { parseLogLookup, type LogLookup } from "@/lib/log-lookup";
 import { useModalA11y } from "@/lib/modal-a11y";
@@ -195,6 +187,7 @@ type FilterParam =
   | "customer"
   | "unpriced"
   | "guardrail"
+  | "plugin"
   | "request_id"
   | "trace_id";
 
@@ -230,6 +223,8 @@ function useLogFilters() {
   const unpriced = params.get("unpriced") === "true";
   // one guardrail outcome, as the Guardrail Rules cards link it (#2158)
   const guardrail = (params.get("guardrail") ?? "").trim();
+  // one plugin outcome, as the plugin rollup names it (#2243)
+  const plugin = (params.get("plugin") ?? "").trim();
   const requestId = (params.get("request_id") ?? "").trim();
   const traceId = (params.get("trace_id") ?? "").trim();
   // memoised on the raw value: a fresh array every render would look like a
@@ -270,6 +265,7 @@ function useLogFilters() {
     customers,
     unpriced,
     guardrail,
+    plugin,
     /** the id being looked up, if any */
     lookup,
     /** changes whenever any filter does */
@@ -282,6 +278,7 @@ function useLogFilters() {
       customerParam,
       unpriced,
       guardrail,
+      plugin,
       lookup?.kind,
       lookup?.value,
     ].join("|"),
@@ -310,6 +307,7 @@ function useLogFilters() {
     setCustomers: (next: string[]) => update({ customer: next.join(",") }),
     setUnpriced: (next: boolean) => update({ unpriced: next ? "true" : "" }),
     clearGuardrail: () => update({ guardrail: "" }),
+    clearPlugin: () => update({ plugin: "" }),
     clear: () =>
       update({
         status: "",
@@ -319,6 +317,7 @@ function useLogFilters() {
         customer: "",
         unpriced: "",
         guardrail: "",
+        plugin: "",
       }),
     setLookup: (next: LogLookup | null) =>
       update({
@@ -335,6 +334,7 @@ function useLogFilters() {
               customer: "",
               unpriced: "",
               guardrail: "",
+              plugin: "",
             }
           : {}),
       }),
@@ -389,6 +389,7 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
     customers: customerSel,
     unpriced,
     guardrail,
+    plugin,
     lookup,
   } = filters;
   const windowOptions = useTimeWindowOptions();
@@ -416,35 +417,9 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
   const [streaming, setStreaming] = React.useState(true);
   const errorHeading = React.useId();
 
-  const scope = useScope();
-  const models = useQuery({ queryKey: ["models"], queryFn: fetchModels });
-  // the two governance dimensions a row can be attributed to. named here so
-  // the rail and the drawer both show "Platform Engineering" rather than the
-  // uuid ClickHouse actually stores
-  const units = useQuery({
-    queryKey: ["business-units", scope.orgId],
-    queryFn: () => fetchBusinessUnits(scope.orgId as string),
-    enabled: !!scope.orgId,
-    retry: false,
-  });
-  const customers = useQuery({
-    queryKey: ["customers", scope.orgId],
-    queryFn: () => fetchCustomers(scope.orgId as string),
-    enabled: !!scope.orgId,
-    retry: false,
-  });
-
-  // the keys the caller can read in the scoped project, which is the list the
-  // key picker offers and the drawer already asks for (#1983). a caller the
-  // gate refuses gets no picker rather than a list that always fails
-  const can = useCan();
-  const keys = useQuery({
-    queryKey: ["virtual-keys", scope.projectId],
-    queryFn: () => fetchVirtualKeys(scope.projectId as string),
-    enabled: can("virtual_key", "read") !== false && !!scope.projectId,
-    retry: false,
-    staleTime: 60_000,
-  });
+  // the pickers' lists; the drawer reads the unit and customer names off them
+  const rowData = useRowFilterData();
+  const { units, customers } = rowData;
 
   React.useEffect(() => setCursors([]), [filters.key]);
   // the drawer belongs to the lookup it was opened by
@@ -461,6 +436,7 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
       customerSel.join(","),
       unpriced,
       guardrail,
+      plugin,
       cursors[page - 1] ?? "",
       lookupKey,
     ],
@@ -480,6 +456,7 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
         customer: customerSel.length ? customerSel : undefined,
         unpriced: unpriced || undefined,
         guardrail: guardrail || undefined,
+        plugin: plugin || undefined,
         status,
         limit: PAGE_SIZE,
         cursor: cursors[page - 1],
@@ -584,7 +561,8 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
     unitSel.length +
     customerSel.length +
     (unpriced ? 1 : 0) +
-    (guardrail ? 1 : 0);
+    (guardrail ? 1 : 0) +
+    (plugin ? 1 : 0);
   // what a saved view keeps of the screen: the lookup, the page and the
   // unpriced flag are not filters it holds, and an `all` status or an empty
   // value is left out rather than saved as a filter that filters nothing
@@ -596,29 +574,6 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
     ...(unitSel.length ? { business_unit: unitSel } : {}),
     ...(customerSel.length ? { customer: customerSel } : {}),
   };
-  // the list the model filter picks from. a model the address names but the
-  // catalogue no longer lists still filters the log, so it is offered too:
-  // otherwise the control would read as unset while the rows are narrowed
-  const modelOptions = React.useMemo(() => {
-    const names = (models.data ?? []).map((m) => m.model);
-    if (model && !names.includes(model)) names.push(model);
-    return names.map((name) => ({ value: name, label: name }));
-  }, [models.data, model]);
-
-  // the list the key filter picks from, by name. a key the address names but
-  // this project's list does not hold (a saved view from another project, a
-  // pasted link) still filters the log, so it is offered by its id too
-  const keyOptions = React.useMemo(() => {
-    const options = (keys.data ?? []).map((k) => ({
-      value: k.id,
-      label: k.name ? `${k.name} (${k.key_prefix}…)` : `${k.key_prefix}…`,
-    }));
-    if (keyId && !options.some((o) => o.value === keyId)) {
-      options.push({ value: keyId, label: keyId });
-    }
-    return options;
-  }, [keys.data, keyId]);
-
   // a deployment with no analytics store is a shape rolter supports, not a
   // failure, so it gets a calm panel naming the setting rather than the red
   // alert a 500 gets (#1236, #1984). no retry, since none can help
@@ -852,30 +807,11 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
                 onChange={(next) => filters.setWindow(readTimeWindow(next))}
               />
             </FilterSection>
-            {/* the control plane filters on one exact model, so this picks one */}
-            <FilterSection title={t("pages.logs.model")} defaultOpen count={model ? 1 : 0}>
-              <Combobox
-                aria-label={t("pages.logs.model")}
-                options={modelOptions}
-                value={model}
-                onChange={filters.setModel}
-                placeholder={t("pages.logs.allModels")}
-                clearable
-              />
-            </FilterSection>
-            {/* the control plane filters on one exact key id, shown by its name */}
-            {keyOptions.length > 0 && (
-              <FilterSection title={t("pages.logs.virtualKey")} defaultOpen count={keyId ? 1 : 0}>
-                <Combobox
-                  aria-label={t("pages.logs.virtualKey")}
-                  options={keyOptions}
-                  value={keyId}
-                  onChange={filters.setKey}
-                  placeholder={t("pages.logs.allKeys")}
-                  clearable
-                />
-              </FilterSection>
-            )}
+            <RowFilterSections
+              data={rowData}
+              values={{ model, keyId, units: unitSel, customers: customerSel }}
+              setters={filters}
+            />
             {/* the flag the gateway recorded per request, applied by the server
                 before the page is cut like every other filter here (#1986) */}
             <FilterSection title={t("pages.logs.cost")} defaultOpen count={unpriced ? 1 : 0}>
@@ -897,29 +833,14 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
                 />
               </FilterSection>
             )}
-            {(units.data ?? []).length > 0 && (
-              <FilterSection title={t("pages.logs.businessUnit")} count={unitSel.length}>
-                <FilterSearchList
-                  options={(units.data ?? []).map((u) => ({
-                    value: u.id,
-                    label: u.name,
-                  }))}
-                  selected={unitSel}
-                  onChange={filters.setUnits}
-                  placeholder={t("pages.logs.filterBusinessUnits")}
-                />
-              </FilterSection>
-            )}
-            {(customers.data ?? []).length > 0 && (
-              <FilterSection title={t("pages.logs.customer")} count={customerSel.length}>
-                <FilterSearchList
-                  options={(customers.data ?? []).map((c) => ({
-                    value: c.id,
-                    label: c.name,
-                  }))}
-                  selected={customerSel}
-                  onChange={filters.setCustomers}
-                  placeholder={t("pages.logs.filterCustomers")}
+            {plugin && (
+              <FilterSection title={t("pages.logs.plugin")} defaultOpen count={1}>
+                <FilterCheckList
+                  options={[{ value: plugin, label: plugin }]}
+                  selected={[plugin]}
+                  onChange={(picked) => {
+                    if (picked.length === 0) filters.clearPlugin();
+                  }}
                 />
               </FilterSection>
             )}

@@ -1,6 +1,7 @@
 import { useQuery, type UseQueryResult } from "@tanstack/react-query";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
+import { Filter, FilterX } from "lucide-react";
 import { Link } from "react-router";
 
 import { AnalyticsUnavailable } from "@/components/AnalyticsUnavailable";
@@ -9,7 +10,9 @@ import { GettingStarted } from "@/components/GettingStarted";
 import { IncompleteSpendNotice } from "@/components/IncompleteSpendNotice";
 import { SampledLogNotice } from "@/components/SampledLogNotice";
 import { LoadError } from "@/components/LoadError";
+import { RowFilterPicker, useAddressRowFilters } from "@/components/RowFilters";
 import { SavedViews } from "@/components/SavedViews";
+import { Button } from "@/components/ui/button";
 import { Combobox } from "@/components/ui/combobox";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Donut } from "@/components/ui/donut";
@@ -25,6 +28,7 @@ import {
   fetchAnalyticsTimeseries,
   fetchInvocations,
   type AnalyticsByModelRow,
+  type AnalyticsRowFilters,
   type InvocationRow,
   type SavedViewFilters,
 } from "@/lib/api";
@@ -51,7 +55,11 @@ const num = (v: number | string | undefined): number => Number(v ?? 0);
 // request leaves rather than once when the module loads, so a tab left open
 // reads the window as it is now and not as it was when it was opened (#1975).
 // the name is what the query keys carry
-const readWindow = (name: TimeWindow) => ({ ...windowBounds(name), bucket: "hour" });
+const readWindow = (name: TimeWindow, filters: AnalyticsRowFilters) => ({
+  ...windowBounds(name),
+  bucket: "hour",
+  ...filters,
+});
 // "recent" is the latest requests, whatever window the figures are read over
 const readRecent = () => windowBounds(DEFAULT_TIME_WINDOW);
 
@@ -204,11 +212,19 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
   const [timeWindow, setWindow] = useAddressWindow();
   const windowOptions = useTimeWindowOptions();
   const windowLabel = windowOptions.find((o) => o.value === timeWindow)?.label ?? timeWindow;
-  // what a saved view keeps: the window. the buckets are fixed at an hour here
-  const savedFilters: SavedViewFilters = { window: timeWindow };
+  // the row filters live in the address beside the window and go to every read
+  // on the screen (#2725). the query keys carry them, so a pick refetches
+  const rowFilters = useAddressRowFilters();
+  const [filtersOpen, setFiltersOpen] = React.useState(false);
+  const filterRegion = React.useId();
+  const filterKey = JSON.stringify(rowFilters.query);
+  const filtered = rowFilters.count > 0;
+  // what a saved view keeps: the window and the row filters. the buckets are
+  // fixed at an hour here
+  const savedFilters: SavedViewFilters = { window: timeWindow, ...rowFilters.saved };
   const summary = useQuery({
-    queryKey: ["analytics", "summary", timeWindow],
-    queryFn: () => fetchAnalyticsSummary(readWindow(timeWindow)),
+    queryKey: ["analytics", "summary", timeWindow, filterKey],
+    queryFn: () => fetchAnalyticsSummary(readWindow(timeWindow, rowFilters.query)),
     refetchInterval: overviewPoll,
     retry: false,
   });
@@ -217,20 +233,20 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
   // `summary` is the query the user is actually waiting on for this screen
   useScreenReady(!summary.isLoading);
   const series = useQuery({
-    queryKey: ["analytics", "timeseries", timeWindow],
-    queryFn: () => fetchAnalyticsTimeseries(readWindow(timeWindow)),
+    queryKey: ["analytics", "timeseries", timeWindow, filterKey],
+    queryFn: () => fetchAnalyticsTimeseries(readWindow(timeWindow, rowFilters.query)),
     refetchInterval: overviewPoll,
     retry: false,
   });
   const byModel = useQuery({
-    queryKey: ["analytics", "by-model", timeWindow],
-    queryFn: () => fetchAnalyticsByModel(readWindow(timeWindow)),
+    queryKey: ["analytics", "by-model", timeWindow, filterKey],
+    queryFn: () => fetchAnalyticsByModel(readWindow(timeWindow, rowFilters.query)),
     refetchInterval: overviewPoll,
     retry: false,
   });
   const recent = useQuery({
-    queryKey: ["invocations", "recent"],
-    queryFn: () => fetchInvocations({ ...readRecent(), limit: 8 }),
+    queryKey: ["invocations", "recent", filterKey],
+    queryFn: () => fetchInvocations({ ...readRecent(), ...rowFilters.query, limit: 8 }),
     refetchInterval: pollEvery(pollMs ?? RECENT_POLL_MS),
     retry: false,
   });
@@ -310,13 +326,44 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
           value={timeWindow}
           onChange={(next) => setWindow(readTimeWindow(next))}
         />
-        <SavedViews
-          surface="dashboard"
-          current={savedFilters}
-          onApply={(view) => setWindow(readTimeWindow(view.window))}
-        />
+        <SavedViews surface="dashboard" current={savedFilters} onApply={rowFilters.apply} />
+        <Button
+          size="sm"
+          variant="outline"
+          aria-expanded={filtersOpen}
+          aria-controls={filterRegion}
+          onClick={() => setFiltersOpen((open) => !open)}
+        >
+          <Filter aria-hidden className="h-3.5 w-3.5" />
+          {t("common.filters")}
+          {filtered && ` · ${rowFilters.count}`}
+        </Button>
       </div>
-      <GettingStarted requests={summary.isSuccess ? num(summary.data?.requests) : undefined} />
+      {filtersOpen && (
+        <section
+          id={filterRegion}
+          aria-label={t("common.filters")}
+          className="flex flex-col gap-2 rounded-lg border border-[color:var(--border-subtle)] p-3"
+        >
+          <div className="grid gap-x-4 gap-y-1 sm:grid-cols-2 xl:grid-cols-4">
+            <RowFilterPicker values={rowFilters.values} setters={rowFilters.setters} />
+          </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={!filtered}
+            onClick={rowFilters.clear}
+            className="w-fit px-2 text-muted-foreground"
+          >
+            <FilterX aria-hidden className="h-3.5 w-3.5" />
+            {t("common.clearFilters")}
+          </Button>
+        </section>
+      )}
+      {/* a filtered zero is the filter's, not a first run with nothing served yet */}
+      <GettingStarted
+        requests={summary.isSuccess && !filtered ? num(summary.data?.requests) : undefined}
+      />
       <div data-testid="dashboard-figures">
         <CardRead
           read={summary}
@@ -414,7 +461,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
                 const anySpend = spendPoints.some((v) => v > 0);
                 return spendPoints.length === 0 ? (
                   <p className="py-16 text-center text-sm text-muted-foreground">
-                    {t("analytics.noRowsYet")}
+                    {filtered ? t("pages.dashboard.noMatch") : t("analytics.noRowsYet")}
                   </p>
                 ) : !anySpend ? (
                   // requests were served but nothing was priced. drawing a flat
@@ -469,7 +516,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
                 const total = traffic.reduce((a, m) => a + m.value, 0);
                 return traffic.length === 0 ? (
                   <p className="py-16 text-center text-sm text-muted-foreground">
-                    {t("pages.dashboard.noTraffic")}
+                    {filtered ? t("pages.dashboard.noMatch") : t("pages.dashboard.noTraffic")}
                   </p>
                 ) : (
                   <Donut
@@ -524,7 +571,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
                 }));
                 return bars.length === 0 ? (
                   <p className="py-10 text-center text-sm text-muted-foreground">
-                    {t("pages.dashboard.noTraffic")}
+                    {filtered ? t("pages.dashboard.noMatch") : t("pages.dashboard.noTraffic")}
                   </p>
                 ) : (
                   bars.map((b) => (
@@ -571,7 +618,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
               {(rows) =>
                 rows.length === 0 ? (
                   <p className="py-10 text-center text-sm text-muted-foreground">
-                    {t("pages.dashboard.nothingLogged")}
+                    {filtered ? t("pages.dashboard.noMatch") : t("pages.dashboard.nothingLogged")}
                   </p>
                 ) : (
                   <Table

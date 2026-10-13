@@ -626,6 +626,13 @@ const INVOCATIONS_QUERY: &[QueryParam] = &[
          `blocked:<rule>`, `redacted:<rule>`, `annotated:<rule>`, `provider_blocked:<provider>`, \
          `provider_transformed:<provider>` (the bare forms for unnamed rows); omit for every request",
     ),
+    QueryParam::new(
+        "plugin",
+        "string",
+        "only requests a plugin acted on, named as the plugins rollup does: \
+         `blocked:<slug>`, `transformed:<slug>`, `annotated:<slug>` or `error:<slug>:<kind>`; \
+         omit for every request",
+    ),
     QueryParam::new("limit", "integer", "page size, 1..=200; defaults to 50"),
     QueryParam::new(
         "cursor",

@@ -351,7 +351,7 @@ pub(crate) fn window_params(q: &WindowQuery) -> Vec<(String, String)> {
 /// `key` are one exact value, `business_unit` and `customer` a comma-separated
 /// set, and an empty or omitted one applies no filter. They narrow what the
 /// caller's row visibility (#1820) already lets through and never widen it,
-/// because [`DASHBOARD_FILTERS`] is `and`-ed beside `ROW_VISIBLE` rather than
+/// because [`ROW_FILTERS`] is `and`-ed beside `ROW_VISIBLE` rather than
 /// in place of it.
 #[derive(Debug, Deserialize)]
 pub struct DashboardQuery {
@@ -376,29 +376,46 @@ impl TimeBounds for DashboardQuery {
 }
 
 impl DashboardQuery {
-    /// The window bindings plus one `param_*` per filter [`DASHBOARD_FILTERS`]
+    /// The window bindings plus one `param_*` per filter [`ROW_FILTERS`]
     /// reads. Every filter is bound, an absent one as the empty string the
     /// predicate short-circuits on, so the SQL never changes shape with the
     /// filters a caller happened to send.
     pub(crate) fn params(&self) -> Vec<(String, String)> {
         let mut params = window_params(&self.window);
-        for (name, value) in [
-            ("param_model", &self.model),
-            ("param_key", &self.key),
-            ("param_business_unit", &self.business_unit),
-            ("param_customer", &self.customer),
-        ] {
-            params.push((name.to_string(), value.clone().unwrap_or_default()));
-        }
+        params.extend(row_filter_params(
+            self.model.as_deref(),
+            self.key.as_deref(),
+            self.business_unit.as_deref(),
+            self.customer.as_deref(),
+        ));
         params
     }
 }
 
-/// The row filters of [`DashboardQuery`], every value a bound ClickHouse
-/// parameter and never spliced text. Word for word the predicate the
-/// invocation list applies, so a filter means the same rows on the Dashboard
-/// as on LLM Logs; a unit test holds the two together.
-pub(crate) const DASHBOARD_FILTERS: &str = "({model:String} = '' or model = {model:String}) \
+/// The `param_*` bindings [`ROW_FILTERS`] reads, for any read that carries the
+/// four row filters. Every filter is bound, an absent one as the empty string
+/// the predicate short-circuits on, so the SQL never changes shape with the
+/// filters a caller happened to send.
+pub(crate) fn row_filter_params(
+    model: Option<&str>,
+    key: Option<&str>,
+    business_unit: Option<&str>,
+    customer: Option<&str>,
+) -> [(String, String); 4] {
+    [
+        ("param_model", model),
+        ("param_key", key),
+        ("param_business_unit", business_unit),
+        ("param_customer", customer),
+    ]
+    .map(|(name, value)| (name.to_string(), value.unwrap_or_default().to_string()))
+}
+
+/// The row filters shared by the dashboard rollups and the invocation list,
+/// every value a bound ClickHouse parameter and never spliced text. One
+/// predicate, so a filter means the same rows on the Dashboard as on LLM Logs
+/// (#2453, #2726).
+pub(crate) const ROW_FILTERS: &str = "({model:String} = '' or model = {model:String}) \
      and ({key:String} = '' or virtual_key_id = {key:String}) \
      and ({business_unit:String} = '' \
           or has(splitByChar(',', {business_unit:String}), business_unit_id)) \
@@ -649,7 +666,7 @@ async fn summary(
                 uniqIf(model, unpriced = 1) as unpriced_models, \
                 {ERRORS} as errors, \
                 round(avg(latency_ms), 1) as avg_latency_ms \
-         from request_logs where {WHERE_WINDOW} and {ROW_VISIBLE} and {DASHBOARD_FILTERS} \
+         from request_logs where {WHERE_WINDOW} and {ROW_VISIBLE} and {ROW_FILTERS} \
          format JSON"
     );
     run(ch.query(&sql, &with_access(q.params(), &access)).await)
@@ -692,7 +709,7 @@ async fn timeseries(
                 {REQUESTS} as requests, \
                 {TOKENS} as tokens, \
                 {COST} as cost_usd \
-         from request_logs where {WHERE_WINDOW} and {ROW_VISIBLE} and {DASHBOARD_FILTERS} \
+         from request_logs where {WHERE_WINDOW} and {ROW_VISIBLE} and {ROW_FILTERS} \
          group by bucket order by bucket format JSON"
     );
     run(ch.query(&sql, &with_access(q.params(), &access)).await)
@@ -717,7 +734,7 @@ async fn by_model(
                 {ERRORS} as errors, \
                 round(quantile(0.5)(latency_ms), 1) as p50_latency_ms, \
                 round(quantile(0.95)(latency_ms), 1) as p95_latency_ms \
-         from request_logs where {WHERE_WINDOW} and {ROW_VISIBLE} and {DASHBOARD_FILTERS} \
+         from request_logs where {WHERE_WINDOW} and {ROW_VISIBLE} and {ROW_FILTERS} \
          group by model order by cost_usd desc format JSON"
     );
     run(ch.query(&sql, &with_access(q.params(), &access)).await)
@@ -934,6 +951,10 @@ pub struct InvocationsQuery {
     /// `provider_blocked`, `provider_transformed`); empty/omitted applies no
     /// filter (#2158)
     pub(crate) guardrail: Option<String>,
+    /// one plugin event to filter to, as the `plugins` rollup names it
+    /// (`blocked:<slug>`, `transformed:<slug>`, `annotated:<slug>` or
+    /// `error:<slug>:<kind>`); empty/omitted applies no filter (#2243)
+    pub(crate) plugin: Option<String>,
     /// page size, 1..=200 (defaults to 50)
     pub(crate) limit: Option<u32>,
     /// opaque `timestamp|request_id` cursor returned as the preceding page's
@@ -1034,6 +1055,7 @@ fn invocations_sql(status_expr: &str, columns: &Columns) -> String {
     // the filter reads the column, which an older table lacks: it then matches
     // nothing, which is true, since no event was ever recorded there
     let guardrail_filter = columns.expr("guardrail_events");
+    let plugin_filter = columns.expr("plugin_events");
     format!(
         "select ts, request_id, trace_id, org_id, team_id, project_id, virtual_key_id, \
                 business_unit_id, customer_id, \
@@ -1054,16 +1076,12 @@ fn invocations_sql(status_expr: &str, columns: &Columns) -> String {
          ) as payload on payload.payload_key = {PAYLOAD_KEY} \
          where {WHERE_WINDOW} \
            and {ROW_VISIBLE} \
-           and ({{model:String}} = '' or model = {{model:String}}) \
-           and ({{key:String}} = '' or virtual_key_id = {{key:String}}) \
-           and ({{business_unit:String}} = '' \
-                or has(splitByChar(',', {{business_unit:String}}), business_unit_id)) \
-           and ({{customer:String}} = '' \
-                or has(splitByChar(',', {{customer:String}}), customer_id)) \
+           and {ROW_FILTERS} \
            and ({{request_id:String}} = '' or request_id = {{request_id:String}}) \
            and ({{trace_id:String}} = '' or trace_id = {{trace_id:String}}) \
            and ({{unpriced:UInt8}} = 0 or unpriced = 1) \
            and ({{guardrail:String}} = '' or has({guardrail_filter}, {{guardrail:String}})) \
+           and ({{plugin:String}} = '' or has({plugin_filter}, {{plugin:String}})) \
            and {status_expr} \
            and {cursor} \
          order by ts desc, request_id desc \
@@ -1134,17 +1152,14 @@ async fn invocations(
         q.guardrail.clone().unwrap_or_default(),
     ));
     params.push((
-        "param_model".to_string(),
-        q.model.clone().unwrap_or_default(),
+        "param_plugin".to_string(),
+        q.plugin.clone().unwrap_or_default(),
     ));
-    params.push(("param_key".to_string(), q.key.clone().unwrap_or_default()));
-    params.push((
-        "param_business_unit".to_string(),
-        q.business_unit.clone().unwrap_or_default(),
-    ));
-    params.push((
-        "param_customer".to_string(),
-        q.customer.clone().unwrap_or_default(),
+    params.extend(row_filter_params(
+        q.model.as_deref(),
+        q.key.as_deref(),
+        q.business_unit.as_deref(),
+        q.customer.as_deref(),
     ));
     params.push(("param_cursor_ts".to_string(), cursor_ts));
     params.push(("param_cursor_id".to_string(), cursor_id));
@@ -1562,14 +1577,12 @@ mod tests {
     }
 
     #[test]
-    fn the_dashboard_reads_filter_rows_as_the_invocation_list_does() {
-        // one predicate, word for word, so a filter means the same rows on the
-        // dashboard as on llm logs (#2453)
+    fn the_invocation_list_filters_through_the_shared_predicate() {
         let sql = invocations_sql(
             status_predicate("all").expect("all is whitelisted"),
             &Columns::default(),
         );
-        assert!(sql.contains(DASHBOARD_FILTERS), "{sql}");
+        assert!(sql.contains(ROW_FILTERS), "{sql}");
     }
 
     #[test]
@@ -1581,7 +1594,7 @@ mod tests {
         let table = "request_logs";
         let filtered = source
             .matches(&format!(
-                "from {table} where {{WHERE_WINDOW}} and {{ROW_VISIBLE}} and {{DASHBOARD_FILTERS}}"
+                "from {table} where {{WHERE_WINDOW}} and {{ROW_VISIBLE}} and {{ROW_FILTERS}}"
             ))
             .count();
         assert_eq!(filtered, 3, "summary, timeseries, by-model");
@@ -1595,22 +1608,17 @@ mod tests {
             "{business_unit:String}",
             "{customer:String}",
         ] {
-            assert!(DASHBOARD_FILTERS.contains(param), "{param}");
+            assert!(ROW_FILTERS.contains(param), "{param}");
             // each one short-circuits when empty, so an omitted filter is no filter
-            assert!(
-                DASHBOARD_FILTERS.contains(&format!("{param} = ''")),
-                "{param}"
-            );
+            assert!(ROW_FILTERS.contains(&format!("{param} = ''")), "{param}");
         }
-        assert!(DASHBOARD_FILTERS
-            .contains("has(splitByChar(',', {business_unit:String}), business_unit_id)"));
-        assert!(DASHBOARD_FILTERS.contains("has(splitByChar(',', {customer:String}), customer_id)"));
+        assert!(
+            ROW_FILTERS.contains("has(splitByChar(',', {business_unit:String}), business_unit_id)")
+        );
+        assert!(ROW_FILTERS.contains("has(splitByChar(',', {customer:String}), customer_id)"));
         // no quoted literal on the column side of a comparison
         for column in ["model", "virtual_key_id", "business_unit_id", "customer_id"] {
-            assert!(
-                !DASHBOARD_FILTERS.contains(&format!("{column} = '")),
-                "{column}"
-            );
+            assert!(!ROW_FILTERS.contains(&format!("{column} = '")), "{column}");
         }
     }
 
@@ -2387,6 +2395,21 @@ mod optional_column_tests {
         let sql = stub.list_sql();
         assert!(
             sql.contains("has(emptyArrayString(), {guardrail:String})"),
+            "{sql}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_invocation_filter_on_a_plugin_event_survives_a_table_without_the_column() {
+        let stub = Stub::start(REQUIRED).await;
+        let app = app_over(ClickHouseClient::new(&stub.url));
+
+        let (status, body) = list(&app, "?plugin=blocked%3Apii-scan").await;
+
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let sql = stub.list_sql();
+        assert!(
+            sql.contains("has(emptyArrayString(), {plugin:String})"),
             "{sql}"
         );
     }
