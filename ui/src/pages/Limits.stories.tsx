@@ -167,6 +167,29 @@ export const Loaded: Story = {
   ),
 };
 
+// a link from another screen, such as a team's detail sheet, opens the page on
+// the scope it names rather than on the sidebar's project
+const linked = recording(
+  routes([
+    ["/virtual-keys", () => KEYS],
+    ["/budgets/spend", () => spendFor([])],
+    ["/budgets", () => []],
+    ["/rate-limits", () => []],
+  ]),
+);
+export const OpensOnTheScopeALinkNames: Story = {
+  render: () => (
+    <Harness fetchStub={linked.stub} route="/budgets?scope_type=team&scope_id=team-7">
+      <Limits />
+    </Harness>
+  ),
+  play: async () => {
+    await linked.expectSent("GET", "/budgets?scope_type=team&scope_id=team-7");
+    await linked.expectSent("GET", "/rate-limits?scope_type=team&scope_id=team-7");
+    linked.expectNotSent("GET", "scope_type=project");
+  },
+};
+
 function withSpend(spend: BudgetSpendReport) {
   return (
     <Harness

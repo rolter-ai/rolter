@@ -1,6 +1,6 @@
 import { ASSIGNMENTS_KEY } from "@/components/SubjectProfiles";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Pencil, Shield, User, UserPlus, Users } from "lucide-react";
+import { Pencil, Plus, Shield, User, UserPlus, Users } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
@@ -21,6 +21,7 @@ import { GatedButton } from "@/components/GatedButton";
 import { LoadError } from "@/components/LoadError";
 import { CardGridSkeleton } from "@/components/LoadingState";
 import { ListSummary, PageBody, Pill, Toolbar } from "@/components/screen";
+import { Card } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
@@ -43,6 +44,7 @@ import {
   type CustomRoleRow,
 } from "@/lib/api";
 import { errorText } from "@/lib/error-copy";
+import { misplacedWildcards } from "@/lib/policy-patterns";
 import { useOptionalAuth } from "@/lib/auth";
 import { useScope } from "@/lib/scope";
 import { useToast } from "@/lib/toast";
@@ -125,7 +127,7 @@ function ProfileCard({
     : 0;
 
   return (
-    <div className="rounded-lg border p-4">
+    <Card className="p-4">
       <div className="flex items-start gap-3">
         <Shield className="mt-0.5 size-4 text-muted-foreground" />
         <div className="min-w-0 flex-1">
@@ -255,7 +257,7 @@ function ProfileCard({
           />
         </div>
       </div>
-    </div>
+    </Card>
   );
 }
 
@@ -494,6 +496,7 @@ export default function AccessProfiles() {
           disabled={!orgId}
           onClick={startCreate}
         >
+          <Plus className="h-4 w-4" aria-hidden />
           {t("pages.accessProfiles.add")}
         </GatedButton>
       </Toolbar>
@@ -660,13 +663,33 @@ function ProfileSheet({
     onChange({ ...draft, roleScopes });
   };
 
+  // a `*` anywhere but the end is read as a literal character, so the line
+  // matches nothing; in an allow-list that blocks everyone the profile reaches
+  const badPatterns = {
+    allowedModels: misplacedWildcards(draft.allowedModels),
+    deniedModels: misplacedWildcards(draft.deniedModels),
+    allowedRoutes: misplacedWildcards(draft.allowedRoutes),
+    deniedRoutes: misplacedWildcards(draft.deniedRoutes),
+  };
+  const policyInvalid = Object.values(badPatterns).some((bad) => bad.length > 0);
+
   const policyField = (
     label: string,
     hint: string,
     key: "allowedModels" | "deniedModels" | "allowedRoutes" | "deniedRoutes",
     placeholder: string,
   ) => (
-    <Field label={label} hint={hint}>
+    <Field
+      label={label}
+      hint={hint}
+      error={
+        badPatterns[key].length > 0
+          ? t("pages.accessProfiles.patternError", {
+              patterns: badPatterns[key].join(", "),
+            })
+          : undefined
+      }
+    >
       <Textarea
         rows={3}
         value={draft[key]}
@@ -690,7 +713,7 @@ function ProfileSheet({
       dirty={dirty}
       errorMessage={errorMessage}
       saveLabel={draft.id ? t("pages.accessProfiles.save") : t("pages.accessProfiles.create")}
-      canSave={!!draft.name.trim()}
+      canSave={!!draft.name.trim() && !policyInvalid}
       saving={saving}
       onSave={onSave}
     >
@@ -730,7 +753,7 @@ function ProfileSheet({
           </legend>
           <p className="text-xs text-muted-foreground">{t("pages.accessProfiles.rolesHint")}</p>
           {roles.length === 0 ? (
-            <p className="rounded-[10px] border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] px-3.5 py-2.5 text-xs text-muted-foreground">
+            <p className="rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] px-3.5 py-2.5 text-xs text-muted-foreground">
               {t("pages.accessProfiles.rolesEmpty")}
             </p>
           ) : (
@@ -749,7 +772,11 @@ function ProfileSheet({
                     <span className="min-w-0">
                       <span className="block truncate font-medium">{role.name}</span>
                       <span className="text-xs text-muted-foreground">
-                        {t("pages.accessProfiles.roleExtends", { role: role.base_role })}
+                        {t("pages.accessProfiles.roleExtends", {
+                          role: t(`shell.roles.${role.base_role}`, {
+                            defaultValue: role.base_role,
+                          }),
+                        })}
                       </span>
                     </span>
                   </label>
