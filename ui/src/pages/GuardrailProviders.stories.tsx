@@ -591,6 +591,33 @@ export const ConfigFileWebhookOwnsEnforcement: Story = {
 };
 
 /**
+ * A config-file webhook that is a copy of the enabled row, field for field,
+ * cannot be told from the row by comparing them. The control plane says the
+ * file supplies it (#2249), so the row reads as overridden, and pausing the row
+ * would not stop enforcement.
+ */
+export const ConfigFileWebhookThatCopiesTheEnabledRow: Story = {
+  render: () => (
+    <Harness
+      fetchStub={async (input, init) =>
+        String(input).includes("/api/v1/guardrails/effective")
+          ? json({ source: "file", provider_id: null, overrides: PROVIDERS[0].id })
+          : registry(PROVIDERS, PRIMARY_WEBHOOK)(input, init)
+      }
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByRole("region", {
+      name: "The config-file webhook owns external enforcement",
+    });
+    const primary = card(canvasElement, "Production LLM Guard");
+    await expect(primary.getByText("overridden by config file")).toBeVisible();
+    await expect(primary.queryByText("enforced")).toBeNull();
+  },
+};
+
+/**
  * A deployment that configures its webhook only in the file has no registry
  * rows at all, and the webhook is still in force.
  */

@@ -359,7 +359,9 @@
       "advanced": "Limits & network",
       "headers": "Custom request headers",
       "headersInfo": "Extra HTTP headers sent upstream with every request this route makes. A locked header replaces a caller's header of the same name; an unlocked one is only a default. Credentials belong on the provider, so authorization headers are refused.",
-      "rbac": "Access & permissions"
+      "rbac": "Access & permissions",
+      "guardrails": "Guardrails",
+      "guardrailsInfo": "Rules this route switches off or forces on, by name. Everything else follows the deployment's guardrail rules."
     },
     "fields": {
       "name": "Route name",
@@ -466,6 +468,15 @@
       "teams": "Allowed teams / business units",
       "vkeys": "Allowed virtual keys",
       "users": "Restrict to specific users"
+    },
+    "guardrails": {
+      "disable": "Switched off on this route",
+      "enable": "Forced on for this route",
+      "hint": "A rule switched off here does not run on this route. A rule named in both lists stays on.",
+      "unknownRule": "{{name}} (no such rule)",
+      "noRules": "No guardrail rule is in force, so there is nothing to switch off or on.",
+      "unreadable": "The rules in force could not be read, so only the overrides already stored are listed.",
+      "fileRoute": "This route is declared in the config file, so its overrides are changed there."
     },
     "errors": {
       "name": "Required. Enter the name clients will send in the model field (e.g. gpt-4o).",

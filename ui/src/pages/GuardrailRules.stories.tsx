@@ -841,6 +841,38 @@ export const ShowsARowTheConfigFileOverrides: Story = {
   },
 };
 
+/**
+ * A config-file rule that is a copy of an enabled row, field for field, cannot
+ * be told from the row by comparing them, and the card used to say enforced
+ * (#2249). The control plane names the file as the source, so the card says the
+ * row is overridden and the rule is listed as the file's.
+ */
+export const ShowsARowWhoseCopyTheConfigFileRuns: Story = {
+  render: () => (
+    <Harness
+      fetchStub={async (input, init) =>
+        String(input).includes("/api/v1/guardrails/effective")
+          ? json({
+              rules: [
+                { ...asEffective(RULES[0]), source: "file", rule_id: null, overrides: RULES[0].id },
+              ],
+            })
+          : withPolicy(
+              async () => json([RULES[0]]),
+              () => json(effectiveConfig({ rows: [RULES[0]], file: [asEffective(RULES[0])] })),
+            )(input, init)
+      }
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const overridden = await ruleCard(canvasElement, /10 · Redact customer email/);
+    await expectStatus(overridden, "overridden by config file");
+    await expect(within(overridden).queryByText("enforced", { exact: true })).toBeNull();
+    const file = await ruleCard(canvasElement, /^Redact customer email$/, 3);
+    await expectStatus(file, "enforced");
+  },
+};
+
 // a rule only the config file defines
 const FILE_AWS: EffectiveRule = {
   name: "Block AWS access keys",

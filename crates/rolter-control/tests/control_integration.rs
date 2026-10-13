@@ -744,6 +744,91 @@ async fn pausing_a_guardrail_rule_named_by_a_route_override_keeps_the_snapshot_s
     );
 }
 
+/// The effective endpoint names the file as the source of a rule and a webhook
+/// that are exact copies of an enabled dashboard row, which comparing fields
+/// cannot (#2249).
+#[tokio::test]
+async fn effective_guardrails_name_the_file_as_the_source_of_an_identical_copy() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let file_config = rolter_core::GatewayConfig::from_toml_str(
+        r#"
+        [guardrails]
+        enabled = true
+        [[guardrails.rules]]
+        name = "email"
+        builtin = "email"
+        action = "redact"
+
+        [guardrail_webhook]
+        enabled = true
+        url = "https://guard.internal/check"
+        "#,
+    )
+    .expect("file config");
+    let app = rolter_control::test_app_with_file_config(db.pool().clone(), None, file_config)
+        .await
+        .expect("build app");
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let rule = client
+        .post(format!("{base}/api/v1/guardrails/rules"))
+        .json(&json!({
+            "name": "email", "enabled": true, "source_type": "builtin", "builtin": "email",
+            "stage": "pre_call", "action": "redact", "include_system": false, "position": 0
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(rule.status(), 201);
+    let rule: Value = rule.json().await.unwrap();
+    let extra = client
+        .post(format!("{base}/api/v1/guardrails/rules"))
+        .json(&json!({
+            "name": "phone", "enabled": true, "source_type": "builtin", "builtin": "phone",
+            "stage": "pre_call", "action": "block", "include_system": false, "position": 1
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(extra.status(), 201);
+    let extra: Value = extra.json().await.unwrap();
+    let provider = client
+        .post(format!("{base}/api/v1/guardrails/providers"))
+        .json(&json!({
+            "name": "hook", "enabled": true, "url": "https://guard.internal/check",
+            "stage": "pre_call", "timeout_ms": 2000, "max_retries": 0,
+            "failure_mode": "fail_open", "max_body_bytes": 65536, "auth_kind": "none"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(provider.status(), 201);
+    let provider: Value = provider.json().await.unwrap();
+
+    let effective: Value = client
+        .get(format!("{base}/api/v1/guardrails/effective"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(effective["guardrails"], true, "{effective}");
+    let rules = effective["rules"].as_array().expect("rules");
+    assert_eq!(rules.len(), 2, "{effective}");
+    assert_eq!(rules[0]["name"], "email");
+    assert_eq!(rules[0]["source"], "file");
+    assert_eq!(rules[0]["overrides"], rule["id"], "{effective}");
+    assert_eq!(rules[1]["name"], "phone");
+    assert_eq!(rules[1]["source"], "registry");
+    assert_eq!(rules[1]["rule_id"], extra["id"], "{effective}");
+    assert_eq!(effective["source"], "file", "{effective}");
+    assert_eq!(effective["overrides"], provider["id"], "{effective}");
+    assert_eq!(effective["webhook"]["url"], "https://guard.internal/check");
+}
+
 /// One org can neither point its routes and groups at another org's providers
 /// nor take a name the gateway holds in a deployment-wide namespace, and the
 /// snapshot stays servable through every refused attempt (#1844, #1845).

@@ -93,7 +93,7 @@ model = "internal-support-bot"
 disable = ["Redact customer email"]
 ```
 
-Rules are matched by their exact name. For a config-file route, set the lists in `rolter.toml` as above. For a route created in the dashboard, send them in the `advanced` object of `PUT /api/v1/routes/{id}/advanced`; the model sheet keeps them when it saves, but has no field for them yet ([#2307](https://github.com/rolter-ai/rolter/issues/2307)). A name that no rule has fails config validation, so a typo in `disable` cannot read as "this rule is off here" while the rule keeps running. Take a rule out of every route's lists before you pause, rename or delete it: until [#2306](https://github.com/rolter-ai/rolter/issues/2306) is fixed, a route that still names it stops config changes from reaching gateways.
+Rules are matched by their exact name. For a config-file route, set the lists in `rolter.toml` as above. For a route created in the dashboard, open its model sheet and use the Guardrails section: one list of rules to switch off on the route and one of rules to force on, picked from the rules in force. A stored name that matches no rule stays in the list, marked, so you can remove it. The sheet shows a config-file route's lists read-only. Without the dashboard, send them in the `advanced` object of `PUT /api/v1/routes/{id}/advanced`. A name that no rule has fails config validation, so a typo in `disable` cannot read as "this rule is off here" while the rule keeps running. Take a rule out of every route's lists before you pause, rename or delete it: until [#2306](https://github.com/rolter-ai/rolter/issues/2306) is fixed, a route that still names it stops config changes from reaching gateways.
 
 **Guardrails → Guardrail Rules** shows each exception on the rule's card, for dashboard and config-file rules alike. The card keeps its status, since the rule still runs on every other route, and adds a line such as **Off for traffic on 2 routes** with the route names under it. Past three routes the names fold behind that line; select it to list them. The routes are read from the same effective configuration as the rest of the screen. A paused card lists no routes, since its rule is not in the policy. Neither does a card the config file overrides: the override names a rule, and the rule under that name is the file's, so its card lists the routes. An override that names a rule the policy no longer has appears on no card.
 
@@ -132,18 +132,21 @@ The banner at the top of **Guardrails → Providers** reports the webhook the co
 
 ## Hot reload and config files
 
-Creating, editing, enabling, or deleting a registry entry increments `config_version`, so gateway snapshots update without a restart. Rules defined in the config file remain immutable and win a name collision; dashboard-managed rules extend them. The Rules screen lists the config-file rules and marks a dashboard rule whose name the file takes as overridden. An enabled config-file webhook remains authoritative. The provider registry supplies the webhook when the config-file hook is disabled. While the config-file webhook is on, the Providers screen names it in the banner and marks an active registry provider as overridden.
+Creating, editing, enabling, or deleting a registry entry increments `config_version`, so gateway snapshots update without a restart. Rules defined in the config file remain immutable and win a name collision; dashboard-managed rules extend them. The Rules screen lists the config-file rules and marks a dashboard rule whose name the file takes as overridden. An enabled config-file webhook remains authoritative. The provider registry supplies the webhook when the config-file hook is disabled. While the config-file webhook is on, the Providers screen names it in the banner and marks an active registry provider as overridden. The control plane states where the webhook and each rule come from (see `GET /api/v1/guardrails/effective` below), so a config-file rule or webhook that is an exact copy of an enabled dashboard entry is still reported as the file's, and the dashboard entry as overridden.
 
 ## API endpoints
 
-| Method          | Endpoint                            | Purpose                                    |
-| --------------- | ----------------------------------- | ------------------------------------------ |
-| `GET`, `POST`   | `/api/v1/guardrails/rules`          | List or create rules                       |
-| `PUT`, `DELETE` | `/api/v1/guardrails/rules/{id}`     | Update or delete a rule                    |
-| `GET`, `POST`   | `/api/v1/guardrails/providers`      | List or register providers                 |
-| `PUT`, `DELETE` | `/api/v1/guardrails/providers/{id}` | Update or delete a provider                |
-| `POST`          | `/api/v1/guardrails/rules/test`     | Run an unsaved rule on text                |
-| `POST`          | `/api/v1/guardrails/providers/test` | Send an unsaved provider a sample envelope |
+| Method          | Endpoint                            | Purpose                                       |
+| --------------- | ----------------------------------- | --------------------------------------------- |
+| `GET`, `POST`   | `/api/v1/guardrails/rules`          | List or create rules                          |
+| `PUT`, `DELETE` | `/api/v1/guardrails/rules/{id}`     | Update or delete a rule                       |
+| `GET`           | `/api/v1/guardrails/effective`      | Rules and webhook in force, with their source |
+| `GET`, `POST`   | `/api/v1/guardrails/providers`      | List or register providers                    |
+| `PUT`, `DELETE` | `/api/v1/guardrails/providers/{id}` | Update or delete a provider                   |
+| `POST`          | `/api/v1/guardrails/rules/test`     | Run an unsaved rule on text                   |
+| `POST`          | `/api/v1/guardrails/providers/test` | Send an unsaved provider a sample envelope    |
+
+`GET /api/v1/guardrails/effective` is superadmin-only and returns what the gateways run: `guardrails` (the feature flag), `streaming_post_call`, `rules`, and `webhook` (`null` when none is on). Each rule carries `source` (`file` or `registry`), `rule_id` (the dashboard row behind a registry rule) and `overrides` (the enabled dashboard row a config-file rule displaced). The webhook has `source` (`file`, `registry` or `none`), `provider_id` (the registry provider in force) and `overrides` (the enabled provider an enabled config-file webhook displaced).
 
 Every mutation is audit logged. The two `test` endpoints write nothing and are not audit logged; they need `guardrail_rule:update` and `guardrail_provider:update`.
 

@@ -377,6 +377,13 @@ struct ConfigOwned {
     /// readonly provider-group slugs; the CRUD API rejects mutations against
     /// these (ADR-0022). default-tier groups are DB-owned and absent here
     groups: std::collections::HashSet<String>,
+    /// names of the guardrail rules the file declares; the store drops a
+    /// dashboard row that takes one, so they decide where an effective rule
+    /// comes from (`GET /api/v1/guardrails/effective`)
+    guardrail_rules: std::collections::HashSet<String>,
+    /// whether the file's `[guardrail_webhook]` is on, which keeps the
+    /// registry's provider out of the effective config
+    guardrail_webhook: bool,
 }
 
 impl ConfigOwned {
@@ -396,6 +403,13 @@ impl ConfigOwned {
                 })
                 .collect(),
             models: config.routes.iter().map(|r| r.model.clone()).collect(),
+            guardrail_rules: config
+                .guardrails
+                .rules
+                .iter()
+                .map(|rule| rule.name.clone())
+                .collect(),
+            guardrail_webhook: config.guardrail_webhook.enabled,
             groups: config
                 .provider_groups
                 .iter()

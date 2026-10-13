@@ -32,6 +32,7 @@ import { Textarea } from "@/components/ui/textarea";
 import {
   createRoute,
   createRouteTarget,
+  fetchConfig,
   fetchCurrencySettings,
   fetchModelPrices,
   fetchProviderModels,
@@ -56,6 +57,7 @@ import {
   type RouteTargetRow,
 } from "@/lib/api";
 import { errorText } from "@/lib/error-copy";
+import { readEffectivePolicy } from "@/lib/guardrail-policy";
 import { cacheWrite1hPatch, cacheWritePatch } from "@/lib/cache-write-rate";
 import { useErrorVisibility } from "@/lib/error-visibility";
 import { providersUsableFrom } from "@/lib/provider-scope";
@@ -151,6 +153,8 @@ interface ModelDraft {
   };
   headerMode: LockMode;
   headers: DraftHeader[];
+  /** the route's guardrail overrides, by rule name (`RouteGuardrails` in rolter-core) */
+  guard: { disable: string[]; enable: string[] };
   rbac: {
     minRole: string;
     visibility: "public" | "project" | "restricted";
@@ -270,6 +274,7 @@ function blankDraft(
     },
     headerMode: "manual",
     headers: [],
+    guard: { disable: [], enable: [] },
     rbac: { minRole: "member", visibility: "public", teams: [], vkeys: [], users: [] },
   };
 }
@@ -344,6 +349,9 @@ function seedAdvanced(draft: ModelDraft, advanced: Record<string, unknown>) {
         : draft.headers.some((h) => h.locked)
           ? "manual"
           : "unlockAll";
+
+  const guardrails = obj(advanced.guardrails);
+  draft.guard = { disable: strings(guardrails.disable), enable: strings(guardrails.enable) };
 
   const visibility = obj(advanced.visibility);
   draft.rbac.minRole = str(visibility.minimum_role) || draft.rbac.minRole;
@@ -427,6 +435,14 @@ function advancedToApi(
   }
   out.headers = headers;
   out.locked_headers = lockedHeaders;
+
+  // the stored object is the base, so a key a newer control plane added to it
+  // survives; an override that was emptied drops out rather than being sent as
+  // `[]`, and an object left with nothing in it is not sent at all
+  const guardrails = obj(stored.guardrails);
+  put(guardrails, "disable", draft.guard.disable.length > 0 ? draft.guard.disable : undefined);
+  put(guardrails, "enable", draft.guard.enable.length > 0 ? draft.guard.enable : undefined);
+  put(out, "guardrails", Object.keys(guardrails).length > 0 ? guardrails : undefined);
 
   // the allow-lists are ids, and the control plane parses each one as a uuid;
   // a model open to the whole organization or its project carries none of them.
@@ -917,6 +933,7 @@ const SECTIONS = [
   "advanced",
   "headers",
   "rbac",
+  "guardrails",
   "preview",
 ] as const;
 type SectionKey = (typeof SECTIONS)[number];
@@ -991,6 +1008,7 @@ export function ModelSheet({
     advanced: false,
     headers: false,
     rbac: false,
+    guardrails: false,
     preview: false,
   });
   const [dupFrom, setDupFrom] = React.useState("");
@@ -1044,6 +1062,17 @@ export function ModelSheet({
     retry: false,
   });
 
+  // the rules an override can name are the effective policy's, and a config
+  // route's own overrides are read out of the same document. any role may read
+  // it, so a project admin gets the section too; best-effort like the chips
+  const config = useQuery({
+    queryKey: ["config"],
+    queryFn: fetchConfig,
+    enabled: open && mode !== "add",
+    retry: false,
+  });
+  const policy = React.useMemo(() => readEffectivePolicy(config.data), [config.data]);
+
   const editLoading = mode === "edit" && (targets.isLoading || prices.isLoading);
 
   // seed the draft once per open (edit mode waits for targets + prices)
@@ -1095,6 +1124,7 @@ export function ModelSheet({
       advanced: false,
       headers: false,
       rbac: false,
+      guardrails: false,
       preview: false,
     });
     initialRef.current = JSON.stringify(d);
@@ -1138,6 +1168,12 @@ export function ModelSheet({
       const custom = d.params.filter((p) => p.custom);
       return { ...d, caps, params: [...paramDefs("chat", on), ...custom] };
     });
+
+  // the overrides a config-file route carries, which the sheet only shows
+  const fileOverride =
+    readonly && configModel
+      ? policy?.routes.find((route) => route.model === configModel.model)
+      : undefined;
 
   const providerName = (id: string) => providers.find((p) => p.id === id)?.name ?? "";
 
@@ -2189,6 +2225,63 @@ export function ModelSheet({
               />
             </div>
           )}
+        </FormSection>
+
+        {/* ===== Guardrail overrides ===== */}
+        <FormSection
+          title={t("modelSheet.sections.guardrails")}
+          info={t("modelSheet.sections.guardrailsInfo")}
+          open={secOpen.guardrails}
+          onToggle={() => toggleSec("guardrails")}
+          className="space-y-3.5"
+        >
+          {readonly && (
+            <p className="text-xs text-muted-foreground">{t("modelSheet.guardrails.fileRoute")}</p>
+          )}
+          {!readonly && policy === null && mode === "edit" && !config.isLoading && (
+            <p className="text-xs text-muted-foreground">{t("modelSheet.guardrails.unreadable")}</p>
+          )}
+          {!readonly && policy !== null && policy.rules.length === 0 && (
+            <p className="text-xs text-muted-foreground">{t("modelSheet.guardrails.noRules")}</p>
+          )}
+          {(["disable", "enable"] as const).map((list) => {
+            const names = new Set(policy?.rules.map((rule) => rule.name.trim()));
+            const chosen = readonly ? (fileOverride?.[list] ?? []) : draft.guard[list];
+            // a stored name that matches no rule stays a chip, marked, so it can
+            // be removed; dropping it silently would hide a typo that the
+            // gateway refuses at load
+            const stale = policy ? chosen.filter((name) => !names.has(name)) : chosen;
+            return (
+              <ChipGroup
+                key={list}
+                label={t(`modelSheet.guardrails.${list}`)}
+                options={[
+                  ...(policy?.rules ?? []).map((rule) => ({
+                    id: rule.name.trim(),
+                    name: rule.name.trim(),
+                  })),
+                  ...stale.map((name) => ({
+                    id: name,
+                    name: policy ? t("modelSheet.guardrails.unknownRule", { name }) : name,
+                  })),
+                ]}
+                selected={chosen}
+                disabled={readonly}
+                onToggle={(name) =>
+                  setDraft((d) => ({
+                    ...d,
+                    guard: {
+                      ...d.guard,
+                      [list]: d.guard[list].includes(name)
+                        ? d.guard[list].filter((x) => x !== name)
+                        : [...d.guard[list], name],
+                    },
+                  }))
+                }
+              />
+            );
+          })}
+          <p className="text-xs text-muted-foreground">{t("modelSheet.guardrails.hint")}</p>
         </FormSection>
 
         {/* ===== Config preview ===== */}

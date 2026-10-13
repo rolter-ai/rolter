@@ -52,6 +52,7 @@ import {
   createGuardrailRule,
   deleteGuardrailRule,
   fetchConfig,
+  fetchEffectiveGuardrails,
   fetchGuardrailRules,
   updateGuardrailRule,
   type GuardrailRuleInput,
@@ -59,7 +60,9 @@ import {
 } from "@/lib/api";
 import {
   readEffectivePolicy,
+  readRuleSources,
   resolvePolicy,
+  type RuleSource,
   type EffectiveRule,
   type RowState,
 } from "@/lib/guardrail-policy";
@@ -160,6 +163,14 @@ function GuardrailRulesScreen() {
     retry: false,
     staleTime: 0,
   });
+  // where each effective rule comes from (#2249). best-effort: when it cannot
+  // be read, the cards infer the source from the rows, as they did before
+  const sourcesQuery = useQuery({
+    queryKey: ["guardrail-effective"],
+    queryFn: () => fetchEffectiveGuardrails().then(readRuleSources),
+    retry: false,
+    staleTime: 0,
+  });
   // every card compares the list with the effective policy, so both are read
   // as one settled pair. A refetch of one against a stale copy of the other
   // would flash a rule just edited as overridden, or a rule just deleted as
@@ -168,21 +179,32 @@ function GuardrailRulesScreen() {
     query.isSuccess &&
     !query.isFetching &&
     !config.isFetching &&
+    !sourcesQuery.isFetching &&
     (config.isSuccess || config.isError);
   const [shown, setShown] = React.useState<{
     rows: GuardrailRuleRow[];
     config: unknown;
     failed: boolean;
+    sources: Map<string, RuleSource> | null;
   }>();
+  const sources = sourcesQuery.data ?? null;
   if (
     settled &&
-    (shown?.rows !== query.data || shown.config !== config.data || shown.failed !== config.isError)
+    (shown?.rows !== query.data ||
+      shown.config !== config.data ||
+      shown.failed !== config.isError ||
+      shown.sources !== sources)
   ) {
-    setShown({ rows: query.data, config: config.data, failed: config.isError });
+    setShown({ rows: query.data, config: config.data, failed: config.isError, sources });
   }
   const resolution = React.useMemo(
     () =>
-      shown && resolvePolicy(shown.rows, shown.failed ? null : readEffectivePolicy(shown.config)),
+      shown &&
+      resolvePolicy(
+        shown.rows,
+        shown.failed ? null : readEffectivePolicy(shown.config),
+        shown.sources,
+      ),
     [shown],
   );
   const policy = resolution?.policy ?? null;
@@ -203,6 +225,7 @@ function GuardrailRulesScreen() {
   const refresh = () => {
     void client.invalidateQueries({ queryKey: ["guardrail-rules"] });
     void client.invalidateQueries({ queryKey: ["config"] });
+    void client.invalidateQueries({ queryKey: ["guardrail-effective"] });
   };
 
   const save = useMutation({
