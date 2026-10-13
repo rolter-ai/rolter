@@ -912,8 +912,30 @@ pub struct Invitation {
     #[serde(skip_serializing)]
     pub token_hash: String,
     pub invited_by: Option<Uuid>,
+    /// email of the account in `invited_by`, resolved by the list query so a
+    /// caller who cannot list that user still sees who sent the invitation
+    /// (#2325). `None` when the sender is unknown or was deleted; absent from
+    /// the rows the other queries return
+    #[sqlx(default)]
+    #[serde(default)]
+    pub invited_by_email: Option<String>,
     pub expires_at: DateTime<Utc>,
     pub accepted_at: Option<DateTime<Utc>>,
+    pub revoked_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+}
+
+/// a one-time password reset an administrator issued for an account (#2240)
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct PasswordReset {
+    pub id: Uuid,
+    pub user_id: Uuid,
+    /// peppered digest of the one-time token; never serialized
+    #[serde(skip_serializing)]
+    pub token_hash: String,
+    pub created_by: Option<Uuid>,
+    pub expires_at: DateTime<Utc>,
+    pub used_at: Option<DateTime<Utc>>,
     pub revoked_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
 }

@@ -14,6 +14,7 @@
 - [Labels](architecture/labels.md)
 - [RBAC & auth](architecture/rbac-and-auth.md)
 - [Invitations](architecture/invitations.md)
+- [Administrator password reset](architecture/password-reset.md)
 - [Single sign-on (OIDC)](architecture/sso.md)
 - [Two-factor authentication](architecture/two-factor-auth.md)
 - [MCP OAuth](architecture/mcp-oauth.md)

@@ -40,6 +40,7 @@ import { isOpenMode } from "@/lib/telemetry";
 import { UxScreenProvider, useRouteTelemetry, useUxContext } from "@/lib/ux-react";
 import AcceptInvite from "@/pages/AcceptInvite";
 import Login from "@/pages/Login";
+import ResetPassword from "@/pages/ResetPassword";
 
 /**
  * A screen as a lazy boundary: its code is fetched when the screen is first
@@ -47,7 +48,7 @@ import Login from "@/pages/Login";
  *
  * The dashboard shipped as one chunk, so signing in downloaded the playground,
  * the charts, the highlighter grammars and forty-odd screens nobody had asked
- * for yet. `Login` and `AcceptInvite` stay statically imported below, because
+ * for yet. `Login`, `AcceptInvite` and `ResetPassword` stay statically imported below, because
  * they *are* the first paint for a signed-out reader and deferring them would
  * add a round trip to the one screen that cannot spare one.
  *
@@ -347,6 +348,13 @@ function Shell() {
   const invite = location.pathname.match(/^\/invite\/([^/]+)$/);
   if (invite) {
     return <AcceptInvite token={decodeURIComponent(invite[1])} />;
+  }
+
+  // a reset link is reachable without a session for the same reason: the member
+  // has lost their password, and the token in the url stands in for it (#2240)
+  const passwordReset = location.pathname.match(/^\/reset-password\/([^/]+)$/);
+  if (passwordReset) {
+    return <ResetPassword token={decodeURIComponent(passwordReset[1])} />;
   }
 
   // the stored token has not been re-checked yet: hold the shape of the shell

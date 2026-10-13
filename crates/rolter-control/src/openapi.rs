@@ -969,12 +969,27 @@ fn operations() -> Vec<Op> {
             )
             .body(Payload::Ref("CreateMembership"))
             .ok(Payload::Ref("Membership")),
+            Op::put(
+                "/api/v1/memberships/{id}",
+                "updateMembership",
+                "Change a role grant's role in one request",
+            )
+            .body(Payload::Ref("UpdateMembership"))
+            .ok(Payload::Ref("Membership"))
+            .conflict(LAST_ORG_ADMIN_409),
             Op::delete(
                 "/api/v1/memberships/{id}",
                 "deleteMembership",
                 "Revoke a role grant",
             )
             .conflict(LAST_ORG_ADMIN_409),
+            Op::post(
+                "/api/v1/orgs/{org_id}/users/{id}/password-reset",
+                "issuePasswordReset",
+                "Issue a one-time password reset link for a member and end their sessions",
+            )
+            .body(Payload::Empty)
+            .ok(Payload::Ref("CreatedPasswordReset")),
         ],
     ));
 
@@ -2156,6 +2171,18 @@ fn operations() -> Vec<Op> {
                 "Accept an invitation",
             )
             .public(),
+            Op::get(
+                "/api/v1/password-reset/{token}",
+                "previewPasswordReset",
+                "Preview a password reset from its one-time token",
+            )
+            .public(),
+            Op::post(
+                "/api/v1/password-reset/{token}",
+                "redeemPasswordReset",
+                "Choose a new password with a reset token",
+            )
+            .public(),
         ],
     ));
 
@@ -2911,6 +2938,26 @@ fn identity_schemas(p: &Prim) -> Value {
             "additionalProperties": false
         },
 
+        "UpdateMembership": {
+            "type": "object",
+            "required": ["role"],
+            "properties": {
+                "role": {"type": "string", "enum": ["admin", "member", "viewer"]}
+            },
+            "additionalProperties": false
+        },
+
+        "CreatedPasswordReset": {
+            "type": "object",
+            "required": ["reset", "token", "reset_url", "sessions_revoked"],
+            "properties": {
+                "reset": {"type": "object", "description": "the reset row: id, user_id, created_by, expires_at, created_at"},
+                "token": {"type": "string", "description": "shown once; hand it to the member, it is not recoverable"},
+                "reset_url": {"type": "string", "description": "ready-made link carrying the token"},
+                "sessions_revoked": {"type": "integer"}
+            }
+        },
+
         "Invitation": {
             "type": "object",
             "required": ["id", "org_id", "email", "role", "expires_at"],
@@ -2918,6 +2965,7 @@ fn identity_schemas(p: &Prim) -> Value {
                 "id": uuid, "org_id": uuid, "email": {"type": "string", "format": "email"},
                 "role": string, "team_id": nullable_uuid, "project_id": nullable_uuid,
                 "invited_by": nullable_uuid,
+                "invited_by_email": {"type": ["string", "null"], "description": "email of the sender, resolved server-side whatever users the caller may list; null when the invitation came from the admin token or its sender was deleted. Set on the list only"},
                 "expires_at": timestamp,
                 "accepted_at": nullable_timestamp,
                 "revoked_at": nullable_timestamp

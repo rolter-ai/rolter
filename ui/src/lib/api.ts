@@ -2848,6 +2848,12 @@ export interface Invitation {
   team_id: string | null;
   project_id: string | null;
   invited_by: string | null;
+  /**
+   * The sender's address, resolved by the control plane whatever users the
+   * caller may list (#2325). Null for the admin token, a deleted sender, and
+   * the rows other endpoints return.
+   */
+  invited_by_email: string | null;
   expires_at: string;
   accepted_at: string | null;
   revoked_at: string | null;
@@ -3046,8 +3052,59 @@ export function createMembership(
   return sendJson<MembershipRow>("POST", `/api/v1/orgs/${orgId}/memberships`, input);
 }
 
+// change a grant's role in one request; one `membership.update` audit row
+export function updateMembership(id: string, role: string): Promise<MembershipRow> {
+  return sendJson<MembershipRow>("PUT", `/api/v1/memberships/${id}`, { role });
+}
+
 export function deleteMembership(id: string): Promise<void> {
   return sendJson<void>("DELETE", `/api/v1/memberships/${id}`);
+}
+
+// --- administrator password reset (crates/rolter-control/src/password_reset.rs, #2240) ---
+
+export interface CreatedPasswordReset {
+  /** shown once; the server keeps only its digest */
+  token: string;
+  /** ready-made link the member opens to choose a new password */
+  reset_url: string;
+  /** how many of the member's sessions the reset ended */
+  sessions_revoked: number;
+  reset: { id: string; user_id: string; expires_at: string };
+}
+
+/**
+ * Issue a one-time reset link for a member and end their sessions. The caller
+ * never sees or picks a password; the member chooses theirs at the link.
+ */
+export function issuePasswordReset(orgId: string, userId: string): Promise<CreatedPasswordReset> {
+  return sendJson<CreatedPasswordReset>(
+    "POST",
+    `/api/v1/orgs/${orgId}/users/${userId}/password-reset`,
+  );
+}
+
+export interface PasswordResetPreview {
+  email: string;
+  expires_at: string;
+}
+
+// unauthenticated: the member has no session, the token is the credential
+export function previewPasswordReset(token: string): Promise<PasswordResetPreview> {
+  return getJson<PasswordResetPreview>(`/api/v1/password-reset/${encodeURIComponent(token)}`);
+}
+
+// stores the password and signs nobody in: the member signs in as usual, so an
+// armed second factor still applies
+export function redeemPasswordReset(
+  token: string,
+  password: string,
+): Promise<{ email: string; sign_in_required: true }> {
+  return sendJson<{ email: string; sign_in_required: true }>(
+    "POST",
+    `/api/v1/password-reset/${encodeURIComponent(token)}`,
+    { password },
+  );
 }
 
 // --- the rbac capability matrix (crates/rolter-control/src/rbac_matrix.rs) ---

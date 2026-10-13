@@ -126,6 +126,18 @@ pub(crate) const PUBLIC_ROUTES: &[PublicRoute] = &[
     ),
     route(
         "get",
+        "/api/v1/password-reset/{token}",
+        "the member being reset has no session; the unguessable one-time token an administrator \
+         issued is the credential, and the preview reveals only the address it is for",
+    ),
+    route(
+        "post",
+        "/api/v1/password-reset/{token}",
+        "the member being reset has no session; the unguessable one-time token an administrator \
+         issued is the credential. Redeeming signs nobody in",
+    ),
+    route(
+        "get",
         "/api/v1/ping",
         "round-trip check the login screen uses to tell a reachable control plane from a \
          dead one; answers a constant",

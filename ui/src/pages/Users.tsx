@@ -5,6 +5,7 @@ import {
   Building2,
   Loader2,
   Mail,
+  KeyRound,
   Pencil,
   Plus,
   Trash2,
@@ -72,9 +73,11 @@ import {
   fetchMemberships,
   fetchUsers,
   inviteUser,
+  issuePasswordReset,
   listInvitations,
   revokeInvitation,
   ROLES,
+  updateMembership,
   updateUser,
   type Invitation,
   type MembershipRow,
@@ -91,7 +94,6 @@ import {
   LAST_ORG_ADMIN,
   afterRevoke,
   grantScope,
-  higherRole,
   isLastOrgAdmin,
   membershipScope,
   sameScope,
@@ -126,6 +128,7 @@ export default function Users() {
   // (#2804). the control plane ignores it for anyone else. the flag is in the
   // key because AuditLog and the model sheet cache the plain list under
   // `["users", orgId]`, and the two answers must not stand in for each other
+  const self = useOptionalAuth()?.user?.id;
   const callerIsSuperadmin = !!useOptionalAuth()?.user?.is_superadmin;
   const users = useQuery({
     queryKey: ["users", orgId, { includeUnassigned: callerIsSuperadmin }],
@@ -164,6 +167,7 @@ export default function Users() {
   const [changeTarget, setChangeTarget] = React.useState<GrantTarget | null>(null);
   const [deactivateTarget, setDeactivateTarget] = React.useState<UserRow | null>(null);
   const [deleteTarget, setDeleteTarget] = React.useState<UserRow | null>(null);
+  const [resetTarget, setResetTarget] = React.useState<UserRow | null>(null);
   const [search, setSearch] = React.useState("");
   const [statusTab, setStatusTab] = React.useState<"all" | "active" | "deactivated">("all");
 
@@ -402,6 +406,17 @@ export default function Users() {
                 >
                   <Pencil className="h-3.5 w-3.5" />
                 </RowIconButton>
+                {active && user.id !== self && (
+                  <RowIconButton
+                    gate="password_reset:create"
+                    control="user-password-reset"
+                    title={t("pages.users.resetPassword", { email: user.email })}
+                    aria-label={t("pages.users.resetPassword", { email: user.email })}
+                    onClick={() => setResetTarget(user)}
+                  >
+                    <KeyRound className="h-3.5 w-3.5" />
+                  </RowIconButton>
+                )}
                 <RowIconButton
                   gate="user:update"
                   control="user-deactivate"
@@ -456,7 +471,6 @@ export default function Users() {
         <PendingInvitations
           orgId={orgId}
           orgScope={orgScope}
-          users={users}
           onInvite={() => setInviteOpen(true)}
         />
       )}
@@ -500,6 +514,14 @@ export default function Users() {
           onDone={invalidate}
         />
       )}
+      {orgId && (
+        <ResetPasswordDialog
+          target={resetTarget}
+          orgId={orgId}
+          onClose={() => setResetTarget(null)}
+          onDone={invalidate}
+        />
+      )}
       {/* each stays mounted and opens on a target, so each sees its own
           landing and reports it (docs/dev-docs/development/destructive-actions.md) */}
       <DeactivateUserDialog
@@ -531,7 +553,6 @@ export default function Users() {
         <ChangeRoleDialog
           target={changeTarget}
           grants={changeTarget ? (byUser.get(changeTarget.user.id) ?? []) : []}
-          orgId={orgId}
           orgScope={orgScope}
           onClose={() => setChangeTarget(null)}
           onDone={invalidate}
@@ -1107,6 +1128,101 @@ function DeactivateUserDialog({
 }
 
 /**
+ * Resetting a member's password (#2240).
+ *
+ * An administrator never sees or picks a password. The confirmation says what
+ * the reset does (ends the member's sessions now, leaves the old password valid
+ * until the link is used, leaves any second factor in place), and a confirm
+ * returns a one-time link in the shared reveal dialog, which asks before it
+ * closes over a link nobody copied.
+ */
+function ResetPasswordDialog({
+  target,
+  orgId,
+  onClose,
+  onDone,
+}: {
+  target: UserRow | null;
+  orgId: string;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const { t } = useTranslation();
+  const toast = useToast();
+  // kept apart from `target` so the reveal outlives the row that raised it
+  const [issued, setIssued] = React.useState<{
+    email: string;
+    link: string;
+    revoked: number;
+  } | null>(null);
+
+  const reset = useMutation({
+    mutationFn: (user: UserRow) => issuePasswordReset(orgId, user.id),
+    onSuccess: (created, user) => {
+      onDone();
+      toast.push({
+        tone: "success",
+        title: t("pages.users.toastResetIssued", { email: user.email }),
+      });
+      setIssued({ email: user.email, link: created.reset_url, revoked: created.sessions_revoked });
+      onClose();
+    },
+    onError: (error) => {
+      // deleted elsewhere: the list is stale, so it is read again
+      if (error instanceof ApiError && error.status === 404) onDone();
+    },
+  });
+
+  return (
+    <>
+      <ConfirmDialog
+        name="user-password-reset"
+        open={!!target}
+        onOpenChange={(open) => {
+          if (open) return;
+          onClose();
+          reset.reset();
+        }}
+        title={target ? t("pages.users.confirm.resetTitle", { email: target.email }) : ""}
+        description={target ? t("pages.users.confirm.resetBody", { email: target.email }) : ""}
+        confirmLabel={t("pages.users.confirm.resetConfirm")}
+        tone="default"
+        pending={reset.isPending}
+        error={reset.error}
+        onConfirm={() => target && reset.mutate(target)}
+      >
+        <AccountErrorHint error={reset.error} />
+      </ConfirmDialog>
+      <SecretRevealDialog
+        name="user-password-reset-link"
+        open={!!issued}
+        onOpenChange={(open) => !open && setIssued(null)}
+        title={t("pages.users.resetLinkTitle")}
+        description={t("pages.users.resetLinkBody")}
+        secret={issued?.link ?? ""}
+        copyLabel={t("pages.users.copyLink")}
+        doneLabel={t("pages.users.done")}
+      >
+        {issued && (
+          <div className="space-y-2">
+            <p className="text-sm text-muted-foreground">
+              <Trans
+                i18nKey="pages.users.resetLinkSendTo"
+                values={{ email: issued.email }}
+                components={[<strong key="email" />]}
+              />
+            </p>
+            <p className="text-sm text-muted-foreground">
+              {t("pages.users.resetLinkSessions", { count: issued.revoked })}
+            </p>
+          </div>
+        )}
+      </SecretRevealDialog>
+    </>
+  );
+}
+
+/**
  * Deleting an account (#2055), raised from the edit sheet.
  *
  * An account is deployment-wide, so the body says it leaves every
@@ -1536,44 +1652,27 @@ function RevokeRoleDialog({
 }
 
 /**
- * The revoke half of a role change failed after the grant half landed. The
- * message is the control plane's own, so the dialog can print it verbatim.
- */
-class RevokeAfterGrantFailed extends Error {
-  readonly code?: string;
-  constructor(cause: unknown) {
-    super(cause instanceof Error ? cause.message : String(cause));
-    this.code = cause instanceof ApiError ? cause.code : undefined;
-    this.name = "RevokeAfterGrantFailed";
-  }
-}
-
-/**
- * Changing the role of one grant in one confirmed step (#2053).
+ * Changing the role of one grant in one confirmed step (#2053, #2310).
  *
- * The control plane has no update for a membership, so a change is a grant
- * and a revoke, in that order: at one scope the higher of two roles applies,
- * so the moment both exist grants nothing beyond the old role or the new one,
- * while the other order would leave the person with no role at all in
- * between. When the person already holds the picked role at that scope, the
- * grant is skipped and only the revoke goes out.
+ * The change is one `PUT /api/v1/memberships/{id}`: the control plane updates
+ * the row in a single statement and writes one audit row with the old and new
+ * role, so the person is never left holding two roles and there is no partial
+ * state to retry. When the person already holds the picked role at that scope
+ * (a second grant there), the grant being changed is revoked instead, since
+ * updating it would only duplicate the other.
  *
- * A grant that fails changes nothing and is reported as it is. A revoke that
- * fails after the grant landed leaves the person holding both, and the dialog
- * says exactly that, with the role that applies meanwhile, and turns its
- * confirm into a retry of the revoke alone.
+ * Demoting the org's last admin is refused with `last_org_admin`, which the
+ * dialog says in the dashboard's language.
  */
 function ChangeRoleDialog({
   target,
   grants,
-  orgId,
   orgScope,
   onClose,
   onDone,
 }: {
   target: GrantTarget | null;
   grants: MembershipRow[];
-  orgId: string;
   orgScope: OrgScope;
   onClose: () => void;
   onDone: () => void;
@@ -1582,35 +1681,21 @@ function ChangeRoleDialog({
   const toast = useToast();
   const self = useOptionalAuth()?.user?.id;
   const [role, setRole] = React.useState("");
-  // the role whose grant landed while the revoke did not; set, the dialog is
-  // a retry of the revoke
-  const [granted, setGranted] = React.useState<string | null>(null);
 
   const change = useMutation({
-    mutationFn: async (vars: { target: GrantTarget; role: string; grantFirst: boolean }) => {
-      const { grant, user } = vars.target;
-      if (vars.grantFirst) {
-        const scope = grantScope(grant);
-        await createMembership(orgId, {
-          user_id: user.id,
-          scope_type: scope.type,
-          scope_id: scope.id || orgId,
-          role: vars.role,
-        });
+    mutationFn: async (vars: { target: GrantTarget; role: string; held: boolean }) => {
+      const { grant } = vars.target;
+      if (!vars.held) {
+        await updateMembership(grant.id, vars.role);
+        return;
       }
       try {
         await deleteMembership(grant.id);
       } catch (error) {
         // already gone is what the revoke was for
         if (error instanceof ApiError && error.status === 404) return;
-        throw new RevokeAfterGrantFailed(error);
+        throw error;
       }
-    },
-    onError: (error, vars) => {
-      if (!(error instanceof RevokeAfterGrantFailed)) return;
-      setGranted(vars.role);
-      // the list shows both grants, which is the state the person is in
-      onDone();
     },
     onSuccess: (_void, vars) => {
       onDone();
@@ -1624,23 +1709,23 @@ function ChangeRoleDialog({
         }),
       });
       onClose();
-      clear();
+      setRole("");
+    },
+    onError: (error) => {
+      // gone elsewhere: the list is stale, so it is read again
+      if (error instanceof ApiError && error.status === 404) onDone();
     },
   });
 
   // the last-admin refusal is said in the dashboard's language, not verbatim
   const changeError =
-    change.error instanceof RevokeAfterGrantFailed && change.error.code === LAST_ORG_ADMIN
+    change.error instanceof ApiError && change.error.code === LAST_ORG_ADMIN
       ? new Error(t("pages.users.confirm.lastAdminRefused"))
       : change.error;
 
-  const clear = () => {
-    setRole("");
-    setGranted(null);
-  };
   const close = () => {
     onClose();
-    clear();
+    setRole("");
     change.reset();
   };
 
@@ -1652,33 +1737,19 @@ function ChangeRoleDialog({
 
   const body: string[] = [];
   if (target && names) {
-    if (granted) {
-      body.push(
-        t("pages.users.confirm.changePartial", {
-          ...names,
-          next: roleLabel(t, granted),
-          applies: roleLabel(t, higherRole(target.grant.role, granted)),
-        }),
-      );
-    } else {
-      body.push(t("pages.users.confirm.changeBody", names));
-      if (target.grant.source === "sso") body.push(t("pages.users.confirm.changeFromSso", names));
-      if (target.grant.source === "scim") body.push(t("pages.users.confirm.changeFromScim", names));
-      if (self && self === target.user.id) body.push(t("pages.users.confirm.changeSelf"));
-    }
+    body.push(t("pages.users.confirm.changeBody", names));
+    if (target.grant.source === "sso") body.push(t("pages.users.confirm.changeFromSso", names));
+    if (target.grant.source === "scim") body.push(t("pages.users.confirm.changeFromScim", names));
+    if (self && self === target.user.id) body.push(t("pages.users.confirm.changeSelf"));
   }
 
   const confirm = () => {
     if (!target) return;
-    if (granted) {
-      change.mutate({ target, role: granted, grantFirst: false });
-      return;
-    }
     const held = grants.some(
       (other) =>
         other.id !== target.grant.id && sameScope(other, target.grant) && other.role === role,
     );
-    change.mutate({ target, role, grantFirst: !held });
+    change.mutate({ target, role, held });
   };
 
   return (
@@ -1688,18 +1759,14 @@ function ChangeRoleDialog({
       onOpenChange={(open) => !open && close()}
       title={names ? t("pages.users.confirm.changeTitle", names) : ""}
       description={body.join(" ")}
-      confirmLabel={
-        granted && names
-          ? t("pages.users.confirm.changeRetry", names)
-          : t("pages.users.confirm.changeConfirm")
-      }
+      confirmLabel={t("pages.users.confirm.changeConfirm")}
       tone="default"
       pending={change.isPending}
       error={changeError}
-      confirmDisabled={!granted && !role}
+      confirmDisabled={!role}
       onConfirm={confirm}
     >
-      {!granted && target && (
+      {target && (
         <Field label={t("pages.users.newRole")}>
           <Combobox
             value={role}
@@ -1746,13 +1813,10 @@ function isExpired(invitation: Invitation): boolean {
 function PendingInvitations({
   orgId,
   orgScope,
-  users,
   onInvite,
 }: {
   orgId: string;
   orgScope: OrgScope;
-  /** the screen's own read, whose rows name who sent each invitation */
-  users: { data?: UserRow[]; isError: boolean };
   onInvite: () => void;
 }) {
   const { t } = useTranslation();
@@ -1877,7 +1941,7 @@ function PendingInvitations({
                   )}
                 </ListCell>
                 <ListCell className="min-w-0 truncate text-xs">
-                  <InvitationSender invitation={invitation} users={users} />
+                  <InvitationSender invitation={invitation} />
                 </ListCell>
                 <ListCell className="flex min-w-0 flex-wrap items-center gap-1.5 font-mono text-xs text-muted-foreground">
                   {expired && <Badge tone="warning">{t("pages.users.invitations.expired")}</Badge>}
@@ -1955,30 +2019,19 @@ function PendingInvitations({
 /**
  * Who sent an invitation, by address.
  *
- * The list row carries the sender's id only, so the address comes from the
- * org's users list the screen already reads. No id means the invitation was
- * sent with the admin token or by an account since deleted; an id this account
- * cannot see is unknown. Neither is drawn as a uuid.
+ * The control plane resolves the address on each list row (`invited_by_email`),
+ * whatever users the caller may list. No address means the invitation was sent
+ * with the admin token or by an account since deleted; it is never drawn as a
+ * uuid.
  */
-function InvitationSender({
-  invitation,
-  users,
-}: {
-  invitation: Invitation;
-  users: { data?: UserRow[]; isError: boolean };
-}) {
+function InvitationSender({ invitation }: { invitation: Invitation }) {
   const { t } = useTranslation();
-  const quiet = "text-[color:var(--text-subtle)]";
-  if (!invitation.invited_by) {
-    return <span className={quiet}>{t("pages.users.invitations.senderNotRecorded")}</span>;
+  if (!invitation.invited_by_email) {
+    return (
+      <span className="text-[color:var(--text-subtle)]">
+        {t("pages.users.invitations.senderNotRecorded")}
+      </span>
+    );
   }
-  if (users.data === undefined && !users.isError) {
-    return <Skeleton width={120} height={16} radius={4} />;
-  }
-  const sender = users.data?.find((user) => user.id === invitation.invited_by);
-  return sender ? (
-    <span className="font-mono">{sender.email}</span>
-  ) : (
-    <span className={quiet}>{t("pages.users.invitations.senderUnknown")}</span>
-  );
+  return <span className="font-mono">{invitation.invited_by_email}</span>;
 }

@@ -35,10 +35,10 @@ use super::models::{
     BusinessUnitListing, ClientSettings, ClusterNode, CompatibilityPolicy, CustomRole,
     CustomRoleGrant, Customer, CustomerListing, EffectiveGrant, FeatureFlags, Invitation,
     LoggingSettings, Membership, MfaPolicyBinding, ModelDefaults, ModelPrice, Org, OrgAuthPolicy,
-    OrgProject, OwnedVirtualKey, PluginInstance, Project, PromptTemplate, PromptTemplateScope,
-    PromptTemplateVersion, Provider, ProviderGroup, ProviderGroupMember, RateLimit, Route,
-    RouteTarget, RuntimePolicy, ScimGroup, ScimGroupMapping, ScimIdentity, ScimToken,
-    SecuritySettings, Session, Skill, SkillVersion, SsoExchangeCode, SsoGroupMapping,
+    OrgProject, OwnedVirtualKey, PasswordReset, PluginInstance, Project, PromptTemplate,
+    PromptTemplateScope, PromptTemplateVersion, Provider, ProviderGroup, ProviderGroupMember,
+    RateLimit, Route, RouteTarget, RuntimePolicy, ScimGroup, ScimGroupMapping, ScimIdentity,
+    ScimToken, SecuritySettings, Session, Skill, SkillVersion, SsoExchangeCode, SsoGroupMapping,
     SsoLoginState, SsoProvider, Team, User, VirtualKey,
 };
 
@@ -4292,6 +4292,75 @@ impl MembershipRepo<'_> {
         Ok(LockoutGuard::Done(()))
     }
 
+    /// change a grant's role in one statement, returning the row as it was
+    /// before and as it is now. Demoting an org-scoped `admin` grant held by
+    /// an active account is refused with [`LockoutGuard::WouldLockOut`] when no
+    /// other active account holds one for that org, under the same per-org
+    /// advisory lock `delete_guarded` takes (#2311); `protect_last_admin =
+    /// false` skips the check (the superadmin override).
+    pub async fn update_role_guarded(
+        &self,
+        id: Uuid,
+        role: &str,
+        protect_last_admin: bool,
+    ) -> Result<LockoutGuard<(Membership, Membership)>> {
+        let mut tx = self.0.begin().await.map_err(store_err)?;
+        if protect_last_admin && role != "admin" {
+            let org: Option<Uuid> = sqlx::query_scalar(
+                "select org_id from memberships where id = $1 and role = 'admin'",
+            )
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(store_err)?
+            .flatten();
+            if let Some(org) = org {
+                lock_org_admins(&mut tx, org).await?;
+                let last: bool = sqlx::query_scalar(
+                    "select exists (
+                         select 1 from memberships m join users u on u.id = m.user_id
+                         where m.id = $1 and m.org_id = $2 and m.role = 'admin'
+                           and u.deactivated_at is null
+                     ) and not exists (
+                         select 1 from memberships m join users u on u.id = m.user_id
+                         where m.id <> $1 and m.org_id = $2 and m.role = 'admin'
+                           and u.deactivated_at is null
+                     )",
+                )
+                .bind(id)
+                .bind(org)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(store_err)?;
+                if last {
+                    return Ok(LockoutGuard::WouldLockOut);
+                }
+            }
+        }
+        let before: Membership = sqlx::query_as(
+            "select id, user_id, org_id, team_id, project_id, role, source, created_at
+             from memberships where id = $1 for update",
+        )
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(store_err)?
+        .ok_or_else(|| Error::NotFound(format!("membership {id}")))?;
+        // a manual edit is operator intent: it must survive sso reconciliation,
+        // which only ever touches rows whose source is 'sso'
+        let after: Membership = sqlx::query_as(
+            "update memberships set role = $2, source = 'manual' where id = $1
+             returning id, user_id, org_id, team_id, project_id, role, source, created_at",
+        )
+        .bind(id)
+        .bind(role)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(store_err)?;
+        tx.commit().await.map_err(store_err)?;
+        Ok(LockoutGuard::Done((before, after)))
+    }
+
     pub async fn delete(&self, id: Uuid) -> Result<()> {
         let res = sqlx::query("delete from memberships where id = $1")
             .bind(id)
@@ -4302,6 +4371,113 @@ impl MembershipRepo<'_> {
             return Err(Error::NotFound(format!("membership {id}")));
         }
         Ok(())
+    }
+}
+
+/// password resets: one-time links an administrator issues so a member can
+/// choose a new password themselves (#2240).
+pub struct PasswordResetRepo<'a>(pub &'a PgPool);
+
+const PASSWORD_RESET_COLUMNS: &str =
+    "id, user_id, token_hash, created_by, expires_at, used_at, revoked_at, created_at";
+
+impl PasswordResetRepo<'_> {
+    /// Issue a reset for `user_id`, revoking the account's live one in the same
+    /// transaction so only the newest link works. Returns the new row and the
+    /// id of the reset it replaced, if any.
+    pub async fn issue(
+        &self,
+        user_id: Uuid,
+        token_hash: &str,
+        created_by: Option<Uuid>,
+        expires_at: DateTime<Utc>,
+    ) -> Result<(PasswordReset, Option<Uuid>)> {
+        let mut tx = self.0.begin().await.map_err(store_err)?;
+        sqlx::query(
+            "select pg_advisory_xact_lock(hashtextextended('password_reset:' || $1::text, 0))",
+        )
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(store_err)?;
+        let replaced: Option<Uuid> = sqlx::query_scalar(
+            "update password_resets set revoked_at = now() \
+             where user_id = $1 and used_at is null and revoked_at is null \
+             returning id",
+        )
+        .bind(user_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(store_err)?;
+        let reset = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "insert into password_resets (user_id, token_hash, created_by, expires_at) \
+             values ($1, $2, $3, $4) returning {PASSWORD_RESET_COLUMNS}"
+        )))
+        .bind(user_id)
+        .bind(token_hash)
+        .bind(created_by)
+        .bind(expires_at)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(store_err)?;
+        tx.commit().await.map_err(store_err)?;
+        Ok((reset, replaced))
+    }
+
+    /// Look a reset up by token digest, only while it is live: unused,
+    /// unrevoked and unexpired. Spent and wrong tokens look alike to the caller.
+    pub async fn find_live_by_hash(&self, token_hash: &str) -> Result<Option<PasswordReset>> {
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "select {PASSWORD_RESET_COLUMNS} from password_resets \
+             where token_hash = $1 and used_at is null and revoked_at is null \
+               and expires_at > now()"
+        )))
+        .bind(token_hash)
+        .fetch_optional(self.0)
+        .await
+        .map_err(store_err)
+    }
+
+    /// Spend a live reset: stamp it used, store the new password hash and end
+    /// every session of the account, in one transaction. Returns the number of
+    /// sessions ended, or `None` when another request spent the reset first or
+    /// the account is deactivated, so redeeming is single-use even under a race.
+    pub async fn redeem(
+        &self,
+        id: Uuid,
+        user_id: Uuid,
+        password_hash: &str,
+    ) -> Result<Option<u64>> {
+        let mut tx = self.0.begin().await.map_err(store_err)?;
+        let spent = sqlx::query(
+            "update password_resets set used_at = now() \
+             where id = $1 and used_at is null and revoked_at is null and expires_at > now()",
+        )
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .map_err(store_err)?;
+        if spent.rows_affected() != 1 {
+            return Ok(None);
+        }
+        let updated = sqlx::query(
+            "update users set password_hash = $2 where id = $1 and deactivated_at is null",
+        )
+        .bind(user_id)
+        .bind(password_hash)
+        .execute(&mut *tx)
+        .await
+        .map_err(store_err)?;
+        if updated.rows_affected() != 1 {
+            return Ok(None);
+        }
+        let sessions = sqlx::query("delete from sessions where user_id = $1")
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(store_err)?;
+        tx.commit().await.map_err(store_err)?;
+        Ok(Some(sessions.rows_affected()))
     }
 }
 
@@ -4375,11 +4551,17 @@ impl InvitationRepo<'_> {
         Ok((invitation, replaced))
     }
 
+    /// the org's invitations, newest first, each with the sender's email
+    /// resolved here (#2325): the join is independent of which users the
+    /// caller may list, since the invitation itself is already visible to them
     pub async fn list(&self, org_id: Uuid) -> Result<Vec<Invitation>> {
-        sqlx::query_as(sqlx::AssertSqlSafe(format!(
-            "select {INVITATION_COLUMNS} from invitations \
-             where org_id = $1 order by created_at desc"
-        )))
+        sqlx::query_as(
+            "select i.id, i.org_id, i.email, i.role, i.team_id, i.project_id, i.token_hash, \
+                    i.invited_by, u.email as invited_by_email, i.expires_at, i.accepted_at, \
+                    i.revoked_at, i.created_at \
+             from invitations i left join users u on u.id = i.invited_by \
+             where i.org_id = $1 order by i.created_at desc",
+        )
         .bind(org_id)
         .fetch_all(self.0)
         .await

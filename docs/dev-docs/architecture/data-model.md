@@ -91,6 +91,10 @@ The OIDC tables (`0047_sso_providers.sql`, `0077_sso_exchange_codes.sql`, #240) 
 
 A login abandoned at the identity provider never comes back to delete its state, and a code whose browser never loads the dashboard is never redeemed, so neither table can rely on use to stay small (#2414). Two more tables have the same shape: `mcp_oauth_login_states` (a consent never finished at an MCP authorization server) and `mfa_challenges` (a login abandoned at the second-factor prompt) (#2616). The control plane runs one sweep every five minutes (`expiry_sweep::start`) over all four, through `SsoRepo::sweep_login_states`, `SsoRepo::sweep_exchange_codes`, `McpOAuthRepo::sweep_login_states` and `MfaRepo::sweep_expired_challenges`. Each statement removes at most 1000 rows (`SSO_SWEEP_BATCH`, `MCP_SWEEP_BATCH`), oldest first, with `for update skip locked` so concurrent replicas split a backlog instead of queueing on it, and a pass stops after ten batches per table and leaves the rest to the next tick. The SSO callback, SSO redemption and MCP OAuth callback also run one such batch first; the MFA login path no longer purges at all, since every challenge read checks `expires_at` itself. The `created_at` and `expires_at` indexes from the original migrations serve every where clause, so the sweep took no migration.
 
+## Password resets
+
+`password_resets` (`0089_password_resets.sql`, #2240) holds the one-time links an administrator issues so a member can choose a new password. It is read only by the control plane, so it carries no `bump_config_version()` trigger. `token_hash` is the peppered digest (the token is shown once), at most one row per account is live (`password_resets_live_user_idx`, `used_at` and `revoked_at` both null), rows cascade with the account and `created_by` is nulled when the issuer is deleted. See [password-reset.md](password-reset.md).
+
 ## Data written _by_ the data plane
 
 Most tables flow control plane → gateway. Two flow the other way, written from the channel the gateway already holds and never read back by it:

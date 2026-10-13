@@ -209,7 +209,10 @@ pub fn router() -> Router<ControlState> {
             "/api/v1/orgs/{org_id}/memberships",
             get(list_memberships).post(create_membership),
         )
-        .route("/api/v1/memberships/{id}", delete(delete_membership))
+        .route(
+            "/api/v1/memberships/{id}",
+            put(update_membership).delete(delete_membership),
+        )
         .route("/api/v1/orgs/{org_id}/audit-log", get(list_audit_log))
         .route("/api/v1/audit-log", get(list_deployment_audit_log))
 }
@@ -6412,6 +6415,76 @@ async fn create_membership(
     )
     .await;
     Ok(Json(membership))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UpdateMembership {
+    role: String,
+}
+
+/// the scope a grant sits at, or `None` for the row the schema should have
+/// made impossible
+async fn membership_chain(pool: &PgPool, m: &Membership) -> ApiResult<Option<ScopeChain>> {
+    Ok(if let Some(project) = m.project_id {
+        Some(ScopeChain::from_project(pool, project).await?)
+    } else if let Some(team) = m.team_id {
+        Some(ScopeChain::from_team(pool, team).await?)
+    } else {
+        m.org_id.map(ScopeChain::org)
+    })
+}
+
+/// change a grant's role in one statement (#2310), authorized at the grant's
+/// own scope like the delete. Demoting an org's last admin is refused for
+/// everyone but a superadmin, as revoking that grant is (#2311)
+async fn update_membership(
+    principal: Principal,
+    State(state): State<ControlState>,
+    Path(id): Path<Uuid>,
+    SafeJson(body): SafeJson<UpdateMembership>,
+) -> ApiResult<Json<Membership>> {
+    validate_role(&body.role)?;
+    let pool = pool(&state);
+    let current = MembershipRepo(pool).get(id).await?;
+    let Some(chain) = membership_chain(pool, &current).await? else {
+        // data-integrity fallback, not a route capability: see delete_membership
+        authorize_superadmin(&principal, Requirement::unscoped_superadmin())?;
+        return Err(ApiError::Core(Error::Config(
+            "the grant has no scope".to_string(),
+        )));
+    };
+    let org_id = chain.org;
+    authorize(&state, &principal, chain, cap!("membership", Update)).await?;
+    if current.role == body.role {
+        return Ok(Json(current));
+    }
+    let (before, after) = match MembershipRepo(pool)
+        .update_role_guarded(
+            id,
+            &body.role,
+            !matches!(principal, Principal::Superadmin { .. }),
+        )
+        .await?
+    {
+        LockoutGuard::Done(pair) => pair,
+        LockoutGuard::WouldLockOut => return Err(last_org_admin()),
+    };
+    log_audit(
+        &state,
+        &principal,
+        org_id,
+        "membership.update",
+        "membership",
+        id,
+        serde_json::json!({
+            "user_id": after.user_id,
+            "old_role": before.role,
+            "new_role": after.role,
+        }),
+    )
+    .await;
+    Ok(Json(after))
 }
 
 async fn delete_membership(
