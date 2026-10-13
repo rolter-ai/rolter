@@ -54,6 +54,32 @@ export const Default: Story = { render: () => <Controlled /> };
 export const WithVisibleLabel: Story = { render: () => <Controlled labelled /> };
 export const Disabled: Story = { render: () => <Controlled disabled /> };
 
+/** Text that explains the choice is read with the group's name via `describedBy`. */
+export const DescribedByAHint: Story = {
+  render: () => (
+    <div className="space-y-1.5">
+      <Segmented
+        value="lockAll"
+        options={MODES}
+        onChange={() => {}}
+        ariaLabel="Parameter lock mode"
+        describedBy="sg-hint"
+      />
+      <p id="sg-hint" className="text-xs text-muted-foreground">
+        Every parameter follows the route.
+      </p>
+    </div>
+  ),
+  play: async ({ canvasElement }) => {
+    await expect(
+      within(canvasElement).getByRole("radiogroup", {
+        name: "Parameter lock mode",
+        description: "Every parameter follows the route.",
+      }),
+    ).toBeVisible();
+  },
+};
+
 /**
  * The group is a `radiogroup` of `radio`s, not three buttons that happen to be
  * adjacent: exactly one is checked, and that is what a screen reader reports.

@@ -1,6 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import * as React from "react";
+import { Link, RouterProvider, createMemoryRouter, useLocation } from "react-router";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import SkillsRepository from "./SkillsRepository";
@@ -10,11 +11,14 @@ import {
   expectEmptyState,
   expectLoadError,
   expectRefused,
+  expectSheetClosed,
   expectSkeleton,
   expectToast,
   withCapabilities,
+  answerDiscardPrompt,
   cancelConfirmation,
   confirmDestructive,
+  discardPrompt,
   expectNoUxEvent,
   expectUxEvent,
   recordUxEvents,
@@ -73,8 +77,9 @@ function json(body: unknown, status = 200) {
   });
 }
 
-function loadedStub(): FetchStub {
-  let currentSkill = { ...skill };
+/** `live` is the published version the skill starts with */
+function loadedStub(live = skill.published_version): FetchStub {
+  let currentSkill = { ...skill, published_version: live };
   let currentVersions = [...versions];
   let deleted = false;
   return async (input, init) => {
@@ -162,10 +167,38 @@ function Harness({
     </div>
   );
   const screen = uxScreen ? <UxScreenProvider screen={uxScreen}>{page}</UxScreenProvider> : page;
-  return (
+  const tree = (
     <QueryClientProvider client={client}>
       <Toasted>{role ? <CapabilityProvider>{screen}</CapabilityProvider> : screen}</Toasted>
+      <Elsewhere />
     </QueryClientProvider>
+  );
+  // a data router, because the screen guards leaving with `useBlocker`
+  const router = React.useMemo(
+    () => createMemoryRouter([{ path: "*", element: <HarnessBody /> }]),
+    [],
+  );
+  return (
+    <HarnessBodyContext.Provider value={tree}>
+      <RouterProvider router={router} />
+    </HarnessBodyContext.Provider>
+  );
+}
+
+const HarnessBodyContext = React.createContext<React.ReactNode>(null);
+function HarnessBody() {
+  return <>{React.useContext(HarnessBodyContext)}</>;
+}
+
+// stands in for the nav: a link away from the screen and a readout of where
+// the router ended up
+function Elsewhere() {
+  const { pathname } = useLocation();
+  return (
+    <div className="fixed bottom-1 right-1 text-xs">
+      <Link to="/elsewhere">Go elsewhere</Link>
+      <output data-testid="pathname">{pathname}</output>
+    </div>
   );
 }
 
@@ -182,6 +215,10 @@ export const Loaded: Story = {
   render: () => <Harness fetchStub={loadedStub()} />,
   play: async ({ canvasElement }) => {
     await within(canvasElement).findAllByText("Incident coordinator");
+    // who may use the skill is named, not counted
+    await expect(await within(canvasElement).findByText("Teams: Platform")).toBeVisible();
+    // every saved version is immutable, so the badge says nothing and is gone
+    await expect(within(canvasElement).queryByText("Immutable")).toBeNull();
     // the shell's ScreenHeader owns the page's only h1 (#2241)
     await expect(within(canvasElement).queryAllByRole("heading", { level: 1 })).toHaveLength(0);
   },
@@ -332,15 +369,52 @@ export const ValidatesArtifactReference: Story = {
   },
 };
 
-export const RetiresSkillWithPolicyIntact: Story = {
-  render: () => <Harness fetchStub={loadedStub()} />,
+/**
+ * Retiring is a lifecycle action of its own, not a checkbox in Settings: it
+ * hides the skill from every team, so it has its own button and its own
+ * confirmation, and sends the flag alone, leaving the access policy untouched.
+ * Restoring is the same move back.
+ */
+let retirements: Recorder;
+export const RetiresThenRestoresSkill: Story = {
+  beforeEach: recordUxEvents,
+  render: () => {
+    retirements = recording(loadedStub());
+    return <Harness fetchStub={retirements.stub} screen="skills-repo" />;
+  },
   play: async ({ canvas, canvasElement }) => {
+    // not a field of the settings form any more
     await userEvent.click(await canvas.findByRole("button", { name: "Settings" }));
     const page = within(canvasElement.ownerDocument.body);
-    await userEvent.click(page.getByRole("checkbox", { name: /Retire this skill/ }));
-    await userEvent.click(page.getByRole("button", { name: "Save settings" }));
-    await waitFor(() => expect(canvas.getAllByText("Retired")).toHaveLength(2));
+    await expect(page.queryByRole("checkbox", { name: /Retire this skill/ })).toBeNull();
+    await userEvent.click(page.getByRole("button", { name: "Cancel" }));
+    await expectSheetClosed();
+
+    await userEvent.click(canvas.getByRole("button", { name: "Retire" }));
+    await expect(
+      await page.findByRole("heading", { name: "Retire skill Incident coordinator?" }),
+    ).toBeVisible();
+    await cancelConfirmation();
+    retirements.expectNotSent("PUT", `/skills/${SKILL}`);
+
+    await userEvent.click(canvas.getByRole("button", { name: "Retire" }));
+    await confirmDestructive(/restore the skill later/, "Retire skill");
+    const sent = await retirements.expectSentBody<Record<string, unknown>>(
+      "PUT",
+      `/skills/${SKILL}`,
+    );
+    await expect(sent).toEqual({ retired: true });
     await expectToast(canvasElement, /no longer resolves/);
+    await waitFor(() => expect(canvas.getAllByText("Retired")).toHaveLength(2));
+    await expectUxEvent("save_confirmed", "skill-retire");
+
+    await userEvent.click(canvas.getByRole("button", { name: "Restore" }));
+    await expect(
+      await page.findByRole("heading", { name: "Restore skill Incident coordinator?" }),
+    ).toBeVisible();
+    await confirmDestructive(/resolve its published version again/, "Restore skill");
+    await expectToast(canvasElement, /Skill restored/);
+    await waitFor(() => expect(canvas.queryByText("Retired")).toBeNull());
   },
 };
 
@@ -351,6 +425,144 @@ export const ConfirmsRollback: Story = {
     const page = within(canvasElement.ownerDocument.body);
     await expect(page.getByRole("heading", { name: "Roll back to v1" })).toBeVisible();
     await expect(page.getByText(/changes the resolved version from v2/)).toBeVisible();
+  },
+};
+
+/**
+ * Publishing asks like rolling back does, and the verb follows the direction
+ * (#2120): with v1 live, the newer v2 is published, never "rolled back to",
+ * and the older one offers no publish at all.
+ */
+let publishes: Recorder;
+export const PublishConfirmsThenGoesLive: Story = {
+  beforeEach: recordUxEvents,
+  render: () => {
+    publishes = recording(loadedStub(1));
+    return <Harness fetchStub={publishes.stub} screen="skills-repo" />;
+  },
+  play: async ({ canvas, canvasElement }) => {
+    const rail = within(await canvas.findByRole("complementary", { name: "Version history" }));
+    const railPublish = await rail.findByRole("button", { name: "Publish v2" });
+    await waitFor(() => expect(railPublish).toBeVisible());
+    // newer than the live version: never offered as a roll back
+    await expect(rail.queryByRole("button", { name: "Roll back to v2" })).toBeNull();
+
+    await userEvent.click(
+      within(canvas.getByRole("main")).getByRole("button", { name: "Publish v2" }),
+    );
+    const page = within(canvasElement.ownerDocument.body);
+    await expect(
+      await page.findByRole("heading", { name: "Publish v2 of Incident coordinator?" }),
+    ).toBeVisible();
+    // asking sent nothing
+    publishes.expectNotSent("PUT", "/publish");
+    await expect(page.getByText(/immutable v2 instead of v1/)).toBeVisible();
+    await userEvent.click(
+      within(await page.findByRole("dialog")).getByRole("button", { name: "Publish v2" }),
+    );
+    const sent = await publishes.expectSentBody<{ version: number }>("PUT", "/publish");
+    await expect(sent.version).toBe(2);
+    publishes.expectNotSent("PUT", "/rollback");
+    await expectToast(canvasElement, /v2 is now the resolved version/);
+    await expectUxEvent("save_confirmed", "skill-publish");
+    // v2 is live, so v1 is now the older one
+    await waitFor(() =>
+      expect(rail.getByRole("button", { name: "Roll back to v1" })).toBeVisible(),
+    );
+  },
+};
+
+/**
+ * The content source is a radio group that behaves like one (#2119): a single
+ * Tab stop, the arrow keys moving the selection, and the hint under the group
+ * following the choice. Driven from the keyboard alone.
+ */
+export const SourceSwitchesFromTheKeyboard: Story = {
+  render: () => <Harness fetchStub={loadedStub()} />,
+  play: async ({ canvas }) => {
+    const group = await canvas.findByRole("radiogroup", { name: "Skill content source" });
+    await expect(group).toHaveAccessibleDescription("Version the instructions in Rolter");
+    const inline = within(group).getByRole("radio", { name: "Inline SKILL.md" });
+    const reference = within(group).getByRole("radio", { name: "Artifact reference" });
+    await expect(inline).toBeChecked();
+    // one tab stop: the checked option, not both
+    await expect(inline).toHaveAttribute("tabindex", "0");
+    await expect(reference).toHaveAttribute("tabindex", "-1");
+
+    inline.focus();
+    await userEvent.keyboard("{ArrowRight}");
+    await waitFor(() => expect(reference).toBeChecked());
+    await waitFor(() => expect(reference).toHaveFocus());
+    await expect(group).toHaveAccessibleDescription("HTTPS, Git, OCI, or S3");
+    await expect(canvas.getByRole("textbox", { name: "Content reference" })).toBeVisible();
+
+    await userEvent.keyboard("{ArrowDown}");
+    await waitFor(() => expect(inline).toBeChecked());
+    await expect(canvas.getByRole("textbox", { name: "SKILL.md content" })).toBeVisible();
+    // Tab leaves the group rather than walking to the other option
+    await userEvent.tab();
+    await expect(reference).not.toHaveFocus();
+    await expect(inline).not.toHaveFocus();
+  },
+};
+
+/**
+ * Switching version or skill with edits in the workbench asks first (#2115).
+ *
+ * Cancel keeps the edits where they were; Discard replaces them with the
+ * version chosen; a clean workbench switches without a question, and so does
+ * a click on the version already open.
+ */
+export const KeepsTheDraftWhenSwitchingVersions: Story = {
+  render: () => <Harness fetchStub={loadedStub()} />,
+  play: async ({ canvas }) => {
+    const rail = within(await canvas.findByRole("complementary", { name: "Version history" }));
+    await canvas.findByRole("textbox", { name: "SKILL.md content" });
+    await expect(canvas.queryByText("Unsaved changes")).toBeNull();
+    // a clean workbench switches at once
+    await userEvent.click(rail.getByRole("button", { name: /^v1\b/ }));
+    await userEvent.click(await rail.findByRole("button", { name: /^v2\b/ }));
+    await waitFor(() => expect(canvas.getByText("editing from immutable v2")).toBeVisible());
+    await expect(within(document.body).queryByRole("dialog")).toBeNull();
+
+    // v1 holds a reference, so the editor was swapped out and back in
+    const content = await canvas.findByRole("textbox", { name: "SKILL.md content" });
+    await userEvent.type(content, "\n4. Schedule the follow-up.");
+    await expect(canvas.getByText("Unsaved changes")).toBeVisible();
+    // the version already open is not a switch
+    await userEvent.click(rail.getByRole("button", { name: /^v2\b/ }));
+    await expect(within(document.body).queryByRole("dialog")).toBeNull();
+
+    await userEvent.click(rail.getByRole("button", { name: /^v1\b/ }));
+    await expect(await discardPrompt()).toBeVisible();
+    await answerDiscardPrompt(false);
+    await expect(canvas.getByText("editing from immutable v2")).toBeVisible();
+    await expect((content as HTMLTextAreaElement).value).toContain("4. Schedule the follow-up.");
+
+    await userEvent.click(rail.getByRole("button", { name: /^v1\b/ }));
+    await answerDiscardPrompt(true);
+    await expect(await canvas.findByRole("textbox", { name: "Content reference" })).toHaveValue(
+      "oci://registry.example/skills/incident-coordinator@sha256:abc123",
+    );
+    await expect(canvas.getByText("editing from immutable v1")).toBeVisible();
+    await expect(canvas.queryByText("Unsaved changes")).toBeNull();
+  },
+};
+
+/** Leaving the screen with edits asks too; a clean workbench lets go at once. */
+export const LeavingWithADraftAsksFirst: Story = {
+  render: () => <Harness fetchStub={loadedStub()} />,
+  play: async ({ canvas }) => {
+    const content = await canvas.findByRole("textbox", { name: "SKILL.md content" });
+    await userEvent.type(content, "!");
+    await userEvent.click(canvas.getByRole("link", { name: "Go elsewhere" }));
+    await expect(await discardPrompt()).toBeVisible();
+    await expect(canvas.getByTestId("pathname")).toHaveTextContent("/");
+    await answerDiscardPrompt(false);
+    await expect((content as HTMLTextAreaElement).value).toContain("!");
+    await userEvent.click(canvas.getByRole("link", { name: "Go elsewhere" }));
+    await answerDiscardPrompt(true);
+    await waitFor(() => expect(canvas.getByTestId("pathname")).toHaveTextContent("/elsewhere"));
   },
 };
 
@@ -407,8 +619,17 @@ export const AsViewer: Story = {
     await expectRefused(canvasElement, "Settings");
     await expectRefused(canvasElement, "Delete Incident coordinator");
     await expectRefused(canvasElement, "Roll back to v1");
+    await expectRefused(canvasElement, "Retire");
     await userEvent.click(await canvas.findByRole("button", { name: /^v1\b/ }));
-    await expectRefused(canvasElement, "Publish v1");
+    // v1 is older than the live v2, so the header offers the same roll back
+    await waitFor(() =>
+      expect(canvas.getAllByRole("button", { name: "Roll back to v1" })).toHaveLength(2),
+    );
+    await waitFor(() => {
+      for (const button of canvas.getAllByRole("button", { name: "Roll back to v1" })) {
+        expect(button).toBeDisabled();
+      }
+    });
     // reading is untouched: the slug is on screen in the index and the header
     await expect(canvas.getAllByText("incident-coordinator").length).toBeGreaterThan(0);
   },
