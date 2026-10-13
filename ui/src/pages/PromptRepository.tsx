@@ -12,13 +12,13 @@ import {
   Pencil,
   Plus,
   RotateCcw,
-  Trash2,
 } from "lucide-react";
 import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { GatedButton } from "@/components/GatedButton";
+import { DeleteIconButton } from "@/components/ui/delete-icon-button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -738,15 +738,12 @@ function PromptWorkbench({
             >
               <Pencil className="h-4 w-4" />
             </GatedButton>
-            <GatedButton
+            <DeleteIconButton
               gate="prompt_template:delete"
               control="prompt-delete"
-              variant="ghost"
-              aria-label={t("pages.promptRepo.deleteAction", { name: template.name })}
+              label={t("pages.promptRepo.deleteAction", { name: template.name })}
               onClick={onDelete}
-            >
-              <Trash2 className="h-4 w-4" />
-            </GatedButton>
+            />
           </div>
         </div>
         <div className="mt-3 flex min-h-5 flex-wrap items-center gap-x-3 gap-y-1 text-xs">
@@ -902,15 +899,12 @@ function VariableEditor({
                   onChange={(event) => update(index, { default: event.target.value })}
                 />
               </label>
-              <Button
-                variant="ghost"
-                aria-label={t("pages.promptRepo.removeVariableAria", {
+              <DeleteIconButton
+                label={t("pages.promptRepo.removeVariableAria", {
                   name: variable.name || index + 1,
                 })}
                 onClick={() => onChange(variables.filter((_, i) => i !== index))}
-              >
-                <Trash2 className="h-4 w-4" />
-              </Button>
+              />
             </div>
           ))
         )}
@@ -1004,13 +998,10 @@ function DecoratorEditor({
               >
                 <ArrowDown className="h-4 w-4" />
               </Button>
-              <Button
-                variant="ghost"
-                aria-label={t("pages.promptRepo.removeDecoratorAria", { index: index + 1 })}
+              <DeleteIconButton
+                label={t("pages.promptRepo.removeDecoratorAria", { index: index + 1 })}
                 onClick={() => onChange(decorators.filter((_, i) => i !== index))}
-              >
-                <Trash2 className="h-4 w-4" />
-              </Button>
+              />
             </div>
             <Textarea
               aria-label={t("pages.promptRepo.decoratorContentAria", { index: index + 1 })}
