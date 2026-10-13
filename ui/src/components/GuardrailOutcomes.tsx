@@ -141,3 +141,44 @@ export function OutcomeCounts({
     </div>
   );
 }
+
+/**
+ * What the enforced provider's card says about outcomes recorded without a
+ * provider name: rows written before the gateway named the provider (#3038), or
+ * by a config-file webhook that sets no `name`. They cannot be tied to one
+ * provider, so they are stated apart from the card's own counts rather than
+ * added to them, and the links open exactly those rows. Nothing when there are
+ * none.
+ */
+export function UnnamedProviderCounts({ query }: { query: OutcomesQuery }) {
+  const { t } = useTranslation();
+  const fmt = useFormat();
+  if (!query.data?.recorded) return null;
+  const counts = PROVIDER_ACTIONS.map((action) => ({
+    action,
+    count: countOf(query.data, action, ""),
+  })).filter((c) => c.count > 0);
+  if (counts.length === 0) return null;
+  return (
+    <div className="mt-2">
+      <p className="text-muted-foreground">{t("pages.guardrailOutcomes.unnamed")}</p>
+      <ul className="mt-1 flex flex-wrap gap-x-4 gap-y-1">
+        {counts.map(({ action, count }) => (
+          <li key={action}>
+            {t(`pages.guardrailOutcomes.actions.${action}`)}{" "}
+            <Link
+              to={outcomeLogsHref(action, "")}
+              className="font-medium text-foreground underline underline-offset-2"
+              aria-label={t("pages.guardrailOutcomes.viewAria", {
+                total: count,
+                action: t(`pages.guardrailOutcomes.actions.${action}`),
+              })}
+            >
+              {fmt.number(count)}
+            </Link>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}

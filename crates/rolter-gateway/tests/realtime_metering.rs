@@ -22,7 +22,10 @@ use axum::routing::post;
 use axum::Router;
 use futures_util::{SinkExt, StreamExt};
 use parking_lot::Mutex;
-use rolter_core::{GatewayConfig, ProviderConfig, ProviderKind};
+use rolter_core::{
+    FailureMode, GatewayConfig, PluginInstanceConfig, PluginStage, PluginsConfig, ProviderConfig,
+    ProviderKind,
+};
 use serde_json::{json, Value};
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tokio_tungstenite::tungstenite::Message;
@@ -1300,4 +1303,93 @@ org_id = "{org}"
         );
     }
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ── plugin calls on a session (#3071) ────────────────────────────────────────
+
+/// A plugin endpoint answering every call with `answer`.
+async fn plugin_endpoint(answer: Value) -> String {
+    let app = Router::new().route(
+        "/hook",
+        post(move || {
+            let answer = answer.clone();
+            async move { axum::Json(answer) }
+        }),
+    );
+    format!("http://{}/hook", serve(app).await)
+}
+
+fn with_plugin(mut config: GatewayConfig, org: &str, endpoint: String) -> GatewayConfig {
+    config.plugins = PluginsConfig {
+        instances: vec![PluginInstanceConfig {
+            slug: "audit".to_string(),
+            org_id: org.to_string(),
+            project_id: None,
+            stage: PluginStage::PreUpstream,
+            position: 0,
+            failure_mode: FailureMode::FailOpen,
+            endpoint,
+            auth: None,
+        }],
+    };
+    config
+}
+
+/// The calls a session makes before a turn finishes ride that turn's row, one
+/// entry per call, so the Plugins screen counts realtime traffic.
+#[tokio::test]
+async fn plugin_calls_made_on_a_session_ride_the_next_turn_row() {
+    let org = unique("org-plugin-turn");
+    let rows = Rows::default();
+    let clickhouse = rows.serve().await;
+    let (upstream, _) = realtime_upstream(true).await;
+    let endpoint = plugin_endpoint(json!({"action": "allow"})).await;
+    let config = with_plugin(config(upstream, Some(clickhouse), &org), &org, endpoint);
+    let gw = gateway(&config, None).await;
+
+    let mut client = open(gw, KEY).await;
+    client
+        .send(Message::Text(
+            r#"{"type":"conversation.item.create","item":{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}}"#
+                .into(),
+        ))
+        .await
+        .unwrap();
+    // the second call is the response.create run_turn sends
+    run_turn(&mut client).await;
+    let row = rows.wait_for(1).await[0].clone();
+    client.close(None).await.unwrap();
+
+    assert_eq!(
+        row["plugin_events"],
+        json!(["allowed:audit", "allowed:audit"]),
+        "{row}"
+    );
+}
+
+/// A session whose events were all refused finishes no turn, and its calls
+/// still reach a row when it closes.
+#[tokio::test]
+async fn plugin_calls_on_a_session_with_no_turn_are_written_when_it_closes() {
+    let org = unique("org-plugin-close");
+    let rows = Rows::default();
+    let clickhouse = rows.serve().await;
+    let (upstream, _) = realtime_upstream(true).await;
+    let endpoint = plugin_endpoint(json!({"action": "block", "reason": "no"})).await;
+    let config = with_plugin(config(upstream, Some(clickhouse), &org), &org, endpoint);
+    let gw = gateway(&config, None).await;
+
+    let mut client = open(gw, KEY).await;
+    client
+        .send(Message::Text(r#"{"type":"response.create"}"#.into()))
+        .await
+        .unwrap();
+    let refusal = next_event(&mut client).await;
+    assert_eq!(refusal["type"], "error", "{refusal}");
+    client.close(None).await.unwrap();
+
+    let row = rows.wait_for(1).await[0].clone();
+    assert_eq!(row["plugin_events"], json!(["blocked:audit"]), "{row}");
+    assert_eq!(row["total_tokens"].as_u64().unwrap_or(0), 0, "{row}");
+    assert_eq!(row["org_id"], org.as_str());
 }

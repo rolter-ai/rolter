@@ -63,9 +63,9 @@ A **saved view** on the `dashboard` surface can hold these four filters beside `
 }
 ```
 
-`action` is `blocked`, `redacted` or `annotated` for a rule named in `rule`, and `provider_blocked` or `provider_transformed` with an empty `rule` for the active guardrail provider. A request counts once per rule, scaled by the log's sampling weight like every other count. The rows are limited to the request log you can read, as everywhere on this page. `recorded` is `false`, with `data` empty, when the ClickHouse table lacks `clickhouse/018_guardrail_events.sql`.
+`action` is `blocked`, `redacted` or `annotated` for a rule named in `rule`, and `provider_blocked` or `provider_transformed` for a guardrail provider, with the provider's name in `rule` (empty for rows written before the name was recorded, or by a provider that has none). A request counts once per rule, scaled by the log's sampling weight like every other count. The rows are limited to the request log you can read, as everywhere on this page. `recorded` is `false`, with `data` empty, when the ClickHouse table lacks `clickhouse/018_guardrail_events.sql`.
 
-`GET /api/v1/analytics/invocations` takes `guardrail=<action>:<rule>` (or `provider_blocked` / `provider_transformed`) to list exactly those requests, and each row carries `guardrail_events`, an array of the same strings.
+`GET /api/v1/analytics/invocations` takes `guardrail=<action>:<rule>` (`provider_blocked:<provider name>` / `provider_transformed:<provider name>`, or the bare `provider_blocked` / `provider_transformed`) to list exactly those requests, and each row carries `guardrail_events`, an array of the same strings.
 
 ## Plugin outcomes
 

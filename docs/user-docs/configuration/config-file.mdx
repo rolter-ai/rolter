@@ -1618,6 +1618,10 @@ A vendor-neutral hook to a self-hosted semantic guardrail service, such as Guard
   The master switch. A disabled block is never a problem, whatever else is unset.
 </ParamField>
 
+<ParamField path="name" default="" type="string">
+  A label recorded with this hook's outcomes in LLM Logs (`provider_blocked:<name>`). Optional; empty records the bare `provider_blocked` / `provider_transformed`. A provider registered on the dashboard supplies its own name.
+</ParamField>
+
 <ParamField path="url" type="string">
   The `http://` or `https://` endpoint the envelope is POSTed to. Required when `enabled` is `true`. The URL is checked against the [egress policy](/configuration/egress) when the config loads and again before every call, and Rolter does not follow a redirect from it.
 </ParamField>

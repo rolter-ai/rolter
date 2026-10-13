@@ -75,6 +75,50 @@ const TYPE_MAX_LEN: usize = 128;
 /// by other traffic would only be noticed after its own next billed turn.
 const IDLE_BUDGET_CHECK: Duration = Duration::from_secs(1);
 
+/// The plugin calls a session has made and no row carries yet (#3071).
+///
+/// A session is one connection, so its client events have no request row of
+/// their own to leave `plugin_events` on. The relay tallies each call here as it
+/// is made, as a count per `<outcome>:<slug>` entry, and the meter hands the
+/// tally to the next row it writes, so the Plugins screen counts realtime
+/// traffic with the same rollup as HTTP. Shared between the relay and the meter
+/// task behind a `parking_lot` lock held for a push or a drain, never across an
+/// await.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct PluginCalls {
+    tally: Arc<parking_lot::Mutex<Vec<(String, u32)>>>,
+}
+
+impl PluginCalls {
+    /// Add the entries one dispatch produced.
+    pub(crate) fn record(&self, events: Vec<String>) {
+        if events.is_empty() {
+            return;
+        }
+        let mut tally = self.tally.lock();
+        for event in events {
+            match tally.iter_mut().find(|(seen, _)| *seen == event) {
+                Some((_, count)) => *count = count.saturating_add(1),
+                None => tally.push((event, 1)),
+            }
+        }
+    }
+
+    /// Take everything tallied so far as `plugin_events` entries, one per call
+    /// so the rollup's per-entry count stays a count of calls.
+    fn take(&self) -> Vec<String> {
+        let tally = std::mem::take(&mut *self.tally.lock());
+        tally
+            .into_iter()
+            .flat_map(|(event, count)| std::iter::repeat_n(event, count as usize))
+            .collect()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.tally.lock().is_empty()
+    }
+}
+
 /// One finished response and what the upstream reported it used.
 #[derive(Debug)]
 pub(crate) struct Turn {
@@ -450,6 +494,8 @@ pub(crate) struct SessionMeter {
     /// digest of the key that opened the session, looked up again on every
     /// tick; `None` when the session was opened without a key
     pub(crate) key_digest: Option<String>,
+    /// plugin calls the relay made, written onto the session's next row
+    pub(crate) plugin_calls: PluginCalls,
 }
 
 /// The relay's view of a running meter.
@@ -680,9 +726,14 @@ impl Runner {
         let price = snap.prices.get(&self.meter.price_model);
         let mut cost = Decimal::ZERO;
         let mut tokens = 0u64;
+        // the calls made since the last row ride on the first row of this
+        // flush: a turn is the unit a session is logged in, and the calls that
+        // preceded it are what shaped it
+        let mut plugin_events = self.meter.plugin_calls.take();
         for turn in std::mem::take(&mut self.pending) {
             self.seq += 1;
-            let (row, turn_cost) = self.turn_row(snap, price, &turn, self.seq);
+            let (mut row, turn_cost) = self.turn_row(snap, price, &turn, self.seq);
+            row.plugin_events = std::mem::take(&mut plugin_events);
             cost += turn_cost;
             tokens += u64::from(row.total_tokens);
             self.meter.state.log.log(row);
@@ -708,13 +759,24 @@ impl Runner {
         let state = &self.meter.state;
         for turn in open {
             self.seq += 1;
-            let row = self.cut_short_row(&snap, price, &turn, end, now, self.seq);
+            let mut row = self.cut_short_row(&snap, price, &turn, end, now, self.seq);
+            row.plugin_events = self.meter.plugin_calls.take();
             if end.status == CLIENT_DISCONNECT_STATUS {
                 state.metrics.client_disconnects_total.fetch_add(1, Relaxed);
             }
             // the relay already attributed a broken upstream leg to its target
             // once, and a client leaving, a budget or a session limit is not the
             // target's failure, so these rows must not count against its health
+            state.log.log_recorded_attempt(row);
+        }
+        // calls no turn row took (a session whose events were all refused, or
+        // that ended before any response finished) still happened, and would
+        // read as 'No calls' on the Plugins screen without a row to sit on
+        if !self.meter.plugin_calls.is_empty() {
+            self.seq += 1;
+            let mut row = self.base_row(&snap, price, now, self.seq);
+            row.status = 200;
+            row.plugin_events = self.meter.plugin_calls.take();
             state.log.log_recorded_attempt(row);
         }
     }

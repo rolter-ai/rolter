@@ -465,7 +465,7 @@ export interface InvocationRow {
   lifecycle_operation?: string;
   /// what each guardrail did to the request, as `<action>:<rule>` entries with
   /// the action `blocked`, `redacted` or `annotated`, plus the bare
-  /// `provider_blocked` / `provider_transformed` for the guardrail provider
+  /// `provider_blocked:<name>` / `provider_transformed:<name>` for the guardrail provider (bare on rows from before the name, #3038)
   /// (#2158). rule names only, never the matched text. absent from a control
   /// plane that predates it, empty for a request no guardrail touched
   guardrail_events?: string[];
@@ -475,7 +475,7 @@ export interface InvocationsQuery extends AnalyticsWindow {
   /**
    * Only the requests a guardrail acted on, named as the `guardrails` rollup
    * names it: `blocked:<rule>`, `redacted:<rule>`, `annotated:<rule>`,
-   * `provider_blocked` or `provider_transformed` (#2158)
+   * `provider_blocked:<name>` or `provider_transformed:<name>`, or the bare forms (#2158)
    */
   guardrail?: string;
   model?: string;
@@ -549,8 +549,8 @@ export type GuardrailAction =
 
 /**
  * One `(action, rule)` of the guardrail outcome rollup (#2158): how many
- * requests the rule acted on over the window. `rule` is empty for the
- * guardrail provider's two actions. A request counts once per rule however
+ * requests the rule acted on over the window. `rule` is the provider's name for its
+ * two actions, empty on rows from before the name was recorded. A request counts once per rule however
  * often it matched; the number may arrive as a string, like every ClickHouse
  * count.
  */

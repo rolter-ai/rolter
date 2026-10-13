@@ -790,8 +790,8 @@ async fn by_attribution(
 /// `(rule, action)` with the number of requests it acted on.
 ///
 /// `action` is `blocked`, `redacted` or `annotated` for a rule (named in
-/// `rule`), and `provider_blocked` or `provider_transformed` with an empty
-/// `rule` for the active guardrail provider. A request counts once per entry
+/// `rule`), and `provider_blocked` or `provider_transformed` for a guardrail provider,
+/// with its name in `rule` (empty on rows written before #3038). A request counts once per entry
 /// however many times the rule matched in it, scaled by the sampling weight
 /// like every other count here. Rows older than
 /// `clickhouse/018_guardrail_events.sql` carry no events, and a table without
@@ -886,7 +886,7 @@ fn plugins_sql() -> String {
 }
 
 /// The rollup behind [`guardrails`]. An entry is `<action>:<rule>`, or just the
-/// action for the provider's; the action never holds a `:`, so the first one
+/// action for a provider recorded without a name; the action never holds a `:`, so the first one
 /// splits it even when a rule name does.
 fn guardrails_sql() -> String {
     format!(

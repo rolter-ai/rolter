@@ -90,6 +90,8 @@ pub(crate) struct ContentPolicy {
     blocked: Vec<String>,
     /// the tail of the text delivered so far, per streamed item
     tails: Vec<(String, String)>,
+    /// where the plugin calls this session makes are tallied for its log rows
+    plugin_calls: crate::realtime_metering::PluginCalls,
 }
 
 impl ContentPolicy {
@@ -133,7 +135,18 @@ impl ContentPolicy {
             egress: egress.clone(),
             blocked: Vec::new(),
             tails: Vec::new(),
+            plugin_calls: Default::default(),
         })
+    }
+
+    /// Tally this session's plugin calls into `calls`, which the session's
+    /// meter writes onto its rows (#3071).
+    pub(crate) fn recording_plugin_calls(
+        mut self,
+        calls: crate::realtime_metering::PluginCalls,
+    ) -> Self {
+        self.plugin_calls = calls;
+        self
     }
 
     /// Follow the session's key into the team or project its meter re-scoped
@@ -243,7 +256,8 @@ impl ContentPolicy {
         if let Some(plugins) = &self.plugins {
             let list =
                 plugins.for_stage(PluginStage::PreUpstream, &self.org, self.project.as_deref());
-            match crate::plugin_dispatch::dispatch(
+            let mut events = Vec::new();
+            let outcome = crate::plugin_dispatch::dispatch(
                 &list,
                 PluginStage::PreUpstream,
                 metrics,
@@ -252,13 +266,14 @@ impl ContentPolicy {
                 &self.route,
                 &self.trace_id,
                 &self.tenant,
-                // a session is not a request row, so its plugin calls are
-                // counted on `/metrics` only (#2243)
-                &mut Vec::new(),
+                &mut events,
                 &event,
             )
-            .await
-            {
+            .await;
+            // a session is not a request row: the calls are tallied and the
+            // meter writes them onto the session's next row (#3071)
+            self.plugin_calls.record(events);
+            match outcome {
                 crate::plugin_dispatch::DispatchOutcome::Allow(content) => {
                     if content != event {
                         match transformed(&kind, content) {

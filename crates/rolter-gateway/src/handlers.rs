@@ -1768,9 +1768,12 @@ async fn proxy(
                         .fetch_add(report.redactions as u64, Relaxed);
                 }
             }
-            Err(rule) => {
+            Err(blocked) => {
                 state.metrics.guardrail_blocks_total.fetch_add(1, Relaxed);
-                let events = vec![format!("blocked:{rule}")];
+                // the rules that ran before the blocking one may already have
+                // redacted this request, and the rollup should count that
+                let rule = blocked.rule;
+                let events = blocked.report.events();
                 return refuse.log_with_events(
                     crate::error::ApiError::new(
                         StatusCode::BAD_REQUEST,
@@ -1805,7 +1808,10 @@ async fn proxy(
         {
             crate::guardrail_webhook::WebhookOutcome::Allow => {}
             crate::guardrail_webhook::WebhookOutcome::Block(reason) => {
-                guardrail_events.push(PROVIDER_BLOCKED_EVENT.to_string());
+                guardrail_events.push(provider_event(
+                    PROVIDER_BLOCKED_EVENT,
+                    &snap.guardrail_webhook.name,
+                ));
                 return refuse.log_with_events(
                     crate::error::ApiError::new(
                         StatusCode::BAD_REQUEST,
@@ -1818,7 +1824,10 @@ async fn proxy(
                 );
             }
             crate::guardrail_webhook::WebhookOutcome::Transform(content) => {
-                guardrail_events.push(PROVIDER_TRANSFORMED_EVENT.to_string());
+                guardrail_events.push(provider_event(
+                    PROVIDER_TRANSFORMED_EVENT,
+                    &snap.guardrail_webhook.name,
+                ));
                 parsed = content;
                 webhook_transformed = true;
             }
@@ -4469,6 +4478,17 @@ fn withheld_response(
 /// `<action>:<rule>`, see [`rolter_core::GuardrailReport::events`].
 const PROVIDER_BLOCKED_EVENT: &str = "provider_blocked";
 const PROVIDER_TRANSFORMED_EVENT: &str = "provider_transformed";
+
+/// The log entry for a guardrail provider's outcome: `<action>:<provider>`, or
+/// the bare action for a provider that carries no name (a config-file webhook
+/// that sets none), which is also how rows written before #3038 read.
+fn provider_event(action: &str, provider: &str) -> String {
+    if provider.is_empty() {
+        action.to_string()
+    } else {
+        format!("{action}:{provider}")
+    }
+}
 
 /// Who asked for what, captured once a request is authenticated: enough to
 /// write its request-log row on any path that answers without running the

@@ -1173,8 +1173,8 @@ export const ShowsWhatTheActiveProviderDid: Story = {
         json({
           recorded: true,
           data: [
-            { action: "provider_blocked", rule: "", requests: "4" },
-            { action: "provider_transformed", rule: "", requests: "9" },
+            { action: "provider_blocked", rule: "Production LLM Guard", requests: "4" },
+            { action: "provider_transformed", rule: "Production LLM Guard", requests: "9" },
           ],
         }),
       )}
@@ -1186,15 +1186,50 @@ export const ShowsWhatTheActiveProviderDid: Story = {
     await expect(await active.findByText("Matches in the last 7 days")).toBeVisible();
     await expect(active.getByRole("link", { name: /4 requests Blocked/ })).toHaveAttribute(
       "href",
-      "/logs?window=7d&guardrail=provider_blocked",
+      "/logs?window=7d&guardrail=provider_blocked%3AProduction%20LLM%20Guard",
     );
     await expect(active.getByRole("link", { name: /9 requests Transformed/ })).toHaveAttribute(
       "href",
-      "/logs?window=7d&guardrail=provider_transformed",
+      "/logs?window=7d&guardrail=provider_transformed%3AProduction%20LLM%20Guard",
     );
     const paused = card(canvasElement, "Staging evaluator");
     await expect(paused.queryByText("Matches in the last 7 days")).toBeNull();
     await expect(paused.queryByText(/No matches/)).toBeNull();
+  },
+};
+
+/**
+ * Counts follow the provider that recorded them: a provider switched away from
+ * keeps its history off the one now in force, and rows written before the name
+ * was recorded are stated apart rather than added to the card's own (#3038).
+ */
+export const CountsFollowTheProviderThatRecordedThem: Story = {
+  render: () => (
+    <Harness
+      fetchStub={withOutcomes(registry(PROVIDERS), () =>
+        json({
+          recorded: true,
+          data: [
+            { action: "provider_blocked", rule: "Production LLM Guard", requests: "4" },
+            { action: "provider_blocked", rule: "Staging evaluator", requests: "30" },
+            { action: "provider_transformed", rule: "", requests: "7" },
+          ],
+        }),
+      )}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    await within(canvasElement).findByRole("heading", { name: "Production LLM Guard" });
+    const active = card(canvasElement, "Production LLM Guard");
+    await expect(await active.findByText("Matches in the last 7 days")).toBeVisible();
+    await expect(active.getByRole("link", { name: /4 requests Blocked/ })).toBeVisible();
+    // the other provider's 30 never lands on this card
+    await expect(active.queryByRole("link", { name: /30 requests/ })).toBeNull();
+    await expect(active.getByText("Recorded without a provider name")).toBeVisible();
+    await expect(active.getByRole("link", { name: /7 requests Transformed/ })).toHaveAttribute(
+      "href",
+      "/logs?window=7d&guardrail=provider_transformed",
+    );
   },
 };
 

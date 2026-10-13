@@ -9,7 +9,8 @@ description: "Connect to the OpenAI-compatible Realtime WebSocket relay at /v1/r
   [stability marker](/api/stability) and may change shape in a minor release.
   Budgets, rate limits, usage recording, guardrails, the guardrail webhook and
   `pre_upstream` plugins apply to a session's text events, and guardrails to
-  the arguments of the model's function calls. The PII sanitizer and
+  the arguments of the model's function calls. Plugin calls made on a session
+  reach the request log on its next row, so the Plugins screen counts them. The PII sanitizer and
   `pre_route` / `post_response` plugins do not run on a session. A
   `fail_closed` PII sanitizer refuses the session with
   `sanitizer_unsupported_on_realtime`; under `fail_open` the session is

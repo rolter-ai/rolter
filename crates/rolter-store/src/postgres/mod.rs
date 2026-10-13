@@ -670,6 +670,7 @@ impl PostgresConfigStore {
         };
         Ok(GuardrailWebhookConfig {
             enabled: true,
+            name: row.name,
             url: row.url,
             stage: if row.stage == "post_call" {
                 WebhookStage::PostCall

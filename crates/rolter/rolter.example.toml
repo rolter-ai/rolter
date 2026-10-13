@@ -781,6 +781,7 @@ disabled = false # revoke without deleting
 # from the environment at call time, never inlined here.
 # [guardrail_webhook]
 # enabled = true
+# name = "llm-guard"              # recorded with its outcomes in LLM Logs
 # url = "https://guard.internal/check"
 # stage = "pre_call"              # post_call is validated but not yet enforced
 # timeout_ms = 2000

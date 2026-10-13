@@ -15,6 +15,7 @@ import {
   GuardrailOutcomesNotice,
   OutcomeCounts,
   PROVIDER_ACTIONS,
+  UnnamedProviderCounts,
   useGuardrailOutcomes,
 } from "@/components/GuardrailOutcomes";
 import { GuardrailProviderTrial } from "@/components/GuardrailProviderTrial";
@@ -275,10 +276,20 @@ function GuardrailProvidersScreen() {
                       {t("pages.guardrailProviders.postCallCardNote")}
                     </p>
                   )}
-                  {/* the gateway records the provider's outcomes without a name,
-                      so only the one it is sending requests to can own them */}
+                  {/* outcomes are recorded under the provider's name, so a card
+                      counts its own and a switched-away provider's history
+                      stays off the new one's. a paused provider the gateway
+                      never calls says nothing; rows from before the name was
+                      recorded are stated once, on the provider in force */}
                   {enforcement && providerStatus(provider, enforcement) === "enforced" && (
-                    <OutcomeCounts query={outcomes} rule="" actions={PROVIDER_ACTIONS} />
+                    <>
+                      <OutcomeCounts
+                        query={outcomes}
+                        rule={provider.name}
+                        actions={PROVIDER_ACTIONS}
+                      />
+                      <UnnamedProviderCounts query={outcomes} />
+                    </>
                   )}
                 </>
               }
