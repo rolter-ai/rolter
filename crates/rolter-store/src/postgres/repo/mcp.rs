@@ -737,6 +737,10 @@ pub struct NewMcpLogin<'a> {
     pub token_url: &'a str,
 }
 
+/// Most rows one MCP OAuth sweep statement deletes, so a single delete stays
+/// short however large the backlog.
+pub const MCP_SWEEP_BATCH: i64 = 1000;
+
 impl McpOAuthRepo<'_> {
     /// Record (or refresh) a user's consent for a server. Re-consenting
     /// updates the scope set on the live grant rather than accumulating rows.
@@ -1003,6 +1007,24 @@ impl McpOAuthRepo<'_> {
         Ok(())
     }
 
+    /// Delete at most `limit` login states created before `cutoff`, oldest
+    /// first, and return how many went. A consent abandoned at the
+    /// authorization server never comes back to be consumed. Locked rows are
+    /// skipped so concurrent replicas split a backlog.
+    pub async fn sweep_login_states(&self, cutoff: DateTime<Utc>, limit: i64) -> Result<u64> {
+        let res = sqlx::query(
+            "delete from mcp_oauth_login_states where state in ( \
+                 select state from mcp_oauth_login_states where created_at < $1 \
+                 order by created_at limit $2 for update skip locked)",
+        )
+        .bind(cutoff)
+        .bind(limit)
+        .execute(self.0)
+        .await
+        .map_err(store_err)?;
+        Ok(res.rows_affected())
+    }
+
     /// Consume an in-flight consent: the row is deleted as it is read, so a
     /// replayed `code`+`state` pair finds nothing. Rows older than `max_age`
     /// are treated as absent (and swept), which bounds how long a leaked
@@ -1015,13 +1037,9 @@ impl McpOAuthRepo<'_> {
         max_age: Duration,
     ) -> Result<Option<McpLoginState>> {
         let cutoff = now - max_age;
-        // sweep first: expired rows are garbage whether or not this call
-        // matches one, and this is the only traffic the table sees
-        sqlx::query("delete from mcp_oauth_login_states where created_at < $1")
-            .bind(cutoff)
-            .execute(self.0)
-            .await
-            .map_err(store_err)?;
+        // bounded, with the periodic sweep taking the rest. the delete below
+        // refuses an expired state itself, so a short sweep cannot let one through
+        self.sweep_login_states(cutoff, MCP_SWEEP_BATCH).await?;
         let row: Option<SealedLoginRow> = sqlx::query_as(
             "delete from mcp_oauth_login_states where state = $1 and created_at >= $2 \
                  returning state, server_id, user_id, verifier_ciphertext, verifier_nonce, \

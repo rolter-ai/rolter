@@ -6697,6 +6697,91 @@ mod tests {
         assert!(states().await.is_empty());
     }
 
+    #[tokio::test]
+    async fn mfa_and_mcp_sweeps_drop_expired_rows_nobody_used_and_keep_live_ones() {
+        if !super::super::test_database::is_configured() {
+            eprintln!("skipping: {} not set", super::super::test_database::URL_ENV);
+            return;
+        }
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
+        let org = OrgRepo(&pool).create("sweep", "sweep").await.unwrap();
+        let user = UserRepo(&pool)
+            .create("sweep@example.com", None, false)
+            .await
+            .unwrap();
+
+        // two challenges for logins abandoned at the prompt, one still live
+        let mfa = MfaRepo(&pool);
+        for (hash, ttl) in [("old-1", -60), ("old-2", -30), ("live", 600)] {
+            mfa.create_challenge(
+                user.id,
+                hash,
+                Utc::now() + Duration::seconds(ttl),
+                ChallengePurpose::Verify,
+                false,
+            )
+            .await
+            .unwrap();
+        }
+        // a batch of one leaves the second expired row for the next pass
+        assert_eq!(mfa.sweep_expired_challenges(1).await.unwrap(), 1);
+        assert_eq!(mfa.sweep_expired_challenges(10).await.unwrap(), 1);
+        assert_eq!(mfa.sweep_expired_challenges(10).await.unwrap(), 0);
+        let left: Vec<String> = sqlx::query_scalar("select token_hash from mfa_challenges")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        assert_eq!(left, vec!["live".to_string()]);
+
+        // the same for consents abandoned at an mcp authorization server
+        let server = McpServerRepo(&pool)
+            .create(NewMcpServer {
+                org_id: org.id,
+                name: "mcp",
+                slug: "mcp",
+                url: "https://mcp.example.com",
+                transport: "streamable_http",
+                description: "",
+                enabled: true,
+                tools: &[],
+                source: "custom",
+                required_scopes: &[],
+            })
+            .await
+            .unwrap();
+        for state in ["old-1", "old-2", "live"] {
+            sqlx::query(
+                "insert into mcp_oauth_login_states \
+                     (state, server_id, user_id, verifier_ciphertext, verifier_nonce, redirect_uri) \
+                 values ($1, $2, $3, '\\x00', '\\x00', 'https://cb')",
+            )
+            .bind(state)
+            .bind(server.id)
+            .bind(user.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        sqlx::query(
+            "update mcp_oauth_login_states set created_at = now() - interval '1 hour' \
+             where state like 'old-%'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let mcp = McpOAuthRepo(&pool);
+        let cutoff = Utc::now() - Duration::seconds(600);
+        assert_eq!(mcp.sweep_login_states(cutoff, 1).await.unwrap(), 1);
+        assert_eq!(mcp.sweep_login_states(cutoff, 10).await.unwrap(), 1);
+        assert_eq!(mcp.sweep_login_states(cutoff, 10).await.unwrap(), 0);
+        let left: Vec<String> = sqlx::query_scalar("select state from mcp_oauth_login_states")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        assert_eq!(left, vec!["live".to_string()]);
+    }
+
     fn stored_target(provider_id: Uuid, upstream_model: Option<&str>, weight: i32) -> RouteTarget {
         RouteTarget {
             id: Uuid::new_v4(),

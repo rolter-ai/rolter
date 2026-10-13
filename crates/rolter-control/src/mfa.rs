@@ -643,8 +643,6 @@ async fn mint_challenge(
     after_lock: bool,
 ) -> Result<(String, DateTime<Utc>), AuthError> {
     let pool = pool(state);
-    // the table only ever holds logins in flight, so this stays small
-    let _ = MfaRepo(pool).purge_expired_challenges().await;
     let (token, token_hash) = crate::auth::generate_token(prefix, &session_pepper());
     let expires_at = Utc::now() + Duration::minutes(ttl_minutes);
     MfaRepo(pool)

@@ -59,6 +59,8 @@ mod invitations;
 #[cfg(feature = "postgres")]
 mod labels;
 // not reachable from any sign-in route yet (#1826); see the module docs
+#[cfg(feature = "postgres")]
+mod expiry_sweep;
 pub mod ldap;
 #[cfg(feature = "postgres")]
 mod logging_settings;
@@ -1120,10 +1122,10 @@ fn build_app_with(state: ControlState, mount_internal: bool) -> Router {
         // renew MCP OAuth sessions before they lapse, so a user consents once
         // rather than every hour (#707)
         mcp_oauth_flow::start_refresher(state.clone());
-        // abandoned sso logins and unredeemed exchange codes are otherwise
-        // only removed when the same flow returns, which it never does (#2414)
+        // abandoned logins and unredeemed codes are otherwise only removed when
+        // the same flow returns, which it never does (#2414, #2616)
         if let Some(pool) = state.pool.clone() {
-            sso::start_state_sweeper(pool);
+            expiry_sweep::start(pool);
         }
         api = api
             .merge(access_control::router())
