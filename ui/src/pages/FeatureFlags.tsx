@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { SettingsBody } from "@/components/screen";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
@@ -129,21 +130,21 @@ function FeatureFlagsScreen() {
 
   if (flags.isLoading) {
     return (
-      <div className="mx-auto flex max-w-[840px] flex-col gap-3.5 p-[22px]">
+      <SettingsBody>
         <PanelSkeleton panels={FEATURE_FLAG_KEYS.length} height={86} />
-      </div>
+      </SettingsBody>
     );
   }
   if (flags.isError) {
     return (
-      <div className="mx-auto flex max-w-[840px] flex-col gap-3.5 p-[22px]">
+      <SettingsBody>
         <LoadError
           error={flags.error}
           resource={t("errors.resources.featureFlags")}
           onRetry={() => void flags.refetch()}
           target="feature-flags"
         />
-      </div>
+      </SettingsBody>
     );
   }
   if (!form) return null;
@@ -167,7 +168,7 @@ function FeatureFlagsScreen() {
   };
 
   return (
-    <div className="mx-auto flex max-w-[840px] flex-col gap-3.5 p-[22px]">
+    <SettingsBody>
       {FEATURE_FLAG_KEYS.map((key) => (
         <FlagCard
           key={key}
@@ -225,7 +226,7 @@ function FeatureFlagsScreen() {
           ))}
         </ul>
       </ConfirmDialog>
-    </div>
+    </SettingsBody>
   );
 }
 

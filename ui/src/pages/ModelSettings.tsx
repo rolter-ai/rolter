@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { SettingsBody } from "@/components/screen";
 import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { Link } from "react-router";
@@ -198,21 +199,21 @@ function ModelSettingsScreen() {
 
   if (defaults.isLoading) {
     return (
-      <div className="mx-auto flex max-w-[840px] flex-col gap-3.5 p-[22px]">
+      <SettingsBody>
         <PanelSkeleton panels={2} height={152} />
-      </div>
+      </SettingsBody>
     );
   }
   if (defaults.isError) {
     return (
-      <div className="mx-auto flex max-w-[840px] flex-col gap-3.5 p-[22px]">
+      <SettingsBody>
         <LoadError
           error={defaults.error}
           resource={t("errors.resources.modelSettings")}
           onRetry={() => void defaults.refetch()}
           target="model-settings"
         />
-      </div>
+      </SettingsBody>
     );
   }
   if (!form) return null;
@@ -228,7 +229,7 @@ function ModelSettingsScreen() {
   const active = form.enabled && hasAnyDefault(form);
 
   return (
-    <div className="mx-auto flex max-w-[840px] flex-col gap-3.5 p-[22px]">
+    <SettingsBody>
       <SettingsPanel
         title={t("pages.modelSettings.applyDefaults")}
         description={t("pages.modelSettings.applyDefaultsDesc")}
@@ -348,7 +349,7 @@ function ModelSettingsScreen() {
         pending={save.isPending}
         onSave={() => fields.submit(() => save.mutate(form))}
       />
-    </div>
+    </SettingsBody>
   );
 }
 

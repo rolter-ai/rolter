@@ -240,6 +240,8 @@ export const Loaded: Story = {
 
 // ------------------------------------------- traffic, playground link, config (#2138)
 
+let trafficReads: Recorder;
+
 const card = async (canvas: ReturnType<typeof within>, model: string) =>
   within((await canvas.findByText(model, ROUTE_NAME)).closest("div.flex-col") as HTMLElement);
 
@@ -249,20 +251,29 @@ const card = async (canvas: ReturnType<typeof within>, model: string) =>
  * answered. Each enabled route links the Playground with its model selected.
  */
 export const RouteTraffic: Story = {
-  render: () => (
-    <Harness fetchStub={answer(ROUTES)}>
-      <RoutingRules />
-    </Harness>
-  ),
+  render: () => {
+    trafficReads = recording(answer(ROUTES));
+    return (
+      <Harness fetchStub={trafficReads.stub}>
+        <RoutingRules />
+      </Harness>
+    );
+  },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
+    // the rollup is read for the route's project, not the whole org (#3101)
+    await trafficReads.expectSent("GET", "/analytics/by-model");
+    const read = trafficReads.calls.find((c) => c.url.includes("/analytics/by-model"))!;
+    await expect(new URL(read.url, "http://localhost").searchParams.get("project")).toBe(
+      PROJECT.id,
+    );
     const gpt = await card(canvas, "gpt-4o");
     await expect(await gpt.findByTestId("route-traffic")).toHaveTextContent(
-      "1,240 requests for this model name, org-wide, in the last 24 h · 2.5% errors",
+      "1,240 requests for this model name in this project in the last 24 h · 2.5% errors",
     );
     const claude = await card(canvas, "claude-sonnet");
     await expect(await claude.findByTestId("route-traffic")).toHaveTextContent(
-      "No requests for this model name, org-wide, in the last 24 h",
+      "No requests for this model name in this project in the last 24 h",
     );
     const tryIt = gpt.getByRole("link", { name: "Try gpt-4o in the Playground" });
     await expect(tryIt).toHaveAttribute("href", "/playground?model=gpt-4o");

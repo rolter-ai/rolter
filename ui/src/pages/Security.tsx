@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { SettingsBody } from "@/components/screen";
 import type { TFunction } from "i18next";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
@@ -181,21 +182,21 @@ function SecurityScreen() {
 
   if (settings.isLoading) {
     return (
-      <div className="mx-auto flex max-w-[840px] flex-col gap-3.5 p-[22px]">
+      <SettingsBody>
         <PanelSkeleton panels={3} height={148} />
-      </div>
+      </SettingsBody>
     );
   }
   if (settings.isError) {
     return (
-      <div className="mx-auto flex max-w-[840px] flex-col gap-3.5 p-[22px]">
+      <SettingsBody>
         <LoadError
           error={settings.error}
           resource={t("errors.resources.securitySettings")}
           onRetry={() => void settings.refetch()}
           target="security"
         />
-      </div>
+      </SettingsBody>
     );
   }
   if (!form || !saved || !parsed) return null;
@@ -246,7 +247,7 @@ function SecurityScreen() {
   }
 
   return (
-    <div className="mx-auto flex max-w-[840px] flex-col gap-3.5 p-[22px]">
+    <SettingsBody>
       <ListCard
         title={t("pages.security.allowedOrigins")}
         desc={t("pages.security.allowedOriginsHint")}
@@ -322,7 +323,7 @@ function SecurityScreen() {
           ))}
         </ul>
       </ConfirmDialog>
-    </div>
+    </SettingsBody>
   );
 }
 

@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { SettingsBody } from "@/components/screen";
 import { AlertTriangle } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
@@ -196,21 +197,21 @@ function LogsSettingsScreen() {
 
   if (settings.isLoading) {
     return (
-      <div className="mx-auto flex max-w-[840px] flex-col gap-3.5 p-[22px]">
+      <SettingsBody>
         <PanelSkeleton panels={4} height={104} />
-      </div>
+      </SettingsBody>
     );
   }
   if (settings.isError) {
     return (
-      <div className="mx-auto flex max-w-[840px] flex-col gap-3.5 p-[22px]">
+      <SettingsBody>
         <LoadError
           error={settings.error}
           resource={t("errors.resources.logsSettings")}
           onRetry={() => void settings.refetch()}
           target="logs-settings"
         />
-      </div>
+      </SettingsBody>
     );
   }
   if (!form) return null;
@@ -226,7 +227,7 @@ function LogsSettingsScreen() {
   const capture = form.captureEnabled;
 
   return (
-    <div className="mx-auto flex max-w-[840px] flex-col gap-3.5 p-[22px]">
+    <SettingsBody>
       <SettingsPanel
         title={t("pages.logsSettings.sampleRate")}
         description={<span id={sampleHintId}>{t("pages.logsSettings.sampleRateHint")}</span>}
@@ -388,7 +389,7 @@ function LogsSettingsScreen() {
         pending={save.isPending}
         onSave={() => fields.submit(() => save.mutate(form))}
       />
-    </div>
+    </SettingsBody>
   );
 }
 

@@ -17,6 +17,15 @@ export function PageBody({ className, ...props }: React.HTMLAttributes<HTMLDivEl
   return <div className={cn("flex flex-col gap-4 p-[22px]", className)} {...props} />;
 }
 
+/**
+ * The frame of a settings screen: `PageBody`'s left-aligned 22px gutter with a
+ * 840px reading cap. Left-aligned, never centred, so content does not jump
+ * sideways between a list screen and a settings one (#3053).
+ */
+export function SettingsBody({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
+  return <PageBody className={cn("max-w-[840px] gap-3.5", className)} {...props} />;
+}
+
 export function SearchInput({ className, ...props }: React.InputHTMLAttributes<HTMLInputElement>) {
   const { t } = useTranslation();
   return (
