@@ -4684,6 +4684,14 @@ export const updateGuardrailRule = (id: string, body: GuardrailRuleInput) =>
 export const deleteGuardrailRule = (id: string) =>
   sendJson<void>("DELETE", `/api/v1/guardrails/rules/${id}`);
 
+/**
+ * The guardrail rules and webhook the gateways run, each with where it comes
+ * from (`GET /api/v1/guardrails/effective`, superadmin). Left as `unknown`:
+ * `readRuleSources` and `readWebhookSource` check the shape, since a status
+ * screen must not guess from a document it does not recognise.
+ */
+export const fetchEffectiveGuardrails = () => getJson<unknown>("/api/v1/guardrails/effective");
+
 export const fetchGuardrailProviders = () =>
   getJson<GuardrailProviderRow[]>("/api/v1/guardrails/providers");
 export const createGuardrailProvider = (body: GuardrailProviderInput) =>

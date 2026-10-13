@@ -42,6 +42,7 @@ import {
   createGuardrailProvider,
   deleteGuardrailProvider,
   fetchConfig,
+  fetchEffectiveGuardrails,
   fetchGuardrailProviders,
   updateGuardrailProvider,
   type GuardrailProviderInput,
@@ -50,6 +51,7 @@ import {
 import {
   providerStatus,
   readEffectiveWebhook,
+  readWebhookSource,
   resolveEnforcement,
   type Enforcement,
   type ProviderStatus,
@@ -91,11 +93,14 @@ function GuardrailProvidersScreen() {
   const query = useQuery({
     queryKey: ["guardrail-providers"],
     queryFn: async () => {
-      const [providers, webhook] = await Promise.all([
+      const [providers, webhook, source] = await Promise.all([
         fetchGuardrailProviders(),
         fetchConfig().then(readEffectiveWebhook, () => null),
+        // where the webhook comes from (#2249); without it the screen compares
+        // fields, which cannot tell a file copy of the enabled row from the row
+        fetchEffectiveGuardrails().then(readWebhookSource, () => null),
       ]);
-      return { providers, webhook };
+      return { providers, webhook, source };
     },
     retry: false,
   });
@@ -146,7 +151,7 @@ function GuardrailProvidersScreen() {
 
   const providers = query.data?.providers ?? [];
   const enforcement = query.data
-    ? resolveEnforcement(query.data.providers, query.data.webhook)
+    ? resolveEnforcement(query.data.providers, query.data.webhook, query.data.source)
     : null;
   // `undefined` while the registry has not loaded: "none is active" would be a
   // guess, and the confirmation below must not guess

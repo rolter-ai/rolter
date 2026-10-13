@@ -80,6 +80,30 @@ export function readEffectiveWebhook(config: unknown): EffectiveWebhook | null {
   return hook as unknown as EffectiveWebhook;
 }
 
+/** Where the effective webhook comes from, as `GET /api/v1/guardrails/effective` says (#2249). */
+export interface WebhookSource {
+  source: "file" | "registry" | "none";
+  /** the registry provider in force, for `registry` */
+  providerId: string | null;
+  /** the enabled registry provider an enabled config-file webhook displaced */
+  overrides: string | null;
+}
+
+/** Read the webhook's source out of the answer of the effective endpoint, or `null` when unreadable. */
+export function readWebhookSource(doc: unknown): WebhookSource | null {
+  if (!doc || typeof doc !== "object" || Array.isArray(doc)) return null;
+  const value = doc as Record<string, unknown>;
+  if (value.source !== "file" && value.source !== "registry" && value.source !== "none") {
+    return null;
+  }
+  const id = (field: unknown) => (typeof field === "string" ? field : null);
+  return {
+    source: value.source,
+    providerId: id(value.provider_id),
+    overrides: id(value.overrides),
+  };
+}
+
 /** the credential a hook carries, as `kind:env`, in the shape both sides share */
 function authKey(kind: string, env: string | null | undefined): string {
   return kind === "none" || !env ? "none" : `${kind}:${env}`;
@@ -116,11 +140,13 @@ function isRow(row: GuardrailProviderRow, hook: EffectiveWebhook): boolean {
 
 /**
  * Resolve what the gateway enforces from the registry and the effective
- * webhook. `webhook` is `null` when the effective config could not be read.
+ * webhook. `webhook` is `null` when the effective config could not be read;
+ * `source` is `null` when the control plane could not say where it comes from.
  */
 export function resolveEnforcement(
   providers: GuardrailProviderRow[],
   webhook: EffectiveWebhook | null,
+  source: WebhookSource | null = null,
 ): Enforcement {
   if (!webhook) return { state: "unknown" };
   // the store lets at most one row be enabled (`guardrail_providers_one_enabled`)
@@ -130,7 +156,11 @@ export function resolveEnforcement(
     // disabled webhook next to one means the two reads disagree
     return active ? { state: "unknown" } : { state: "off" };
   }
-  const fromRegistry = active !== null && isRow(active, webhook);
+  // the control plane names the source (#2249); the field comparison only
+  // stands in when it could not be asked, and cannot tell a file webhook that
+  // is a copy of the enabled row from the row itself
+  const fromRegistry =
+    active !== null && (source ? source.source === "registry" : isRow(active, webhook));
   return {
     state: webhook.stage === "pre_call" ? "enforced" : "inert",
     provider: fromRegistry ? active : null,

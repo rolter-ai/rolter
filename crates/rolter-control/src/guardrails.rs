@@ -4,12 +4,12 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::routing::get;
 use axum::{Json, Router};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use rolter_core::{
-    BuiltinRule, FailureMode, GuardAction, GuardStage, GuardrailRule, GuardrailWebhookConfig,
-    GuardrailsConfig, WebhookAuth, WebhookStage,
+    BuiltinRule, FailureMode, GatewayConfig, GuardAction, GuardStage, GuardrailRule,
+    GuardrailWebhookConfig, GuardrailsConfig, WebhookAuth, WebhookStage,
 };
 use rolter_store::postgres::models::{GuardrailProvider, GuardrailRule as GuardrailRuleRow};
 use rolter_store::postgres::repo::{GuardrailProviderInput, GuardrailRepo, GuardrailRuleInput};
@@ -21,6 +21,7 @@ use crate::ControlState;
 
 pub(crate) fn router() -> Router<ControlState> {
     Router::new()
+        .route("/api/v1/guardrails/effective", get(get_effective))
         .route(
             "/api/v1/guardrails/rules",
             get(list_rules).post(create_rule),
@@ -292,6 +293,116 @@ fn validate_provider(body: &ProviderBody) -> ApiResult<()> {
     }
 }
 
+/// Where an effective guardrail setting comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum GuardrailSource {
+    /// the config file's `[guardrails]` / `[guardrail_webhook]`
+    File,
+    /// a dashboard row
+    Registry,
+    /// no webhook is configured anywhere
+    None,
+}
+
+#[derive(Debug, Serialize)]
+struct EffectiveRule {
+    #[serde(flatten)]
+    rule: GuardrailRule,
+    source: GuardrailSource,
+    /// the dashboard row behind a registry rule
+    rule_id: Option<Uuid>,
+    /// the enabled dashboard row a config-file rule displaced
+    overrides: Option<Uuid>,
+}
+
+#[derive(Debug, Serialize)]
+struct EffectiveGuardrails {
+    /// the `guardrails` feature flag: off, no rule inspects traffic
+    guardrails: bool,
+    streaming_post_call: rolter_core::StreamingPostCall,
+    rules: Vec<EffectiveRule>,
+    /// the webhook the gateways run, `null` when none is on
+    webhook: Option<GuardrailWebhookConfig>,
+    source: GuardrailSource,
+    /// the registry provider in force, set when `source` is `registry`
+    provider_id: Option<Uuid>,
+    /// the enabled registry provider an enabled config-file webhook displaced
+    overrides: Option<Uuid>,
+}
+
+/// Work out where the effective rules and webhook come from.
+///
+/// `MergedConfigStore::load` decides the winner (a file rule beats a row of the
+/// same name, an enabled file webhook beats the enabled provider); this names
+/// the winner from the file's own names rather than comparing fields, so a row
+/// that is a copy of the file's rule is still reported as displaced.
+fn describe_effective(
+    config: GatewayConfig,
+    owned: &crate::ConfigOwned,
+    rules: &[GuardrailRuleRow],
+    providers: &[GuardrailProvider],
+) -> EffectiveGuardrails {
+    let enabled_row = |name: &str| rules.iter().find(|row| row.enabled && row.name == name);
+    let effective = config
+        .guardrails
+        .rules
+        .into_iter()
+        .map(|rule| {
+            if owned.guardrail_rules.contains(&rule.name) {
+                let overrides = enabled_row(&rule.name).map(|row| row.id);
+                EffectiveRule {
+                    rule,
+                    source: GuardrailSource::File,
+                    rule_id: None,
+                    overrides,
+                }
+            } else {
+                let rule_id = enabled_row(&rule.name).map(|row| row.id);
+                EffectiveRule {
+                    rule,
+                    source: GuardrailSource::Registry,
+                    rule_id,
+                    overrides: None,
+                }
+            }
+        })
+        .collect();
+    let active = providers.iter().find(|provider| provider.enabled);
+    let webhook = config.guardrail_webhook.enabled;
+    let (source, provider_id, overrides) = match (webhook, owned.guardrail_webhook) {
+        (false, _) => (GuardrailSource::None, None, None),
+        (true, true) => (GuardrailSource::File, None, active.map(|row| row.id)),
+        (true, false) => (GuardrailSource::Registry, active.map(|row| row.id), None),
+    };
+    EffectiveGuardrails {
+        guardrails: config.feature_flags.guardrails,
+        streaming_post_call: config.guardrails.streaming_post_call,
+        rules: effective,
+        webhook: webhook.then_some(config.guardrail_webhook),
+        source,
+        provider_id,
+        overrides,
+    }
+}
+
+async fn get_effective(
+    principal: Principal,
+    State(state): State<ControlState>,
+) -> ApiResult<Json<EffectiveGuardrails>> {
+    authorize_superadmin(&principal, superadmin_cap!("guardrail_rule", Read))?;
+    let repo = GuardrailRepo(pool(&state));
+    let rules = repo.list_rules().await?;
+    let providers = repo.list_providers().await?;
+    let config = state.store.load().await?;
+    Ok(Json(describe_effective(
+        config,
+        &state.config_owned,
+        &rules,
+        &providers,
+    )))
+}
+
 async fn list_rules(
     principal: Principal,
     State(state): State<ControlState>,
@@ -453,6 +564,100 @@ async fn delete_provider(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn core_rule(name: &str) -> GuardrailRule {
+        GuardrailRule {
+            name: name.into(),
+            builtin: Some(BuiltinRule::Email),
+            pattern: None,
+            stage: GuardStage::PreCall,
+            action: GuardAction::Redact,
+            replacement: None,
+            include_system: false,
+        }
+    }
+
+    fn row(name: &str, enabled: bool) -> GuardrailRuleRow {
+        GuardrailRuleRow {
+            id: Uuid::new_v4(),
+            name: name.into(),
+            enabled,
+            source_type: "builtin".into(),
+            builtin: Some("email".into()),
+            pattern: None,
+            stage: "pre_call".into(),
+            action: "redact".into(),
+            replacement: None,
+            include_system: false,
+            position: 0,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        }
+    }
+
+    fn provider(enabled: bool) -> GuardrailProvider {
+        GuardrailProvider {
+            id: Uuid::new_v4(),
+            name: "hook".into(),
+            enabled,
+            url: "https://guard.internal/check".into(),
+            stage: "pre_call".into(),
+            timeout_ms: 2_000,
+            max_retries: 0,
+            failure_mode: "fail_open".into(),
+            max_body_bytes: 65_536,
+            auth_kind: "none".into(),
+            auth_env: None,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        }
+    }
+
+    fn webhook() -> GuardrailWebhookConfig {
+        GuardrailWebhookConfig {
+            enabled: true,
+            url: "https://guard.internal/check".into(),
+            ..GuardrailWebhookConfig::default()
+        }
+    }
+
+    #[test]
+    fn a_file_rule_displaces_an_identical_enabled_row() {
+        let copy = row("email", true);
+        let mut config = GatewayConfig::default();
+        config.guardrails.rules = vec![core_rule("email"), core_rule("dashboard-only")];
+        let mut owned = crate::ConfigOwned::default();
+        owned.guardrail_rules.insert("email".into());
+        let rows = [copy.clone(), row("dashboard-only", true)];
+        let out = describe_effective(config, &owned, &rows, &[]);
+        assert_eq!(out.rules[0].source, GuardrailSource::File);
+        assert_eq!(out.rules[0].rule_id, None);
+        assert_eq!(out.rules[0].overrides, Some(copy.id));
+        assert_eq!(out.rules[1].source, GuardrailSource::Registry);
+        assert_eq!(out.rules[1].rule_id, Some(rows[1].id));
+        assert_eq!(out.rules[1].overrides, None);
+    }
+
+    #[test]
+    fn the_webhook_source_follows_who_enabled_it() {
+        let row = provider(true);
+        let config = GatewayConfig {
+            guardrail_webhook: webhook(),
+            ..GatewayConfig::default()
+        };
+        let mut owned = crate::ConfigOwned::default();
+        let from_row = describe_effective(config.clone(), &owned, &[], std::slice::from_ref(&row));
+        assert_eq!(from_row.source, GuardrailSource::Registry);
+        assert_eq!(from_row.provider_id, Some(row.id));
+        owned.guardrail_webhook = true;
+        let from_file = describe_effective(config, &owned, &[], std::slice::from_ref(&row));
+        assert_eq!(from_file.source, GuardrailSource::File);
+        assert_eq!(from_file.provider_id, None);
+        assert_eq!(from_file.overrides, Some(row.id));
+        let none = describe_effective(GatewayConfig::default(), &owned, &[], &[]);
+        assert_eq!(none.source, GuardrailSource::None);
+        assert!(none.webhook.is_none());
+    }
 
     #[test]
     fn rejects_an_invalid_custom_pattern_before_storage() {

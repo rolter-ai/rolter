@@ -3,6 +3,7 @@ import { describe, expect, it } from "bun:test";
 import type { GuardrailRuleRow } from "./api";
 import {
   readEffectivePolicy,
+  readRuleSources,
   resolvePolicy,
   switchesOff,
   type EffectiveRule,
@@ -246,5 +247,46 @@ describe("offRoutes", () => {
 
   it("is empty when the config is unreadable", () => {
     expect(resolvePolicy([ROW], null).offRoutes.size).toBe(0);
+  });
+});
+
+describe("the control plane's account of where a rule comes from", () => {
+  const effective = (rules: unknown[]) => ({ rules });
+
+  it("reads each rule's source by name", () => {
+    const sources = readRuleSources(
+      effective([
+        { name: "a", source: "file", rule_id: null, overrides: "row-1" },
+        { name: "b", source: "registry", rule_id: "row-2", overrides: null },
+      ]),
+    );
+    expect(sources?.get("a")).toEqual({ source: "file", ruleId: null, overrides: "row-1" });
+    expect(sources?.get("b")).toEqual({ source: "registry", ruleId: "row-2", overrides: null });
+  });
+
+  it("refuses a document it does not recognise", () => {
+    expect(readRuleSources(null)).toBeNull();
+    expect(readRuleSources({ rules: [{ name: "a", source: "env" }] })).toBeNull();
+  });
+
+  it("names a file rule that is a copy of an enabled row, which field comparison credits to the row", () => {
+    const policy = readEffectivePolicy(config(true, [FROM_ROW]));
+    const inferred = resolvePolicy([ROW], policy);
+    expect(inferred.rows.get(ROW.id)).toEqual({ state: "enforced" });
+    const sources = readRuleSources(
+      effective([{ ...FROM_ROW, source: "file", rule_id: null, overrides: ROW.id }]),
+    );
+    const resolved = resolvePolicy([ROW], policy, sources);
+    expect(resolved.rows.get(ROW.id)).toEqual({ state: "overridden", by: FROM_ROW });
+    expect(resolved.fileRules).toEqual([FROM_ROW]);
+  });
+
+  it("credits a registry rule to its row", () => {
+    const sources = readRuleSources(
+      effective([{ ...FROM_ROW, source: "registry", rule_id: ROW.id, overrides: null }]),
+    );
+    const resolved = resolvePolicy([ROW], readEffectivePolicy(config(true, [FROM_ROW])), sources);
+    expect(resolved.rows.get(ROW.id)).toEqual({ state: "enforced" });
+    expect(resolved.fileRules).toEqual([]);
   });
 });

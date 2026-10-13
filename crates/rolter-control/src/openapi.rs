@@ -1555,6 +1555,11 @@ fn operations() -> Vec<Op> {
         "guardrails",
         vec![
             Op::get(
+                "/api/v1/guardrails/effective",
+                "getEffectiveGuardrails",
+                "Read the guardrail rules and webhook the gateways run, each with where it comes from (config file or dashboard row)",
+            ),
+            Op::get(
                 "/api/v1/guardrails/providers",
                 "listGuardrailProviders",
                 "List guardrail providers",

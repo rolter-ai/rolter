@@ -4,6 +4,7 @@ import type { GuardrailProviderRow } from "./api";
 import {
   providerStatus,
   readEffectiveWebhook,
+  readWebhookSource,
   resolveEnforcement,
   type EffectiveWebhook,
 } from "./guardrail-enforcement";
@@ -127,5 +128,32 @@ describe("resolveEnforcement", () => {
   it("still calls an enabled post-call row inert when the config is unreadable", () => {
     const row = { ...ROW, stage: "post_call" as const };
     expect(providerStatus(row, resolveEnforcement([row], null))).toBe("inert");
+  });
+});
+
+describe("the control plane's account of where the webhook comes from", () => {
+  it("reads the source and the rows it names", () => {
+    expect(readWebhookSource({ source: "file", provider_id: null, overrides: "primary" })).toEqual({
+      source: "file",
+      providerId: null,
+      overrides: "primary",
+    });
+    expect(readWebhookSource({ source: "env" })).toBeNull();
+    expect(readWebhookSource(null)).toBeNull();
+  });
+
+  it("names a file webhook that copies the enabled row, which field comparison credits to the row", () => {
+    expect(resolveEnforcement([ROW], FROM_ROW)).toMatchObject({ provider: ROW });
+    const source = { source: "file" as const, providerId: null, overrides: ROW.id };
+    const enforcement = resolveEnforcement([ROW], FROM_ROW, source);
+    expect(enforcement).toMatchObject({ state: "enforced", provider: null, overridden: ROW });
+    expect(providerStatus(ROW, enforcement)).toBe("overridden");
+  });
+
+  it("credits the row when the control plane says the registry supplies the webhook", () => {
+    const source = { source: "registry" as const, providerId: ROW.id, overrides: null };
+    // a differing field no longer matters once the source is stated
+    const enforcement = resolveEnforcement([ROW], { ...FROM_ROW, timeout_ms: 1 }, source);
+    expect(enforcement).toMatchObject({ provider: ROW, overridden: null });
   });
 });

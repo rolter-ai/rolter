@@ -225,20 +225,52 @@ function isRow(row: GuardrailRuleRow, rule: EffectiveRule): boolean {
   );
 }
 
+/** Where one effective rule comes from, as `GET /api/v1/guardrails/effective` says (#2249). */
+export interface RuleSource {
+  source: "file" | "registry";
+  /** the dashboard row behind a registry rule */
+  ruleId: string | null;
+  /** the enabled dashboard row a config-file rule displaced */
+  overrides: string | null;
+}
+
+/**
+ * Read the rules' sources out of the answer of `GET /api/v1/guardrails/effective`,
+ * keyed by rule name, or `null` when the answer is missing or malformed. The
+ * caller then falls back to inferring the source from the rows.
+ */
+export function readRuleSources(doc: unknown): Map<string, RuleSource> | null {
+  if (!isObject(doc) || !Array.isArray(doc.rules)) return null;
+  const out = new Map<string, RuleSource>();
+  for (const item of doc.rules) {
+    if (!isObject(item) || typeof item.name !== "string") return null;
+    if (item.source !== "file" && item.source !== "registry") return null;
+    const id = (value: unknown) => (typeof value === "string" ? value : null);
+    out.set(item.name, {
+      source: item.source,
+      ruleId: id(item.rule_id),
+      overrides: id(item.overrides),
+    });
+  }
+  return out;
+}
+
 /**
  * Resolve what each dashboard row does on the gateway, and which effective
  * rules come from the config file, from the rows and the effective policy.
  *
- * The effective config names no rule's source. A config-file rule wins a name
- * clash, so an effective rule is the file's when no row has its name, when the
- * row with its name is paused (a paused row never reaches the policy), or when
- * it differs from that row. One identical to an enabled row cannot be told
- * apart from it and is credited to the row; enforcement is the same either way
- * (#2249 asks the API to report the source).
+ * `sources` is the control plane's own account of where each effective rule
+ * comes from (#2249). Without it, or for a rule it does not list, the source is
+ * inferred: a config-file rule wins a name clash, so an effective rule is the
+ * file's when no row has its name, when the row with its name is paused (a
+ * paused row never reaches the policy), or when it differs from that row. One
+ * identical to an enabled row cannot be told apart from it that way and is
+ * credited to the row, which is the case `sources` exists to settle.
  */
 export function resolvePolicy(
   rows: GuardrailRuleRow[],
   policy: EffectivePolicy | null,
+  sources: Map<string, RuleSource> | null = null,
 ): PolicyResolution {
   const states = new Map<string, RowState>();
   if (!policy) {
@@ -251,13 +283,14 @@ export function resolvePolicy(
   const credited = new Set<string>();
   for (const row of rows) {
     const rule = byName.get(row.name) ?? null;
+    const named = sources?.get(row.name);
     if (!row.enabled) {
       states.set(row.id, { state: "paused", clash: rule });
     } else if (!rule) {
       // an enabled row always reaches the policy, so its absence means the
       // two reads disagree
       states.set(row.id, { state: "unknown" });
-    } else if (!isRow(row, rule)) {
+    } else if (named ? named.source === "file" : !isRow(row, rule)) {
       states.set(row.id, { state: "overridden", by: rule });
     } else {
       credited.add(row.name);
@@ -267,7 +300,10 @@ export function resolvePolicy(
   return {
     policy,
     rows: states,
-    fileRules: policy.rules.filter((rule) => !credited.has(rule.name)),
+    fileRules: policy.rules.filter((rule) => {
+      const named = sources?.get(rule.name);
+      return named ? named.source === "file" : !credited.has(rule.name);
+    }),
     offRoutes: offRoutesFor(policy),
   };
 }

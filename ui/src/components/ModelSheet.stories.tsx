@@ -1223,6 +1223,156 @@ export const DuplicatesStrategyAndTargets: Story = {
   },
 };
 
+/** the effective config as the sheet reads it for the rules an override can name */
+const POLICY_DOC = {
+  feature_flags: { guardrails: true },
+  guardrails: {
+    enabled: true,
+    streaming_post_call: "reject",
+    rules: [
+      {
+        name: "email",
+        builtin: "email",
+        stage: "pre_call",
+        action: "redact",
+        include_system: false,
+      },
+      {
+        name: "phone",
+        builtin: "phone",
+        stage: "pre_call",
+        action: "block",
+        include_system: false,
+      },
+    ],
+  },
+  routes: [
+    { model: "fake-llm", advanced: { guardrails: { disable: ["phone"], enable: ["gone"] } } },
+  ],
+};
+
+const withPolicy: FetchStub = async (input, init) =>
+  /\/api\/v1\/config(\?|$)/.test(String(input)) ? json(POLICY_DOC) : backing(input, init);
+
+/** a route that switches `email` off and names a rule that no longer exists */
+const GUARDED_ROUTE: RouteRow = {
+  ...ROUTE,
+  advanced: {
+    ...ADVANCED_ROUTE.advanced,
+    guardrails: { disable: ["email", "gone"], rules: ["pii-out"] },
+  },
+};
+
+/**
+ * A route's guardrail overrides are edited here (#2307). The rules on offer are
+ * the ones in force, a stored name that matches none stays a marked chip so it
+ * can be removed, and the saved `advanced` body carries the edited lists next to
+ * the keys the sheet does not model.
+ */
+export const EditsGuardrailOverrides: Story = {
+  render: () => <Stage mode="edit" route={GUARDED_ROUTE} stub={withPolicy} />,
+  play: async () => {
+    const dialog = within(sheet());
+    await seeded(dialog);
+    await userEvent.click(dialog.getByRole("button", { name: "Guardrails" }));
+    const off = within(await dialog.findByRole("group", { name: "Switched off on this route" }));
+    const on = within(dialog.getByRole("group", { name: "Forced on for this route" }));
+    await expect(off.getByRole("button", { name: "email" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    await expect(off.getByRole("button", { name: "phone" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+    // the stale name is shown as what it is, and pressing it removes it
+    const stale = off.getByRole("button", { name: "gone (no such rule)" });
+    await expect(stale).toHaveAttribute("aria-pressed", "true");
+    await userEvent.click(stale);
+    await userEvent.click(off.getByRole("button", { name: "email" }));
+    await userEvent.click(off.getByRole("button", { name: "phone" }));
+    await userEvent.click(on.getByRole("button", { name: "email" }));
+    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
+    const body = (await calls.expectSentBody("PUT", "/routes/route-1/advanced")) as {
+      advanced: { guardrails: unknown };
+    };
+    await expect(body.advanced.guardrails).toEqual({
+      disable: ["phone"],
+      enable: ["email"],
+      rules: ["pii-out"],
+    });
+  },
+};
+
+/** Switching the last override off sends no `guardrails` object at all. */
+export const ClearingEveryGuardrailOverrideSendsNone: Story = {
+  render: () => (
+    <Stage
+      mode="edit"
+      route={{
+        ...ROUTE,
+        advanced: { ...ADVANCED_ROUTE.advanced, guardrails: { disable: ["email"] } },
+      }}
+      stub={withPolicy}
+    />
+  ),
+  play: async () => {
+    const dialog = within(sheet());
+    await seeded(dialog);
+    await userEvent.click(dialog.getByRole("button", { name: "Guardrails" }));
+    const off = within(await dialog.findByRole("group", { name: "Switched off on this route" }));
+    await userEvent.click(off.getByRole("button", { name: "email" }));
+    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
+    const body = (await calls.expectSentBody("PUT", "/routes/route-1/advanced")) as {
+      advanced: Record<string, unknown>;
+    };
+    await expect(body.advanced).not.toHaveProperty("guardrails");
+  },
+};
+
+/** The same section in Russian, with the stale name marked in the operator's language. */
+export const GuardrailOverridesInRussian: Story = {
+  globals: { locale: "ru" },
+  render: () => <Stage mode="edit" route={GUARDED_ROUTE} stub={withPolicy} />,
+  play: async () => {
+    const dialog = within(sheet());
+    await userEvent.click(
+      await dialog.findByRole("button", { name: ru.modelSheet.sections.guardrails }),
+    );
+    const off = within(
+      await dialog.findByRole("group", { name: ru.modelSheet.guardrails.disable }),
+    );
+    await expect(
+      off.getByRole("button", {
+        name: ru.modelSheet.guardrails.unknownRule.replace("{{name}}", "gone"),
+      }),
+    ).toHaveAttribute("aria-pressed", "true");
+  },
+};
+
+/**
+ * A config-file route shows the overrides `rolter.toml` gives it and cannot be
+ * edited from here (#2307).
+ */
+export const ShowsAConfigRoutesGuardrailOverridesReadOnly: Story = {
+  render: () => (
+    <Stage
+      mode="view"
+      configModel={{ model: "fake-llm", strategy: "weighted", targets: 1, source: "config" }}
+      stub={withPolicy}
+    />
+  ),
+  play: async () => {
+    const dialog = within(sheet());
+    await userEvent.click(await dialog.findByRole("button", { name: "Guardrails" }));
+    await waitFor(() => expect(dialog.getByText(/declared in the config file/)).toBeVisible());
+    const off = within(await dialog.findByRole("group", { name: "Switched off on this route" }));
+    const phone = await off.findByRole("button", { name: "phone" });
+    await expect(phone).toHaveAttribute("aria-pressed", "true");
+    await expect(phone).toBeDisabled();
+  },
+};
+
 /**
  * The advanced half of the form is written back.
  *
