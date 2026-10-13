@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, Gauge, Pencil, Plus, Wallet } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
+import { useSearchParams } from "react-router";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { GatedButton } from "@/components/GatedButton";
@@ -81,8 +82,14 @@ export default function Limits() {
   // the scope hook names a catalog key rather than carrying english copy
   const scopeMessage = scope.errorKey ? t(scope.errorKey) : undefined;
 
-  const [scopeType, setScopeType] = React.useState<string>("project");
-  const [scopeId, setScopeId] = React.useState<string>("");
+  // a link from another screen can open the page on a scope, such as a team's
+  // detail sheet: `?scope_type=team&scope_id=<id>`. an unknown type is ignored
+  const [params] = useSearchParams();
+  const linked = params.get("scope_type") ?? "";
+  const linkedId = params.get("scope_id") ?? "";
+  const fromLink = Object.prototype.hasOwnProperty.call(SCOPE_PLACEHOLDERS, linked) && !!linkedId;
+  const [scopeType, setScopeType] = React.useState<string>(fromLink ? linked : "project");
+  const [scopeId, setScopeId] = React.useState<string>(fromLink ? linkedId : "");
 
   React.useEffect(() => {
     if (scopeType === "project" && scope.projectId && !scopeId) {

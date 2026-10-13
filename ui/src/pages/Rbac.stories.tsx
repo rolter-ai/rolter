@@ -4,7 +4,6 @@ import { expect, userEvent, waitFor, within } from "storybook/test";
 import Rbac from "./Rbac";
 import {
   cancelConfirmation,
-  clickWhenEnabled,
   confirmDestructive,
   expectClosesWithoutPrompting,
   expectNoUxEvent,
@@ -297,6 +296,20 @@ async function openCustomTab(canvasElement: HTMLElement): Promise<void> {
   await waitFor(() => expect(tab).toHaveAttribute("aria-selected", "true"));
 }
 
+// the toolbar's button and the empty state's repeat each other by design, so the
+// first of them is the one pressed
+async function clickNewRole(canvasElement: HTMLElement) {
+  const canvas = within(canvasElement);
+  const button = await waitFor(() => {
+    const [first] = canvas.getAllByRole("button", { name: "New role" });
+    // story-wait-allow: no capability provider is mounted, so the button is only
+    // disabled until the scope chain resolves, which this poll waits out
+    expect(first).toBeEnabled();
+    return first;
+  });
+  await userEvent.click(button);
+}
+
 /**
  * One (resource, role) cell of the permission matrix, found through its row
  * header and its column header the way a screen reader finds it.
@@ -304,7 +317,7 @@ async function openCustomTab(canvasElement: HTMLElement): Promise<void> {
 function matrixCell(canvasElement: HTMLElement, resource: string, role: string): HTMLElement {
   const table = within(canvasElement).getByRole("table", { name: "Permission matrix" });
   const headers = within(table).getAllByRole("columnheader");
-  const column = headers.findIndex((h) => h.textContent?.startsWith(role));
+  const column = headers.findIndex((h) => h.textContent?.toLowerCase().startsWith(role));
   const row = within(table).getByRole("rowheader", { name: resource }).closest("tr");
   if (!row || column < 1) throw new Error(`no ${resource} × ${role} cell`);
   // the row header takes the first column, so a role's cell sits one to the left
@@ -339,15 +352,15 @@ export const Loaded: Story = {
     // one column per built-in role, with the live membership count under it.
     // the counts are a second request, so they are awaited rather than assumed
     // to have landed with the matrix (#1266)
-    await expect(canvas.getByText("admin")).toBeVisible();
-    await expect(await canvas.findByText("2 members")).toBeVisible();
-    await expect(await canvas.findByText("1 member")).toBeVisible();
-    await expect(await canvas.findByText("0 members")).toBeVisible();
+    await expect(canvas.getByText("Admin")).toBeVisible();
+    await expect(await canvas.findByText("2 members at any scope")).toBeVisible();
+    await expect(await canvas.findByText("1 member at any scope")).toBeVisible();
+    await expect(await canvas.findByText("0 members at any scope")).toBeVisible();
 
     // a real table (#2081): the roles are column headers and the resources row
     // headers, so a screen reader announces both with every cell
     const table = canvas.getByRole("table", { name: "Permission matrix" });
-    await expect(within(table).getByRole("columnheader", { name: /^member/ })).toBeVisible();
+    await expect(within(table).getByRole("columnheader", { name: /^Member/ })).toBeVisible();
     await expect(within(table).getByRole("rowheader", { name: "provider" })).toBeVisible();
 
     // each cell states its value in words, not only in a tint. a member may read
@@ -447,7 +460,7 @@ export const CustomRolesList: Story = {
     await openCustomTab(canvasElement);
 
     await expect(await canvas.findByText("support-engineer")).toBeVisible();
-    await expect(canvas.getByText("extends viewer")).toBeVisible();
+    await expect(canvas.getByText("extends Viewer")).toBeVisible();
     // the known grant and the retired one both count: both are stored on the role
     await expect(canvas.getByText("2 grants")).toBeVisible();
     // derived from the profiles that compose it, which is what a 409 would name.
@@ -487,7 +500,7 @@ export const CreatesACustomRole: Story = {
   play: async ({ canvasElement }) => {
     await openCustomTab(canvasElement);
     // the button stays disabled until the org/team/project chain has resolved
-    await clickWhenEnabled(canvasElement, "+ New role");
+    await clickNewRole(canvasElement);
 
     const form = within(sheet());
     await userEvent.type(form.getByLabelText("Name"), "Support engineer");
@@ -535,7 +548,7 @@ export const CreateRejectedByTheServer: Story = {
   ),
   play: async ({ canvasElement }) => {
     await openCustomTab(canvasElement);
-    await clickWhenEnabled(canvasElement, "+ New role");
+    await clickNewRole(canvasElement);
 
     const form = within(sheet());
     await userEvent.type(form.getByLabelText("Name"), "Support engineer");
@@ -584,6 +597,71 @@ export const EditsACustomRole: Story = {
       { resource: "virtual_key", action: "update" },
       { resource: "legacy_widget", action: "read" },
     ]);
+  },
+};
+
+// the matrix lists every resource the build defines, so finding one is typing
+export const FiltersTheMatrixByResource: Story = {
+  render: () => (
+    <Harness fetchStub={stub(MATRIX)}>
+      <Rbac />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText("runtime_settings");
+    const filter = canvas.getByRole("textbox", { name: "Filter resources" });
+    await userEvent.type(filter, "virtual");
+    await waitFor(() => expect(canvas.queryByText("runtime_settings")).toBeNull());
+    await expect(canvas.getByText("virtual_key")).toBeVisible();
+    // a filter that matches nothing says so rather than drawing an empty table
+    await userEvent.clear(filter);
+    await userEvent.type(filter, "no-such-resource");
+    await expect(await canvas.findByText("No resource matches that filter.")).toBeVisible();
+    await userEvent.clear(filter);
+    await expect(await canvas.findByText("runtime_settings")).toBeVisible();
+  },
+};
+
+// saving a role changes what everyone holding it gets, through the profiles that
+// compose it, so the editor names them before the save widens or narrows it
+export const EditorNamesWhoASaveAffects: Story = {
+  render: () => (
+    <Harness fetchStub={withRoles(CUSTOM_ROLES)}>
+      <Rbac />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await openCustomTab(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "Edit Support engineer" }));
+    const form = within(sheet());
+    const affects = await form.findByText(
+      /Saving changes what everyone holding this role gets through Support/,
+    );
+    await waitFor(() => expect(affects).toBeVisible());
+  },
+};
+
+export const EditorSaysWhenNoProfileComposesTheRole: Story = {
+  render: () => (
+    <Harness
+      fetchStub={routes([
+        ["/rbac/matrix", () => WITH_CUSTOM_ROLE],
+        ["/memberships", () => MEMBERSHIPS],
+        ["/custom-roles", () => CUSTOM_ROLES],
+        ["/access-profiles", () => []],
+      ])}
+    >
+      <Rbac />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await openCustomTab(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "Edit Support engineer" }));
+    const none = await within(sheet()).findByText(/No access profile composes this role yet/);
+    await waitFor(() => expect(none).toBeVisible());
   },
 };
 
@@ -723,7 +801,7 @@ export const AbandoningTheRoleEditorIsReported: Story = {
   ),
   play: async ({ canvasElement }) => {
     await openCustomTab(canvasElement);
-    await clickWhenEnabled(canvasElement, "+ New role");
+    await clickNewRole(canvasElement);
     await within(sheet()).findByLabelText("Name");
 
     await expectClosesWithoutPrompting();

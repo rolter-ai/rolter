@@ -22,7 +22,7 @@ import {
   Toasted,
   type FetchStub,
 } from "./story-harness";
-import type { TeamRow } from "@/lib/api";
+import type { BudgetRow, MembershipRow, OrgProjectRow, TeamRow, UserRow } from "@/lib/api";
 
 const TEAMS: TeamRow[] = [
   { id: "team-1", org_id: "org-1", name: "Platform", created_at: "2026-01-04T00:00:00Z" },
@@ -364,5 +364,302 @@ export const ProfileAssignmentRefusedToAViewer: Story = {
     await canvas.findByText("Platform");
     await expectRefused(canvasElement, "Assign an access profile to Platform");
     await expectRefused(canvasElement, "Remove Support engineers from Platform");
+  },
+};
+
+// ---------------------------------------------------------------------------
+// #2066 / #2072: who the cards name and count, and the team's detail sheet
+
+const user = (id: string, email: string): UserRow => ({
+  id,
+  email,
+  display_name: null,
+  is_superadmin: false,
+  created_at: "2026-01-01T00:00:00Z",
+});
+const PEOPLE = [
+  user("u-ada", "ada@example.com"),
+  user("u-bob", "bob@example.com"),
+  user("u-cy", "cy@example.com"),
+  user("u-dee", "dee@example.com"),
+];
+const grant = (
+  id: string,
+  user_id: string,
+  role: string,
+  at: Partial<MembershipRow>,
+): MembershipRow => ({ id, user_id, role, created_at: "2026-01-01T00:00:00Z", ...at });
+// Platform: ada and gil administer it, bob also works on one project; Research:
+// its only person holds a role on a project and none on the team itself
+const GRANTS = [
+  grant("m1", "u-ada", "admin", { team_id: "team-1" }),
+  grant("m2", "u-bob", "member", { team_id: "team-1" }),
+  grant("m3", "u-bob", "viewer", { project_id: "proj-1" }),
+  grant("m4", "u-cy", "member", { project_id: "proj-1" }),
+  grant("m5", "u-dee", "member", { project_id: "proj-3" }),
+  grant("m6", "u-ada", "admin", { org_id: "org-1" }),
+];
+const project = (id: string, team_id: string, name: string): OrgProjectRow => ({
+  id,
+  team_id,
+  name,
+  team_name: team_id === "team-1" ? "Platform" : "Research",
+  created_at: "2026-01-01T00:00:00Z",
+});
+const PROJECTS = [
+  project("proj-1", "team-1", "prod"),
+  project("proj-2", "team-1", "staging"),
+  project("proj-3", "team-2", "evals"),
+];
+const budget = (id: string, scope_id: string, limit_usd: string, period: string): BudgetRow => ({
+  id,
+  scope_type: "team",
+  scope_id,
+  limit_usd,
+  period,
+  unpriced_policy: null,
+  created_at: "2026-01-01T00:00:00Z",
+});
+const BUDGETS: Record<string, BudgetRow[]> = {
+  "team-1": [budget("b1", "team-1", "500", "monthly"), budget("b2", "team-1", "50", "daily")],
+  "team-2": [],
+};
+
+type Part = "memberships" | "users" | "projects" | "budgets";
+
+/** the org's teams with the reads each card and the sheet draw on; `fail` breaks one of them */
+function teamsApi(fail: Partial<Record<Part, "pending" | "error">> = {}) {
+  let deleted = false;
+  return recording(async (input, init) => {
+    const url = new URL(String(input), "http://localhost");
+    const path = url.pathname;
+    const answer = (part: Part, body: unknown) =>
+      fail[part] === "pending"
+        ? new Promise<Response>(() => {})
+        : fail[part] === "error"
+          ? json({ error: { message: "boom" } }, 500)
+          : json(body);
+    if (path === "/api/v1/orgs") return json([ORG]);
+    if (init?.method === "DELETE" && path === "/api/v1/teams/team-1") {
+      deleted = true;
+      return json({}, 204);
+    }
+    if (/\/teams$/.test(path)) return json(deleted ? TEAMS.slice(1) : TEAMS);
+    if (/\/memberships$/.test(path)) return answer("memberships", GRANTS);
+    if (/\/users$/.test(path)) return answer("users", PEOPLE);
+    if (/\/orgs\/org-1\/projects$/.test(path)) return answer("projects", PROJECTS);
+    if (path === "/api/v1/budgets") {
+      return answer("budgets", BUDGETS[url.searchParams.get("scope_id") ?? ""] ?? []);
+    }
+    return json([]);
+  });
+}
+
+const cardOf = async (canvas: ReturnType<typeof within>, name: string) =>
+  within(await canvas.findByRole("group", { name }));
+
+// the numbers say what they count: people across the team and its projects (not
+// the team-scoped grants alone), the admin by email, and a second budget as "+1"
+const cards = teamsApi();
+export const NamesAdminsAndCountsPeople: Story = {
+  render: () => (
+    <Harness fetchStub={cards.stub}>
+      <Teams />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const platform = await cardOf(canvas, "Platform");
+    // ada, bob and cy: bob holds two grants and counts once, ada's org-wide one is no team's
+    await waitFor(() => expect(platform.getByText("3")).toBeVisible());
+    await expect(platform.getByText("2")).toBeVisible();
+    await expect(platform.getByText("ada@example.com")).toBeVisible();
+    await expect(await platform.findByText(/\$500/)).toBeVisible();
+    await expect(platform.getByText("+1 more")).toBeVisible();
+    // a team whose only person works at project scope still has one
+    const research = await cardOf(canvas, "Research");
+    await waitFor(() => expect(research.getAllByText("1")).toHaveLength(2));
+    await expect(research.getByText("none yet")).toBeVisible();
+    await expect(research.getByText("—")).toBeVisible();
+  },
+};
+
+// a budget that could not be read is not a team with no budget
+const budgetDown = teamsApi({ budgets: "error" });
+export const BudgetFailedToLoad: Story = {
+  render: () => (
+    <Harness fetchStub={budgetDown.stub}>
+      <Teams />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getAllByText("unavailable")).toHaveLength(2));
+    await expect(canvas.queryByText("—")).toBeNull();
+  },
+};
+
+// counts the screen has not read are never drawn as zero
+const readsPending = teamsApi({ memberships: "pending", projects: "pending" });
+export const CountsWaitForTheirReads: Story = {
+  render: () => (
+    <Harness fetchStub={readsPending.stub}>
+      <Teams />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByRole("group", { name: "Platform" });
+    await expectNoFalseEmpty(canvasElement, /No teams yet/);
+    await expect(canvas.queryByText("none yet")).toBeNull();
+  },
+};
+
+const detail = teamsApi();
+export const OpensATeamToSeeItsProjectsAndPeople: Story = {
+  render: () => (
+    <Harness fetchStub={detail.stub} role="admin">
+      <Teams />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "Open Platform" }));
+    const panel = within(sheet());
+    const onTeam = await panel.findByRole("list", { name: "Roles on the team" });
+    await expect(within(onTeam).getByText("ada@example.com")).toBeVisible();
+    await expect(within(onTeam).getByText("Admin")).toBeVisible();
+    await expect(within(onTeam).getByText("bob@example.com")).toBeVisible();
+    const projects = panel.getByRole("list", { name: "Projects" });
+    await expect(within(projects).getByText("prod")).toBeVisible();
+    await expect(within(projects).getByText("staging")).toBeVisible();
+    // another team's project is not listed
+    await expect(within(projects).queryByText("evals")).toBeNull();
+    const onProd = panel.getByRole("list", { name: "Roles on prod" });
+    await expect(within(onProd).getByText("cy@example.com")).toBeVisible();
+    await waitFor(() =>
+      expect(panel.getByText("No one holds a role on this project directly.")).toBeVisible(),
+    );
+    await expect(panel.getByRole("link", { name: "Users" })).toHaveAttribute("href", "/gov-users");
+    await expect(panel.getByRole("link", { name: /Budgets & Limits of Platform/ })).toHaveAttribute(
+      "href",
+      "/budgets?scope_type=team&scope_id=team-1",
+    );
+  },
+};
+
+// a team with nothing under it says so in both lists
+const emptyApi = recording(async (input) => {
+  const path = new URL(String(input), "http://localhost").pathname;
+  if (path === "/api/v1/orgs") return json([ORG]);
+  if (/\/teams$/.test(path)) return json([TEAMS[1]]);
+  return json([]);
+});
+export const OpenedTeamWithNothingInIt: Story = {
+  render: () => (
+    <Harness fetchStub={emptyApi.stub}>
+      <Teams />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await userEvent.click(
+      await within(canvasElement).findByRole("button", { name: "Open Research" }),
+    );
+    const panel = within(sheet());
+    const none = await panel.findByText(/No one holds a role on this team itself/);
+    await waitFor(() => expect(none).toBeVisible());
+    await waitFor(() => expect(panel.getByText(/This team has no projects yet/)).toBeVisible());
+  },
+};
+
+const sheetLoading = teamsApi({ memberships: "pending", projects: "pending" });
+export const OpenedTeamLoading: Story = {
+  render: () => (
+    <Harness fetchStub={sheetLoading.stub}>
+      <Teams />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await userEvent.click(
+      await within(canvasElement).findByRole("button", { name: "Open Platform" }),
+    );
+    await expectSkeleton(sheet());
+    await expect(within(sheet()).queryByText(/No one holds a role/)).toBeNull();
+    await expect(within(sheet()).queryByText(/no projects yet/)).toBeNull();
+  },
+};
+
+const sheetBroken = teamsApi({ memberships: "error", projects: "error" });
+export const OpenedTeamFailedToLoad: Story = {
+  render: () => (
+    <Harness fetchStub={sheetBroken.stub}>
+      <Teams />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await userEvent.click(
+      await within(canvasElement).findByRole("button", { name: "Open Platform" }),
+    );
+    await expectLoadError(sheet(), /failed to return role grants/i);
+    await expectLoadError(sheet(), /failed to return projects/i);
+    await expect(within(sheet()).queryByText(/No one holds a role/)).toBeNull();
+    await expect(within(sheet()).queryByText(/no projects yet/)).toBeNull();
+  },
+};
+
+const removal = teamsApi();
+export const DeletesATeamAfterNamingWhatGoesWithIt: Story = {
+  render: () => (
+    <Harness fetchStub={removal.stub} role="admin">
+      <Toasted>
+        <Teams />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "Open Platform" }));
+    await expectAllowed(document.body, "Delete Platform…");
+    await userEvent.click(within(sheet()).getByRole("button", { name: "Delete Platform…" }));
+    // the dialog names the team and how many projects go with it
+    // the sheet makes way for the question
+    await confirmDestructive(/Delete team Platform\?/, "Delete team");
+    await removal.expectSent("DELETE", "/api/v1/teams/team-1");
+    await expectToast(canvasElement, /Platform deleted/);
+    await expectSheetClosed();
+    await waitFor(() => expect(canvas.queryByRole("group", { name: "Platform" })).toBeNull());
+  },
+};
+
+const confirmText = teamsApi();
+export const DeleteConfirmationCountsTheProjects: Story = {
+  render: () => (
+    <Harness fetchStub={confirmText.stub} role="admin">
+      <Teams />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await userEvent.click(
+      await within(canvasElement).findByRole("button", { name: "Open Platform" }),
+    );
+    await userEvent.click(await within(sheet()).findByRole("button", { name: "Delete Platform…" }));
+    await expect(
+      await within(document.body).findByText(/Its 2 projects and everything scoped/),
+    ).toBeVisible();
+  },
+};
+
+// deleting a team is an org admin's: a member opens the sheet and is refused the delete
+export const DeleteRefusedToAMember: Story = {
+  render: () => (
+    <Harness fetchStub={teamsApi().stub} role="member">
+      <Teams />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await userEvent.click(
+      await within(canvasElement).findByRole("button", { name: "Open Platform" }),
+    );
+    await expectRefused(document.body, "Delete Platform…");
   },
 };

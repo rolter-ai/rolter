@@ -203,6 +203,8 @@ export const Loaded: Story = {
     await expect(canvas.getByText("1 custom role")).toBeVisible();
     await expect(canvas.getByText("3 policy patterns")).toBeVisible();
     await expect(canvas.getByText("No model or route policy")).toBeVisible();
+    // a slug is an identifier someone types into the API: it keeps its case
+    await expect(canvas.getByText("support-engineers")).toHaveStyle({ textTransform: "none" });
   },
 };
 
@@ -243,7 +245,7 @@ export const CreatesAProfileWithRolesAndPolicy: Story = {
   ),
   play: async ({ canvasElement }) => {
     // the button stays disabled until the org/team/project chain has resolved
-    await clickWhenEnabled(canvasElement, "+ Add profile");
+    await clickWhenEnabled(canvasElement, "Add profile");
 
     const form = within(sheet());
     await userEvent.type(form.getByLabelText("Name"), "Support");
@@ -272,6 +274,37 @@ export const CreatesAProfileWithRolesAndPolicy: Story = {
   },
 };
 
+// the matcher reads a `*` as a wildcard only at the end of a line, so a pattern like
+// `o1-*-mini` is an exact name nobody serves, and in an allow-list it blocks
+// every model for everyone the profile reaches
+export const RefusesAStarThatIsNotTheLastCharacter: Story = {
+  render: () => (
+    <Harness fetchStub={stub(async () => json([]))}>
+      <AccessProfiles />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, "Add profile");
+
+    const form = within(sheet());
+    await userEvent.type(form.getByLabelText("Name"), "Support");
+    const save = form.getByRole("button", { name: "Create profile" });
+    await waitFor(() => expect(save).toBeEnabled());
+
+    await userEvent.type(form.getByLabelText("Allowed models"), "gpt-4o\no1-*-mini");
+    const refusal = await form.findByText(/o1-\*-mini: a \* only works as the last character/);
+    await waitFor(() => expect(refusal).toBeVisible());
+    await expect(form.getByLabelText("Allowed models")).toBeInvalid();
+    await waitFor(() => expect(save).toBeDisabled());
+
+    // a trailing glob is what the hint promises, and it saves
+    await userEvent.clear(form.getByLabelText("Allowed models"));
+    await userEvent.type(form.getByLabelText("Allowed models"), "gpt-4o\no1-*");
+    await waitFor(() => expect(save).toBeEnabled());
+    await expect(form.queryByText(/only works as the last character/)).toBeNull();
+  },
+};
+
 /**
  * The profile is refused (#1607).
  *
@@ -294,7 +327,7 @@ export const CreateRejectedByTheServer: Story = {
     </Harness>
   ),
   play: async ({ canvasElement }) => {
-    await clickWhenEnabled(canvasElement, "+ Add profile");
+    await clickWhenEnabled(canvasElement, "Add profile");
 
     const form = within(sheet());
     await userEvent.type(form.getByLabelText("Name"), "Support");
@@ -488,7 +521,7 @@ export const RefusedToAViewerWhenEmpty: Story = {
     </Harness>
   ),
   play: async ({ canvasElement }) => {
-    // the exact name, not a fragment: the toolbar carries `+ Add profile` and
+    // the exact name, not a fragment: the toolbar carries `Add profile` and
     // the placeholder `Add profile`, and a loose regex would match both and
     // fail on the ambiguity rather than on the gate
     await expectRefused(canvasElement, "Add profile");
@@ -604,7 +637,7 @@ export const ComposesARoleAtTeamScope: Story = {
     </Harness>
   ),
   play: async ({ canvasElement }) => {
-    await clickWhenEnabled(canvasElement, "+ Add profile");
+    await clickWhenEnabled(canvasElement, "Add profile");
 
     const form = within(sheet());
     await userEvent.type(form.getByLabelText("Name"), "Platform support");
@@ -724,7 +757,7 @@ export const TogglingARoleOffLeavesTheDraftClean: Story = {
     </Harness>
   ),
   play: async ({ canvasElement }) => {
-    await clickWhenEnabled(canvasElement, "+ Add profile");
+    await clickWhenEnabled(canvasElement, "Add profile");
 
     const form = within(sheet());
     // the role list is a request of its own (`/custom-roles`), fired as the
@@ -769,7 +802,7 @@ export const AbandoningTheEditorIsReported: Story = {
     </Harness>
   ),
   play: async ({ canvasElement }) => {
-    await clickWhenEnabled(canvasElement, "+ Add profile");
+    await clickWhenEnabled(canvasElement, "Add profile");
     await within(sheet()).findByLabelText("Name");
 
     await expectClosesWithoutPrompting();

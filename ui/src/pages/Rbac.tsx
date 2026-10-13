@@ -1,5 +1,5 @@
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
-import { KeySquare, Lock, Pencil, Trash2, X } from "lucide-react";
+import { KeySquare, Lock, Pencil, Plus, Trash2, X } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
@@ -81,6 +81,8 @@ interface RoleColumn {
   key: string;
   label: string;
   rank: number;
+  /** a built-in role: its label is a wire value, drawn through `shell.roles` */
+  builtin?: boolean;
   custom?: RbacCustomRoleView;
 }
 
@@ -197,7 +199,7 @@ function byScope(resources: RbacResourceView[]): [string, RbacResourceView[]][] 
 function columns(matrix: RbacMatrix): RoleColumn[] {
   const builtins = [...matrix.roles]
     .sort((a, b) => a.rank - b.rank)
-    .map((r) => ({ key: r.role, label: r.role, rank: r.rank }));
+    .map((r) => ({ key: r.role, label: r.role, rank: r.rank, builtin: true }));
   const custom = [...matrix.custom_roles]
     .sort((a, b) => a.base_rank - b.base_rank || a.name.localeCompare(b.name))
     .map((r) => ({ key: r.id, label: r.name, rank: r.base_rank, custom: r }));
@@ -289,6 +291,7 @@ function MatrixTab({
   membershipsFailed: boolean;
 }) {
   const { t } = useTranslation();
+  const [filter, setFilter] = React.useState("");
 
   const memberCount = (role: string) =>
     new Set(memberships.filter((m) => m.role === role).map((m) => m.user_id)).size;
@@ -301,6 +304,11 @@ function MatrixTab({
   const resourceShare = `${(1.6 / (1.6 + cols.length)) * 100}%`;
   const minWidth = Math.max(720, 212 + cols.length * 144);
   const unknown = matrix.custom_roles.flatMap((r) => r.unknown_grants);
+  // about 53 resources in a real build: finding one means typing, not scrolling
+  const needle = filter.trim().toLowerCase();
+  const shown = needle
+    ? matrix.resources.filter((r) => r.resource.toLowerCase().includes(needle))
+    : matrix.resources;
 
   return (
     <>
@@ -320,6 +328,14 @@ function MatrixTab({
           {t("pages.rbac.unknownGrants", { count: unknown.length })}
         </p>
       )}
+
+      <Input
+        className="max-w-xs"
+        value={filter}
+        placeholder={t("pages.rbac.custom.filterPlaceholder")}
+        aria-label={t("pages.rbac.custom.filterPlaceholder")}
+        onChange={(e) => setFilter(e.target.value)}
+      />
 
       {/* a native table, so a screen reader announces the role and the
           resource with every cell (#2081). `relative` gives the cells' sr-only
@@ -351,7 +367,11 @@ function MatrixTab({
                   scope="col"
                   className="px-1.5 py-[11px] align-bottom font-normal first:pl-4 last:pr-4"
                 >
-                  <span className="block text-sm font-semibold capitalize">{col.label}</span>
+                  <span className="block text-sm font-semibold">
+                    {col.builtin
+                      ? t(`shell.roles.${col.key}`, { defaultValue: col.label })
+                      : col.label}
+                  </span>
                   <span className="mt-0.5 block text-[10px] text-[color:var(--text-subtle)]">
                     {col.custom
                       ? t("pages.rbac.viaAccessProfiles")
@@ -364,7 +384,7 @@ function MatrixTab({
             </tr>
           </thead>
 
-          {byScope(matrix.resources).map(([scopeKey, resources]) => (
+          {byScope(shown).map(([scopeKey, resources]) => (
             <tbody key={scopeKey}>
               <tr className="border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)]/40">
                 <th
@@ -416,6 +436,11 @@ function MatrixTab({
           ))}
         </table>
       </div>
+      {shown.length === 0 && (
+        <p role="status" className="text-center text-xs text-muted-foreground">
+          {t("pages.rbac.custom.noResources")}
+        </p>
+      )}
 
       {/* the letters first, then every state a cell can be in, each drawn the
           way the matrix draws it and named in words */}
@@ -648,6 +673,7 @@ function CustomRolesTab({ matrix, orgId }: { matrix: RbacMatrix; orgId?: string 
           disabled={!orgId}
           onClick={startCreate}
         >
+          <Plus className="h-4 w-4" aria-hidden />
           {t("pages.rbac.custom.add")}
         </GatedButton>
       </div>
@@ -700,7 +726,9 @@ function CustomRolesTab({ matrix, orgId }: { matrix: RbacMatrix; orgId?: string 
                     {role.slug}
                   </Pill>
                   <span className="text-xs text-muted-foreground">
-                    {t("pages.rbac.custom.extends", { role: role.base_role })}
+                    {t("pages.rbac.custom.extends", {
+                      role: t(`shell.roles.${role.base_role}`, { defaultValue: role.base_role }),
+                    })}
                   </span>
                 </div>
                 {role.description && (
@@ -757,6 +785,8 @@ function CustomRolesTab({ matrix, orgId }: { matrix: RbacMatrix; orgId?: string 
           draft={draft}
           dirty={JSON.stringify(draft) !== seed}
           resources={matrix.resources}
+          // who the save reaches: null until the profiles' composition is known
+          usedBy={draft.id && usageKnown ? (usedBy.get(draft.id) ?? []) : null}
           saving={save.isPending}
           errorMessage={save.error ? errorText(save.error, t) : undefined}
           onChange={setDraft}
@@ -798,6 +828,7 @@ function RoleSheet({
   draft,
   dirty,
   resources,
+  usedBy,
   saving,
   errorMessage,
   onChange,
@@ -807,6 +838,8 @@ function RoleSheet({
   draft: RoleDraft;
   dirty: boolean;
   resources: RbacResourceView[];
+  /** the profiles composing the role being edited; null when creating or not yet known */
+  usedBy: string[] | null;
   saving: boolean;
   errorMessage?: string;
   onChange: (draft: RoleDraft) => void;
@@ -872,6 +905,16 @@ function RoleSheet({
             }))}
           />
         </Field>
+
+        {/* a save replaces the role's grants for everyone who holds it, through
+            each profile that composes it, so the sheet says who that is */}
+        {usedBy && (
+          <p className="rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] px-3.5 py-2.5 text-xs text-muted-foreground">
+            {usedBy.length === 0
+              ? t("pages.rbac.custom.affectsNone")
+              : t("pages.rbac.custom.affects", { profiles: usedBy.join(", ") })}
+          </p>
+        )}
 
         <GrantGrid
           resources={resources}
@@ -974,7 +1017,7 @@ function GrantGrid({
                     return (
                       <span
                         key={action}
-                        className="w-6 text-center font-mono text-xs text-[color:var(--text-subtle)] opacity-40"
+                        className="w-6 text-center font-mono text-xs text-[color:var(--text-subtle)]"
                         title={t("pages.rbac.states.na")}
                       >
                         –
