@@ -279,14 +279,15 @@ impl TranslationPlan {
     }
 
     /// Whether a Chat Completions client talks to a Chat Completions upstream
-    /// that states its thinking tokens in `total_tokens` alone (Gemini's
-    /// compatible endpoint, #2926). The body is otherwise passed through, but
-    /// the `usage` the client reads is completed so its own accounting matches
-    /// what the gateway bills.
+    /// that counts its thinking tokens beside `completion_tokens` (Gemini's
+    /// compatible endpoint, #2926, xAI and Vertex AI, #3093). The body is
+    /// otherwise passed through, but the `usage` the client reads is completed
+    /// to OpenAI's convention, so its own accounting matches what the gateway
+    /// bills.
     pub fn completes_chat_usage(self) -> bool {
         self.client == Protocol::OpenAiChat
             && self.upstream == Protocol::OpenAiChat
-            && self.thinking == ThinkingCount::TotalOnly
+            && self.thinking != ThinkingCount::Stated
     }
 
     /// Whether the response body is rewritten on its way to the client: a
@@ -704,7 +705,7 @@ fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
 /// JSON, states no total or has nothing beyond the prompt and the completion
 /// is returned as it came.
 fn complete_chat_usage(body: Bytes, thinking: ThinkingCount) -> Bytes {
-    if !contains_bytes(&body, b"\"total_tokens\"") {
+    if !thinking.worth_parsing(&body) {
         return body;
     }
     let Ok(mut value) = serde_json::from_slice::<Value>(&body) else {
@@ -1214,6 +1215,10 @@ pub enum ThinkingCount {
     /// the thinking tokens are in `total_tokens` alone: whatever the total has
     /// beyond the prompt and the completion is them
     TotalOnly,
+    /// the thinking tokens are named in `completion_tokens_details` beside a
+    /// `completion_tokens` that leaves them out, and the total adds the three
+    /// up (xAI, Vertex AI, #3093)
+    NamedBeside,
 }
 
 impl ThinkingCount {
@@ -1222,6 +1227,7 @@ impl ThinkingCount {
     pub const fn of(kind: ProviderKind) -> Self {
         match kind {
             ProviderKind::Gemini => Self::TotalOnly,
+            ProviderKind::Xai | ProviderKind::Vertex => Self::NamedBeside,
             _ => Self::Stated,
         }
     }
@@ -1239,7 +1245,7 @@ impl ThinkingCount {
     /// added to twice, and nor is an answer that states no total or no count.
     pub fn beside_completion(self, usage: &Value) -> Option<u64> {
         reasoning_tokens_beside_completion(usage).or_else(|| match self {
-            Self::Stated => None,
+            Self::Stated | Self::NamedBeside => None,
             Self::TotalOnly => total_beyond_prompt_and_completion(usage),
         })
     }
@@ -1251,6 +1257,15 @@ impl ThinkingCount {
     /// the prompt and the new completion added up.
     fn fold_into_completion(self, body: &mut Value) {
         self.completes(body);
+    }
+
+    /// Whether a body or event is worth parsing for [`Self::completes`]: it
+    /// states a total, and a provider that names its thinking says so in a
+    /// field. A byte search, so an event with no usage is never parsed.
+    fn worth_parsing(self, raw: &[u8]) -> bool {
+        self != Self::Stated
+            && contains_bytes(raw, b"\"total_tokens\"")
+            && (self != Self::NamedBeside || contains_bytes(raw, b"\"reasoning_tokens\""))
     }
 
     /// [`Self::fold_into_completion`], saying whether the body changed.
@@ -1265,7 +1280,7 @@ impl ThinkingCount {
         let Some(completion) = usage.get("completion_tokens").and_then(Value::as_u64) else {
             return false;
         };
-        let Some(thinking) = total_beyond_prompt_and_completion(usage) else {
+        let Some(thinking) = self.beside_completion(usage) else {
             return false;
         };
         usage["completion_tokens"] = json!(completion.saturating_add(thinking));
@@ -2383,7 +2398,7 @@ impl SseConverter {
             out.extend_from_slice(b"\n\n");
             vec![Bytes::from(out)]
         };
-        if !contains_bytes(raw, b"\"total_tokens\"") {
+        if !self.plan.thinking.worth_parsing(raw) {
             return verbatim();
         }
         let text = String::from_utf8_lossy(raw);
@@ -5365,12 +5380,12 @@ mod tests {
     }
 
     #[test]
-    fn only_the_gemini_compat_endpoint_counts_thinking_in_the_total_alone() {
+    fn only_gemini_xai_and_vertex_count_thinking_beside_the_completion() {
         for kind in ProviderKind::ALL {
-            let expected = if kind == ProviderKind::Gemini {
-                ThinkingCount::TotalOnly
-            } else {
-                ThinkingCount::Stated
+            let expected = match kind {
+                ProviderKind::Gemini => ThinkingCount::TotalOnly,
+                ProviderKind::Xai | ProviderKind::Vertex => ThinkingCount::NamedBeside,
+                _ => ThinkingCount::Stated,
             };
             assert_eq!(ThinkingCount::of(kind), expected, "{kind:?}");
         }
@@ -5598,7 +5613,7 @@ data: [DONE]
         let body = Bytes::from(serde_json::to_vec(&chat_body_with_usage(usage)).unwrap());
         let other = TranslationPlan::resolve(
             "/v1/chat/completions",
-            ProviderKind::Vertex,
+            ProviderKind::Mistral,
             RoleProfile::Openai,
         );
         assert!(!other.rewrites_response());
@@ -5663,6 +5678,140 @@ data: [DONE]
             usages[1]["completion_tokens_details"]["reasoning_tokens"],
             93
         );
+    }
+
+    /// xAI's API reference prints a usage whose three counts add up to the
+    /// total (docs.x.ai/docs/api-reference, 32 + 9 + 110 = 151); the OpenAPI
+    /// example is the repo's `XAI_USAGE` (32 + 9 + 94 = 135)
+    const XAI_REFERENCE_ANSWERS: [(&str, &str, u64); 2] = [
+        (
+            "api reference",
+            r#"{"prompt_tokens":32,"completion_tokens":9,"total_tokens":151,"prompt_tokens_details":{"text_tokens":32,"audio_tokens":0,"image_tokens":0,"cached_tokens":8},"completion_tokens_details":{"reasoning_tokens":110,"audio_tokens":0,"accepted_prediction_tokens":0,"rejected_prediction_tokens":0},"num_sources_used":0}"#,
+            110,
+        ),
+        ("openapi", XAI_USAGE, 94),
+    ];
+
+    /// Every provider that states its thinking beside the completion is shown a
+    /// chat client the shape OpenAI documents (#3093): `completion_tokens`
+    /// includes it, `reasoning_tokens` names it, `total_tokens` is prompt plus
+    /// completion.
+    fn beside_answers() -> Vec<(ProviderKind, String, &'static str, u64)> {
+        let mut out = Vec::new();
+        for (name, usage, thinking) in XAI_REFERENCE_ANSWERS {
+            out.push((ProviderKind::Xai, name.to_string(), usage, thinking));
+        }
+        for (name, usage, thinking) in VERTEX_COMPAT_ANSWERS {
+            out.push((ProviderKind::Vertex, name.to_string(), usage, thinking));
+        }
+        out
+    }
+
+    #[test]
+    fn xai_and_vertex_answers_reach_a_chat_client_with_the_thinking_in_the_completion() {
+        for (kind, name, usage, thinking) in beside_answers() {
+            let value: Value = serde_json::from_str(usage).unwrap();
+            let completion = value["completion_tokens"].as_u64().unwrap();
+            let plan = TranslationPlan::resolve("/v1/chat/completions", kind, RoleProfile::Openai);
+            assert!(plan.completes_chat_usage() && plan.rewrites_response());
+            let body = chat_body_with_usage(usage);
+            let out =
+                plan.translate_response(Bytes::from(serde_json::to_vec(&body).unwrap()), false);
+            let v: Value = serde_json::from_slice(&out).unwrap();
+            let shown = &v["usage"];
+            assert_eq!(
+                shown["completion_tokens"],
+                completion + thinking,
+                "{kind:?} {name}"
+            );
+            assert_eq!(
+                shown["completion_tokens_details"]["reasoning_tokens"], thinking,
+                "{kind:?} {name}"
+            );
+            assert_eq!(
+                shown["total_tokens"], value["total_tokens"],
+                "{kind:?} {name}"
+            );
+            // untouched fields ride along
+            assert_eq!(
+                shown["prompt_tokens"], value["prompt_tokens"],
+                "{kind:?} {name}"
+            );
+            assert_eq!(
+                shown["prompt_tokens"].as_u64().unwrap()
+                    + shown["completion_tokens"].as_u64().unwrap(),
+                shown["total_tokens"].as_u64().unwrap(),
+                "{kind:?} {name}: prompt plus completion is the total, as OpenAI states it"
+            );
+            // the log reads the completed body without adding it again
+            let read = TokenUsage::from_openai(shown);
+            assert_eq!(read.completion, completion + thinking, "{kind:?} {name}");
+            assert_eq!(plan.thinking_count().beside_completion(shown), None);
+            // and a second pass is a no-op
+            let again = plan.translate_response(out.clone(), false);
+            assert_eq!(again, out, "{kind:?} {name}");
+        }
+    }
+
+    #[test]
+    fn a_stream_of_xai_or_vertex_reaches_a_chat_client_with_the_final_usage_completed() {
+        for (kind, name, usage, thinking) in beside_answers() {
+            let value: Value = serde_json::from_str(usage).unwrap();
+            let completion = value["completion_tokens"].as_u64().unwrap();
+            let sse = format!(
+                "data: {{\"id\":\"c1\",\"choices\":[{{\"index\":0,\"delta\":{{\"content\":\"hi\"}}}}]}}\n\n\
+                 data: {{\"id\":\"c1\",\"choices\":[],\"usage\":{usage}}}\n\n\
+                 data: [DONE]\n\n"
+            );
+            let plan = TranslationPlan::resolve("/v1/chat/completions", kind, RoleProfile::Openai);
+            let whole = plan.translate_response(Bytes::copy_from_slice(sse.as_bytes()), true);
+            let mut converter = SseConverter::new(plan);
+            let mut split = Vec::new();
+            for byte in sse.as_bytes() {
+                split.extend(converter.feed(std::slice::from_ref(byte)));
+            }
+            split.extend(converter.finish());
+            assert_eq!(whole, Bytes::from(split.concat()), "{kind:?} {name}");
+            let text = String::from_utf8(whole.to_vec()).unwrap();
+            assert!(text.starts_with(
+                "data: {\"id\":\"c1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\n"
+            ));
+            assert!(text.ends_with("data: [DONE]\n\n"));
+            let usages: Vec<Value> = frames(&whole)
+                .into_iter()
+                .filter_map(|(_, data)| data.get("usage").cloned())
+                .collect();
+            assert_eq!(usages.len(), 1);
+            assert_eq!(
+                usages[0]["completion_tokens"],
+                completion + thinking,
+                "{kind:?} {name}"
+            );
+            assert_eq!(
+                usages[0]["completion_tokens_details"]["reasoning_tokens"],
+                thinking
+            );
+            assert_eq!(usages[0]["total_tokens"], value["total_tokens"]);
+        }
+    }
+
+    #[test]
+    fn a_beside_provider_answer_that_already_includes_its_thinking_is_returned_as_it_came() {
+        // total is prompt plus completion: the reasoning is inside, as at OpenAI
+        let bodies = [
+            r#"{"usage":{"prompt_tokens":14,"completion_tokens":619,"total_tokens":633,"completion_tokens_details":{"reasoning_tokens":560}}}"#,
+            // no thinking named
+            r#"{"usage":{"prompt_tokens":14,"completion_tokens":59,"total_tokens":73}}"#,
+            // a named zero
+            r#"{"usage":{"prompt_tokens":14,"completion_tokens":59,"total_tokens":73,"completion_tokens_details":{"reasoning_tokens":0}}}"#,
+        ];
+        for kind in [ProviderKind::Xai, ProviderKind::Vertex] {
+            let plan = TranslationPlan::resolve("/v1/chat/completions", kind, RoleProfile::Openai);
+            for body in bodies {
+                let out = plan.translate_response(Bytes::from_static(body.as_bytes()), false);
+                assert_eq!(out, Bytes::from_static(body.as_bytes()), "{kind:?} {body}");
+            }
+        }
     }
 
     #[test]
