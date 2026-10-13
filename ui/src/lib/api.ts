@@ -295,12 +295,15 @@ export interface AnalyticsRowFilters {
   business_unit?: string[];
   /** customer ids to narrow to; omitted means every customer */
   customer?: string[];
+  /** one exact project id; omitted means every project the caller may read (#3090) */
+  project?: string;
 }
 
 // the control plane splits the two sets on commas, so a set travels as one param
 function setRowFilterParams(params: URLSearchParams, filters: AnalyticsRowFilters) {
   if (filters.model) params.set("model", filters.model);
   if (filters.key) params.set("key", filters.key);
+  if (filters.project) params.set("project", filters.project);
   if (filters.business_unit?.length) params.set("business_unit", filters.business_unit.join(","));
   if (filters.customer?.length) params.set("customer", filters.customer.join(","));
 }

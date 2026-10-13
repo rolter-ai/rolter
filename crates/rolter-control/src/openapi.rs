@@ -477,6 +477,12 @@ const CUSTOMER_FILTER: QueryParam = QueryParam::new(
     "comma-separated customer ids; omit for every customer",
 );
 
+const PROJECT_FILTER: QueryParam = QueryParam::new(
+    "project",
+    "string",
+    "exact project id; omit for every project the caller may read",
+);
+
 /// The dashboard's summary and by-model reads: the window plus the row filters.
 const DASHBOARD_QUERY: &[QueryParam] = &[
     SINCE,
@@ -485,6 +491,7 @@ const DASHBOARD_QUERY: &[QueryParam] = &[
     KEY_FILTER,
     BUSINESS_UNIT_FILTER,
     CUSTOMER_FILTER,
+    PROJECT_FILTER,
 ];
 
 /// The window plus the bucket only the timeseries endpoint reads, and the
@@ -501,6 +508,7 @@ const TIMESERIES_QUERY: &[QueryParam] = &[
     KEY_FILTER,
     BUSINESS_UNIT_FILTER,
     CUSTOMER_FILTER,
+    PROJECT_FILTER,
 ];
 
 /// The uptime endpoint's window plus the target it measures against.
@@ -601,6 +609,7 @@ const INVOCATIONS_QUERY: &[QueryParam] = &[
     KEY_FILTER,
     BUSINESS_UNIT_FILTER,
     CUSTOMER_FILTER,
+    PROJECT_FILTER,
     QueryParam::new("status", "string", "all|error|success; defaults to all"),
     QueryParam::new(
         "request_id",
@@ -3864,6 +3873,7 @@ mod tests {
                 "key",
                 "business_unit",
                 "customer",
+                "project",
             ] {
                 assert!(names.contains(filter), "{path} lacks {filter}: {names:?}");
                 assert!(invocations.contains(filter), "invocations lacks {filter}");

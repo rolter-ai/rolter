@@ -367,6 +367,9 @@ pub struct DashboardQuery {
     /// comma-separated customer ids to filter to; empty/omitted means every
     /// customer
     pub(crate) customer: Option<String>,
+    /// exact project id to filter to; empty/omitted means every project the
+    /// caller may read (#3090)
+    pub(crate) project: Option<String>,
 }
 
 impl TimeBounds for DashboardQuery {
@@ -387,13 +390,14 @@ impl DashboardQuery {
             self.key.as_deref(),
             self.business_unit.as_deref(),
             self.customer.as_deref(),
+            self.project.as_deref(),
         ));
         params
     }
 }
 
 /// The `param_*` bindings [`ROW_FILTERS`] reads, for any read that carries the
-/// four row filters. Every filter is bound, an absent one as the empty string
+/// five row filters. Every filter is bound, an absent one as the empty string
 /// the predicate short-circuits on, so the SQL never changes shape with the
 /// filters a caller happened to send.
 pub(crate) fn row_filter_params(
@@ -401,12 +405,14 @@ pub(crate) fn row_filter_params(
     key: Option<&str>,
     business_unit: Option<&str>,
     customer: Option<&str>,
-) -> [(String, String); 4] {
+    project: Option<&str>,
+) -> [(String, String); 5] {
     [
         ("param_model", model),
         ("param_key", key),
         ("param_business_unit", business_unit),
         ("param_customer", customer),
+        ("param_project", project),
     ]
     .map(|(name, value)| (name.to_string(), value.unwrap_or_default().to_string()))
 }
@@ -420,7 +426,8 @@ pub(crate) const ROW_FILTERS: &str = "({model:String} = '' or model = {model:Str
      and ({business_unit:String} = '' \
           or has(splitByChar(',', {business_unit:String}), business_unit_id)) \
      and ({customer:String} = '' \
-          or has(splitByChar(',', {customer:String}), customer_id))";
+          or has(splitByChar(',', {customer:String}), customer_id)) \
+     and ({project:String} = '' or project_id = {project:String})";
 
 /// `params` plus the caller's scope filter, which every analytics and health
 /// query binds (#1820).
@@ -935,6 +942,9 @@ pub struct InvocationsQuery {
     /// comma-separated customer ids to filter to; empty/omitted means every
     /// customer
     pub(crate) customer: Option<String>,
+    /// exact project id to filter to; empty/omitted means every project the
+    /// caller may read (#3090)
+    pub(crate) project: Option<String>,
     /// status class: all|error|success (defaults to all)
     pub(crate) status: Option<String>,
     /// exact request id — the one the gateway returned to the client in
@@ -1160,6 +1170,7 @@ async fn invocations(
         q.key.as_deref(),
         q.business_unit.as_deref(),
         q.customer.as_deref(),
+        q.project.as_deref(),
     ));
     params.push(("param_cursor_ts".to_string(), cursor_ts));
     params.push(("param_cursor_id".to_string(), cursor_id));
@@ -1607,6 +1618,7 @@ mod tests {
             "{key:String}",
             "{business_unit:String}",
             "{customer:String}",
+            "{project:String}",
         ] {
             assert!(ROW_FILTERS.contains(param), "{param}");
             // each one short-circuits when empty, so an omitted filter is no filter
@@ -1617,7 +1629,13 @@ mod tests {
         );
         assert!(ROW_FILTERS.contains("has(splitByChar(',', {customer:String}), customer_id)"));
         // no quoted literal on the column side of a comparison
-        for column in ["model", "virtual_key_id", "business_unit_id", "customer_id"] {
+        for column in [
+            "model",
+            "virtual_key_id",
+            "business_unit_id",
+            "customer_id",
+            "project_id",
+        ] {
             assert!(!ROW_FILTERS.contains(&format!("{column} = '")), "{column}");
         }
     }
@@ -1643,10 +1661,11 @@ mod tests {
     fn a_dashboard_query_reads_the_filters_beside_the_window() {
         let q = dashboard_query(
             "since=2026-01-01T00:00:00Z&bucket=hour&model=gpt-4o&key=k-1\
-             &business_unit=bu-1,bu-2&customer=c-1",
+             &business_unit=bu-1,bu-2&customer=c-1&project=p-1",
         );
         assert_eq!(q.window.bucket.as_deref(), Some("hour"));
         let params = q.params();
+        assert_eq!(param(&params, "param_project"), "p-1");
         assert_eq!(param(&params, "param_since"), "2026-01-01T00:00:00Z");
         assert_eq!(param(&params, "param_until"), "");
         assert_eq!(param(&params, "param_model"), "gpt-4o");
