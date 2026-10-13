@@ -4179,7 +4179,7 @@ async fn stream_response(
     // when a post-call rule applies to this route, so an unguarded route keeps
     // streaming straight through
     if !is_sse
-        && (translation.is_translation()
+        && (translation.rewrites_response()
             || output.is_some()
             || post_response_plugins.is_some()
             || pii.is_some())
@@ -4245,7 +4245,7 @@ async fn stream_response(
     > = Box::pin(response.bytes_stream());
     let translated: std::pin::Pin<
         Box<dyn futures_util::Stream<Item = reqwest::Result<Bytes>> + Send>,
-    > = if translation.is_translation() && is_sse {
+    > = if translation.rewrites_response() && is_sse {
         Box::pin(rolter_proxy::TranslatedStream::new(upstream, translation))
     } else {
         upstream

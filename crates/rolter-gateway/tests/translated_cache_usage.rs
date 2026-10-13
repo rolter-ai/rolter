@@ -1206,7 +1206,8 @@ async fn xai_stream_to_a_messages_client_counts_its_reasoning_once() {
 // gemini's openai-compatible endpoint bills the 20 thinking tokens as output
 // but states them nowhere except `total_tokens`, so the row used to log 3 and be
 // charged 2003 where the provider charged 2023. the chat client is served the
-// provider's bytes as they are, so only the row can be put right there
+// provider's bytes, with the usage completed (#2926): the client reads the
+// same 23 the row is priced for
 
 #[tokio::test]
 async fn gemini_compat_answer_to_a_chat_client_is_logged_with_its_thinking() {
@@ -1218,14 +1219,32 @@ async fn gemini_compat_answer_to_a_chat_client_is_logged_with_its_thinking() {
         chat_completion_with(GEMINI_COMPAT_USAGE),
     )
     .await;
-    // a passthrough body is the provider's own
-    assert_eq!(shown_usage(&body)["completion_tokens"], 3);
+    let usage = shown_usage(&body);
+    assert_eq!(usage["completion_tokens"], 23, "usage shown to the client");
+    assert_eq!(usage["total_tokens"], 2023, "usage shown to the client");
+    assert_eq!(usage["completion_tokens_details"]["reasoning_tokens"], 20);
     assert_priced_with_the_thoughts(&row);
+}
+
+/// an answer that did not think is the provider's bytes, untouched
+#[tokio::test]
+async fn gemini_compat_answer_without_thinking_is_passed_to_a_chat_client_unchanged() {
+    let answer =
+        chat_completion_with(r#"{"prompt_tokens":2000,"completion_tokens":3,"total_tokens":2003}"#);
+    let (body, _) = exchange(
+        "gemini-compat-chat-no-thinking",
+        ProviderKind::Gemini,
+        Client::Chat,
+        false,
+        answer.clone(),
+    )
+    .await;
+    assert_eq!(body, answer.1);
 }
 
 #[tokio::test]
 async fn gemini_compat_stream_to_a_chat_client_is_logged_with_its_thinking() {
-    let (_, row) = exchange(
+    let (body, row) = exchange(
         "gemini-compat-chat-streamed",
         ProviderKind::Gemini,
         Client::Chat,
@@ -1233,6 +1252,12 @@ async fn gemini_compat_stream_to_a_chat_client_is_logged_with_its_thinking() {
         gemini_compat_stream(),
     )
     .await;
+    // every chunk's usage is completed, the last one is what the client keeps
+    let usage = shown_usage(&body);
+    assert_eq!(usage["completion_tokens"], 23, "usage shown to the client");
+    assert_eq!(usage["total_tokens"], 2023, "usage shown to the client");
+    assert_eq!(usage["completion_tokens_details"]["reasoning_tokens"], 20);
+    assert!(body.contains("data: [DONE]"));
     assert_priced_with_the_thoughts(&row);
 }
 
