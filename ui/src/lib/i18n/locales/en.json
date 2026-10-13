@@ -404,6 +404,8 @@
       "weight": "Weight",
       "providerAria": "Target {{n}} provider",
       "upstreamAria": "Target {{n}} upstream model",
+      "checkAria": "Check target {{n}} upstream model with its provider",
+      "checkTitle": "Check that the provider lists this model",
       "weightAria": "Target {{n}} weight",
       "removeAria": "Remove target {{n}}",
       "upstreamPlaceholder": "same as route name",
@@ -422,6 +424,12 @@
       "noteLockAll": "Locked: clients cannot override any parameter — these server-side values are enforced.",
       "noteUnlockAll": "Open: clients may override any parameter. Values here act as defaults only.",
       "noteManual": "Manual: lock individual parameters below; unlocked ones stay client-overridable."
+    },
+    "check": {
+      "checking": "Asking {{provider}} for its models…",
+      "listed": "{{provider}} answered and lists {{model}}.",
+      "notListed": "{{provider}} answered, but its model list does not include {{model}}. Requests for it are likely to fail.",
+      "noCatalogue": "{{provider}} answered, but it has no model list to look {{model}} up in, so this cannot be confirmed."
     },
     "params": {
       "name": "Param name",
@@ -3749,10 +3757,21 @@
       "redactedHint": "Comma-separated JSON keys stripped from captured payloads before they are stored. Redaction happens before the write, so a redacted value never reaches storage.",
       "redactedPlaceholder": "authorization, api_key, ssn",
       "onlyModels": "Capture only these models",
-      "onlyModelsHint": "Comma-separated model names. Leave empty to capture payloads for every model.",
-      "onlyModelsPlaceholder": "gpt-4o, claude-sonnet-5",
+      "onlyModelsHint": "Pick from the models that carried traffic in the last 30 days, or type one that has not yet. Leave empty to capture payloads for every model.",
+      "onlyModelsPlaceholder": "Add a model",
       "onlyKeys": "Capture only these virtual keys",
-      "onlyKeysHint": "Comma-separated virtual key UUIDs. Leave empty to capture payloads for every key.",
+      "onlyKeysHint": "Pick from the virtual keys of the project selected in the sidebar. Leave empty to capture payloads for every key.",
+      "onlyKeysPlaceholder": "Add a virtual key",
+      "picker": {
+        "addModel": "Add a model to capture",
+        "addKey": "Add a virtual key to capture",
+        "remove": "Remove {{name}}",
+        "loading": "Loading…",
+        "modelsUnavailable": "No models to suggest. Type a model name to add it.",
+        "keysUnavailable": "No virtual keys to pick in this project.",
+        "modelUnseen": "no traffic in 30 days",
+        "keyMissing": "not in this project's keys"
+      },
       "retention": "Retention",
       "retentionHint": "How long each half of the log is kept. Payloads are the sensitive half, so they cannot outlive the metadata they belong to.",
       "retentionDays": "Log metadata (days)",

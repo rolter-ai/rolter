@@ -192,7 +192,13 @@ const CAPABILITIES: &[Capability] = &[
     // admin then manages it. The scope is `project` so the advisory answer
     // reaches a project role; an org admin still passes there through the
     // org membership. An org-wide row stays an org admin's: crud.rs checks
-    // the org for it, and that, not this table, is the authority
+    // the org for it, and that, not this table, is the authority.
+    // The provider test, with or without its `model` lookup (#2008), and the
+    // model listing both spend the stored credential, so they stay behind
+    // `provider:update`, checked in the provider's own scope: a project
+    // admin may check a model of a provider scoped to their project, an
+    // org-wide provider stays an org admin's. A route editor holding neither
+    // sees the model sheet's check refused
     Capability {
         resource: "provider",
         scope: "project",

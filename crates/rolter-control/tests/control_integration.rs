@@ -5887,6 +5887,78 @@ async fn provider_test_sends_the_anthropic_key_as_x_api_key() {
     assert!(!tested.to_string().contains(&sealed_secret), "leaked key");
 }
 
+/// #2008: the provider test, given a model name, says listed, not listed, or
+/// cannot tell (a liveness-only kind), and still refuses a secret env name.
+#[tokio::test]
+async fn provider_test_reports_whether_a_model_is_listed() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let app = rolter_control::test_app(db.pool().clone()).await.unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let catalogue = serve(axum::Router::new().fallback(|| async {
+        axum::Json(json!({"data": [{"id": "gpt-4o"}, {"id": "gpt-4o-mini"}]}))
+    }))
+    .await;
+    let health = serve(axum::Router::new().fallback(|| async { "OK" })).await;
+
+    let org: Value = client
+        .post(format!("{base}/api/v1/orgs"))
+        .json(&json!({"name": "Acme", "slug": "acme"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_id = org["id"].as_str().expect("org id");
+    let mut ids = Vec::new();
+    for (name, kind, upstream) in [("oa", "openai", catalogue), ("embed", "tei", health)] {
+        let created: Value = client
+            .post(format!("{base}/api/v1/orgs/{org_id}/providers"))
+            .json(&json!({
+                "name": name,
+                "kind": kind,
+                "api_base": format!("http://{upstream}"),
+            }))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        ids.push(created["id"].as_str().expect("provider id").to_string());
+    }
+
+    let test = |id: String, query: &'static str| {
+        let client = client.clone();
+        let base = base.clone();
+        async move {
+            client
+                .post(format!("{base}/api/v1/providers/{id}/test{query}"))
+                .send()
+                .await
+                .unwrap()
+                .json::<Value>()
+                .await
+                .unwrap()
+        }
+    };
+    let listed = test(ids[0].clone(), "?model=gpt-4o").await;
+    assert_eq!(listed["reachable"], true, "{listed}");
+    assert_eq!(listed["model_listed"], true, "{listed}");
+    let missing = test(ids[0].clone(), "?model=gpt-9").await;
+    assert_eq!(missing["reachable"], true, "{missing}");
+    assert_eq!(missing["model_listed"], false, "{missing}");
+    let unasked = test(ids[0].clone(), "").await;
+    assert!(unasked["model_listed"].is_null(), "{unasked}");
+    let liveness = test(ids[1].clone(), "?model=gpt-4o").await;
+    assert_eq!(liveness["reachable"], true, "{liveness}");
+    assert!(liveness["model_listed"].is_null(), "{liveness}");
+}
+
 /// #3085: a provider cannot name a control-plane secret as its credential
 /// variable, on save or on test, and a row that already does is never read.
 #[tokio::test]

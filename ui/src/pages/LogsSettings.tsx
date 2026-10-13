@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { SettingsBody } from "@/components/screen";
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, X } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
@@ -9,6 +9,7 @@ import { DocsLink } from "@/components/DocsLink";
 import { superadminOnly } from "@/components/ForbiddenScreen";
 import { LoadError } from "@/components/LoadError";
 import { PanelSkeleton } from "@/components/LoadingState";
+import { Combobox, type ComboboxOption } from "@/components/ui/combobox";
 import { Field } from "@/components/ui/field";
 import { FieldError } from "@/components/ui/field-error";
 import { Input } from "@/components/ui/input";
@@ -18,13 +19,16 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import {
   AnalyticsUnavailableError,
+  fetchAnalyticsByModel,
   fetchAnalyticsSummary,
   fetchLoggingSettings,
+  fetchVirtualKeys,
   updateLoggingSettings,
   type LoggingSettingsDto,
 } from "@/lib/api";
 import { useFormat } from "@/lib/i18n/format";
 import { errorText } from "@/lib/error-copy";
+import { useScope } from "@/lib/scope";
 import { parseSamplingPercent, sampleShare, samplingPercentText } from "@/lib/sampling";
 import { useToast } from "@/lib/toast";
 import { translateErrors, useFieldErrors } from "@/lib/use-field-errors";
@@ -35,8 +39,8 @@ interface FormState {
   captureEnabled: boolean;
   maxBytes: string;
   redactFields: string;
-  models: string;
-  virtualKeyIds: string;
+  models: string[];
+  virtualKeyIds: string[];
   retentionDays: string;
   payloadRetentionHours: string;
   uiEvents: boolean;
@@ -55,8 +59,8 @@ const fromDto = (dto: LoggingSettingsDto): FormState => ({
   captureEnabled: dto.payload_capture_enabled,
   maxBytes: String(dto.payload_capture_max_bytes),
   redactFields: dto.payload_capture_redact_fields.join(", "),
-  models: dto.payload_capture_models.join(", "),
-  virtualKeyIds: dto.payload_capture_virtual_key_ids.join(", "),
+  models: dto.payload_capture_models,
+  virtualKeyIds: dto.payload_capture_virtual_key_ids,
   retentionDays: String(dto.retention_days),
   payloadRetentionHours: String(dto.payload_retention_hours),
   uiEvents: dto.ui_events,
@@ -148,6 +152,25 @@ function LogsSettingsScreen() {
     staleTime: 60_000,
   });
 
+  // what the two capture filters can be picked from: the models that carried
+  // traffic recently, and the virtual keys of the scope the dashboard is on.
+  // Neither read blocks the screen, and one that fails leaves its filter as a
+  // list nobody can check an entry against (#2089)
+  const scope = useScope();
+  const since = React.useMemo(() => new Date(Date.now() - 30 * 86_400_000).toISOString(), []);
+  const seenModels = useQuery({
+    queryKey: ["analytics", "by-model", "capture-picker", since],
+    queryFn: () => fetchAnalyticsByModel({ since }),
+    retry: false,
+    staleTime: 60_000,
+  });
+  const keys = useQuery({
+    queryKey: ["virtual-keys", scope.projectId],
+    queryFn: () => fetchVirtualKeys(scope.projectId as string),
+    enabled: !!scope.projectId,
+    retry: false,
+  });
+
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
   // `settings` is the query the user is actually waiting on for this screen
   useScreenReady(!settings.isLoading);
@@ -186,8 +209,8 @@ function LogsSettingsScreen() {
           ? Number(f.maxBytes)
           : (settings.data?.payload_capture_max_bytes ?? 0),
         payload_capture_redact_fields: splitList(f.redactFields),
-        payload_capture_models: splitList(f.models),
-        payload_capture_virtual_key_ids: splitList(f.virtualKeyIds),
+        payload_capture_models: f.models,
+        payload_capture_virtual_key_ids: f.virtualKeyIds,
         retention_days: Number(f.retentionDays),
         payload_retention_hours: Number(f.payloadRetentionHours),
         ui_events: f.uiEvents,
@@ -304,7 +327,7 @@ function LogsSettingsScreen() {
                 hours: form.payloadRetentionHours || "0",
                 redacted:
                   splitList(form.redactFields).join(", ") || t("pages.logsSettings.nothing"),
-                models: splitList(form.models).join(", ") || t("pages.logsSettings.everyModel"),
+                models: form.models.join(", ") || t("pages.logsSettings.everyModel"),
               })
             : t("pages.logsSettings.captureOffSummary")}
         </p>
@@ -338,19 +361,43 @@ function LogsSettingsScreen() {
           placeholder={t("pages.logsSettings.redactedPlaceholder")}
           onChange={(v) => set({ redactFields: v })}
         />
-        <FilterField
+        <CaptureFilter
           label={t("pages.logsSettings.onlyModels")}
           hint={t("pages.logsSettings.onlyModelsHint")}
-          value={form.models}
+          addLabel={t("pages.logsSettings.picker.addModel")}
           placeholder={t("pages.logsSettings.onlyModelsPlaceholder")}
-          onChange={(v) => set({ models: v })}
+          selected={form.models}
+          options={(seenModels.data ?? []).map((row) => ({ value: row.model, label: row.model }))}
+          // a model that has not carried traffic yet is still a fair thing to
+          // capture, so a name outside the list is accepted and only marked
+          allowCustom
+          checkable={seenModels.isSuccess && seenModels.data.length > 0}
+          staleLabel={t("pages.logsSettings.picker.modelUnseen")}
+          emptyText={
+            seenModels.isPending
+              ? t("pages.logsSettings.picker.loading")
+              : t("pages.logsSettings.picker.modelsUnavailable")
+          }
+          onChange={(models) => set({ models })}
         />
-        <FilterField
+        <CaptureFilter
           label={t("pages.logsSettings.onlyKeys")}
           hint={t("pages.logsSettings.onlyKeysHint")}
-          value={form.virtualKeyIds}
-          placeholder="0b7f1e2a-1c3d-4e5f-8a9b-0c1d2e3f4a5b"
-          onChange={(v) => set({ virtualKeyIds: v })}
+          addLabel={t("pages.logsSettings.picker.addKey")}
+          placeholder={t("pages.logsSettings.onlyKeysPlaceholder")}
+          selected={form.virtualKeyIds}
+          options={(keys.data ?? []).map((key) => ({
+            value: key.id,
+            label: key.name ? `${key.name} (${key.key_prefix})` : key.key_prefix,
+          }))}
+          checkable={keys.isSuccess}
+          staleLabel={t("pages.logsSettings.picker.keyMissing")}
+          emptyText={
+            keys.isPending && scope.projectId
+              ? t("pages.logsSettings.picker.loading")
+              : t("pages.logsSettings.picker.keysUnavailable")
+          }
+          onChange={(virtualKeyIds) => set({ virtualKeyIds })}
         />
       </SettingsPanel>
 
@@ -475,6 +522,99 @@ function SampledLogWarning({ id, rate }: { id: string; rate: number | null }) {
         </p>
       )}
     </div>
+  );
+}
+
+/**
+ * A capture filter picked from what exists instead of typed (#2089).
+ *
+ * A `Combobox` adds an entry and the entries are removable chips below it: the
+ * fuzzy filter finds a key by its name or prefix, while what is stored stays
+ * the value (a key's id, a model's name), so the API payload is the list it
+ * always was. An entry the read cannot account for is kept and marked, never
+ * dropped: a key deleted since the filter was saved would otherwise vanish on
+ * the next save with nothing said, and a filter that matches nothing is the
+ * thing this screen exists to prevent. `checkable` is false while the list an
+ * entry would be checked against is missing, so a failed read marks nothing as
+ * stale. The panel's disabled fieldset switches the controls off with capture.
+ */
+function CaptureFilter({
+  label,
+  hint,
+  addLabel,
+  placeholder,
+  selected,
+  options,
+  allowCustom = false,
+  checkable,
+  staleLabel,
+  emptyText,
+  onChange,
+}: {
+  label: string;
+  hint: string;
+  addLabel: string;
+  placeholder: string;
+  selected: string[];
+  options: ComboboxOption[];
+  allowCustom?: boolean;
+  checkable: boolean;
+  staleLabel: string;
+  emptyText: string;
+  onChange: (next: string[]) => void;
+}) {
+  const { t } = useTranslation();
+  const labels = new Map(options.map((o) => [o.value, o.label]));
+  const add = (value: string) => {
+    const picked = value.trim();
+    if (picked && !selected.includes(picked)) onChange([...selected, picked]);
+  };
+  return (
+    <Field label={label} hint={hint} className="w-full">
+      <Combobox
+        allowCustom={allowCustom}
+        className="max-w-sm font-mono"
+        aria-label={addLabel}
+        placeholder={placeholder}
+        emptyText={emptyText}
+        value=""
+        options={options.filter((o) => !selected.includes(o.value))}
+        onChange={add}
+      />
+      {selected.length > 0 && (
+        <ul aria-label={label} className="mt-2 flex flex-wrap gap-1.5">
+          {selected.map((value) => {
+            const stale = checkable && !labels.has(value);
+            const name = labels.get(value) ?? value;
+            return (
+              <li
+                key={value}
+                className={`inline-flex max-w-full items-center gap-1 rounded-full border py-0.5 pl-2.5 pr-1 font-mono text-xs ${
+                  stale
+                    ? "border-[color:var(--status-warning)]/40 bg-[color:var(--status-warning)]/10"
+                    : "border-[color:var(--border-subtle)]"
+                }`}
+              >
+                <span className="min-w-0 break-all">{name}</span>
+                {stale && (
+                  <span className="shrink-0 font-sans text-[color:var(--status-warning-text)]">
+                    {staleLabel}
+                  </span>
+                )}
+                <button
+                  type="button"
+                  aria-label={t("pages.logsSettings.picker.remove", { name })}
+                  className="inline-flex size-5 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+                  onClick={() => onChange(selected.filter((v) => v !== value))}
+                >
+                  <X aria-hidden className="size-3" />
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </Field>
   );
 }
 
