@@ -36,7 +36,7 @@ await step("E2.1", "mint a personal key: dashboard, then API", async () => {
   assert(r.status === 200 && r.json?.key, `API mint ${r.status} ${JSON.stringify(r.json).slice(0, 160)}`);
   key = r.json.key;
   keyId = r.json.id;
-  if (uiBlocked) return ["bug", "the API mints the key (shown once, 30-day expiry), but on My Virtual Keys 'Generate virtual key' is disabled ('Select a project in the sidebar') and the switcher cannot select one (#1846)"];
+  if (uiBlocked) return ["bug", "the API mints the key (shown once, 30-day expiry), but on Account & keys 'Generate virtual key' is disabled ('Select a project in the sidebar') and the switcher cannot select one (#1846)"];
   return ["pass", "minted from the dashboard and the API"];
 }, page);
 

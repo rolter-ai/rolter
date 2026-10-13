@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { ArrowRight, Check, Compass, Plus, Rocket, X } from "lucide-react";
+import { ArrowRight, Check, ChevronDown, ChevronUp, Compass, Plus, Rocket, X } from "lucide-react";
 import * as React from "react";
 import { Link } from "react-router";
 import { useTranslation } from "react-i18next";
@@ -72,12 +72,36 @@ interface Step {
   gate?: Capability;
 }
 
-/** one step: a state marker, the copy, and the link that does it */
-function StepRow({ step, index }: { step: Step; index: number }) {
+/** the link that does a step, or the refusal that names the role it takes */
+function StepAction({ step, primary }: { step: Step; primary: boolean }) {
   const { t } = useTranslation();
   // use-gate-allow: picks a link or a button; the refused button is a
   // `GatedButton`, which is what records the reach for it
   const { denied } = useGate(step.gate);
+  const variant = primary ? "default" : "outline";
+  const label = t(`pages.gettingStarted.steps.${step.key}.action`);
+  return denied && step.gate ? (
+    // the house pattern for a control the caller may not use (#1183): present,
+    // disabled, and saying which role it takes — rather than a link that spends
+    // the operator's attention on a 403. the capability tells the steps apart in
+    // `refused_click`, so they share one slug
+    <GatedButton gate={step.gate} control="getting-started-step" size="sm" variant={variant}>
+      {label}
+    </GatedButton>
+  ) : (
+    <Link to={step.to} className={cn(buttonVariants({ variant, size: "sm" }), "gap-1.5")}>
+      {label}
+      <ArrowRight className="h-3.5 w-3.5" />
+    </Link>
+  );
+}
+
+/**
+ * one step: a state marker, the copy, and the link that does it. only the next
+ * undone step carries the primary button; a finished one has nothing to press
+ */
+function StepRow({ step, index, next }: { step: Step; index: number; next: boolean }) {
+  const { t } = useTranslation();
   const label = t(`pages.gettingStarted.steps.${step.key}.title`);
   return (
     <li className="flex items-start gap-3">
@@ -105,31 +129,11 @@ function StepRow({ step, index }: { step: Step; index: number }) {
         <p className="mt-0.5 text-xs leading-snug text-muted-foreground">
           {t(`pages.gettingStarted.steps.${step.key}.body`)}
         </p>
-        <div className="mt-2">
-          {denied && step.gate ? (
-            // the house pattern for a control the caller may not use (#1183):
-            // present, disabled, and saying which role it takes — rather than
-            // a link that spends the operator's attention on a 403. the
-            // capability tells the steps apart in `refused_click`, so they
-            // share one slug
-            <GatedButton
-              gate={step.gate}
-              control="getting-started-step"
-              size="sm"
-              variant="outline"
-            >
-              {t(`pages.gettingStarted.steps.${step.key}.action`)}
-            </GatedButton>
-          ) : (
-            <Link
-              to={step.to}
-              className={cn(buttonVariants({ variant: "outline", size: "sm" }), "gap-1.5")}
-            >
-              {t(`pages.gettingStarted.steps.${step.key}.action`)}
-              <ArrowRight className="h-3.5 w-3.5" />
-            </Link>
-          )}
-        </div>
+        {step.done ? null : (
+          <div className="mt-2">
+            <StepAction step={step} primary={next} />
+          </div>
+        )}
       </div>
     </li>
   );
@@ -230,6 +234,9 @@ export function GettingStarted({ requests }: GettingStartedProps) {
   const noProjectExists = !scope.isLoading && scope.projects.length === 0;
   const hasProvider = (providers.data?.length ?? 0) > 0;
   const hasTraffic = (requests ?? 0) > 0;
+  // the strip and the steps share one state: opened from the strip, or whole
+  // while nothing is done yet
+  const [expanded, setExpanded] = React.useState(false);
 
   const dismiss = () => {
     writeDismissed(true);
@@ -252,8 +259,12 @@ export function GettingStarted({ requests }: GettingStartedProps) {
   );
   if (unreadable) return null;
 
-  // configured and serving: the card has said everything it has to say
-  if (hasTraffic && hasProvider) return null;
+  // configured: a provider, a route and a key exist, which is everything the
+  // checklist asks for. traffic is no part of it — a quiet day would bring the
+  // card back, and a deployment with no analytics store could never retire it
+  const hasRoute = (routes.data?.length ?? 0) > 0;
+  const hasKey = (keys.data?.length ?? 0) > 0;
+  if (hasProvider && hasRoute && hasKey) return null;
 
   if (dismissed) {
     return (
@@ -274,21 +285,57 @@ export function GettingStarted({ requests }: GettingStartedProps) {
     { key: "provider", done: hasProvider, to: "/providers", gate: SETUP_GATES.provider },
     {
       key: "route",
-      done: (routes.data?.length ?? 0) > 0,
+      done: hasRoute,
       to: "/routing-rules",
       gate: SETUP_GATES.route,
     },
     {
       key: "key",
-      done: (keys.data?.length ?? 0) > 0,
+      done: hasKey,
       to: "/virtual-keys",
       gate: SETUP_GATES.key,
     },
   ];
 
+  const doneCount = steps.filter((step) => step.done).length;
+  const next = steps.find((step) => !step.done);
+  // one line once any step is done: the progress, and the step that comes next.
+  // only while the rows are known, since a count over unread lists is a guess
+  const strip = doneCount > 0 && !expanded && !loading && !failed && !!scope.projectId && !!next;
+
+  if (strip) {
+    return (
+      <Card>
+        <CardContent className="flex flex-wrap items-center justify-between gap-3 p-3">
+          <span className="flex min-w-0 items-center gap-2 text-sm">
+            <Rocket aria-hidden className="h-4 w-4 flex-none text-muted-foreground" />
+            {t("pages.gettingStarted.progress", {
+              done: doneCount,
+              total: steps.length,
+              next: t(`pages.gettingStarted.steps.${next.key}.action`),
+            })}
+          </span>
+          <span className="flex flex-wrap items-center gap-2">
+            <StepAction step={next} primary />
+            <Button
+              variant="ghost"
+              size="sm"
+              className="gap-1.5"
+              aria-expanded={false}
+              onClick={() => setExpanded(true)}
+            >
+              <ChevronDown aria-hidden className="h-3.5 w-3.5" />
+              {t("pages.gettingStarted.showSteps")}
+            </Button>
+          </span>
+        </CardContent>
+      </Card>
+    );
+  }
+
   return (
     <Card>
-      <CardHeader className="flex-row items-start justify-between gap-3 space-y-0">
+      <CardHeader className="flex-row flex-wrap items-start justify-between gap-3 space-y-0">
         <div className="flex items-start gap-3">
           <span className="mt-0.5 flex h-8 w-8 flex-none items-center justify-center rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] text-muted-foreground">
             <Rocket className="h-4 w-4" />
@@ -298,16 +345,30 @@ export function GettingStarted({ requests }: GettingStartedProps) {
             <CardDescription>{t("pages.gettingStarted.subtitle")}</CardDescription>
           </div>
         </div>
-        <Button
-          variant="ghost"
-          size="sm"
-          className="gap-1.5"
-          onClick={dismiss}
-          aria-label={t("pages.gettingStarted.dismiss")}
-        >
-          <X className="h-3.5 w-3.5" />
-          {t("pages.gettingStarted.dismiss")}
-        </Button>
+        <div className="flex items-center gap-1">
+          {doneCount > 0 && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="gap-1.5"
+              aria-expanded
+              onClick={() => setExpanded(false)}
+            >
+              <ChevronUp aria-hidden className="h-3.5 w-3.5" />
+              {t("pages.gettingStarted.hideSteps")}
+            </Button>
+          )}
+          <Button
+            variant="ghost"
+            size="sm"
+            className="gap-1.5"
+            onClick={dismiss}
+            aria-label={t("pages.gettingStarted.dismiss")}
+          >
+            <X className="h-3.5 w-3.5" />
+            {t("pages.gettingStarted.dismiss")}
+          </Button>
+        </div>
       </CardHeader>
       <CardContent>
         {loading ? (
@@ -380,10 +441,10 @@ export function GettingStarted({ requests }: GettingStartedProps) {
           <div className="flex flex-col gap-5">
             <ol className="flex flex-col gap-4">
               {steps.map((step, i) => (
-                <StepRow key={step.key} step={step} index={i} />
+                <StepRow key={step.key} step={step} index={i} next={step === next} />
               ))}
             </ol>
-            <div>
+            <div className="min-w-0">
               <div className="text-sm">{t("pages.gettingStarted.steps.client.title")}</div>
               <p className="mt-0.5 mb-2 text-xs leading-snug text-muted-foreground">
                 {t("pages.gettingStarted.steps.client.body")}

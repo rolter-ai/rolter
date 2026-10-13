@@ -80,7 +80,7 @@ export const Default: Story = {
     // a combobox reads as the option's label; `30` and `inherit` are what the
     // form sends
     await expect(canvas.getByLabelText("Expires")).toHaveValue(`In ${DEFAULT_KEY_TTL_DAYS} days`);
-    await expect(canvas.getByLabelText("Response cache")).toHaveValue("Inherit route setting");
+    await expect(canvas.getByLabelText("Response cache")).toHaveValue("Inherit");
   },
 };
 

@@ -1,3 +1,4 @@
+import { csvLine } from "./csv";
 import type { AuditLogEntry, AuditLogPage, AuditLogQuery } from "./api";
 
 // an audit export is evidence, so a row carries everything that identifies it
@@ -53,19 +54,8 @@ const COLUMNS: (keyof AuditExportRow)[] = [
   "detail",
 ];
 
-function cell(value: unknown): string {
-  let text = value == null ? "" : typeof value === "string" ? value : JSON.stringify(value);
-  // a spreadsheet runs a cell that starts with one of these as a formula, and
-  // a target id or an e-mail is typed by someone other than the reader
-  if (/^[=+\-@\t\r]/.test(text)) text = `'${text}`;
-  return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
-}
-
 export function auditCsv(rows: AuditExportRow[]): string {
-  const lines = [
-    COLUMNS.join(","),
-    ...rows.map((row) => COLUMNS.map((c) => cell(row[c])).join(",")),
-  ];
+  const lines = [COLUMNS.join(","), ...rows.map((row) => csvLine(COLUMNS.map((c) => row[c])))];
   return lines.join("\r\n") + "\r\n";
 }
 

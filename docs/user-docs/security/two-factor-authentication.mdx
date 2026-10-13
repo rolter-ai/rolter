@@ -28,8 +28,8 @@ operator running several can tell the entries apart.
 
 ## Enrolling from the dashboard
 
-**Account → Two-factor authentication**, at the top of the screen above your
-virtual keys.
+**Settings → Account & keys → Two-factor authentication**, the panel after
+Profile and Password and above your virtual keys.
 
 1. **Set up two-factor authentication** shows a QR code and, beside it, the
    same secret as text for a desktop authenticator or a phone whose camera is
@@ -268,7 +268,7 @@ curl -sS -X PUT https://rolter.example.com/api/v1/orgs/$ORG/auth-policy \
 
 Until that moment an unenrolled member signs in with the password alone. The
 login response carries `mfa_enrol_by` with the date, the dashboard says it in
-a notice on the way in, and **Account → Two-factor authentication** shows it
+a notice on the way in, and **Settings → Account & keys → Two-factor authentication** shows it
 too, so members can enrol at their own pace. After it, the next sign-in walks
 them through enrolment as above.
 

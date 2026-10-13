@@ -37,7 +37,9 @@ Each step is ticked from the deployment itself, not from a checklist kept in you
 
 The card is for whoever sets the deployment up. If your role can add none of a provider, a route or a virtual key (a member or a viewer, typically), the Dashboard opens straight on its traffic panels and the card is not shown at all. The same happens when your role may not read the providers, routes or keys it would tick off. Neither case is reported as an error.
 
-**Dismiss** hides the card and leaves a **Getting started** button in its place, so it is never gone for good. It retires itself once the deployment has both a provider and traffic — traffic on its own can be a single Playground call, which is step one.
+Once any step is done the card shrinks to one line, such as _2 of 4 · Next: Add a route_, with a primary button for the next undone step and **Show steps** to open the list again. Inside the list only that next step carries a primary button, and a finished step has none. While the deployment has traffic the card sits under the four figures rather than above them.
+
+**Dismiss** hides the card and leaves a **Getting started** button in its place, so it is never gone for good. The card retires itself once a provider, a route and a virtual key all exist. Traffic plays no part in that, so a quiet day does not bring it back, and a deployment without ClickHouse retires it as well.
 
 ## The overview figures
 

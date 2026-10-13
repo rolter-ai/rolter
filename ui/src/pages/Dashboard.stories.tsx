@@ -449,6 +449,24 @@ export const AsAdmin: Story = {
 };
 
 /**
+ * With traffic the telemetry leads: an unfinished checklist sits under the
+ * figures instead of pushing them to the fold (#1977). On a deployment with no
+ * traffic it stays on top, where there is nothing else to look at.
+ */
+export const ChecklistSitsBelowTheFiguresWhenServing: Story = {
+  render: () => render(withRecent(MOBILE_ROWS), "admin"),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const checklist = await canvas.findByText(en.pages.gettingStarted.subtitle);
+    const figures = await canvas.findByTestId("dashboard-figures");
+    await canvas.findAllByText(fmt.number(132));
+    await expect(
+      figures.compareDocumentPosition(checklist) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  },
+};
+
+/**
  * A polling cadence a play can watch several intervals of (#1975). The recent
  * requests card asks every 15s and the figures every minute, and the
  * story tests give a whole story 15s, so the screen takes `pollMs` from a
