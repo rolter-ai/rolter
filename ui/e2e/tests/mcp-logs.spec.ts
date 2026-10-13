@@ -96,8 +96,9 @@ test("a real failure reads as an error, leading with plain language", async ({ p
   await page.goto("/mcp-logs");
 
   await expect(page.getByText(FAILED)).toBeVisible();
-  // the raw message stays available to diagnose with, just not as the headline
-  await expect(page.getByText(/clickhouse read timed out/)).toBeVisible();
+  // the raw message stays available to diagnose with, just not as the headline;
+  // the summary tiles and the list each carry it since #3063
+  await expect(page.getByText(/clickhouse read timed out/).first()).toBeVisible();
   await expect(page.getByText(UNAVAILABLE)).toHaveCount(0);
 });
 
