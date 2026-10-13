@@ -46,6 +46,23 @@ tenancy scope. The `allowed_for_agrees_with_authorize_on_every_row` test in
 `rbac_matrix.rs` walks every row against the guard's own decision, so the
 advisory answer cannot promise more than the guard grants (#1877).
 
+The test walks `CAPABILITIES`, not the handlers, so a second check covers the
+handler side (#2377): in a debug build `authorize` and `ScopeFilter::allows_as`
+panic when the chain they are handed has a different depth (org, org + team, full)
+than the row's declared `scope`. Every integration test that reaches a guard
+therefore exercises it, and a handler that guards a `team` row at `ScopeChain::org`
+fails its own test. The rows whose records live at several scopes (`provider`,
+`provider_group`, `budget`, `rate_limit`, see below) may guard at a shallower chain
+than declared, never a deeper one; that list is `MULTI_SCOPE` in `rbac_matrix.rs`. Guards that already differed when the
+check landed (`project`, `team:delete`, `membership`, `user`, `invitation:create`) are
+listed in `KNOWN_DRIFT` beside it, to be removed as #3074 fixes each.
+
+No `deployment` row takes a scoped role (`deployment_rows_name_no_role` asserts it),
+so keeping the whole chain for them in `chain_at` decides nothing: their authority is
+superadmin or any authenticated caller, and the guard never reads a chain for either.
+A new `deployment` row with a `Role(..)` authority fails that test until its guard
+chain is specified here.
+
 `provider` and `provider_group` are `project` rows although a row may also be
 org-wide (#1919, #2519). The matrix answers for the chain the caller queried, so
 a project admin asked at `(org, team, project)` gets the writes `crud.rs` allows

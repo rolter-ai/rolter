@@ -11,7 +11,7 @@ name = "rolter-gateway"
 path = "src/main.rs"
 
 [dependencies]
-rolter-core.workspace = true
+rolter-core = { workspace = true, features = ["shutdown"] }
 rolter-balancer.workspace = true
 rolter-proxy.workspace = true
 rolter-auth.workspace = true

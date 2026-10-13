@@ -16,7 +16,7 @@ path = "src/bin/seed.rs"
 required-features = ["postgres"]
 
 [dependencies]
-rolter-core.workspace = true
+rolter-core = { workspace = true, features = ["shutdown"] }
 rolter-store.workspace = true
 rolter-auth.workspace = true
 rolter-balancer.workspace = true

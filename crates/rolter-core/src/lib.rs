@@ -26,6 +26,8 @@ pub mod plugin_dispatch;
 pub mod probe;
 pub mod prompt_templates;
 pub mod redact;
+#[cfg(feature = "shutdown")]
+pub mod shutdown;
 pub mod slug;
 pub mod stability;
 pub mod telemetry;

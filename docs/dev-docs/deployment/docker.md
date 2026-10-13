@@ -234,7 +234,7 @@ GHCR always publishes via the built-in `GITHUB_TOKEN`. To also push to Docker Hu
 
 ## Stopping
 
-Both planes drain in-flight requests on `SIGTERM` and Ctrl-C (`SIGINT`), standalone and under `rolter easy-up`, which is the image's default command. Under `easy-up` each plane installs its own handler, so one signal starts both drains and the process exits `0` once both have finished; `docker stop` therefore returns promptly instead of waiting out the grace period for `SIGKILL`. If either plane fails, the command ends with that error. `crates/rolter/tests/easy_up_signals.rs` spawns the real binary and bounds the exit time.
+Both planes drain in-flight requests on `SIGTERM` and Ctrl-C (`SIGINT`), standalone and under `rolter easy-up`, which is the image's default command. Under `easy-up` each plane installs its own handler, so one signal starts both drains and the process exits `0` once both have finished; `docker stop` therefore returns promptly instead of waiting out the grace period for `SIGKILL`. If either plane fails, the command ends with that error. The control plane bounds its drain at 10 seconds (`SHUTDOWN_DRAIN_GRACE`): a request still open that long after the signal, such as a stalled SSE or a hung export, is dropped with a `warn` line instead of holding the process until `SIGKILL`. Both planes wait on the one `rolter_core::shutdown::shutdown_signal`. `crates/rolter/tests/easy_up_signals.rs` spawns the real binary and bounds the exit time.
 
 ## Air-gapped
 

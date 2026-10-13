@@ -811,6 +811,85 @@ pub(crate) const fn requirement_for(resource: &'static str, action: Action) -> R
     panic!("this resource is not in the rbac capability table (crates/rolter-control/src/rbac_matrix.rs)")
 }
 
+/// Resources whose rows live at more than one scope, so the table declares the
+/// deepest one and a guard may check a shallower chain for a row that sits
+/// higher up (an org-wide provider is an org admin's, #1919; a budget is
+/// checked at its own scope, #2527). Anything else must guard at exactly the
+/// scope its row declares.
+#[cfg(debug_assertions)]
+const MULTI_SCOPE: &[&str] = &["provider", "provider_group", "budget", "rate_limit"];
+
+/// Guards that already use a chain depth their row does not declare, found when
+/// the check was added and left as they are: changing one changes who is
+/// authorized, which a hygiene check must not do. Each `(resource, depth)` is
+/// one extra depth accepted; the list is meant to shrink to nothing (#3074).
+#[cfg(debug_assertions)]
+const KNOWN_DRIFT: &[(&str, u8)] = &[
+    // the project list guards at the org, a single project at the project
+    ("project", 1),
+    ("project", 3),
+    // deleting a team guards at the team
+    ("team", 2),
+    // granting a role in a team guards at that team
+    ("membership", 2),
+    // the member listings filter each row at its own scope
+    ("membership", 3),
+    ("user", 2),
+    ("user", 3),
+    ("invitation", 2),
+    ("invitation", 3),
+];
+
+/// How many levels of the org, team, project chain a guard names.
+#[cfg(debug_assertions)]
+fn chain_depth(chain: ScopeChain) -> u8 {
+    match (chain.org, chain.team, chain.project) {
+        (_, _, Some(_)) => 3,
+        (_, Some(_), None) => 2,
+        (Some(_), None, None) => 1,
+        (None, None, None) => 0,
+    }
+}
+
+/// How many levels a row's declared `scope` names; `None` for `deployment`,
+/// which names no tenancy scope and is never reached by a role (#2377).
+#[cfg(debug_assertions)]
+fn scope_depth(scope: &str) -> Option<u8> {
+    match scope {
+        "org" => Some(1),
+        "team" => Some(2),
+        "project" => Some(3),
+        _ => None,
+    }
+}
+
+/// Describe a guard whose `chain` has a different shape than the scope its
+/// capability row declares, or `None` when they agree.
+///
+/// `GET /api/v1/rbac/effective` trims the chain to the row's `scope`
+/// ([`chain_at`]); a handler that guards at another shape makes the advisory
+/// answer drift from the guard, silently (#2377).
+#[cfg(debug_assertions)]
+pub(crate) fn guard_shape_mismatch(requirement: Requirement, chain: ScopeChain) -> Option<String> {
+    let cap = CAPABILITIES
+        .iter()
+        .find(|cap| cap.resource == requirement.resource)?;
+    let declared = scope_depth(cap.scope)?;
+    let used = chain_depth(chain);
+    let multi = MULTI_SCOPE.contains(&cap.resource);
+    let agrees = used == declared
+        || (multi && used >= 1 && used < declared)
+        || KNOWN_DRIFT.contains(&(cap.resource, used));
+    (!agrees).then(|| {
+        format!(
+            "guard on {}:{} uses a chain {used} levels deep but CAPABILITIES declares scope {:?} ({declared} levels)",
+            cap.resource,
+            action_key(requirement.action),
+            cap.scope
+        )
+    })
+}
+
 /// The [`Requirement`] a guarded route takes, resolved from [`CAPABILITIES`] at
 /// compile time: `cap!("provider", Create)`.
 macro_rules! cap {
@@ -1242,6 +1321,49 @@ pub(crate) const fn action_key(action: Action) -> &'static str {
 mod tests {
     use super::*;
     use chrono::Utc;
+
+    fn chain_of(depth: u8) -> ScopeChain {
+        ScopeChain {
+            org: Some(Uuid::new_v4()),
+            team: (depth >= 2).then(Uuid::new_v4),
+            project: (depth >= 3).then(Uuid::new_v4),
+        }
+    }
+
+    #[test]
+    fn a_guard_must_use_the_chain_shape_its_row_declares() {
+        // plugin is org-scoped, route is project-scoped
+        let plugin = requirement_for("plugin", Action::Read);
+        assert!(guard_shape_mismatch(plugin, chain_of(1)).is_none());
+        assert!(guard_shape_mismatch(plugin, chain_of(2)).is_some());
+        assert!(guard_shape_mismatch(plugin, chain_of(3)).is_some());
+        let route = requirement_for("route", Action::Read);
+        assert!(guard_shape_mismatch(route, chain_of(3)).is_none());
+        assert!(guard_shape_mismatch(route, chain_of(1)).is_some());
+        assert!(guard_shape_mismatch(route, chain_of(2)).is_some());
+        // an org-wide provider is checked at the org although the row is a
+        // project row; that is the documented exception
+        let provider = requirement_for("provider", Action::Read);
+        assert!(guard_shape_mismatch(provider, chain_of(1)).is_none());
+        assert!(guard_shape_mismatch(provider, chain_of(3)).is_none());
+    }
+
+    #[test]
+    fn deployment_rows_name_no_role() {
+        // `chain_at` keeps the whole chain for a deployment row and no guard
+        // shape is checked for it, which is only sound while no such row takes
+        // a scoped role
+        for cap in CAPABILITIES.iter().filter(|cap| cap.scope == "deployment") {
+            for action in Action::ALL {
+                assert!(
+                    !matches!(cap.authority(action), Some(Authority::Role(_))),
+                    "{}:{} is deployment-scoped but takes a role",
+                    cap.resource,
+                    action_key(action)
+                );
+            }
+        }
+    }
 
     fn membership(
         org: Option<Uuid>,
