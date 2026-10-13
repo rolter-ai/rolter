@@ -21,7 +21,7 @@ The **Kind** picker lists each provider by display name with a line on what it i
 There are two places, and they resolve in this order:
 
 1. **A stored key** — typed into the dashboard, sealed with AES-256-GCM under `ROLTER_KEK` before it reaches the database, and never returned by the API again.
-2. **An environment variable** — `api_key_env` names a variable that is read from the environment of each process that needs the key. The value never enters the database at all.
+2. **An environment variable** — `api_key_env` names a variable that is read from the environment of each process that needs the key. The value never enters the database at all. The control plane's own secrets cannot be named: `ROLTER_KEK`, `ROLTER_DATABASE_URL` and the like, any other name starting with `ROLTER_`, and the database and cache connection variables, are refused with a `400` (`invalid_field` on `api_key_env`) when you save the provider and when you test it, because the connection test sends the value to the provider's base URL.
 
 A stored key wins when both are set.
 

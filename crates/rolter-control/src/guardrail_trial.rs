@@ -53,27 +53,6 @@ const MAX_REASON_CHARS: usize = 500;
 /// What a provider test sends when the operator supplies no sample.
 const DEFAULT_SAMPLE: &str = "Hello, this is a harmless test message from the rolter dashboard.";
 
-/// Environment variables the control plane itself runs on. A test reads the
-/// credential named by `auth_env` from *this* process's environment, and the
-/// url is the operator's to choose, so a name here would send the control
-/// plane's own secret to an arbitrary endpoint. Refused outright; no
-/// guardrail webhook has a reason to name one.
-const RESERVED_ENV: &[&str] = &[
-    "ROLTER_KEK",
-    "ROLTER_KEK_OLD",
-    "ROLTER_MASTER_KEY",
-    "ROLTER_KEY_PEPPER",
-    "ROLTER_SESSION_PEPPER",
-    "ROLTER_ADMIN_TOKEN",
-    "ROLTER_INTERNAL_TOKEN",
-    "ROLTER_PLUGIN_TOKEN",
-    "ROLTER_DATABASE_URL",
-    "ROLTER_REDIS_URL",
-    "DATABASE_URL",
-    "REDIS_URL",
-    "CLICKHOUSE_URL",
-];
-
 pub(crate) fn router() -> Router<ControlState> {
     Router::new()
         .route("/api/v1/guardrails/rules/test", post(test_rule))
@@ -322,12 +301,7 @@ fn webhook_config(body: &ProviderTestBody) -> ApiResult<GuardrailWebhookConfig> 
     let auth = parse_webhook_auth(&body.auth_kind, body.auth_env.as_deref())?;
     if let Some(auth) = &auth {
         let name = auth.env_var();
-        if RESERVED_ENV.iter().any(|r| r.eq_ignore_ascii_case(name)) {
-            return Err(invalid_field(
-                "auth_env",
-                format!("{name} holds a control-plane secret and cannot be used to test a webhook"),
-            ));
-        }
+        crate::secret_env::refuse("auth_env", name, "to test a webhook")?;
     }
     let config = GuardrailWebhookConfig {
         enabled: true,

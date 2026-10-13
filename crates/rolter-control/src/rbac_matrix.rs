@@ -1797,6 +1797,7 @@ mod tests {
         ("runtime_policy.rs", include_str!("runtime_policy.rs")),
         ("scim.rs", include_str!("scim.rs")),
         ("scim_groups.rs", include_str!("scim_groups.rs")),
+        ("secret_env.rs", include_str!("secret_env.rs")),
         ("session_guard.rs", include_str!("session_guard.rs")),
         ("security.rs", include_str!("security.rs")),
         ("seed.rs", include_str!("seed.rs")),

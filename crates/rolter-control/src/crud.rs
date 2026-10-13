@@ -2588,6 +2588,12 @@ async fn resolve_probe_credential(
     id: Uuid,
     api_key_env: Option<&str>,
 ) -> ApiResult<(Option<String>, &'static str)> {
+    // a row saved before the refusal existed, or written by an import, may name
+    // a control-plane secret; it is checked here, before any read, because the
+    // probe sends the value to the row's own api_base
+    if let Some(name) = api_key_env {
+        crate::secret_env::refuse("api_key_env", name, "as a provider credential")?;
+    }
     let sealed: Option<(Vec<u8>, Vec<u8>)> =
         sqlx::query_as("select ciphertext, nonce from provider_keys where provider_id=$1")
             .bind(id)
@@ -3477,6 +3483,9 @@ async fn create_provider(
     require_not_config_owned(&state.config_owned.providers, &body.name, "provider")?;
     require_non_empty(&body.api_base, "api_base")?;
     require_allowed_egress(&state, &body.api_base, "api_base")?;
+    if let Some(name) = body.api_key_env.as_deref() {
+        crate::secret_env::refuse("api_key_env", name, "as a provider credential")?;
+    }
     validate_kind(&body.kind)?;
     require_wellformed_api_base(&body.kind, &body.api_base)?;
     require_valid_telemetry(
@@ -3653,6 +3662,9 @@ async fn update_provider(
     }
     if let Some(kind) = &body.kind {
         validate_kind(kind)?;
+    }
+    if let Some(name) = body.api_key_env.as_deref() {
+        crate::secret_env::refuse("api_key_env", name, "as a provider credential")?;
     }
     if let Some(api_base) = &body.api_base {
         require_non_empty(api_base, "api_base")?;
