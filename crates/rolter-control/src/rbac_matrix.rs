@@ -1946,6 +1946,7 @@ mod tests {
             "request_log_columns.rs",
             include_str!("request_log_columns.rs"),
         ),
+        ("request_timeout.rs", include_str!("request_timeout.rs")),
         ("runtime_policy.rs", include_str!("runtime_policy.rs")),
         ("scim.rs", include_str!("scim.rs")),
         ("scim_groups.rs", include_str!("scim_groups.rs")),

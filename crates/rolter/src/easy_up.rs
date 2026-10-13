@@ -261,6 +261,9 @@ fn refuse_unacknowledged_open_mode(args: &EasyUpArgs, db_mode: bool) -> anyhow::
         .admin_token
         .as_deref()
         .is_some_and(|token| !token.trim().is_empty());
+    if let Some(token) = args.admin_token.as_deref() {
+        rolter_core::admin_token::check(token)?;
+    }
     if token_set || args.allow_open_mode {
         return Ok(());
     }
@@ -705,6 +708,11 @@ models = ["fake-llm"]
         easy_up: EasyUpArgs,
     }
 
+    /// An admin token long enough to close the management API.
+    fn strong_token() -> String {
+        "0123456789abcdef".repeat(2)
+    }
+
     /// Args as `easy-up` would parse them with no environment, bound to `host`.
     fn args_on(host: &str) -> EasyUpArgs {
         EasyUpArgs {
@@ -829,6 +837,24 @@ models = ["fake-llm"]
     }
 
     #[test]
+    fn easy_up_refuses_a_short_admin_token_even_on_loopback() {
+        for host in ["127.0.0.1", "0.0.0.0"] {
+            let mut short = args_on(host);
+            short.admin_token = Some("changeme".to_string());
+            let err = refuse_unacknowledged_open_mode(&short, false)
+                .expect_err("a short token does not close the api");
+            assert!(err.to_string().contains("openssl rand -hex 32"), "{err}");
+        }
+        // blank is unset, so loopback still starts and 0.0.0.0 is still refused
+        let mut blank = args_on("127.0.0.1");
+        blank.admin_token = Some("  ".to_string());
+        assert!(refuse_unacknowledged_open_mode(&blank, false).is_ok());
+        let mut generated = args_on("0.0.0.0");
+        generated.admin_token = Some(strong_token());
+        assert!(refuse_unacknowledged_open_mode(&generated, false).is_ok());
+    }
+
+    #[test]
     fn database_mode_counts_the_gateways_admin_proxy_as_the_management_api() {
         // in database mode the gateway serves /admin/* by proxying to the
         // co-hosted control plane, so a control plane on loopback behind a
@@ -843,7 +869,7 @@ models = ["fake-llm"]
 
         // in file mode the gateway proxies nothing, so the same split is fine
         assert!(refuse_unacknowledged_open_mode(&split, false).is_ok());
-        split.admin_token = Some("secret".to_string());
+        split.admin_token = Some(strong_token());
         assert!(refuse_unacknowledged_open_mode(&split, true).is_ok());
     }
 
@@ -858,7 +884,7 @@ models = ["fake-llm"]
             }
         }
         let mut closed = args_on("0.0.0.0");
-        closed.admin_token = Some("secret".to_string());
+        closed.admin_token = Some(strong_token());
         assert!(refuse_unacknowledged_open_mode(&closed, true).is_ok());
 
         let mut acknowledged = args_on("0.0.0.0");

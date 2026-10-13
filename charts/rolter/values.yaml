@@ -56,6 +56,9 @@ control:
   # ROLTER_ALLOW_OPEN_MODE is set to acknowledge it. Supply a token through
   # `secretEnv` as ROLTER_ADMIN_TOKEN.
   host: 0.0.0.0
+  # outer bound on one control-plane API request (504, code request_timeout);
+  # the /gw/* playground proxy streams and is not bound. 0 disables
+  requestTimeoutSeconds: 60
   service:
     type: ClusterIP
     port: 4001
@@ -114,6 +117,12 @@ control:
     # retire connections so the pool cannot pin itself to one database instance
     # across a failover
     maxLifetimeSeconds: 1800
+    # nothing waits forever on the database: a write stuck behind another
+    # transaction's row lock fails after the lock timeout, a runaway statement
+    # after the statement timeout, both as a 504 with code store_timeout. 0
+    # waits forever. keep lock < statement < control.requestTimeoutSeconds
+    lockTimeoutSeconds: 10
+    statementTimeoutSeconds: 30
   # failed sign-ins are counted per account and per client address, and refused
   # before any argon2 work happens (#1079). counters are shared across replicas
   # through `env.redisUrl`; without it each replica holds its own budget, so a

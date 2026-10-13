@@ -32,6 +32,7 @@ mod clickhouse_client;
 pub mod cooldowns;
 mod egress_client;
 mod error;
+mod example_key;
 mod fake_llm;
 mod genai;
 mod guardrail_webhook;
@@ -221,6 +222,9 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     // revoking the last virtual key must lock the data plane, not open it.
     // `server.require_auth` still overrides this in either direction
     state.managed_auth = args.snapshot_url.is_some();
+    // reloads re-check the public example key against this (#1965)
+    state.exposed_bind = example_key::bind_is_exposed(addr.ip());
+    example_key::warn_if_exposed(&config, state.exposed_bind);
     let state = state;
 
     // export the counters the Prometheus endpoint already renders over OTLP too

@@ -136,7 +136,7 @@ stop "$open"
 
 echo "== closed with an admin token: answers, and the token is enforced =="
 closed="rolter-image-smoke-closed-$$"
-token="smoke-$(date +%s)-$$"
+token="smoke-$(date +%s)-$$-0123456789abcdef0123456789"
 start "$closed" -e "ROLTER_ADMIN_TOKEN=${token}"
 wait_http gateway "http://127.0.0.1:${gateway_port}/healthz"
 wait_http control "http://127.0.0.1:${control_port}/healthz"

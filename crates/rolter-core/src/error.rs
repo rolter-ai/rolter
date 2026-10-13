@@ -27,6 +27,13 @@ pub enum Error {
     #[error("already exists: {0}")]
     AlreadyExists(String),
 
+    /// The database gave up on a statement, or on a lock it was waiting for,
+    /// because the connection's `statement_timeout` or `lock_timeout` ran out.
+    /// Kept apart from [`Error::Store`] so an API can answer it with a coded
+    /// timeout instead of an opaque failure (#1925).
+    #[error("store timeout: {0}")]
+    StoreTimeout(String),
+
     #[error("unauthorized")]
     Unauthorized,
 }

@@ -10,6 +10,7 @@
 //! [ADR-0032](https://github.com/rolter-ai/rolter/blob/master/docs/dev-docs/adr/2026-09-09-one-point-oh-compatibility-guarantees.md).
 
 pub mod access_policy;
+pub mod admin_token;
 #[cfg(feature = "cli-guard")]
 pub mod cli_guard;
 pub mod config;

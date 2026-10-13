@@ -848,6 +848,9 @@ pub struct AppState {
     /// `server.require_auth` overrides this either way. process-level rather
     /// than snapshot-level so a control-plane reload can never clear it
     pub managed_auth: bool,
+    /// whether the listener accepts connections from other hosts; set once at
+    /// startup so a reload can warn about the public example key (#1965)
+    pub exposed_bind: bool,
     /// set by the config watcher when the control plane marks this node as
     /// draining; `/readyz` then reports not-ready so a load balancer stops
     /// sending new traffic while in-flight requests finish (#543)
@@ -1044,6 +1047,7 @@ impl AppState {
             ))),
             // opted into by the binary when a snapshot url is configured
             managed_auth: false,
+            exposed_bind: false,
             draining: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             egress,
             side_client,
@@ -1105,6 +1109,7 @@ impl AppState {
         // the resolver reads this on every lookup, so a policy change takes
         // effect on the next connect without rebuilding a single client
         self.egress.store(Arc::new(config.egress.clone()));
+        crate::example_key::warn_if_exposed(config, self.exposed_bind);
         self.cache_telemetry.configure(&config.providers);
         self.health_events.set_provider_orgs(&config.providers);
         self.snapshot.store(Arc::new(Snapshot::build_with_telemetry(

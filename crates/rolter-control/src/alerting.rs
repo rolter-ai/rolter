@@ -44,10 +44,22 @@ use crate::rbac::{authorize_superadmin, Principal};
 use crate::rbac_matrix::superadmin_cap;
 use crate::ControlState;
 
-/// Longest one webhook delivery may take, connect included. The evaluator waits
-/// on it while holding the rule's row lock, so a slow receiver must not hold
-/// that lock for long.
+/// Longest one webhook delivery may take, connect included. Deliveries run
+/// after the evaluation's transaction has committed (see [`Outbox`]), so a slow
+/// receiver holds neither the rule's row lock nor a database connection, only
+/// one of [`MAX_DELIVERIES`] slots.
 const DELIVERY_TIMEOUT: Duration = Duration::from_secs(10);
+/// Deliveries in flight at once across every pass. A scheduled pass hands its
+/// deliveries off and moves on, so this is what bounds the sockets a burst of
+/// firing rules can open against a dead receiver.
+const MAX_DELIVERIES: usize = 16;
+/// How long a `pending` history row is taken to be in flight on some replica.
+/// Past it the delivery is presumed lost (the process died between the commit
+/// and the send) and the state is delivered again. Well above the longest a
+/// queued delivery can wait, [`DELIVERY_TIMEOUT`] times the queue depth over
+/// [`MAX_DELIVERIES`] for a pass of dead receivers, so a slow one is not sent twice.
+const PENDING_GRACE_SECS: f64 = 300.0;
+static DELIVERY_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(MAX_DELIVERIES);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// Longest a signal query may run. The ClickHouse client bounds each request at
 /// 15s itself; this outer bound is a backstop so a pass never hangs on one rule.
@@ -74,6 +86,7 @@ mod detail_code {
     pub const CLIENT_UNAVAILABLE: &str = "client_unavailable";
     pub const NO_CHANNEL: &str = "no_channel";
     pub const CHANNEL_DISABLED: &str = "channel_disabled";
+    pub const DELIVERY_PENDING: &str = "delivery_pending";
 }
 
 /// Stable codes for `alert_rules.last_error_code`. Part of the API.
@@ -640,7 +653,7 @@ struct HistoryQuery {
 }
 
 const HISTORY_STATES: &[&str] = &["firing", "resolved"];
-const DELIVERY_STATUSES: &[&str] = &["delivered", "failed", "skipped"];
+const DELIVERY_STATUSES: &[&str] = &["pending", "delivered", "failed", "skipped"];
 
 fn bad_param(field: &str, message: String) -> ApiError {
     ApiError::InvalidField {
@@ -739,11 +752,33 @@ async fn evaluate_enabled(state: &ControlState) -> Result<(), Error> {
             .map_err(rolter_store::postgres::store_err)?;
     let kek = Kek::from_env();
     for id in ids {
-        if let Err(error) = evaluate_one(state, id, Lock::SkipLocked, kek.as_ref()).await {
-            tracing::warn!(%id, error = ?error, "alert rule evaluation failed");
+        match evaluate_rule(state, id, Lock::SkipLocked, kek.as_ref()).await {
+            // the send is handed off: the pass goes on to the next rule while
+            // a slow or dead receiver runs out its timeout in the background
+            Ok(Some((_, Some(outbox)))) => hand_off(state, outbox),
+            Ok(_) => {}
+            Err(error) => tracing::warn!(%id, error = ?error, "alert rule evaluation failed"),
         }
     }
     Ok(())
+}
+
+/// Send `outbox` in the background, within the [`MAX_DELIVERIES`] bound. The
+/// slot is waited for inside the task so a burst never holds up the caller.
+fn hand_off(state: &ControlState, outbox: Outbox) {
+    let pool = pool(state).clone();
+    let egress = Arc::clone(&state.egress);
+    tokio::spawn(async move {
+        let Ok(_slot) = DELIVERY_SLOTS.acquire().await else {
+            return;
+        };
+        let rule = outbox.rule_id;
+        if let Err(error) = settle(&pool, &egress, outbox).await {
+            // the row stays `pending` and is delivered again once it is older
+            // than PENDING_GRACE_SECS
+            tracing::warn!(%rule, error = ?error, "alert delivery outcome was not recorded");
+        }
+    });
 }
 
 /// How [`evaluate_one`] takes the rule's row lock.
@@ -773,26 +808,55 @@ struct Reported {
     state: String,
     delivery_status: String,
     sent_at: DateTime<Utc>,
+    /// seconds since `sent_at` by the database clock, so a replica whose own
+    /// clock is off cannot misjudge whether a `pending` row is still in flight
+    age_secs: f64,
 }
 
-/// Evaluate one rule, then deliver and record whatever changed.
-///
-/// `None` when the rule is gone, or, under [`Lock::SkipLocked`], when it is
-/// disabled or another evaluation holds it.
-///
-/// The ClickHouse read happens before any lock is taken, because it is the slow
-/// part. Everything after it runs in one transaction holding the rule's row
-/// lock: deciding whether the reading is a transition, delivering it, and
-/// writing the rule and its history row. Every control-plane replica runs an
-/// evaluator, and the lock is what stops two of them that read the same state
-/// from reporting the same change twice. A reading older than the one the rule
-/// already records is dropped, so a slow query cannot undo a newer result.
+/// Evaluate one rule, then deliver and record whatever changed, returning once
+/// the delivery has settled. **Evaluate now** runs this way, since the operator
+/// is waiting for the outcome; the scheduled pass uses [`evaluate_rule`] and
+/// hands the delivery off.
 async fn evaluate_one(
     state: &ControlState,
     id: Uuid,
     lock: Lock,
     kek: Option<&Kek>,
 ) -> ApiResult<Option<Evaluation>> {
+    let Some((mut evaluation, outbox)) = evaluate_rule(state, id, lock, kek).await? else {
+        return Ok(None);
+    };
+    if let Some(outbox) = outbox {
+        let settled = settle(pool(state), &state.egress, outbox).await?;
+        evaluation.notified = settled.delivery_status == "delivered";
+        evaluation.notification = Some(settled);
+    }
+    Ok(Some(evaluation))
+}
+
+/// Evaluate one rule and record what changed, without sending anything.
+///
+/// `None` when the rule is gone, or, under [`Lock::SkipLocked`], when it is
+/// disabled or another evaluation holds it. Otherwise the evaluation and, for a
+/// transition owed to an enabled channel, the [`Outbox`] to send afterwards.
+///
+/// The ClickHouse read happens before any lock is taken, because it is the slow
+/// part. Everything after it runs in one short transaction holding the rule's
+/// row lock: deciding whether the reading is a transition, writing the rule and
+/// writing its history row, `pending` when a delivery is owed. Every
+/// control-plane replica runs an evaluator, and the lock is what stops two of
+/// them that read the same state from reporting the same change twice: the
+/// second finds the first's `pending` row. The send itself happens after the
+/// commit, so a slow receiver holds neither the lock nor a connection, and a
+/// database that closes idle transactions cannot kill a commit mid-delivery and
+/// have the alert sent again. A reading older than the one the rule already
+/// records is dropped, so a slow query cannot undo a newer result.
+async fn evaluate_rule(
+    state: &ControlState,
+    id: Uuid,
+    lock: Lock,
+    kek: Option<&Kek>,
+) -> ApiResult<Option<(Evaluation, Option<Outbox>)>> {
     let filter = if lock == Lock::SkipLocked {
         " and enabled"
     } else {
@@ -860,11 +924,14 @@ async fn evaluate_one(
     // reading, which this older one must not overwrite
     let superseded = rule.last_evaluated_at.is_some_and(|at| at > read_at);
     if edited || superseded {
-        return Ok(Some(Evaluation {
-            rule,
-            notified: false,
-            notification: None,
-        }));
+        return Ok(Some((
+            Evaluation {
+                rule,
+                notified: false,
+                notification: None,
+            },
+            None,
+        )));
     }
 
     let value = match reading {
@@ -894,8 +961,9 @@ async fn evaluate_one(
         }
     };
     let history: Vec<Reported> = sqlx::query_as(
-        "select state, delivery_status, sent_at from alert_notification_history \
-         where rule_id=$1 order by sent_at desc limit $2",
+        "select state, delivery_status, sent_at, \
+                extract(epoch from clock_timestamp() - sent_at)::float8 as age_secs \
+         from alert_notification_history where rule_id=$1 order by sent_at desc limit $2",
     )
     .bind(id)
     .bind(HISTORY_WINDOW)
@@ -921,34 +989,36 @@ async fn evaluate_one(
         (Some(channel), Lock::SkipLocked) if channel.enabled => Redeliver::After(read_at),
         _ => Redeliver::Never,
     };
+    let mut outbox = None;
     let notification = match transition(&history, next_state, redeliver) {
         Some(change) => {
             let no_data = value.is_none() && rule.no_data != "ignore";
             let currency = state.currency.base_code();
-            let report = report(
-                &state.egress,
+            let (notification, owed) = record(
                 &mut tx,
                 &rule,
                 channel.as_ref(),
                 (change, no_data),
                 &currency,
                 kek,
-            );
-            Some(report.await?)
+            )
+            .await?;
+            outbox = owed;
+            Some(notification)
         }
         None => None,
     };
     tx.commit()
         .await
         .map_err(rolter_store::postgres::store_err)?;
-    let notified = notification
-        .as_ref()
-        .is_some_and(|n| n.delivery_status == "delivered");
-    Ok(Some(Evaluation {
-        rule,
-        notified,
-        notification,
-    }))
+    Ok(Some((
+        Evaluation {
+            rule,
+            notified: false,
+            notification,
+        },
+        outbox,
+    )))
 }
 
 /// The state a rule keeps when a window has no data and its policy is `ignore`.
@@ -1037,6 +1107,11 @@ fn transition(
         .iter()
         .take_while(|r| r.state == holding && r.delivery_status != "delivered");
     let last = unreported.next()?;
+    // a delivery that was committed to and has not settled is on its way from
+    // this replica or another, and sending it again now would duplicate it
+    if last.delivery_status == "pending" && last.age_secs < PENDING_GRACE_SECS {
+        return None;
+    }
     match redeliver {
         Redeliver::Never => None,
         Redeliver::Now => Some(holding),
@@ -1195,7 +1270,7 @@ fn metric_sql(signal: &str, window_secs: i32) -> ApiResult<String> {
 }
 
 /// The channel columns delivery needs, secret included. Never serialized.
-#[derive(sqlx::FromRow)]
+#[derive(Clone, sqlx::FromRow)]
 struct ChannelTarget {
     id: Uuid,
     endpoint: String,
@@ -1251,47 +1326,60 @@ impl Outcome {
     }
 }
 
-/// Deliver `change` to the rule's channel and record the outcome as a history
-/// row, inside the evaluation's transaction.
-async fn report(
-    egress: &Arc<EgressPolicy>,
+/// A delivery an evaluation committed to and has not sent yet: everything the
+/// send needs, so it can run after the transaction and the rule's row lock are
+/// gone. The `pending` history row it settles is already in the database.
+struct Outbox {
+    /// the `pending` history row to settle
+    id: Uuid,
+    rule_id: Uuid,
+    change: &'static str,
+    no_data: bool,
+    channel: ChannelTarget,
+    body: serde_json::Value,
+    /// held so the secret is unsealed at send time, not at commit time
+    kek: Option<Kek>,
+}
+
+/// Write the history row for `change`. A channel that cannot be sent to has its
+/// outcome (`skipped`) written final; one that can gets a `pending` row and the
+/// [`Outbox`] that settles it once the transaction has committed.
+async fn record(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     rule: &Rule,
     channel: Option<&ChannelTarget>,
     (change, no_data): (&'static str, bool),
     currency: &str,
     kek: Option<&Kek>,
-) -> ApiResult<Notification> {
+) -> ApiResult<(Notification, Option<Outbox>)> {
     let id = Uuid::new_v4();
-    let outcome = match channel {
-        None => Outcome::skipped(detail_code::NO_CHANNEL, "no channel configured"),
-        Some(channel) if !channel.enabled => {
-            Outcome::skipped(detail_code::CHANNEL_DISABLED, "channel disabled")
-        }
-        Some(channel) => {
-            let body = payload(id, rule, change, no_data, currency);
-            deliver(egress, channel, &body, kek).await
-        }
+    let (outcome, outbox) = match channel {
+        None => (
+            Outcome::skipped(detail_code::NO_CHANNEL, "no channel configured"),
+            None,
+        ),
+        Some(channel) if !channel.enabled => (
+            Outcome::skipped(detail_code::CHANNEL_DISABLED, "channel disabled"),
+            None,
+        ),
+        Some(channel) => (
+            Outcome::new(
+                "pending",
+                detail_code::DELIVERY_PENDING,
+                "delivery in progress",
+            ),
+            Some(Outbox {
+                id,
+                rule_id: rule.id,
+                change,
+                no_data,
+                channel: channel.clone(),
+                body: payload(id, rule, change, no_data, currency),
+                kek: kek.cloned(),
+            }),
+        ),
     };
-    // the history row is the record of why a rule fired, and an empty window
-    // is not evident from the reading
-    let outcome = if no_data {
-        let mut params = match outcome.params {
-            Some(serde_json::Value::Object(params)) => params,
-            _ => serde_json::Map::new(),
-        };
-        params.insert("no_data".into(), true.into());
-        Outcome {
-            detail: format!("{}; {NO_DATA_DETAIL}", outcome.detail),
-            params: Some(serde_json::Value::Object(params)),
-            ..outcome
-        }
-    } else {
-        outcome
-    };
-    if outcome.status == "failed" {
-        tracing::warn!(rule = %rule.id, change, detail = %outcome.detail, "alert delivery failed");
-    }
+    let outcome = note_no_data(outcome, no_data);
     // clock_timestamp rather than the column's now() default: now() is when the
     // transaction began, and a transaction that waited for the row lock began
     // before the one it waited for, which would order the history backwards
@@ -1313,7 +1401,55 @@ async fn report(
     .fetch_one(&mut **tx)
     .await
     .map_err(rolter_store::postgres::store_err)?;
-    Ok(notification)
+    Ok((notification, outbox))
+}
+
+/// The history row is the record of why a rule fired, and an empty window is
+/// not evident from the reading, so an outcome on one says so.
+fn note_no_data(outcome: Outcome, no_data: bool) -> Outcome {
+    if !no_data {
+        return outcome;
+    }
+    let mut params = match outcome.params {
+        Some(serde_json::Value::Object(params)) => params,
+        _ => serde_json::Map::new(),
+    };
+    params.insert("no_data".into(), true.into());
+    Outcome {
+        detail: format!("{}; {NO_DATA_DETAIL}", outcome.detail),
+        params: Some(serde_json::Value::Object(params)),
+        ..outcome
+    }
+}
+
+/// Send `outbox` and write the outcome over its `pending` row.
+///
+/// Runs outside any transaction. A failed write leaves the row `pending`, which
+/// [`transition`] reads as lost once it is older than [`PENDING_GRACE_SECS`].
+async fn settle(
+    pool: &sqlx::PgPool,
+    egress: &Arc<EgressPolicy>,
+    outbox: Outbox,
+) -> ApiResult<Notification> {
+    let outcome = deliver(egress, &outbox.channel, &outbox.body, outbox.kek.as_ref()).await;
+    let outcome = note_no_data(outcome, outbox.no_data);
+    if outcome.status == "failed" {
+        tracing::warn!(rule = %outbox.rule_id, change = outbox.change, detail = %outcome.detail, "alert delivery failed");
+    }
+    sqlx::query_as(
+        "update alert_notification_history set delivery_status=$2, detail=$3, detail_code=$4, detail_params=$5 \
+         where id=$1 \
+         returning id, rule_id, channel_id, state, delivery_status, detail, detail_code, detail_params, value, threshold, sent_at",
+    )
+    .bind(outbox.id)
+    .bind(outcome.status)
+    .bind(&outcome.detail)
+    .bind(outcome.code)
+    .bind(&outcome.params)
+    .fetch_one(pool)
+    .await
+    .map_err(rolter_store::postgres::store_err)
+    .map_err(ApiError::from)
 }
 
 /// The reading a transition reports: the rule's last value, or `None` for a
@@ -1675,6 +1811,7 @@ mod tests {
             state: state.into(),
             delivery_status: "delivered".into(),
             sent_at: Utc::now(),
+            age_secs: 0.0,
         };
         assert_eq!(held_state("error", &[row("firing")]), "firing");
         assert_eq!(held_state("error", &[row("resolved")]), "ok");
@@ -1955,7 +2092,29 @@ mod tests {
             state: state.into(),
             delivery_status: delivery_status.into(),
             sent_at: now() - chrono::Duration::minutes(minutes_ago),
+            age_secs: (minutes_ago * 60) as f64,
         }
+    }
+
+    #[test]
+    fn a_delivery_still_in_flight_is_not_sent_again_until_it_is_presumed_lost() {
+        for redeliver in [Redeliver::Now, Redeliver::After(now())] {
+            // committed a minute ago: some replica is sending it
+            assert_eq!(
+                transition(&[row("firing", "pending", 1)], "firing", redeliver),
+                None
+            );
+            // past the grace the process that owed it is gone
+            assert_eq!(
+                transition(&[row("firing", "pending", 10)], "firing", redeliver),
+                Some("firing")
+            );
+        }
+        // a recovery is a new transition, never held back by a pending firing
+        assert_eq!(
+            transition(&[row("firing", "pending", 0)], "ok", Redeliver::Now),
+            Some("resolved")
+        );
     }
 
     #[test]
@@ -2135,6 +2294,7 @@ mod tests {
                 let app = Router::new()
                     .route("/", post(clickhouse))
                     .route("/hook", post(hook))
+                    .route("/hold", post(hold))
                     .with_state(stub.clone());
                 tokio::spawn(async move { axum::serve(listener, app).await });
                 stub
@@ -2155,6 +2315,18 @@ mod tests {
             fn hooks(&self) -> Vec<Hook> {
                 self.hooks.lock().clone()
             }
+
+            /// An endpoint that takes the request and never answers until
+            /// [`Self::release`] is notified, like a receiver that black-holes
+            fn hold_url(&self) -> String {
+                format!("{}/hold", self.url)
+            }
+        }
+
+        async fn hold(State(stub): State<Stub>, Json(body): Json<Value>) -> Response {
+            stub.hooks.lock().push((None, body));
+            stub.release.notified().await;
+            StatusCode::OK.into_response()
         }
 
         async fn clickhouse(State(stub): State<Stub>) -> Response {
@@ -2356,6 +2528,121 @@ mod tests {
                     ),
                 ]
             );
+        }
+
+        async fn status_of(db: &TestSchema, rule_id: Uuid) -> Vec<String> {
+            history(db, rule_id)
+                .await
+                .into_iter()
+                .map(|(_, status, _)| status)
+                .collect()
+        }
+
+        /// Wait for `rule_id`'s history to read `expected`, or fail
+        async fn settles_to(db: &TestSchema, rule_id: Uuid, expected: &[&str]) {
+            for _ in 0..100 {
+                if status_of(db, rule_id).await == expected {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            panic!(
+                "history of {rule_id} is {:?}, wanted {expected:?}",
+                status_of(db, rule_id).await
+            );
+        }
+
+        /// #1967: a receiver that black-holes its connection used to hold the
+        /// pass on that rule for the whole delivery timeout, and every rule
+        /// after it waited too.
+        #[tokio::test]
+        async fn a_slow_receiver_does_not_hold_up_the_next_rule_in_the_pass() {
+            let Some(db) = scratch().await else { return };
+            let stub = Stub::start().await;
+            let state = state_with(&db, &stub);
+            let slow_channel = add_channel(&db, &stub.hold_url(), true, false).await;
+            let fast_channel = add_channel(&db, &stub.hook_url(), true, false).await;
+            // evaluated in name order, so the slow rule goes first
+            let slow = add_rule(&db, Some(slow_channel)).await;
+            let fast = add_rule(&db, Some(fast_channel)).await;
+            for (id, name) in [(slow, "a-slow"), (fast, "b-fast")] {
+                sqlx::query("update alert_rules set name=$2 where id=$1")
+                    .bind(id)
+                    .bind(name)
+                    .execute(db.pool())
+                    .await
+                    .expect("name the rule");
+            }
+
+            stub.read(0.9);
+            tokio::time::timeout(std::time::Duration::from_secs(5), evaluate_enabled(&state))
+                .await
+                .expect("the pass must not wait on the slow receiver")
+                .expect("the pass succeeds");
+
+            settles_to(&db, fast, &["delivered"]).await;
+            // both were evaluated; the slow one is still being sent
+            assert_eq!(rule_row(&db, slow).await.state, "firing");
+            assert_eq!(rule_row(&db, fast).await.state, "firing");
+            assert_eq!(status_of(&db, slow).await, ["pending"]);
+
+            // a later pass finds the delivery in flight and does not send again
+            evaluate_enabled(&state).await.expect("the second pass");
+            assert_eq!(status_of(&db, slow).await, ["pending"]);
+            assert_eq!(
+                stub.hooks()
+                    .iter()
+                    .filter(|(_, body)| body["rule"]["name"] == "a-slow")
+                    .count(),
+                1,
+                "the transition was sent twice"
+            );
+
+            // and the slow one settles once its receiver answers
+            stub.release.notify_one();
+            settles_to(&db, slow, &["delivered"]).await;
+        }
+
+        /// #1967: the transaction used to stay open for the whole delivery, so a
+        /// database that closes idle transactions killed the commit, wrote no
+        /// history and sent the same alert again on the next pass.
+        #[tokio::test]
+        async fn a_session_that_closes_idle_transactions_early_does_not_resend() {
+            let Some(db) = scratch().await else { return };
+            let url = rolter_store::postgres::test_database::url()
+                .await
+                .expect("configured, or scratch() returned above");
+            let stub = Stub::start().await;
+            // every connection of this pool is killed 200 ms into an idle
+            // transaction, well inside the 700 ms the receiver takes
+            let pool = sqlx::postgres::PgPoolOptions::new()
+                .max_connections(2)
+                .connect(&format!(
+                    "{}%20-c%20idle_in_transaction_session_timeout%3D200",
+                    rolter_store::postgres::test_schema::with_search_path(&url, db.schema())
+                ))
+                .await
+                .expect("connect with a short idle-in-transaction timeout");
+            let mut state = state_with(&db, &stub);
+            state.pool = Some(pool);
+            let channel = add_channel(&db, &stub.hold_url(), true, false).await;
+            let id = add_rule(&db, Some(channel)).await;
+
+            stub.read(0.9);
+            let release = stub.release.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+                release.notify_one();
+            });
+            let evaluation = run(&state, id, None).await;
+            assert!(evaluation.notified);
+            assert_eq!(evaluation.rule.state, "firing");
+            assert_eq!(status_of(&db, id).await, ["delivered"]);
+
+            // the next pass has nothing to send
+            let again = run(&state, id, None).await;
+            assert!(again.notification.is_none());
+            assert_eq!(stub.hooks().len(), 1);
         }
 
         #[tokio::test]
@@ -2666,8 +2953,11 @@ mod tests {
             assert!(history(&db, id).await.is_empty());
         }
 
+        /// The delivery runs after the transaction, so a channel delete no
+        /// longer queues behind it (#1967); it must also still not deadlock
+        /// with the evaluation, and the delivery still settles its row.
         #[tokio::test]
-        async fn deleting_a_channel_waits_for_a_delivery_in_flight() {
+        async fn deleting_a_channel_during_a_delivery_neither_waits_nor_deadlocks() {
             let Some(db) = scratch().await else { return };
             let stub = Stub::start().await;
             let state = state_with(&db, &stub);
@@ -2689,35 +2979,15 @@ mod tests {
             .await
             .expect("the delivery reaches the receiver");
 
-            let delete = tokio::spawn({
-                let pool = db.pool().clone();
-                async move {
-                    sqlx::query("delete from alert_channels where id=$1 /* in-flight delete */")
-                        .bind(channel)
-                        .execute(&pool)
-                        .await
-                }
-            });
-            // the delete is queued behind the delivery's lock before the
-            // receiver answers, which is the order that used to deadlock
-            tokio::time::timeout(Duration::from_secs(10), async {
-                loop {
-                    let waiting: i64 = sqlx::query_scalar(
-                        "select count(*) from pg_stat_activity \
-                         where wait_event_type = 'Lock' and query like '%in-flight delete%' \
-                         and query not like '%pg_stat_activity%'",
-                    )
-                    .fetch_one(db.pool())
-                    .await
-                    .expect("read pg_stat_activity");
-                    if waiting > 0 {
-                        break;
-                    }
-                    tokio::time::sleep(Duration::from_millis(20)).await;
-                }
-            })
+            tokio::time::timeout(
+                Duration::from_secs(5),
+                sqlx::query("delete from alert_channels where id=$1")
+                    .bind(channel)
+                    .execute(db.pool()),
+            )
             .await
-            .expect("the delete waits on a lock");
+            .expect("the delete does not wait for the delivery")
+            .expect("the delete is not a deadlock victim");
             stub.release.notify_one();
 
             let evaluation = evaluation
@@ -2726,10 +2996,6 @@ mod tests {
                 .expect("the evaluation is not a deadlock victim")
                 .expect("the rule exists");
             assert!(evaluation.notified);
-            delete
-                .await
-                .expect("the delete task")
-                .expect("the delete is not a deadlock victim");
             assert_eq!(
                 history(&db, id).await,
                 vec![("firing".into(), "delivered".into(), Some("HTTP 200".into()))]

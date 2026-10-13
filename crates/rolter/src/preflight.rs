@@ -168,13 +168,22 @@ fn check_kek(env: &dyn Env, out: &mut Vec<Finding>) {
 
 /// Management API and snapshot endpoint must not be open in production.
 fn check_admin_token(env: &dyn Env, out: &mut Vec<Finding>) {
-    if env.get("ROLTER_ADMIN_TOKEN").is_none() {
-        out.push(Finding::error(
+    match env.get("ROLTER_ADMIN_TOKEN") {
+        None => out.push(Finding::error(
             "ROLTER_ADMIN_TOKEN is missing",
             "the management API and /internal/snapshot are unauthenticated without it. Anyone \
              who can reach the control plane can read the whole config snapshot and mutate \
              providers, routes and virtual keys.",
-        ));
+        )),
+        // the control plane refuses to start on the same condition (#1964)
+        Some(token) => {
+            if let Err(short) = rolter_core::admin_token::check(&token) {
+                out.push(Finding::error(
+                    "ROLTER_ADMIN_TOKEN is too short",
+                    format!("{short}; the control plane will refuse to start with it."),
+                ));
+            }
+        }
     }
 }
 
@@ -765,7 +774,10 @@ mod tests {
         fn healthy() -> Self {
             Self::default()
                 .with(KEK_ENV, "b6f1c0d2e3a4957886b1c0d2e3a49578")
-                .with("ROLTER_ADMIN_TOKEN", "an-admin-token")
+                .with(
+                    "ROLTER_ADMIN_TOKEN",
+                    "an-admin-token-of-a-sound-length-0123",
+                )
                 .with("ROLTER_DATABASE_URL", "postgres://user:pw@db:5432/rolter")
                 .with("ROLTER_REDIS_URL", "redis://redis:6379")
                 .with("ROLTER_CONTROL_HOST", "127.0.0.1")
@@ -1130,6 +1142,20 @@ mod tests {
         assert!(findings
             .iter()
             .any(|f| f.fatal && f.title.contains("example value")));
+    }
+
+    #[test]
+    fn a_short_admin_token_is_fatal_and_a_generated_one_is_not() {
+        let short = FakeEnv::healthy().with("ROLTER_ADMIN_TOKEN", "changeme");
+        assert!(run_checks(&short, Role::Control)
+            .iter()
+            .any(|f| f.fatal && f.title.contains("ROLTER_ADMIN_TOKEN is too short")));
+
+        let generated =
+            FakeEnv::healthy().with("ROLTER_ADMIN_TOKEN", &"0123456789abcdef".repeat(2));
+        assert!(!run_checks(&generated, Role::Control)
+            .iter()
+            .any(|f| f.title.contains("ROLTER_ADMIN_TOKEN")));
     }
 
     #[test]
