@@ -216,6 +216,14 @@ pub fn router() -> Router<ControlState> {
         )
         .route("/api/v1/orgs/{org_id}/audit-log", get(list_audit_log))
         .route("/api/v1/audit-log", get(list_deployment_audit_log))
+        .route(
+            "/api/v1/orgs/{org_id}/audit-log/export",
+            get(crate::audit_export::export_org_audit_log),
+        )
+        .route(
+            "/api/v1/audit-log/export",
+            get(crate::audit_export::export_deployment_audit_log),
+        )
 }
 
 pub(crate) fn pool(state: &ControlState) -> &PgPool {
@@ -807,7 +815,7 @@ struct AuditLogPageResponse {
     total: Option<i64>,
 }
 
-fn normalized_filter(value: Option<String>, field: &str) -> ApiResult<Option<String>> {
+pub(crate) fn normalized_filter(value: Option<String>, field: &str) -> ApiResult<Option<String>> {
     value
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())

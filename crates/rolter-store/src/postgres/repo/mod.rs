@@ -3748,6 +3748,16 @@ impl UserRepo<'_> {
         .map_err(store_err)
     }
 
+    /// the e-mail of each account in `ids` that still exists, for naming the
+    /// actors of an audit export a page at a time; an unknown id is left out
+    pub async fn emails_by_ids(&self, ids: &[Uuid]) -> Result<Vec<(Uuid, String)>> {
+        sqlx::query_as("select id, email from users where id = any($1)")
+            .bind(ids)
+            .fetch_all(self.0)
+            .await
+            .map_err(store_err)
+    }
+
     pub async fn get(&self, id: Uuid) -> Result<User> {
         sqlx::query_as(
             "select id, email, password_hash, is_superadmin, deactivated_at, created_at,

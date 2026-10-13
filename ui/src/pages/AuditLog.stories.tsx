@@ -752,11 +752,17 @@ async function captureDownload(names: string[], run: () => Promise<void>): Promi
   }
 }
 
-/** two pages, so the export has to follow the cursor with the filters on both */
+/**
+ * a control plane that predates the export endpoint: it answers 404 there, so
+ * the export has to follow the cursor itself, with the filters on both pages
+ */
 const exportPages = () =>
   recording(
     scoped(async (input) => {
       const url = new URL(String(input), "http://localhost");
+      if (url.pathname.endsWith("/audit-log/export")) {
+        return json({ error: { code: "no_such_endpoint", message: "no such endpoint" } }, 404);
+      }
       if (url.pathname.endsWith("/audit-log")) {
         return json(
           url.searchParams.get("cursor")
@@ -774,9 +780,9 @@ const exportPages = () =>
 
 const exporting = exportPages();
 
-// the file holds the whole filtered log: the action filter rides on every page
-// request, the cursor is followed, and the name carries the org and the window
-export const ExportsTheFilteredLog: Story = {
+// the fallback for an older control plane: the action filter rides on every
+// page request, the cursor is followed, and the name carries the org and window
+export const ExportFallsBackToPagesOnAnOlderControlPlane: Story = {
   render: () => <Screen fetchStub={exporting.stub} />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
@@ -812,10 +818,67 @@ export const ExportsTheFilteredLog: Story = {
   },
 };
 
+/** the control plane streams the file: one request, the filters on it, no paging */
+const streamed = recording(
+  scoped(async (input) => {
+    const url = new URL(String(input), "http://localhost");
+    if (url.pathname.endsWith("/audit-log/export")) {
+      return new Response("at,actor_email\r\n", {
+        headers: {
+          "content-type": "text/csv; charset=utf-8",
+          "content-disposition": 'attachment; filename="audit-log-rolter-all_to_2026-10-13.csv"',
+        },
+      });
+    }
+    return url.pathname.endsWith("/audit-log") ? json(page([entry()])) : json([]);
+  }),
+);
+
+// past the browser's 10,000-row cap the file comes from the control plane: the
+// filters ride on one export request and its own file name is kept
+export const ExportsTheFilteredLog: Story = {
+  render: () => (
+    <MemoryRouter>
+      <Harness fetchStub={streamed.stub}>
+        <Toasted>
+          <AuditLog />
+        </Toasted>
+      </Harness>
+    </MemoryRouter>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText("provider.create");
+    await userEvent.type(
+      canvas.getByRole("combobox", { name: "Filter by action" }),
+      "sso_provider.up",
+    );
+    await userEvent.click(
+      await within(document.body).findByRole("option", { name: "sso_provider.update" }),
+    );
+    await userEvent.click(canvas.getByRole("radio", { name: "Last 7d" }));
+
+    const names: string[] = [];
+    await captureDownload(names, async () => {
+      await userEvent.click(canvas.getByRole("button", { name: "Export CSV" }));
+      await waitFor(() => expect(names).toHaveLength(1));
+    });
+    await expect(names[0]).toBe("audit-log-rolter-all_to_2026-10-13.csv");
+    await expectToast(canvasElement, /Export downloaded/, "success");
+
+    const exportCalls = streamed.calls.filter((c) => c.url.includes("/audit-log/export"));
+    await expect(exportCalls).toHaveLength(1);
+    await expect(exportCalls[0].url).toContain("format=csv");
+    await expect(exportCalls[0].url).toContain("action=sso_provider.update");
+    await expect(exportCalls[0].url).toContain("from=");
+    await expect(exportCalls[0].url).not.toContain("limit=");
+  },
+};
+
 const exportFails = recording(
   scoped(async (input) => {
     const url = new URL(String(input), "http://localhost");
-    if (url.pathname.endsWith("/audit-log") && url.searchParams.get("limit") === "500") {
+    if (url.pathname.endsWith("/audit-log/export")) {
       return json({ error: { message: "store unavailable" } }, 500);
     }
     return url.pathname.endsWith("/audit-log") ? json(page([entry()])) : json([]);

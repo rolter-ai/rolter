@@ -72,6 +72,7 @@ const GROUP_OF_FAMILY: Record<string, AuditGroup> = {
   runtime_policy: "settings",
   cluster_node: "settings",
   auth: "account",
+  audit_log: "account",
 };
 
 /** the filter group an audited action sits under */
