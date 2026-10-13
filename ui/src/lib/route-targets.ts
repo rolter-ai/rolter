@@ -149,7 +149,7 @@ export function targetHealth(
  * tell "no health data for this target" from "health was never asked for".
  */
 export function targetViews(
-  route: RouteDto,
+  route: Pick<RouteDto, "model" | "targets">,
   uptime?: UptimeRow[],
   timeline?: TimelineRow[],
 ): RouteTargetView[] {

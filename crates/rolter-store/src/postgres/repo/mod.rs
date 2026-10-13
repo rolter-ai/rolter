@@ -2934,6 +2934,23 @@ impl RouteRepo<'_> {
 pub struct RouteTargetRepo<'a>(pub &'a PgPool);
 
 impl RouteTargetRepo<'_> {
+    /// Every target of every route in `project_id`, in one read.
+    ///
+    /// The routes list embeds them (`?include=targets`) so a screen of N routes
+    /// costs one query rather than N. Rows come back grouped by route and in
+    /// creation order inside it, the order [`RouteTargetRepo::list`] gives.
+    pub async fn list_for_project(&self, project_id: Uuid) -> Result<Vec<RouteTarget>> {
+        sqlx::query_as(
+            "select t.id, t.route_id, t.provider_id, t.upstream_model, t.weight, t.created_at
+             from route_targets t join routes r on r.id = t.route_id
+             where r.project_id = $1 order by t.route_id, t.created_at, t.id",
+        )
+        .bind(project_id)
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)
+    }
+
     pub async fn list(&self, route_id: Uuid) -> Result<Vec<RouteTarget>> {
         sqlx::query_as(
             "select id, route_id, provider_id, upstream_model, weight, created_at

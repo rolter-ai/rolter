@@ -1708,6 +1708,17 @@ export interface RouteRow {
    */
   advanced: Record<string, unknown>;
   created_at: string;
+  /**
+   * the route's targets; present only when the list was read with
+   * `include: ["targets"]`, so an absent field means "not asked for", never
+   * "no targets" (that is an empty array)
+   */
+  targets?: RouteTargetRow[];
+  /**
+   * the route's complexity policy; present only when the list was read with
+   * `include: ["complexity"]`. `{ tiers: [] }` is a route with no policy
+   */
+  complexity?: ComplexityPolicy;
 }
 
 export interface RouteTargetRow {
@@ -1719,8 +1730,17 @@ export interface RouteTargetRow {
   created_at: string;
 }
 
-export function fetchRoutes(projectId: string): Promise<RouteRow[]> {
-  return getJson<RouteRow[]>(`/api/v1/projects/${projectId}/routes`);
+/** what `GET /api/v1/projects/{id}/routes` can embed beside each route */
+export type RouteInclude = "targets" | "complexity";
+
+/**
+ * A project's routes. `include` embeds each route's targets and/or complexity
+ * policy, so a screen that shows them reads the project in one request rather
+ * than one per route (#3031, #3046).
+ */
+export function fetchRoutes(projectId: string, include?: RouteInclude[]): Promise<RouteRow[]> {
+  const query = include?.length ? `?include=${include.join(",")}` : "";
+  return getJson<RouteRow[]>(`/api/v1/projects/${projectId}/routes${query}`);
 }
 
 export function createRoute(
@@ -1794,7 +1814,14 @@ export function deleteRouteTarget(id: string): Promise<void> {
 export interface EffectiveModelDto {
   model: string;
   strategy: string;
+  /** how many targets the route has; `route_targets.length` */
   targets: number;
+  /** the targets themselves: provider name, upstream model (null forwards the public name), weight; absent from a control plane that predates it */
+  route_targets?: TargetDto[];
+  /** the organization that owns the route; absent for one from `rolter.toml` */
+  org_id?: string;
+  /** the project that owns the route; absent for one from `rolter.toml` */
+  project_id?: string;
   source: "config" | "db";
 }
 

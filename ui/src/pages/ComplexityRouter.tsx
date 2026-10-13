@@ -1,4 +1,4 @@
-import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeftRight, CircleHelp, Plus } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
@@ -33,16 +33,17 @@ import { useScreenReady } from "@/lib/ux-react";
 /**
  * What is known about one route's complexity policy.
  *
- * The four cases are deliberately separate. `unconfigured` is an answer from
- * the control plane; `loading` and `failed` are the absence of one, and folding
- * either into "no policy yet" invites an operator to write a policy over one
- * they were simply never shown (#1461).
+ * The policy arrives inside the route list (`include=complexity`), so a route
+ * on screen already has its answer and the list's own loading and error states
+ * cover the policies too. `unconfigured` is an answer from the control plane;
+ * `unread` is a route returned without the field, which only a control plane
+ * that predates it does. Folding it into "no policy yet" invites an operator to
+ * write a policy over one they were never shown (#1461).
  */
 type PolicyState =
-  | { kind: "loading"; route: RouteRow }
-  | { kind: "failed"; route: RouteRow; error: unknown; retry: () => void }
   | { kind: "configured"; route: RouteRow; tiers: ComplexityTier[] }
-  | { kind: "unconfigured"; route: RouteRow };
+  | { kind: "unconfigured"; route: RouteRow }
+  | { kind: "unread"; route: RouteRow };
 
 /** `states.filter(isKind("configured"))`, narrowed rather than cast */
 function isKind<K extends PolicyState["kind"]>(kind: K) {
@@ -57,47 +58,33 @@ export default function ComplexityRouter() {
   const fmt = useFormat();
   const scope = useScope();
   const routes = useQuery({
-    queryKey: ["routes", scope.projectId],
-    queryFn: () => fetchRoutes(scope.projectId as string),
+    // the policies ride along, so the screen costs one request however many
+    // routes the project has (#3046). the key sits under ["routes", project],
+    // which every route mutation already invalidates
+    queryKey: ["routes", scope.projectId, "complexity"],
+    queryFn: () => fetchRoutes(scope.projectId as string, ["complexity"]),
     enabled: !!scope.projectId,
   });
 
-  const policyQueries = useQueries({
-    queries: (routes.data ?? []).map((r) => ({
-      queryKey: ["route-complexity", r.id],
-      queryFn: () => fetchRouteComplexity(r.id),
-    })),
-  });
-
   const [editing, setEditing] = React.useState<RouteRow | null>(null);
-  // one request per route, so "this route has no policy" and "this route's
-  // policy never arrived" are different answers and the screen has to say which
-  // one it is holding. `?? []` collapsed them, and a delayed, 500'd or 403'd
-  // read rendered as a route the operator had simply never configured (#1461)
-  const states = (routes.data ?? []).map((route, i): PolicyState => {
-    const query = policyQueries[i];
-    if (!query || query.isPending) return { kind: "loading", route };
-    if (query.error) {
-      return { kind: "failed", route, error: query.error, retry: () => void query.refetch() };
-    }
-    const tiers = query.data?.tiers ?? [];
+  const states = (routes.data ?? []).map((route): PolicyState => {
+    if (!route.complexity) return { kind: "unread", route };
+    const tiers = route.complexity.tiers ?? [];
     return tiers.length > 0
       ? { kind: "configured", route, tiers }
       : { kind: "unconfigured", route };
   });
   const configured = states.filter(isKind("configured"));
   const unconfigured = states.filter(isKind("unconfigured"));
-  const checking = states.filter(isKind("loading"));
-  const failed = states.filter(isKind("failed"));
+  const unread = states.filter(isKind("unread"));
   // only a route whose policy actually came back counts towards the summary: a
   // denominator that includes the unread ones states them as unconfigured
   const resolved = configured.length + unconfigured.length;
 
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider.
-  // the route list is half of what the reader waits on — the policy reads decide
-  // what every card says — so readiness follows both. the error signal is the
-  // two `LoadError`s' own, one for the route list and one for the policy group
-  useScreenReady(!routes.isLoading && checking.length === 0);
+  // the route list carries the policies, so it is the one thing the reader
+  // waits on. the error signal is its `LoadError`'s own
+  useScreenReady(!routes.isLoading);
 
   return (
     <PageBody>
@@ -109,14 +96,9 @@ export default function ComplexityRouter() {
           t("pages.complexityRouter.summary", { configured: configured.length, count: resolved })
         }
       </ListSummary>
-      {checking.length > 0 && (
-        <span className="text-sm text-[color:var(--text-subtle)]">
-          {t("pages.complexityRouter.checkingPolicies", { count: checking.length })}
-        </span>
-      )}
-      {failed.length > 0 && (
+      {unread.length > 0 && (
         <span className="text-sm text-[color:var(--status-danger-text)]">
-          {t("pages.complexityRouter.unreadPolicies", { count: failed.length })}
+          {t("pages.complexityRouter.unreadPolicies", { count: unread.length })}
         </span>
       )}
 
@@ -144,21 +126,11 @@ export default function ComplexityRouter() {
           }
         />
       )}
-      {failed.length > 0 && (
+      {unread.length > 0 && (
         <div className="flex flex-col gap-2.5">
           <Overline as="h2">{t("pages.complexityRouter.policyLoadFailed")}</Overline>
-          {/* one alert for the group rather than one per route: it is the same
-              endpoint failing every time, and the routes it covers are named
-              underneath. retry re-runs exactly the reads that failed */}
-          {/* load-error-allow: one alert for the per-route policy reads beside the route list, which pairs as complexity-routes; no list of its own */}
-          <LoadError
-            error={failed[0].error}
-            resource={t("errors.resources.complexityPolicies")}
-            onRetry={() => failed.forEach((f) => f.retry())}
-            target="complexity-policies"
-          />
           <div className="flex flex-wrap gap-2.5">
-            {failed.map(({ route }) => (
+            {unread.map(({ route }) => (
               // deliberately not a button: an editor seeded from a read that
               // failed would save a fresh draft over contents nobody has seen
               <span
@@ -233,18 +205,6 @@ export default function ComplexityRouter() {
           </CardStack>
         ))}
       </div>
-
-      {!routes.isLoading && checking.length > 0 && (
-        <div className="flex flex-col gap-2.5">
-          <Overline as="h2">{t("pages.complexityRouter.checkingPolicy")}</Overline>
-          <CardGridSkeleton
-            cards={checking.length}
-            height={196}
-            min={380}
-            testId="complexity-policies-loading"
-          />
-        </div>
-      )}
 
       {unconfigured.length > 0 && (
         <>
@@ -374,6 +334,8 @@ function PolicyDialog({
     mutationFn: (next: ComplexityTier[]) => setRouteComplexity(route.id, { tiers: next }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["route-complexity", route.id] });
+      // the list holds every route's policy, so it has to read the new one
+      queryClient.invalidateQueries({ queryKey: ["routes"] });
       // the sheet closes on success, so the outcome is announced somewhere
       // that outlives it (#1197)
       toast.push({

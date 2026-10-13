@@ -24385,3 +24385,223 @@ async fn an_unsaved_guardrail_provider_is_tried_with_a_sample_envelope() {
     .await;
     assert_eq!(out["truncated"], true, "{out}");
 }
+
+/// #2210, #3031, #3046: the routes list embeds each route's targets and
+/// complexity policy on request, so a screen of N routes is one read. The
+/// embedded fields obey the list's own scope: another organization's member is
+/// refused, a plain list keeps its old body, and `/api/v1/models` carries each
+/// entry's targets and the organization that owns it.
+#[tokio::test]
+async fn the_routes_list_embeds_targets_and_complexity_within_the_callers_scope() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app =
+        rolter_control::test_app_with_admin_token(pool.clone(), Some(admin_token().to_string()))
+            .await
+            .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    async fn post_as(client: &reqwest::Client, url: String, body: Value) -> Value {
+        let response = client
+            .post(url)
+            .bearer_auth(admin_token())
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        let status = response.status();
+        let json: Value = response.json().await.unwrap();
+        assert!(status.is_success(), "{status}: {json}");
+        json
+    }
+    async fn get_as(client: &reqwest::Client, url: String, token: &str) -> (u16, Value) {
+        let response = client.get(url).bearer_auth(token).send().await.unwrap();
+        let status = response.status().as_u16();
+        (status, response.json().await.unwrap_or(Value::Null))
+    }
+
+    let mut orgs = Vec::new();
+    for slug in ["embed-a", "embed-b"] {
+        let org = post_as(
+            &client,
+            format!("{base}/api/v1/orgs"),
+            json!({"name": slug, "slug": slug}),
+        )
+        .await;
+        let org_id = org["id"].as_str().unwrap().to_string();
+        let team = post_as(
+            &client,
+            format!("{base}/api/v1/orgs/{org_id}/teams"),
+            json!({"name": "core"}),
+        )
+        .await;
+        let team_id = team["id"].as_str().unwrap().to_string();
+        let project = post_as(
+            &client,
+            format!("{base}/api/v1/teams/{team_id}/projects"),
+            json!({"name": "app"}),
+        )
+        .await;
+        orgs.push((org_id, project["id"].as_str().unwrap().to_string()));
+    }
+    let (org_a, project_a) = orgs[0].clone();
+    let (org_b, _) = orgs[1].clone();
+
+    let mut provider_ids = Vec::new();
+    for name in ["edge-one", "edge-two"] {
+        let provider = post_as(
+            &client,
+            format!("{base}/api/v1/orgs/{org_a}/providers"),
+            json!({"name": name, "kind": "openai_compatible", "api_base": "http://127.0.0.1:9"}),
+        )
+        .await;
+        provider_ids.push(provider["id"].as_str().unwrap().to_string());
+    }
+    let busy = post_as(
+        &client,
+        format!("{base}/api/v1/projects/{project_a}/routes"),
+        json!({"model": "busy", "strategy": "weighted"}),
+    )
+    .await;
+    let busy_id = busy["id"].as_str().unwrap().to_string();
+    let idle = post_as(
+        &client,
+        format!("{base}/api/v1/projects/{project_a}/routes"),
+        json!({"model": "idle", "strategy": "round_robin"}),
+    )
+    .await;
+    let idle_id = idle["id"].as_str().unwrap().to_string();
+    for (provider, weight) in provider_ids.iter().zip([3, 1]) {
+        post_as(
+            &client,
+            format!("{base}/api/v1/routes/{busy_id}/targets"),
+            json!({"provider_id": provider, "upstream_model": "gpt-x", "weight": weight}),
+        )
+        .await;
+    }
+    let policy = json!({"tiers": [
+        {"name": "small", "max_input_bytes": 4096, "route": "idle"},
+        {"name": "large", "route": "busy"},
+    ]});
+    let written = client
+        .put(format!("{base}/api/v1/routes/{busy_id}/complexity"))
+        .bearer_auth(admin_token())
+        .json(&policy)
+        .send()
+        .await
+        .unwrap();
+    assert!(written.status().is_success(), "{}", written.status());
+
+    // a plain list is the body it always was: no embedded keys at all
+    let list_url = format!("{base}/api/v1/projects/{project_a}/routes");
+    let (status, plain) = get_as(&client, list_url.clone(), admin_token()).await;
+    assert_eq!(status, 200, "{plain}");
+    for route in plain.as_array().unwrap() {
+        assert!(route.get("targets").is_none() && route.get("complexity").is_none());
+    }
+
+    // one request answers what N per-route reads did
+    let (status, embedded) = get_as(
+        &client,
+        format!("{list_url}?include=targets,complexity"),
+        admin_token(),
+    )
+    .await;
+    assert_eq!(status, 200, "{embedded}");
+    let embedded = embedded.as_array().unwrap();
+    assert_eq!(embedded.len(), 2);
+    for route in embedded {
+        let id = route["id"].as_str().unwrap();
+        let (_, per_route_targets) = get_as(
+            &client,
+            format!("{base}/api/v1/routes/{id}/targets"),
+            admin_token(),
+        )
+        .await;
+        assert_eq!(route["targets"], per_route_targets, "{}", route["model"]);
+        let (_, per_route_policy) = get_as(
+            &client,
+            format!("{base}/api/v1/routes/{id}/complexity"),
+            admin_token(),
+        )
+        .await;
+        assert_eq!(route["complexity"], per_route_policy, "{}", route["model"]);
+    }
+    let busy_row = embedded
+        .iter()
+        .find(|r| r["id"] == busy_id.as_str())
+        .unwrap();
+    assert_eq!(busy_row["targets"].as_array().map(Vec::len), Some(2));
+    assert_eq!(busy_row["complexity"]["tiers"][1]["name"], "large");
+    let idle_row = embedded
+        .iter()
+        .find(|r| r["id"] == idle_id.as_str())
+        .unwrap();
+    assert_eq!(
+        idle_row["targets"],
+        json!([]),
+        "no targets is an empty list"
+    );
+    assert_eq!(idle_row["complexity"], json!({"tiers": []}));
+
+    // each extra is asked for on its own, and an unknown one is refused
+    let (_, only_targets) = get_as(
+        &client,
+        format!("{list_url}?include=targets"),
+        admin_token(),
+    )
+    .await;
+    assert!(
+        only_targets[0].get("complexity").is_none(),
+        "{only_targets}"
+    );
+    let (status, refused) = get_as(
+        &client,
+        format!("{list_url}?include=secrets"),
+        admin_token(),
+    )
+    .await;
+    assert_eq!(status, 400, "{refused}");
+
+    // the embedded fields are no wider than the list: a member of the owning
+    // org reads them, a member of another org is refused
+    let org_a_uuid: uuid::Uuid = org_a.parse().unwrap();
+    let org_b_uuid: uuid::Uuid = org_b.parse().unwrap();
+    let insider = seed_user(&pool, "embed-insider@example.com", false).await;
+    seed_membership(&pool, insider, Some(org_a_uuid), None, None, "viewer").await;
+    let insider_token = seed_session(&pool, insider, "embedinsider").await;
+    let outsider = seed_user(&pool, "embed-outsider@example.com", false).await;
+    seed_membership(&pool, outsider, Some(org_b_uuid), None, None, "admin").await;
+    let outsider_token = seed_session(&pool, outsider, "embedoutsider").await;
+    let embed_url = format!("{list_url}?include=targets,complexity");
+    let (status, seen) = get_as(&client, embed_url.clone(), &insider_token).await;
+    assert_eq!(status, 200, "{seen}");
+    assert_eq!(seen.as_array().map(Vec::len), Some(2));
+    let (status, seen) = get_as(&client, embed_url, &outsider_token).await;
+    assert_eq!(status, 403, "{seen}");
+
+    // the model list names each entry's targets and its organization
+    let (status, models) = get_as(&client, format!("{base}/api/v1/models"), admin_token()).await;
+    assert_eq!(status, 200, "{models}");
+    let busy_model = models
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["model"] == "busy")
+        .unwrap();
+    assert_eq!(busy_model["targets"], 2);
+    assert_eq!(busy_model["org_id"], org_a.as_str());
+    assert_eq!(busy_model["project_id"], project_a.as_str());
+    let providers: Vec<&str> = busy_model["route_targets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["provider"].as_str().unwrap())
+        .collect();
+    assert_eq!(providers.len(), 2);
+    assert!(providers.contains(&"edge-one") && providers.contains(&"edge-two"));
+    assert_eq!(busy_model["route_targets"][0]["model"], "gpt-x");
+}

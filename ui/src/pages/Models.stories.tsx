@@ -28,19 +28,30 @@ import {
   uxEvents,
   type Recorder,
 } from "./story-harness";
-import type {
-  EffectiveModelDto,
-  GatewayConfigDto,
-  LabelRow,
-  RouteRow,
-  TimelineRow,
-  UptimeRow,
-} from "@/lib/api";
+import type { EffectiveModelDto, LabelRow, RouteRow, TimelineRow, UptimeRow } from "@/lib/api";
 import { UxScreenProvider } from "@/lib/ux-react";
 
+// each entry carries its own targets (#2210): provider names, not row ids
 const MODELS: EffectiveModelDto[] = [
-  { model: "gpt-4o", strategy: "weighted", targets: 2, source: "db" },
-  { model: "claude-sonnet", strategy: "fastest", targets: 1, source: "config" },
+  {
+    model: "gpt-4o",
+    strategy: "weighted",
+    targets: 2,
+    route_targets: [
+      { provider: "sim-a", model: null, weight: 3 },
+      { provider: "sim-b", model: null, weight: 1 },
+    ],
+    org_id: "org-1",
+    project_id: "project-1",
+    source: "db",
+  },
+  {
+    model: "claude-sonnet",
+    strategy: "fastest",
+    targets: 1,
+    route_targets: [{ provider: "anthropic", model: "claude-sonnet-4-20250514", weight: 1 }],
+    source: "config",
+  },
 ];
 
 // one route fanned out over two providers, which is the shape the provider
@@ -60,37 +71,11 @@ const FANOUT_PROVIDERS = [
   { id: "prov-b", name: "sim-b" },
 ];
 
-/**
- * The effective config: where every route's traffic goes, config-file and
- * database routes alike, with providers named rather than referenced by id.
- * The catalog reads each row's targets from here (#1979).
- */
-const CONFIG = {
-  providers: [],
-  virtual_keys: [],
-  routes: [
-    {
-      model: "gpt-4o",
-      strategy: "weighted",
-      targets: [
-        { provider: "sim-a", model: null, weight: 3 },
-        { provider: "sim-b", model: null, weight: 1 },
-      ],
-    },
-    {
-      model: "claude-sonnet",
-      strategy: "fastest",
-      targets: [{ provider: "anthropic", model: "claude-sonnet-4-20250514", weight: 1 }],
-    },
-  ],
-} satisfies GatewayConfigDto;
-
 const loaded = routes([
   // longest first: `/models/prices` would otherwise be answered by `/models`
   ["/model-prices", () => []],
   ["/currency", () => ({ base: "USD", rates: {} })],
   ["/health/uptime", () => ({ data: [] })],
-  ["/config", () => CONFIG],
   ["/models", () => MODELS],
   ["/providers", () => []],
   ["/routes", () => []],
@@ -213,7 +198,6 @@ export const MultiProviderRoute: Story = {
         ["/model-prices", () => []],
         ["/currency", () => ({ base: "USD", rates: {} })],
         ["/health/uptime", () => ({ data: [] })],
-        ["/config", () => CONFIG],
         ["/models", () => [MODELS[0]]],
         ["/providers", () => FANOUT_PROVIDERS],
         ["/routes", () => [FANOUT_ROUTE]],
@@ -236,24 +220,13 @@ const FLEET_MODEL: EffectiveModelDto = {
   model: "llama-70b",
   strategy: "cache_aware",
   targets: 3,
+  route_targets: [
+    { provider: "vllm-a", model: "meta-llama/Llama-3.1-70B", weight: 1 },
+    { provider: "vllm-b", model: "meta-llama/Llama-3.1-70B", weight: 1 },
+    { provider: "vllm-c", model: "meta-llama/Llama-3.1-70B", weight: 2 },
+  ],
   source: "db",
 };
-
-const FLEET_CONFIG = {
-  providers: [],
-  virtual_keys: [],
-  routes: [
-    {
-      model: "llama-70b",
-      strategy: "cache_aware",
-      targets: [
-        { provider: "vllm-a", model: "meta-llama/Llama-3.1-70B", weight: 1 },
-        { provider: "vllm-b", model: "meta-llama/Llama-3.1-70B", weight: 1 },
-        { provider: "vllm-c", model: "meta-llama/Llama-3.1-70B", weight: 2 },
-      ],
-    },
-  ],
-} satisfies GatewayConfigDto;
 
 const uptimeRow = (patch: Partial<UptimeRow>): UptimeRow => ({
   provider: "vllm-a",
@@ -314,7 +287,6 @@ export const TargetSlaAtRisk: Story = {
         ["/currency", () => ({ base: "USD", rates: {} })],
         ["/health/uptime", () => ({ data: AT_RISK_UPTIME })],
         ["/health/timeline", () => ({ data: AT_RISK_TIMELINE })],
-        ["/config", () => FLEET_CONFIG],
         ["/models", () => [FLEET_MODEL]],
         ["/providers", () => []],
         ["/routes", () => []],
@@ -351,7 +323,6 @@ export const CacheAwareMultiTargetRoute: Story = {
         ["/model-prices", () => []],
         ["/currency", () => ({ base: "USD", rates: {} })],
         ["/health/uptime", () => ({ data: FLEET_UPTIME })],
-        ["/config", () => FLEET_CONFIG],
         ["/models", () => [FLEET_MODEL]],
         ["/providers", () => []],
         ["/routes", () => []],
@@ -438,13 +409,6 @@ export const ConfigRouteCarriesItsCaveat: Story = {
         // the sheet this story opens reads the deployment's currency table
         ["/currency", () => ({ settlement: "USD", codes: ["USD"] })],
         ["/health/uptime", () => ({ data: [] })],
-        [
-          "/config",
-          () => ({
-            ...FLEET_CONFIG,
-            routes: [{ ...FLEET_CONFIG.routes[0], strategy: "precise_cache_aware" }],
-          }),
-        ],
         ["/models", () => [{ ...FLEET_MODEL, strategy: "precise_cache_aware", source: "config" }]],
         ["/providers", () => []],
         ["/routes", () => []],
@@ -462,7 +426,6 @@ export const ConfigRouteCarriesItsCaveat: Story = {
       "title",
       expect.stringMatching(/falls back to least-load/),
     );
-    // the providers arrive with the effective config, a request after the row
     await expect(await canvas.findByTitle("vllm-a, vllm-b, vllm-c")).toHaveTextContent(
       "vllm-a +2 more",
     );
@@ -482,16 +445,15 @@ export const ConfigRouteCarriesItsCaveat: Story = {
 };
 
 /**
- * Until the effective config answers, a row knows its target count from the
- * catalog and no more, so the count is plain text with nothing to open.
+ * A control plane that predates the embedded targets sends the count alone, so
+ * the count is plain text with nothing to open rather than a list of none.
  */
-export const TargetsBeforeTheConfigAnswers: Story = {
+export const TargetsFromAnOlderControlPlane: Story = {
   render: () => (
     <Harness
       fetchStub={scoped(async (input) => {
         const url = String(input);
-        if (url.includes("/config")) return new Promise<Response>(() => {});
-        if (url.includes("/models")) return json([FLEET_MODEL]);
+        if (url.includes("/models")) return json([{ ...FLEET_MODEL, route_targets: undefined }]);
         if (url.includes("/currency")) return json({ base: "USD", rates: {} });
         if (url.includes("/health/uptime")) return json({ data: [] });
         return json([]);
@@ -507,6 +469,49 @@ export const TargetsBeforeTheConfigAnswers: Story = {
   },
 };
 
+/**
+ * Two organizations can each serve a `gpt-4o` (#2210). The catalog has two
+ * entries, each with its own targets, and neither borrows the other's: the
+ * first match by name used to stand in for both, and the shared name was also
+ * the row key.
+ */
+export const SameNameInTwoOrganizations: Story = {
+  render: () => (
+    <Harness
+      fetchStub={routes([
+        ["/model-prices", () => []],
+        ["/currency", () => ({ base: "USD", rates: {} })],
+        ["/health/uptime", () => ({ data: [] })],
+        [
+          "/models",
+          () => [
+            { ...MODELS[0], org_id: "org-1" },
+            {
+              ...MODELS[0],
+              org_id: "org-2",
+              targets: 1,
+              route_targets: [{ provider: "other-edge", model: null, weight: 1 }],
+            },
+          ],
+        ],
+        ["/providers", () => []],
+        ["/routes", () => []],
+      ])}
+    >
+      <Models />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getAllByText("gpt-4o")).toHaveLength(2));
+    await expect(canvas.getByTitle("sim-a, sim-b")).toBeVisible();
+    await expect(canvas.getByText("other-edge")).toBeVisible();
+    // opening one row opens that row only
+    await userEvent.click(canvas.getByRole("button", { name: "1 target for gpt-4o" }));
+    await expect(await canvas.findAllByRole("list", { name: "Targets of gpt-4o" })).toHaveLength(1);
+  },
+};
+
 /** A route with no target has nowhere to send a request, and the row says so. */
 export const RouteWithNoTargets: Story = {
   render: () => (
@@ -515,11 +520,7 @@ export const RouteWithNoTargets: Story = {
         ["/model-prices", () => []],
         ["/currency", () => ({ base: "USD", rates: {} })],
         ["/health/uptime", () => ({ data: [] })],
-        [
-          "/config",
-          () => ({ ...FLEET_CONFIG, routes: [{ ...FLEET_CONFIG.routes[0], targets: [] }] }),
-        ],
-        ["/models", () => [{ ...FLEET_MODEL, targets: 0 }]],
+        ["/models", () => [{ ...FLEET_MODEL, targets: 0, route_targets: [] }]],
         ["/providers", () => []],
         ["/routes", () => []],
       ])}
@@ -540,7 +541,6 @@ const oneRoutedModel = routes([
   ["/model-prices", () => []],
   ["/currency", () => ({ base: "USD", rates: {} })],
   ["/health/uptime", () => ({ data: [] })],
-  ["/config", () => CONFIG],
   ["/models", () => [MODELS[0]]],
   ["/providers", () => FANOUT_PROVIDERS],
   ["/routes", () => [FANOUT_ROUTE]],

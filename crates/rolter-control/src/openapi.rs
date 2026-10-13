@@ -341,6 +341,14 @@ const UNTIL: QueryParam = QueryParam::new(
      does not parse is a 400",
 );
 
+/// The routes list's query string: what to embed beside each route.
+const ROUTE_INCLUDE_QUERY: &[QueryParam] = &[QueryParam::new(
+    "include",
+    "string",
+    "comma-separated extras to embed in each route: `targets` and `complexity`; omitted, the \
+     list carries neither, and a value outside those two is a 400",
+)];
+
 /// The MCP call log's query string. The same keyset-paging problem as the
 /// invocation log below, and the one #1412 names first: `next_cursor` comes
 /// back in the body, and a caller who does not know to send it as `cursor`
@@ -1133,8 +1141,9 @@ fn operations() -> Vec<Op> {
             Op::get(
                 "/api/v1/models",
                 "listModels",
-                "List every public model name served",
-            ),
+                "List every public model name served, with each entry's targets and owning organization",
+            )
+            .ok(Payload::List("EffectiveModel")),
             Op::delete(
                 "/api/v1/models/{model}",
                 "deleteModel",
@@ -1143,8 +1152,9 @@ fn operations() -> Vec<Op> {
             Op::get(
                 "/api/v1/projects/{project_id}/routes",
                 "listRoutes",
-                "List a project's routes",
+                "List a project's routes; `include` embeds each route's targets and complexity policy so a screen needs one request, not one per route",
             )
+            .query(ROUTE_INCLUDE_QUERY)
             .ok(Payload::List("Route")),
             Op::post(
                 "/api/v1/projects/{project_id}/routes",
@@ -3087,7 +3097,41 @@ fn routing_schemas(p: &Prim) -> Value {
                 "params": {"type": "object", "description": "admin default inference params"},
                 "param_policy": {"type": "object", "description": "`{mode, allow, deny}` override policy"},
                 "advanced": {"type": "object", "description": "catalog metadata and per-model execution policy"},
-                "created_at": timestamp
+                "created_at": timestamp,
+                "targets": {
+                    "type": "array",
+                    "description": "the route's targets, as GET /api/v1/routes/{route_id}/targets lists them; present only when the list was asked for `include=targets`",
+                    "items": {"$ref": "#/components/schemas/RouteTarget"}
+                },
+                "complexity": {
+                    "type": "object",
+                    "description": "the route's complexity policy, as GET /api/v1/routes/{id}/complexity returns it (`{\"tiers\": []}` when none is set); present only when the list was asked for `include=complexity`"
+                }
+            }
+        },
+        "EffectiveModel": {
+            "type": "object",
+            "required": ["model", "strategy", "targets", "route_targets", "source"],
+            "properties": {
+                "model": {"type": "string", "description": "the public model name"},
+                "strategy": string,
+                "targets": {"type": "integer", "description": "how many targets the route has"},
+                "route_targets": {
+                    "type": "array",
+                    "description": "the targets themselves: provider name, upstream model and weight",
+                    "items": {
+                        "type": "object",
+                        "required": ["provider", "weight"],
+                        "properties": {
+                            "provider": string,
+                            "model": nullable_string,
+                            "weight": {"type": "integer"}
+                        }
+                    }
+                },
+                "org_id": {"type": "string", "description": "the organization the route belongs to; absent for a route from the bootstrap file. Two organizations can serve the same model name, and this tells their entries apart"},
+                "project_id": {"type": "string", "description": "the project the route belongs to; absent for a route from the bootstrap file"},
+                "source": {"type": "string", "enum": ["config", "db"]}
             }
         },
         "CreateRoute": {
