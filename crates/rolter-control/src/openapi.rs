@@ -363,6 +363,14 @@ const ROUTE_INCLUDE_QUERY: &[QueryParam] = &[QueryParam::new(
      list carries neither, and a value outside those two is a 400",
 )];
 
+/// The provider test's query string: the model to look up.
+const PROVIDER_TEST_QUERY: &[QueryParam] = &[QueryParam::new(
+    "model",
+    "string",
+    "an upstream model name to look up in the provider's catalogue; the response then carries \
+     `model_listed`: true or false, or null when the provider has no catalogue to check",
+)];
+
 /// The MCP call log's query string. The same keyset-paging problem as the
 /// invocation log below, and the one #1412 names first: `next_cursor` comes
 /// back in the body, and a caller who does not know to send it as `cursor`
@@ -1196,8 +1204,9 @@ fn operations() -> Vec<Op> {
             Op::post(
                 "/api/v1/providers/{id}/test",
                 "testProvider",
-                "Probe a provider's credentials and reachability",
+                "Probe a provider's credentials and reachability; with `?model=`, also whether its catalogue lists that upstream model",
             )
+            .query(PROVIDER_TEST_QUERY)
             .body(Payload::Empty),
             Op::get(
                 "/api/v1/providers/{id}/models",

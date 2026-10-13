@@ -9,11 +9,13 @@ import {
   expectToast,
   Harness as ScreenHarness,
   json,
+  pickOption,
+  scopeResponse,
   Toasted,
   type FetchStub,
   type StoryRole,
 } from "./story-harness";
-import type { LoggingSettingsDto } from "@/lib/api";
+import type { AnalyticsByModelRow, LoggingSettingsDto, VirtualKeyRow } from "@/lib/api";
 
 const BASE: LoggingSettingsDto = {
   sample_rate: 0.25,
@@ -28,6 +30,62 @@ const BASE: LoggingSettingsDto = {
   updated_at: "2026-07-30T12:00:00Z",
 };
 
+const model = (name: string): AnalyticsByModelRow => ({
+  model: name,
+  requests: 10,
+  tokens: 1000,
+  cost_usd: 1,
+  unpriced_requests: 0,
+  errors: 0,
+  p50_latency_ms: 100,
+  p95_latency_ms: 200,
+});
+
+const key = (id: string, name: string, prefix: string): VirtualKeyRow => ({
+  id,
+  project_id: "project-1",
+  key_hash: "hash",
+  key_prefix: prefix,
+  name,
+  models: [],
+  providers: [],
+  disabled: false,
+  created_by: null,
+  business_unit_id: null,
+  customer_id: null,
+  created_at: "2026-01-01T00:00:00Z",
+});
+
+const CI_KEY = "key-ci-bot";
+const SW_KEY = "key-support";
+const KEYS = [key(CI_KEY, "ci-bot", "rk_live_ci01"), key(SW_KEY, "support-widget", "rk_live_sw02")];
+const MODELS = [model("gpt-4o"), model("claude-sonnet-5")];
+
+/** what the two pickers read beside the settings: the scope's keys and the recent models */
+interface Reads {
+  keys?: VirtualKeyRow[] | number;
+  models?: AnalyticsByModelRow[] | number;
+}
+
+/**
+ * Answers the reads the pickers make, and leaves the settings (and a save) to
+ * `inner`. A number is the status of a refused read.
+ */
+function withReads(inner: FetchStub, { keys = KEYS, models = MODELS }: Reads): FetchStub {
+  return async (input, init) => {
+    const scope = scopeResponse(String(input));
+    if (scope) return scope;
+    const path = new URL(String(input), "http://localhost").pathname;
+    const answer = (rows: unknown[] | number, wrap: boolean) =>
+      typeof rows === "number"
+        ? json({ error: { message: "refused" } }, rows)
+        : json(wrap ? { data: rows } : rows);
+    if (path === "/api/v1/analytics/by-model") return answer(models, true);
+    if (/^\/api\/v1\/projects\/[^/]+\/virtual-keys$/.test(path)) return answer(keys, false);
+    return inner(input, init);
+  };
+}
+
 /**
  * The screen under the shared fetch-stub harness, with a role to render as.
  *
@@ -36,9 +94,17 @@ const BASE: LoggingSettingsDto = {
  * never blocks, and a story can only reach the 403 by stubbing one — which
  * tests the screen's own error path rather than the gate (#1606).
  */
-function Harness({ fetchStub, role }: { fetchStub: FetchStub; role?: StoryRole }) {
+function Harness({
+  fetchStub,
+  role,
+  reads = {},
+}: {
+  fetchStub: FetchStub;
+  role?: StoryRole;
+  reads?: Reads;
+}) {
   return (
-    <ScreenHarness fetchStub={fetchStub} role={role}>
+    <ScreenHarness fetchStub={withReads(fetchStub, reads)} role={role}>
       <Toasted>
         <LogsSettings />
       </Toasted>
@@ -543,5 +609,160 @@ export const SaveWaitsForAnEdit: Story = {
     await expect(save).toBeDisabled();
     await userEvent.type(canvas.getByLabelText("Sample rate percent"), "5");
     await waitFor(() => expect(save).toBeEnabled());
+  },
+};
+
+/** the body of the PUT the story under way made, read back by its play function */
+let sent: { body?: LoggingSettingsDto } = {};
+
+/** a saving stub: the settings come back as given, a PUT is recorded and echoed */
+function saving(stored: LoggingSettingsDto, record: typeof sent): FetchStub {
+  return async (_input, init) => {
+    if (init?.method === "PUT") {
+      record.body = JSON.parse(String(init.body)) as LoggingSettingsDto;
+      return json({ ...stored, ...record.body });
+    }
+    return json(stored);
+  };
+}
+
+/**
+ * A virtual key is picked by its name and prefix, and what is saved is its id
+ * (#2089). The payload is the list of ids it always was.
+ */
+export const PicksAVirtualKeyByName: Story = {
+  render: () => {
+    sent = {};
+    return (
+      <Harness fetchStub={saving({ ...BASE, payload_capture_virtual_key_ids: [SW_KEY] }, sent)} />
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const list = await canvas.findByRole("list", { name: "Capture only these virtual keys" });
+    // the saved key reads as its name once the key list has loaded
+    await waitFor(() => expect(list).toHaveTextContent("support-widget (rk_live_sw02)"));
+    await pickOption(
+      canvas.getByRole("combobox", { name: "Add a virtual key to capture" }),
+      /ci-bot/,
+    );
+    await expect(within(list).getByText("ci-bot (rk_live_ci01)")).toBeVisible();
+    // an uuid is never shown for a key the list knows
+    await expect(within(list).queryByText(CI_KEY)).not.toBeInTheDocument();
+    await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
+    await expectToast(canvasElement, /logs settings updated/i);
+    await expect(sent.body?.payload_capture_virtual_key_ids).toEqual([SW_KEY, CI_KEY]);
+  },
+};
+
+/**
+ * A saved key the list no longer has is kept and marked, not dropped (#2089).
+ * It can be removed, and until then a save sends it unchanged.
+ */
+export const MarksASavedKeyThatNoLongerExists: Story = {
+  render: () => {
+    sent = {};
+    const gone = "key-deleted";
+    return (
+      <Harness
+        fetchStub={saving({ ...BASE, payload_capture_virtual_key_ids: [CI_KEY, gone] }, sent)}
+      />
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const list = await canvas.findByRole("list", { name: "Capture only these virtual keys" });
+    await waitFor(() => expect(list).toHaveTextContent("ci-bot (rk_live_ci01)"));
+    const items = within(list).getAllByRole("listitem");
+    await expect(items).toHaveLength(2);
+    await expect(items[0]).toHaveTextContent("ci-bot (rk_live_ci01)");
+    await expect(items[0]).not.toHaveTextContent("not in this project's keys");
+    await expect(items[1]).toHaveTextContent("key-deleted");
+    await expect(items[1]).toHaveTextContent("not in this project's keys");
+    // the save bar stays off until something changed, so change something else
+    const rate = canvas.getByLabelText("Sample rate percent");
+    await userEvent.clear(rate);
+    await userEvent.type(rate, "10");
+    await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
+    await expectToast(canvasElement, /logs settings updated/i);
+    await expect(sent.body?.payload_capture_virtual_key_ids).toEqual([CI_KEY, "key-deleted"]);
+  },
+};
+
+/** removing the stale entry is what drops it */
+export const RemovesAStaleKey: Story = {
+  render: () => (
+    <Harness
+      fetchStub={async () => json({ ...BASE, payload_capture_virtual_key_ids: ["key-deleted"] })}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "Remove key-deleted" }));
+    await waitFor(() => expect(canvas.queryByText("key-deleted")).not.toBeInTheDocument());
+  },
+};
+
+/**
+ * A model is picked from the ones that carried traffic, and a name that has
+ * not (a typo, or a model not yet used) is accepted but marked, so `gpt4o` is
+ * no longer saved in silence.
+ */
+export const PicksAModelAndMarksAnUnseenOne: Story = {
+  render: () => {
+    sent = {};
+    return <Harness fetchStub={saving({ ...BASE, payload_capture_models: ["gpt4o"] }, sent)} />;
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const list = await canvas.findByRole("list", { name: "Capture only these models" });
+    await waitFor(() => expect(within(list).getByText(/no traffic in 30 days/)).toBeVisible());
+    await pickOption(
+      canvas.getByRole("combobox", { name: "Add a model to capture" }),
+      "claude-sonnet-5",
+    );
+    await expect(within(list).getByText("claude-sonnet-5")).toBeVisible();
+    await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
+    await expectToast(canvasElement, /logs settings updated/i);
+    await expect(sent.body?.payload_capture_models).toEqual(["gpt4o", "claude-sonnet-5"]);
+  },
+};
+
+/**
+ * With no list to check against (analytics unavailable, keys refused), nothing
+ * is marked stale and a model can still be typed.
+ */
+export const MarksNothingWhenTheListsAreUnavailable: Story = {
+  render: () => (
+    <Harness
+      reads={{ keys: 403, models: 503 }}
+      fetchStub={async () =>
+        json({
+          ...BASE,
+          payload_capture_models: ["gpt-4o"],
+          payload_capture_virtual_key_ids: [CI_KEY],
+        })
+      }
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const keys = await canvas.findByRole("list", { name: "Capture only these virtual keys" });
+    await expect(within(keys).getByText(CI_KEY)).toBeVisible();
+    await waitFor(() =>
+      expect(canvas.getByRole("combobox", { name: "Add a model to capture" })).toBeEnabled(),
+    );
+    await expect(canvas.queryByText(/not in this project's keys/)).not.toBeInTheDocument();
+    await expect(canvas.queryByText(/no traffic in 30 days/)).not.toBeInTheDocument();
+    const adder = canvas.getByRole("combobox", { name: "Add a model to capture" });
+    await userEvent.type(adder, "gpt-4o-mini");
+    await userEvent.click(
+      await within(document.body).findByRole("option", { name: /gpt-4o-mini/ }),
+    );
+    await expect(
+      within(canvas.getByRole("list", { name: "Capture only these models" })).getByText(
+        "gpt-4o-mini",
+      ),
+    ).toBeVisible();
   },
 };

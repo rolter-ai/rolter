@@ -16,13 +16,17 @@ import {
   pickOption,
   recording,
   sheet,
+  expectAllowed,
+  expectRefused,
   answerDiscardPrompt,
   type FetchStub,
+  type StoryRole,
 } from "@/pages/story-harness";
 import type {
   EffectiveModelDto,
   ModelPriceRow,
   ProviderRow,
+  ProviderTestResult,
   RouteRow,
   RouteTargetRow,
 } from "@/lib/api";
@@ -181,6 +185,7 @@ function Stage({
   stub = backing,
   providers = PROVIDERS,
   toasts = false,
+  role,
 }: {
   mode: ModelSheetMode;
   route?: RouteRow | null;
@@ -190,6 +195,8 @@ function Stage({
   providers?: ProviderRow[];
   /** mount the toast queue, for a story that asserts what the save announced */
   toasts?: boolean;
+  /** mount the capability gate as this role, for a story that asserts it */
+  role?: StoryRole;
 }) {
   const [open, setOpen] = React.useState(true);
   // a ref, not `useMemo`: a story that passes an inline stub changes its
@@ -202,7 +209,7 @@ function Stage({
   }
   const Toasting = toasts ? Toasted : React.Fragment;
   return (
-    <Harness fetchStub={recorder.current.stub}>
+    <Harness fetchStub={recorder.current.stub} role={role}>
       <Toasting>
         <ModelSheet
           open={open}
@@ -1606,30 +1613,204 @@ export const PricesPerUnitModels: Story = {
   },
 };
 
+const PROBE: ProviderTestResult = {
+  reachable: true,
+  probed_url: "https://api.openai.com/v1/models",
+  status: 200,
+  latency_ms: 84,
+  credential: "stored",
+  models_found: 2,
+  model_listed: true,
+  error: null,
+};
+
+/** the sheet's stub, answering the provider test with `answer` */
+function probing(answer: (url: string) => Response | Promise<Response>): FetchStub {
+  return async (input, init) =>
+    String(input).includes("/providers/prov-1/test") ? answer(String(input)) : backing(input, init);
+}
+
+/** a draft that names a provider and an upstream model, ready to be checked */
+async function draftToCheck(dialog: ReturnType<typeof within>): Promise<HTMLElement> {
+  await seeded(dialog);
+  const upstream = dialog.getByLabelText("Target 1 upstream model");
+  await userEvent.type(upstream, "gpt-4o");
+  await userEvent.tab();
+  return dialog.getByRole("button", { name: "Check target 1 upstream model with its provider" });
+}
+
 /**
- * The sheet offers no connection check (#1972).
+ * The check asks the provider whether it lists the upstream model (#2009).
  *
- * Its "Test connection" button ran a timer and then showed "Connection OK" for
- * any draft, an empty provider and upstream included, without a request. The
- * one probe the control plane has, the provider test, says whether a provider
- * answers and not whether it serves this upstream model, so nothing here claims
- * a result until a probe can (#2008, #2009).
+ * The probe is given the model the line would send, and "listed" says what was
+ * verified: the provider answered, and its catalogue has that name.
  */
-export const OffersNoFakeConnectionTest: Story = {
-  render: () => <Stage mode="add" />,
+export const ChecksThatTheProviderListsTheModel: Story = {
+  render: () => <Stage mode="edit" route={ROUTE} stub={probing(() => json(PROBE))} />,
+  play: async () => {
+    const dialog = within(sheet());
+    const check = await draftToCheck(dialog);
+    await userEvent.click(check);
+    await calls.expectSent("POST", "/providers/prov-1/test?model=gpt-4o");
+    await waitFor(() =>
+      expect(dialog.getByText("openai-prod answered and lists gpt-4o.")).toBeVisible(),
+    );
+  },
+};
+
+/** a model the provider answered without listing is a warning, not an OK */
+export const SaysWhenTheProviderDoesNotListTheModel: Story = {
+  render: () => (
+    <Stage
+      mode="edit"
+      route={ROUTE}
+      stub={probing(() => json({ ...PROBE, model_listed: false }))}
+    />
+  ),
+  play: async () => {
+    const dialog = within(sheet());
+    await userEvent.click(await draftToCheck(dialog));
+    await waitFor(() =>
+      expect(dialog.getByText(/its model list does not include gpt-4o/)).toBeVisible(),
+    );
+    await expect(dialog.queryByText(/answered and lists/)).not.toBeInTheDocument();
+  },
+};
+
+/** a provider with no catalogue cannot confirm the model, and says so */
+export const SaysWhenTheProviderHasNoCatalogueToCheck: Story = {
+  render: () => (
+    <Stage
+      mode="edit"
+      route={ROUTE}
+      stub={probing(() => json({ ...PROBE, models_found: null, model_listed: null }))}
+    />
+  ),
+  play: async () => {
+    const dialog = within(sheet());
+    await userEvent.click(await draftToCheck(dialog));
+    await waitFor(() =>
+      expect(dialog.getByText(/has no model list to look gpt-4o up in/)).toBeVisible(),
+    );
+    await expect(dialog.queryByText(/answered and lists/)).not.toBeInTheDocument();
+  },
+};
+
+/**
+ * A failed probe shows the server's reason and the URL it tried, and nothing
+ * on the line reads as a pass (#2009).
+ */
+export const ShowsWhyTheCheckFailedAndNeverReadsAsOk: Story = {
+  render: () => (
+    <Stage
+      mode="edit"
+      route={ROUTE}
+      stub={probing(() =>
+        json({
+          ...PROBE,
+          reachable: false,
+          status: 401,
+          models_found: null,
+          model_listed: null,
+          error: "401: the upstream rejected the credential (resolved from: stored)",
+        }),
+      )}
+    />
+  ),
+  play: async () => {
+    const dialog = within(sheet());
+    await userEvent.click(await draftToCheck(dialog));
+    await waitFor(() => expect(dialog.getByText("Could not reach this provider")).toBeVisible());
+    await expect(dialog.getByText(/the upstream rejected the credential/)).toBeVisible();
+    await expect(dialog.getByText("https://api.openai.com/v1/models")).toBeVisible();
+    await expect(dialog.queryByText(/ok\b/i)).not.toBeInTheDocument();
+    await expect(dialog.queryByText(/lists gpt-4o/)).not.toBeInTheDocument();
+  },
+};
+
+/** a refused request (the role may not spend the credential) is shown as the error it is */
+export const ShowsARefusedCheck: Story = {
+  render: () => (
+    <Stage
+      mode="edit"
+      route={ROUTE}
+      stub={probing(() =>
+        json({ error: { message: "provider:update needs the admin role" } }, 403),
+      )}
+    />
+  ),
+  play: async () => {
+    const dialog = within(sheet());
+    await userEvent.click(await draftToCheck(dialog));
+    await waitFor(() => expect(dialog.getByRole("alert")).toBeVisible());
+    await expect(dialog.queryByText(/answered and lists/)).not.toBeInTheDocument();
+  },
+};
+
+/** while the probe is out the button is busy and the line says what it is waiting on */
+export const ShowsThatTheCheckIsPending: Story = {
+  render: () => <Stage mode="edit" route={ROUTE} stub={probing(() => new Promise(() => {}))} />,
+  play: async () => {
+    const dialog = within(sheet());
+    const check = await draftToCheck(dialog);
+    await userEvent.click(check);
+    await waitFor(() =>
+      expect(dialog.getByText("Asking openai-prod for its models…")).toBeVisible(),
+    );
+    await expect(check).toBeDisabled();
+    await expect(dialog.queryByText(/answered and lists/)).not.toBeInTheDocument();
+  },
+};
+
+/** an answer is about one provider and one name, so editing either clears it */
+export const ClearsTheAnswerWhenTheNameChanges: Story = {
+  render: () => <Stage mode="edit" route={ROUTE} stub={probing(() => json(PROBE))} />,
+  play: async () => {
+    const dialog = within(sheet());
+    await userEvent.click(await draftToCheck(dialog));
+    await dialog.findByText("openai-prod answered and lists gpt-4o.");
+    await userEvent.type(dialog.getByLabelText("Target 1 upstream model"), "-mini");
+    await userEvent.tab();
+    await waitFor(() => expect(dialog.queryByText(/answered and lists/)).not.toBeInTheDocument());
+  },
+};
+
+/** nothing to check until a provider and a name are chosen; a blank name checks the public one */
+export const TheCheckWaitsForAProviderAndAName: Story = {
+  render: () => <Stage mode="add" stub={probing(() => json(PROBE))} />,
   play: async () => {
     const dialog = within(sheet());
     await seededBlank(dialog);
-    await pickOption(dialog.getByLabelText("Target 1 provider"), "vllm-cluster");
-    await userEvent.type(dialog.getByLabelText("Route name"), "llama-3.1-70b");
-    // a complete draft, the state an operator would have tested from: this is
-    // an absent control, not a footer that has not painted its actions yet
-    await expect(dialog.getByRole("button", { name: "Add route" })).toBeEnabled();
-    await expect(
-      dialog.queryByRole("button", { name: /test connection/i }),
-    ).not.toBeInTheDocument();
-    await expect(dialog.queryByText(/connection ok/i)).not.toBeInTheDocument();
-    calls.expectNotSent("POST", "/test");
+    const check = dialog.getByRole("button", {
+      name: "Check target 1 upstream model with its provider",
+    });
+    await expect(check).toBeDisabled();
+    await pickOption(dialog.getByLabelText("Target 1 provider"), "openai-prod");
+    // a provider but no name, and no public name to stand in for it
+    await expect(check).toBeDisabled();
+    await userEvent.type(dialog.getByLabelText("Route name"), "gpt-4o");
+    await waitFor(() => expect(check).toBeEnabled());
+    await userEvent.click(check);
+    await calls.expectSent("POST", "/providers/prov-1/test?model=gpt-4o");
+  },
+};
+
+/** the probe spends the provider's credential, so it follows `provider:update` */
+export const TheCheckIsRefusedWithoutProviderUpdate: Story = {
+  render: () => <Stage mode="edit" route={ROUTE} role="viewer" />,
+  play: async () => {
+    const dialog = sheet();
+    await seeded(within(dialog));
+    await expectRefused(dialog, "Check target 1 upstream model with its provider", undefined);
+  },
+};
+
+export const TheCheckIsAllowedForAProviderAdmin: Story = {
+  render: () => <Stage mode="edit" route={ROUTE} role="admin" />,
+  play: async () => {
+    const dialog = sheet();
+    await seeded(within(dialog));
+    await expectAllowed(dialog, "Check target 1 upstream model with its provider");
   },
 };
 

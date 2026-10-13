@@ -30,7 +30,7 @@ Rolter connects models in two moves: a **provider** says how to reach an upstrea
     **Test connection** asks the upstream for its model list and says so if it gets anything else. Fix a wrong key or URL here, not after a client fails.
   </Step>
   <Step title="Add a route">
-    **Models → Routing Rules → + Add route** (**Model Catalog** has the same button and opens the same sheet): the public name clients will send (say `gpt-4o`), a strategy, and the provider target it lands on. Pick the provider yourself when you have more than one; the **Upstream model** field then suggests what that provider lists, and takes any id you type. It appears in **Model Catalog**, and in `GET /v1/models` for every key allowed to reach it.
+    **Models → Routing Rules → + Add route** (**Model Catalog** has the same button and opens the same sheet): the public name clients will send (say `gpt-4o`), a strategy, and the provider target it lands on. Pick the provider yourself when you have more than one; the **Upstream model** field then suggests what that provider lists, and takes any id you type. The magnifier button beside it checks that the provider lists the id (it needs the same permission as **Test connection**), and says plainly when the provider has no model list to check against. It appears in **Model Catalog**, and in `GET /v1/models` for every key allowed to reach it.
   </Step>
   <Step title="Try it">
     Send a message from the **Playground**, then find the request in **Observability → LLM Logs** with its provider, latency and cost.

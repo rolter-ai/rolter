@@ -1623,6 +1623,12 @@ export interface ProviderTestResult {
   /** how the credential was resolved: "stored", "env", "none", … */
   credential: string;
   models_found?: number | null;
+  /**
+   * whether the catalogue lists the model the test was asked about: true or
+   * false when the provider answered with a catalogue, null (or absent) when no
+   * model was asked about or the provider has no catalogue to check (#2008)
+   */
+  model_listed?: boolean | null;
   error?: string | null;
 }
 
@@ -1633,8 +1639,9 @@ export interface ProviderTestResult {
  * green result here means the sweep will agree. Costs nothing to run — it is a
  * catalogue call, not a completion.
  */
-export function testProvider(id: string): Promise<ProviderTestResult> {
-  return sendJson<ProviderTestResult>("POST", `/api/v1/providers/${id}/test`);
+export function testProvider(id: string, model?: string): Promise<ProviderTestResult> {
+  const query = model ? `?model=${encodeURIComponent(model)}` : "";
+  return sendJson<ProviderTestResult>("POST", `/api/v1/providers/${id}/test${query}`);
 }
 
 /** The upstream model ids a stored provider lists, sorted. Empty when it listed none. */

@@ -43,6 +43,39 @@ does. An update that omits `api_key` leaves the stored key alone and the
 response still reports it, and sending `api_key: ""` deletes the key and flips
 the field to `false`.
 
+## Testing a provider and one of its models
+
+`POST /api/v1/providers/{id}/test` probes the provider's free model-list endpoint
+and reports whether it answers: `reachable`, `status`, `latency_ms`,
+`probed_url`, `credential`, `models_found` and `error`. It sends the provider's
+own credential, so it needs `provider:update` in the provider's scope (the
+organization for an org-wide provider, the project for a project-scoped one) and
+goes through the [egress policy](/configuration/egress). A credential variable
+that names one of the control plane's own secrets is refused.
+
+Add `?model=<name>` to also look an upstream model up in the catalogue the
+probe returned. The response then carries `model_listed`:
+
+| `model_listed` | Meaning                                                                        |
+| -------------- | ------------------------------------------------------------------------------ |
+| `true`         | the provider answered with a catalogue and it lists the model                  |
+| `false`        | the provider answered with a catalogue and it does not list the model          |
+| `null`         | no model was asked about, or there is no catalogue to check it against (below) |
+
+`null` also covers an unreachable provider and a kind whose probe is a liveness
+endpoint rather than a model list (`tei`). The name is compared by its last path
+segment, the way the catalogue's own ids are reduced, so
+`publishers/google/models/gemini-2.5-pro` and `gemini-2.5-pro` agree.
+
+```bash
+curl -X POST "$CONTROL/api/v1/providers/$PROVIDER_ID/test?model=gpt-4o" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+The dashboard's model sheet uses it: the **Check** button beside a target's
+upstream model reports listed, not listed, no catalogue to check, or why the
+probe failed.
+
 ## Cache telemetry sources
 
 A provider can name the source the cache-aware strategies read, in two optional

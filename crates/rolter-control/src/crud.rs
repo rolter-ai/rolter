@@ -2556,7 +2556,43 @@ struct ProviderTestResult {
     credential: &'static str,
     /// how many models the upstream listed, when it answered with a catalogue
     models_found: Option<usize>,
+    /// whether the catalogue lists the `model` the caller asked about: `true`
+    /// or `false` when the provider answered with a catalogue, `null` when no
+    /// model was asked about or the provider cannot tell (a liveness-only
+    /// probe, an unreachable provider, a body that is not a catalogue)
+    model_listed: Option<bool>,
     error: Option<String>,
+}
+
+/// Query of the provider test.
+#[derive(Deserialize, Default)]
+struct ProviderTestQuery {
+    /// an upstream model name to look up in the catalogue
+    model: Option<String>,
+}
+
+/// Whether a catalogue lists `model`, compared the way
+/// [`rolter_core::probe::catalogue_ids`] reduces an id (last path segment), so
+/// `publishers/google/models/gemini-2.5-pro` and `gemini-2.5-pro` agree.
+///
+/// `None` when there is nothing to check against: no model asked about, a
+/// probe that failed, or a body that is not a catalogue.
+fn model_listed(
+    kind: rolter_core::ProviderKind,
+    verdict: &ProbeVerdict,
+    body: Option<&serde_json::Value>,
+    model: Option<&str>,
+) -> Option<bool> {
+    let wanted = model?.trim();
+    let wanted = wanted.rsplit('/').next().unwrap_or(wanted).trim();
+    // a liveness probe's body is not evidence about models, whatever it holds
+    let catalogue =
+        rolter_core::probe_expectation(kind, "/") == rolter_core::ProbeExpectation::Catalogue;
+    if wanted.is_empty() || !verdict.reachable || !catalogue {
+        return None;
+    }
+    let ids = rolter_core::probe::catalogue_ids(body?)?;
+    Some(ids.iter().any(|id| id == wanted))
 }
 
 /// The `credential` a test reports when `api_key_env` names a variable this
@@ -2807,26 +2843,28 @@ async fn test_provider(
     principal: Principal,
     State(state): State<ControlState>,
     Path(id): Path<Uuid>,
+    Query(query): Query<ProviderTestQuery>,
 ) -> ApiResult<Json<ProviderTestResult>> {
     // reveals whether a credential works, so it is gated like a mutation even
     // though it writes nothing
-    let row: (Uuid, String, String, String, Option<String>) = sqlx::query_as(
-        "select org_id, name, kind, api_base, api_key_env from providers where id=$1",
+    let row: (Uuid, Option<Uuid>, String, String, String, Option<String>) = sqlx::query_as(
+        "select org_id, project_id, name, kind, api_base, api_key_env from providers where id=$1",
     )
     .bind(id)
     .fetch_optional(pool(&state))
     .await
     .map_err(rolter_store::postgres::store_err)?
     .ok_or_else(|| Error::NotFound(format!("provider {id}")))?;
-    let (org_id, name, kind, api_base, api_key_env) = row;
+    let (org_id, project_id, name, kind, api_base, api_key_env) = row;
 
-    authorize(
-        &state,
-        &principal,
-        ScopeChain::org(org_id),
-        cap!("provider", Update),
-    )
-    .await?;
+    // in the provider's own scope, as for an edit of the row (#1919): a
+    // project-scoped provider is its project admin's to test, which is what
+    // lets the model sheet check an upstream model without an org admin (#2008)
+    let chain = match project_id {
+        Some(project_id) => ScopeChain::from_project(pool(&state), project_id).await?,
+        None => ScopeChain::org(org_id),
+    };
+    authorize(&state, &principal, chain, cap!("provider", Update)).await?;
 
     // the base was checked when it was stored, but the egress policy may have
     // been tightened since; a stored row is not a standing permission to egress
@@ -2846,6 +2884,7 @@ async fn test_provider(
             latency_ms: 0,
             credential,
             models_found: None,
+            model_listed: None,
             error: Some(format!(
                 "the stored credential for '{name}' could not be read: {KEK_ENV} is unset or \
                  does not match the key it was sealed with. The upstream was not contacted."
@@ -2871,6 +2910,8 @@ async fn test_provider(
                 credential,
                 api_key_env.as_deref(),
             );
+            let model_listed =
+                model_listed(parsed_kind, &verdict, body.as_ref(), query.model.as_deref());
             ProviderTestResult {
                 reachable: verdict.reachable,
                 probed_url: url.clone(),
@@ -2878,6 +2919,7 @@ async fn test_provider(
                 latency_ms,
                 credential,
                 models_found: verdict.models_found,
+                model_listed,
                 error: verdict.error,
             }
         }
@@ -2890,6 +2932,7 @@ async fn test_provider(
             latency_ms,
             credential,
             models_found: None,
+            model_listed: None,
             error: Some(if e.is_timeout() {
                 "no response within 10s".to_string()
             } else if e.is_connect() {
@@ -3225,6 +3268,81 @@ mod probe_verdict_tests {
             "stored",
             None,
         )
+    }
+
+    fn listed(
+        kind: ProviderKind,
+        status: u16,
+        body: serde_json::Value,
+        model: &str,
+    ) -> Option<bool> {
+        let verdict = judge(kind, status, Some(body.clone()));
+        model_listed(kind, &verdict, Some(&body), Some(model))
+    }
+
+    /// #2008: the catalogue answers "listed" and "not listed" separately.
+    #[test]
+    fn a_catalogue_says_whether_it_lists_the_model() {
+        let body = json!({"data": [{"id": "gpt-4o"}, {"id": "gpt-4o-mini"}]});
+        assert_eq!(
+            listed(ProviderKind::Openai, 200, body.clone(), "gpt-4o"),
+            Some(true)
+        );
+        assert_eq!(
+            listed(ProviderKind::Openai, 200, body, "gpt-5"),
+            Some(false)
+        );
+    }
+
+    /// A resource path and a bare name agree, as in `catalogue_ids`.
+    #[test]
+    fn a_resource_path_and_a_bare_name_agree() {
+        let body =
+            json!({"publisherModels": [{"name": "publishers/google/models/gemini-2.5-pro"}]});
+        assert_eq!(
+            listed(ProviderKind::Vertex, 200, body.clone(), "gemini-2.5-pro"),
+            Some(true)
+        );
+        assert_eq!(
+            listed(
+                ProviderKind::Vertex,
+                200,
+                body,
+                "publishers/google/models/gemini-2.5-pro"
+            ),
+            Some(true)
+        );
+    }
+
+    /// A liveness probe has no catalogue, a failed probe proves nothing, and
+    /// no model asked about means nothing to answer.
+    #[test]
+    fn nothing_is_claimed_without_a_catalogue_to_check() {
+        assert_eq!(
+            listed(ProviderKind::Tei, 200, json!({"data": [{"id": "x"}]}), "x"),
+            None,
+            "tei is a liveness probe"
+        );
+        assert_eq!(
+            listed(
+                ProviderKind::Openai,
+                401,
+                json!({"data": [{"id": "x"}]}),
+                "x"
+            ),
+            None,
+            "a refused probe cannot say"
+        );
+        let body = json!({"data": [{"id": "x"}]});
+        let verdict = judge(ProviderKind::Openai, 200, Some(body.clone()));
+        assert_eq!(
+            model_listed(ProviderKind::Openai, &verdict, Some(&body), None),
+            None
+        );
+        assert_eq!(
+            model_listed(ProviderKind::Openai, &verdict, Some(&body), Some("  ")),
+            None
+        );
     }
 
     /// #2811: `401 … (resolved from: env (unset))` said a key was missing and

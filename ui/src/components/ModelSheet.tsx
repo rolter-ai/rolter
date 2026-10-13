@@ -1,9 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Lock, Plus } from "lucide-react";
+import { Loader2, Lock, Plus, SearchCheck } from "lucide-react";
 import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
 
 import { FormSkeleton } from "@/components/LoadingState";
+import { GatedButton } from "@/components/GatedButton";
+import { ModelCheckOutcome } from "@/components/ProviderTestOutcome";
 import { RouteTargetList } from "@/components/RouteTargetList";
 import { StrategyPicker } from "@/components/StrategyPicker";
 import { useDiscardGuard } from "@/components/DiscardGuard";
@@ -45,6 +47,7 @@ import {
   setRouteAdvanced,
   setRouteEnabled,
   STRATEGIES,
+  testProvider,
   updateRoute,
   updateRouteParams,
   ApiError,
@@ -904,6 +907,18 @@ function TargetRow({
   // plane answers an upstream that does not answer with an empty list, and
   // refuses a role that may not spend the provider's credential on it, so the
   // two read differently and neither stops the id being typed
+  // what the provider says about the id this line would send: the name typed,
+  // or the public name when the field is blank, since that is what goes
+  // upstream. The answer belongs to that pair, so changing either clears it
+  const checked = target.upstream.trim() || publicName.trim();
+  const provider = providers.find((p) => p.id === target.providerId);
+  const check = useMutation({
+    mutationFn: () => testProvider(target.providerId, checked),
+  });
+  const resetCheck = check.reset;
+  React.useEffect(() => {
+    resetCheck();
+  }, [target.providerId, checked, resetCheck]);
   const nothingToOffer = !target.providerId
     ? t("modelSheet.targets.upstreamNeedsProvider")
     : listed.isFetching
@@ -933,23 +948,44 @@ function TargetRow({
           icon: <ProviderLogo kind={p.kind} name={p.name} />,
         }))}
       />
-      <Combobox
-        allowCustom
-        clearable
-        commitOnBlur
-        aria-label={t("modelSheet.targets.upstreamAria", { n })}
-        className="font-mono"
-        // model ids share long prefixes, so the list is wider than the field:
-        // it grows leftward from the field's edge on the sheet, and fills the
-        // line below it on a phone, where the field is a third of the width
-        listClassName="sm:right-0 sm:w-96 max-sm:w-[calc(100vw-4.5rem)]"
-        value={target.upstream}
-        placeholder={publicName || t("modelSheet.targets.upstreamPlaceholder")}
-        emptyText={nothingToOffer}
-        options={suggestions}
-        onChange={(upstream) => onChange({ upstream })}
-        onFocus={() => setAsked(true)}
-      />
+      <div className="flex min-w-0 items-center gap-1">
+        <Combobox
+          allowCustom
+          clearable
+          commitOnBlur
+          aria-label={t("modelSheet.targets.upstreamAria", { n })}
+          className="min-w-0 flex-1 font-mono"
+          // model ids share long prefixes, so the list is wider than the field:
+          // it grows leftward from the field's edge on the sheet, and fills the
+          // line below it on a phone, where the field is a third of the width
+          listClassName="sm:right-0 sm:w-96 max-sm:w-[calc(100vw-4.5rem)]"
+          value={target.upstream}
+          placeholder={publicName || t("modelSheet.targets.upstreamPlaceholder")}
+          emptyText={nothingToOffer}
+          options={suggestions}
+          onChange={(upstream) => onChange({ upstream })}
+          onFocus={() => setAsked(true)}
+        />
+        {/* the probe spends the provider's credential, so it is the provider
+          editor's to run, as for the provider sheet's own test */}
+        <GatedButton
+          gate="provider:update"
+          control="model-check-upstream"
+          variant="outline"
+          size="icon"
+          className="shrink-0"
+          disabled={!target.providerId || !checked || check.isPending}
+          aria-label={t("modelSheet.targets.checkAria", { n })}
+          title={t("modelSheet.targets.checkTitle")}
+          onClick={() => check.mutate()}
+        >
+          {check.isPending ? (
+            <Loader2 className="size-4 motion-safe:animate-spin" />
+          ) : (
+            <SearchCheck className="size-4" />
+          )}
+        </GatedButton>
+      </div>
       <Input
         aria-label={t("modelSheet.targets.weightAria", { n })}
         type="number"
@@ -967,6 +1003,27 @@ function TargetRow({
         title={t("common.remove")}
         onClick={onRemove}
       />
+      {(check.isPending || check.data || check.isError) && (
+        <div className="col-span-full" aria-live="polite">
+          {check.isPending && (
+            <p role="status" className="text-xs text-muted-foreground">
+              {t("modelSheet.check.checking", { provider: provider?.name ?? "" })}
+            </p>
+          )}
+          {check.data && (
+            <ModelCheckOutcome
+              result={check.data}
+              model={checked}
+              provider={provider?.name ?? ""}
+            />
+          )}
+          {check.isError && (
+            <p role="alert" className="text-xs text-[color:var(--status-danger-text)]">
+              {errorText(check.error, t)}
+            </p>
+          )}
+        </div>
+      )}
     </li>
   );
 }
