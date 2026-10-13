@@ -760,6 +760,18 @@ Define per-model token pricing so Rolter can compute a `cost_usd` value on every
   Price per million characters of text sent to `/v1/audio/speech`, in `currency`. The characters are counted from the request's `input`, because the audio that comes back states no length. When omitted, a speech request is logged `unpriced`.
 </ParamField>
 
+<ParamField path="audio_input_per_mtok" type="float">
+  Price per million audio input tokens, for a realtime or audio model that bills the audio it is sent apart from the text. The share of the prompt that is audio is the one the response's usage names (see [Audio and text tokens](/observability/logs-and-cost#audio-and-text-tokens)). Defaults to `input_per_mtok`.
+</ParamField>
+
+<ParamField path="audio_output_per_mtok" type="float">
+  Price per million audio output tokens. Defaults to `output_per_mtok`.
+</ParamField>
+
+<ParamField path="cached_audio_input_per_mtok" type="float">
+  Price per million cached audio input tokens, for a provider that says how many of its cache hits were audio (a realtime session does). Defaults to `cached_input_per_mtok`, and from there to the audio input rate.
+</ParamField>
+
 <ParamField path="currency" default="USD" type="string">
   The currency the rates above are written in. It defaults to `USD`, not to the `base` of `[currency]`, so on a deployment whose base is another currency set it on every price or add a `USD` rate. A currency with no rate in `[currency]` is a config error.
 </ParamField>

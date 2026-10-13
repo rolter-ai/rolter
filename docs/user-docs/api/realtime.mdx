@@ -71,6 +71,15 @@ Its cost is added to your budgets and its tokens to your `tpm` limits every
 `usage_flush_secs` seconds (15 by default), not only when the session closes. A
 session that stays open all day is accounted as it goes.
 
+**Audio and text tokens are priced apart.** A `response.done` names the audio share of its input and output tokens, and when the model's price row sets `audio_input_per_mtok`, `audio_output_per_mtok` or `cached_audio_input_per_mtok` those tokens are charged at them; a row without them prices every token at the text rates. See [Audio and text tokens](/observability/logs-and-cost#audio-and-text-tokens).
+
+**Input-audio transcription is metered as its own model.** With `input_audio_transcription` on, the upstream runs a second model (`whisper-1`, `gpt-4o-transcribe`) over the caller's audio and reports its usage on `conversation.item.input_audio_transcription.completed`. Each such event becomes one more row in the request log, and its cost is added to your budgets and its tokens to your `tpm` limits with the session's turns. The row's `model` is the transcription model the session named in `session.update` (`session.audio.input.transcription.model`, or `session.input_audio_transcription.model` in the beta shape) and it is priced from that model's own price row:
+
+- A model billed by tokens (`gpt-4o-transcribe`) is priced from the event's token usage, with its audio input at `audio_input_per_mtok` when set.
+- A model billed by the minute (`whisper-1`) is priced from the event's duration at `audio_input_per_minute`.
+- A model with no price row, a duration with no per-minute rate, or a session that never named a transcription model is logged `unpriced = 1` with no cost.
+- An event that carries no usage is logged `usage_unknown = 1`, unknown rather than free.
+
 A full `tpm` window does not close a live session; it refuses the key's next
 session or request, as it would for HTTP.
 
@@ -166,11 +175,12 @@ moment, the rows and charges still queued are lost after those 5 seconds.
   refused while a policy applies. See
   [Content policy](https://github.com/rolter-ai/rolter/blob/master/docs/dev-docs/architecture/realtime-metering.md#content-policy-on-a-bidirectional-stream-1880)
   for the detail.
-- **Audio and text tokens share one price.** A model price has one input and
-  one output rate, so set them to the blend you expect
-  ([#1882](https://github.com/rolter-ai/rolter/issues/1882)). Input-audio
-  transcription, which the upstream bills as a separate model, is not metered
-  yet ([#1883](https://github.com/rolter-ai/rolter/issues/1883)).
+- **Audio rates need the split.** An audio rate applies only to the tokens a
+  `response.done` names as audio. An upstream that reports totals alone is
+  priced at the text rates.
+- **A transcription model is named by the session.** A session that turns
+  transcription on in its defaults, without a `session.update` or a
+  `session.updated` naming the model, has its transcription logged `unpriced`.
 
 ## `[realtime]` configuration
 

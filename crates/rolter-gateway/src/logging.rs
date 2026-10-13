@@ -609,6 +609,16 @@ pub struct Usage {
     /// Anthropic's `usage.cache_creation.ephemeral_1h_input_tokens`; `0` when
     /// the body reported no split, and never part of `cache_write` twice
     pub cache_write_1h: u32,
+    /// the audio tokens among `prompt`, for a model that bills them apart from
+    /// the text (#1882). `0` when the body named no split, in which case every
+    /// token is priced at the text rate
+    pub audio_input: u32,
+    /// the audio tokens among `completion` (#1882)
+    pub audio_output: u32,
+    /// the audio tokens among `cache_read` (#1882), named by a realtime
+    /// `cached_tokens_details`; a cache hit the body does not split is read as
+    /// text
+    pub audio_cache_read: u32,
     /// whether the body carried a usage object at all. Without it an all-zero
     /// usage is indistinguishable from an upstream that said nothing (#1478)
     pub reported: bool,
@@ -765,7 +775,74 @@ fn merge_usage(usage: &mut Usage, value: &Value, thinking: rolter_proxy::Thinkin
         if let Some(long) = rolter_proxy::cache_written_one_hour_tokens(u) {
             usage.cache_write_1h = usage.cache_write_1h.max(long as u32);
         }
+        // the audio share of the prompt and the completion, for the models
+        // that bill it apart from the text (#1882)
+        let (audio_in, audio_out, audio_cached) = audio_usage(u);
+        usage.audio_input = usage.audio_input.max(audio_in);
+        usage.audio_output = usage.audio_output.max(audio_out);
+        usage.audio_cache_read = usage.audio_cache_read.max(audio_cached);
     }
+}
+
+impl Usage {
+    /// The audio share of these tokens, as [`rolter_core::ModelPriceConfig::cost_with_audio`]
+    /// takes it.
+    pub fn audio(&self) -> rolter_core::AudioTokens {
+        rolter_core::AudioTokens {
+            input: self.audio_input,
+            output: self.audio_output,
+            cached_input: self.audio_cache_read,
+        }
+    }
+
+    /// Cost of these tokens at `price`, audio and text apart where the usage
+    /// names the split (#1882).
+    pub fn cost(&self, price: &rolter_core::ModelPriceConfig) -> rust_decimal::Decimal {
+        price.cost_with_audio(
+            self.prompt,
+            self.completion,
+            self.cache_read,
+            self.cache_write,
+            self.cache_write_1h,
+            self.audio(),
+        )
+    }
+}
+
+/// The audio tokens a `usage` object names, in any of the spellings that carry
+/// them (#1882), as `(input, output, cached input)`.
+///
+/// Each is a share of the matching total, not an addition to it:
+/// - Chat Completions: `prompt_tokens_details.audio_tokens` and
+///   `completion_tokens_details.audio_tokens` (the audio models)
+/// - Realtime `response.done` and a transcription's token usage:
+///   `input_token_details.audio_tokens` and `output_token_details.audio_tokens`,
+///   with the audio part of the cache hits under
+///   `input_token_details.cached_tokens_details.audio_tokens`
+pub(crate) fn audio_usage(usage: &Value) -> (u32, u32, u32) {
+    let first = |pointers: &[&str]| {
+        pointers
+            .iter()
+            .find_map(|pointer| usage.pointer(pointer)?.as_u64())
+            .map_or(0, |n| u32::try_from(n).unwrap_or(u32::MAX))
+    };
+    (
+        first(&[
+            "/prompt_tokens_details/audio_tokens",
+            "/input_token_details/audio_tokens",
+            "/input_tokens_details/audio_tokens",
+        ]),
+        first(&[
+            "/completion_tokens_details/audio_tokens",
+            "/output_token_details/audio_tokens",
+            "/output_tokens_details/audio_tokens",
+        ]),
+        first(&[
+            "/input_token_details/cached_tokens_details/audio_tokens",
+            "/prompt_tokens_details/cached_tokens_details/audio_tokens",
+            "/input_tokens_details/cached_tokens_details/audio_tokens",
+        ]),
+    )
 }
 
 fn u32_field(value: &Value, key: &str) -> Option<u32> {
@@ -1056,15 +1133,10 @@ impl UsageLoggingStream {
                 // a unit rate adds to the token cost: a model that reports
                 // tokens and is billed per unit as well sets both rates, and a
                 // model billed one way leaves the other unset (#2937)
-                p.cost(
-                    usage.prompt,
-                    usage.completion,
-                    usage.cache_read,
-                    usage.cache_write,
-                    usage.cache_write_1h,
-                ) + units
-                    .and_then(|units| p.unit_cost(&units))
-                    .unwrap_or_default()
+                usage.cost(p)
+                    + units
+                        .and_then(|units| p.unit_cost(&units))
+                        .unwrap_or_default()
             })
             .unwrap_or(rust_decimal::Decimal::ZERO);
         log.cost_usd = cost.to_f64().unwrap_or(0.0);
@@ -1677,6 +1749,44 @@ mod tests {
             data.extend_from_slice(&chunk[..n]);
         }
         String::from_utf8_lossy(&data).to_string()
+    }
+
+    /// #1882: the audio share of a body's tokens is read from every spelling
+    /// that carries it, and kept apart from the totals.
+    #[test]
+    fn audio_shares_are_read_from_each_usage_spelling() {
+        let chat = br#"{"usage":{"prompt_tokens":10,"completion_tokens":10,"total_tokens":20,"prompt_tokens_details":{"audio_tokens":6,"cached_tokens":2},"completion_tokens_details":{"audio_tokens":9}}}"#;
+        let usage = parse_usage(false, chat);
+        assert_eq!((usage.audio_input, usage.audio_output), (6, 9));
+        assert_eq!(
+            (usage.prompt, usage.completion, usage.cache_read),
+            (10, 10, 2)
+        );
+
+        let transcription = br#"{"text":"hi","usage":{"type":"tokens","input_tokens":13,"input_token_details":{"text_tokens":3,"audio_tokens":10},"output_tokens":9,"total_tokens":22}}"#;
+        let usage = parse_usage(false, transcription);
+        assert_eq!(usage.audio_input, 10);
+        assert_eq!((usage.prompt, usage.completion), (13, 9));
+
+        let realtime = br#"{"usage":{"input_tokens":100,"output_tokens":50,"input_token_details":{"cached_tokens":20,"audio_tokens":90,"cached_tokens_details":{"audio_tokens":15}},"output_token_details":{"audio_tokens":45}}}"#;
+        let usage = parse_usage(false, realtime);
+        assert_eq!(
+            (
+                usage.audio_input,
+                usage.audio_output,
+                usage.audio_cache_read
+            ),
+            (90, 45, 15)
+        );
+
+        // a streamed body keeps the largest figure seen, like the totals
+        let sse = b"data: {\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":1,\"completion_tokens_details\":{\"audio_tokens\":1}}}\n\ndata: {\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":9,\"completion_tokens_details\":{\"audio_tokens\":7}}}\n\ndata: [DONE]\n\n";
+        assert_eq!(parse_usage(true, sse).audio_output, 7);
+
+        assert_eq!(
+            parse_usage(false, br#"{"usage":{"prompt_tokens":3}}"#).audio(),
+            Default::default()
+        );
     }
 
     #[test]
@@ -2532,6 +2642,7 @@ data: {\"type\":\"message_delta\",\"usage\":{\"input_tokens\":10,\"cache_creatio
                 cache_write: 248,
                 cache_write_1h: 100,
                 reported: true,
+                ..Usage::default()
             }
         );
     }
@@ -2601,6 +2712,7 @@ data: {\"type\":\"message_delta\",\"usage\":{\"input_tokens\":2048,\"cache_creat
             cache_write: 248,
             cache_write_1h: 100,
             reported: true,
+            ..Usage::default()
         };
         assert_eq!(parse_usage(false, chat), expected);
         assert_eq!(parse_usage(false, responses), expected);
@@ -3523,6 +3635,9 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
             image_per_unit: None,
             audio_input_per_minute: None,
             speech_per_mchar: None,
+            audio_input_per_mtok: None,
+            audio_output_per_mtok: None,
+            cached_audio_input_per_mtok: None,
             currency: "USD".to_string(),
         });
         let mut wrapped = UsageLoggingStream::new(

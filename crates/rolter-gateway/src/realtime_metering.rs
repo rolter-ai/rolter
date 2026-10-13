@@ -56,6 +56,17 @@ use crate::logging::{RequestLog, Usage, CLIENT_DISCONNECT_ERROR, CLIENT_DISCONNE
 use crate::metrics::Metrics;
 use crate::state::{AppState, KeyMeta, Snapshot};
 
+/// The server event that carries an input-audio transcription's usage (#1883).
+const TRANSCRIPTION_COMPLETED: &str = "conversation.item.input_audio_transcription.completed";
+
+/// The longest transcription model name taken from a session event. The name
+/// is the caller's, and it ends up in a log row.
+const MAX_MODEL_LEN: usize = 128;
+
+/// The largest client frame searched for a `session.update` whose `type` is not
+/// its first key (#1883).
+const MAX_SESSION_UPDATE_LEN: usize = 64 * 1024;
+
 /// Finished turns that may wait for the meter before the relay drops them.
 ///
 /// The meter drains continuously and each flush is bounded by the Redis
@@ -128,6 +139,20 @@ pub(crate) struct Turn {
     usage: Usage,
     /// the upstream ended the response with `status: "failed"`
     failed: bool,
+    /// set when this is the input-audio transcription the upstream ran beside
+    /// the session's model rather than one of that model's responses (#1883)
+    transcription: Option<Transcription>,
+}
+
+/// One finished input-audio transcription, billed as the transcription model
+/// and not as the session's (#1883).
+#[derive(Debug)]
+pub(crate) struct Transcription {
+    /// the model the session asked to transcribe with; `None` when no
+    /// `session.update` named one, which leaves the row unpriced
+    model: Option<String>,
+    /// the audio duration of a duration-billed model's usage
+    seconds: Option<Decimal>,
 }
 
 /// A response the upstream has started and not yet finished.
@@ -163,9 +188,79 @@ pub(crate) struct TurnTracker {
     /// set while some open response has not produced its first delta, so the
     /// search for one stops as soon as it is found
     awaiting_delta: bool,
+    /// the model the session transcribes the caller's audio with, as the last
+    /// `session.update` or `session.updated` named it (#1883)
+    transcription_model: Option<String>,
 }
 
 impl TurnTracker {
+    /// Observe one client text frame, for the transcription model a
+    /// `session.update` names (#1883). Only those events are parsed; the
+    /// audio the client streams is never looked at.
+    ///
+    /// A client is free to write `type` anywhere in the object, and an SDK that
+    /// sorts its keys writes it last, so a frame without a leading `type` is
+    /// searched for the event name instead. The search is bounded by
+    /// [`MAX_SESSION_UPDATE_LEN`]: the frames that carry audio are base64 and
+    /// larger than that or cannot contain the name, and the update itself is a
+    /// few kilobytes.
+    pub(crate) fn observe_client(&mut self, frame: &str) {
+        let is_update = match leading_type(frame) {
+            Some(kind) => matches!(kind, "session.update" | "transcription_session.update"),
+            None => {
+                frame.len() <= MAX_SESSION_UPDATE_LEN
+                    && (frame.contains("\"session.update\"")
+                        || frame.contains("\"transcription_session.update\""))
+            }
+        };
+        if is_update {
+            self.note_session(frame);
+        }
+    }
+
+    /// Remember the transcription model a session event names. An event that
+    /// sets `transcription` to null switches it off; one that names no model
+    /// leaves the last one, as a partial `session.update` does upstream.
+    fn note_session(&mut self, frame: &str) {
+        let Ok(event) = serde_json::from_str::<Value>(frame) else {
+            return;
+        };
+        // GA nests it under `audio.input.transcription`, the beta shape keeps
+        // `input_audio_transcription` on the session itself
+        for pointer in [
+            "/session/audio/input/transcription",
+            "/session/input_audio_transcription",
+        ] {
+            match event.pointer(pointer) {
+                Some(Value::Null) => self.transcription_model = None,
+                Some(setting) => {
+                    if let Some(model) = setting.get("model").and_then(Value::as_str) {
+                        if !model.is_empty() && model.len() <= MAX_MODEL_LEN {
+                            self.transcription_model = Some(model.to_string());
+                        }
+                    }
+                }
+                None => {}
+            }
+        }
+    }
+
+    fn transcription(&self, frame: &str, now: Instant) -> Option<Turn> {
+        let event: Value = serde_json::from_str(frame).ok()?;
+        let (usage, seconds) = transcription_usage(event.get("usage"));
+        Some(Turn {
+            started: now,
+            latency_ms: 0,
+            ttft_ms: 0,
+            usage,
+            failed: false,
+            transcription: Some(Transcription {
+                model: self.transcription_model.clone(),
+                seconds,
+            }),
+        })
+    }
+
     /// Observe one upstream text frame. Returns the turn a `response.done`
     /// finished, if this frame was one.
     pub(crate) fn observe(&mut self, frame: &str) -> Option<Turn> {
@@ -184,6 +279,11 @@ impl TurnTracker {
                 None
             }
             Some("response.created" | "response.done") => self.lifecycle(frame, now),
+            Some(TRANSCRIPTION_COMPLETED) => self.transcription(frame, now),
+            Some("session.created" | "session.updated" | "transcription_session.updated") => {
+                self.note_session(frame);
+                None
+            }
             Some(_) => None,
             // `type` was not among the leading keys. a frame shaped that way is
             // still metered correctly, it just costs a scan of the whole frame
@@ -196,6 +296,8 @@ impl TurnTracker {
                 }
                 if frame.contains("\"response.done\"") || frame.contains("\"response.created\"") {
                     self.lifecycle(frame, now)
+                } else if frame.contains(TRANSCRIPTION_COMPLETED) {
+                    self.transcription(frame, now)
                 } else {
                     None
                 }
@@ -239,6 +341,7 @@ impl TurnTracker {
                     ttft_ms,
                     usage: realtime_usage(response),
                     failed: response.get("status").and_then(Value::as_str) == Some("failed"),
+                    transcription: None,
                 })
             }
             _ => None,
@@ -322,8 +425,11 @@ fn skip_string_member(after_key: &str) -> Option<&str> {
 /// Realtime reports `input_tokens`/`output_tokens` with cached input under
 /// `input_token_details.cached_tokens`, which is neither the Chat Completions
 /// nor the Messages spelling, so [`crate::logging::parse_usage`] does not read
-/// it. Audio and text tokens are summed into those totals by the upstream and
-/// are priced alike here: a price row has one input and one output rate.
+/// it. The upstream sums audio and text tokens into those totals and names the
+/// audio share of each (`input_token_details.audio_tokens`,
+/// `output_token_details.audio_tokens`, and for the cache hits
+/// `input_token_details.cached_tokens_details.audio_tokens`), which is what a
+/// price row's audio rates apply to (#1882).
 fn realtime_usage(response: &Value) -> Usage {
     let Some(usage) = response.get("usage").filter(|usage| usage.is_object()) else {
         return Usage::default();
@@ -339,6 +445,7 @@ fn realtime_usage(response: &Value) -> Usage {
         0 => prompt.saturating_add(completion),
         total => total,
     };
+    let (audio_input, audio_output, audio_cache_read) = crate::logging::audio_usage(usage);
     Usage {
         prompt,
         completion,
@@ -346,8 +453,61 @@ fn realtime_usage(response: &Value) -> Usage {
         cache_read: count(usage.pointer("/input_token_details/cached_tokens")),
         cache_write: 0,
         cache_write_1h: 0,
+        audio_input,
+        audio_output,
+        audio_cache_read,
         reported: true,
     }
+}
+
+/// What a `conversation.item.input_audio_transcription.completed` event's
+/// `usage` bills (#1883): the tokens of a token-billed model, or the seconds of
+/// a duration-billed one (`whisper-1`). A missing `usage` is not reported, so
+/// the row says the spend is unknown rather than free.
+fn transcription_usage(usage: Option<&Value>) -> (Usage, Option<Decimal>) {
+    let Some(usage) = usage.filter(|usage| usage.is_object()) else {
+        return (Usage::default(), None);
+    };
+    if usage.get("type").and_then(Value::as_str) == Some("duration") {
+        // read from the number's own text so 12.3 seconds is exactly 12.3
+        let seconds = usage
+            .get("seconds")
+            .and_then(|seconds| seconds.as_number()?.to_string().parse::<Decimal>().ok())
+            .filter(|seconds| *seconds >= Decimal::ZERO);
+        let reported = seconds.is_some();
+        return (
+            Usage {
+                reported,
+                ..Usage::default()
+            },
+            seconds,
+        );
+    }
+    let count = |key: &str| {
+        usage
+            .get(key)
+            .and_then(Value::as_u64)
+            .map_or(0, |n| u32::try_from(n).unwrap_or(u32::MAX))
+    };
+    let (prompt, completion) = (count("input_tokens"), count("output_tokens"));
+    let total = match count("total_tokens") {
+        0 => prompt.saturating_add(completion),
+        total => total,
+    };
+    let (audio_input, audio_output, audio_cache_read) = crate::logging::audio_usage(usage);
+    (
+        Usage {
+            prompt,
+            completion,
+            total,
+            audio_input,
+            audio_output,
+            audio_cache_read,
+            reported: true,
+            ..Usage::default()
+        },
+        None,
+    )
 }
 
 /// Why a session ended, as recorded on the row of a response it cut short.
@@ -825,17 +985,12 @@ impl Runner {
         turn: &Turn,
         seq: u64,
     ) -> (RequestLog, Decimal) {
+        if let Some(transcription) = &turn.transcription {
+            return self.transcription_row(snap, turn, transcription, seq);
+        }
         let usage = turn.usage;
         let cost = price
-            .map(|price| {
-                price.cost(
-                    usage.prompt,
-                    usage.completion,
-                    usage.cache_read,
-                    usage.cache_write,
-                    usage.cache_write_1h,
-                )
-            })
+            .map(|price| usage.cost(price))
             .unwrap_or(Decimal::ZERO);
         let mut row = self.base_row(snap, price, turn.started, seq);
         row.status = if turn.failed { 502 } else { 200 };
@@ -852,6 +1007,54 @@ impl Runner {
         row.usage_unknown = u8::from(!turn.failed && !usage.reported);
         row.latency_ms = turn.latency_ms;
         row.ttft_ms = turn.ttft_ms;
+        (row, cost)
+    }
+
+    /// The row for an input-audio transcription (#1883), priced against the
+    /// transcription model the session named and not the session's own.
+    ///
+    /// A token-billed model prices its tokens like any response (audio input
+    /// at its audio rate), and a duration-billed one its seconds at
+    /// `audio_input_per_minute`. A model with no price, or a duration with no
+    /// minute rate, leaves the row `unpriced`; a event with no usage leaves it
+    /// `usage_unknown`. Neither is recorded as free.
+    fn transcription_row(
+        &self,
+        snap: &Snapshot,
+        turn: &Turn,
+        transcription: &Transcription,
+        seq: u64,
+    ) -> (RequestLog, Decimal) {
+        let price = transcription
+            .model
+            .as_deref()
+            .and_then(|model| snap.prices.get(model));
+        let usage = turn.usage;
+        let cost = match (price, transcription.seconds) {
+            (Some(price), Some(seconds)) => price
+                .unit_cost(&rolter_core::BilledUnits::AudioSeconds(seconds))
+                .unwrap_or(Decimal::ZERO),
+            (Some(price), None) => usage.cost(price),
+            (None, _) => Decimal::ZERO,
+        };
+        let mut row = self.base_row(snap, price, turn.started, seq);
+        if let Some(model) = &transcription.model {
+            row.model = model.clone();
+        }
+        // the session is a stream, an input transcription is not one
+        row.stream = 0;
+        row.unpriced = u8::from(
+            price.is_none()
+                || transcription.seconds.is_some_and(|_| {
+                    price.is_some_and(|price| price.audio_input_per_minute.is_none())
+                }),
+        );
+        row.status = 200;
+        row.prompt_tokens = usage.prompt;
+        row.completion_tokens = usage.completion;
+        row.total_tokens = usage.total;
+        row.cost_usd = cost.to_f64().unwrap_or(0.0);
+        row.usage_unknown = u8::from(!usage.reported);
         (row, cost)
     }
 
@@ -965,12 +1168,127 @@ mod tests {
                 cache_read: 64,
                 cache_write: 0,
                 cache_write_1h: 0,
+                audio_input: 100,
+                audio_output: 200,
+                audio_cache_read: 0,
                 reported: true,
             }
         );
         assert_eq!((turn.latency_ms, turn.ttft_ms), (900, 40));
         assert!(!turn.failed);
         assert!(tracker.into_open().is_empty(), "the turn is closed");
+    }
+
+    const COMPLETED: &str = r#"{"type":"conversation.item.input_audio_transcription.completed","event_id":"e","item_id":"i","content_index":0,"transcript":"hi","usage":{"type":"tokens","total_tokens":22,"input_tokens":13,"input_token_details":{"text_tokens":3,"audio_tokens":10},"output_tokens":9}}"#;
+
+    /// #1883: both usage shapes of a transcription are read, and neither is a
+    /// response turn.
+    #[test]
+    fn a_transcription_event_yields_its_token_or_duration_usage() {
+        let mut tracker = TurnTracker::default();
+        let turn = tracker.observe(COMPLETED).expect("a transcription turn");
+        assert_eq!(turn.usage.prompt, 13);
+        assert_eq!(turn.usage.completion, 9);
+        assert_eq!(turn.usage.total, 22);
+        assert_eq!(turn.usage.audio_input, 10);
+        assert!(turn.usage.reported);
+        assert!(!turn.failed);
+        let transcription = turn.transcription.expect("marked as a transcription");
+        assert_eq!(transcription.model, None);
+        assert_eq!(transcription.seconds, None);
+
+        let duration = r#"{"type":"conversation.item.input_audio_transcription.completed","usage":{"type":"duration","seconds":12.3}}"#;
+        let turn = tracker.observe(duration).unwrap();
+        assert!(turn.usage.reported);
+        assert_eq!(turn.usage.total, 0);
+        assert_eq!(
+            turn.transcription.unwrap().seconds,
+            Some("12.3".parse().unwrap())
+        );
+
+        let bare =
+            r#"{"type":"conversation.item.input_audio_transcription.completed","transcript":"hi"}"#;
+        assert!(!tracker.observe(bare).unwrap().usage.reported);
+        // nothing opened or closed a response
+        assert!(tracker.into_open().is_empty());
+    }
+
+    /// A frame whose `type` is not among the leading keys is still found.
+    #[test]
+    fn a_transcription_event_with_a_late_type_is_still_metered() {
+        let mut tracker = TurnTracker::default();
+        let frame = r#"{"item_id":"i","transcript":"hi","usage":{"type":"duration","seconds":3},"type":"conversation.item.input_audio_transcription.completed"}"#;
+        let turn = tracker.observe(frame).unwrap();
+        assert!(turn.transcription.is_some());
+    }
+
+    /// #1883: the model comes from the client's `session.update` in either
+    /// shape, from the server's echo, and is dropped when transcription is set
+    /// to null. A partial update that names no model keeps the last one.
+    #[test]
+    fn the_transcription_model_follows_the_session_events() {
+        let model = |tracker: &TurnTracker| tracker.transcription_model.clone();
+        let mut tracker = TurnTracker::default();
+        tracker.observe_client(
+            r#"{"type":"session.update","session":{"audio":{"input":{"transcription":{"model":"gpt-4o-transcribe"}}}}}"#,
+        );
+        assert_eq!(model(&tracker).as_deref(), Some("gpt-4o-transcribe"));
+        // a partial update that does not touch transcription
+        tracker.observe_client(r#"{"type":"session.update","session":{"instructions":"x"}}"#);
+        assert_eq!(model(&tracker).as_deref(), Some("gpt-4o-transcribe"));
+        // the beta spelling, and `type` after the session as a sorting SDK writes it
+        tracker.observe_client(
+            r#"{"session":{"input_audio_transcription":{"model":"whisper-1"}},"type":"session.update"}"#,
+        );
+        assert_eq!(model(&tracker).as_deref(), Some("whisper-1"));
+        // the server's echo is what the session actually runs
+        tracker.observe(
+            r#"{"type":"session.updated","session":{"audio":{"input":{"transcription":{"model":"gpt-4o-mini-transcribe"}}}}}"#,
+        );
+        assert_eq!(model(&tracker).as_deref(), Some("gpt-4o-mini-transcribe"));
+        tracker.observe_client(
+            r#"{"type":"session.update","session":{"audio":{"input":{"transcription":null}}}}"#,
+        );
+        assert_eq!(model(&tracker), None);
+        // the audio a client streams is never parsed, and an unrelated frame
+        // that merely mentions the name is harmless
+        tracker.observe_client(r#"{"type":"input_audio_buffer.append","audio":"AAAA"}"#);
+        assert_eq!(model(&tracker), None);
+        tracker.observe_client(&format!(
+            r#"{{"type":"x","audio":"{}","y":"session.update"}}"#,
+            "A".repeat(MAX_SESSION_UPDATE_LEN)
+        ));
+        assert_eq!(model(&tracker), None);
+    }
+
+    /// The model name is the caller's, so an absurd one is not taken.
+    #[test]
+    fn an_oversized_transcription_model_name_is_ignored() {
+        let mut tracker = TurnTracker::default();
+        let name = "m".repeat(MAX_MODEL_LEN + 1);
+        tracker.observe_client(&format!(
+            r#"{{"type":"session.update","session":{{"input_audio_transcription":{{"model":"{name}"}}}}}}"#
+        ));
+        assert_eq!(tracker.transcription_model, None);
+    }
+
+    /// #1882: the audio shares are read from a `response.done`.
+    #[test]
+    fn a_response_reports_its_audio_shares() {
+        let response: Value = serde_json::from_str(
+            r#"{"usage":{"input_tokens":100,"output_tokens":50,"input_token_details":{"cached_tokens":20,"audio_tokens":90,"cached_tokens_details":{"text_tokens":5,"audio_tokens":15}},"output_token_details":{"audio_tokens":45}}}"#,
+        )
+        .unwrap();
+        let usage = realtime_usage(&response);
+        assert_eq!(
+            (
+                usage.audio_input,
+                usage.audio_output,
+                usage.audio_cache_read
+            ),
+            (90, 45, 15)
+        );
+        assert_eq!(usage.cache_read, 20);
     }
 
     #[test]

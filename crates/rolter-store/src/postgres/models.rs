@@ -407,6 +407,15 @@ pub struct ModelPrice {
     pub audio_input_per_minute: Option<String>,
     /// price per million characters of text-to-speech input (#2937)
     pub speech_per_mchar: Option<String>,
+    /// price per million audio input tokens (#1882); `None` means
+    /// `input_per_mtok`
+    pub audio_input_per_mtok: Option<String>,
+    /// price per million audio output tokens (#1882); `None` means
+    /// `output_per_mtok`
+    pub audio_output_per_mtok: Option<String>,
+    /// price per million cached audio input tokens (#1882); `None` means the
+    /// cached rate, then the audio input rate
+    pub cached_audio_input_per_mtok: Option<String>,
     pub currency: String,
     pub created_at: DateTime<Utc>,
 }

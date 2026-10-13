@@ -48,8 +48,11 @@ import {
 } from "@/lib/api";
 import {
   audioInputPatch,
+  audioInputTokenPatch,
+  audioOutputTokenPatch,
   cacheWrite1hPatch,
   cacheWritePatch,
+  cachedAudioPatch,
   imagePatch,
   speechPatch,
 } from "@/lib/cache-write-rate";
@@ -77,6 +80,9 @@ const PRICE_COLUMNS = [
   { col: "image", field: "image_per_unit" },
   { col: "audio", field: "audio_input_per_minute" },
   { col: "speech", field: "speech_per_mchar" },
+  { col: "audioIn", field: "audio_input_per_mtok" },
+  { col: "audioOut", field: "audio_output_per_mtok" },
+  { col: "cachedAudio", field: "cached_audio_input_per_mtok" },
 ] as const satisfies readonly { col: string; field: keyof ModelPriceRow }[];
 
 type PriceColumn = (typeof PRICE_COLUMNS)[number]["col"];
@@ -461,6 +467,9 @@ type PriceField =
   | "image"
   | "audio"
   | "speech"
+  | "audioIn"
+  | "audioOut"
+  | "cachedAudio"
   | "currency";
 
 /**
@@ -469,12 +478,25 @@ type PriceField =
  * plane knows is a rate the stored column cannot hold, so that refusal is placed
  * on its input instead of surfacing as a toast.
  */
-const WIRE_FIELDS: Record<string, "cacheWrite" | "cacheWrite1h" | "image" | "audio" | "speech"> = {
+const WIRE_FIELDS: Record<
+  string,
+  | "cacheWrite"
+  | "cacheWrite1h"
+  | "image"
+  | "audio"
+  | "speech"
+  | "audioIn"
+  | "audioOut"
+  | "cachedAudio"
+> = {
   cache_write_per_mtok: "cacheWrite",
   cache_write_1h_per_mtok: "cacheWrite1h",
   image_per_unit: "image",
   audio_input_per_minute: "audio",
   speech_per_mchar: "speech",
+  audio_input_per_mtok: "audioIn",
+  audio_output_per_mtok: "audioOut",
+  cached_audio_input_per_mtok: "cachedAudio",
 };
 
 function UpsertPriceDialog({
@@ -508,6 +530,11 @@ function UpsertPriceDialog({
   const [imagePerUnit, setImagePerUnit] = React.useState("");
   const [audioPerMinute, setAudioPerMinute] = React.useState("");
   const [speechPerMchar, setSpeechPerMchar] = React.useState("");
+  // the audio token rates of a realtime or audio model (#1882); empty prices
+  // those tokens at the text rate
+  const [audioInPerMtok, setAudioInPerMtok] = React.useState("");
+  const [audioOutPerMtok, setAudioOutPerMtok] = React.useState("");
+  const [cachedAudioPerMtok, setCachedAudioPerMtok] = React.useState("");
   const baseCurrency = settings?.base ?? "USD";
   const [currency, setCurrency] = React.useState(baseCurrency);
   const visibility = useErrorVisibility<PriceField>();
@@ -518,6 +545,9 @@ function UpsertPriceDialog({
     image: `${idBase}-image`,
     audio: `${idBase}-audio`,
     speech: `${idBase}-speech`,
+    audioIn: `${idBase}-audio-in`,
+    audioOut: `${idBase}-audio-out`,
+    cachedAudio: `${idBase}-cached-audio`,
   };
 
   // names worth offering: the routes the gateway serves and the models seen in
@@ -567,6 +597,9 @@ function UpsertPriceDialog({
       setImagePerUnit(existing?.image_per_unit ?? "");
       setAudioPerMinute(existing?.audio_input_per_minute ?? "");
       setSpeechPerMchar(existing?.speech_per_mchar ?? "");
+      setAudioInPerMtok(existing?.audio_input_per_mtok ?? "");
+      setAudioOutPerMtok(existing?.audio_output_per_mtok ?? "");
+      setCachedAudioPerMtok(existing?.cached_audio_input_per_mtok ?? "");
       fields.clear();
       setCurrency(existing?.currency ?? baseCurrency);
     }
@@ -590,6 +623,9 @@ function UpsertPriceDialog({
     image: imagePerUnit.trim() ? priceError(imagePerUnit) : undefined,
     audio: audioPerMinute.trim() ? priceError(audioPerMinute) : undefined,
     speech: speechPerMchar.trim() ? priceError(speechPerMchar) : undefined,
+    audioIn: audioInPerMtok.trim() ? priceError(audioInPerMtok) : undefined,
+    audioOut: audioOutPerMtok.trim() ? priceError(audioOutPerMtok) : undefined,
+    cachedAudio: cachedAudioPerMtok.trim() ? priceError(cachedAudioPerMtok) : undefined,
     currency: currency.trim() ? undefined : t("pages.pricing.currencyRequired"),
   };
   const fields = useFieldErrors<PriceField>({
@@ -603,6 +639,9 @@ function UpsertPriceDialog({
       "image",
       "audio",
       "speech",
+      "audioIn",
+      "audioOut",
+      "cachedAudio",
       "currency",
     ],
     wire: WIRE_FIELDS,
@@ -628,6 +667,10 @@ function UpsertPriceDialog({
         ...imagePatch(imagePerUnit, existing?.image_per_unit ?? ""),
         ...audioInputPatch(audioPerMinute, existing?.audio_input_per_minute ?? ""),
         ...speechPatch(speechPerMchar, existing?.speech_per_mchar ?? ""),
+        // and the audio token rates (#1882)
+        ...audioInputTokenPatch(audioInPerMtok, existing?.audio_input_per_mtok ?? ""),
+        ...audioOutputTokenPatch(audioOutPerMtok, existing?.audio_output_per_mtok ?? ""),
+        ...cachedAudioPatch(cachedAudioPerMtok, existing?.cached_audio_input_per_mtok ?? ""),
         currency,
       }),
     onSuccess: () => {
@@ -670,6 +713,9 @@ function UpsertPriceDialog({
     imagePerUnit !== (existing?.image_per_unit ?? "") ||
     audioPerMinute !== (existing?.audio_input_per_minute ?? "") ||
     speechPerMchar !== (existing?.speech_per_mchar ?? "") ||
+    audioInPerMtok !== (existing?.audio_input_per_mtok ?? "") ||
+    audioOutPerMtok !== (existing?.audio_output_per_mtok ?? "") ||
+    cachedAudioPerMtok !== (existing?.cached_audio_input_per_mtok ?? "") ||
     currency !== (existing?.currency ?? baseCurrency);
 
   return (
@@ -840,6 +886,63 @@ function UpsertPriceDialog({
               fields.edit("speech");
             }}
             placeholder={t("pages.pricing.unitPlaceholder")}
+          />
+        </Field>
+        <Field
+          label={t("pages.pricing.audioInTokenPrice")}
+          hint={t("pages.pricing.priceUnit", { currency })}
+          info={t("pages.pricing.audioInTokenInfo")}
+          error={shown("audioIn")}
+        >
+          <Input
+            id={writeIds.audioIn}
+            type="number"
+            min={0}
+            step="0.000001"
+            value={audioInPerMtok}
+            onChange={(e) => {
+              setAudioInPerMtok(e.target.value);
+              fields.edit("audioIn");
+            }}
+            placeholder={t("pages.pricing.audioTokenPlaceholder")}
+          />
+        </Field>
+        <Field
+          label={t("pages.pricing.audioOutTokenPrice")}
+          hint={t("pages.pricing.priceUnit", { currency })}
+          info={t("pages.pricing.audioOutTokenInfo")}
+          error={shown("audioOut")}
+        >
+          <Input
+            id={writeIds.audioOut}
+            type="number"
+            min={0}
+            step="0.000001"
+            value={audioOutPerMtok}
+            onChange={(e) => {
+              setAudioOutPerMtok(e.target.value);
+              fields.edit("audioOut");
+            }}
+            placeholder={t("pages.pricing.audioTokenPlaceholder")}
+          />
+        </Field>
+        <Field
+          label={t("pages.pricing.cachedAudioPrice")}
+          hint={t("pages.pricing.priceUnit", { currency })}
+          info={t("pages.pricing.cachedAudioInfo")}
+          error={shown("cachedAudio")}
+        >
+          <Input
+            id={writeIds.cachedAudio}
+            type="number"
+            min={0}
+            step="0.000001"
+            value={cachedAudioPerMtok}
+            onChange={(e) => {
+              setCachedAudioPerMtok(e.target.value);
+              fields.edit("cachedAudio");
+            }}
+            placeholder={t("pages.pricing.audioTokenPlaceholder")}
           />
         </Field>
         <Field

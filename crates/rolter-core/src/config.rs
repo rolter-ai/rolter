@@ -2199,6 +2199,29 @@ pub struct ModelPriceConfig {
     /// the audio that comes back is binary and states no length
     #[serde(default, with = "rust_decimal::serde::float_option")]
     pub speech_per_mchar: Option<Decimal>,
+    /// price per million audio input tokens (#1882), for a realtime or audio
+    /// model that bills the audio it is sent apart from the text. The share of
+    /// the prompt that is audio is what the response's usage names
+    /// (`input_token_details.audio_tokens` on a realtime `response.done` and on
+    /// a transcription's usage, `prompt_tokens_details.audio_tokens` on a chat
+    /// completion). Falls back to `input_per_mtok`, which is what a row without
+    /// it has always charged for those tokens
+    #[serde(default, with = "rust_decimal::serde::float_option")]
+    pub audio_input_per_mtok: Option<Decimal>,
+    /// price per million audio output tokens (#1882); falls back to
+    /// `output_per_mtok`. The audio share of the completion is
+    /// `output_token_details.audio_tokens` (realtime) or
+    /// `completion_tokens_details.audio_tokens` (chat completions)
+    #[serde(default, with = "rust_decimal::serde::float_option")]
+    pub audio_output_per_mtok: Option<Decimal>,
+    /// price per million cached audio input tokens (#1882). Falls back to
+    /// `cached_input_per_mtok`, then to the audio input rate: a cache hit is
+    /// priced at the provider's cache rate when the row states one, and at the
+    /// full audio rate when it does not. Only a provider that names the audio
+    /// share of its cached tokens (a realtime `cached_tokens_details`) has
+    /// tokens to charge at it
+    #[serde(default, with = "rust_decimal::serde::float_option")]
+    pub cached_audio_input_per_mtok: Option<Decimal>,
     /// currency the rates above are denominated in. An open code — ISO-4217
     /// today, a crypto or custom settlement unit tomorrow — resolved against
     /// [`crate::CurrencyConfig`]'s rate table, never against a fixed enum
@@ -2218,6 +2241,9 @@ impl Default for ModelPriceConfig {
             image_per_unit: None,
             audio_input_per_minute: None,
             speech_per_mchar: None,
+            audio_input_per_mtok: None,
+            audio_output_per_mtok: None,
+            cached_audio_input_per_mtok: None,
             currency: crate::currency::default_base_currency(),
         }
     }
@@ -2240,6 +2266,12 @@ impl ModelPriceConfig {
             ("image_per_unit", self.image_per_unit),
             ("audio_input_per_minute", self.audio_input_per_minute),
             ("speech_per_mchar", self.speech_per_mchar),
+            ("audio_input_per_mtok", self.audio_input_per_mtok),
+            ("audio_output_per_mtok", self.audio_output_per_mtok),
+            (
+                "cached_audio_input_per_mtok",
+                self.cached_audio_input_per_mtok,
+            ),
         ]
         .into_iter()
         .filter_map(|(field, rate)| {
@@ -2272,22 +2304,71 @@ impl ModelPriceConfig {
         cache_write: u32,
         cache_write_1h: u32,
     ) -> Decimal {
+        self.cost_with_audio(
+            prompt,
+            completion,
+            cached_input,
+            cache_write,
+            cache_write_1h,
+            AudioTokens::default(),
+        )
+    }
+
+    /// [`Self::cost`] for a response that names the audio share of its tokens
+    /// (#1882).
+    ///
+    /// `audio` counts are shares of `prompt` and `completion` like the cached
+    /// counts, so a token is priced once. The prompt splits into an audio part
+    /// and a text part; cache hits are taken out of each, the audio ones at
+    /// [`Self::cached_audio_input_per_mtok`] and the text ones at the cached
+    /// rate, and cache writes (which no audio provider reports) out of the
+    /// text part. A cached count the provider does not split is read as text,
+    /// and whatever of it does not fit the text part is priced as audio.
+    /// Every audio rate falls back to its text rate, so a row that sets none
+    /// is priced exactly as [`Self::cost`] prices it.
+    pub fn cost_with_audio(
+        &self,
+        prompt: u32,
+        completion: u32,
+        cached_input: u32,
+        cache_write: u32,
+        cache_write_1h: u32,
+        audio: AudioTokens,
+    ) -> Decimal {
+        let audio_in = audio.input.min(prompt);
+        let text_in = prompt - audio_in;
         let cached = cached_input.min(prompt);
-        let written = cache_write.min(prompt - cached);
+        // the audio share of the cache hits, never more than the audio there is
+        let cached_audio = audio.cached_input.min(cached).min(audio_in);
+        let cached_text = (cached - cached_audio).min(text_in);
+        // what is left of the hits after both shares is audio the provider did
+        // not split out, so it is priced with the fresh audio below
+        let fresh_audio = audio_in - cached_audio;
+        let written = cache_write.min(text_in - cached_text);
         let written_1h = cache_write_1h.min(written);
         let written_5m = written - written_1h;
-        let fresh = prompt - cached - written;
+        let fresh_text = text_in - cached_text - written;
+        let audio_in_rate = self.audio_input_per_mtok.unwrap_or(self.input_per_mtok);
         let cached_rate = self.cached_input_per_mtok.unwrap_or(self.input_per_mtok);
+        let cached_audio_rate = self
+            .cached_audio_input_per_mtok
+            .or(self.cached_input_per_mtok)
+            .unwrap_or(audio_in_rate);
         let write_rate = self.cache_write_per_mtok.unwrap_or(self.input_per_mtok);
         let write_1h_rate = self.cache_write_1h_per_mtok.unwrap_or(write_rate);
+        let audio_out = audio.output.min(completion);
+        let audio_out_rate = self.audio_output_per_mtok.unwrap_or(self.output_per_mtok);
         // exact: token counts are integers and the rates are decimal, so the
         // only inexact step left would be the division, and a power of ten
         // divides exactly in a base-ten representation
-        (Decimal::from(fresh) * self.input_per_mtok
-            + Decimal::from(cached) * cached_rate
+        (Decimal::from(fresh_text) * self.input_per_mtok
+            + Decimal::from(cached_text) * cached_rate
             + Decimal::from(written_5m) * write_rate
             + Decimal::from(written_1h) * write_1h_rate
-            + Decimal::from(completion) * self.output_per_mtok)
+            + Decimal::from(fresh_audio) * audio_in_rate
+            + Decimal::from(cached_audio) * cached_audio_rate
+            + Decimal::from(completion - audio_out) * self.output_per_mtok
+            + Decimal::from(audio_out) * audio_out_rate)
             / Decimal::from(1_000_000u32)
     }
 
@@ -2322,6 +2403,19 @@ impl ModelPriceConfig {
     pub fn cost_usd(&self, prompt: u32, completion: u32, cached_input: u32) -> Decimal {
         self.cost(prompt, completion, cached_input, 0, 0)
     }
+}
+
+/// The audio share of a response's tokens, for a provider that bills audio and
+/// text at different rates (#1882). Every count is part of the matching total
+/// handed to [`ModelPriceConfig::cost_with_audio`], not an addition to it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct AudioTokens {
+    /// audio tokens in the prompt
+    pub input: u32,
+    /// audio tokens in the completion
+    pub output: u32,
+    /// the audio tokens among the cache hits
+    pub cached_input: u32,
 }
 
 /// The non-token quantity a request is billed by, read from the request and
@@ -7149,6 +7243,9 @@ mod tests {
             image_per_unit: None,
             audio_input_per_minute: None,
             speech_per_mchar: None,
+            audio_input_per_mtok: None,
+            audio_output_per_mtok: None,
+            cached_audio_input_per_mtok: None,
             currency: "USD".to_string(),
         };
         // 1000 * 2.5/1e6 + 500 * 10/1e6 = 0.0025 + 0.005 = 0.0075, and now
@@ -7173,6 +7270,9 @@ mod tests {
             image_per_unit: None,
             audio_input_per_minute: None,
             speech_per_mchar: None,
+            audio_input_per_mtok: None,
+            audio_output_per_mtok: None,
+            cached_audio_input_per_mtok: None,
             currency: "USD".to_string(),
         };
         // one million of each: 0.1 + 0.2, which in f64 is 0.30000000000000004
@@ -7203,6 +7303,9 @@ mod tests {
             image_per_unit: None,
             audio_input_per_minute: None,
             speech_per_mchar: None,
+            audio_input_per_mtok: None,
+            audio_output_per_mtok: None,
+            cached_audio_input_per_mtok: None,
             currency: "ETH".to_string(),
         };
         assert_eq!(price.input_per_mtok, one_wei);
@@ -7236,6 +7339,9 @@ mod tests {
             image_per_unit: None,
             audio_input_per_minute: None,
             speech_per_mchar: None,
+            audio_input_per_mtok: None,
+            audio_output_per_mtok: None,
+            cached_audio_input_per_mtok: None,
             currency: "USD".to_string(),
         };
         let json = serde_json::to_value(&price).expect("serializes");
@@ -7328,6 +7434,9 @@ mod tests {
             image_per_unit: None,
             audio_input_per_minute: None,
             speech_per_mchar: None,
+            audio_input_per_mtok: None,
+            audio_output_per_mtok: None,
+            cached_audio_input_per_mtok: None,
             currency: "USD".to_string(),
         };
         // 600 fresh * 2 + 400 cached * 0.5 = 1200 + 200 = 1400 / 1e6
@@ -7345,6 +7454,9 @@ mod tests {
             image_per_unit: None,
             audio_input_per_minute: None,
             speech_per_mchar: None,
+            audio_input_per_mtok: None,
+            audio_output_per_mtok: None,
+            cached_audio_input_per_mtok: None,
             currency: "USD".to_string(),
         }
     }
@@ -7426,6 +7538,9 @@ mod tests {
             image_per_unit: None,
             audio_input_per_minute: None,
             speech_per_mchar: None,
+            audio_input_per_mtok: None,
+            audio_output_per_mtok: None,
+            cached_audio_input_per_mtok: None,
             ..write_priced()
         }
     }
@@ -7517,6 +7632,9 @@ mod tests {
             image_per_unit: None,
             audio_input_per_minute: None,
             speech_per_mchar: None,
+            audio_input_per_mtok: None,
+            audio_output_per_mtok: None,
+            cached_audio_input_per_mtok: None,
             currency: "EUR".to_string(),
         });
         let problems = config.validate().unwrap_err();
@@ -7549,6 +7667,9 @@ mod tests {
             image_per_unit: None,
             audio_input_per_minute: None,
             speech_per_mchar: None,
+            audio_input_per_mtok: None,
+            audio_output_per_mtok: None,
+            cached_audio_input_per_mtok: None,
             currency: "usd".to_string(),
         });
         let problems = config.validate().err().unwrap_or_default();
@@ -7569,6 +7690,9 @@ mod tests {
             image_per_unit: None,
             audio_input_per_minute: None,
             speech_per_mchar: None,
+            audio_input_per_mtok: None,
+            audio_output_per_mtok: None,
+            cached_audio_input_per_mtok: None,
             currency: "USD".to_string(),
         }
     }
@@ -7612,6 +7736,146 @@ mod tests {
 
     /// #2937: a unit rate prices its own unit and nothing else, and a price
     /// that sets no rate for the request's unit says nothing about it.
+    fn audio_price() -> ModelPriceConfig {
+        ModelPriceConfig {
+            model: "gpt-realtime".into(),
+            input_per_mtok: d("4"),
+            output_per_mtok: d("16"),
+            cached_input_per_mtok: Some(d("0.4")),
+            audio_input_per_mtok: Some(d("32")),
+            audio_output_per_mtok: Some(d("64")),
+            cached_audio_input_per_mtok: Some(d("0.5")),
+            ..Default::default()
+        }
+    }
+
+    const M: u32 = 1_000_000;
+
+    /// #1882: each modality is charged at its own rate, with the cache hits
+    /// taken out of each side.
+    #[test]
+    fn audio_cost_prices_each_modality_at_its_own_rate() {
+        let price = audio_price();
+        // 1M text + 1M audio in, 1M text + 1M audio out, no cache
+        let audio = AudioTokens {
+            input: M,
+            output: M,
+            cached_input: 0,
+        };
+        assert_eq!(
+            price.cost_with_audio(2 * M, 2 * M, 0, 0, 0, audio),
+            d("4") + d("32") + d("16") + d("64")
+        );
+        // half of each side served from the cache: 0.5M text hits at 0.4,
+        // 0.5M audio hits at 0.5, the rest fresh
+        let cached = AudioTokens {
+            input: M,
+            output: 0,
+            cached_input: M / 2,
+        };
+        assert_eq!(
+            price.cost_with_audio(2 * M, 0, M, 0, 0, cached),
+            d("2") + d("0.2") + d("16") + d("0.25")
+        );
+    }
+
+    /// #1882: with no audio rate set a split changes nothing, and with no split
+    /// the audio rates have nothing to apply to.
+    #[test]
+    fn audio_cost_falls_back_to_the_text_rates() {
+        let text_only = ModelPriceConfig {
+            model: "m".into(),
+            input_per_mtok: d("4"),
+            output_per_mtok: d("16"),
+            cached_input_per_mtok: Some(d("0.4")),
+            ..Default::default()
+        };
+        let split = AudioTokens {
+            input: 600,
+            output: 300,
+            cached_input: 100,
+        };
+        assert_eq!(
+            text_only.cost_with_audio(1000, 500, 200, 0, 0, split),
+            text_only.cost(1000, 500, 200, 0, 0)
+        );
+        let priced = audio_price();
+        assert_eq!(
+            priced.cost_with_audio(1000, 500, 200, 0, 0, AudioTokens::default()),
+            priced.cost(1000, 500, 200, 0, 0)
+        );
+    }
+
+    /// #1882: a cached audio token falls back to the cached text rate, and
+    /// without one to the audio input rate.
+    #[test]
+    fn cached_audio_falls_back_to_the_cached_rate_then_the_audio_rate() {
+        let audio = AudioTokens {
+            input: M,
+            output: 0,
+            cached_input: M,
+        };
+        let mut price = audio_price();
+        price.cached_audio_input_per_mtok = None;
+        assert_eq!(price.cost_with_audio(M, 0, M, 0, 0, audio), d("0.4"));
+        price.cached_input_per_mtok = None;
+        assert_eq!(price.cost_with_audio(M, 0, M, 0, 0, audio), d("32"));
+    }
+
+    /// #1882: counts that disagree are clamped, never priced twice or below
+    /// zero: audio beyond the prompt, a cached audio count beyond the audio
+    /// there is, and cache hits the provider did not split.
+    #[test]
+    fn audio_cost_clamps_inconsistent_counts() {
+        let price = audio_price();
+        // more audio than prompt: all of the prompt is audio
+        let over = AudioTokens {
+            input: 5 * M,
+            output: 5 * M,
+            cached_input: 0,
+        };
+        assert_eq!(
+            price.cost_with_audio(M, M, 0, 0, 0, over),
+            d("32") + d("64")
+        );
+        // an unsplit cache hit larger than the text part spills into audio:
+        // 0.5M text prompt fully cached (0.2), the other 0.5M hits are cached
+        // audio read as text-cached first, and what does not fit is priced as
+        // fresh audio (16)
+        let unsplit = AudioTokens {
+            input: M / 2,
+            output: 0,
+            cached_input: 0,
+        };
+        assert_eq!(
+            price.cost_with_audio(M, 0, M, 0, 0, unsplit),
+            d("0.2") + d("16")
+        );
+    }
+
+    /// The audio rates are rates like the others: negative ones are a problem
+    /// on the row, and a snapshot from before them parses without.
+    #[test]
+    fn audio_rates_are_checked_and_optional_on_the_wire() {
+        let mut price = audio_price();
+        assert!(price.rate_problems().is_empty());
+        price.audio_output_per_mtok = Some(d("-1"));
+        price.cached_audio_input_per_mtok = Some(d("-2"));
+        let problems = price.rate_problems();
+        assert_eq!(problems.len(), 2, "{problems:?}");
+        assert!(problems[0].starts_with("audio_output_per_mtok is -1"));
+        let older: ModelPriceConfig =
+            serde_json::from_str(r#"{"model":"m","input_per_mtok":1,"output_per_mtok":2}"#)
+                .unwrap();
+        assert_eq!(older.audio_input_per_mtok, None);
+        let wire: ModelPriceConfig = serde_json::from_str(
+            r#"{"model":"m","audio_input_per_mtok":32,"cached_audio_input_per_mtok":0.5}"#,
+        )
+        .unwrap();
+        assert_eq!(wire.audio_input_per_mtok, Some(d("32")));
+        assert_eq!(wire.cached_audio_input_per_mtok, Some(d("0.5")));
+    }
+
     #[test]
     fn unit_cost_prices_each_unit_at_its_own_rate() {
         let price = ModelPriceConfig {

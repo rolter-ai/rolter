@@ -804,6 +804,9 @@ fn to_base_currency(
         image_per_unit: price.image_per_unit.map(|rate| rate * factor),
         audio_input_per_minute: price.audio_input_per_minute.map(|rate| rate * factor),
         speech_per_mchar: price.speech_per_mchar.map(|rate| rate * factor),
+        audio_input_per_mtok: price.audio_input_per_mtok.map(|rate| rate * factor),
+        audio_output_per_mtok: price.audio_output_per_mtok.map(|rate| rate * factor),
+        cached_audio_input_per_mtok: price.cached_audio_input_per_mtok.map(|rate| rate * factor),
         currency: base.to_string(),
     })
 }
@@ -1212,6 +1215,9 @@ mod tests {
             image_per_unit: None,
             audio_input_per_minute: None,
             speech_per_mchar: None,
+            audio_input_per_mtok: None,
+            audio_output_per_mtok: None,
+            cached_audio_input_per_mtok: None,
             currency: "USD".to_string(),
         }
     }
@@ -1283,6 +1289,9 @@ mod tests {
             image_per_unit: None,
             audio_input_per_minute: None,
             speech_per_mchar: None,
+            audio_input_per_mtok: None,
+            audio_output_per_mtok: None,
+            cached_audio_input_per_mtok: None,
             currency: "EUR".to_string(),
         });
         let loads = crate::load::LoadTracker::new();
@@ -1316,6 +1325,9 @@ mod tests {
             image_per_unit: None,
             audio_input_per_minute: None,
             speech_per_mchar: None,
+            audio_input_per_mtok: None,
+            audio_output_per_mtok: None,
+            cached_audio_input_per_mtok: None,
             currency: "EUR".to_string(),
         });
         let loads = crate::load::LoadTracker::new();
@@ -1348,6 +1360,9 @@ mod tests {
             image_per_unit: None,
             audio_input_per_minute: None,
             speech_per_mchar: None,
+            audio_input_per_mtok: None,
+            audio_output_per_mtok: None,
+            cached_audio_input_per_mtok: None,
             currency: "DBL".to_string(),
         });
         let loads = crate::load::LoadTracker::new();
@@ -1372,6 +1387,9 @@ mod tests {
             image_per_unit: None,
             audio_input_per_minute: None,
             speech_per_mchar: None,
+            audio_input_per_mtok: None,
+            audio_output_per_mtok: None,
+            cached_audio_input_per_mtok: None,
             currency: "USD".to_string(),
         });
         let loads = crate::load::LoadTracker::new();

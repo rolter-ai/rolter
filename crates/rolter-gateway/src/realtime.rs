@@ -665,6 +665,11 @@ async fn relay(
                         }
                         (_, message) => message,
                     };
+                    // the transcription model a `session.update` names prices the
+                    // input transcription the upstream runs for the session
+                    if let Message::Text(text) = &message {
+                        turns.observe_client(text.as_str());
+                    }
                     if upstream_sender.send(to_upstream(message)).await.is_err() {
                         end = SessionEnd::upstream_failed();
                         break;

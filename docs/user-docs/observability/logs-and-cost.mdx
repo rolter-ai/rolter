@@ -263,6 +263,41 @@ How it combines and what it records:
 - **Budgets count it.** `cost_usd` is the figure budgets add, so unit-priced requests advance an org, team, project, key, business-unit or customer budget exactly as token-priced ones do, and a rate in another currency is converted to the base first.
 - **Setting it.** The **Pricing** screen has an _image_, an _audio minute_ and a _speech character_ field, and a price that sets one shows a badge on its card. Over the API the rates are `image_per_unit`, `audio_input_per_minute` and `speech_per_mchar` on `PUT /api/v1/model-prices`, with the same rule as the cache-write rates: a body that leaves one out keeps the stored rate, `null` clears it. The **Pricing override** section of an image model's sheet edits the image rate, and that of an audio model's sheet the audio minute and speech character rates. Saving the sheet without touching one keeps the stored rate, and emptying one clears it.
 
+### Audio and text tokens
+
+A realtime or audio model bills the audio tokens it is sent and speaks at a different rate from its text tokens, and its usage says how many of each. A price row carries up to three audio rates beside the text ones, per million tokens:
+
+```toml rolter.toml
+[[model_prices]]
+model = "gpt-realtime"
+input_per_mtok = 4.0
+output_per_mtok = 16.0
+cached_input_per_mtok = 0.4
+audio_input_per_mtok = 32.0
+audio_output_per_mtok = 64.0
+cached_audio_input_per_mtok = 0.4
+```
+
+These figures are illustrative. Rolter ships no price list, so take the rates from your provider's pricing page.
+
+Where the split comes from, and what it applies to:
+
+| Source                                                                     | Audio input                                | Audio output                                   | Cached audio input                                             |
+| -------------------------------------------------------------------------- | ------------------------------------------ | ---------------------------------------------- | -------------------------------------------------------------- |
+| A realtime `response.done`                                                 | `usage.input_token_details.audio_tokens`   | `usage.output_token_details.audio_tokens`      | `usage.input_token_details.cached_tokens_details.audio_tokens` |
+| Chat Completions with an audio model                                       | `usage.prompt_tokens_details.audio_tokens` | `usage.completion_tokens_details.audio_tokens` | not reported                                                   |
+| `/v1/audio/transcriptions` with a token-billed model (`gpt-4o-transcribe`) | `usage.input_token_details.audio_tokens`   | not reported                                   | not reported                                                   |
+
+Each count is a share of the matching total (`input_tokens`, `output_tokens`), so a token is priced once:
+
+- **Unset falls back to the text rate.** A row with no audio rate prices every token at `input_per_mtok` or `output_per_mtok`, exactly as before the audio rates existed. A response that names no audio share has nothing to apply them to, whatever the row sets.
+- **Cached audio has its own fallback.** A cached audio token is charged at `cached_audio_input_per_mtok`, then at `cached_input_per_mtok`, then at the audio input rate. The cache hits are split into audio and text only when the provider names the audio share; an unsplit hit is read as text.
+- **Inconsistent counts are clamped.** An audio count larger than the total it belongs to is capped at that total, so a response is never charged for more tokens than it reported.
+- **One cost.** The figure on the request-log row is the one budgets and `tpm` windows see; there is no second audio-only cost.
+- **Setting it.** The **Pricing** screen has an _audio input_, an _audio output_ and a _cached audio input_ field. Over the API they are `audio_input_per_mtok`, `audio_output_per_mtok` and `cached_audio_input_per_mtok` on `PUT /api/v1/model-prices`, and they keep the rule the cache-write rates keep: a body that leaves one out keeps the stored rate, `null` clears it, and a number sets it.
+
+For how a realtime session is metered, including its input-audio transcription, see [Realtime](/api/realtime).
+
 ### Prices are yours, not ours
 
 Rolter ships no pricing catalog and never fetches one. Every rate comes from

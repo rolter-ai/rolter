@@ -2386,6 +2386,16 @@ export interface ModelPriceRow {
   audio_input_per_minute: string | null;
   /** the price per million characters of text-to-speech input (#2937) */
   speech_per_mchar: string | null;
+  /**
+   * The price per million audio input tokens (#1882), for a realtime or audio
+   * model that bills audio apart from text; `null` charges them at the input
+   * rate. Optional because a control plane that predates it does not send it.
+   */
+  audio_input_per_mtok?: string | null;
+  /** the price per million audio output tokens (#1882); `null` means the output rate */
+  audio_output_per_mtok?: string | null;
+  /** the price per million cached audio input tokens (#1882) */
+  cached_audio_input_per_mtok?: string | null;
   currency: string;
   created_at: string;
 }
@@ -2413,6 +2423,13 @@ export interface UpsertModelPriceInput {
   image_per_unit?: string | null;
   audio_input_per_minute?: string | null;
   speech_per_mchar?: string | null;
+  /**
+   * Kept, cleared and set the same way (#1882). Build them with
+   * `audioInputTokenPatch()`, `audioOutputTokenPatch()` and `cachedAudioPatch()`.
+   */
+  audio_input_per_mtok?: string | null;
+  audio_output_per_mtok?: string | null;
+  cached_audio_input_per_mtok?: string | null;
   currency?: string;
 }
 

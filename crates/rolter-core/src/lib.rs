@@ -40,7 +40,7 @@ pub use config::{
     strip_retired_advanced_keys, DEFAULT_REQUEST_ID_HEADER,
 };
 pub use config::{
-    AdaptiveRoutingConfig, AdvancedModelConfig, ApiKeyConfig, BackpressurePolicy,
+    AdaptiveRoutingConfig, AdvancedModelConfig, ApiKeyConfig, AudioTokens, BackpressurePolicy,
     BalancingStrategy, BilledUnits, BreakerConfig, BudgetConfig, BudgetPeriod, BudgetScope,
     CacheConfig, ClientConfig, CompatibilityConfig, CooldownConfig, EgressPolicy,
     FeatureFlagsConfig, GatewayConfig, GroupMember, HealthConfig, KvEventsConfig, LmCacheConfig,

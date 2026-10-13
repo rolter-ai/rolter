@@ -828,6 +828,22 @@ async fn import_model_prices(pool: &PgPool, config: &GatewayConfig) -> anyhow::R
                     speech_per_mchar: Some(
                         price.speech_per_mchar.map(|v| v.to_string()).as_deref(),
                     ),
+                    // and the audio token rates (#1882)
+                    audio_input_per_mtok: Some(
+                        price.audio_input_per_mtok.map(|v| v.to_string()).as_deref(),
+                    ),
+                    audio_output_per_mtok: Some(
+                        price
+                            .audio_output_per_mtok
+                            .map(|v| v.to_string())
+                            .as_deref(),
+                    ),
+                    cached_audio_input_per_mtok: Some(
+                        price
+                            .cached_audio_input_per_mtok
+                            .map(|v| v.to_string())
+                            .as_deref(),
+                    ),
                 },
                 &price.currency,
             )
@@ -1337,6 +1353,77 @@ weight = 1
             .unwrap_err();
         assert!(
             refused.to_string().contains("speech_per_mchar"),
+            "{refused}"
+        );
+    }
+
+    /// #1882: the audio token rates follow the import file like the unit rates,
+    /// and a negative one refuses the whole import.
+    #[tokio::test]
+    async fn the_audio_rates_follow_the_import_file() {
+        let Some(db) = scratch_db().await else {
+            return;
+        };
+        let pool = db.pool().clone();
+        let (org_id, project_id) = bootstrap_org(&pool).await;
+        let dir = tempdir("audio-rates");
+        let path = dir.join("rolter.toml");
+        let prices = rolter_store::postgres::repo::ModelPriceRepo(&pool);
+        let stored = || async {
+            let price = prices
+                .list()
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|price| price.model == "voice")
+                .expect("the price must have been imported");
+            (
+                price.audio_input_per_mtok,
+                price.audio_output_per_mtok,
+                price.cached_audio_input_per_mtok,
+            )
+        };
+
+        std::fs::write(
+            &path,
+            "[[model_prices]]\nmodel = \"voice\"\ninput_per_mtok = 4\noutput_per_mtok = 16\n\
+             audio_input_per_mtok = 32\naudio_output_per_mtok = 64\n\
+             cached_audio_input_per_mtok = 0.4\n",
+        )
+        .unwrap();
+        import_bootstrap_toml(&pool, org_id, project_id, &path)
+            .await
+            .unwrap();
+        let (input, output, cached) = stored().await;
+        assert_eq!(input.as_deref(), Some("32.000000"));
+        assert_eq!(output.as_deref(), Some("64.000000"));
+        assert_eq!(cached.as_deref(), Some("0.400000"));
+
+        // the file is the desired state: a key it drops is cleared
+        std::fs::write(
+            &path,
+            "[[model_prices]]\nmodel = \"voice\"\ninput_per_mtok = 4\noutput_per_mtok = 16\n\
+             audio_input_per_mtok = 32\n",
+        )
+        .unwrap();
+        import_bootstrap_toml(&pool, org_id, project_id, &path)
+            .await
+            .unwrap();
+        let (input, output, cached) = stored().await;
+        assert_eq!(input.as_deref(), Some("32.000000"));
+        assert_eq!((output, cached), (None, None));
+
+        std::fs::write(
+            &path,
+            "[[model_prices]]\nmodel = \"voice\"\ninput_per_mtok = 4\noutput_per_mtok = 16\n\
+             audio_output_per_mtok = -1\n",
+        )
+        .unwrap();
+        let refused = import_bootstrap_toml(&pool, org_id, project_id, &path)
+            .await
+            .unwrap_err();
+        assert!(
+            refused.to_string().contains("audio_output_per_mtok"),
             "{refused}"
         );
     }
