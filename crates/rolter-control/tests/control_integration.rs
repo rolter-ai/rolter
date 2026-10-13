@@ -25606,3 +25606,174 @@ async fn the_routes_list_embeds_targets_and_complexity_within_the_callers_scope(
     assert!(providers.contains(&"edge-one") && providers.contains(&"edge-two"));
     assert_eq!(busy_model["route_targets"][0]["model"], "gpt-x");
 }
+
+/// #3094: `/api/v1/models` and `/api/v1/config` list the merged store, which
+/// holds every organization's rows. A caller sees the rows of the organizations
+/// and projects they hold a role in, a superadmin sees all, and the
+/// deployment-wide settings stay whole.
+#[tokio::test]
+async fn the_models_and_config_reads_show_only_the_callers_organizations() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app =
+        rolter_control::test_app_with_admin_token(pool.clone(), Some(admin_token().to_string()))
+            .await
+            .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    async fn post_as(client: &reqwest::Client, url: String, body: Value) -> Value {
+        let response = client
+            .post(url)
+            .bearer_auth(admin_token())
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        let status = response.status();
+        let json: Value = response.json().await.unwrap();
+        assert!(status.is_success(), "{status}: {json}");
+        json
+    }
+    async fn get_as(client: &reqwest::Client, url: String, token: &str) -> Value {
+        let response = client.get(url).bearer_auth(token).send().await.unwrap();
+        assert_eq!(response.status().as_u16(), 200);
+        response.json().await.unwrap()
+    }
+    fn names(rows: &Value, key: &str) -> Vec<String> {
+        let mut out: Vec<String> = rows
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r[key].as_str().unwrap().to_string())
+            .collect();
+        out.sort();
+        out
+    }
+
+    // org A with two projects, org B with one; every org owns a provider and
+    // each project a route pointing at it
+    let mut orgs = Vec::new();
+    for slug in ["scope-a", "scope-b"] {
+        let org = post_as(
+            &client,
+            format!("{base}/api/v1/orgs"),
+            json!({"name": slug, "slug": slug}),
+        )
+        .await;
+        let org_id = org["id"].as_str().unwrap().to_string();
+        let team = post_as(
+            &client,
+            format!("{base}/api/v1/orgs/{org_id}/teams"),
+            json!({"name": "core"}),
+        )
+        .await;
+        let team_id = team["id"].as_str().unwrap().to_string();
+        let provider = post_as(
+            &client,
+            format!("{base}/api/v1/orgs/{org_id}/providers"),
+            json!({"name": format!("{slug}-upstream"), "kind": "openai_compatible", "api_base": "http://127.0.0.1:9"}),
+        )
+        .await;
+        let provider_id = provider["id"].as_str().unwrap().to_string();
+        let mut projects = Vec::new();
+        let project_names: &[&str] = if slug == "scope-a" {
+            &["one", "two"]
+        } else {
+            &["only"]
+        };
+        for name in project_names {
+            let project = post_as(
+                &client,
+                format!("{base}/api/v1/teams/{team_id}/projects"),
+                json!({"name": name}),
+            )
+            .await;
+            let project_id = project["id"].as_str().unwrap().to_string();
+            let route = post_as(
+                &client,
+                format!("{base}/api/v1/projects/{project_id}/routes"),
+                json!({"model": format!("{slug}-{name}"), "strategy": "round_robin"}),
+            )
+            .await;
+            post_as(
+                &client,
+                format!(
+                    "{base}/api/v1/routes/{}/targets",
+                    route["id"].as_str().unwrap()
+                ),
+                json!({"provider_id": provider_id, "upstream_model": "gpt-x", "weight": 1}),
+            )
+            .await;
+            projects.push(project_id);
+        }
+        orgs.push((org_id, projects));
+    }
+    let org_a: uuid::Uuid = orgs[0].0.parse().unwrap();
+    let org_b: uuid::Uuid = orgs[1].0.parse().unwrap();
+    let project_a_one: uuid::Uuid = orgs[0].1[0].parse().unwrap();
+
+    let member_a = seed_user(&pool, "scope-member-a@example.com", false).await;
+    seed_membership(&pool, member_a, Some(org_a), None, None, "viewer").await;
+    let member_a_token = seed_session(&pool, member_a, "scopemembera").await;
+    let member_b = seed_user(&pool, "scope-member-b@example.com", false).await;
+    seed_membership(&pool, member_b, Some(org_b), None, None, "viewer").await;
+    let member_b_token = seed_session(&pool, member_b, "scopememberb").await;
+    // a role on one project of org A shows that project's routes, not its sibling's
+    let project_member = seed_user(&pool, "scope-project@example.com", false).await;
+    seed_membership(
+        &pool,
+        project_member,
+        None,
+        None,
+        Some(project_a_one),
+        "viewer",
+    )
+    .await;
+    let project_token = seed_session(&pool, project_member, "scopeproject").await;
+    let nobody = seed_user(&pool, "scope-nobody@example.com", false).await;
+    let nobody_token = seed_session(&pool, nobody, "scopenobody").await;
+
+    let models_url = format!("{base}/api/v1/models");
+    let config_url = format!("{base}/api/v1/config");
+
+    let all_models = ["scope-a-one", "scope-a-two", "scope-b-only"];
+    let all_providers = ["scope-a-upstream", "scope-b-upstream"];
+    let models = get_as(&client, models_url.clone(), admin_token()).await;
+    assert_eq!(names(&models, "model"), all_models);
+    let config = get_as(&client, config_url.clone(), admin_token()).await;
+    assert_eq!(names(&config["routes"], "model"), all_models);
+    assert_eq!(names(&config["providers"], "name"), all_providers);
+
+    // (token, models, providers) each caller may see
+    let cases: [(&str, &[&str], &[&str]); 4] = [
+        (
+            &member_a_token,
+            &["scope-a-one", "scope-a-two"],
+            &["scope-a-upstream"],
+        ),
+        (&member_b_token, &["scope-b-only"], &["scope-b-upstream"]),
+        // the project member holds no role at the org, so the org-wide provider
+        // is not theirs; the route of their project is
+        (&project_token, &["scope-a-one"], &["scope-a-upstream"]),
+        (&nobody_token, &[], &[]),
+    ];
+    for (token, want_models, want_providers) in cases {
+        let models = get_as(&client, models_url.clone(), token).await;
+        assert_eq!(names(&models, "model"), want_models, "{models}");
+        let config = get_as(&client, config_url.clone(), token).await;
+        assert_eq!(names(&config["routes"], "model"), want_models, "{config}");
+        assert_eq!(
+            names(&config["providers"], "name"),
+            want_providers,
+            "{config}"
+        );
+        // another org's targets and ids appear nowhere in either body
+        let text = format!("{models}{config}");
+        for other in all_models.iter().filter(|m| !want_models.contains(m)) {
+            assert!(!text.contains(other), "{other} leaked: {text}");
+        }
+    }
+}

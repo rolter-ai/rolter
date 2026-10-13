@@ -316,6 +316,10 @@ const CAPABILITIES: &[Capability] = &[
         delete: SUPER,
     },
     Capability {
+        // any signed-in caller may ask, and is answered with the rows of the
+        // organizations and projects they hold a role in; a superadmin sees
+        // all (#3094). The scoping is in the handler (`tenant_view`), not in
+        // this row, because the row has no org to name
         resource: "model",
         scope: "deployment",
         read: ANYONE,
@@ -1826,6 +1830,7 @@ mod tests {
         ("sso.rs", include_str!("sso.rs")),
         ("stability.rs", include_str!("stability.rs")),
         ("telemetry.rs", include_str!("telemetry.rs")),
+        ("tenant_view.rs", include_str!("tenant_view.rs")),
         ("time_bounds.rs", include_str!("time_bounds.rs")),
         ("ui_config.rs", include_str!("ui_config.rs")),
         ("ui_events.rs", include_str!("ui_events.rs")),

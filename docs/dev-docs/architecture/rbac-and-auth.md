@@ -255,9 +255,10 @@ The write path keeps the snapshot inside that rule:
 
 The dashboard never sees `tenancy`: `redact_config_for_dashboard` clears it
 along with the credentials, and drops the database key records, which name
-every key's org, team, project and creator. `GET /api/v1/config` still lists
-every org's providers, routes and groups, so it needs a session of any role
-(#1840).
+every key's org, team, project and creator. `GET /api/v1/config` still needs a
+session of any role (#1840), but lists only the providers, routes and groups of
+the organizations and projects the caller can see (#3094); the tenancy is
+read for that before it is cleared.
 
 ### One org never reaches another (#1844, #1845)
 
@@ -529,6 +530,8 @@ Read access is a viewer's and mutations are an admin's, with three deliberate ex
 - **a user's own things** — minting a virtual key for yourself takes `member` (a viewer cannot), and revoking your own MCP OAuth grant or session takes only a viewer membership plus ownership, which the handler checks after the guard.
 
 Listing the pricing catalog (`GET /api/v1/model-prices`) and the effective model list (`GET /api/v1/models`) is every **authenticated** caller's, with no membership anywhere. That is a third authority alongside a scoped role and superadmin, and the table names it rather than implying a role floor: both are deployment-wide catalogs of upstream capability and list price that carry no tenant's data, and `deployment` is not a scope a membership can be held at, so a `viewer` floor there would have described a bar nobody could clear. `GET /api/v1/rbac/matrix` reports those cells as `authenticated_only`. The effective model list is still filtered per caller by the access-profile model policy (#534), so _what_ a caller sees remains theirs alone.
+
+The model list is a catalog of names, but it is also the merged route table, so each entry names its targets and owning org. It is therefore scoped by tenancy as well (#3094): a row with no tenancy (from `rolter.toml`) is the deployment's and everyone sees it, an org-wide row is seen by whoever holds a role anywhere in that org, a project-scoped row needs a role that reaches the project, and a superadmin sees all. `crates/rolter-control/src/tenant_view.rs` holds the rule and `GET /api/v1/config` applies it to its providers, routes and groups. The matrix row stays `authenticated_only` because the authority to ask is unchanged; only the rows answered are cut.
 
 Every cell in the table is now backed by the guard.
 

@@ -121,6 +121,8 @@ mod sso;
 #[cfg(feature = "postgres")]
 mod stability;
 mod telemetry;
+#[cfg(feature = "postgres")]
+mod tenant_view;
 mod time_bounds;
 mod ui_config;
 #[cfg(feature = "postgres")]
@@ -2011,13 +2013,31 @@ impl IntoResponse for StoreReadError {
     }
 }
 
+/// The effective config, with the tenant-owned rows (providers, routes,
+/// groups) cut to the organizations and projects the caller can see (#3094).
+/// The deployment-wide settings stay whole: they are not any tenant's.
 async fn get_config(
-    _: session_guard::AnySession,
+    session: session_guard::AnySession,
     State(state): State<ControlState>,
 ) -> Result<Json<GatewayConfig>, StoreReadError> {
     // a failed load is a 5xx, never an empty config: defaults would read as a
     // deployment with no providers or routes. `ApiError` redacts driver text
     let mut config = load_for_read(&state).await?;
+    // before the redaction below, which strips the tenancy this reads
+    #[cfg(feature = "postgres")]
+    {
+        let mut view = tenant_view::TenantView::load(&state, session.principal.as_ref())
+            .await
+            .map_err(|err| {
+                tracing::error!(?err, "failed to resolve the caller's scope for the config");
+                StoreReadError
+            })?;
+        tenant_view::ConfigVisibility::compute(&state, &mut view, &config)
+            .await
+            .retain(&mut config);
+    }
+    #[cfg(not(feature = "postgres"))]
+    let _ = session;
     redact_config_for_dashboard(&mut config);
     Ok(Json(config))
 }
@@ -2199,7 +2219,7 @@ async fn get_currency(
 /// Session-gated like [`get_config`] (#1840): it carries no credentials, but
 /// the names and reasons it lists are the deployment's topology.
 async fn get_config_problems(
-    _: session_guard::AnySession,
+    session: session_guard::AnySession,
     State(state): State<ControlState>,
 ) -> Result<Json<Value>, StoreReadError> {
     // an unreadable store must not render as "no problems"
@@ -2207,11 +2227,29 @@ async fn get_config_problems(
         Ok(config) => config,
         Err(error) => return Ok(Json(unloadable_config_problems(&state, &error).await?)),
     };
+    // positions are read before the sanitize drops rows, as the records' are
+    #[cfg(feature = "postgres")]
+    let visibility = {
+        let mut view = tenant_view::TenantView::load(&state, session.principal.as_ref())
+            .await
+            .map_err(|err| {
+                tracing::error!(
+                    ?err,
+                    "failed to resolve the caller's scope for the problems"
+                );
+                StoreReadError
+            })?;
+        tenant_view::ConfigVisibility::compute(&state, &mut view, &config).await
+    };
+    #[cfg(not(feature = "postgres"))]
+    let _ = session;
     let SnapshotReport {
         mut problems,
         omitted,
         ..
     } = sanitize_snapshot(&state, &mut config);
+    #[cfg(feature = "postgres")]
+    let omitted = visibility.renumber(omitted);
     // structural problems never reach a gateway at all — the snapshot refuses
     // outright — so an operator needs to see those here too, not just in a log
     if let Err(fatal) = config.validate_snapshot() {
