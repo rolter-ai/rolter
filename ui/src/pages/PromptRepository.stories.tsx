@@ -33,7 +33,12 @@ import type {
 } from "@/lib/api";
 import { CapabilityProvider } from "@/lib/can";
 import ru from "@/lib/i18n/locales/ru.json";
-import { atShort, expectInViewport } from "@/lib/story-viewport";
+import {
+  atMobile,
+  atShort,
+  expectInViewport,
+  expectNoHorizontalOverflow,
+} from "@/lib/story-viewport";
 import { UxScreenProvider } from "@/lib/ux-react";
 
 const ORG = "00000000-0000-4000-8000-000000000001";
@@ -42,6 +47,7 @@ const PROJECT = "00000000-0000-4000-8000-000000000003";
 const TEMPLATE = "00000000-0000-4000-8000-000000000004";
 const ROUTE = "00000000-0000-4000-8000-000000000005";
 const KEY = "00000000-0000-4000-8000-000000000006";
+const CREATED = "00000000-0000-4000-8000-0000000000aa";
 
 const template: PromptTemplateRow = {
   id: TEMPLATE,
@@ -179,6 +185,19 @@ function loadedStub({
       return json([
         { id: PROJECT, team_id: TEAM, name: "Production", created_at: "2026-01-01T00:00:00Z" },
       ]);
+    if (url.endsWith(`/orgs/${ORG}/prompt-templates`) && init?.method === "POST") {
+      const body = JSON.parse(String(init.body)) as { name: string };
+      return json({
+        id: CREATED,
+        org_id: ORG,
+        name: body.name,
+        slug: "billing-helper",
+        description: "",
+        published_version: null,
+        created_at: "2026-08-03T09:00:00Z",
+      });
+    }
+    if (url.endsWith(`/prompt-templates/${CREATED}/versions`)) return json([]);
     if (url.endsWith(`/orgs/${ORG}/prompt-templates`))
       return json(deleted ? [] : [{ ...template, published_version: published }]);
     if (url.endsWith(`/projects/${PROJECT}/routes`))
@@ -880,5 +899,254 @@ export const AsViewer: Story = {
     await expectRefused(canvasElement, "Roll back to v1");
     // reading is untouched: the slug is on screen in the index and the header
     await expect(canvas.getAllByText("support-concierge").length).toBeGreaterThan(0);
+  },
+};
+
+/**
+ * Selecting a version offers its comparison with the live one (#2112): the
+ * variables by name, each added, removed or changed, and the decorators as
+ * lines. A change is never only a colour: every line and row carries a mark and
+ * a visually hidden "Added" / "Removed". The two layouts show the same lines.
+ */
+export const ComparesAVersionWithTheLiveOne: Story = {
+  render: () => (
+    <Harness
+      fetchStub={loadedStub({
+        versions: [breakingV3, ...versions],
+        scopes: { 2: [projectScope(2)], 3: [projectScope(3)] },
+      })}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const main = await workbench(canvasElement);
+    await userEvent.click(await main.findByRole("button", { name: "Compare with live v2" }));
+    const dialog = await openConfirmation(canvasElement);
+    await expect(
+      await dialog.findByRole("heading", { name: "v3 compared with live v2" }),
+    ).toBeVisible();
+
+    const variables = within(dialog.getByRole("list", { name: "Variables" }));
+    await expect(variables.getByText("ticket_id").closest("li")).toHaveTextContent(/added/);
+    await expect(variables.getByText("tone").closest("li")).toHaveTextContent(/removed/);
+    // the unchanged variable is not repeated
+    await expect(variables.queryByText("customer_name")).toBeNull();
+
+    const decorators = within(dialog.getByRole("region", { name: "Decorators" }));
+    const added = decorators.getByText(
+      "You support {{ customer_name }} on ticket {{ ticket_id }}.",
+    );
+    await expect(added.closest("div")).toHaveTextContent(/Added:/);
+    await expect(
+      decorators
+        .getByText("You support {{ customer_name }}. Keep the tone {{ tone }}.")
+        .closest("div"),
+    ).toHaveTextContent(/Removed:/);
+
+    await userEvent.click(dialog.getByRole("radio", { name: "Side by side" }));
+    await expect(
+      within(dialog.getByRole("region", { name: "Decorators" })).getByText(
+        "You support {{ customer_name }} on ticket {{ ticket_id }}.",
+      ),
+    ).toBeVisible();
+    await userEvent.click(dialog.getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(within(document.body).queryByRole("dialog")).toBeNull());
+  },
+};
+
+/** the live version has nothing to compare with itself, so it offers no comparison */
+export const TheLiveVersionOffersNoComparison: Story = {
+  render: () => <Harness fetchStub={loadedStub()} />,
+  play: async ({ canvasElement }) => {
+    const main = await workbench(canvasElement);
+    await main.findByText(/editing from immutable v2/);
+    await expect(main.queryByRole("button", { name: /^Compare with live/ })).toBeNull();
+  },
+};
+
+/**
+ * The publish confirmation carries the comparison, folded behind a button so
+ * the impact on callers stays the first thing read (#2112). The count says
+ * how many differences there are before it is opened.
+ */
+export const PublishShowsWhatChanged: Story = {
+  render: () => (
+    <Harness
+      fetchStub={loadedStub({
+        versions: [breakingV3, ...versions],
+        scopes: { 2: [projectScope(2)], 3: [projectScope(3)] },
+      })}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    await userEvent.click(
+      await (await workbench(canvasElement)).findByRole("button", { name: "Publish v3" }),
+    );
+    const dialog = await openConfirmation(canvasElement);
+    const changes = within(await dialog.findByRole("region", { name: /Changes from live v2/ }));
+    await expect(changes.getByText(/\d+ differences/)).toBeVisible();
+    await expect(changes.queryByRole("region", { name: "Decorators" })).toBeNull();
+    const show = changes.getByRole("button", { name: "Show changes" });
+    await expect(show).toHaveAttribute("aria-expanded", "false");
+    await userEvent.click(show);
+    await expect(changes.getByRole("button", { name: "Hide changes" })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+    await expect(changes.getByRole("region", { name: "Decorators" })).toBeVisible();
+    await expect(changes.getByRole("list", { name: "Variables" })).toBeVisible();
+  },
+};
+
+/** a version that changed nothing says so, and shows no empty diff */
+export const IdenticalVersionsSayNothingChanged: Story = {
+  render: () => {
+    const copy: PromptTemplateVersionRow = { ...versions[0], version: 3 };
+    return (
+      <Harness
+        fetchStub={loadedStub({
+          versions: [copy, ...versions],
+          scopes: { 2: [projectScope(2)], 3: [projectScope(3)] },
+        })}
+      />
+    );
+  },
+  play: async ({ canvasElement }) => {
+    await userEvent.click(
+      await (await workbench(canvasElement)).findByRole("button", { name: "Publish v3" }),
+    );
+    const dialog = await openConfirmation(canvasElement);
+    await expect(await dialog.findByText("v3 is identical to live v2.")).toBeVisible();
+    await expect(dialog.queryByRole("button", { name: "Show changes" })).toBeNull();
+  },
+};
+
+/** every version in the rail names the scopes it is assigned to (#2112) */
+export const RailListsEachVersionsScopes: Story = {
+  render: () => (
+    <Harness fetchStub={loadedStub({ scopes: { 2: [projectScope(2), routeScope(2)] } })} />
+  ),
+  play: async ({ canvasElement }) => {
+    const rail = await versionRail(canvasElement);
+    await expect(await rail.findByText("Scopes: Production, support")).toBeVisible();
+    await expect(rail.getByText("No scopes")).toBeVisible();
+  },
+};
+
+/**
+ * Creating a template while the open draft has unsaved edits goes through the
+ * same guard as switching (#3118). The template is created either way; Cancel
+ * leaves the edits and the selection where they were.
+ */
+export const CreatingOverAnUnsavedDraftAsksFirst: Story = {
+  render: () => <Harness fetchStub={loadedStub()} />,
+  play: async ({ canvas, canvasElement }) => {
+    const index = within(await canvas.findByRole("complementary", { name: "Templates" }));
+    const decorator = await canvas.findByRole("textbox", { name: /Decorator 1 content/ });
+    await userEvent.type(decorator, " Extra.");
+    await userEvent.click(index.getByRole("button", { name: "Create template" }));
+    const dialog = await openConfirmation(canvasElement);
+    await userEvent.type(dialog.getByRole("textbox", { name: "Name" }), "Billing helper");
+    await userEvent.click(dialog.getByRole("button", { name: "Create template" }));
+
+    await expect(await discardPrompt()).toBeVisible();
+    await answerDiscardPrompt(false);
+    // created and listed, not selected, and the edits are still there
+    await waitFor(() =>
+      expect(index.getByRole("button", { name: /Billing helper/ })).toBeVisible(),
+    );
+    await expect(index.getByRole("button", { name: /Support concierge/ })).toHaveAttribute(
+      "aria-current",
+      "true",
+    );
+    await expect((decorator as HTMLTextAreaElement).value).toContain("Extra.");
+    await expect(canvas.getByText("Unsaved changes")).toBeVisible();
+  },
+};
+
+export const CreatingAfterDiscardingSelectsTheNewTemplate: Story = {
+  render: () => <Harness fetchStub={loadedStub()} />,
+  play: async ({ canvas, canvasElement }) => {
+    const index = within(await canvas.findByRole("complementary", { name: "Templates" }));
+    await userEvent.type(
+      await canvas.findByRole("textbox", { name: /Decorator 1 content/ }),
+      " Extra.",
+    );
+    await userEvent.click(index.getByRole("button", { name: "Create template" }));
+    const dialog = await openConfirmation(canvasElement);
+    await userEvent.type(dialog.getByRole("textbox", { name: "Name" }), "Billing helper");
+    await userEvent.click(dialog.getByRole("button", { name: "Create template" }));
+    await answerDiscardPrompt(true);
+    await waitFor(() =>
+      expect(index.getByRole("button", { name: /Billing helper/ })).toHaveAttribute(
+        "aria-current",
+        "true",
+      ),
+    );
+    await expect(canvas.queryByText("Unsaved changes")).toBeNull();
+  },
+};
+
+/** a clean draft is not asked about: the new template is selected at once */
+export const CreatingOverACleanDraftSelectsAtOnce: Story = {
+  render: () => <Harness fetchStub={loadedStub()} />,
+  play: async ({ canvas, canvasElement }) => {
+    const index = within(await canvas.findByRole("complementary", { name: "Templates" }));
+    await canvas.findByRole("textbox", { name: /Decorator 1 content/ });
+    await userEvent.click(index.getByRole("button", { name: "Create template" }));
+    const dialog = await openConfirmation(canvasElement);
+    await userEvent.type(dialog.getByRole("textbox", { name: "Name" }), "Billing helper");
+    await userEvent.click(dialog.getByRole("button", { name: "Create template" }));
+    await waitFor(() =>
+      expect(index.getByRole("button", { name: /Billing helper/ })).toHaveAttribute(
+        "aria-current",
+        "true",
+      ),
+    );
+    await expect(within(document.body).queryByRole("dialog")).toBeNull();
+  },
+};
+
+/**
+ * On a phone the version history is a folded line above the editor instead of
+ * a list below all of it (#3118): reachable without scrolling past the
+ * editor, and opened with one tap.
+ */
+export const HistoryFoldsOnAPhone: Story = {
+  ...atMobile,
+  render: () => <Harness fetchStub={loadedStub()} />,
+  play: async ({ canvas, canvasElement }) => {
+    const rail = await versionRail(canvasElement);
+    const toggle = rail.getByRole("button", { name: /Version history/ });
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await waitFor(() => expect(toggle).toHaveTextContent("2 versions · v2 selected"));
+    await expect(rail.queryByRole("button", { name: /^v1\b/ })).toBeNull();
+    // above the editor on screen, though after it in the document
+    const editor = await canvas.findByRole("main");
+    await expect(
+      rail.getByRole("button", { name: /Version history/ }).getBoundingClientRect().top,
+    ).toBeLessThan(editor.getBoundingClientRect().top);
+
+    await userEvent.click(toggle);
+    await expect(toggle).toHaveAttribute("aria-expanded", "true");
+    await userEvent.click(await rail.findByRole("button", { name: /^v1\b/ }));
+    await waitFor(() => expect(canvas.getByText(/editing from immutable v1/)).toBeVisible());
+    await expectNoHorizontalOverflow();
+  },
+};
+
+export const HistoryFoldsOnAPhoneInRussian: Story = {
+  ...atMobile,
+  globals: { ...atMobile.globals, locale: "ru" },
+  render: () => <Harness fetchStub={loadedStub()} />,
+  play: async ({ canvasElement }) => {
+    const history = within(
+      await within(canvasElement).findByRole("complementary", { name: ru.repository.history }),
+    );
+    const toggle = history.getByRole("button", { name: new RegExp(ru.repository.history) });
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await waitFor(() => expect(toggle).toHaveTextContent("2 версии · выбрана v2"));
+    await userEvent.click(toggle);
+    await waitFor(() => expect(history.getByRole("button", { name: /^v1\b/ })).toBeVisible());
+    await expectNoHorizontalOverflow();
   },
 };

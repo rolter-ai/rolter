@@ -4,7 +4,6 @@ import {
   ArchiveRestore,
   BookOpen,
   Check,
-  Clock3,
   ExternalLink,
   FileCode2,
   FilePlus2,
@@ -19,6 +18,24 @@ import { useTranslation } from "react-i18next";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { GatedButton } from "@/components/GatedButton";
+import {
+  ChangesPanel,
+  CompareButton,
+  DeleteBySlugDialog,
+  MakeLiveDialog,
+  MakeLiveLabel,
+  RepositoryIndex,
+  RepositoryLoadingState,
+  RepositoryShell,
+  SectionHeading,
+  VersionBadge,
+  VersionCompareDialog,
+  VersionMeta,
+  VersionRail,
+  liveAction,
+  useLatched,
+  type LiveAction,
+} from "@/components/versioned-repository";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -32,12 +49,12 @@ import {
 } from "@/components/ui/dialog";
 import { Combobox } from "@/components/ui/combobox";
 import { EmptyState } from "@/components/ui/empty-state";
-import { Field } from "@/components/ui/field";
 import { LoadError } from "@/components/LoadError";
 import { LoadingRegion } from "@/components/LoadingState";
 import { Input } from "@/components/ui/input";
 import { Segmented } from "@/components/ui/segmented";
 import { Skeleton } from "@/components/ui/skeleton";
+import { FieldDiff, TextDiff } from "@/components/ui/text-diff";
 import { Textarea } from "@/components/ui/textarea";
 import {
   createSkill,
@@ -57,12 +74,11 @@ import {
 } from "@/lib/api";
 import { skillRoleLabel } from "@/lib/enum-labels";
 import { errorText } from "@/lib/error-copy";
-import { useFormat } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
 import { useToast } from "@/lib/toast";
 import { useDraftSwitch } from "@/lib/use-draft-switch";
 import { useLeaveGuard } from "@/lib/use-leave-guard";
-import { cn } from "@/lib/utils";
+import { diffSkillVersions } from "@/lib/version-diff";
 import { useScreenReady } from "@/lib/ux-react";
 
 type SourceMode = "inline" | "reference";
@@ -94,16 +110,6 @@ function draftFromVersion(version?: SkillVersionRow): Draft {
 /** the draft as a comparable string, for telling an edited workbench from a clean one */
 function draftKey(draft: Draft): string {
   return JSON.stringify([draft.mode, draft.content, draft.contentRef, draft.metadataText]);
-}
-
-type LiveAction = "publish" | "rollback";
-
-// publishing and rolling back move the same pointer and differ only in the
-// audit row, so the verb follows the direction: a version newer than the live
-// one is published, an older one is rolled back to, and with nothing live every
-// version is a publish. the prompt repository words it the same way (#2110)
-function liveAction(version: number, published?: number | null): LiveAction {
-  return version > (published ?? 0) ? "publish" : "rollback";
 }
 
 /** a catalog key rather than English, so validation can be translated where it
@@ -158,6 +164,7 @@ export default function SkillsRepository() {
   const [settingsOpen, setSettingsOpen] = React.useState(false);
   const [deleteOpen, setDeleteOpen] = React.useState(false);
   const [retireOpen, setRetireOpen] = React.useState(false);
+  const [compareOpen, setCompareOpen] = React.useState(false);
   // the version waiting on the publish / roll back confirmation, with the
   // direction fixed when the button was pressed: once a publish lands the
   // version *is* the live one, and a direction read again would call the
@@ -229,8 +236,14 @@ export default function SkillsRepository() {
         ...current,
         skill,
       ]);
-      setSelectedId(skill.id);
       setCreateOpen(false);
+      // the new row is selected through the same guard as any other switch: the
+      // open draft's unsaved edits are not thrown away without a word (#3118).
+      // cancelling leaves the skill created and the edits where they were
+      switchGuard.request(() => {
+        setSelectedId(skill.id);
+        setSelectedVersion(undefined);
+      });
       // the workbench's notice strip vanished the moment the draft was
       // touched; the outcome belongs in the toast queue instead (#1197)
       toast.push({ tone: "success", title: t("pages.skillsRepo.created") });
@@ -298,6 +311,12 @@ export default function SkillsRepository() {
       });
     },
   });
+  const liveVersion = orderedVersions.find(
+    (version) => version.version === selected?.published_version,
+  );
+  // the request is latched through the closing render, see `useLatched`
+  const shownTarget = useLatched(liveTarget);
+  const targetVersion = orderedVersions.find((version) => version.version === shownTarget?.version);
   const confirmMakeLive = (version: number) =>
     setLiveTarget({ version, action: liveAction(version, selected?.published_version) });
 
@@ -365,7 +384,7 @@ export default function SkillsRepository() {
     },
   });
 
-  if (scope.isLoading || skills.isLoading) return <LoadingState />;
+  if (scope.isLoading || skills.isLoading) return <RepositoryLoadingState />;
   // never hand-rolled: the bespoke "repository unavailable / Try again" panel
   // offered the same retry for every cause, including the 403 a viewer gets
   // here, where retrying cannot ever work. LoadError names the cause and only
@@ -397,10 +416,37 @@ export default function SkillsRepository() {
   }
 
   return (
-    <div className="h-full min-h-0 overflow-y-auto p-4 sm:p-5">
-      <div className="mx-auto grid min-h-full max-w-[1500px] gap-4 lg:grid-cols-[15rem_minmax(0,1fr)] xl:grid-cols-[14rem_minmax(0,1fr)_15rem] 2xl:grid-cols-[15rem_minmax(0,1fr)_17rem]">
-        <SkillIndex
-          skills={skills.data ?? []}
+    <RepositoryShell
+      wide={!selected}
+      index={
+        <RepositoryIndex
+          label={t("pages.skillsRepo.orgSkills")}
+          count={t("pages.skillsRepo.visibleCount", { count: skills.data?.length ?? 0 })}
+          empty={t("pages.skillsRepo.noSkills")}
+          create={
+            <GatedButton
+              gate="skill:create"
+              control="skill-new"
+              variant="ghost"
+              onClick={() => setCreateOpen(true)}
+              aria-label={t("pages.skillsRepo.createSkill")}
+            >
+              <Plus className="h-4 w-4" />
+            </GatedButton>
+          }
+          items={(skills.data ?? []).map((skill) => ({
+            id: skill.id,
+            name: skill.name,
+            slug: skill.slug,
+            badge: skill.retired_at ? (
+              <Badge tone="neutral">{t("pages.skillsRepo.retired")}</Badge>
+            ) : (
+              <VersionBadge
+                version={skill.published_version}
+                draft={t("pages.skillsRepo.draftBadge")}
+              />
+            ),
+          }))}
           selectedId={selectedId}
           onSelect={(id) =>
             id !== selectedId &&
@@ -409,11 +455,11 @@ export default function SkillsRepository() {
               setSelectedVersion(undefined);
             })
           }
-          onCreate={() => setCreateOpen(true)}
         />
-
-        {!selected ? (
-          <main className="flex min-h-[32rem] items-center justify-center rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-raised)] xl:col-span-2">
+      }
+      workbench={
+        !selected ? (
+          <main className="flex min-h-[32rem] items-center justify-center rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-raised)]">
             <EmptyState
               uxTarget="skill-versions"
               icon={<FilePlus2 />}
@@ -454,6 +500,7 @@ export default function SkillsRepository() {
           <SkillWorkbench
             skill={selected}
             baseVersion={baseVersion}
+            liveVersion={liveVersion}
             draft={draft}
             teams={scope.teams}
             dirty={dirty}
@@ -462,27 +509,67 @@ export default function SkillsRepository() {
             onDraftChange={setDraft}
             onSave={() => save.mutate()}
             onMakeLive={confirmMakeLive}
+            onCompare={() => setCompareOpen(true)}
             onSettings={() => setSettingsOpen(true)}
             onRetire={() => setRetireOpen(true)}
             onDelete={() => setDeleteOpen(true)}
           />
-        )}
-
-        {selected && (
+        )
+      }
+      rail={
+        selected && (
           <VersionRail
-            className="lg:col-start-2 xl:col-start-3 xl:row-start-1"
-            skill={selected}
+            label={t("repository.history")}
+            hint={t("pages.skillsRepo.versionHistoryHint")}
             versions={orderedVersions}
+            publishedVersion={selected.published_version}
             selectedVersion={selectedVersion}
             loading={versions.isLoading}
+            loadingTestId="skill-versions-loading"
+            emptyText={t("repository.noSavedVersions")}
+            renderMakeLive={(version, action) =>
+              selected.retired_at ? null : action === "publish" ? (
+                <GatedButton
+                  gate="skill:update"
+                  control="skill-rail-publish"
+                  variant="ghost"
+                  onClick={() => confirmMakeLive(version)}
+                >
+                  <MakeLiveLabel action={action} version={version} size="sm" />
+                </GatedButton>
+              ) : (
+                <GatedButton
+                  gate="skill:update"
+                  control="skill-rollback"
+                  variant="ghost"
+                  onClick={() => confirmMakeLive(version)}
+                >
+                  <MakeLiveLabel action={action} version={version} size="sm" />
+                </GatedButton>
+              )
+            }
+            renderMeta={(version) => (
+              <VersionMeta>
+                {version.content_ref ? (
+                  <>
+                    <ExternalLink className="h-3 w-3" />
+                    {t("pages.skillsRepo.artifactReferenceMeta")}
+                  </>
+                ) : (
+                  <>
+                    <FileCode2 className="h-3 w-3" />
+                    {t("pages.skillsRepo.inlineContentMeta")}
+                  </>
+                )}
+              </VersionMeta>
+            )}
             onSelect={(version) =>
               version !== selectedVersion && switchGuard.request(() => setSelectedVersion(version))
             }
-            onMakeLive={confirmMakeLive}
           />
-        )}
-      </div>
-
+        )
+      }
+    >
       <CreateSkillDialog
         open={createOpen}
         teams={scope.teams}
@@ -502,9 +589,12 @@ export default function SkillsRepository() {
           onSubmit={(input) => settings.mutate(input)}
         />
       )}
-      <MakeLiveDialog
+      <SkillMakeLiveDialog
         skill={selected}
-        target={liveTarget}
+        open={!!liveTarget}
+        request={shownTarget}
+        target={targetVersion}
+        live={liveVersion}
         pending={makeLive.isPending}
         error={makeLive.error}
         onOpenChange={(open) => {
@@ -515,6 +605,14 @@ export default function SkillsRepository() {
         }}
         onConfirm={() => liveTarget && makeLive.mutate(liveTarget)}
       />
+      <VersionCompareDialog
+        open={compareOpen && !!liveVersion && !!baseVersion}
+        live={liveVersion?.version}
+        target={baseVersion?.version}
+        onOpenChange={setCompareOpen}
+      >
+        {liveVersion && baseVersion && <SkillChanges live={liveVersion} target={baseVersion} />}
+      </VersionCompareDialog>
       <RetireDialog
         open={retireOpen && !!selected}
         skill={selected}
@@ -540,7 +638,7 @@ export default function SkillsRepository() {
         }}
         onConfirm={() => remove.mutate()}
       />
-    </div>
+    </RepositoryShell>
   );
 }
 
@@ -560,18 +658,14 @@ function DeleteSkillDialog({
   onConfirm: () => void;
 }) {
   const { t } = useTranslation();
-  const [confirmation, setConfirmation] = React.useState("");
-  React.useEffect(() => {
-    if (!open) setConfirmation("");
-  }, [open]);
   // retiring hides a skill but keeps its history; deleting drops every
-  // immutable version, so make the operator retype the slug first
-  const matches = confirmation.trim() === skill?.slug;
+  // immutable version, so the operator retypes the slug first
   return (
-    <ConfirmDialog
-      name="skill-delete"
+    <DeleteBySlugDialog
+      uxName="skill-delete"
       open={open}
       onOpenChange={onOpenChange}
+      slug={skill?.slug}
       title={t("pages.skillsRepo.confirm.deleteTitle", { name: skill?.name ?? "" })}
       description={
         <>
@@ -581,20 +675,12 @@ function DeleteSkillDialog({
           {t("pages.skillsRepo.confirm.deleteConsequence")}
         </>
       }
+      slugLabel={t("pages.skillsRepo.confirm.deleteSlugLabel", { slug: skill?.slug ?? "" })}
       confirmLabel={t("pages.skillsRepo.confirm.deleteConfirm")}
       pending={pending}
       error={error}
-      confirmDisabled={!matches}
       onConfirm={onConfirm}
-    >
-      <Field label={t("pages.skillsRepo.confirm.deleteSlugLabel", { slug: skill?.slug ?? "" })}>
-        <Input
-          value={confirmation}
-          onChange={(event) => setConfirmation(event.target.value)}
-          placeholder={skill?.slug}
-        />
-      </Field>
-    </ConfirmDialog>
+    />
   );
 }
 
@@ -608,103 +694,10 @@ function replaceSkill(
   );
 }
 
-// the three-column workspace this screen loads into, which is layout-specific
-// enough that none of the named shapes in LoadingState.tsx fits. the region is
-// not optional though: bare `Skeleton`s are `aria-hidden`, so without it a
-// screen reader heard nothing at all while the skills were out (#1605)
-function LoadingState() {
-  return (
-    <LoadingRegion className="grid gap-4 p-5 lg:grid-cols-[15rem_minmax(0,1fr)_17rem]">
-      <Skeleton width="100%" height={460} radius={12} />
-      <Skeleton width="100%" height={620} radius={12} />
-      <Skeleton width="100%" height={460} radius={12} />
-    </LoadingRegion>
-  );
-}
-
-function SkillIndex({
-  skills,
-  selectedId,
-  onSelect,
-  onCreate,
-}: {
-  skills: SkillRow[];
-  selectedId?: string;
-  onSelect: (id: string) => void;
-  onCreate: () => void;
-}) {
-  const { t } = useTranslation();
-  return (
-    <aside
-      aria-label={t("pages.skillsRepo.orgSkills")}
-      className="overflow-hidden rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-raised)]"
-    >
-      <div className="flex items-center justify-between border-b border-[color:var(--border-subtle)] px-3 py-2.5">
-        <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[color:var(--text-subtle)]">
-            {t("pages.skillsRepo.orgSkills")}
-          </p>
-          <p className="mt-0.5 text-xs text-muted-foreground">
-            {t("pages.skillsRepo.visibleCount", { count: skills.length })}
-          </p>
-        </div>
-        <GatedButton
-          gate="skill:create"
-          control="skill-new"
-          variant="ghost"
-          onClick={onCreate}
-          aria-label={t("pages.skillsRepo.createSkill")}
-        >
-          <Plus className="h-4 w-4" />
-        </GatedButton>
-      </div>
-      <div className="max-h-[26rem] overflow-y-auto p-1.5 lg:max-h-[calc(100vh-14rem)]">
-        {skills.length === 0 ? (
-          <p className="px-2 py-5 text-center text-xs text-muted-foreground">
-            {t("pages.skillsRepo.noSkills")}
-          </p>
-        ) : (
-          skills.map((skill) => (
-            <button
-              key={skill.id}
-              type="button"
-              aria-current={selectedId === skill.id ? "true" : undefined}
-              onClick={() => onSelect(skill.id)}
-              className={cn(
-                "w-full rounded-lg px-2.5 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-                selectedId === skill.id
-                  ? "bg-[color:var(--surface-selected)]"
-                  : "text-[color:var(--text-secondary)] hover:bg-[color:var(--surface-hover)] hover:text-foreground",
-              )}
-            >
-              <span className="flex items-center gap-2">
-                <span className="min-w-0 flex-1 truncate text-sm font-medium">{skill.name}</span>
-                {skill.retired_at ? (
-                  <Badge tone="neutral">{t("pages.skillsRepo.retired")}</Badge>
-                ) : skill.published_version ? (
-                  <span className="text-[0.6875rem] tabular-nums text-[color:var(--status-success-text)]">
-                    v{skill.published_version}
-                  </span>
-                ) : (
-                  <span className="text-[0.6875rem] text-[color:var(--text-subtle)]">
-                    {t("pages.skillsRepo.draftBadge")}
-                  </span>
-                )}
-              </span>
-              <span className="mt-0.5 block truncate font-mono text-[0.6875rem] text-[color:var(--text-subtle)]">
-                {skill.slug}
-              </span>
-            </button>
-          ))
-        )}
-      </div>
-    </aside>
-  );
-}
-
 function SkillWorkbench({
   skill,
   baseVersion,
+  liveVersion,
   draft,
   teams,
   dirty,
@@ -713,12 +706,15 @@ function SkillWorkbench({
   onDraftChange,
   onSave,
   onMakeLive,
+  onCompare,
   onSettings,
   onRetire,
   onDelete,
 }: {
   skill: SkillRow;
   baseVersion?: SkillVersionRow;
+  /** the version callers resolve now, to compare the selected one with */
+  liveVersion?: SkillVersionRow;
   draft: Draft;
   teams: TeamRow[];
   /** the draft differs from the version it was seeded with */
@@ -728,6 +724,7 @@ function SkillWorkbench({
   onDraftChange: (draft: Draft) => void;
   onSave: () => void;
   onMakeLive: (version: number) => void;
+  onCompare: () => void;
   onSettings: () => void;
   onRetire: () => void;
   onDelete: () => void;
@@ -798,6 +795,9 @@ function SkillWorkbench({
             >
               <Trash2 className="h-4 w-4" />
             </GatedButton>
+            {baseVersion && liveVersion && !selectedPublished && (
+              <CompareButton live={liveVersion.version} onClick={onCompare} />
+            )}
             {baseVersion && !selectedPublished && !skill.retired_at && action === "publish" && (
               <GatedButton
                 gate="skill:update"
@@ -807,7 +807,7 @@ function SkillWorkbench({
                 onClick={() => onMakeLive(baseVersion.version)}
               >
                 <Check className="h-4 w-4" />{" "}
-                {t("pages.skillsRepo.publishVersion", { version: baseVersion.version })}
+                {t("repository.publishVersion", { version: baseVersion.version })}
               </GatedButton>
             )}
             {baseVersion && !selectedPublished && !skill.retired_at && action === "rollback" && (
@@ -819,7 +819,7 @@ function SkillWorkbench({
                 onClick={() => onMakeLive(baseVersion.version)}
               >
                 <RotateCcw className="h-4 w-4" />{" "}
-                {t("pages.skillsRepo.rollbackTo", { version: baseVersion.version })}
+                {t("repository.rollbackTo", { version: baseVersion.version })}
               </GatedButton>
             )}
             <GatedButton
@@ -938,134 +938,6 @@ function SkillWorkbench({
         </section>
       </div>
     </main>
-  );
-}
-
-function SectionHeading({ title, description }: { title: string; description: string }) {
-  return (
-    <div className="mb-3">
-      <h3 className="text-sm font-semibold">{title}</h3>
-      <p className="mt-0.5 text-xs leading-5 text-muted-foreground">{description}</p>
-    </div>
-  );
-}
-
-function VersionRail({
-  className,
-  skill,
-  versions,
-  selectedVersion,
-  loading,
-  onSelect,
-  onMakeLive,
-}: {
-  className?: string;
-  skill: SkillRow;
-  versions: SkillVersionRow[];
-  selectedVersion?: number;
-  loading: boolean;
-  onSelect: (version: number) => void;
-  onMakeLive: (version: number) => void;
-}) {
-  const { t } = useTranslation();
-  // the dashboard locale, not the browser's, which is what a bare
-  // Intl.DateTimeFormat(undefined, …) silently followed before (#1092)
-  const format = useFormat();
-  return (
-    <aside
-      aria-label={t("pages.skillsRepo.versionHistory")}
-      className={cn(
-        "overflow-hidden rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-raised)]",
-        className,
-      )}
-    >
-      <div className="border-b border-[color:var(--border-subtle)] px-4 py-3">
-        <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[color:var(--text-subtle)]">
-          {t("pages.skillsRepo.versionHistory")}
-        </p>
-        <p className="mt-1 text-xs text-muted-foreground">
-          {t("pages.skillsRepo.versionHistoryHint")}
-        </p>
-      </div>
-      <div className="max-h-[30rem] space-y-1 overflow-y-auto p-2 xl:max-h-[calc(100vh-14rem)]">
-        {loading ? (
-          <LoadingRegion>
-            <Skeleton width="100%" height={180} radius={8} data-testid="skill-versions-loading" />
-          </LoadingRegion>
-        ) : versions.length === 0 ? (
-          <p className="px-2 py-5 text-center text-xs text-muted-foreground">
-            {t("pages.skillsRepo.noSavedVersions")}
-          </p>
-        ) : (
-          versions.map((version) => {
-            const published = skill.published_version === version.version;
-            const action = liveAction(version.version, skill.published_version);
-            return (
-              <div
-                key={version.version}
-                className={cn(
-                  "rounded-lg border p-2.5",
-                  selectedVersion === version.version
-                    ? "border-[color:var(--red-folk)] bg-[color:var(--surface-selected)]"
-                    : "border-transparent hover:bg-[color:var(--surface-hover)]",
-                )}
-              >
-                <button
-                  type="button"
-                  className="w-full text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring rounded-md"
-                  aria-pressed={selectedVersion === version.version}
-                  onClick={() => onSelect(version.version)}
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-sm font-semibold tabular-nums">v{version.version}</span>
-                    {published && <Badge tone="success">{t("pages.skillsRepo.published")}</Badge>}
-                  </div>
-                  <p className="mt-1.5 flex items-center gap-1 text-[0.6875rem] text-muted-foreground">
-                    <Clock3 className="h-3 w-3" />
-                    {format.date(version.created_at, { dateStyle: "medium", timeStyle: "short" })}
-                  </p>
-                  <p className="mt-1 flex items-center gap-1 text-[0.6875rem] text-[color:var(--text-subtle)]">
-                    {version.content_ref ? (
-                      <>
-                        <ExternalLink className="h-3 w-3" />
-                        {t("pages.skillsRepo.artifactReferenceMeta")}
-                      </>
-                    ) : (
-                      <>
-                        <FileCode2 className="h-3 w-3" />
-                        {t("pages.skillsRepo.inlineContentMeta")}
-                      </>
-                    )}
-                  </p>
-                </button>
-                {!published && !skill.retired_at && action === "publish" && (
-                  <GatedButton
-                    gate="skill:update"
-                    control="skill-rail-publish"
-                    variant="ghost"
-                    onClick={() => onMakeLive(version.version)}
-                  >
-                    <Check className="h-3.5 w-3.5" />{" "}
-                    {t("pages.skillsRepo.publishVersion", { version: version.version })}
-                  </GatedButton>
-                )}
-                {!published && !skill.retired_at && action === "rollback" && (
-                  <GatedButton
-                    gate="skill:update"
-                    control="skill-rollback"
-                    variant="ghost"
-                    onClick={() => onMakeLive(version.version)}
-                  >
-                    <RotateCcw className="h-3.5 w-3.5" />{" "}
-                    {t("pages.skillsRepo.rollbackTo", { version: version.version })}
-                  </GatedButton>
-                )}
-              </div>
-            );
-          })
-        )}
-      </div>
-    </aside>
   );
 }
 
@@ -1310,67 +1182,111 @@ function SkillSettingsDialog({
 }
 
 /**
- * The one confirmation for moving the live pointer, forwards or back.
+ * What this screen says about moving the live pointer, forwards or back. The
+ * dialog itself is the kit's.
  *
  * Skills are not consumed through the gateway yet (the `skills_repository`
  * stability note), so there is no scope or variable impact to show as the
  * prompt repository does; the dialog states which version callers resolve
- * before and after, and how to undo it.
+ * before and after, how to undo it, and what changed between the two.
  */
-function MakeLiveDialog({
+function SkillMakeLiveDialog({
   skill,
+  open,
+  request,
   target,
+  live,
   pending,
   error,
   onOpenChange,
   onConfirm,
 }: {
   skill?: SkillRow;
-  target?: { version: number; action: LiveAction };
+  open: boolean;
+  /** the move, kept through the closing render */
+  request?: { version: number; action: LiveAction };
+  target?: SkillVersionRow;
+  live?: SkillVersionRow;
   pending: boolean;
   error: unknown;
   onOpenChange: (open: boolean) => void;
   onConfirm: () => void;
 }) {
   const { t } = useTranslation();
-  // latched through the closing render: the dialog's `name` keys its UX stream
-  // rows, and the landing is reported on the render that closes it, when the
-  // parent has already let go of the target
-  const [latched, setLatched] = React.useState(target);
-  if (target && (target.version !== latched?.version || target.action !== latched?.action)) {
-    setLatched(target);
-  }
-  const shown = target ?? latched;
-  const version = shown?.version;
-  const publishing = shown?.action !== "rollback";
-  const live = skill?.published_version;
+  const version = request?.version;
+  const publishing = request?.action !== "rollback";
+  const liveNumber = skill?.published_version;
   return (
-    <ConfirmDialog
-      name={publishing ? "skill-publish" : "skill-rollback"}
-      open={!!target}
+    <MakeLiveDialog
+      uxName="skill"
+      open={open}
+      action={request?.action}
+      version={version}
       onOpenChange={onOpenChange}
       title={
         publishing
           ? t("pages.skillsRepo.confirm.publishTitle", { version, name: skill?.name ?? "" })
-          : t("pages.skillsRepo.rollbackTo", { version })
+          : t("repository.rollbackTo", { version })
       }
       description={
         !publishing
-          ? t("pages.skillsRepo.rollbackDescription", { from: live, to: version })
-          : live
-            ? t("pages.skillsRepo.confirm.publishBody", { from: live, to: version })
+          ? t("pages.skillsRepo.rollbackDescription", { from: liveNumber, to: version })
+          : liveNumber
+            ? t("pages.skillsRepo.confirm.publishBody", { from: liveNumber, to: version })
             : t("pages.skillsRepo.confirm.publishFirst", { version })
       }
-      confirmLabel={
-        publishing
-          ? t("pages.skillsRepo.publishVersion", { version })
-          : t("pages.skillsRepo.rollbackTo", { version })
-      }
-      tone="default"
       pending={pending}
       error={error}
       onConfirm={onConfirm}
-    />
+    >
+      {live && target && live.version !== target.version && (
+        <SkillChanges live={live} target={target} collapsible />
+      )}
+    </MakeLiveDialog>
+  );
+}
+
+/** what differs between two skill versions: the source, the content as text, the metadata by key (#2112) */
+function SkillChanges({
+  live,
+  target,
+  collapsible = false,
+}: {
+  live: SkillVersionRow;
+  target: SkillVersionRow;
+  collapsible?: boolean;
+}) {
+  const { t } = useTranslation();
+  const diff = React.useMemo(
+    () =>
+      diffSkillVersions(live, target, {
+        source: t("repository.diff.source"),
+        reference: t("pages.skillsRepo.contentReference"),
+        inline: t("pages.skillsRepo.inlineContentMeta"),
+        artifact: t("pages.skillsRepo.artifactReferenceMeta"),
+      }),
+    [live, target, t],
+  );
+  const sourceChanged = diff.source.some((row) => row.kind !== "same");
+  const contentChanged = diff.content.some((line) => line.kind !== "same");
+  const metadataChanged = diff.metadata.some((row) => row.kind !== "same");
+  return (
+    <ChangesPanel
+      live={live.version}
+      target={target.version}
+      changed={diff.changed}
+      collapsible={collapsible}
+    >
+      {sourceChanged && (
+        <FieldDiff changes={diff.source} label={t("pages.skillsRepo.contentSourceTitle")} />
+      )}
+      {contentChanged && (
+        <TextDiff lines={diff.content} label={t("pages.skillsRepo.skillMdContent")} />
+      )}
+      {metadataChanged && (
+        <FieldDiff changes={diff.metadata} label={t("pages.skillsRepo.versionMetadataTitle")} />
+      )}
+    </ChangesPanel>
   );
 }
 

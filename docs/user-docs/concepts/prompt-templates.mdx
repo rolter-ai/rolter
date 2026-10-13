@@ -74,7 +74,15 @@ Each of these can refuse requests that work today, so the dialog warns when one 
 
 After a roll back, the newer versions stay in history and can be published again.
 
-The workbench marks **Unsaved changes** while the draft differs from the version it was opened from. Selecting another template or version, or leaving the screen, asks whether to discard the edits first, and Cancel keeps them.
+### Compare a version with the live one
+
+A selected version that is not the live one offers **Compare with live vN** in the workbench header. The comparison lists the variables that were added, removed or changed, and shows the decorators as a line diff, inline or side by side. Removed lines and added lines are marked with `-` and `+` as well as colour. The publish and roll back dialogs carry the same comparison under **Changes from live vN**, folded behind **Show changes**, with the number of differences shown first.
+
+Each version in the history rail also lists the scopes it is assigned to, by name. The control plane does not record who created a version yet, so the rail shows no author.
+
+The workbench marks **Unsaved changes** while the draft differs from the version it was opened from. Selecting another template or version, creating a template, or leaving the screen asks whether to discard the edits first, and Cancel keeps them. When you cancel after creating, the new template still exists and is listed; it is only not selected.
+
+On a phone the version history is a single line above the workbench showing the selected version and how many there are; tap it to open the list.
 
 ## Rename and delete
 

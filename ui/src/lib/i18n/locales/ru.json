@@ -1220,7 +1220,6 @@
       "unpublished": "Не опубликован",
       "liveBadge": "v{{version}} активна",
       "noDescription": "Описания пока нет.",
-      "publishVersion": "Опубликовать v{{version}}",
       "saving": "Сохранение…",
       "saveNewDraft": "Сохранить как новый черновик",
       "editingFrom": "правка на основе неизменяемой v{{version}}",
@@ -1276,10 +1275,7 @@
       "emptyDecorator": "Пустой декоратор",
       "requestShapeTitle": "Что передают клиенты",
       "callerVarsHint": "Клиенты передают переменные в <0>rolter_template_vars</0> в теле запроса. Запрос без обязательной переменной или с переменной, которую не объявляет ни один шаблон в его области, отклоняется с ошибкой 400 <1>invalid_prompt_template</1>.",
-      "versionHistory": "История версий",
       "versionHistoryHint": "Сохранённые версии нельзя редактировать.",
-      "noSavedVersions": "Сохранённых версий нет",
-      "published": "Опубликована",
       "versionCounts": "{{variables}} · {{decorators}}",
       "versionVariables_one": "{{count}} переменная",
       "versionVariables_few": "{{count}} переменные",
@@ -1290,7 +1286,6 @@
       "versionDecorators_many": "{{count}} декораторов",
       "versionDecorators_other": "{{count}} декоратора",
       "unsavedChanges": "Есть несохранённые изменения",
-      "rollbackTo": "Откатить к v{{version}}",
       "createTitle": "Создать шаблон промпта",
       "createDescription": "Слаг — стабильная идентичность. Содержимое добавляется следующим шагом как неизменяемая версия.",
       "fieldSlug": "Слаг",
@@ -1322,7 +1317,11 @@
         "deleteConsequence": "Вместе с ним удаляются все версии, области применения и примеры. Это необратимо.",
         "deleteSlugLabel": "Введите {{slug}} для подтверждения",
         "deleteConfirm": "Удалить шаблон"
-      }
+      },
+      "scopesLoading": "Загрузка областей…",
+      "scopesUnavailable": "Области недоступны",
+      "scopesNone": "Нет областей",
+      "scopesList": "Области: {{names}}"
     },
     "skillsRepo": {
       "deleteAction": "Удалить {{name}}",
@@ -1359,7 +1358,6 @@
       "unpublished": "Не опубликован",
       "liveBadge": "v{{version}} активна",
       "noDescription": "Описания пока нет.",
-      "publishVersion": "Опубликовать v{{version}}",
       "saving": "Сохранение…",
       "saveNewVersion": "Сохранить новую версию",
       "minimumRoleMeta": "минимальная роль: {{role}}",
@@ -1380,13 +1378,9 @@
       "versionMetadataDescription": "Необязательный несекретный JSON для требований среды выполнения, возможностей или происхождения.",
       "metadataJson": "JSON метаданных",
       "secretFieldsRejected": "Поля с именами secret, password, token или API key отклоняются control plane.",
-      "versionHistory": "История версий",
       "versionHistoryHint": "Содержимое и метаданные никогда не меняются.",
-      "noSavedVersions": "Сохранённых версий нет",
-      "published": "Опубликована",
       "artifactReferenceMeta": "ссылка на артефакт",
       "inlineContentMeta": "встроенное содержимое",
-      "rollbackTo": "Откатить к v{{version}}",
       "fieldName": "Название",
       "fieldSlug": "Слаг",
       "fieldOptional": "необязательно",
@@ -5533,6 +5527,56 @@
       "adaptive": "Смесь задержки, стоимости и нагрузки, которую настраивает шлюз. Для пулов, где различаются и цена, и задержка.",
       "loraAware": "Предпочитает цель, у которой нужный LoRA-адаптер уже загружен. Для парков, обслуживающих много адаптеров на общих базовых весах.",
       "predictedLatency": "Ранжирует цели по расчётной стоимости именно этого запроса: по глубине очереди и размеру промпта. Для разных размеров промптов и глубоких очередей."
+    }
+  },
+  "repository": {
+    "history": "История версий",
+    "noSavedVersions": "Сохранённых версий нет",
+    "published": "Опубликована",
+    "publishVersion": "Опубликовать v{{version}}",
+    "rollbackTo": "Откатить к v{{version}}",
+    "historySummary_one": "{{count}} версия · выбрана v{{version}}",
+    "historySummary_few": "{{count}} версии · выбрана v{{version}}",
+    "historySummary_many": "{{count}} версий · выбрана v{{version}}",
+    "historySummary_other": "{{count}} версии · выбрана v{{version}}",
+    "changes": {
+      "title": "Что изменилось с опубликованной v{{live}} до v{{version}}",
+      "identical": "v{{version}} совпадает с опубликованной v{{live}}.",
+      "count_one": "{{count}} отличие",
+      "count_few": "{{count}} отличия",
+      "count_many": "{{count}} отличий",
+      "count_other": "{{count}} отличия",
+      "show": "Показать изменения",
+      "hide": "Скрыть изменения"
+    },
+    "compare": {
+      "action": "Сравнить с опубликованной v{{live}}",
+      "title": "v{{version}} в сравнении с опубликованной v{{live}}",
+      "description": "Удалённые строки есть только в опубликованной v{{live}}, добавленные только в открытой версии. Обе версии неизменяемы."
+    },
+    "diff": {
+      "added": "Добавлено",
+      "removed": "Удалено",
+      "before": "Было",
+      "after": "Стало",
+      "unchanged_one": "{{count}} строка без изменений",
+      "unchanged_few": "{{count}} строки без изменений",
+      "unchanged_many": "{{count}} строк без изменений",
+      "unchanged_other": "{{count}} строки без изменений",
+      "layout": "Вид сравнения: {{name}}",
+      "inline": "В одну колонку",
+      "split": "Две колонки",
+      "identical": "Различий нет.",
+      "source": "Источник",
+      "variableRequired": "обязательная",
+      "variableOptional": "необязательная",
+      "variableDefault": "по умолчанию «{{value}}»",
+      "field": {
+        "added": "добавлено",
+        "removed": "удалено",
+        "changed": "изменено",
+        "same": "без изменений"
+      }
     }
   }
 }

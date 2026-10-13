@@ -29,12 +29,14 @@ import {
 import type { SkillRow, SkillVersionRow } from "@/lib/api";
 import { CapabilityProvider } from "@/lib/can";
 import ru from "@/lib/i18n/locales/ru.json";
+import { atMobile, expectNoHorizontalOverflow } from "@/lib/story-viewport";
 import { UxScreenProvider } from "@/lib/ux-react";
 
 const ORG = "00000000-0000-4000-8000-000000000011";
 const TEAM = "00000000-0000-4000-8000-000000000012";
 const PROJECT = "00000000-0000-4000-8000-000000000013";
 const SKILL = "00000000-0000-4000-8000-000000000014";
+const CREATED = "00000000-0000-4000-8000-0000000000bb";
 
 const skill: SkillRow = {
   id: SKILL,
@@ -97,6 +99,19 @@ function loadedStub(live = skill.published_version): FetchStub {
       return json([
         { id: PROJECT, team_id: TEAM, name: "Production", created_at: "2026-01-01T00:00:00Z" },
       ]);
+    if (url.endsWith(`/orgs/${ORG}/skills`) && init?.method === "POST") {
+      const body = JSON.parse(String(init.body)) as { name: string };
+      return json({
+        ...skill,
+        id: CREATED,
+        name: body.name,
+        slug: "billing-triage",
+        description: "",
+        published_version: null,
+        allowed_team_ids: [],
+      });
+    }
+    if (url.endsWith(`/skills/${CREATED}/versions`)) return json([]);
     if (url.endsWith(`/orgs/${ORG}/skills`)) return json(deleted ? [] : [currentSkill]);
     if (url.endsWith(`/skills/${SKILL}/versions`) && init?.method === "POST") {
       const body = JSON.parse(String(init.body)) as Partial<SkillVersionRow>;
@@ -649,5 +664,182 @@ export const AsViewer: Story = {
     });
     // reading is untouched: the slug is on screen in the index and the header
     await expect(canvas.getAllByText("incident-coordinator").length).toBeGreaterThan(0);
+  },
+};
+
+async function railOf(canvas: ReturnType<typeof within>) {
+  return within(await canvas.findByRole("complementary", { name: "Version history" }));
+}
+
+/**
+ * Selecting a version offers its comparison with the live one (#2112): the
+ * source and the metadata keys as fields, the content as lines. v1 is an
+ * artifact reference and v2, the live one, is inline content, so the source
+ * moved, every inline line is gone from v1 and its metadata is another set.
+ */
+export const ComparesAVersionWithTheLiveOne: Story = {
+  render: () => <Harness fetchStub={loadedStub()} />,
+  play: async ({ canvas, canvasElement }) => {
+    const rail = await railOf(canvas);
+    await userEvent.click(await rail.findByRole("button", { name: /^v1\b/ }));
+    await userEvent.click(
+      await within(canvas.getByRole("main")).findByRole("button", {
+        name: "Compare with live v2",
+      }),
+    );
+    const dialog = within(await within(canvasElement.ownerDocument.body).findByRole("dialog"));
+    await waitFor(() =>
+      expect(dialog.getByRole("heading", { name: "v1 compared with live v2" })).toBeVisible(),
+    );
+
+    const source = within(dialog.getByRole("list", { name: "Content source" }));
+    await expect(source.getByText("Source").closest("li")).toHaveTextContent(/changed/);
+    await expect(source.getByText("Content reference").closest("li")).toHaveTextContent(
+      "oci://registry.example/skills/incident-coordinator@sha256:abc123",
+    );
+
+    const content = within(dialog.getByRole("region", { name: "SKILL.md content" }));
+    await expect(content.getByText("1. Collect evidence.").closest("div")).toHaveTextContent(
+      /Removed:/,
+    );
+
+    const metadata = within(dialog.getByRole("list", { name: "Version metadata" }));
+    await expect(metadata.getByText("runtime").closest("li")).toHaveTextContent(/removed/);
+    await expect(metadata.getByText("source").closest("li")).toHaveTextContent(/added/);
+    await expect(metadata.getByText("source").closest("li")).toHaveTextContent(
+      '"platform-runbooks"',
+    );
+
+    await userEvent.click(dialog.getByRole("radio", { name: "Side by side" }));
+    await expect(
+      within(dialog.getByRole("region", { name: "SKILL.md content" })).getByText(
+        "1. Collect evidence.",
+      ),
+    ).toBeVisible();
+  },
+};
+
+/** the roll back dialog says what rolling back changes, not only that it will */
+export const RollbackShowsWhatChanged: Story = {
+  render: () => <Harness fetchStub={loadedStub()} />,
+  play: async ({ canvas, canvasElement }) => {
+    await userEvent.click(await canvas.findByRole("button", { name: "Roll back to v1" }));
+    const dialog = within(await within(canvasElement.ownerDocument.body).findByRole("dialog"));
+    const changes = within(dialog.getByRole("region", { name: /Changes from live v2 to v1/ }));
+    await expect(changes.getByText(/\d+ differences/)).toBeVisible();
+    await expect(changes.queryByRole("list", { name: "Version metadata" })).toBeNull();
+    await userEvent.click(changes.getByRole("button", { name: "Show changes" }));
+    await expect(changes.getByRole("list", { name: "Version metadata" })).toBeVisible();
+  },
+};
+
+export const CreatingOverAnUnsavedDraftAsksFirst: Story = {
+  render: () => <Harness fetchStub={loadedStub()} />,
+  play: async ({ canvas, canvasElement }) => {
+    const index = within(await canvas.findByRole("complementary", { name: "Org skills" }));
+    const content = await canvas.findByRole("textbox", { name: "SKILL.md content" });
+    await userEvent.type(content, "\n4. Schedule the follow-up.");
+    await userEvent.click(index.getByRole("button", { name: "Create skill" }));
+    const dialog = within(await within(canvasElement.ownerDocument.body).findByRole("dialog"));
+    await userEvent.type(dialog.getByRole("textbox", { name: "Name" }), "Billing triage");
+    await userEvent.click(dialog.getByRole("button", { name: "Create skill" }));
+
+    await expect(await discardPrompt()).toBeVisible();
+    await answerDiscardPrompt(false);
+    // created and listed, not selected, and the edits are still there
+    await waitFor(() =>
+      expect(index.getByRole("button", { name: /Billing triage/ })).toBeVisible(),
+    );
+    await expect(index.getByRole("button", { name: /Incident coordinator/ })).toHaveAttribute(
+      "aria-current",
+      "true",
+    );
+    await expect((content as HTMLTextAreaElement).value).toContain("4. Schedule the follow-up.");
+    await expect(canvas.getByText("Unsaved changes")).toBeVisible();
+  },
+};
+
+export const CreatingAfterDiscardingSelectsTheNewSkill: Story = {
+  render: () => <Harness fetchStub={loadedStub()} />,
+  play: async ({ canvas, canvasElement }) => {
+    const index = within(await canvas.findByRole("complementary", { name: "Org skills" }));
+    await userEvent.type(
+      await canvas.findByRole("textbox", { name: "SKILL.md content" }),
+      "\n4. Schedule the follow-up.",
+    );
+    await userEvent.click(index.getByRole("button", { name: "Create skill" }));
+    const dialog = within(await within(canvasElement.ownerDocument.body).findByRole("dialog"));
+    await userEvent.type(dialog.getByRole("textbox", { name: "Name" }), "Billing triage");
+    await userEvent.click(dialog.getByRole("button", { name: "Create skill" }));
+    await answerDiscardPrompt(true);
+    await waitFor(() =>
+      expect(index.getByRole("button", { name: /Billing triage/ })).toHaveAttribute(
+        "aria-current",
+        "true",
+      ),
+    );
+    await expect(canvas.queryByText("Unsaved changes")).toBeNull();
+  },
+};
+
+export const CreatingOverACleanDraftSelectsAtOnce: Story = {
+  render: () => <Harness fetchStub={loadedStub()} />,
+  play: async ({ canvas, canvasElement }) => {
+    const index = within(await canvas.findByRole("complementary", { name: "Org skills" }));
+    await canvas.findByRole("textbox", { name: "SKILL.md content" });
+    await userEvent.click(index.getByRole("button", { name: "Create skill" }));
+    const dialog = within(await within(canvasElement.ownerDocument.body).findByRole("dialog"));
+    await userEvent.type(dialog.getByRole("textbox", { name: "Name" }), "Billing triage");
+    await userEvent.click(dialog.getByRole("button", { name: "Create skill" }));
+    await waitFor(() =>
+      expect(index.getByRole("button", { name: /Billing triage/ })).toHaveAttribute(
+        "aria-current",
+        "true",
+      ),
+    );
+    await expect(within(document.body).queryByRole("dialog")).toBeNull();
+  },
+};
+
+/**
+ * On a phone the version history is a folded line above the editor instead of
+ * a list below all of it (#3118), and opens with one tap.
+ */
+export const HistoryFoldsOnAPhone: Story = {
+  ...atMobile,
+  render: () => <Harness fetchStub={loadedStub()} />,
+  play: async ({ canvas }) => {
+    const rail = await railOf(canvas);
+    const toggle = rail.getByRole("button", { name: /Version history/ });
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await waitFor(() => expect(toggle).toHaveTextContent("2 versions · v2 selected"));
+    await expect(rail.queryByRole("button", { name: /^v1\b/ })).toBeNull();
+    const editor = await canvas.findByRole("main");
+    await expect(toggle.getBoundingClientRect().top).toBeLessThan(
+      editor.getBoundingClientRect().top,
+    );
+
+    await userEvent.click(toggle);
+    await expect(toggle).toHaveAttribute("aria-expanded", "true");
+    await userEvent.click(await rail.findByRole("button", { name: /^v1\b/ }));
+    await waitFor(() => expect(canvas.getByText("editing from immutable v1")).toBeVisible());
+    await expectNoHorizontalOverflow();
+  },
+};
+
+export const HistoryFoldsOnAPhoneInRussian: Story = {
+  ...atMobile,
+  globals: { ...atMobile.globals, locale: "ru" },
+  render: () => <Harness fetchStub={loadedStub()} />,
+  play: async ({ canvasElement }) => {
+    const history = within(
+      await within(canvasElement).findByRole("complementary", { name: ru.repository.history }),
+    );
+    const toggle = history.getByRole("button", { name: new RegExp(ru.repository.history) });
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await waitFor(() => expect(toggle).toHaveTextContent("2 версии · выбрана v2"));
+    await userEvent.click(toggle);
+    await waitFor(() => expect(history.getByRole("button", { name: /^v1\b/ })).toBeVisible());
+    await expectNoHorizontalOverflow();
   },
 };
