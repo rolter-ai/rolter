@@ -7,6 +7,7 @@ import {
   expectLoadError,
   expectNoFalseEmpty,
   confirmDestructive,
+  expectAnalyticsUnavailable,
   expectEmptyState,
   expectForbidden,
   expectRefused,
@@ -126,10 +127,21 @@ function Harness({
   );
 }
 
+const isOutcomes = (input: RequestInfo | URL) =>
+  new URL(String(input), "http://localhost").pathname === "/api/v1/analytics/plugins";
+
+/** the call counts of #2243, answered on their own path; none recorded unless a story says */
+const NO_CALLS = () => json({ recorded: true, data: [] });
+
 const withPlugins =
-  (plugins: PluginInstanceRow[], pluginStatus = 200): FetchStub =>
+  (
+    plugins: PluginInstanceRow[],
+    pluginStatus = 200,
+    outcomes: () => Response = NO_CALLS,
+  ): FetchStub =>
   async (input) => {
     const url = String(input);
+    if (isOutcomes(input)) return outcomes();
     return (
       scopeResponse(url) ??
       json(pluginStatus === 200 ? plugins : { error: { message: "forbidden" } }, pluginStatus)
@@ -583,5 +595,190 @@ export const RefusedToAMember: Story = {
   play: async ({ canvasElement }) => {
     await expectRefused(canvasElement, "Install plugin");
     await expectRefused(canvasElement, "Delete plugin PII redaction");
+  },
+};
+
+const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString();
+
+/** one row of the rollup; the counts arrive as strings, like ClickHouse sends them */
+const outcomeRow = (
+  plugin: string,
+  counts: { calls: number; blocked?: number; transformed?: number; errors?: number },
+  lastError?: { minutes: number; kind: string },
+  orgId = "org-1",
+) => ({
+  org_id: orgId,
+  plugin,
+  calls: String(counts.calls),
+  blocked: String(counts.blocked ?? 0),
+  transformed: String(counts.transformed ?? 0),
+  annotated: "0",
+  errors: String(counts.errors ?? 0),
+  last_error_at: lastError ? minutesAgo(lastError.minutes) : null,
+  last_error_kind: lastError?.kind ?? "",
+});
+
+/**
+ * Each card states what its plugin did over the last seven days, and the
+ * newest failure with its cause (#2243, #2224). A plugin that failed every call
+ * is flagged with what its failure policy is doing to traffic because of it; a
+ * paused one is not, as it sees no traffic. Another organization's plugin of
+ * the same slug is not counted.
+ */
+export const ShowsWhatEachPluginDid: Story = {
+  render: () => (
+    <Harness
+      fetchStub={withPlugins(PLUGINS, 200, () =>
+        json({
+          recorded: true,
+          data: [
+            outcomeRow(
+              "pii-redaction",
+              { calls: 120, blocked: 4, transformed: 30, errors: 2 },
+              { minutes: 5, kind: "timeout" },
+            ),
+            outcomeRow(
+              "response-policy",
+              { calls: 40, errors: 40 },
+              { minutes: 1, kind: "connect" },
+            ),
+            outcomeRow(
+              "response-audit",
+              { calls: 5, errors: 5 },
+              { minutes: 60, kind: "status_503" },
+            ),
+            outcomeRow("pii-redaction", { calls: 9999, blocked: 9999 }, undefined, "org-2"),
+          ],
+        }),
+      )}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const redact = within(await card(canvasElement, "PII redaction"));
+    await expect(await redact.findByText("Calls in the last 7 days")).toBeVisible();
+    for (const [label, value] of [
+      ["Calls", "120"],
+      ["Blocked", "4"],
+      ["Transformed", "30"],
+      ["Errors", "2"],
+    ]) {
+      await expect(redact.getByText(label, { exact: false, selector: "li" })).toHaveTextContent(
+        `${label} ${value}`,
+      );
+    }
+    await expect(redact.getByText(/Last error: the call timed out, .+ ago\./)).toBeVisible();
+    // two failures in 120 calls is not "failing every call"
+    await expect(redact.queryByText(/Failing every call/)).toBeNull();
+
+    // fail-closed and failing every call: its traffic is being refused
+    const policy = within(await card(canvasElement, "Response policy"));
+    await expect(
+      await policy.findByText(
+        /Failing every call: 40 of 40 calls in the last 7 days got no answer\. Requests it covers are being refused\./,
+      ),
+    ).toBeVisible();
+
+    // paused: counts stay, the flag does not, and the status code is named
+    const audit = within(await card(canvasElement, "Response audit"));
+    await expect(
+      await audit.findByText(/Last error: the endpoint answered with status 503/),
+    ).toBeVisible();
+    await expect(audit.queryByText(/Failing every call/)).toBeNull();
+  },
+};
+
+/** A fail-open plugin whose endpoint is down still forwards, and the card says so. */
+export const FailingOpenForwardsUnchecked: Story = {
+  render: () => (
+    <Harness
+      fetchStub={withPlugins(
+        PLUGINS.map((plugin) =>
+          plugin.id === "plugin-audit" ? { ...plugin, enabled: true } : plugin,
+        ),
+        200,
+        () =>
+          json({
+            recorded: true,
+            data: [
+              outcomeRow(
+                "response-audit",
+                { calls: 3, errors: 3 },
+                { minutes: 2, kind: "refused" },
+              ),
+            ],
+          }),
+      )}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const audit = within(await card(canvasElement, "Response audit"));
+    await expect(
+      await audit.findByText(/Failing every call: 3 of 3 calls.*Requests continue unchecked\./),
+    ).toBeVisible();
+    await expect(audit.getByText(/the egress policy refused the endpoint/)).toBeVisible();
+  },
+};
+
+/** A plugin nothing has called in the window says "no calls", not a row of zeros. */
+export const NoCallsYet: Story = {
+  render: () => <Harness fetchStub={withPlugins(PLUGINS)} />,
+  play: async ({ canvasElement }) => {
+    const redact = within(await card(canvasElement, "PII redaction"));
+    await expect(await redact.findByText("No calls in the last 7 days.")).toBeVisible();
+    await expect(redact.queryByText("Calls", { selector: "li" })).toBeNull();
+    await expect(redact.queryByText(/Failing every call/)).toBeNull();
+  },
+};
+
+/**
+ * A deployment with no ClickHouse cannot count anything. The screen says so
+ * once, calmly, and the cards claim neither calls nor their absence.
+ */
+export const NoAnalytics: Story = {
+  render: () => (
+    <Harness
+      fetchStub={withPlugins(PLUGINS, 200, () =>
+        json({ error: { message: "analytics unavailable: no clickhouse_url configured" } }, 503),
+      )}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    await expectAnalyticsUnavailable(
+      canvasElement,
+      "Call counts need an analytics store",
+      "analytics unavailable: no clickhouse_url configured",
+    );
+    await expect(canvasElement).not.toHaveTextContent(/No calls in the last 7 days/);
+    await expect(canvasElement).not.toHaveTextContent(/Counting calls/);
+  },
+};
+
+/** ClickHouse is there but the file that keeps plugin calls was never applied. */
+export const CallsNotRecorded: Story = {
+  render: () => (
+    <Harness fetchStub={withPlugins(PLUGINS, 200, () => json({ recorded: false, data: [] }))} />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText(/Call counts are not being kept/)).toBeVisible();
+    await expect(canvasElement).not.toHaveTextContent(/No calls in the last 7 days/);
+  },
+};
+
+/** The rollup failing leaves the plugin list usable, with the cards saying why they have no counts. */
+export const CallCountsFailed: Story = {
+  render: () => (
+    <Harness
+      fetchStub={withPlugins(PLUGINS, 200, () => json({ error: { message: "boom" } }, 500))}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const redact = within(await card(canvasElement, "PII redaction"));
+    await expect(
+      await redact.findByText("Could not load call counts.", undefined, { timeout: 8000 }),
+    ).toBeVisible();
+    await expect(
+      redact.getByRole("button", { name: "Configure plugin PII redaction" }),
+    ).toBeEnabled();
   },
 };

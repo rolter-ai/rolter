@@ -66,3 +66,28 @@ A **saved view** on the `dashboard` surface can hold these four filters beside `
 `action` is `blocked`, `redacted` or `annotated` for a rule named in `rule`, and `provider_blocked` or `provider_transformed` with an empty `rule` for the active guardrail provider. A request counts once per rule, scaled by the log's sampling weight like every other count. The rows are limited to the request log you can read, as everywhere on this page. `recorded` is `false`, with `data` empty, when the ClickHouse table lacks `clickhouse/018_guardrail_events.sql`.
 
 `GET /api/v1/analytics/invocations` takes `guardrail=<action>:<rule>` (or `provider_blocked` / `provider_transformed`) to list exactly those requests, and each row carries `guardrail_events`, an array of the same strings.
+
+## Plugin outcomes
+
+`GET /api/v1/analytics/plugins` takes the same `since` and `until` and answers what each [plugin](/configuration/plugins#what-each-plugin-did) did to the requests in that window, one row per organization and plugin slug:
+
+```json
+{
+  "recorded": true,
+  "data": [
+    {
+      "org_id": "0c8e9b1e-4d1f-4f6e-9c43-1d2a6f6f2b10",
+      "plugin": "pii-redaction",
+      "calls": 120,
+      "blocked": 4,
+      "transformed": 30,
+      "annotated": 0,
+      "errors": 2,
+      "last_error_at": "2026-10-13T08:41:07.000Z",
+      "last_error_kind": "timeout"
+    }
+  ]
+}
+```
+
+`calls` is every consultation, and `blocked`, `transformed`, `annotated` and `errors` are the parts of it that ended that way; the rest were allowed. A call that got no verdict is an `errors` one, so a fail-closed plugin that refused traffic because its endpoint was down counts there and not under `blocked`. `last_error_kind` is `refused`, `timeout`, `connect`, `status_<code>` or `body`; `last_error_at` and `last_error_kind` are `null` and empty while `errors` is `0`. Counts are scaled by the log's sampling weight and limited to the request log you can read, like every other count here. `recorded` is `false`, with `data` empty, when the ClickHouse table lacks `clickhouse/019_plugin_events.sql`. Each row of `GET /api/v1/analytics/invocations` carries `plugin_events`, the entries behind the counts.

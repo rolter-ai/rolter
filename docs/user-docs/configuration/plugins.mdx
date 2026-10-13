@@ -57,6 +57,16 @@ A `block` from any plugin in the chain stops it immediately — later plugins in
 
 A `post_response` block, or a `transform` that rewrites the `usage` object, does not change what the request is billed. The provider has already generated the answer, so its reported usage counts toward budgets and is logged with `withheld = 1` when delivery is refused. See [Withheld responses](/observability/logs-and-cost#withheld-responses).
 
+## What each plugin did
+
+Every plugin call leaves an entry on the request's row in **LLM Logs** (`plugin_events`): `allowed`, `blocked`, `transformed` or `annotated`, followed by the plugin's slug, or `error:<slug>:<kind>` when the call produced no verdict. The kind is one of `refused` (the egress policy turned the endpoint away), `timeout`, `connect`, `status_<code>` (a non-2xx answer) or `body` (an unreadable response). Slugs and that fixed list only: nothing the plugin answered, and nothing from the request, reaches a row. A request refused by a plugin is logged like any other refusal, with the entries of the plugins that had already run.
+
+A call that failed is an `error` whatever the failure policy then did. A fail-closed plugin whose endpoint is down refuses the request, and the row says `error:<slug>:connect`, not `blocked`, because the plugin never gave a verdict. Counts of `blocked` are verdicts only.
+
+Each card on **Plugins** states what its plugin did over the last seven days: **Calls**, **Blocked**, **Transformed** and **Errors** (and **Annotated** once there is one), and the newest failure with its cause and how long ago it happened. A plugin that is enabled and failed every call in the window is flagged **Failing every call**, with what its failure policy is doing because of it: fail open says requests continue unchecked, fail closed says the requests it covers are being refused. A plugin with no calls in the window says **No calls in the last 7 days**, which is not the same as healthy: a plugin outside the route's scope is never called. A paused plugin keeps its counts but is never flagged.
+
+The counts are read from ClickHouse, the same way as the [guardrail counts](/security/guardrails#what-each-rule-did). Without `CLICKHOUSE_URL` the screen says so once, and with ClickHouse but without `clickhouse/019_plugin_events.sql` applied it says the counts are not being kept (see [Upgrading](/deployment/upgrading)); neither is shown as "no calls". Counts are scaled by the log's sampling weight, so at a sample rate below 1 they are estimates and the last error is the newest one among the sampled rows. Plugin calls made on a [Realtime](/api/realtime) session are counted on `/metrics` only, not here. The same rollup is `GET /api/v1/analytics/plugins` (see [Dashboard analytics](/api/dashboard-analytics#plugin-outcomes)). A slug is only unique within an organization, so the rollup reports `org_id` beside it; an org-wide plugin and a project plugin of one organization that share a slug are counted together.
+
 ## Egress policy
 
 A plugin's endpoint is checked against the [egress policy](/configuration/egress) when it is saved (a `400` names the field) and again before every call. Rolter does not follow a redirect from a plugin endpoint.

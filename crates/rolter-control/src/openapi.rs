@@ -1884,9 +1884,9 @@ fn operations() -> Vec<Op> {
                  `cache_write_1h_tokens` (a number) is the part of `cache_write_tokens` written to the \
                  provider's 1 hour prompt cache, so the 5 minute share is the difference; it is `0` for a \
                  provider that reports no split. `upstream_status`, `attempts`, `lifecycle_operation`, \
-                 `cache_write_1h_tokens` and `guardrail_events` (an array of strings, one per guardrail \
-                 action) come from ClickHouse files an operator applies by hand \
-                 (`clickhouse/015` to `018`): on a table that lacks one the field is still on every row, \
+                 `cache_write_1h_tokens`, `guardrail_events` (an array of strings, one per guardrail \
+                 action) and `plugin_events` (the same for plugin calls) come from ClickHouse files an operator applies by hand \
+                 (`clickhouse/015` to `019`): on a table that lacks one the field is still on every row, \
                  as `0` (an empty string for `lifecycle_operation`), and the list does not fail",
             )
             .clickhouse_read()
@@ -1900,6 +1900,20 @@ fn operations() -> Vec<Op> {
                  `provider_transformed` with an empty `rule` for the active guardrail provider. \
                  `recorded` is `false` when the ClickHouse table lacks \
                  `clickhouse/018_guardrail_events.sql`, in which case `data` is empty",
+            )
+            .clickhouse_read()
+            .query(WINDOW_QUERY),
+            Op::get(
+                "/api/v1/analytics/plugins",
+                "getAnalyticsPlugins",
+                "What each plugin did to requests in the window: one row per `org_id` and `plugin` (its slug) with \
+                 `calls`, and the `blocked`, `transformed`, `annotated` and `errors` among them (the \
+                 rest were allowed). An `errors` call gave no verdict, so a fail-closed plugin that \
+                 refused traffic because its endpoint was down counts there, not under `blocked`. \
+                 `last_error_at` and `last_error_kind` (`refused`, `timeout`, `connect`, \
+                 `status_<code>` or `body`) name the newest failure and are `null` and empty when `errors` is \
+                 `0`. `recorded` is `false` when the ClickHouse table lacks \
+                 `clickhouse/019_plugin_events.sql`, in which case `data` is empty",
             )
             .clickhouse_read()
             .query(WINDOW_QUERY),

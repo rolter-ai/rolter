@@ -1517,6 +1517,7 @@ async fn proxy(
         model: &model,
         sample_rate: snap.logging.sample_rate,
         started,
+        plugin_events: parking_lot::Mutex::new(Vec::new()),
     };
     if let Err(denial) = authorize_model(vk.as_ref(), &model) {
         return refuse.log(denial.into_response());
@@ -1539,7 +1540,8 @@ async fn proxy(
     let mut pre_route_transformed = false;
     if !pre_route_plugins.is_empty() {
         let tenant = plugin_tenant(&scope);
-        match crate::plugin_dispatch::dispatch(
+        let mut events = Vec::new();
+        let outcome = crate::plugin_dispatch::dispatch(
             &pre_route_plugins,
             rolter_core::PluginStage::PreRoute,
             &state.metrics,
@@ -1548,10 +1550,12 @@ async fn proxy(
             "", // no route resolved yet at this stage
             trace_id,
             &tenant,
+            &mut events,
             &parsed,
         )
-        .await
-        {
+        .await;
+        refuse.note_plugin_events(events);
+        match outcome {
             crate::plugin_dispatch::DispatchOutcome::Allow(content) => {
                 pre_route_transformed = content != parsed;
                 parsed = content;
@@ -1903,7 +1907,8 @@ async fn proxy(
     );
     if !pre_upstream_plugins.is_empty() {
         let tenant = plugin_tenant(&scope);
-        match crate::plugin_dispatch::dispatch(
+        let mut events = Vec::new();
+        let outcome = crate::plugin_dispatch::dispatch(
             &pre_upstream_plugins,
             rolter_core::PluginStage::PreUpstream,
             &state.metrics,
@@ -1912,10 +1917,12 @@ async fn proxy(
             &entry.route.model,
             trace_id,
             &tenant,
+            &mut events,
             &parsed,
         )
-        .await
-        {
+        .await;
+        refuse.note_plugin_events(events);
+        match outcome {
             crate::plugin_dispatch::DispatchOutcome::Allow(content) => {
                 plugin_transformed = content != parsed;
                 parsed = content;
@@ -1932,6 +1939,8 @@ async fn proxy(
             }
         }
     }
+    // what the plugin stages did, for the rows this request leaves (#2243)
+    let plugin_events = refuse.plugin_events();
     guardrails_pre_stage.record(
         "redacted",
         guardrail_redacted
@@ -2227,6 +2236,7 @@ async fn proxy(
                     model: model.clone(),
                     sample_rate: snap.logging.sample_rate,
                     guardrail_events: guardrail_events.clone(),
+                    plugin_events: plugin_events.clone(),
                     started,
                 },
                 DeliveryPolicy {
@@ -2294,6 +2304,7 @@ async fn proxy(
                             model: model.clone(),
                             sample_rate: snap.logging.sample_rate,
                             guardrail_events: guardrail_events.clone(),
+                            plugin_events: plugin_events.clone(),
                             started,
                         },
                         DeliveryPolicy {
@@ -2343,6 +2354,7 @@ async fn proxy(
             stream: stream as u8,
             sample_rate: snap.logging.sample_rate,
             guardrail_events: guardrail_events.clone(),
+            plugin_events: plugin_events.clone(),
             ..Default::default()
         },
     );
@@ -2768,7 +2780,7 @@ async fn proxy(
                 } else {
                     None
                 };
-            let log = RequestLog {
+            let mut log = RequestLog {
                 ts: crate::logging::started_at(started),
                 request_id,
                 trace_id,
@@ -2800,6 +2812,7 @@ async fn proxy(
                 },
                 sample_rate: snap.logging.sample_rate,
                 guardrail_events,
+                plugin_events,
                 ..Default::default()
             };
             // on a cache-eligible route, buffer a successful response (JSON or a
@@ -2873,7 +2886,10 @@ async fn proxy(
                             };
                             let status_code =
                                 StatusCode::from_u16(status).unwrap_or(StatusCode::OK);
-                            let bytes = match policy.apply(status_code, bytes).await {
+                            let mut post_events = Vec::new();
+                            let applied = policy.apply(status_code, &mut post_events, bytes).await;
+                            log.plugin_events.extend(post_events);
+                            let bytes = match applied {
                                 Delivery::Send(bytes) => bytes,
                                 // the upstream call happened and is billed on
                                 // a refusal as on a delivery (#1478)
@@ -3003,6 +3019,7 @@ async fn proxy(
                 error,
                 sample_rate: snap.logging.sample_rate,
                 guardrail_events,
+                plugin_events,
                 ..Default::default()
             };
             if no_target {
@@ -3085,6 +3102,7 @@ async fn proxy_multipart(
         model: &model,
         sample_rate: snap.logging.sample_rate,
         started,
+        plugin_events: parking_lot::Mutex::new(Vec::new()),
     };
     if let Err(denial) = authorize_model(vk.as_ref(), &model) {
         return refuse.log(denial.into_response());
@@ -4179,7 +4197,11 @@ async fn stream_response(
                     plugins: post_response_plugins.as_ref(),
                     pii,
                 };
-                let bytes = match policy.apply(status, bytes).await {
+                let mut post_events = Vec::new();
+                let applied = policy.apply(status, &mut post_events, bytes).await;
+                let mut log = log;
+                log.plugin_events.extend(post_events);
+                let bytes = match applied {
                     Delivery::Send(bytes) => bytes,
                     Delivery::Refuse { response, reason } => {
                         return withheld_response(
@@ -4470,6 +4492,8 @@ struct RequestLogCtx {
     started: Instant,
     /// what each guardrail did to the request (#2158)
     guardrail_events: Vec<String>,
+    /// what each plugin did to the request (#2243)
+    plugin_events: Vec<String>,
 }
 
 impl RequestLogCtx {
@@ -4500,6 +4524,7 @@ impl RequestLogCtx {
             sample_rate,
             started,
             guardrail_events: Vec::new(),
+            plugin_events: Vec::new(),
         }
     }
 
@@ -4523,6 +4548,7 @@ impl RequestLogCtx {
             ttft_ms: latency_ms,
             sample_rate: self.sample_rate,
             guardrail_events: self.guardrail_events,
+            plugin_events: self.plugin_events,
             ..Default::default()
         }
     }
@@ -4574,9 +4600,24 @@ struct Refusals<'a> {
     model: &'a str,
     sample_rate: f64,
     started: Instant,
+    /// what each plugin did before the refusal, so a request a later check
+    /// turns away still shows the calls already made (#2243). A mutex, not a
+    /// `Cell`: the handler future must stay `Sync` across awaits
+    plugin_events: parking_lot::Mutex<Vec<String>>,
 }
 
 impl Refusals<'_> {
+    /// Remember the calls a plugin stage made, for every row this request
+    /// leaves from here on.
+    fn note_plugin_events(&self, events: Vec<String>) {
+        self.plugin_events.lock().extend(events);
+    }
+
+    /// The plugin calls noted so far.
+    fn plugin_events(&self) -> Vec<String> {
+        self.plugin_events.lock().clone()
+    }
+
     /// Log `response` as this request's outcome and hand it back. The row's
     /// `error` is the message the response carries, so the log says what the
     /// caller was told.
@@ -4601,6 +4642,7 @@ impl Refusals<'_> {
             status: response.status().as_u16(),
             error,
             guardrail_events,
+            plugin_events: self.plugin_events(),
             ..ctx.into_log()
         });
         response
@@ -4787,13 +4829,23 @@ async fn cached_response(
     policy: DeliveryPolicy<'_, '_>,
 ) -> Response {
     let status = StatusCode::from_u16(hit.status).unwrap_or(StatusCode::OK);
-    let (body, withheld) = match policy.apply(status, Bytes::from(hit.body)).await {
+    let mut post_events = Vec::new();
+    let applied = policy
+        .apply(status, &mut post_events, Bytes::from(hit.body))
+        .await;
+    let (body, withheld) = match applied {
         Delivery::Send(body) => (body, None),
         Delivery::Refuse { response, reason } => (Bytes::new(), Some((response, reason))),
     };
     let log = RequestLog {
         status: hit.status,
         cache_hit: 1,
+        plugin_events: ctx
+            .plugin_events
+            .iter()
+            .cloned()
+            .chain(post_events)
+            .collect(),
         ..ctx.into_log()
     };
     // a withheld hit still gets its row, so a refusal is visible, but with zero
@@ -4844,7 +4896,7 @@ struct DeliveryPolicy<'p, 'a> {
 impl DeliveryPolicy<'_, '_> {
     /// Finalise a buffered body with `status`. Only a successful body is
     /// examined; an error body passes through untouched.
-    async fn apply(&self, status: StatusCode, bytes: Bytes) -> Delivery {
+    async fn apply(&self, status: StatusCode, events: &mut Vec<String>, bytes: Bytes) -> Delivery {
         if !status.is_success() {
             return Delivery::Send(bytes);
         }
@@ -4862,22 +4914,24 @@ impl DeliveryPolicy<'_, '_> {
             None => bytes,
         };
         let bytes = match self.plugins {
-            Some(ctx) => match crate::plugin_dispatch::apply_post_response(ctx, &bytes).await {
-                crate::plugin_dispatch::PostResponseOutcome::Bytes(bytes) => Bytes::from(bytes),
-                crate::plugin_dispatch::PostResponseOutcome::Block(reason) => {
-                    let reason =
-                        reason.unwrap_or_else(|| "response withheld by plugin".to_string());
-                    return Delivery::Refuse {
-                        response: crate::error::ApiError::new(
-                            StatusCode::FORBIDDEN,
-                            reason.clone(),
-                        )
-                        .with_code("plugin_blocked")
-                        .into_response(),
-                        reason: format!("plugin_blocked: {reason}"),
-                    };
+            Some(ctx) => {
+                match crate::plugin_dispatch::apply_post_response(ctx, events, &bytes).await {
+                    crate::plugin_dispatch::PostResponseOutcome::Bytes(bytes) => Bytes::from(bytes),
+                    crate::plugin_dispatch::PostResponseOutcome::Block(reason) => {
+                        let reason =
+                            reason.unwrap_or_else(|| "response withheld by plugin".to_string());
+                        return Delivery::Refuse {
+                            response: crate::error::ApiError::new(
+                                StatusCode::FORBIDDEN,
+                                reason.clone(),
+                            )
+                            .with_code("plugin_blocked")
+                            .into_response(),
+                            reason: format!("plugin_blocked: {reason}"),
+                        };
+                    }
                 }
-            },
+            }
             None => bytes,
         };
         // last, so the sanitizer sees the body the caller would have received
