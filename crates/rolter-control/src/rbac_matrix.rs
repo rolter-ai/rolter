@@ -1622,6 +1622,7 @@ mod tests {
         ("crud.rs", include_str!("crud.rs")),
         ("egress_client.rs", include_str!("egress_client.rs")),
         ("feature_flags.rs", include_str!("feature_flags.rs")),
+        ("expiry_sweep.rs", include_str!("expiry_sweep.rs")),
         ("guardrails.rs", include_str!("guardrails.rs")),
         ("labels.rs", include_str!("labels.rs")),
         ("health.rs", include_str!("health.rs")),

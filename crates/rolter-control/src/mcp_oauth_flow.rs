@@ -70,7 +70,7 @@ use crate::ControlState;
 /// Bound on one token-endpoint round trip; the shared client it replaces had none
 const TOKEN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
-const LOGIN_STATE_TTL_SECS: i64 = 600;
+pub(crate) const LOGIN_STATE_TTL_SECS: i64 = 600;
 /// Access-token lifetime assumed when the authorization server omits
 /// `expires_in`. Deliberately short: a wrong guess that is too long leaves a
 /// dead token looking live, and the refresher would never wake up for it.

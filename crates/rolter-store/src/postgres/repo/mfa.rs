@@ -431,13 +431,21 @@ impl MfaRepo<'_> {
         Ok(result.rows_affected())
     }
 
-    /// Drop expired challenges. Cheap enough to run on the login path: the
-    /// table only ever holds logins in flight.
-    pub async fn purge_expired_challenges(&self) -> Result<u64> {
-        let result = sqlx::query("delete from mfa_challenges where expires_at <= now()")
-            .execute(self.0)
-            .await
-            .map_err(store_err)?;
+    /// Delete at most `limit` challenges past their expiry, oldest first, and
+    /// return how many went. A login abandoned at the second-factor prompt
+    /// never redeems its challenge, so only a sweep removes it; every read
+    /// checks `expires_at` itself, so a row waiting for the sweep is inert.
+    /// Locked rows are skipped so concurrent replicas split a backlog.
+    pub async fn sweep_expired_challenges(&self, limit: i64) -> Result<u64> {
+        let result = sqlx::query(
+            "delete from mfa_challenges where id in ( \
+                 select id from mfa_challenges where expires_at <= now() \
+                 order by expires_at limit $1 for update skip locked)",
+        )
+        .bind(limit)
+        .execute(self.0)
+        .await
+        .map_err(store_err)?;
         Ok(result.rows_affected())
     }
 }
