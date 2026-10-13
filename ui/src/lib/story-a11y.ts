@@ -40,7 +40,8 @@ export const PAGE_A11Y_RULE_IDS = ["region", "landmark-one-main", "page-has-head
 // story means adding it here, and `story-a11y.test.ts` checks the pattern
 // against the titles that actually spread `withPageA11y`
 /** Story-id prefixes whose stories mount a whole page (`Shell/App`, `Screens/Login`). */
-export const PAGE_A11Y_STORY_ID = /^(shell-app|screens-login|screens-acceptinvite)--/;
+export const PAGE_A11Y_STORY_ID =
+  /^(shell-app|screens-login|screens-acceptinvite|screens-resetpassword)--/;
 
 /**
  * What axe looks at: the whole document, `<html>` included.

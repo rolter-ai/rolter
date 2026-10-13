@@ -1582,25 +1582,27 @@ export const ThroughputCapsOutOfRangeAreRefused: Story = {
 };
 
 /**
- * A model type billed per image or per minute has no rate to set: cost is
- * computed from tokens, and the flat price this section used to offer never
- * reached a cost path (#2924). The section says so, rather than showing a
- * currency picker with nothing to apply it to.
+ * A model type billed per image or per minute is priced by that unit (#2937),
+ * not by tokens: the sheet offers the unit rates for it instead of the token
+ * ones, and a chat model keeps its token rates.
  */
-export const PricesTokensOnly: Story = {
+export const PricesPerUnitModels: Story = {
   render: () => <Stage mode="add" />,
   play: async () => {
     const dialog = within(sheet());
     await seededBlank(dialog);
     await pickOption(dialog.getByLabelText("Model type"), "image");
     await userEvent.click(dialog.getByRole("button", { name: "Pricing override" }));
-    await waitFor(() => expect(dialog.getByText(/Rolter prices by tokens/)).toBeVisible());
-    await expect(dialog.queryByLabelText(/Flat price per/)).not.toBeInTheDocument();
-    await expect(dialog.queryByLabelText("Currency")).not.toBeInTheDocument();
+    await waitFor(() => expect(dialog.getByLabelText(IMAGE_LABEL)).toBeVisible());
+    await expect(dialog.queryByLabelText(/Input USD\/Mtok/)).not.toBeInTheDocument();
+    await pickOption(dialog.getByLabelText("Model type"), "audio");
+    await expect(await dialog.findByLabelText(AUDIO_LABEL)).toBeVisible();
+    await expect(dialog.getByLabelText(SPEECH_LABEL)).toBeVisible();
+    await expect(dialog.queryByLabelText(IMAGE_LABEL)).not.toBeInTheDocument();
     // and a chat model still gets its rates
     await pickOption(dialog.getByLabelText("Model type"), "chat");
     await expect(await dialog.findByLabelText(/Input USD\/Mtok/)).toBeVisible();
-    await expect(dialog.queryByText(/Rolter prices by tokens/)).not.toBeInTheDocument();
+    await expect(dialog.queryByLabelText(AUDIO_LABEL)).not.toBeInTheDocument();
   },
 };
 
@@ -1778,7 +1780,13 @@ export const PricingLinksToRolterDocs: Story = {
  * as the control plane returns them: decimal text, six places, or null for no
  * rate.
  */
-function pricedAt(cacheWrite: string | null, cacheWrite1h: string | null = null): FetchStub {
+function pricedAt(
+  cacheWrite: string | null,
+  cacheWrite1h: string | null = null,
+  units: Partial<
+    Pick<ModelPriceRow, "image_per_unit" | "audio_input_per_minute" | "speech_per_mchar">
+  > = {},
+): FetchStub {
   const row: ModelPriceRow = {
     id: "price-1",
     model: "gpt-4o",
@@ -1790,6 +1798,7 @@ function pricedAt(cacheWrite: string | null, cacheWrite1h: string | null = null)
     image_per_unit: null,
     audio_input_per_minute: null,
     speech_per_mchar: null,
+    ...units,
     currency: "USD",
     created_at: "2026-07-01T00:00:00Z",
   };
@@ -2029,6 +2038,84 @@ export const ClearsTheOneHourCacheWriteRateOnThePriceRow: Story = {
     >;
     await expect(price).toHaveProperty("cache_write_1h_per_mtok", null);
     await expect(price).not.toHaveProperty("cache_write_per_mtok");
+  },
+};
+
+const IMAGE_LABEL = /Per image USD/;
+const AUDIO_LABEL = /Per minute of audio USD/;
+const SPEECH_LABEL = /Per Mchar of speech USD/;
+const IMAGE_ROUTE: RouteRow = { ...ROUTE, advanced: { ...ROUTE.advanced, model_type: "image" } };
+const AUDIO_ROUTE: RouteRow = { ...ROUTE, advanced: { ...ROUTE.advanced, model_type: "audio" } };
+
+/** A save that never touched the unit rates names none of them, so a rate set elsewhere survives (#2937). */
+export const KeepsTheUnitRatesWhenUntouched: Story = {
+  render: () => (
+    <Stage
+      mode="edit"
+      route={AUDIO_ROUTE}
+      stub={pricedAt(null, null, {
+        audio_input_per_minute: "0.006000",
+        speech_per_mchar: "15.000000",
+      })}
+    />
+  ),
+  play: async () => {
+    const dialog = within(sheet());
+    await seeded(dialog);
+    await userEvent.click(dialog.getByRole("button", { name: "Pricing override" }));
+    await expect(dialog.getByLabelText(AUDIO_LABEL)).toHaveValue(0.006);
+    await expect(dialog.getByLabelText(SPEECH_LABEL)).toHaveValue(15);
+    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
+    const price = (await calls.expectSentBody("PUT", "/api/v1/model-prices")) as Record<
+      string,
+      unknown
+    >;
+    await expect(price).not.toHaveProperty("image_per_unit");
+    await expect(price).not.toHaveProperty("audio_input_per_minute");
+    await expect(price).not.toHaveProperty("speech_per_mchar");
+  },
+};
+
+/** A rate typed into an image model's sheet goes under its own key and nothing else is named. */
+export const SavesTheImageRate: Story = {
+  render: () => <Stage mode="edit" route={IMAGE_ROUTE} stub={pricedAt(null)} />,
+  play: async () => {
+    const dialog = within(sheet());
+    await seeded(dialog);
+    await userEvent.click(dialog.getByRole("button", { name: "Pricing override" }));
+    await userEvent.type(dialog.getByLabelText(IMAGE_LABEL), "0.04");
+    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
+    const price = (await calls.expectSentBody("PUT", "/api/v1/model-prices")) as Record<
+      string,
+      unknown
+    >;
+    await expect(price.image_per_unit).toBe("0.04");
+    await expect(price).not.toHaveProperty("audio_input_per_minute");
+    await expect(price).not.toHaveProperty("speech_per_mchar");
+  },
+};
+
+/** Emptying a stored rate is `null` on the wire, which clears it. */
+export const ClearsAUnitRate: Story = {
+  render: () => (
+    <Stage
+      mode="edit"
+      route={AUDIO_ROUTE}
+      stub={pricedAt(null, null, { audio_input_per_minute: "0.006000" })}
+    />
+  ),
+  play: async () => {
+    const dialog = within(sheet());
+    await seeded(dialog);
+    await userEvent.click(dialog.getByRole("button", { name: "Pricing override" }));
+    await userEvent.clear(dialog.getByLabelText(AUDIO_LABEL));
+    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
+    const price = (await calls.expectSentBody("PUT", "/api/v1/model-prices")) as Record<
+      string,
+      unknown
+    >;
+    await expect(price).toHaveProperty("audio_input_per_minute", null);
+    await expect(price).not.toHaveProperty("speech_per_mchar");
   },
 };
 
