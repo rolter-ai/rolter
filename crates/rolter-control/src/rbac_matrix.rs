@@ -1782,6 +1782,7 @@ mod tests {
         ("me_saved_views.rs", include_str!("me_saved_views.rs")),
         ("mfa.rs", include_str!("mfa.rs")),
         ("open_mode.rs", include_str!("open_mode.rs")),
+        ("password_reset.rs", include_str!("password_reset.rs")),
         ("openapi.rs", include_str!("openapi.rs")),
         ("proxy.rs", include_str!("proxy.rs")),
         ("plugins.rs", include_str!("plugins.rs")),
