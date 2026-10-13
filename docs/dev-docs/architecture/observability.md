@@ -628,29 +628,58 @@ database, and the `alert_notification_history` table (migration `0025`). The
 user-facing behaviour is in `docs/user-docs/observability/alerting.mdx`; this
 section is the reasoning behind it.
 
-**One evaluation is one transaction around the rule's row lock.** The
-ClickHouse read runs first, unlocked and bounded to 30 seconds, because it is
-the slow part. Then the evaluation takes `select … for key share` on the rule's
-channel, `select … for update` on the rule, decides whether the reading is a
-transition, POSTs it, writes the rule and the history row, and commits. The
-scheduled pass takes the rule lock with `skip locked` and `and enabled`, so a
-rule another replica is evaluating is left to that replica and a rule disabled
-mid-pass is skipped; **Evaluate now** waits for the lock instead. That is what
-keeps `control.replicaCount > 1` from reporting each transition once per
-replica. An edit that lands between the read and the lock and changes the
-signal, window or channel discards the reading, since it measures a query the
-rule no longer asks for or would go to a channel that was not locked.
+**One evaluation is a short transaction around the rule's row lock, and the
+send happens after it commits (#1967).** The ClickHouse read runs first,
+unlocked and bounded to 30 seconds, because it is the slow part. Then the
+evaluation takes `select … for key share` on the rule's channel, `select … for
+update` on the rule, decides whether the reading is a transition, writes the
+rule and a history row, and commits. For a channel that can be sent to the row
+is written `pending` and the send is an outbox entry (`Outbox`) the caller
+settles once the transaction is gone: `settle()` POSTs and then updates the row
+to `delivered` or `failed`. A rule with no channel, or a disabled one, gets its
+final `skipped` row in the same transaction. The scheduled pass takes the rule
+lock with `skip locked` and `and enabled`, so a rule another replica is
+evaluating is left to that replica and a rule disabled mid-pass is skipped;
+**Evaluate now** waits for the lock instead. That is what keeps
+`control.replicaCount > 1` from reporting each transition once per replica. An
+edit that lands between the read and the lock and changes the signal, window or
+channel discards the reading, since it measures a query the rule no longer asks
+for or would go to a channel that was not locked.
+
+Sending inside the transaction had two costs. Deliveries ran one after another
+while the pass held each rule's lock, so thirty rules firing at a receiver that
+black-holes connections spent up to 300 seconds of 10-second timeouts before the
+pass reached the rest. And a Postgres session whose
+`idle_in_transaction_session_timeout` was shorter than a slow `200` was killed
+mid-delivery: the commit failed, no history row was written and the next pass
+sent the same alert again. Now the scheduled pass hands each `Outbox` to a
+background task and goes on to the next rule. A process-wide semaphore
+(`MAX_DELIVERIES`, 16) bounds the deliveries in flight, and the slot is awaited
+inside the task so a burst never holds up the pass. **Evaluate now** awaits its
+own `settle()`, since the operator is waiting for the outcome. The transaction
+now holds a connection for a few queries and no network call.
+
+`pending` is also the cross-replica guard. The row is committed before the send,
+so a replica that evaluates the rule next finds a newest row that is `pending`
+and `transition()` returns nothing for it until the row is older than
+`PENDING_GRACE_SECS` (5 minutes, aged by the database clock so a skewed replica
+cannot misjudge it). Past that the process that owed the send is presumed gone
+(it died between the commit and the POST, or the write that settles the row
+failed), the row counts as an unreported attempt and the state is sent again, so
+a crash costs a late alert, not a lost one. A recovery is a new transition and is
+never held back by a pending `firing`.
 
 The channel is locked before the rule because deleting a channel takes the
 locks in that order: the `delete` locks the channel row, then its
 `on delete set null` locks every rule naming it. With the evaluator taking the
 rule first and meeting the channel only at the history insert's foreign-key
-check, a delete issued during a POST deadlocked with it (`40P01`), and either
-the delete returned a `500` or the evaluation rolled back after the receiver
-already had the alert. In the same order, the delete simply waits for the
-delivery to commit. `key share` rather than `share` keeps the channel editable
-meanwhile, and `update_channel` locks with `for no key update` so an edit does
-not queue behind a delivery either.
+check, a delete issued during an evaluation could deadlock with it (`40P01`).
+In the same order, the delete simply waits for the evaluation's transaction,
+which is now milliseconds. A delete that lands while a delivery is in flight no
+longer waits for it: the row's `channel_id` is cleared by the cascade and the
+delivery settles the same row by `id`. `key share` rather than `share` keeps the
+channel editable meanwhile, and `update_channel` locks with `for no key update`
+so an edit does not queue behind an evaluation either.
 
 **An older reading never overwrites a newer one.** The unlocked read also takes
 `clock_timestamp()`, the database clock rather than the replica's, as the
@@ -687,7 +716,7 @@ a rule fires would otherwise mean no page for the whole incident, since every
 later pass reads `firing` against a newest row of `firing`. So `transition()`
 treats a holding state as unreported while every row for it since the last
 change is `failed` or `skipped`, and sends it again once the rule has an
-enabled channel. Each attempt is a new history row with a new `id`. The
+enabled channel. Each attempt is a new history row with a new `id`. A `pending` row is not yet an attempt that failed: it counts toward neither the delay nor the retries until it is old enough to be presumed lost. The
 scheduled pass spaces attempts out by the number that failed: the next pass,
 then 2, 4, 8, 16 and 32 passes on, then hourly (`retry_delay`), so a dead
 endpoint writes a handful of rows an hour rather than one a minute, and the

@@ -107,7 +107,13 @@ copy that drifts.
   value: {{ .idleTimeoutSeconds | quote }}
 - name: ROLTER_DB_MAX_LIFETIME_SECS
   value: {{ .maxLifetimeSeconds | quote }}
+- name: ROLTER_DB_LOCK_TIMEOUT_SECS
+  value: {{ .lockTimeoutSeconds | quote }}
+- name: ROLTER_DB_STATEMENT_TIMEOUT_SECS
+  value: {{ .statementTimeoutSeconds | quote }}
 {{- end }}
+- name: ROLTER_REQUEST_TIMEOUT_SECS
+  value: {{ .Values.control.requestTimeoutSeconds | quote }}
 {{- with .Values.control.login }}
 - name: ROLTER_LOGIN_MAX_FAILURES
   value: {{ .maxFailures | quote }}

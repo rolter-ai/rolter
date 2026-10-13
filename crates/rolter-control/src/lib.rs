@@ -105,6 +105,7 @@ mod rbac;
 #[cfg(feature = "postgres")]
 mod rbac_matrix;
 mod request_log_columns;
+mod request_timeout;
 #[cfg(feature = "postgres")]
 mod runtime_policy;
 #[cfg(feature = "postgres")]
@@ -240,6 +241,19 @@ pub struct Args {
     #[cfg(feature = "postgres")]
     #[arg(long, env = "ROLTER_DB_MAX_LIFETIME_SECS", default_value_t = 1800)]
     pub db_max_lifetime_secs: u64,
+    /// longest a single statement may run before Postgres cancels it and the
+    /// request answers `504` with code `store_timeout`; `0` waits forever.
+    /// Keep it below `--request-timeout-secs`, or the request bound fires first
+    /// and the database keeps working on a statement nobody is waiting for
+    #[cfg(feature = "postgres")]
+    #[arg(long, env = "ROLTER_DB_STATEMENT_TIMEOUT_SECS", default_value_t = 30)]
+    pub db_statement_timeout_secs: u64,
+    /// longest a statement may wait for a lock another transaction holds, so a
+    /// write stuck behind a row lock gives up with `504` and code
+    /// `store_timeout` rather than hanging; `0` waits forever
+    #[cfg(feature = "postgres")]
+    #[arg(long, env = "ROLTER_DB_LOCK_TIMEOUT_SECS", default_value_t = 10)]
+    pub db_lock_timeout_secs: u64,
     /// redis connection url; when set, config-version bumps are published on
     /// the `rolter.config` channel so gateways refetch immediately instead of
     /// waiting for their poll interval
@@ -304,6 +318,12 @@ pub struct Args {
     /// reachable on the port the dashboard and management API are served from
     #[arg(long, env = "ROLTER_INTERNAL_ADDR")]
     pub internal_addr: Option<SocketAddr>,
+    /// longest the control plane works on one API request before answering
+    /// `504` with code `request_timeout`; `0` disables the bound. The `/gw/*`
+    /// playground proxy streams model output and is not bound. Keep it above
+    /// the database bounds so those answer first with their own code
+    #[arg(long, env = "ROLTER_REQUEST_TIMEOUT_SECS", default_value_t = 60)]
+    pub request_timeout_secs: u64,
     /// acknowledge running with no `--admin-token` on a non-loopback bind.
     /// Without it the control plane refuses to start in that combination,
     /// because every request would be served as superadmin with no credential
@@ -339,6 +359,7 @@ impl Default for Args {
             ui_otel_service_name: None,
             ui_docs_base_url: None,
             gateway_url: "http://localhost:4000".to_string(),
+            request_timeout_secs: 60,
             config: None,
             #[cfg(feature = "postgres")]
             database_url: None,
@@ -352,6 +373,10 @@ impl Default for Args {
             db_idle_timeout_secs: 600,
             #[cfg(feature = "postgres")]
             db_max_lifetime_secs: 1800,
+            #[cfg(feature = "postgres")]
+            db_statement_timeout_secs: 30,
+            #[cfg(feature = "postgres")]
+            db_lock_timeout_secs: 10,
             redis_url: None,
             login_throttle_disabled: false,
             login_max_failures: 5,
@@ -570,6 +595,19 @@ fn log_endpoint(what: &str, url: &str) {
     tracing::info!(url = %rolter_core::redact::redact_url(url), "{what}");
 }
 
+/// Read `ROLTER_ADMIN_TOKEN`: a blank value is no token, and a short one is
+/// refused because a placeholder is no better than none yet looks like one
+/// (#1964).
+fn resolve_admin_token(
+    raw: Option<&str>,
+) -> Result<Option<Arc<String>>, rolter_core::admin_token::AdminTokenTooShort> {
+    let Some(token) = raw.map(str::trim).filter(|t| !t.is_empty()) else {
+        return Ok(None);
+    };
+    rolter_core::admin_token::check(token)?;
+    Ok(Some(Arc::new(token.to_string())))
+}
+
 /// Run the control plane to completion. The caller owns argument parsing and
 /// telemetry initialization.
 pub async fn run(args: Args) -> anyhow::Result<()> {
@@ -605,12 +643,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         analytics::ClickHouseClient::new(url)
     });
 
-    let admin_token = args
-        .admin_token
-        .as_deref()
-        .map(str::trim)
-        .filter(|t| !t.is_empty())
-        .map(|t| Arc::new(t.to_string()));
+    let admin_token = resolve_admin_token(args.admin_token.as_deref())?;
     // decided before anything binds: an unauthenticated control plane reachable
     // from off the machine is refused outright rather than served and warned
     // about (#970)
@@ -825,8 +858,12 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     }
     let index = load_index(&args.ui_dir, &ui_runtime);
 
-    let app = build_app_with(state.clone(), !split_internal)
-        .fallback_service(spa_fallback(&args.ui_dir, index));
+    let request_timeout = request_timeout::bound(args.request_timeout_secs);
+    let app = request_timeout::apply(
+        build_app_with(state.clone(), !split_internal)
+            .fallback_service(spa_fallback(&args.ui_dir, index)),
+        request_timeout,
+    );
 
     tracing::info!(%addr, ui_dir = %args.ui_dir.display(), "rolter-control listening");
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -847,7 +884,8 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         return Ok(());
     };
 
-    let internal = internal_routes(&state).with_state(state);
+    let internal =
+        request_timeout::apply(internal_routes(&state).with_state(state), request_timeout);
     tracing::info!(addr = %internal_addr, "rolter-control internal api listening");
     let internal_listener = tokio::net::TcpListener::bind(internal_addr).await?;
     // both listeners share the process: if either dies the control plane is
@@ -1560,6 +1598,8 @@ fn pool_config_from(args: &Args) -> anyhow::Result<rolter_store::postgres::PoolC
         acquire_timeout: Duration::from_secs(args.db_acquire_timeout_secs),
         idle_timeout: optional(args.db_idle_timeout_secs),
         max_lifetime: optional(args.db_max_lifetime_secs),
+        statement_timeout: optional(args.db_statement_timeout_secs),
+        lock_timeout: optional(args.db_lock_timeout_secs),
     })
 }
 
@@ -1576,8 +1616,24 @@ async fn build_store(
             acquire_timeout_secs = pool_config.acquire_timeout.as_secs(),
             "connecting to postgres"
         );
+        // migrations run on a pool of their own with no statement or lock
+        // bound: an index build or backfill legitimately outlasts the request
+        // bounds, and killing it half way would leave the schema behind the
+        // binary
+        let migrations = rolter_store::postgres::connect_with(
+            database_url,
+            rolter_store::postgres::PoolConfig {
+                max_connections: 1,
+                min_connections: 0,
+                statement_timeout: None,
+                lock_timeout: None,
+                ..pool_config
+            },
+        )
+        .await?;
+        rolter_store::postgres::run_migrations(&migrations).await?;
+        migrations.close().await;
         let pool = rolter_store::postgres::connect_with(database_url, pool_config).await?;
-        rolter_store::postgres::run_migrations(&pool).await?;
         if let Some(config) = bootstrap.as_ref() {
             // providers first: a models.default target or a provider_groups.default
             // member may reference a provider that providers.default just seeded
@@ -2812,6 +2868,22 @@ mod startup_log_tests {
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_short_admin_token_is_refused_a_blank_one_is_unset_and_a_generated_one_is_kept() {
+        let err = resolve_admin_token(Some("changeme")).expect_err("eight characters");
+        assert!(err.to_string().contains("openssl rand -hex 32"), "{err}");
+        assert!(resolve_admin_token(Some("...")).is_err());
+
+        assert!(resolve_admin_token(None).expect("unset").is_none());
+        assert!(resolve_admin_token(Some("  ")).expect("blank").is_none());
+
+        let generated = "0123456789abcdef".repeat(2);
+        let kept = resolve_admin_token(Some(&format!(" {generated}\n")))
+            .expect("long enough")
+            .expect("set");
+        assert_eq!(kept.as_str(), generated);
+    }
+
     /// A decimal literal for tests. `rust_decimal`'s `dec!` macro would read
     /// slightly better, but its `macros` feature pulls `rust_decimal_macros`,
     /// `proc-macro-crate`, `toml_edit` and `borsh` into the dependency graph in
@@ -2858,6 +2930,10 @@ mod tests {
                 "login_failure_window_secs",
                 args.login_failure_window_secs.to_string(),
             ),
+            (
+                "request_timeout_secs",
+                args.request_timeout_secs.to_string(),
+            ),
             ("login_lock_secs", args.login_lock_secs.to_string()),
             ("login_max_lock_secs", args.login_max_lock_secs.to_string()),
             ("login_max_delay_ms", args.login_max_delay_ms.to_string()),
@@ -2881,6 +2957,14 @@ mod tests {
             (
                 "db_max_lifetime_secs",
                 args.db_max_lifetime_secs.to_string(),
+            ),
+            (
+                "db_statement_timeout_secs",
+                args.db_statement_timeout_secs.to_string(),
+            ),
+            (
+                "db_lock_timeout_secs",
+                args.db_lock_timeout_secs.to_string(),
             ),
         ]);
 

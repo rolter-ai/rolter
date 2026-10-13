@@ -104,6 +104,10 @@ expires_at = "2027-01-01T00:00:00Z"
   same array of names either way.
 </Note>
 
+<Warning>
+  `sk-rolter-dev` is published in the repository, the README and these docs, and it allows every model. A gateway that serves other hosts must not carry it. When it is an active virtual key and the gateway listens on anything but a loopback address, the gateway logs a warning at startup and again on every config reload that still has it, and `rolter check` reports it as a failure. Delete its `[[virtual_keys]]` entry and mint a key of your own.
+</Warning>
+
 <Note>
   The raw key value is visible only at the moment you add it to your configuration or create it via the API. Store it in a secrets manager (such as a CI secret or a vault) immediately — it cannot be recovered later.
 </Note>

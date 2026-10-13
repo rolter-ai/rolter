@@ -139,6 +139,9 @@ services:
       # ROLTER_LOGIN_IP_MAX_FAILURES: "50"
       # ROLTER_LOGIN_LOCK_SECS: "60"
       # ROLTER_DB_ACQUIRE_TIMEOUT_SECS: "30"
+      # ROLTER_DB_LOCK_TIMEOUT_SECS: "10"
+      # ROLTER_DB_STATEMENT_TIMEOUT_SECS: "30"
+      # ROLTER_REQUEST_TIMEOUT_SECS: "60"
       # the control plane asks github once at boot and every six hours for the
       # latest stable release, so the dashboard footer can hint at a newer one
       # (#902). set "false" on a host that must make no outbound call

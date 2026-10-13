@@ -594,7 +594,7 @@ const ALERT_HISTORY_QUERY: &[QueryParam] = &[
     QueryParam::new(
         "delivery_status",
         "string",
-        "`delivered`, `failed` or `skipped`; omit for all",
+        "`pending`, `delivered`, `failed` or `skipped`; omit for all",
     ),
     QueryParam::new(
         "before",
@@ -2683,7 +2683,7 @@ fn alerting_schemas(p: &Prim) -> Value {
                 "id": uuid, "rule_id": uuid,
                 "channel_id": p.nullable_uuid,
                 "state": {"type": "string", "enum": ["firing", "resolved"]},
-                "delivery_status": {"type": "string", "enum": ["delivered", "failed", "skipped"]},
+                "delivery_status": {"type": "string", "enum": ["pending", "delivered", "failed", "skipped"]},
                 "detail": {"type": ["string", "null"], "description": "English fallback for detail_code"},
                 "detail_code": {
                     "type": ["string", "null"],

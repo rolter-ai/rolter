@@ -21,7 +21,7 @@ COMPOSE_FILE = HERE / "docker-compose.e2e.yml"
 # host-published endpoints (see docker-compose.e2e.yml port mappings)
 CONTROL_URL = os.environ.get("ROLTER_E2E_CONTROL_URL", "http://localhost:4001")
 GATEWAY_URL = os.environ.get("ROLTER_E2E_GATEWAY_URL", "http://localhost:4000")
-ADMIN_TOKEN = os.environ.get("ROLTER_E2E_ADMIN_TOKEN", "e2e-superadmin-token")
+ADMIN_TOKEN = os.environ.get("ROLTER_E2E_ADMIN_TOKEN", "e2e-superadmin-token-for-local-stack-only")
 # the control<->data-plane channel (#636): a separate listener with its own
 # token, since the snapshot carries decrypted provider credentials
 INTERNAL_URL = os.environ.get("ROLTER_E2E_INTERNAL_URL", "http://localhost:4002")

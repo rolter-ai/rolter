@@ -20,6 +20,13 @@ pub(in crate::postgres) fn store_err(err: sqlx::Error) -> Error {
     // answer it with a 409 rather than a 500 (#2567)
     match err.as_database_error() {
         Some(db) if db.is_unique_violation() => Error::AlreadyExists(db.message().to_string()),
+        // `lock_not_available` (lock_timeout) and `query_canceled`
+        // (statement_timeout): the bounds the pool sets on every connection, so
+        // a write stuck behind another transaction's row lock answers instead
+        // of hanging (#1925)
+        Some(db) if matches!(db.code().as_deref(), Some("55P03" | "57014")) => {
+            Error::StoreTimeout(db.message().to_string())
+        }
         _ => Error::Store(err.to_string()),
     }
 }

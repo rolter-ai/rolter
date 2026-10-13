@@ -68,6 +68,12 @@ pub struct PoolConfig {
     /// retire a connection older than this regardless of use, so a pool cannot
     /// pin itself to a database instance across a failover. `None` disables
     pub max_lifetime: Option<std::time::Duration>,
+    /// longest a single statement may run before Postgres cancels it. `None`
+    /// leaves the server default, which is to wait forever
+    pub statement_timeout: Option<std::time::Duration>,
+    /// longest a statement may wait for a row or table lock held by another
+    /// transaction. `None` leaves the server default, which is to wait forever
+    pub lock_timeout: Option<std::time::Duration>,
 }
 
 impl Default for PoolConfig {
@@ -79,6 +85,8 @@ impl Default for PoolConfig {
             acquire_timeout: std::time::Duration::from_secs(30),
             idle_timeout: Some(std::time::Duration::from_secs(600)),
             max_lifetime: Some(std::time::Duration::from_secs(1800)),
+            statement_timeout: None,
+            lock_timeout: None,
         }
     }
 }
@@ -98,6 +106,31 @@ pub async fn connect_with(database_url: &str, config: PoolConfig) -> Result<PgPo
     // expire" explicit rather than implied by a missing builder call
     options = options.idle_timeout(config.idle_timeout);
     options = options.max_lifetime(config.max_lifetime);
+    if config.statement_timeout.is_some() || config.lock_timeout.is_some() {
+        // session settings, so they hold for every statement the connection
+        // runs, a transaction's included. `set_config` takes the value as a
+        // bind parameter, so no setting is ever spliced into sql text
+        let settings: Vec<(&'static str, String)> = [
+            ("statement_timeout", config.statement_timeout),
+            ("lock_timeout", config.lock_timeout),
+        ]
+        .into_iter()
+        .filter_map(|(name, bound)| bound.map(|d| (name, d.as_millis().to_string())))
+        .collect();
+        options = options.after_connect(move |conn, _meta| {
+            let settings = settings.clone();
+            Box::pin(async move {
+                for (name, millis) in settings {
+                    sqlx::query("select set_config($1, $2, false)")
+                        .bind(name)
+                        .bind(millis)
+                        .execute(&mut *conn)
+                        .await?;
+                }
+                Ok(())
+            })
+        });
+    }
     options.connect(database_url).await.map_err(store_err)
 }
 
@@ -2082,6 +2115,70 @@ mod tests {
             .await
             .expect("ROLTER_TEST_DATABASE_URL not set; skipping");
         super::test_schema::TestSchema::migrated(&url).await
+    }
+
+    /// #1925: a write stuck behind another transaction's row lock, or a
+    /// statement that runs too long, ends with a timeout the API can code
+    /// rather than waiting forever.
+    #[tokio::test]
+    async fn a_pool_with_bounds_ends_a_stuck_write_with_a_store_timeout() {
+        if !test_database::is_configured() {
+            eprintln!("skipping: {} not set", test_database::URL_ENV);
+            return;
+        }
+        let db = fresh_db().await;
+        let url = test_database::url().await.expect("configured above");
+        let bounded = connect_with(
+            &super::test_schema::with_search_path(&url, db.schema()),
+            PoolConfig {
+                max_connections: 2,
+                statement_timeout: Some(std::time::Duration::from_millis(800)),
+                lock_timeout: Some(std::time::Duration::from_millis(300)),
+                ..PoolConfig::default()
+            },
+        )
+        .await
+        .expect("bounded pool connects");
+
+        let org_id: Uuid = sqlx::query_scalar(
+            "insert into orgs (name, slug) values ('acme', 'acme') returning id",
+        )
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+
+        // another transaction holds the row; the update must give up
+        let mut holder = db.pool().begin().await.unwrap();
+        sqlx::query("select id from orgs where id = $1 for update")
+            .bind(org_id)
+            .fetch_one(&mut *holder)
+            .await
+            .unwrap();
+        let started = std::time::Instant::now();
+        let err = sqlx::query("update orgs set name = 'renamed' where id = $1")
+            .bind(org_id)
+            .execute(&bounded)
+            .await
+            .map_err(store_err)
+            .expect_err("the row is locked");
+        assert!(matches!(err, Error::StoreTimeout(_)), "{err:?}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        holder.rollback().await.unwrap();
+
+        // and a statement that outlasts its bound is cancelled the same way
+        let err = sqlx::query("select pg_sleep(30)")
+            .execute(&bounded)
+            .await
+            .map_err(store_err)
+            .expect_err("pg_sleep outlasts the statement bound");
+        assert!(matches!(err, Error::StoreTimeout(_)), "{err:?}");
+
+        // with the lock released the same write goes through
+        sqlx::query("update orgs set name = 'renamed' where id = $1")
+            .bind(org_id)
+            .execute(&bounded)
+            .await
+            .expect("the lock is gone");
     }
 
     #[tokio::test]

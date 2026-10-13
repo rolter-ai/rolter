@@ -5,7 +5,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 
 const CONTROL_URL = process.env.E2E_CONTROL_URL || "http://localhost:4001";
-const ADMIN_TOKEN = process.env.E2E_ADMIN_TOKEN || "e2e-superadmin-token";
+const ADMIN_TOKEN = process.env.E2E_ADMIN_TOKEN || "e2e-superadmin-token-for-local-stack-only";
 
 export interface SeededTenant {
   orgId: string;

@@ -455,6 +455,32 @@ only asserts the userinfo is gone proves less than it seems: `reqwest` moves
 userinfo into an `Authorization` header before it sends, so a transport error
 rarely quotes it, and the query is what leaks.
 
+## The admin token must be long enough to close the API (#1964)
+
+A placeholder such as `...`, `x` or `changeme` lifts the open-mode refusal below
+while closing nothing, since whoever presents it is superadmin. The minimum,
+`MIN_ADMIN_TOKEN_LEN` (32 characters after trimming, what `openssl rand -hex 16`
+prints), lives in `rolter_core::admin_token` so one rule serves every caller:
+`rolter-control` refuses to start with a shorter token (`resolve_admin_token`),
+`rolter easy-up` refuses before it writes or binds anything, and `rolter check`
+reports it as an error. A blank token is still read as unset, which keeps the
+open-mode rules in charge of it. The check applies on a loopback bind too: a
+short token is a short token wherever it is presented.
+
+## The public dev key off loopback (#1965)
+
+`sk-rolter-dev` ships in the example config, the image's baked config and
+`easy-up`, and every document prints it. The gateway logs a warning at startup,
+and on every config reload that still carries it, when the key is an active
+virtual key and the listener is not on loopback (`example_key::warn_if_exposed`;
+`AppState::exposed_bind` is set once at startup). It warns rather than refuses:
+`easy-up` serves the key on purpose, and a file-mode gateway with no virtual keys
+serves every request with no key at all, so deleting the key is not a fix by
+itself. A control plane with an admin token already withholds the key from the
+snapshot (`prune_public_example_key`), and `rolter check` reports a config that
+declares it as an error, so this warning covers the gateway that reads its own
+file.
+
 ## Open mode (no admin token)
 
 With no `ROLTER_ADMIN_TOKEN` set, `Principal` short-circuits to `Superadmin` for

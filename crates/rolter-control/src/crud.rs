@@ -317,6 +317,7 @@ impl IntoResponse for ApiError {
             Self::InvalidBody(_) => Some(INVALID_BODY),
             Self::InvalidQuery(_) => Some(INVALID_QUERY),
             Self::Core(Error::AlreadyExists(_)) => Some(NAME_TAKEN),
+            Self::Core(Error::StoreTimeout(_)) => Some(STORE_TIMEOUT),
             // the same code the sign-in answers a lock with, so a client reads
             // one name for it wherever a password is being guessed
             Self::TooManyAttempts(_) => Some("too_many_attempts"),
@@ -337,6 +338,15 @@ impl IntoResponse for ApiError {
                 Error::AlreadyExists(_) => {
                     tracing::debug!(error = %err, "control-plane write hit a unique constraint");
                     (StatusCode::CONFLICT, ALREADY_EXISTS_MESSAGE.to_string())
+                }
+                // the pool's lock_timeout / statement_timeout ran out. The
+                // driver's text stays in the log; the caller is told what to do
+                Error::StoreTimeout(_) => {
+                    tracing::warn!(error = %err, "control-plane write timed out in the store");
+                    (
+                        StatusCode::GATEWAY_TIMEOUT,
+                        STORE_TIMEOUT_MESSAGE.to_string(),
+                    )
                 }
                 _ => {
                     tracing::error!(error = %err, "control-plane request failed");
@@ -421,6 +431,16 @@ pub(crate) const REFERENCED: &str = "referenced";
 /// the scope it is confined to, such as a project-scoped provider from another
 /// project (#2567)
 pub(crate) const SCOPE_MISMATCH: &str = "scope_mismatch";
+
+/// stable code of the `504` for a statement the database gave up on, or a lock
+/// it stopped waiting for, because the pool's `lock_timeout` or
+/// `statement_timeout` ran out (#1925)
+pub(crate) const STORE_TIMEOUT: &str = "store_timeout";
+
+/// what a store timeout says. The driver's own text names a lock or a
+/// statement, which is detail the caller has no use for
+const STORE_TIMEOUT_MESSAGE: &str = "the database did not finish this change in time; it may be \
+     waiting on another change to the same record, so try again";
 
 /// what a unique violation from the store says. the driver's own text names a
 /// constraint and a table, which is schema detail the caller has no use for

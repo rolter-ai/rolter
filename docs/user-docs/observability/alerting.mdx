@@ -195,9 +195,11 @@ condition cleared during it still reports `resolved`.
 
 Every control-plane process runs its own evaluator, so with more than one
 replica each rule is evaluated by several of them. An evaluation holds the
-rule's row lock while it decides, delivers and writes the history, and the
+rule's row lock only while it decides and writes the history, and the
 scheduled pass skips a rule another replica is holding, so one replica delivers
-and records each change of state. If another replica records a newer reading
+and records each change of state. The delivery itself runs after that, in the
+background, so a receiver that is slow or not answering delays only its own
+rule's history row, never the evaluation of the others. If another replica records a newer reading
 while one replica's query is still running, the older reading is dropped rather
 than applied, so a slow query cannot undo a newer result. `last_evaluated_at`
 is the time the reading was taken.
@@ -321,7 +323,8 @@ body and posts its own.
 
 A delivery succeeds on any `2xx` response. It is bounded to 10 seconds
 including a 5-second connect, and redirects are not followed, so a `3xx`
-counts as a failure. The response body is never read or stored.
+counts as a failure. The response body is never read or stored. At most 16
+deliveries run at once per control-plane process.
 
 ### Retries
 
@@ -394,8 +397,8 @@ The sealed column is covered by `rolter kek verify` and listed in
 Rules pointing at a deleted channel stay in place with their `channel_id`
 cleared, so their next transitions are recorded as `skipped` with
 `no channel configured`. History rows that named the channel keep their other
-fields. A delete that arrives while a delivery to the channel is in flight
-waits for that delivery to finish, at most 10 seconds.
+fields. A delivery already in flight when the channel is deleted still
+finishes and is recorded.
 
 ## Rules
 
@@ -536,13 +539,14 @@ phone the detail is the last column, so scroll the list sideways to reach it.
 
 | Delivery status | Detail                                                                                                                                                                                                                                                                                                                                                    |
 | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pending`       | `delivery in progress`. The transition is recorded and the request is being sent; the row becomes `delivered` or `failed` when it ends. A row still `pending` after 5 minutes is taken as lost (the control plane stopped before sending) and the state is sent again.                                                                                    |
 | `delivered`     | The endpoint's status, for example `HTTP 200`.                                                                                                                                                                                                                                                                                                            |
 | `failed`        | The endpoint's status when it answered outside `2xx` (`HTTP 401`, `HTTP 503`, `HTTP 302`), or what stopped the request: `timed out after 10s`, `could not connect to the endpoint`, `delivery failed`, `endpoint denied by the egress policy`, `channel secret could not be unsealed; check ROLTER_KEK`, or `channel secret is not a valid header value`. |
 | `skipped`       | `no channel configured` or `channel disabled`.                                                                                                                                                                                                                                                                                                            |
 
 A detail never contains the endpoint's response body, which can echo the
-credential it rejected. `sent_at` is when the row was written, just after the
-delivery attempt finished. A [retried](#retries) state has one row per attempt.
+credential it rejected. `sent_at` is when the transition was recorded, just before the
+delivery attempt started. A [retried](#retries) state has one row per attempt.
 
 The history is append-only: the API has no update or delete for it. Deleting a
 rule deletes that rule's rows along with it.
@@ -553,6 +557,7 @@ fallback. A row written before codes existed has `null` for both.
 
 | `detail_code`        | `detail_params` | Outcome                                                      |
 | -------------------- | --------------- | ------------------------------------------------------------ |
+| `delivery_pending`   |                 | `pending`: the request is being sent.                        |
 | `http_ok`            | `status`        | `delivered`: the endpoint answered `2xx`.                    |
 | `http_error`         | `status`        | `failed`: the endpoint answered outside `2xx`.               |
 | `timeout`            | `seconds`       | `failed`: the delivery ran past the bound.                   |

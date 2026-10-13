@@ -103,7 +103,7 @@ services:
       ROLTER_CONFIG: /app/e2e-no-bootstrap.toml
       # RBAC only enforces when an admin token is set; the harness bootstraps as
       # superadmin with this token, then drives per-role users via session tokens.
-      ROLTER_ADMIN_TOKEN: e2e-superadmin-token
+      ROLTER_ADMIN_TOKEN: e2e-superadmin-token-for-local-stack-only
       # the snapshot carries decrypted provider keys, so it is a separate trust
       # boundary from the operator API (#636): a distinct token gates /internal/*
       # on its own port, and the admin token above no longer opens it.
@@ -158,7 +158,7 @@ services:
       ROLTER_HOST: 0.0.0.0
       ROLTER_PORT: "4000"
       # admin token so bootstrap CRUD can be proxied through the gateway port too
-      ROLTER_ADMIN_TOKEN: e2e-superadmin-token
+      ROLTER_ADMIN_TOKEN: e2e-superadmin-token-for-local-stack-only
       # and the internal token for snapshot polls, which control now gates
       # separately from the operator credential (#636)
       ROLTER_INTERNAL_TOKEN: e2e-internal-token
