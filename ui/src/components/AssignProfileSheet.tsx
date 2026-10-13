@@ -1,3 +1,4 @@
+import { ASSIGNMENTS_KEY } from "@/components/SubjectProfiles";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
@@ -80,6 +81,7 @@ export function AssignProfileSheet({
       ),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["access-profile", profile.id] });
+      void queryClient.invalidateQueries({ queryKey: ASSIGNMENTS_KEY() });
       toast.push({
         tone: "success",
         title: t("pages.accessProfiles.assign.assigned", { name: profile.name }),

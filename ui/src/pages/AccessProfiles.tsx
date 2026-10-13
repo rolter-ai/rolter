@@ -1,3 +1,4 @@
+import { ASSIGNMENTS_KEY } from "@/components/SubjectProfiles";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Pencil, Shield, User, UserPlus, Users } from "lucide-react";
 import * as React from "react";
@@ -364,6 +365,8 @@ export default function AccessProfiles() {
   const invalidate = (id?: string) => {
     void queryClient.invalidateQueries({ queryKey: ["access-profiles", orgId] });
     if (id) void queryClient.invalidateQueries({ queryKey: ["access-profile", id] });
+    // the Users and Teams screens read assignments through the org-wide list
+    void queryClient.invalidateQueries({ queryKey: ASSIGNMENTS_KEY() });
   };
 
   const save = useMutation({

@@ -673,6 +673,7 @@ Endpoints:
 - `GET`/`POST /api/v1/orgs/{org_id}/custom-roles`, `GET`/`PUT`/`DELETE /api/v1/custom-roles/{id}`
 - `GET`/`POST /api/v1/orgs/{org_id}/access-profiles`, `GET`/`PUT`/`DELETE /api/v1/access-profiles/{id}`
 - `GET`/`POST /api/v1/access-profiles/{id}/assignments`, `DELETE /api/v1/access-profile-assignments/{id}`
+- `GET /api/v1/orgs/{org_id}/access-profile-assignments[?user_id=|team_id=]`: every assignment of the org's profiles in one read, narrowed to one user or team on request (#3025). Gated as `access_profile_assignment` read at the org, the same as the per-profile list, and joined to the org's own profiles, so a subject holding profiles in another org shows none of them. The Users and Teams screens read it instead of one profile detail per profile. It lists direct assignments only; the profiles a user reaches through a team are not folded in
 - `PUT /api/v1/access-profiles/{id}/policy`
 
 ### Identity providers (ROL-35)

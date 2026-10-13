@@ -59,7 +59,8 @@ use rolter_store::postgres::models::{
 use rolter_store::postgres::repo::{AccessProfileRepo, CustomRoleRepo, ProjectRepo, TeamRepo};
 
 use crate::crud::{
-    log_audit, pool, require_non_empty, resolve_new_slug, ApiError, ApiResult, SafeJson,
+    invalid_field, log_audit, pool, require_non_empty, resolve_new_slug, ApiError, ApiResult,
+    Query, SafeJson,
 };
 use crate::rbac::{authorize, Principal, ScopeChain};
 use crate::rbac_matrix::cap;
@@ -88,6 +89,10 @@ pub(crate) fn router() -> Router<ControlState> {
         .route(
             "/api/v1/access-profiles/{id}/assignments",
             get(list_assignments).post(create_assignment),
+        )
+        .route(
+            "/api/v1/orgs/{org_id}/access-profile-assignments",
+            get(list_subject_assignments),
         )
         .route(
             "/api/v1/access-profile-assignments/{id}",
@@ -714,6 +719,47 @@ async fn list_assignments(
     )
     .await?;
     Ok(Json(repo.list_assignments(id).await?))
+}
+
+#[derive(Debug, Deserialize)]
+struct SubjectQuery {
+    #[serde(default)]
+    user_id: Option<Uuid>,
+    #[serde(default)]
+    team_id: Option<Uuid>,
+}
+
+/// The assignments of the org's access profiles in one read, narrowed to one
+/// user (`user_id`) or one team (`team_id`) when given.
+///
+/// Gated exactly like the per-profile read (`access_profile_assignment` read at
+/// the org) and bounded to the org's own profiles in the query, so it shows no
+/// more than walking every profile's assignments would. A dashboard row asking
+/// about one person reads the same list as one asking about the whole org.
+async fn list_subject_assignments(
+    principal: Principal,
+    State(state): State<ControlState>,
+    Path(org_id): Path<Uuid>,
+    Query(query): Query<SubjectQuery>,
+) -> ApiResult<Json<Vec<AccessProfileAssignment>>> {
+    authorize(
+        &state,
+        &principal,
+        ScopeChain::org(org_id),
+        cap!("access_profile_assignment", Read),
+    )
+    .await?;
+    if query.user_id.is_some() && query.team_id.is_some() {
+        return Err(invalid_field(
+            "team_id",
+            "filter by user_id or team_id, not both",
+        ));
+    }
+    Ok(Json(
+        AccessProfileRepo(pool(&state))
+            .list_org_assignments(org_id, query.user_id, query.team_id)
+            .await?,
+    ))
 }
 
 async fn create_assignment(

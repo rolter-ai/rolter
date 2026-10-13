@@ -215,6 +215,7 @@ fn api_error_message(err: ApiError) -> String {
         | ApiError::BadGateway { message: msg, .. }
         | ApiError::InvalidField { message: msg, .. }
         | ApiError::InvalidBody(msg)
+        | ApiError::InvalidQuery(msg)
         | ApiError::CodedForbidden { message: msg, .. } => msg,
         ApiError::Unauthenticated => "unauthenticated".to_string(),
         ApiError::Forbidden => "forbidden".to_string(),

@@ -13760,6 +13760,222 @@ async fn custom_role_grant_widens_a_member_within_its_scope_only() {
     );
 }
 
+/// The org-wide assignment read (#3025) answers what walking every profile's
+/// assignments would, never wider: bounded to the org's own profiles, gated like
+/// the per-profile read, and narrowed by one subject on request.
+#[tokio::test]
+async fn assignments_list_by_subject_within_the_org_and_gate_like_the_profile_read() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app =
+        rolter_control::test_app_with_admin_token(pool.clone(), Some(admin_token().to_string()))
+            .await
+            .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let send_json = |method: reqwest::Method, url: String, body: Value| {
+        let client = client.clone();
+        async move {
+            let res = client
+                .request(method, url)
+                .bearer_auth(admin_token())
+                .json(&body)
+                .send()
+                .await
+                .unwrap();
+            let status = res.status().as_u16();
+            (status, res.json::<Value>().await.unwrap())
+        }
+    };
+
+    let mut orgs = Vec::new();
+    for slug in ["acme", "globex"] {
+        let (status, org) = send_json(
+            reqwest::Method::POST,
+            format!("{base}/api/v1/orgs"),
+            json!({"name": slug, "slug": slug}),
+        )
+        .await;
+        assert_eq!(status, 200, "{org}");
+        orgs.push(org["id"].as_str().unwrap().to_string());
+    }
+    let (acme, globex) = (orgs[0].clone(), orgs[1].clone());
+    let (status, team) = send_json(
+        reqwest::Method::POST,
+        format!("{base}/api/v1/orgs/{acme}/teams"),
+        json!({"name": "Platform"}),
+    )
+    .await;
+    assert_eq!(status, 200, "{team}");
+    let team_id = team["id"].as_str().unwrap().to_string();
+    let member = seed_user(&pool, "member@example.com", false).await;
+    let other = seed_user(&pool, "other@example.com", false).await;
+
+    let mut profiles = Vec::new();
+    for (org, slug) in [
+        (&acme, "support"),
+        (&acme, "on-call"),
+        (&globex, "auditors"),
+    ] {
+        let (status, profile) = send_json(
+            reqwest::Method::POST,
+            format!("{base}/api/v1/orgs/{org}/access-profiles"),
+            json!({"name": slug, "slug": slug}),
+        )
+        .await;
+        assert_eq!(status, 200, "{profile}");
+        profiles.push(profile["id"].as_str().unwrap().to_string());
+    }
+    let assign = |profile: String, subject: Value| {
+        let base = base.clone();
+        let send_json = &send_json;
+        async move {
+            let (status, body) = send_json(
+                reqwest::Method::POST,
+                format!("{base}/api/v1/access-profiles/{profile}/assignments"),
+                subject,
+            )
+            .await;
+            assert_eq!(status, 200, "{body}");
+        }
+    };
+    assign(profiles[0].clone(), json!({"user_id": member})).await;
+    assign(profiles[1].clone(), json!({"team_id": team_id})).await;
+    assign(profiles[1].clone(), json!({"user_id": other})).await;
+    // the same person holds a profile in the other org too
+    assign(profiles[2].clone(), json!({"user_id": member})).await;
+
+    let list = |org: String, query: String| {
+        let client = client.clone();
+        let base = base.clone();
+        async move {
+            let res = client
+                .get(format!(
+                    "{base}/api/v1/orgs/{org}/access-profile-assignments{query}"
+                ))
+                .bearer_auth(admin_token())
+                .send()
+                .await
+                .unwrap();
+            let status = res.status().as_u16();
+            (status, res.json::<Value>().await.unwrap())
+        }
+    };
+    let profile_ids = |body: &Value| -> Vec<String> {
+        let mut ids: Vec<String> = body
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a["profile_id"].as_str().unwrap().to_string())
+            .collect();
+        ids.sort();
+        ids
+    };
+    let sorted = |ids: &[&String]| -> Vec<String> {
+        let mut ids: Vec<String> = ids.iter().map(|s| s.to_string()).collect();
+        ids.sort();
+        ids
+    };
+
+    // unfiltered: every assignment of this org's profiles, none of the other's
+    let (status, all) = list(acme.clone(), String::new()).await;
+    assert_eq!(status, 200, "{all}");
+    assert_eq!(all.as_array().unwrap().len(), 3, "{all}");
+    assert_eq!(
+        profile_ids(&all),
+        sorted(&[&profiles[0], &profiles[1], &profiles[1]])
+    );
+
+    // one user: only the profiles of this org, though they hold another's too
+    let (status, mine) = list(acme.clone(), format!("?user_id={member}")).await;
+    assert_eq!(status, 200, "{mine}");
+    assert_eq!(profile_ids(&mine), sorted(&[&profiles[0]]));
+    let (_, theirs) = list(globex.clone(), format!("?user_id={member}")).await;
+    assert_eq!(profile_ids(&theirs), sorted(&[&profiles[2]]));
+
+    // one team
+    let (status, held) = list(acme.clone(), format!("?team_id={team_id}")).await;
+    assert_eq!(status, 200, "{held}");
+    assert_eq!(profile_ids(&held), sorted(&[&profiles[1]]));
+    assert_eq!(held[0]["team_id"], team_id.as_str(), "{held}");
+
+    // a subject that holds nothing is an empty list, not an error
+    let (status, none) = list(acme.clone(), format!("?user_id={}", uuid::Uuid::new_v4())).await;
+    assert_eq!(status, 200, "{none}");
+    assert!(none.as_array().unwrap().is_empty(), "{none}");
+
+    // both subjects at once is a field refusal, a malformed id a coded query one
+    let (status, body) = list(acme.clone(), format!("?user_id={member}&team_id={team_id}")).await;
+    assert_eq!(status, 400, "{body}");
+    assert_eq!(body["error"]["code"], "invalid_field", "{body}");
+    assert_eq!(body["error"]["field"], "team_id", "{body}");
+    let (status, body) = list(acme.clone(), "?user_id=not-a-uuid".to_string()).await;
+    assert_eq!(status, 400, "{body}");
+    assert_eq!(body["error"]["code"], "invalid_query", "{body}");
+
+    // gated like the per-profile read: a member of another org is refused on
+    // both, and a plain member of this org sees exactly what that read allows
+    let outsider = seed_user(&pool, "outsider@example.com", false).await;
+    seed_membership(
+        &pool,
+        outsider,
+        Some(globex.parse().unwrap()),
+        None,
+        None,
+        "admin",
+    )
+    .await;
+    let outsider_token = seed_session(&pool, outsider, "assignments-outsider").await;
+    let insider = seed_user(&pool, "insider@example.com", false).await;
+    seed_membership(
+        &pool,
+        insider,
+        Some(acme.parse().unwrap()),
+        None,
+        None,
+        "member",
+    )
+    .await;
+    let insider_token = seed_session(&pool, insider, "assignments-insider").await;
+    for (token, name) in [(&outsider_token, "outsider"), (&insider_token, "insider")] {
+        let by_profile = client
+            .get(format!(
+                "{base}/api/v1/access-profiles/{}/assignments",
+                profiles[0]
+            ))
+            .bearer_auth(token)
+            .send()
+            .await
+            .unwrap()
+            .status();
+        let by_org = client
+            .get(format!(
+                "{base}/api/v1/orgs/{acme}/access-profile-assignments?user_id={member}"
+            ))
+            .bearer_auth(token)
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(by_org, by_profile, "{name}: the org read must not be wider");
+    }
+    assert_eq!(
+        client
+            .get(format!(
+                "{base}/api/v1/orgs/{acme}/access-profile-assignments"
+            ))
+            .bearer_auth(&outsider_token)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        403,
+        "another org's admin must not read this org's assignments"
+    );
+}
+
 /// A custom role in use cannot be deleted out from under its assignments, and
 /// every change to one is audited.
 #[tokio::test]
@@ -23048,6 +23264,40 @@ async fn common_refusals_carry_a_stable_code() {
     .await;
     assert_eq!(status, 400, "{body}");
     assert_eq!(body["error"]["code"], "invalid_body", "{body}");
+    assert!(body["error"].get("field").is_none(), "{body}");
+
+    // a list cursor that does not parse names the parameter
+    let get = |url: String| {
+        let client = client.clone();
+        async move {
+            let res = client
+                .get(url)
+                .bearer_auth("admintok")
+                .send()
+                .await
+                .unwrap();
+            let status = res.status().as_u16();
+            (status, res.json::<Value>().await.unwrap())
+        }
+    };
+    let (status, body) = get(format!("{base}/api/v1/audit-log?cursor=nonsense")).await;
+    assert_eq!(status, 400, "{body}");
+    assert_eq!(body["error"]["code"], "invalid_field", "{body}");
+    assert_eq!(body["error"]["field"], "cursor", "{body}");
+
+    // so does an enum parameter the handler checks by hand
+    let (status, body) = get(format!(
+        "{base}/api/v1/budgets?scope_type=galaxy&scope_id={org_id}"
+    ))
+    .await;
+    assert_eq!(status, 400, "{body}");
+    assert_eq!(body["error"]["code"], "invalid_field", "{body}");
+    assert_eq!(body["error"]["field"], "scope_type", "{body}");
+
+    // a query string that does not deserialize is coded, with no field
+    let (status, body) = get(format!("{base}/api/v1/audit-log?limit=abc")).await;
+    assert_eq!(status, 400, "{body}");
+    assert_eq!(body["error"]["code"], "invalid_query", "{body}");
     assert!(body["error"].get("field").is_none(), "{body}");
 
     // a settings refusal names the list row, not just the message prefix

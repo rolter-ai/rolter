@@ -341,6 +341,20 @@ const UNTIL: QueryParam = QueryParam::new(
      does not parse is a 400",
 );
 
+/// The org-wide access profile assignment list: narrow it to one subject.
+const ASSIGNMENT_SUBJECT_QUERY: &[QueryParam] = &[
+    QueryParam::new(
+        "user_id",
+        "string",
+        "only the assignments this user holds; send at most one of `user_id` and `team_id`",
+    ),
+    QueryParam::new(
+        "team_id",
+        "string",
+        "only the assignments this team holds; sending both is a 400 `invalid_field`",
+    ),
+];
+
 /// The routes list's query string: what to embed beside each route.
 const ROUTE_INCLUDE_QUERY: &[QueryParam] = &[QueryParam::new(
     "include",
@@ -1084,6 +1098,12 @@ fn operations() -> Vec<Op> {
                 "listAccessProfileAssignments",
                 "List an access profile's assignments",
             ),
+            Op::get(
+                "/api/v1/orgs/{org_id}/access-profile-assignments",
+                "listSubjectAccessProfileAssignments",
+                "List an org's access profile assignments, optionally for one user or team",
+            )
+            .query(ASSIGNMENT_SUBJECT_QUERY),
             Op::post(
                 "/api/v1/access-profiles/{id}/assignments",
                 "createAccessProfileAssignment",
