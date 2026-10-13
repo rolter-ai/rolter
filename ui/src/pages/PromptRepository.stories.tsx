@@ -1,6 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import * as React from "react";
+import { Link, RouterProvider, createMemoryRouter, useLocation } from "react-router";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import PromptRepository from "./PromptRepository";
@@ -14,8 +15,10 @@ import {
   expectSkeleton,
   expectToast,
   withCapabilities,
+  answerDiscardPrompt,
   cancelConfirmation,
   confirmDestructive,
+  discardPrompt,
   expectNoUxEvent,
   expectUxEvent,
   recordUxEvents,
@@ -273,10 +276,38 @@ function Harness({
     </div>
   );
   const screen = uxScreen ? <UxScreenProvider screen={uxScreen}>{page}</UxScreenProvider> : page;
-  return (
+  const tree = (
     <QueryClientProvider client={client}>
       <Toasted>{role ? <CapabilityProvider>{screen}</CapabilityProvider> : screen}</Toasted>
+      <Elsewhere />
     </QueryClientProvider>
+  );
+  // a data router, because the screen guards leaving with `useBlocker`
+  const router = React.useMemo(
+    () => createMemoryRouter([{ path: "*", element: <HarnessBody /> }]),
+    [],
+  );
+  return (
+    <HarnessBodyContext.Provider value={tree}>
+      <RouterProvider router={router} />
+    </HarnessBodyContext.Provider>
+  );
+}
+
+const HarnessBodyContext = React.createContext<React.ReactNode>(null);
+function HarnessBody() {
+  return <>{React.useContext(HarnessBodyContext)}</>;
+}
+
+// stands in for the nav: a link away from the screen and a readout of where
+// the router ended up
+function Elsewhere() {
+  const { pathname } = useLocation();
+  return (
+    <div className="fixed bottom-1 right-1 text-xs">
+      <Link to="/elsewhere">Go elsewhere</Link>
+      <output data-testid="pathname">{pathname}</output>
+    </div>
   );
 }
 
@@ -295,6 +326,81 @@ export const Loaded: Story = {
     await within(canvasElement).findAllByText("Support concierge");
     // the shell's ScreenHeader owns the page's only h1 (#2241)
     await expect(within(canvasElement).queryAllByRole("heading", { level: 1 })).toHaveLength(0);
+    const canvas = within(canvasElement);
+    // counts take their plural form, and every version being immutable, the
+    // badge that said so on all but the live one is gone (#2117)
+    await expect(await canvas.findByText("1 variable · 1 decorator")).toBeVisible();
+    await expect(canvas.getByText("2 variables · 2 decorators")).toBeVisible();
+    await expect(canvas.queryByText("Immutable")).toBeNull();
+    // a heading is read once, and the list selects within the screen
+    await expect(canvas.getAllByRole("heading", { name: "Variables" })).toHaveLength(1);
+    await expect(canvas.getByRole("region", { name: "Variables" })).toBeVisible();
+    await expect(
+      within(canvas.getByRole("complementary", { name: "Templates" })).getByRole("button", {
+        name: /Support concierge/,
+      }),
+    ).toHaveAttribute("aria-current", "true");
+    // the preview sits between the decorators and the scopes, not under the
+    // whole editor
+    const decorators = canvas.getByRole("heading", { name: "Decorators" });
+    const preview = canvas.getByRole("complementary", { name: "Preview" });
+    const scopes = canvas.getByRole("heading", { name: "Assignment scopes" });
+    await expect(
+      decorators.compareDocumentPosition(preview) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    await expect(
+      preview.compareDocumentPosition(scopes) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  },
+};
+
+/**
+ * Switching version with edits in the workbench asks first (#2115).
+ *
+ * Cancel keeps the edits where they were; Discard replaces them with the
+ * version chosen; a clean workbench switches without a question, and so does
+ * a click on the version already open. Leaving the screen asks as well.
+ */
+export const KeepsTheDraftWhenSwitchingVersions: Story = {
+  render: () => <Harness fetchStub={loadedStub()} />,
+  play: async ({ canvas, canvasElement }) => {
+    const rail = await versionRail(canvasElement);
+    const decorator = await canvas.findByRole("textbox", { name: /Decorator 1 content/ });
+    await expect(canvas.queryByText("Unsaved changes")).toBeNull();
+    // a clean workbench switches at once
+    await userEvent.click(rail.getByRole("button", { name: /^v1\b/ }));
+    await waitFor(() => expect(canvas.getByText(/editing from immutable v1/)).toBeVisible());
+    await userEvent.click(rail.getByRole("button", { name: /^v2\b/ }));
+    await waitFor(() => expect(canvas.getByText(/editing from immutable v2/)).toBeVisible());
+    await expect(within(document.body).queryByRole("dialog")).toBeNull();
+
+    await userEvent.type(decorator, " Extra.");
+    await expect(canvas.getByText("Unsaved changes")).toBeVisible();
+    // the version already open is not a switch
+    await userEvent.click(rail.getByRole("button", { name: /^v2\b/ }));
+    await expect(within(document.body).queryByRole("dialog")).toBeNull();
+
+    await userEvent.click(rail.getByRole("button", { name: /^v1\b/ }));
+    await expect(await discardPrompt()).toBeVisible();
+    await answerDiscardPrompt(false);
+    await expect(canvas.getByText(/editing from immutable v2/)).toBeVisible();
+    await expect((decorator as HTMLTextAreaElement).value).toContain("Extra.");
+
+    // leaving the screen asks too
+    await userEvent.click(canvas.getByRole("link", { name: "Go elsewhere" }));
+    await expect(await discardPrompt()).toBeVisible();
+    await expect(canvas.getByTestId("pathname")).toHaveTextContent("/");
+    await answerDiscardPrompt(false);
+
+    await userEvent.click(rail.getByRole("button", { name: /^v1\b/ }));
+    await answerDiscardPrompt(true);
+    await waitFor(() => expect(canvas.getByText(/editing from immutable v1/)).toBeVisible());
+    await waitFor(() =>
+      expect(canvas.getByRole("textbox", { name: /Decorator 1 content/ })).toHaveValue(
+        "You are the support concierge for {{ customer_name }}.",
+      ),
+    );
+    await expect(canvas.queryByText("Unsaved changes")).toBeNull();
   },
 };
 

@@ -67,6 +67,8 @@ import { useFormat } from "@/lib/i18n/format";
 import { addedScopes, publishImpact, scopeKey, templateVarsExample } from "@/lib/prompt-templates";
 import { useScope } from "@/lib/scope";
 import { useToast } from "@/lib/toast";
+import { useDraftSwitch } from "@/lib/use-draft-switch";
+import { useLeaveGuard } from "@/lib/use-leave-guard";
 import { cn } from "@/lib/utils";
 import { useScreenReady } from "@/lib/ux-react";
 
@@ -92,6 +94,17 @@ function copyDraft(
     decorators: version.decorators.map((decorator) => ({ ...decorator })),
     scopes: scopes.map((scope) => ({ ...scope })),
   };
+}
+
+/** the draft as a comparable string, for telling an edited workbench from a clean one.
+ * a variable's absent default and an empty one are the same thing, and the order
+ * scopes were ticked in is not part of the draft */
+function draftKey(draft: Draft): string {
+  return JSON.stringify([
+    draft.variables.map((variable) => [variable.name, variable.required, variable.default ?? ""]),
+    draft.decorators.map((decorator) => [decorator.role, decorator.position, decorator.content]),
+    draft.scopes.map(scopeKey).sort(),
+  ]);
 }
 
 /** the `{{ name }}` syntax the decorators use, kept out of the catalogs so
@@ -146,6 +159,9 @@ export default function PromptRepository() {
   const [selectedId, setSelectedId] = React.useState<string>();
   const [selectedVersion, setSelectedVersion] = React.useState<number>();
   const [draft, setDraft] = React.useState<Draft>(() => copyDraft());
+  // what the draft was last seeded with: the draft differs from it exactly
+  // when there is something to lose (#2115)
+  const [seeded, setSeeded] = React.useState<Draft>();
   const [samples, setSamples] = React.useState<Record<string, string>>({});
   const [createOpen, setCreateOpen] = React.useState(false);
   const [renameOpen, setRenameOpen] = React.useState(false);
@@ -216,10 +232,15 @@ export default function PromptRepository() {
       (!selectedVersion || baseVersion) &&
       (!selectedVersion || scopes.isSuccess)
     ) {
-      setDraft(copyDraft(baseVersion, scopes.data ?? []));
+      const next = copyDraft(baseVersion, scopes.data ?? []);
+      setDraft(next);
+      setSeeded(next);
       setSamples({});
     }
   }, [baseVersion, scopes.data, scopes.isSuccess, selectedId, selectedVersion, versions.isSuccess]);
+  const dirty = !!seeded && draftKey(draft) !== draftKey(seeded);
+  const leavePrompt = useLeaveGuard(dirty);
+  const switchGuard = useDraftSwitch(dirty);
 
   const routes = useQuery({
     queryKey: ["routes", scope.projectId],
@@ -423,15 +444,18 @@ export default function PromptRepository() {
         <TemplateIndex
           templates={templates.data ?? []}
           selectedId={selectedId}
-          onSelect={(id) => {
-            setSelectedId(id);
-            setSelectedVersion(undefined);
-          }}
+          onSelect={(id) =>
+            id !== selectedId &&
+            switchGuard.request(() => {
+              setSelectedId(id);
+              setSelectedVersion(undefined);
+            })
+          }
           onCreate={() => setCreateOpen(true)}
         />
 
         {!selected ? (
-          <main className="flex min-h-[32rem] items-center justify-center rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-raised)]">
+          <main className="flex min-h-[32rem] items-center justify-center rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-raised)] xl:col-span-2">
             <EmptyState
               uxTarget="prompt-versions"
               icon={<FilePlus2 />}
@@ -458,6 +482,7 @@ export default function PromptRepository() {
             virtualKeys={keys.data ?? []}
             orgId={scope.orgId}
             projectId={scope.projectId}
+            dirty={dirty}
             pending={saveDraft.isPending || makeLive.isPending}
             error={saveDraft.error as Error | null}
             onDraftChange={setDraft}
@@ -476,7 +501,9 @@ export default function PromptRepository() {
             versions={orderedVersions}
             selectedVersion={selectedVersion}
             loading={versions.isLoading}
-            onSelect={setSelectedVersion}
+            onSelect={(version) =>
+              version !== selectedVersion && switchGuard.request(() => setSelectedVersion(version))
+            }
             onMakeLive={confirmMakeLive}
           />
         )}
@@ -532,6 +559,8 @@ export default function PromptRepository() {
         }}
         onConfirm={() => remove.mutate()}
       />
+      {switchGuard.prompt}
+      {leavePrompt}
     </div>
   );
 }
@@ -596,7 +625,7 @@ function TemplateIndex({
             <button
               key={template.id}
               type="button"
-              aria-current={selectedId === template.id ? "page" : undefined}
+              aria-current={selectedId === template.id ? "true" : undefined}
               onClick={() => onSelect(template.id)}
               className={cn(
                 "group flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
@@ -638,6 +667,7 @@ function PromptWorkbench({
   virtualKeys,
   orgId,
   projectId,
+  dirty,
   pending,
   error,
   onDraftChange,
@@ -655,6 +685,8 @@ function PromptWorkbench({
   virtualKeys: { id: string; name?: string | null; key_prefix: string }[];
   orgId?: string;
   projectId?: string;
+  /** the draft differs from the version it was seeded with */
+  dirty: boolean;
   pending: boolean;
   error: Error | null;
   onDraftChange: (draft: Draft) => void;
@@ -729,24 +761,28 @@ function PromptWorkbench({
               <FilePlus2 className="h-4 w-4" />{" "}
               {pending ? t("pages.promptRepo.saving") : t("pages.promptRepo.saveNewDraft")}
             </GatedButton>
-            <GatedButton
-              gate="prompt_template:update"
-              control="prompt-rename"
-              variant="ghost"
-              aria-label={t("pages.promptRepo.renameAction", { name: template.name })}
-              onClick={onRename}
-            >
-              <Pencil className="h-4 w-4" />
-            </GatedButton>
-            <GatedButton
-              gate="prompt_template:delete"
-              control="prompt-delete"
-              variant="ghost"
-              aria-label={t("pages.promptRepo.deleteAction", { name: template.name })}
-              onClick={onDelete}
-            >
-              <Trash2 className="h-4 w-4" />
-            </GatedButton>
+            {/* one unit, so a narrow header wraps both icon buttons together
+                rather than leaving the delete alone on a row */}
+            <div className="flex items-center gap-2">
+              <GatedButton
+                gate="prompt_template:update"
+                control="prompt-rename"
+                variant="ghost"
+                aria-label={t("pages.promptRepo.renameAction", { name: template.name })}
+                onClick={onRename}
+              >
+                <Pencil className="h-4 w-4" />
+              </GatedButton>
+              <GatedButton
+                gate="prompt_template:delete"
+                control="prompt-delete"
+                variant="ghost"
+                aria-label={t("pages.promptRepo.deleteAction", { name: template.name })}
+                onClick={onDelete}
+              >
+                <Trash2 className="h-4 w-4" />
+              </GatedButton>
+            </div>
           </div>
         </div>
         <div className="mt-3 flex min-h-5 flex-wrap items-center gap-x-3 gap-y-1 text-xs">
@@ -754,6 +790,11 @@ function PromptWorkbench({
           {baseVersion && (
             <span className="text-muted-foreground">
               {t("pages.promptRepo.editingFrom", { version: baseVersion.version })}
+            </span>
+          )}
+          {dirty && (
+            <span className="font-medium text-[color:var(--status-warning-text)]">
+              {t("pages.promptRepo.unsavedChanges")}
             </span>
           )}
           {problemText && (
@@ -769,16 +810,31 @@ function PromptWorkbench({
         </div>
       </header>
 
-      <div className="grid min-w-0 gap-0 2xl:grid-cols-[minmax(0,1fr)_minmax(18rem,0.78fr)]">
-        <div className="min-w-0 space-y-7 p-4 sm:p-5">
+      {/* one column of editor sections with the preview between the decorators
+          and the scopes, so checking a render never means scrolling past the
+          whole editor; from 2xl the preview takes the right column beside all
+          three instead */}
+      <div className="grid min-w-0 2xl:grid-cols-[minmax(0,1fr)_minmax(18rem,0.78fr)]">
+        <div className="min-w-0 p-4 pb-0 sm:p-5 sm:pb-0 2xl:col-start-1">
           <VariableEditor
             variables={draft.variables}
             onChange={(variables) => onDraftChange({ ...draft, variables })}
           />
+        </div>
+        <div className="min-w-0 px-4 pb-7 pt-7 sm:px-5 2xl:col-start-1 2xl:pb-0">
           <DecoratorEditor
             decorators={draft.decorators}
             onChange={(decorators) => onDraftChange({ ...draft, decorators })}
           />
+        </div>
+        <PreviewPanel
+          className="2xl:col-start-2 2xl:row-span-3 2xl:row-start-1"
+          variables={draft.variables}
+          decorators={draft.decorators}
+          samples={samples}
+          onSamplesChange={onSamplesChange}
+        />
+        <div className="min-w-0 p-4 pt-7 sm:p-5 sm:pt-7 2xl:col-start-1">
           <ScopeEditor
             scopes={draft.scopes}
             orgId={orgId}
@@ -788,22 +844,19 @@ function PromptWorkbench({
             onChange={(scopes) => onDraftChange({ ...draft, scopes })}
           />
         </div>
-        <PreviewPanel
-          variables={draft.variables}
-          decorators={draft.decorators}
-          samples={samples}
-          onSamplesChange={onSamplesChange}
-        />
       </div>
     </main>
   );
 }
 
 function SectionHeading({
+  id,
   title,
   description,
   action,
 }: {
+  /** the heading's id, for a section that names itself by it */
+  id?: string;
   title: string;
   description: string;
   action?: React.ReactNode;
@@ -811,7 +864,9 @@ function SectionHeading({
   return (
     <div className="mb-3 flex items-start justify-between gap-3">
       <div>
-        <h3 className="text-sm font-semibold">{title}</h3>
+        <h3 id={id} className="text-sm font-semibold">
+          {title}
+        </h3>
         <p className="mt-0.5 text-xs leading-5 text-muted-foreground">{description}</p>
       </div>
       {action}
@@ -832,6 +887,7 @@ function VariableEditor({
   return (
     <section aria-labelledby="variables-heading">
       <SectionHeading
+        id="variables-heading"
         title={t("pages.promptRepo.variablesTitle")}
         description={t("pages.promptRepo.variablesDescription", { sample: VARIABLE_SAMPLE })}
         action={
@@ -843,19 +899,16 @@ function VariableEditor({
           </Button>
         }
       />
-      <h3 id="variables-heading" className="sr-only">
-        {t("pages.promptRepo.variablesTitle")}
-      </h3>
-      <div className="space-y-2">
+      {/* hairlines between the rows, not a box around each: the workbench
+          panel is the card (#2117) */}
+      <div className="divide-y divide-[color:var(--border-subtle)] border-y border-[color:var(--border-subtle)]">
         {variables.length === 0 ? (
-          <p className="rounded-lg border border-dashed border-[color:var(--border-default)] p-3 text-xs text-muted-foreground">
-            {t("pages.promptRepo.noVariables")}
-          </p>
+          <p className="py-3 text-xs text-muted-foreground">{t("pages.promptRepo.noVariables")}</p>
         ) : (
           variables.map((variable, index) => (
             <div
               key={index}
-              className="grid gap-2 rounded-lg border border-[color:var(--border-subtle)] p-3 sm:grid-cols-[minmax(8rem,1fr)_8rem_minmax(8rem,1fr)_auto]"
+              className="grid gap-2 py-3 sm:grid-cols-[minmax(8rem,1fr)_8rem_minmax(8rem,1fr)_auto]"
             >
               <label className="text-xs font-medium">
                 {t("pages.promptRepo.fieldName")}
@@ -954,12 +1007,9 @@ function DecoratorEditor({
           </Button>
         }
       />
-      <div className="space-y-2">
+      <div className="divide-y divide-[color:var(--border-subtle)] border-y border-[color:var(--border-subtle)]">
         {decorators.map((decorator, index) => (
-          <article
-            key={index}
-            className="rounded-lg border border-[color:var(--border-subtle)] p-3"
-          >
+          <article key={index} className="py-3">
             <div className="mb-2 flex flex-wrap items-center gap-2">
               <span className="font-mono text-[0.6875rem] text-[color:var(--text-subtle)]">
                 {String(index + 1).padStart(2, "0")}
@@ -1095,11 +1145,11 @@ function ScopeEditor({
         title={t("pages.promptRepo.scopesTitle")}
         description={t("pages.promptRepo.scopesDescription")}
       />
-      <div className="grid gap-2 sm:grid-cols-2">
+      <div className="grid border-y border-[color:var(--border-subtle)] sm:grid-cols-2 sm:gap-x-4">
         {options.map((option) => (
           <label
             key={`${option.scope_type}:${option.scope_id}`}
-            className="flex cursor-pointer items-start gap-2.5 rounded-lg border border-[color:var(--border-subtle)] p-3 hover:bg-[color:var(--surface-hover)]"
+            className="flex cursor-pointer items-start gap-2.5 border-b border-[color:var(--border-subtle)] py-3 last:border-b-0 hover:bg-[color:var(--surface-hover)] sm:[&:nth-last-child(2):nth-child(odd)]:border-b-0"
           >
             <Checkbox
               className="mt-0.5"
@@ -1118,11 +1168,13 @@ function ScopeEditor({
 }
 
 function PreviewPanel({
+  className,
   variables,
   decorators,
   samples,
   onSamplesChange,
 }: {
+  className?: string;
   variables: PromptTemplateVariable[];
   decorators: PromptTemplateDecorator[];
   samples: Record<string, string>;
@@ -1141,7 +1193,10 @@ function PreviewPanel({
   return (
     <aside
       aria-label={t("pages.promptRepo.previewTitle")}
-      className="border-t border-[color:var(--border-subtle)] bg-[color:var(--surface-app)] p-4 sm:p-5 2xl:border-l 2xl:border-t-0"
+      className={cn(
+        "border-y border-[color:var(--border-subtle)] bg-[color:var(--surface-app)] p-4 sm:p-5 2xl:border-y-0 2xl:border-l",
+        className,
+      )}
     >
       <SectionHeading
         title={t("pages.promptRepo.previewTitle")}
@@ -1186,7 +1241,7 @@ function PreviewPanel({
           })}
         </p>
       )}
-      <div className="space-y-2" aria-label={t("pages.promptRepo.renderedPreviewAria")}>
+      <div aria-label={t("pages.promptRepo.renderedPreviewAria")}>
         {decorators.length === 0 ? (
           <p className="text-xs text-muted-foreground">{t("pages.promptRepo.addDecoratorHint")}</p>
         ) : (
@@ -1261,14 +1316,14 @@ function PreviewMessage({
 }) {
   const { t } = useTranslation();
   return (
-    <article className="overflow-hidden rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-raised)]">
-      <div className="flex items-center justify-between border-b border-[color:var(--border-subtle)] px-3 py-1.5">
+    <article className="border-b border-[color:var(--border-subtle)] py-2.5">
+      <div className="flex items-center justify-between">
         <span className="text-[0.6875rem] font-semibold uppercase tracking-[0.12em]">
           {decorator.role}
         </span>
         <Badge tone="outline">{decorator.position}</Badge>
       </div>
-      <p className="whitespace-pre-wrap break-words px-3 py-2.5 text-sm leading-6">
+      <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-6">
         {content || (
           <span className="text-muted-foreground">{t("pages.promptRepo.emptyDecorator")}</span>
         )}
@@ -1343,11 +1398,7 @@ export function VersionRail({
                 >
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-sm font-semibold tabular-nums">v{version.version}</span>
-                    <Badge tone={published ? "success" : "neutral"}>
-                      {published
-                        ? t("pages.promptRepo.published")
-                        : t("pages.promptRepo.immutable")}
-                    </Badge>
+                    {published && <Badge tone="success">{t("pages.promptRepo.published")}</Badge>}
                   </div>
                   <p className="mt-1.5 flex items-center gap-1 text-[0.6875rem] text-muted-foreground">
                     <Clock3 className="h-3 w-3" />
@@ -1355,8 +1406,12 @@ export function VersionRail({
                   </p>
                   <p className="mt-1 text-[0.6875rem] text-[color:var(--text-subtle)]">
                     {t("pages.promptRepo.versionCounts", {
-                      variables: version.variables.length,
-                      decorators: version.decorators.length,
+                      variables: t("pages.promptRepo.versionVariables", {
+                        count: version.variables.length,
+                      }),
+                      decorators: t("pages.promptRepo.versionDecorators", {
+                        count: version.decorators.length,
+                      }),
                     })}
                   </p>
                 </button>

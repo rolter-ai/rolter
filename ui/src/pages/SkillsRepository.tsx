@@ -1,5 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  Archive,
+  ArchiveRestore,
   BookOpen,
   Check,
   Clock3,
@@ -34,7 +36,7 @@ import { Field } from "@/components/ui/field";
 import { LoadError } from "@/components/LoadError";
 import { LoadingRegion } from "@/components/LoadingState";
 import { Input } from "@/components/ui/input";
-
+import { Segmented } from "@/components/ui/segmented";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -57,6 +59,8 @@ import { errorText } from "@/lib/error-copy";
 import { useFormat } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
 import { useToast } from "@/lib/toast";
+import { useDraftSwitch } from "@/lib/use-draft-switch";
+import { useLeaveGuard } from "@/lib/use-leave-guard";
 import { cn } from "@/lib/utils";
 import { useScreenReady } from "@/lib/ux-react";
 
@@ -85,6 +89,21 @@ function draftFromVersion(version?: SkillVersionRow): Draft {
     contentRef: version.content_ref ?? "",
     metadataText: JSON.stringify(version.metadata, null, 2),
   };
+}
+
+/** the draft as a comparable string, for telling an edited workbench from a clean one */
+function draftKey(draft: Draft): string {
+  return JSON.stringify([draft.mode, draft.content, draft.contentRef, draft.metadataText]);
+}
+
+type LiveAction = "publish" | "rollback";
+
+// publishing and rolling back move the same pointer and differ only in the
+// audit row, so the verb follows the direction: a version newer than the live
+// one is published, an older one is rolled back to, and with nothing live every
+// version is a publish. the prompt repository words it the same way (#2110)
+function liveAction(version: number, published?: number | null): LiveAction {
+  return version > (published ?? 0) ? "publish" : "rollback";
 }
 
 /** a catalog key rather than English, so validation can be translated where it
@@ -132,10 +151,18 @@ export default function SkillsRepository() {
   const [selectedId, setSelectedId] = React.useState<string>();
   const [selectedVersion, setSelectedVersion] = React.useState<number>();
   const [draft, setDraft] = React.useState<Draft>({ ...EMPTY_DRAFT });
+  // what the draft was last seeded with: the draft differs from it exactly
+  // when there is something to lose (#2115)
+  const [seeded, setSeeded] = React.useState<Draft>();
   const [createOpen, setCreateOpen] = React.useState(false);
   const [settingsOpen, setSettingsOpen] = React.useState(false);
   const [deleteOpen, setDeleteOpen] = React.useState(false);
-  const [rollbackVersion, setRollbackVersion] = React.useState<number>();
+  const [retireOpen, setRetireOpen] = React.useState(false);
+  // the version waiting on the publish / roll back confirmation, with the
+  // direction fixed when the button was pressed: once a publish lands the
+  // version *is* the live one, and a direction read again would call the
+  // landing a roll back
+  const [liveTarget, setLiveTarget] = React.useState<{ version: number; action: LiveAction }>();
 
   const skills = useQuery({
     queryKey: ["skills", scope.orgId],
@@ -186,8 +213,14 @@ export default function SkillsRepository() {
 
   const baseVersion = orderedVersions.find((version) => version.version === selectedVersion);
   React.useEffect(() => {
-    if (versions.isSuccess) setDraft(draftFromVersion(baseVersion));
+    if (!versions.isSuccess) return;
+    const next = draftFromVersion(baseVersion);
+    setDraft(next);
+    setSeeded(next);
   }, [baseVersion, selectedId, versions.isSuccess]);
+  const dirty = !!seeded && draftKey(draft) !== draftKey(seeded);
+  const leavePrompt = useLeaveGuard(dirty);
+  const switchGuard = useDraftSwitch(dirty);
 
   const create = useMutation({
     mutationFn: (input: CreateSkillInput) => createSkill(scope.orgId as string, input),
@@ -238,13 +271,23 @@ export default function SkillsRepository() {
     },
   });
 
-  const publish = useMutation({
-    mutationFn: (version: number) => publishSkillVersion(selectedId as string, version),
-    onSuccess: (skill) => {
+  // one mutation for both directions, so both go through one confirmation;
+  // the endpoint still follows the direction, since it is what the audit log
+  // records the change as
+  const makeLive = useMutation({
+    mutationFn: ({ version, action }: { version: number; action: LiveAction }) =>
+      action === "publish"
+        ? publishSkillVersion(selectedId as string, version)
+        : rollbackSkillVersion(selectedId as string, version),
+    onSuccess: (skill, { action }) => {
       replaceSkill(queryClient, scope.orgId, skill);
+      setLiveTarget(undefined);
       toast.push({
         tone: "success",
-        title: t("pages.skillsRepo.publishedNotice", { version: skill.published_version }),
+        title:
+          action === "publish"
+            ? t("pages.skillsRepo.publishedNotice", { version: skill.published_version })
+            : t("pages.skillsRepo.rolledBack", { version: skill.published_version }),
       });
     },
     onError: (error) => {
@@ -255,25 +298,8 @@ export default function SkillsRepository() {
       });
     },
   });
-
-  const rollback = useMutation({
-    mutationFn: (version: number) => rollbackSkillVersion(selectedId as string, version),
-    onSuccess: (skill) => {
-      replaceSkill(queryClient, scope.orgId, skill);
-      setRollbackVersion(undefined);
-      toast.push({
-        tone: "success",
-        title: t("pages.skillsRepo.rolledBack", { version: skill.published_version }),
-      });
-    },
-    onError: (error) => {
-      toast.push({
-        tone: "error",
-        title: t("toast.saveFailed", { what: selected?.name ?? "" }),
-        detail: errorText(error, t),
-      });
-    },
-  });
+  const confirmMakeLive = (version: number) =>
+    setLiveTarget({ version, action: liveAction(version, selected?.published_version) });
 
   const remove = useMutation({
     mutationFn: () => deleteSkill(selectedId as string),
@@ -305,11 +331,29 @@ export default function SkillsRepository() {
     onSuccess: (skill) => {
       replaceSkill(queryClient, scope.orgId, skill);
       setSettingsOpen(false);
+      toast.push({ tone: "success", title: t("pages.skillsRepo.settingsUpdated") });
+    },
+    onError: (error) => {
+      toast.push({
+        tone: "error",
+        title: t("toast.saveFailed", { what: selected?.name ?? "" }),
+        detail: errorText(error, t),
+      });
+    },
+  });
+
+  // retiring is a lifecycle move of its own, not a field of the settings form:
+  // it hides the skill from every team at once
+  const retire = useMutation({
+    mutationFn: (retired: boolean) => updateSkill(selectedId as string, { retired }),
+    onSuccess: (skill) => {
+      replaceSkill(queryClient, scope.orgId, skill);
+      setRetireOpen(false);
       toast.push({
         tone: "success",
         title: skill.retired_at
           ? t("pages.skillsRepo.retiredNotice")
-          : t("pages.skillsRepo.settingsUpdated"),
+          : t("pages.skillsRepo.restoredNotice"),
       });
     },
     onError: (error) => {
@@ -358,10 +402,13 @@ export default function SkillsRepository() {
         <SkillIndex
           skills={skills.data ?? []}
           selectedId={selectedId}
-          onSelect={(id) => {
-            setSelectedId(id);
-            setSelectedVersion(undefined);
-          }}
+          onSelect={(id) =>
+            id !== selectedId &&
+            switchGuard.request(() => {
+              setSelectedId(id);
+              setSelectedVersion(undefined);
+            })
+          }
           onCreate={() => setCreateOpen(true)}
         />
 
@@ -408,12 +455,15 @@ export default function SkillsRepository() {
             skill={selected}
             baseVersion={baseVersion}
             draft={draft}
-            pending={save.isPending || publish.isPending}
-            error={(save.error ?? publish.error) as Error | null}
+            teams={scope.teams}
+            dirty={dirty}
+            pending={save.isPending || makeLive.isPending}
+            error={save.error as Error | null}
             onDraftChange={setDraft}
             onSave={() => save.mutate()}
-            onPublish={(version) => publish.mutate(version)}
+            onMakeLive={confirmMakeLive}
             onSettings={() => setSettingsOpen(true)}
+            onRetire={() => setRetireOpen(true)}
             onDelete={() => setDeleteOpen(true)}
           />
         )}
@@ -425,8 +475,10 @@ export default function SkillsRepository() {
             versions={orderedVersions}
             selectedVersion={selectedVersion}
             loading={versions.isLoading}
-            onSelect={setSelectedVersion}
-            onRollback={setRollbackVersion}
+            onSelect={(version) =>
+              version !== selectedVersion && switchGuard.request(() => setSelectedVersion(version))
+            }
+            onMakeLive={confirmMakeLive}
           />
         )}
       </div>
@@ -450,14 +502,32 @@ export default function SkillsRepository() {
           onSubmit={(input) => settings.mutate(input)}
         />
       )}
-      <RollbackDialog
-        version={rollbackVersion}
-        publishedVersion={selected?.published_version}
-        pending={rollback.isPending}
-        error={rollback.error as Error | null}
-        onClose={() => setRollbackVersion(undefined)}
-        onConfirm={() => rollbackVersion && rollback.mutate(rollbackVersion)}
+      <MakeLiveDialog
+        skill={selected}
+        target={liveTarget}
+        pending={makeLive.isPending}
+        error={makeLive.error}
+        onOpenChange={(open) => {
+          if (open) return;
+          setLiveTarget(undefined);
+          // a refusal for one version must not greet the next one opened
+          makeLive.reset();
+        }}
+        onConfirm={() => liveTarget && makeLive.mutate(liveTarget)}
       />
+      <RetireDialog
+        open={retireOpen && !!selected}
+        skill={selected}
+        pending={retire.isPending}
+        error={retire.error}
+        onOpenChange={(next) => {
+          setRetireOpen(next);
+          if (!next) retire.reset();
+        }}
+        onConfirm={() => selected && retire.mutate(!selected.retired_at)}
+      />
+      {switchGuard.prompt}
+      {leavePrompt}
       <DeleteSkillDialog
         open={deleteOpen && !!selected}
         skill={selected}
@@ -598,7 +668,7 @@ function SkillIndex({
             <button
               key={skill.id}
               type="button"
-              aria-current={selectedId === skill.id ? "page" : undefined}
+              aria-current={selectedId === skill.id ? "true" : undefined}
               onClick={() => onSelect(skill.id)}
               className={cn(
                 "w-full rounded-lg px-2.5 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
@@ -636,26 +706,40 @@ function SkillWorkbench({
   skill,
   baseVersion,
   draft,
+  teams,
+  dirty,
   pending,
   error,
   onDraftChange,
   onSave,
-  onPublish,
+  onMakeLive,
   onSettings,
+  onRetire,
   onDelete,
 }: {
   skill: SkillRow;
   baseVersion?: SkillVersionRow;
   draft: Draft;
+  teams: TeamRow[];
+  /** the draft differs from the version it was seeded with */
+  dirty: boolean;
   pending: boolean;
   error: Error | null;
   onDraftChange: (draft: Draft) => void;
   onSave: () => void;
-  onPublish: (version: number) => void;
+  onMakeLive: (version: number) => void;
   onSettings: () => void;
+  onRetire: () => void;
   onDelete: () => void;
 }) {
   const { t } = useTranslation();
+  const sourceHintId = React.useId();
+  const action = baseVersion && liveAction(baseVersion.version, skill.published_version);
+  // the allowed teams by name; a team outside the loaded list is still named,
+  // by the start of its id
+  const teamNames = skill.allowed_team_ids.map(
+    (id) => teams.find((team) => team.id === id)?.name ?? id.slice(0, 8),
+  );
   const problemKey = draftProblem(draft);
   const problem = problemKey && t(`pages.skillsRepo.${problemKey}`);
   const selectedPublished = baseVersion?.version === skill.published_version;
@@ -693,6 +777,19 @@ function SkillWorkbench({
               <Settings2 className="h-4 w-4" /> {t("pages.skillsRepo.settings")}
             </GatedButton>
             <GatedButton
+              gate="skill:update"
+              control="skill-retire"
+              variant="ghost"
+              onClick={onRetire}
+            >
+              {skill.retired_at ? (
+                <ArchiveRestore className="h-4 w-4" />
+              ) : (
+                <Archive className="h-4 w-4" />
+              )}{" "}
+              {skill.retired_at ? t("pages.skillsRepo.restore") : t("pages.skillsRepo.retire")}
+            </GatedButton>
+            <GatedButton
               gate="skill:delete"
               control="skill-delete"
               variant="ghost"
@@ -701,16 +798,28 @@ function SkillWorkbench({
             >
               <Trash2 className="h-4 w-4" />
             </GatedButton>
-            {baseVersion && !selectedPublished && !skill.retired_at && (
+            {baseVersion && !selectedPublished && !skill.retired_at && action === "publish" && (
               <GatedButton
                 gate="skill:update"
                 control="skill-publish"
                 variant="outline"
                 disabled={pending}
-                onClick={() => onPublish(baseVersion.version)}
+                onClick={() => onMakeLive(baseVersion.version)}
               >
                 <Check className="h-4 w-4" />{" "}
                 {t("pages.skillsRepo.publishVersion", { version: baseVersion.version })}
+              </GatedButton>
+            )}
+            {baseVersion && !selectedPublished && !skill.retired_at && action === "rollback" && (
+              <GatedButton
+                gate="skill:update"
+                control="skill-header-rollback"
+                variant="outline"
+                disabled={pending}
+                onClick={() => onMakeLive(baseVersion.version)}
+              >
+                <RotateCcw className="h-4 w-4" />{" "}
+                {t("pages.skillsRepo.rollbackTo", { version: baseVersion.version })}
               </GatedButton>
             )}
             <GatedButton
@@ -729,14 +838,22 @@ function SkillWorkbench({
           <span className="text-muted-foreground">
             {t("pages.skillsRepo.minimumRoleMeta", { role: skill.minimum_role })}
           </span>
-          <span className="text-muted-foreground">
-            {skill.allowed_team_ids.length
-              ? t("pages.skillsRepo.teamsCount", { count: skill.allowed_team_ids.length })
+          <span
+            className="max-w-full truncate text-muted-foreground"
+            title={teamNames.length ? teamNames.join(", ") : undefined}
+          >
+            {teamNames.length
+              ? t("pages.skillsRepo.teamsMeta", { names: teamNames.join(", ") })
               : t("pages.skillsRepo.allOrgTeams")}
           </span>
           {baseVersion && (
             <span className="text-muted-foreground">
               {t("pages.skillsRepo.editingFrom", { version: baseVersion.version })}
+            </span>
+          )}
+          {dirty && (
+            <span className="font-medium text-[color:var(--status-warning-text)]">
+              {t("pages.skillsRepo.unsavedChanges")}
             </span>
           )}
           {problem && (
@@ -758,24 +875,21 @@ function SkillWorkbench({
             title={t("pages.skillsRepo.contentSourceTitle")}
             description={t("pages.skillsRepo.contentSourceDescription")}
           />
-          <div
-            className="mb-3 grid gap-2 sm:grid-cols-2"
-            role="radiogroup"
-            aria-label={t("pages.skillsRepo.sourceRadioGroup")}
-          >
-            <SourceOption
-              selected={draft.mode === "inline"}
-              title={t("pages.skillsRepo.inlineTitle")}
-              description={t("pages.skillsRepo.inlineDescription")}
-              onSelect={() => onDraftChange({ ...draft, mode: "inline" })}
-            />
-            <SourceOption
-              selected={draft.mode === "reference"}
-              title={t("pages.skillsRepo.referenceTitle")}
-              description={t("pages.skillsRepo.referenceDescription")}
-              onSelect={() => onDraftChange({ ...draft, mode: "reference" })}
-            />
-          </div>
+          <Segmented
+            ariaLabel={t("pages.skillsRepo.sourceRadioGroup")}
+            describedBy={sourceHintId}
+            value={draft.mode}
+            options={[
+              { value: "inline", label: t("pages.skillsRepo.inlineTitle") },
+              { value: "reference", label: t("pages.skillsRepo.referenceTitle") },
+            ]}
+            onChange={(mode) => onDraftChange({ ...draft, mode })}
+          />
+          <p id={sourceHintId} className="mb-3 mt-2 text-xs text-muted-foreground">
+            {draft.mode === "inline"
+              ? t("pages.skillsRepo.inlineDescription")
+              : t("pages.skillsRepo.referenceDescription")}
+          </p>
           {draft.mode === "inline" ? (
             <label className="block text-xs font-medium">
               {t("pages.skillsRepo.skillMdContent")}
@@ -827,46 +941,6 @@ function SkillWorkbench({
   );
 }
 
-function SourceOption({
-  selected,
-  title,
-  description,
-  onSelect,
-}: {
-  selected: boolean;
-  title: string;
-  description: string;
-  onSelect: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      role="radio"
-      aria-checked={selected}
-      onClick={onSelect}
-      className={cn(
-        "rounded-lg border p-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-        selected
-          ? "border-[color:var(--red-folk)] bg-[color:var(--surface-selected)]"
-          : "border-[color:var(--border-subtle)] hover:bg-[color:var(--surface-hover)]",
-      )}
-    >
-      <span className="flex items-center gap-2 text-sm font-medium">
-        <span
-          className={cn(
-            "flex h-4 w-4 items-center justify-center rounded-full border",
-            selected ? "border-[color:var(--red-folk)]" : "border-[color:var(--border-default)]",
-          )}
-        >
-          {selected && <span className="h-2 w-2 rounded-full bg-[color:var(--red-folk)]" />}
-        </span>
-        {title}
-      </span>
-      <span className="ml-6 mt-1 block text-xs text-muted-foreground">{description}</span>
-    </button>
-  );
-}
-
 function SectionHeading({ title, description }: { title: string; description: string }) {
   return (
     <div className="mb-3">
@@ -883,7 +957,7 @@ function VersionRail({
   selectedVersion,
   loading,
   onSelect,
-  onRollback,
+  onMakeLive,
 }: {
   className?: string;
   skill: SkillRow;
@@ -891,7 +965,7 @@ function VersionRail({
   selectedVersion?: number;
   loading: boolean;
   onSelect: (version: number) => void;
-  onRollback: (version: number) => void;
+  onMakeLive: (version: number) => void;
 }) {
   const { t } = useTranslation();
   // the dashboard locale, not the browser's, which is what a bare
@@ -925,6 +999,7 @@ function VersionRail({
         ) : (
           versions.map((version) => {
             const published = skill.published_version === version.version;
+            const action = liveAction(version.version, skill.published_version);
             return (
               <div
                 key={version.version}
@@ -943,11 +1018,7 @@ function VersionRail({
                 >
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-sm font-semibold tabular-nums">v{version.version}</span>
-                    <Badge tone={published ? "success" : "neutral"}>
-                      {published
-                        ? t("pages.skillsRepo.published")
-                        : t("pages.skillsRepo.immutable")}
-                    </Badge>
+                    {published && <Badge tone="success">{t("pages.skillsRepo.published")}</Badge>}
                   </div>
                   <p className="mt-1.5 flex items-center gap-1 text-[0.6875rem] text-muted-foreground">
                     <Clock3 className="h-3 w-3" />
@@ -967,12 +1038,23 @@ function VersionRail({
                     )}
                   </p>
                 </button>
-                {!published && skill.published_version && !skill.retired_at && (
+                {!published && !skill.retired_at && action === "publish" && (
+                  <GatedButton
+                    gate="skill:update"
+                    control="skill-rail-publish"
+                    variant="ghost"
+                    onClick={() => onMakeLive(version.version)}
+                  >
+                    <Check className="h-3.5 w-3.5" />{" "}
+                    {t("pages.skillsRepo.publishVersion", { version: version.version })}
+                  </GatedButton>
+                )}
+                {!published && !skill.retired_at && action === "rollback" && (
                   <GatedButton
                     gate="skill:update"
                     control="skill-rollback"
                     variant="ghost"
-                    onClick={() => onRollback(version.version)}
+                    onClick={() => onMakeLive(version.version)}
                   >
                     <RotateCcw className="h-3.5 w-3.5" />{" "}
                     {t("pages.skillsRepo.rollbackTo", { version: version.version })}
@@ -993,20 +1075,17 @@ interface SkillFormValue {
   description: string;
   minimum_role: SkillMinimumRole;
   allowed_team_ids: string[];
-  retired?: boolean;
 }
 
 function AccessFields({
   value,
   teams,
   includeSlug,
-  includeRetired,
   onChange,
 }: {
   value: SkillFormValue;
   teams: TeamRow[];
   includeSlug?: boolean;
-  includeRetired?: boolean;
   onChange: (value: SkillFormValue) => void;
 }) {
   const { t } = useTranslation();
@@ -1083,21 +1162,6 @@ function AccessFields({
           ))}
         </div>
       </fieldset>
-      {includeRetired && (
-        <label className="flex cursor-pointer items-start gap-2.5 rounded-lg border border-[color:var(--border-subtle)] p-3">
-          <Checkbox
-            className="mt-0.5"
-            checked={value.retired ?? false}
-            onChange={(event) => onChange({ ...value, retired: event.target.checked })}
-          />
-          <span>
-            <span className="block text-sm font-medium">{t("pages.skillsRepo.retireLabel")}</span>
-            <span className="text-xs text-muted-foreground">
-              {t("pages.skillsRepo.retireHint")}
-            </span>
-          </span>
-        </label>
-      )}
     </div>
   );
 }
@@ -1199,7 +1263,6 @@ function SkillSettingsDialog({
       description: skill.description,
       minimum_role: skill.minimum_role,
       allowed_team_ids: skill.allowed_team_ids,
-      retired: !!skill.retired_at,
     }),
     [skill],
   );
@@ -1222,12 +1285,11 @@ function SkillSettingsDialog({
             description: value.description.trim(),
             minimum_role: value.minimum_role,
             allowed_team_ids: value.allowed_team_ids,
-            retired: value.retired,
           });
         }}
       >
         <DialogBody>
-          <AccessFields value={value} teams={teams} includeRetired onChange={setValue} />
+          <AccessFields value={value} teams={teams} onChange={setValue} />
           {error && (
             <p role="alert" className="mt-3 text-xs text-[color:var(--status-danger-text)]">
               {errorText(error, t)}
@@ -1247,46 +1309,119 @@ function SkillSettingsDialog({
   );
 }
 
-function RollbackDialog({
-  version,
-  publishedVersion,
+/**
+ * The one confirmation for moving the live pointer, forwards or back.
+ *
+ * Skills are not consumed through the gateway yet (the `skills_repository`
+ * stability note), so there is no scope or variable impact to show as the
+ * prompt repository does; the dialog states which version callers resolve
+ * before and after, and how to undo it.
+ */
+function MakeLiveDialog({
+  skill,
+  target,
   pending,
   error,
-  onClose,
+  onOpenChange,
   onConfirm,
 }: {
-  version?: number;
-  publishedVersion?: number | null;
+  skill?: SkillRow;
+  target?: { version: number; action: LiveAction };
   pending: boolean;
-  error: Error | null;
-  onClose: () => void;
+  error: unknown;
+  onOpenChange: (open: boolean) => void;
   onConfirm: () => void;
 }) {
   const { t } = useTranslation();
+  // latched through the closing render: the dialog's `name` keys its UX stream
+  // rows, and the landing is reported on the render that closes it, when the
+  // parent has already let go of the target
+  const [latched, setLatched] = React.useState(target);
+  if (target && (target.version !== latched?.version || target.action !== latched?.action)) {
+    setLatched(target);
+  }
+  const shown = target ?? latched;
+  const version = shown?.version;
+  const publishing = shown?.action !== "rollback";
+  const live = skill?.published_version;
   return (
-    <Dialog open={version !== undefined} onOpenChange={(open) => !open && onClose()}>
-      <DialogHeader>
-        <DialogTitle>{t("pages.skillsRepo.rollbackTo", { version })}</DialogTitle>
-        <DialogDescription>
-          {t("pages.skillsRepo.rollbackDescription", { from: publishedVersion, to: version })}
-        </DialogDescription>
-      </DialogHeader>
-      {error && (
-        <p role="alert" className="text-xs text-[color:var(--status-danger-text)]">
-          {errorText(error, t)}
-        </p>
-      )}
-      <DialogFooter>
-        <Button variant="outline" onClick={onClose}>
-          {t("pages.skillsRepo.keepLive", { version: publishedVersion })}
-        </Button>
-        <Button disabled={pending} onClick={onConfirm}>
-          <RotateCcw className="h-4 w-4" />
-          {pending
-            ? t("pages.skillsRepo.rollingBack")
-            : t("pages.skillsRepo.rollbackTo", { version })}
-        </Button>
-      </DialogFooter>
-    </Dialog>
+    <ConfirmDialog
+      name={publishing ? "skill-publish" : "skill-rollback"}
+      open={!!target}
+      onOpenChange={onOpenChange}
+      title={
+        publishing
+          ? t("pages.skillsRepo.confirm.publishTitle", { version, name: skill?.name ?? "" })
+          : t("pages.skillsRepo.rollbackTo", { version })
+      }
+      description={
+        !publishing
+          ? t("pages.skillsRepo.rollbackDescription", { from: live, to: version })
+          : live
+            ? t("pages.skillsRepo.confirm.publishBody", { from: live, to: version })
+            : t("pages.skillsRepo.confirm.publishFirst", { version })
+      }
+      confirmLabel={
+        publishing
+          ? t("pages.skillsRepo.publishVersion", { version })
+          : t("pages.skillsRepo.rollbackTo", { version })
+      }
+      tone="default"
+      pending={pending}
+      error={error}
+      onConfirm={onConfirm}
+    />
+  );
+}
+
+/** retiring and restoring share one confirmation, worded for the move being made */
+function RetireDialog({
+  open,
+  skill,
+  pending,
+  error,
+  onOpenChange,
+  onConfirm,
+}: {
+  open: boolean;
+  skill?: SkillRow;
+  pending: boolean;
+  error: unknown;
+  onOpenChange: (open: boolean) => void;
+  onConfirm: () => void;
+}) {
+  const { t } = useTranslation();
+  // the move is latched while the dialog is open: a retire that lands flips
+  // `retired_at` on the render that closes it, and the landing would otherwise
+  // be reported (and worded) as the opposite move
+  const [latched, setLatched] = React.useState(!!skill?.retired_at);
+  if (open && latched !== !!skill?.retired_at) setLatched(!!skill?.retired_at);
+  const restoring = latched;
+  const name = skill?.name ?? "";
+  return (
+    <ConfirmDialog
+      name={restoring ? "skill-restore" : "skill-retire"}
+      open={open}
+      onOpenChange={onOpenChange}
+      title={
+        restoring
+          ? t("pages.skillsRepo.confirm.restoreTitle", { name })
+          : t("pages.skillsRepo.confirm.retireTitle", { name })
+      }
+      description={
+        restoring
+          ? t("pages.skillsRepo.confirm.restoreBody")
+          : t("pages.skillsRepo.confirm.retireBody")
+      }
+      confirmLabel={
+        restoring
+          ? t("pages.skillsRepo.confirm.restoreConfirm")
+          : t("pages.skillsRepo.confirm.retireConfirm")
+      }
+      tone="default"
+      pending={pending}
+      error={error}
+      onConfirm={onConfirm}
+    />
   );
 }

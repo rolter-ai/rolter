@@ -15,6 +15,8 @@ export interface SegmentedProps<T extends string> {
   labelledBy?: string;
   /** a name for a group with no visible label */
   ariaLabel?: string;
+  /** id of text that explains the choice, read after the group's name */
+  describedBy?: string;
 }
 
 export function Segmented<T extends string>({
@@ -24,6 +26,7 @@ export function Segmented<T extends string>({
   disabled,
   labelledBy,
   ariaLabel,
+  describedBy,
 }: SegmentedProps<T>) {
   const refs = React.useRef<(HTMLButtonElement | null)[]>([]);
   // the tab stop: the checked option, or the first when nothing matches
@@ -61,6 +64,7 @@ export function Segmented<T extends string>({
       role="radiogroup"
       aria-labelledby={labelledBy}
       aria-label={ariaLabel}
+      aria-describedby={describedBy}
       className="inline-flex w-fit rounded-md bg-[color:var(--surface-subtle)] p-0.5"
     >
       {options.map((o, i) => (
