@@ -10,7 +10,7 @@ When an MCP server needs to act on a user's behalf — read their repositories, 
 
 Access and refresh tokens are sealed with the deployment key encryption key and stored alongside the session row. Only credential-bearing internal code can open them. The control plane projects the newest live, scope-valid access token per user/server through its separately token-guarded internal snapshot channel; no public API response, and therefore no dashboard screen, ever carries a token value.
 
-What you see instead is metadata: when the session was created, when it expires, when it was last used, and a `has_refresh_token` flag rendered as a **RENEWABLE** badge. That flag is enough to answer "will this keep working tomorrow?" without the token ever being serialised out of the control plane.
+What you see instead is metadata: when the session was created, when it expires, when it was last used, and a `has_refresh_token` flag rendered as a **Renewable** badge. That flag is enough to answer "will this keep working tomorrow?" without the token ever being serialised out of the control plane.
 
 <Warning>
   If a screen or an integration ever appears to show you an MCP access token, that is a bug worth reporting — the API surface has no field to carry one.
