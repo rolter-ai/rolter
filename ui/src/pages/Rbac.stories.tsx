@@ -468,6 +468,7 @@ export const CustomRolesList: Story = {
     // per profile — so this is awaited rather than read off the roles' settle
     // point, and the row says nothing about composition until they answer (#1266)
     await expect(await canvas.findByText("Composed into Support")).toBeVisible();
+    await expect(canvas.getByRole("button", { name: "Delete Support engineer" })).toBeVisible();
   },
 };
 
