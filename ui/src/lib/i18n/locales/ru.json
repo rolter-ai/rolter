@@ -4406,6 +4406,7 @@
       "includesV1": "Укажите версию в адресе — {{kind}} ожидает её в базовом URL, например https://api.example.com/v1",
       "resolvesTo": {
         "chat": "Чат-запросы уходят на",
+        "decision": "Запросы решений уходят на",
         "embeddings": "Запросы эмбеддингов уходят на"
       }
     },
@@ -4647,6 +4648,10 @@
       "falcon": {
         "name": "Falcon",
         "description": "Размещённые модели Falcon от G42 и TII"
+      },
+      "system_one": {
+        "name": "System One (решения)",
+        "description": "Модели типизированных решений через POST /v1/systemone: TypeSafe Jev, vLLM Semantic Router, Ollama"
       }
     },
     "telemetry": {

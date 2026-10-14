@@ -62,6 +62,9 @@ pub fn respond(path: &str, body: &Value) -> Reply {
         "/v1/messages" => (messages(body), Some(chat_tokens(body)), true),
         "/v1/embeddings" => (embeddings(body), Some(embeddings_tokens(body)), false),
         "/v1/rerank" => (rerank(body), Some(rerank_tokens(body)), false),
+        rolter_core::upstream::SYSTEM_ONE_PATH => {
+            (decision(body), Some(decision_tokens(body)), false)
+        }
         // no tokens exist for these, which is not the same as zero tokens
         "/v1/images/generations" => (images(body), None, false),
         "/v1/audio/speech" => (speech(body), None, false),
@@ -592,6 +595,154 @@ pub fn rerank(body: &Value) -> Response {
     Json(payload).into_response()
 }
 
+/// The text a decision reads: the `state` and every question, as the caller
+/// wrote them. A string state is taken as is; any other JSON is its encoding.
+fn decision_text(body: &Value) -> String {
+    let state = match body.get("state") {
+        Some(Value::String(text)) => text.clone(),
+        Some(other) => other.to_string(),
+        None => String::new(),
+    };
+    let questions = body
+        .get("questions")
+        .map(Value::to_string)
+        .unwrap_or_default();
+    format!("{state} {questions}")
+}
+
+/// `(input, output)` tokens of a decision. The state and the questions are the
+/// input; a decision model generates nothing, so output is zero, which is what
+/// lets a model priced at zero output cost exactly its input.
+fn decision_tokens(body: &Value) -> (u64, u64) {
+    (approx_tokens(&decision_text(body)), 0)
+}
+
+/// `values` scaled to sum to one.
+fn normalized(values: Vec<f64>) -> Vec<f64> {
+    let sum: f64 = values.iter().sum();
+    values.into_iter().map(|value| value / sum).collect()
+}
+
+/// The answer to one question, or a per-question error the way a System One
+/// server reports one: the other questions in the request are still answered.
+fn decision_answer(seed: &str, id: &str, question: &Value) -> Value {
+    let kind = question
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let invalid = || json!({ "type": kind, "error": "invalid_question" });
+    let seed = format!("{seed}\u{0}{id}");
+    match kind {
+        "noul" => json!({ "type": "noul", "noul": fake_score(&seed, "true") }),
+        "choice" => {
+            let Some(criteria) = question.get("criteria").and_then(Value::as_object) else {
+                return invalid();
+            };
+            if criteria.len() < 2 {
+                return invalid();
+            }
+            let options: Vec<&String> = criteria.keys().collect();
+            let probabilities = normalized(
+                options
+                    .iter()
+                    .map(|option| fake_score(&seed, option))
+                    .collect(),
+            );
+            let (best, confidence) = probabilities
+                .iter()
+                .enumerate()
+                .max_by(|a, b| a.1.total_cmp(b.1))
+                .map(|(index, p)| (index, *p))
+                .unwrap_or_default();
+            let probabilities: serde_json::Map<String, Value> = options
+                .iter()
+                .zip(&probabilities)
+                .map(|(option, p)| (option.to_string(), json!(p)))
+                .collect();
+            json!({
+                "type": "choice",
+                "choice": options[best],
+                "probabilities": probabilities,
+                "confidence": confidence,
+            })
+        }
+        "score" => {
+            let Some(levels) = question.get("criteria").and_then(Value::as_array) else {
+                return invalid();
+            };
+            if !(2..=10).contains(&levels.len()) {
+                return invalid();
+            }
+            let probabilities = normalized(
+                (0..levels.len())
+                    .map(|level| fake_score(&seed, &level.to_string()))
+                    .collect(),
+            );
+            let score: f64 = probabilities
+                .iter()
+                .enumerate()
+                .map(|(level, p)| level as f64 * p)
+                .sum();
+            let confidence = probabilities.iter().copied().fold(0.0, f64::max);
+            let legend: serde_json::Map<String, Value> = levels
+                .iter()
+                .enumerate()
+                .map(|(level, description)| (level.to_string(), description.clone()))
+                .collect();
+            let probabilities: serde_json::Map<String, Value> = probabilities
+                .iter()
+                .enumerate()
+                .map(|(level, p)| (level.to_string(), json!(p)))
+                .collect();
+            json!({
+                "type": "score",
+                "score": score,
+                "legend": legend,
+                "probabilities": probabilities,
+                "confidence": confidence,
+            })
+        }
+        _ => invalid(),
+    }
+}
+
+/// Handle a `/v1/systemone` request for `fake-llm`: deterministic System One
+/// answers to `choice`, `score` and `noul` questions, so the decision endpoint
+/// can be smoke-tested without a key or a GPU (#3150).
+pub fn decision(body: &Value) -> Response {
+    if body.get("state").is_none_or(Value::is_null) {
+        return crate::error::ApiError::new(StatusCode::BAD_REQUEST, "missing 'state' field")
+            .with_code("missing_required_parameter")
+            .with_param("state")
+            .into_response();
+    }
+    let Some(questions) = body
+        .get("questions")
+        .and_then(Value::as_object)
+        .filter(|questions| !questions.is_empty())
+    else {
+        return crate::error::ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "missing or empty 'questions' field",
+        )
+        .with_code("missing_required_parameter")
+        .with_param("questions")
+        .into_response();
+    };
+    let seed = body.get("state").map(Value::to_string).unwrap_or_default();
+    let answers: serde_json::Map<String, Value> = questions
+        .iter()
+        .map(|(id, question)| (id.clone(), decision_answer(&seed, id, question)))
+        .collect();
+    let (input_tokens, output_tokens) = decision_tokens(body);
+    Json(json!({
+        "model": MODEL_NAME,
+        "answers": answers,
+        "usage": { "input_tokens": input_tokens, "output_tokens": output_tokens },
+    }))
+    .into_response()
+}
+
 /// a 1x1 transparent PNG, base64-encoded — the deterministic pixel the fake
 /// image model returns for every request
 const FAKE_PNG_B64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
@@ -990,6 +1141,10 @@ mod tests {
                 "/v1/rerank",
                 json!({"query": "one", "documents": ["two three", "four"]}),
             ),
+            (
+                "/v1/systemone",
+                json!({"state": "one two", "questions": {"q": {"type": "noul", "instructions": "three"}}}),
+            ),
         ] {
             let reply = respond(path, &request);
             let logged = reply.usage;
@@ -1026,6 +1181,7 @@ mod tests {
             ("/v1/responses", true),
             ("/v1/embeddings", false),
             ("/v1/rerank", false),
+            ("/v1/systemone", false),
         ] {
             assert_eq!(respond(path, &request).stream, streams, "{path}");
         }
@@ -1047,6 +1203,95 @@ mod tests {
             assert_eq!(reply.usage, Usage::default(), "{path}");
             assert!(!reply.stream, "{path}");
         }
+    }
+
+    fn ticket() -> Value {
+        json!({
+            "model": MODEL_NAME,
+            "state": "Our checkout has returned 500 errors since 9am.",
+            "questions": {
+                "label": {
+                    "type": "choice",
+                    "instructions": "Which label fits this ticket?",
+                    "criteria": {"billing": "Payments", "bug": "Software errors", "account": "Login"}
+                },
+                "urgent": {"type": "noul", "instructions": "Is this urgent?"},
+                "impact": {
+                    "type": "score",
+                    "instructions": "How wide is the impact?",
+                    "criteria": ["one user", "a team", "everyone"]
+                },
+                "odd": {"type": "span", "instructions": "Find the time"}
+            }
+        })
+    }
+
+    async fn decided(body: &Value) -> Value {
+        let response = decision(body);
+        assert_eq!(response.status(), StatusCode::OK);
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn decision_answers_every_question_under_its_own_id() {
+        let value = decided(&ticket()).await;
+        let answers = &value["answers"];
+        let label = &answers["label"];
+        assert_eq!(label["type"], "choice");
+        let choice = label["choice"].as_str().unwrap();
+        assert!(["billing", "bug", "account"].contains(&choice));
+        let probabilities = label["probabilities"].as_object().unwrap();
+        let total: f64 = probabilities.values().map(|p| p.as_f64().unwrap()).sum();
+        assert!((total - 1.0).abs() < 1e-9);
+        assert_eq!(label["confidence"], probabilities[choice]);
+
+        let urgent = answers["urgent"]["noul"].as_f64().unwrap();
+        assert!(urgent > 0.0 && urgent < 1.0);
+
+        let impact = &answers["impact"];
+        let score = impact["score"].as_f64().unwrap();
+        assert!((0.0..=2.0).contains(&score));
+        assert_eq!(impact["legend"]["2"], "everyone");
+        assert_eq!(impact["probabilities"].as_object().unwrap().len(), 3);
+
+        // a type the builtin does not know fails alone
+        assert_eq!(answers["odd"]["error"], "invalid_question");
+        assert_eq!(value["usage"]["output_tokens"], 0);
+        assert!(value["usage"]["input_tokens"].as_u64().unwrap() > 0);
+    }
+
+    #[tokio::test]
+    async fn decision_is_deterministic() {
+        assert_eq!(decided(&ticket()).await, decided(&ticket()).await);
+    }
+
+    #[test]
+    fn decision_without_state_or_questions_is_400() {
+        let no_state = decision(&json!({"questions": {"q": {"type": "noul"}}}));
+        assert_eq!(no_state.status(), StatusCode::BAD_REQUEST);
+        let no_questions = decision(&json!({"state": "x"}));
+        assert_eq!(no_questions.status(), StatusCode::BAD_REQUEST);
+        let empty = decision(&json!({"state": "x", "questions": {}}));
+        assert_eq!(empty.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn malformed_choice_and_score_questions_fail_alone() {
+        let value = decided(&json!({
+            "state": {"ticket": 1},
+            "questions": {
+                "one_option": {"type": "choice", "criteria": {"only": "x"}},
+                "eleven_levels": {"type": "score", "criteria": ["a","b","c","d","e","f","g","h","i","j","k"]},
+                "fine": {"type": "noul"}
+            }
+        }))
+        .await;
+        assert_eq!(value["answers"]["one_option"]["error"], "invalid_question");
+        assert_eq!(
+            value["answers"]["eleven_levels"]["error"],
+            "invalid_question"
+        );
+        assert!(value["answers"]["fine"]["noul"].is_number());
     }
 
     #[test]

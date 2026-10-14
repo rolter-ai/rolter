@@ -89,7 +89,8 @@
               "configuration/model-settings",
               "configuration/labels",
               "configuration/mcp-servers",
-              "configuration/gemini-interactions"
+              "configuration/gemini-interactions",
+              "configuration/system-one"
             ]
           },
           {
@@ -158,6 +159,7 @@
               "api/chat-completions",
               "api/completions",
               "api/messages",
+              "api/system-one",
               "api/realtime",
               "api/mcp",
               "api/models",

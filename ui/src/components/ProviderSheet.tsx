@@ -493,7 +493,9 @@ export function ProviderSheet({
               {t(
                 kindInfo?.request === "embeddings"
                   ? "providerSheet.apiBase.resolvesTo.embeddings"
-                  : "providerSheet.apiBase.resolvesTo.chat",
+                  : kindInfo?.request === "decision"
+                    ? "providerSheet.apiBase.resolvesTo.decision"
+                    : "providerSheet.apiBase.resolvesTo.chat",
               )}{" "}
               <span className="font-mono break-all">{resolvedUrl}</span>
             </p>

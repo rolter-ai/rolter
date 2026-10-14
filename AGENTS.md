@@ -48,7 +48,7 @@ rolter is a high-performance OpenAI/Anthropic-compatible AI gateway and load bal
 - New balancing strategies implement `rolter_balancer::LoadBalancer` and are wired into `build()`.
 - A type that fixtures construct everywhere (`ProviderConfig` is the model) carries a `Default` so tests can write `..Default::default()`; production mapping code still writes the literal out in full. See `docs/dev-docs/development/merge-protection.md`.
 - New storage backends implement the `rolter_store` traits behind a cargo feature.
-- The gateway ships a built-in `fake-llm` model (deterministic lorem ipsum, no upstream or config needed) on `/v1/chat/completions` and `/v1/messages` (non-streaming and SSE) plus `/v1/embeddings` (deterministic vectors). Use it for smoke tests and local dev without secrets; a configured route named `fake-llm` shadows the builtin.
+- The gateway ships a built-in `fake-llm` model (deterministic lorem ipsum, no upstream or config needed) on `/v1/chat/completions` and `/v1/messages` (non-streaming and SSE) plus `/v1/embeddings` (deterministic vectors) and `/v1/systemone` (deterministic typed decisions). Use it for smoke tests and local dev without secrets; a configured route named `fake-llm` shadows the builtin.
 
 ## Storage & migrations
 

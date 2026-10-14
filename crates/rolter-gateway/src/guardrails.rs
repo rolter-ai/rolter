@@ -237,6 +237,25 @@ pub fn apply_input(
                 scan.field(body, "system", true)?;
                 scan.messages(body)?;
             }
+            // System One decisions: the `state` is the caller's content and may
+            // be a string, an object or an array, and the questions' text
+            // (instructions and criteria) can carry content of its own, so every
+            // string in both is scanned. images and videos are not text and are
+            // left alone (#3150)
+            rolter_core::upstream::SYSTEM_ONE_PATH => {
+                if let Some(state) = body.get_mut("state") {
+                    scan.nested(state)?;
+                }
+                if let Some(questions) = body.get_mut("questions").and_then(Value::as_object_mut) {
+                    for question in questions.values_mut() {
+                        for field in ["instructions", "criteria"] {
+                            if let Some(text) = question.get_mut(field) {
+                                scan.nested(text)?;
+                            }
+                        }
+                    }
+                }
+            }
             _ => {}
         }
         Ok(())
@@ -411,6 +430,41 @@ mod tests {
             disable: disable.iter().map(|s| s.to_string()).collect(),
             enable: enable.iter().map(|s| s.to_string()).collect(),
         })
+    }
+
+    #[test]
+    fn a_decision_state_and_its_questions_are_scanned() {
+        let g = engine(vec![redact("email", BuiltinRule::Email)]);
+        let mut body = json!({
+            "model": "jev-latest",
+            "state": {"ticket": {"from": "a@b.com", "text": "refund please"}},
+            "questions": {
+                "route": {
+                    "type": "choice",
+                    "instructions": "Should c@d.com handle this?",
+                    "criteria": {"billing": "write to e@f.com", "bug": "software"}
+                }
+            }
+        });
+        let report =
+            apply_input(&g, &RuleSelection::default(), "/v1/systemone", &mut body).unwrap();
+        let text = body.to_string();
+        for address in ["a@b.com", "c@d.com", "e@f.com"] {
+            assert!(!text.contains(address), "{address} survived: {text}");
+        }
+        assert_eq!(report.redactions, 3);
+        // the shape the upstream reads is untouched: ids, keys and types stay
+        assert_eq!(body["questions"]["route"]["type"], "choice");
+        assert!(body["questions"]["route"]["criteria"]["billing"].is_string());
+        assert_eq!(body["state"]["ticket"]["text"], "refund please");
+    }
+
+    #[test]
+    fn a_decision_state_can_be_blocked() {
+        let g = engine(vec![block("email", BuiltinRule::Email)]);
+        let mut body = json!({"model": "m", "state": "mail a@b.com", "questions": {}});
+        let blocked = apply_input(&g, &RuleSelection::default(), "/v1/systemone", &mut body);
+        assert_eq!(blocked.map_err(|b| b.rule).unwrap_err(), "email");
     }
 
     #[test]
