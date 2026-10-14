@@ -1,5 +1,5 @@
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
-import { KeySquare, Lock, Pencil, Plus, Trash2, X } from "lucide-react";
+import { KeySquare, Lock, Pencil, Plus, X } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
