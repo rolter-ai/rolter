@@ -261,7 +261,7 @@ jobs:
         with:
           shared-key: rust-build
           save-if: ${{ github.ref == 'refs/heads/master' }}
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         id: uv
         if: ${{ !cancelled() }}
 
@@ -657,7 +657,7 @@ jobs:
       # the chart's own preflight must pass on the env it renders (#1939). it
       # needs the built launcher, which nextest has just compiled
       - name: set up uv
-        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
       - name: set up helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
@@ -774,7 +774,7 @@ jobs:
       - name: set up uv
         id: uv
         if: ${{ !cancelled() }}
-        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
       - name: set up helm
         id: helm
         if: ${{ !cancelled() }}
