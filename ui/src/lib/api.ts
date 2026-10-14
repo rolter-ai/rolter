@@ -843,7 +843,7 @@ export function fetchHealthTimeline(bucket = "hour"): Promise<TimelineRow[]> {
  * which header carries the key.
  *
  * Served by the control plane rather than restated here: the version rule
- * covers ~38 of 48 kinds, and a copy in TypeScript would drift the moment a
+ * covers ~38 of 49 kinds, and a copy in TypeScript would drift the moment a
  * kind is added (#947). The endpoint and the header come from the functions the
  * gateway's forwarder calls (`ProviderKind::primary_upstream_path`,
  * `ProviderKind::auth_header`), so the preview cannot name another address than
@@ -852,8 +852,11 @@ export function fetchHealthTimeline(bucket = "hour"): Promise<TimelineRow[]> {
 export interface ProviderKindInfo {
   kind: string;
   base_includes_v1: boolean;
-  /** what the kind is chiefly called for; a text-embeddings server is not asked for chat */
-  request: "chat" | "embeddings";
+  /**
+   * what the kind is chiefly called for; a text-embeddings server is not asked
+   * for chat, and a System One decision server answers only decisions
+   */
+  request: "chat" | "embeddings" | "decision";
   /**
    * the upstream path that request is sent to, before the `/v1` rule is applied;
    * `{model}` stands for the upstream model name where the path carries one
@@ -955,6 +958,7 @@ export const PROVIDER_KINDS = [
   "sarvam",
   "krutrim",
   "falcon",
+  "system_one",
 ] as const;
 
 /**

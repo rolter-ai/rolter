@@ -292,6 +292,7 @@ impl ProviderRow {
             "sarvam" => ProviderKind::Sarvam,
             "krutrim" => ProviderKind::Krutrim,
             "falcon" => ProviderKind::Falcon,
+            "system_one" => ProviderKind::SystemOne,
             other => return Err(Error::Store(format!("unknown provider kind '{other}'"))),
         };
         let api_key = match (row.ciphertext.as_deref(), row.nonce.as_deref(), kek) {

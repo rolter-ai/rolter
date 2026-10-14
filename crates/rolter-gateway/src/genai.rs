@@ -13,7 +13,7 @@
 //!
 //! ## Deliberate deviations
 //!
-//! Three of rolter's routes have no answer in the spec. They are recorded here
+//! Four of rolter's routes have no answer in the spec. They are recorded here
 //! rather than left to be rediscovered:
 //!
 //! - **`/v1/rerank`** — no matching value exists in the `gen_ai.operation.name`
@@ -21,6 +21,9 @@
 //!   grouped and attributed rather than silently unlabelled. A local value is
 //!   preferable to borrowing an unrelated one such as `embeddings`, which would
 //!   put reranks into someone's embeddings dashboard.
+//! - **`/v1/systemone`** — a typed decision generates nothing, so neither
+//!   `chat` nor `generate_content` describes it. Emitted as [`OP_DECISION`],
+//!   rolter-local for the reason rerank is, with no output type.
 //! - **`/v1/audio/translations`** and `/v1/audio/transcriptions` — the output
 //!   modality is expressible (`text`), the input modality (audio) is not. Both
 //!   are emitted as `generate_content` with `gen_ai.output.type=text`; the fact
@@ -111,6 +114,8 @@ pub(crate) const OP_EMBEDDINGS: &str = "embeddings";
 pub(crate) const OP_GENERATE_CONTENT: &str = "generate_content";
 /// Not in the spec enum; see the module docs for why rerank gets a local value.
 pub(crate) const OP_RERANK: &str = "rerank";
+/// Not in the spec enum either; see the module docs for decisions.
+pub(crate) const OP_DECISION: &str = "decision";
 
 /// `gen_ai.output.type` values.
 pub(crate) const OUTPUT_TEXT: &str = "text";
@@ -157,6 +162,7 @@ pub(crate) fn operation_for_path(path: &str) -> Option<Operation> {
             Operation::new(OP_GENERATE_CONTENT, Some(OUTPUT_TEXT))
         }
         "/v1/rerank" => Operation::new(OP_RERANK, None),
+        rolter_core::upstream::SYSTEM_ONE_PATH => Operation::new(OP_DECISION, None),
         _ => return None,
     })
 }
@@ -330,6 +336,13 @@ mod tests {
         // dashboard; the deviation is deliberate and documented
         let op = operation_for_path("/v1/rerank").unwrap();
         assert_eq!(op.name, OP_RERANK);
+    }
+
+    #[test]
+    fn a_decision_is_its_own_operation_with_no_output_type() {
+        let op = operation_for_path("/v1/systemone").unwrap();
+        assert_eq!(op.name, OP_DECISION);
+        assert_eq!(op.output_type, None);
     }
 
     #[test]
