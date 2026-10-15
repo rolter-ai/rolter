@@ -62,3 +62,8 @@
 
 **Learning:** Form dialog submit buttons in `GuardrailProviders.tsx` and `GuardrailRules.tsx` changed label text to `publishing` during async save mutations but lacked inline `<Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" aria-hidden />` icons.
 **Action:** Always pair `disabled={pending}` submit buttons in form dialogs with an inline `<Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" aria-hidden />` icon alongside translated pending text for explicit visual feedback.
+
+## 2026-10-13 - DeleteIconButton for Group Mappings, Labels, and RBAC
+
+**Learning:** Hand-rolled icon delete buttons (`RowIconButton` or `GatedButton` wrapping `<Trash2 />`) in list items like group mappings, labels sheet, and custom roles lack standard design system danger hover borders and in-flight pending spinners.
+**Action:** Replace custom icon delete buttons on mapped list items with `DeleteIconButton` from `@/components/ui/delete-icon-button`, passing `pending` qualified by row id to display a `<Loader2 />` spinner while the delete mutation is in flight.
