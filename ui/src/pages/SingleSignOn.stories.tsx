@@ -2199,6 +2199,7 @@ export const AsAdminTheProviderSwitchAndEditAreOffered: Story = {
   play: async ({ canvasElement }) => {
     await expectAllowed(canvasElement, "Enable provider Acme Okta", "switch");
     await expectAllowed(canvasElement, "Edit provider Acme Okta");
+    await expectAllowed(canvasElement, "Remove the mapping for platform-engineering");
   },
 };
 
