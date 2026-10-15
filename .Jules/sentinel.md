@@ -45,3 +45,8 @@
 
 **Learning:** `query_failed` in `crates/rolter-control/src/analytics.rs` previously passed raw `err` strings to `tracing::warn!` without URL redaction, and `my_usage` in `crates/rolter-control/src/me.rs` echoed internal database errors (`err.to_string()`) in `500` JSON responses when fetching virtual keys failed.
 **Prevention:** Redact URLs in text using `rolter_core::redact::redact_urls_in_text` when logging ClickHouse/HTTP errors, log database failures internally via `tracing::warn!`, and return a sanitized static error message (such as `"internal server error"`) in HTTP error response bodies.
+
+## 2026-10-24 - Redact Sensitive URL Credentials in WebSocket Proxy Error Logs
+
+**Learning:** `proxy_ws` in `crates/rolter-control/src/proxy.rs` previously logged raw `tungstenite` error messages with `tracing::warn!(%error, ...)` when WebSocket client requests failed URL parsing. Because `tungstenite` quotes the entire URL in its error message, any sensitive query parameters (like virtual keys or session tokens) were logged unredacted in server log streams.
+**Prevention:** Always run error strings generated from client or upstream URL parsing through `rolter_core::redact::redact_urls_in_text` before logging them with `tracing`.
