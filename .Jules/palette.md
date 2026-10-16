@@ -62,3 +62,8 @@
 
 **Learning:** Form dialog submit buttons in `GuardrailProviders.tsx` and `GuardrailRules.tsx` changed label text to `publishing` during async save mutations but lacked inline `<Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" aria-hidden />` icons.
 **Action:** Always pair `disabled={pending}` submit buttons in form dialogs with an inline `<Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" aria-hidden />` icon alongside translated pending text for explicit visual feedback.
+
+## 2026-10-16 - Repository Screens DeleteIconButton Primitive
+
+**Learning:** `PromptRepository.tsx` and `SkillsRepository.tsx` hand-rolled icon delete buttons with `GatedButton` or `Button` and raw `Trash2`, missing standard design system traits like hover border states (`hover:border-[color:var(--status-danger)]`).
+**Action:** Always use the shared `DeleteIconButton` primitive for icon delete buttons across repository headers and editor row items.
