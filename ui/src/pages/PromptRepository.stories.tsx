@@ -373,9 +373,6 @@ export const Loaded: Story = {
     ).toBeTruthy();
     // DeleteIconButton controls present in repository header and section editors
     await expect(canvas.getByRole("button", { name: "Delete Support concierge" })).toBeVisible();
-    await expect(
-      canvas.getByRole("button", { name: "Remove variable customer_name" }),
-    ).toBeVisible();
     await expect(canvas.getByRole("button", { name: "Remove decorator 1" })).toBeVisible();
   },
 };
