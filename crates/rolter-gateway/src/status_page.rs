@@ -90,7 +90,8 @@ async fn poll_one(state: &crate::state::AppState, provider: &str, url: &str) {
         Ok(resp) if resp.status().is_success() => match resp.text().await {
             Ok(t) => t,
             Err(err) => {
-                tracing::warn!(%provider, %err, "status-page body read failed; skipping");
+                let error = rolter_core::redact::redact_urls_in_text(&err.to_string());
+                tracing::warn!(%provider, %error, "status-page body read failed; skipping");
                 return;
             }
         },
@@ -99,7 +100,8 @@ async fn poll_one(state: &crate::state::AppState, provider: &str, url: &str) {
             return;
         }
         Err(err) => {
-            tracing::warn!(%provider, %err, "status-page request failed; skipping");
+            let error = rolter_core::redact::redact_urls_in_text(&err.to_string());
+            tracing::warn!(%provider, %error, "status-page request failed; skipping");
             return;
         }
     };
@@ -162,5 +164,32 @@ mod tests {
         assert_eq!(classify(&s), Some("major".to_string()));
         let s = parse(r#"{"status":{"indicator":"Critical"}}"#);
         assert_eq!(classify(&s), Some("critical".to_string()));
+    }
+
+    #[tokio::test]
+    async fn status_page_error_redacts_credentials_in_urls() {
+        let secret = format!("secret-{}", uuid::Uuid::new_v4().simple());
+        let mut config = GatewayConfig::default();
+        config.providers.push(rolter_core::ProviderConfig {
+            name: "provider-with-secret-status-url".to_string(),
+            status_page_url: Some(format!("http://127.0.0.1:1/status?token={secret}")),
+            ..Default::default()
+        });
+        let state = crate::state::AppState::new(&config);
+
+        let provider = &config.providers[0].name;
+        let url = config.providers[0].status_page_url.as_ref().unwrap();
+
+        // Run poll_one on closed port 1
+        poll_one(&state, provider, url).await;
+
+        // Verify that redact_urls_in_text removes the secret from reqwest error
+        let err_str = format!("error sending request for url ({url}): connection refused");
+        let redacted = rolter_core::redact::redact_urls_in_text(&err_str);
+        assert!(
+            !redacted.contains(&secret),
+            "secret was leaked in error string"
+        );
+        assert!(redacted.contains("token=***"), "token was not redacted");
     }
 }
