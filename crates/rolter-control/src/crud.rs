@@ -6358,7 +6358,10 @@ pub(crate) fn hash_password(password: &str) -> ApiResult<String> {
     Argon2::default()
         .hash_password(password.as_bytes())
         .map(|h| h.to_string())
-        .map_err(|e| ApiError::Core(Error::Config(format!("failed to hash password: {e}"))))
+        .map_err(|e| {
+            tracing::error!(error = %e, "failed to hash password");
+            ApiError::Curated("failed to hash password".into())
+        })
 }
 
 /// minimal email sanity check: trimmed, non-empty, with a single `@` separating
@@ -7652,6 +7655,13 @@ mod error_body_tests {
             body["error"]["message"],
             crate::ingest_failure::INSERT_FAILED
         );
+    }
+
+    #[tokio::test]
+    async fn password_hash_curated_error_renders_as_500() {
+        let (status, body) = rendered(ApiError::Curated("failed to hash password".into())).await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(body["error"]["message"], "failed to hash password");
     }
 
     #[tokio::test]
