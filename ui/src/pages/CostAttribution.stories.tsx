@@ -1053,10 +1053,11 @@ export const ASampledLogSaysSpendIsAnEstimate: Story = {
   },
 };
 
-// the customers screen reads the same log, so it carries the same note
+// the customers screen reads the same log, so it carries the same note, and a
+// member learns the rate as well as a superadmin does (#3057)
 export const CustomersCarryTheSamplingNoteInRussian: Story = {
   render: () => (
-    <Harness fetchStub={withSampleRate(router({}), 0.25)} role="superadmin">
+    <Harness fetchStub={withSampleRate(router({}), 0.25)} role="member">
       <Customers />
     </Harness>
   ),

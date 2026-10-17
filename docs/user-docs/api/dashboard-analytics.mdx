@@ -49,6 +49,16 @@ The filters narrow what your roles already reach and never widen it. Every read 
 
 A **saved view** on the `dashboard` surface can hold `model`, `key`, `business_unit` and `customer` (not `project`) beside `window` and `bucket`; see [Saved views](/security/rbac#saved-views).
 
+## Sampling
+
+With a [`sample_rate`](/observability/log-settings#sampling) below `1` the gateway logs only a share of the requests, and every count, token total and spend figure above is scaled up from that sample, so it is an estimate. `GET /api/v1/analytics/sampling` answers the rate in force, so a client can say so:
+
+```json
+{ "sample_rate": 0.25 }
+```
+
+`1` means every request is logged and the figures are exact. Any role that can read the analytics above can read the rate, viewers included: it is one deployment-wide number and names no tenant. The rest of the logging policy (payload capture, retention) stays behind `GET /api/v1/logging-settings`, which only a superadmin can read. The rate comes from the control plane's database, not ClickHouse, so it answers without `CLICKHOUSE_URL`; a control plane with no database has no route for it.
+
 ## Guardrail outcomes
 
 `GET /api/v1/analytics/guardrails` takes the same `since` and `until` as the other reads and answers what each guardrail did to the requests in that window:

@@ -1,24 +1,65 @@
 //! Global logging-policy API for request-log sampling, payload capture,
 //! retention and the dashboard UX event opt-out.
+//!
+//! The policy itself is a superadmin's to read and write. Its sample rate is
+//! the one value every analytics reader also needs, since below 100 % the
+//! figures the analytics screens show are scaled up from a sample, so
+//! `GET /api/v1/analytics/sampling` hands out that one number to anyone the
+//! analytics reads serve (#3057).
 
 use axum::extract::State;
 use axum::routing::get;
 use axum::{Json, Router};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use rolter_store::postgres::models::LoggingSettings;
 use rolter_store::postgres::repo::{AuditLogRepo, LoggingSettingsRepo};
 
+use crate::analytics_access::AnalyticsAccess;
 use crate::crud::{invalid_field, pool, publish_config_change, ApiResult, SafeJson};
 use crate::rbac::{authorize_superadmin, Principal};
 use crate::rbac_matrix::superadmin_cap;
 use crate::ControlState;
 
 pub(crate) fn router() -> Router<ControlState> {
-    Router::new().route(
-        "/api/v1/logging-settings",
-        get(get_logging_settings).put(update_logging_settings),
-    )
+    Router::new()
+        .route(
+            "/api/v1/logging-settings",
+            get(get_logging_settings).put(update_logging_settings),
+        )
+        .route("/api/v1/analytics/sampling", get(get_log_sampling))
+}
+
+/// What `GET /api/v1/analytics/sampling` answers: the request log's sample
+/// rate and nothing else from the policy.
+#[derive(Debug, Serialize, PartialEq)]
+struct LogSampling {
+    sample_rate: f64,
+}
+
+impl From<&LoggingSettings> for LogSampling {
+    fn from(settings: &LoggingSettings) -> Self {
+        Self {
+            sample_rate: settings.sample_rate,
+        }
+    }
+}
+
+/// The sample rate, for every caller the analytics reads serve (#3057).
+///
+/// The rest of the policy (payload capture, its model and key lists, retention)
+/// stays a superadmin's, so this answers with the one number the dashboard
+/// needs to say that the figures it shows are estimates. The rate is
+/// deployment-wide and names no tenant, so a viewer may learn it like anyone
+/// else who can open the analytics screens.
+async fn get_log_sampling(
+    // authenticates the caller exactly as the analytics reads do; the filter it
+    // resolves is not needed, since the answer holds no tenant's rows
+    _access: AnalyticsAccess,
+    State(state): State<ControlState>,
+) -> ApiResult<Json<LogSampling>> {
+    let settings = LoggingSettingsRepo(pool(&state)).get().await?;
+    Ok(Json(LogSampling::from(&settings)))
 }
 
 async fn get_logging_settings(
@@ -244,6 +285,24 @@ mod tests {
             payload_retention_hours,
             ui_events: None,
         }
+    }
+
+    #[test]
+    fn the_sampling_answer_carries_the_rate_and_nothing_else() {
+        let stored = LoggingSettings {
+            sample_rate: 0.25,
+            payload_capture_enabled: true,
+            payload_capture_max_bytes: 4096,
+            payload_capture_redact_fields: vec!["authorization".to_string()],
+            payload_capture_models: vec!["gpt-4o".to_string()],
+            payload_capture_virtual_key_ids: vec![uuid::Uuid::nil().to_string()],
+            retention_days: 30,
+            payload_retention_hours: 24,
+            ui_events: false,
+            updated_at: chrono::Utc::now(),
+        };
+        let body = serde_json::to_value(LogSampling::from(&stored)).unwrap();
+        assert_eq!(body, serde_json::json!({"sample_rate": 0.25}));
     }
 
     #[test]
