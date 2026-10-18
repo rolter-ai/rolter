@@ -547,10 +547,10 @@ async fn verify_challenge(
 
     // the challenge is single-use whatever happens next
     let _ = MfaRepo(pool).delete_challenge(&token_hash).await;
-    let user = UserRepo(pool)
-        .get(challenge.user_id)
-        .await
-        .map_err(|err| AuthError::Internal(err.to_string()))?;
+    let user = UserRepo(pool).get(challenge.user_id).await.map_err(|err| {
+        tracing::error!(error = %err, "failed to get user for mfa challenge verification");
+        AuthError::Internal("failed to load user".into())
+    })?;
     // the password step knew whether it followed a lockout and wrote it on the
     // challenge, so the session it finally mints says so like any other
     crate::auth::issue_session(&state, user, challenge.after_lock)
@@ -648,7 +648,10 @@ async fn mint_challenge(
     MfaRepo(pool)
         .create_challenge(user_id, &token_hash, expires_at, purpose, after_lock)
         .await
-        .map_err(|err| AuthError::Internal(err.to_string()))?;
+        .map_err(|err| {
+            tracing::error!(error = %err, "failed to create mfa challenge");
+            AuthError::Internal("failed to create challenge".into())
+        })?;
     Ok((token, expires_at))
 }
 
@@ -745,14 +748,17 @@ async fn enrolling_user(
     let user = UserRepo(pool(state))
         .get(challenge.user_id)
         .await
-        .map_err(|err| AuthError::Internal(err.to_string()))?;
+        .map_err(|err| {
+            tracing::error!(error = %err, "failed to get user for mfa enrolment");
+            AuthError::Internal("failed to load user".into())
+        })?;
     if user.deactivated_at.is_some() {
         return Err(AuthError::InvalidCredentials);
     }
-    let armed = repo
-        .has_armed_factor(user.id)
-        .await
-        .map_err(|err| AuthError::Internal(err.to_string()))?;
+    let armed = repo.has_armed_factor(user.id).await.map_err(|err| {
+        tracing::error!(error = %err, "failed to check factor status for mfa enrolment");
+        AuthError::Internal("failed to check factor status".into())
+    })?;
     if armed {
         return Err(AuthError::InvalidCredentials);
     }
@@ -1033,5 +1039,27 @@ mod tests {
         assert_eq!(effective.policy, "required_superadmin");
         assert!(!effective.required);
         assert_eq!(effective.enforce_after, None);
+    }
+
+    #[tokio::test]
+    async fn mint_challenge_error_does_not_leak_database_details() {
+        let pool = sqlx::PgPool::connect_lazy("postgres://user:secret@10.0.0.1:5432/db").unwrap();
+        let state = crate::test_state(pool, None, None);
+        let Err(AuthError::Internal(msg)) = mint_challenge(
+            &state,
+            Uuid::new_v4(),
+            "rolter_mfa",
+            5,
+            ChallengePurpose::Verify,
+            false,
+        )
+        .await
+        else {
+            panic!("expected AuthError::Internal");
+        };
+        assert!(!msg.contains("postgres"));
+        assert!(!msg.contains("secret"));
+        assert!(!msg.contains("10.0.0.1"));
+        assert_eq!(msg, "failed to create challenge");
     }
 }
