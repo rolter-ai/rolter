@@ -64,6 +64,7 @@ mod semantic;
 mod sink_drain;
 mod state;
 mod status_page;
+mod system_one;
 mod trace;
 mod unit_billing;
 mod upstream_failure;
@@ -406,6 +407,10 @@ pub fn build_router(state: AppState, metrics_path: &str, max_body_bytes: usize) 
         .route("/v1/messages", post(handlers::messages))
         .route("/v1/embeddings", post(handlers::embeddings))
         .route("/v1/rerank", post(handlers::rerank))
+        .route(
+            rolter_core::upstream::SYSTEM_ONE_PATH,
+            post(handlers::system_one),
+        )
         .route("/v1/images/generations", post(handlers::images_generations))
         .route("/v1/audio/speech", post(handlers::audio_speech))
         .route(

@@ -40,7 +40,7 @@ OpenTelemetry OTLP export (traces + metrics) to SigNoz/Datadog/Grafana/Langfuse;
 
 ## Phase 8 — Providers & modalities
 
-Around forty provider kinds ship (Azure, Bedrock, Vertex, Gemini, Mistral, OpenRouter, …), with OpenAI⇄Anthropic translation and the embeddings, images, audio and rerank surfaces. Outstanding: pluggable custom AI APIs (#275).
+Around forty provider kinds ship (Azure, Bedrock, Vertex, Gemini, Mistral, OpenRouter, …), with OpenAI⇄Anthropic translation and the embeddings, images, audio, rerank and System One decision surfaces. Outstanding: pluggable custom AI APIs (#275).
 
 ## Phase 9 — Packaging & release ✅
 

@@ -4162,6 +4162,7 @@
       "includesV1": "Include the version prefix — {{kind}} expects it in the base, e.g. https://api.example.com/v1",
       "resolvesTo": {
         "chat": "Chat requests resolve to",
+        "decision": "Decision requests resolve to",
         "embeddings": "Embedding requests resolve to"
       }
     },
@@ -4401,6 +4402,10 @@
       "falcon": {
         "name": "Falcon",
         "description": "G42 and TII's hosted Falcon models"
+      },
+      "system_one": {
+        "name": "System One (decisions)",
+        "description": "Typed decision models on POST /v1/systemone: TypeSafe Jev, vLLM Semantic Router, Ollama"
       }
     },
     "telemetry": {

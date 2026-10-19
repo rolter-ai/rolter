@@ -24,6 +24,7 @@ When no virtual keys are configured the gateway runs open (useful for local dev)
 | POST              | `/v1/messages`                   | Anthropic Messages; streaming supported                                                              |
 | POST              | `/v1/embeddings`                 | OpenAI embeddings; non-streaming                                                                     |
 | POST              | `/v1/rerank`                     | Cohere/Jina rerank; non-streaming                                                                    |
+| POST              | `/v1/systemone`                  | System One typed decisions, forwarded unchanged to a decision server; non-streaming (ADR-0035)       |
 | POST              | `/v1/images/generations`         | OpenAI image generation; non-streaming                                                               |
 | POST              | `/v1/audio/speech`               | OpenAI text-to-speech; binary audio response                                                         |
 | POST              | `/v1/audio/transcriptions`       | OpenAI speech-to-text; `multipart/form-data` upload                                                  |
@@ -204,6 +205,34 @@ This applies to every client dialect (Chat Completions, Messages, Responses) and
 covers new part types a client SDK starts sending. Only `text`/`input_text` and
 `image_url`/`input_image` have Gemini equivalents today; route models that need
 other modalities to a provider whose dialect carries them.
+
+## System One decisions
+
+`POST /v1/systemone` carries typed decisions: a `model`, a `state` (string,
+object or array) and a map of `questions` keyed by caller-chosen ids, each with
+a `type` (`choice`, `score`, `noul`, or whatever else the model supports),
+`instructions` and usually `criteria`. The answer has one entry per id under
+`answers`, plus `usage.input_tokens` and `usage.output_tokens`.
+
+The request runs the same pipeline as `/v1/rerank` and is never translated.
+The target's upstream model replaces `model`, the body is otherwise forwarded
+as sent, and the response comes back as the upstream wrote it. Usage is read
+from the response, so cost follows the model's price row; TypeSafe's Jev bills
+input only, which is a row with `output_per_mtok = 0`.
+
+Which routes answer which endpoint follows the provider kinds behind them
+(ADR-0035, `crates/rolter-gateway/src/system_one.rs`):
+
+- a decision for a route none of whose targets serves decisions
+  (`system_one`, `openai_compatible`, `ollama`) is refused with
+  `400 unsupported_endpoint`;
+- any other endpoint for a route whose targets are all `system_one` is refused
+  the same way, naming `/v1/systemone`;
+- a route that mixes decision and chat targets balances as usual.
+
+Pre-call guardrails scan every string in `state` and in each question's
+`instructions` and `criteria`; ids, option keys and `type` are never rewritten.
+The built-in `fake-llm` model answers decisions deterministically.
 
 ## Authentication errors
 
