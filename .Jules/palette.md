@@ -62,3 +62,8 @@
 
 **Learning:** Form dialog submit buttons in `GuardrailProviders.tsx` and `GuardrailRules.tsx` changed label text to `publishing` during async save mutations but lacked inline `<Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" aria-hidden />` icons.
 **Action:** Always pair `disabled={pending}` submit buttons in form dialogs with an inline `<Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" aria-hidden />` icon alongside translated pending text for explicit visual feedback.
+
+## 2026-10-13 - Rbac Custom Roles DeleteIconButton Primitive
+
+**Learning:** Hand-rolled delete buttons using `RowIconButton` with an ignored `danger` prop lack standard design system hover traits (`hover:border-[color:var(--status-danger)]` and `hover:text-[color:var(--status-danger-text)]`).
+**Action:** Always replace hand-rolled delete buttons on list and card items with `DeleteIconButton` from `@/components/ui/delete-icon-button`.
