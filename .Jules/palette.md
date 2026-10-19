@@ -62,3 +62,8 @@
 
 **Learning:** Form dialog submit buttons in `GuardrailProviders.tsx` and `GuardrailRules.tsx` changed label text to `publishing` during async save mutations but lacked inline `<Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" aria-hidden />` icons.
 **Action:** Always pair `disabled={pending}` submit buttons in form dialogs with an inline `<Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" aria-hidden />` icon alongside translated pending text for explicit visual feedback.
+
+## 2026-10-13 - Group Mappings DeleteIconButton Primitive
+
+**Learning:** Using `RowIconButton` with a raw `Trash2` icon for deleting mapped IdP group rows in `GroupMappings.tsx` disabled all delete buttons during a pending removal without rendering a localized spinner.
+**Action:** Replace custom list-row delete buttons with `DeleteIconButton` from `@/components/ui/delete-icon-button`, qualifying `pending={remove.isPending && removeTarget?.id === mapping.id}` so the active row displays a loading spinner during deletion.
