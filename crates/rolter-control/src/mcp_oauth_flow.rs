@@ -1742,16 +1742,19 @@ mod tests {
     }
 
     #[test]
-    fn resource_parse_errors_on_server_url_are_redacted() {
+    fn resource_parse_errors_never_repeat_credentials() {
         let password = format!("pw-{}", Uuid::new_v4().simple());
-        let invalid_url = format!("https://svc:{password}@mcp.example.com/mcp");
-        let err = ResourceUri::parse(&invalid_url).unwrap_err();
-        let redacted = rolter_core::redact::redact_urls_in_text(&err.to_string());
-        assert!(!redacted.contains(&password), "{redacted}");
-        assert!(
-            redacted.contains("https://***@mcp.example.com/mcp"),
-            "{redacted}"
-        );
+        for invalid_url in [
+            format!("https://svc:{password}@mcp.example.com/mcp"),
+            format!("ftp://svc:{password}@mcp.example.com/mcp?token={password}"),
+            format!("https://?token={password}"),
+        ] {
+            let error = ResourceUri::parse(&invalid_url).unwrap_err().to_string();
+            assert!(
+                !error.contains(&password),
+                "resource parsing leaked a credential"
+            );
+        }
     }
 
     /// #2919: a store fault in the refresh path used to be laundered into a 400
