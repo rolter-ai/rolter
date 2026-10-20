@@ -53,7 +53,6 @@
   - [ADR-0032 — What 1.0.0 guarantees, surface by surface](adr/2026-09-09-one-point-oh-compatibility-guarantees.md)
   - [ADR-0033 — The merge queue is how master stays green](adr/2026-09-18-merge-queue.md)
   - [ADR-0034 — CI is sized to the 20-slot runner pool](adr/2026-09-29-ci-runner-budget.md)
-  - [ADR-0035 — System One decisions: one generic kind on a native pass-through route](adr/2026-10-14-system-one-decision-api.md)
 
 # API
 

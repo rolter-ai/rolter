@@ -1829,7 +1829,6 @@ fn provider_kind_str(kind: &rolter_core::ProviderKind) -> &'static str {
         Sarvam => "sarvam",
         Krutrim => "krutrim",
         Falcon => "falcon",
-        SystemOne => "system_one",
     }
 }
 
@@ -3485,9 +3484,6 @@ mod tests {
             "/models/{model}:generateContent"
         );
         assert_eq!(of("gemini_interactions")["request_path"], "/interactions");
-        assert_eq!(of("system_one")["request_path"], "/v1/systemone");
-        assert_eq!(of("system_one")["request"], "decision");
-        assert_eq!(of("system_one")["auth_header"], "authorization");
 
         assert_eq!(of("anthropic")["auth_header"], "x-api-key");
         assert_eq!(of("azure_openai")["auth_header"], "api-key");

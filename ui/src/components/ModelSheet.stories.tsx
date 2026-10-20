@@ -1606,15 +1606,10 @@ export const PricesPerUnitModels: Story = {
     await expect(await dialog.findByLabelText(AUDIO_LABEL)).toBeVisible();
     await expect(dialog.getByLabelText(SPEECH_LABEL)).toBeVisible();
     await expect(dialog.queryByLabelText(IMAGE_LABEL)).not.toBeInTheDocument();
-    // an audio model's audio tokens are priced too (#3145)
-    await expect(dialog.getByLabelText(AUDIO_IN_TOKENS_LABEL)).toBeVisible();
-    await expect(dialog.getByLabelText(AUDIO_OUT_TOKENS_LABEL)).toBeVisible();
-    await expect(dialog.getByLabelText(CACHED_AUDIO_LABEL)).toBeVisible();
     // and a chat model still gets its rates
     await pickOption(dialog.getByLabelText("Model type"), "chat");
     await expect(await dialog.findByLabelText(/Input USD\/Mtok/)).toBeVisible();
     await expect(dialog.queryByLabelText(AUDIO_LABEL)).not.toBeInTheDocument();
-    await expect(dialog.queryByLabelText(AUDIO_IN_TOKENS_LABEL)).not.toBeInTheDocument();
   },
 };
 
@@ -1970,15 +1965,7 @@ function pricedAt(
   cacheWrite: string | null,
   cacheWrite1h: string | null = null,
   units: Partial<
-    Pick<
-      ModelPriceRow,
-      | "image_per_unit"
-      | "audio_input_per_minute"
-      | "speech_per_mchar"
-      | "audio_input_per_mtok"
-      | "audio_output_per_mtok"
-      | "cached_audio_input_per_mtok"
-    >
+    Pick<ModelPriceRow, "image_per_unit" | "audio_input_per_minute" | "speech_per_mchar">
   > = {},
 ): FetchStub {
   const row: ModelPriceRow = {
@@ -2267,129 +2254,6 @@ export const KeepsTheUnitRatesWhenUntouched: Story = {
     await expect(price).not.toHaveProperty("image_per_unit");
     await expect(price).not.toHaveProperty("audio_input_per_minute");
     await expect(price).not.toHaveProperty("speech_per_mchar");
-  },
-};
-
-const AUDIO_IN_TOKENS_LABEL = "Audio input USD/Mtok";
-const AUDIO_OUT_TOKENS_LABEL = "Audio output USD/Mtok";
-const CACHED_AUDIO_LABEL = "Cached audio input USD/Mtok";
-const AUDIO_TOKEN_KEYS = [
-  "audio_input_per_mtok",
-  "audio_output_per_mtok",
-  "cached_audio_input_per_mtok",
-] as const;
-
-/**
- * An audio model opens on the audio token rates its price row holds (#3145),
- * each saying what empty falls back to, and a save that never touched them
- * names none, so a rate set on the Pricing screen survives.
- */
-export const KeepsTheAudioTokenRatesWhenUntouched: Story = {
-  render: () => (
-    <Stage
-      mode="edit"
-      route={AUDIO_ROUTE}
-      stub={pricedAt(null, null, {
-        audio_input_per_mtok: "32.000000",
-        audio_output_per_mtok: "64.000000",
-        cached_audio_input_per_mtok: "0.400000",
-      })}
-    />
-  ),
-  play: async () => {
-    const dialog = within(sheet());
-    await seeded(dialog);
-    await userEvent.click(dialog.getByRole("button", { name: "Pricing override" }));
-    const audioIn = await dialog.findByLabelText(AUDIO_IN_TOKENS_LABEL);
-    await expect(audioIn).toHaveValue(32);
-    await expect(audioIn).toHaveAttribute("placeholder", "input rate");
-    await expect(audioIn).toHaveAccessibleDescription(
-      "For a realtime or audio model that bills the audio tokens it is sent above its text tokens. Leave empty to price them at the input rate.",
-    );
-    await expect(dialog.getByLabelText(AUDIO_OUT_TOKENS_LABEL)).toHaveValue(64);
-    await expect(dialog.getByLabelText(CACHED_AUDIO_LABEL)).toHaveValue(0.4);
-    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
-    const price = (await calls.expectSentBody("PUT", "/api/v1/model-prices")) as Record<
-      string,
-      unknown
-    >;
-    for (const key of AUDIO_TOKEN_KEYS) await expect(price).not.toHaveProperty(key);
-  },
-};
-
-/** Audio token rates typed into the sheet go under their own keys, and the one left empty is not named. */
-export const SavesTheAudioTokenRates: Story = {
-  render: () => <Stage mode="edit" route={AUDIO_ROUTE} stub={pricedAt(null)} />,
-  play: async () => {
-    const dialog = within(sheet());
-    await seeded(dialog);
-    await userEvent.click(dialog.getByRole("button", { name: "Pricing override" }));
-    const audioIn = await dialog.findByLabelText(AUDIO_IN_TOKENS_LABEL);
-    await expect(audioIn).toHaveValue(null);
-    await userEvent.type(audioIn, "40");
-    await userEvent.type(dialog.getByLabelText(AUDIO_OUT_TOKENS_LABEL), "80");
-    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
-    const price = (await calls.expectSentBody("PUT", "/api/v1/model-prices")) as Record<
-      string,
-      unknown
-    >;
-    await expect(price).toHaveProperty("audio_input_per_mtok", "40");
-    await expect(price).toHaveProperty("audio_output_per_mtok", "80");
-    await expect(price).not.toHaveProperty("cached_audio_input_per_mtok");
-    await expect(price).not.toHaveProperty("audio_input_per_minute");
-  },
-};
-
-/** Emptying a stored audio token rate is `null` on the wire, and the rates left alone are not named. */
-export const ClearsAnAudioTokenRate: Story = {
-  render: () => (
-    <Stage
-      mode="edit"
-      route={AUDIO_ROUTE}
-      stub={pricedAt(null, null, {
-        audio_input_per_mtok: "32.000000",
-        cached_audio_input_per_mtok: "0.400000",
-      })}
-    />
-  ),
-  play: async () => {
-    const dialog = within(sheet());
-    await seeded(dialog);
-    await userEvent.click(dialog.getByRole("button", { name: "Pricing override" }));
-    const cached = await dialog.findByLabelText(CACHED_AUDIO_LABEL);
-    await expect(cached).toHaveValue(0.4);
-    await userEvent.clear(cached);
-    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
-    const price = (await calls.expectSentBody("PUT", "/api/v1/model-prices")) as Record<
-      string,
-      unknown
-    >;
-    await expect(price).toHaveProperty("cached_audio_input_per_mtok", null);
-    await expect(price).not.toHaveProperty("audio_input_per_mtok");
-    await expect(price).not.toHaveProperty("audio_output_per_mtok");
-  },
-};
-
-/**
- * An audio token rate that is not a number of 0 or more is stated at its own
- * input after a refused save, which opens the pricing section and puts focus
- * there; nothing is sent.
- */
-export const RefusesAnInvalidAudioTokenRate: Story = {
-  render: () => <Stage mode="edit" route={AUDIO_ROUTE} stub={pricedAt(null)} />,
-  play: async () => {
-    const dialog = within(sheet());
-    await seeded(dialog);
-    const toggle = dialog.getByRole("button", { name: "Pricing override" });
-    await userEvent.click(toggle);
-    await userEvent.type(await dialog.findByLabelText(AUDIO_OUT_TOKENS_LABEL), "-1");
-    await userEvent.click(toggle);
-    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
-    const field = await dialog.findByLabelText(AUDIO_OUT_TOKENS_LABEL);
-    await waitFor(() => expect(field).toHaveAttribute("aria-invalid", "true"));
-    await waitFor(() => expect(field).toHaveFocus());
-    await expect(field).toHaveAccessibleDescription(/Enter a rate of 0 or more/);
-    calls.expectNotSent("PUT", "/api/v1/model-prices");
   },
 };
 

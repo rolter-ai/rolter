@@ -42,11 +42,6 @@ pub fn probe_request(
             )],
         ),
         ProviderKind::Tei => (format!("{base}/health"), Vec::new()),
-        // typesafe documents `GET /v1/models` (a `models` list of names) and
-        // ollama serves the openai-shaped one, so both are a catalogue. a vllm
-        // semantic router engine publishes its list at `/v1/systemone/models`;
-        // a 404 here still reads healthy, it only lists no models
-        ProviderKind::SystemOne => (format!("{base}/v1/models"), Vec::new()),
         ProviderKind::Bedrock => (bedrock_models_url(base), Vec::new()),
         ProviderKind::Vertex => (vertex_models_url(base), Vec::new()),
         ProviderKind::Openai
@@ -203,22 +198,6 @@ mod tests {
         let (url, headers) = probe_request(ProviderKind::Tei, "http://tei:80/", "/");
         assert_eq!(url, "http://tei:80/health");
         assert!(headers.is_empty());
-    }
-
-    // typesafe answers `GET /v1/models` with `{"models": [{"name": ...}]}`, which
-    // is a catalogue, so a 2xx with some other body is not taken as healthy
-    #[test]
-    fn system_one_probes_the_model_list() {
-        let (url, headers) =
-            probe_request(ProviderKind::SystemOne, "https://api.typesafe.ai/", "/");
-        assert_eq!(url, "https://api.typesafe.ai/v1/models");
-        assert!(headers.is_empty());
-        assert_eq!(
-            probe_expectation(ProviderKind::SystemOne, "/"),
-            ProbeExpectation::Catalogue
-        );
-        let listed = serde_json::json!({"models": [{"name": "jev-latest", "description": "", "release_date": ""}]});
-        assert_eq!(catalogue_ids(&listed), Some(vec!["jev-latest".to_string()]));
     }
 
     #[test]

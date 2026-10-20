@@ -156,22 +156,6 @@ api_key_env = "OPENROUTER_API_KEY"
 # api_base = "https://generativelanguage.googleapis.com/v1beta"
 # api_key_env = "GEMINI_API_KEY"
 #
-# system_one fronts a decision model: typed answers to choice, score and yes/no
-# questions on POST /v1/systemone instead of generated text. One kind covers
-# TypeSafe's hosted Jev, a vLLM Semantic Router engine (vllm-sr serve -e <model>)
-# and Ollama 0.35+. api_base is the server root without /v1; a route whose
-# targets are all system_one answers only /v1/systemone (ADR-0035).
-# [[providers]]
-# name = "typesafe"
-# kind = "system_one"
-# api_base = "https://api.typesafe.ai"
-# api_key_env = "TYPESAFE_API_KEY"
-#
-# [[providers]]
-# name = "vllm-sr"
-# kind = "system_one"
-# api_base = "http://vllm-sr:8899"
-#
 # [[providers]]
 # name = "mistral"
 # kind = "mistral"
@@ -433,13 +417,6 @@ disabled = false # revoke without deleting
 # currency = "USD"               # optional; defaults to USD, not to the base below, so
 #                                # a deployment whose base is another currency needs a USD
 #                                # rate under [currency] or a currency on every price
-#
-# a decision model that bills input only is a zero output rate. jev's input rate is
-# typesafe's published one as of oct 2026 (https://docs.typesafe.ai/models)
-# [[model_prices]]
-# model = "jev"
-# input_per_mtok = 0.042
-# output_per_mtok = 0
 
 # --- currency and conversion rates ---
 # spend and budgets accumulate in `base`. a model priced in any other currency is

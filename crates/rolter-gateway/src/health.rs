@@ -138,8 +138,7 @@ fn free_probe_plan(
 /// `max_tokens = 1` chat completion put through the same
 /// [`TranslationPlan`] a client request takes, so Anthropic, native Gemini and
 /// Gemini Interactions get their own wire format. A text-embeddings server
-/// answers no completion; it is asked for the embedding of one word instead,
-/// and a System One decision server for one yes/no question.
+/// answers no completion; it is asked for the embedding of one word instead.
 fn llm_call_request(
     provider: &rolter_core::ProviderConfig,
     model: &str,
@@ -154,12 +153,6 @@ fn llm_call_request(
         RequestKind::Embeddings => {
             serde_json::json!({ "model": model, "input": "ping" }).to_string()
         }
-        RequestKind::Decision => serde_json::json!({
-            "model": model,
-            "state": "ping",
-            "questions": { "ping": { "type": "noul", "instructions": "Is this a ping?" } },
-        })
-        .to_string(),
         RequestKind::Chat => {
             let chat = serde_json::json!({
                 "model": model,
@@ -1257,17 +1250,6 @@ mod tests {
         assert_eq!(url, "http://tei:80/v1/embeddings");
         let body = json_body(&body);
         assert_eq!(body["input"], "ping");
-        assert!(body.get("messages").is_none());
-    }
-
-    /// a decision server cannot complete either; it is asked one yes/no question
-    #[test]
-    fn llm_call_for_a_decision_server_asks_one_question() {
-        let (url, _, body) = llm_call_plan(ProviderKind::SystemOne, "https://api.typesafe.ai");
-        assert_eq!(url, "https://api.typesafe.ai/v1/systemone");
-        let body = json_body(&body);
-        assert_eq!(body["state"], "ping");
-        assert_eq!(body["questions"]["ping"]["type"], "noul");
         assert!(body.get("messages").is_none());
     }
 

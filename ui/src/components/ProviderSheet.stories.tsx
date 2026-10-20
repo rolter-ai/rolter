@@ -73,13 +73,6 @@ const KINDS = [
     auth_header: "authorization",
   },
   {
-    kind: "system_one",
-    base_includes_v1: false,
-    request: "decision",
-    request_path: "/v1/systemone",
-    auth_header: "authorization",
-  },
-  {
     kind: "gemini_native",
     base_includes_v1: false,
     request: "chat",
@@ -812,18 +805,6 @@ export const PreviewForTextEmbeddingsInference: Story = previewOf("tei", "http:/
   keyHint: "Sent upstream as a bearer token",
   kindName: "Text Embeddings Inference",
 });
-
-/** a System One server answers decisions, so that is the request the sheet previews */
-export const PreviewForSystemOneDecisions: Story = previewOf(
-  "system_one",
-  "https://api.typesafe.ai",
-  {
-    url: "https://api.typesafe.ai/v1/systemone",
-    label: "Decision requests resolve to",
-    keyHint: "Sent upstream as a bearer token",
-    kindName: "System One (decisions)",
-  },
-);
 
 /** native gemini carries the model in the path, shown as the placeholder it is */
 export const PreviewForNativeGemini: Story = previewOf(

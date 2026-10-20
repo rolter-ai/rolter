@@ -1718,26 +1718,6 @@ mod tests {
         literal.parse().expect("a valid decimal literal")
     }
 
-    /// A System One answer states `input_tokens` and `output_tokens` the way
-    /// Anthropic does, so it is reported usage (not `usage_unknown`) and a model
-    /// whose output is free costs exactly its input (#3150).
-    #[test]
-    fn a_decision_reports_its_usage_and_costs_only_its_input() {
-        let body = br#"{"model":"jev-1.13.0","answers":{"q":{"type":"noul","noul":0.9}},"usage":{"input_tokens":307,"output_tokens":3}}"#;
-        let usage = parse_usage(false, body);
-        assert!(usage.reported);
-        assert_eq!((usage.prompt, usage.completion, usage.total), (307, 3, 310));
-
-        let price: rolter_core::ModelPriceConfig = serde_json::from_value(serde_json::json!({
-            "model": "jev-latest",
-            "input_per_mtok": 0.042,
-            "output_per_mtok": 0,
-        }))
-        .expect("a price row");
-        // 307 tokens at $0.042 per million, and nothing for the three answers
-        assert_eq!(usage.cost(&price), d("0.000012894"));
-    }
-
     /// Reads one whole HTTP request (headers, then `Content-Length` body bytes)
     /// from a fake server socket. A single `read` can return a partial request
     /// under load, which made the assertions on the body flake (#3035).

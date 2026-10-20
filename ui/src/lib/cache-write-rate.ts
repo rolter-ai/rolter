@@ -85,36 +85,3 @@ export function cachedAudioPatch(
 ): { cached_audio_input_per_mtok?: string | null } {
   return ratePatch("cached_audio_input_per_mtok", typed, seeded);
 }
-
-/**
- * Every rate a price save keeps when it leaves it out, as a form holds them:
- * the input as it stands, or as it opened. Keyed by the form's own names, so a
- * draft's price object can be passed as it is.
- */
-export interface KeptRates {
-  cacheWrite: string;
-  cacheWrite1h: string;
-  image: string;
-  audioInput: string;
-  speech: string;
-  audioInputTokens: string;
-  audioOutputTokens: string;
-  cachedAudio: string;
-}
-
-/**
- * What a save says about every kept rate: only those whose input changed are
- * named, so a rate left alone stays as stored. The result spreads into the body.
- */
-export function keptRatePatches(typed: KeptRates, seeded: KeptRates) {
-  return {
-    ...cacheWritePatch(typed.cacheWrite, seeded.cacheWrite),
-    ...cacheWrite1hPatch(typed.cacheWrite1h, seeded.cacheWrite1h),
-    ...imagePatch(typed.image, seeded.image),
-    ...audioInputPatch(typed.audioInput, seeded.audioInput),
-    ...speechPatch(typed.speech, seeded.speech),
-    ...audioInputTokenPatch(typed.audioInputTokens, seeded.audioInputTokens),
-    ...audioOutputTokenPatch(typed.audioOutputTokens, seeded.audioOutputTokens),
-    ...cachedAudioPatch(typed.cachedAudio, seeded.cachedAudio),
-  };
-}

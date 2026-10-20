@@ -1646,8 +1646,7 @@ mod tests {
     /// #2811: the dashboard previews `ProviderKind::primary_upstream_url` while an
     /// operator types an API base, so for every kind it has to be the address
     /// the forwarder really builds for the request that kind is chiefly called
-    /// for (an embedding for TEI, a decision for System One, a chat completion
-    /// for the rest).
+    /// for (an embedding for TEI, a chat completion for the rest).
     #[test]
     fn the_previewed_address_is_the_one_the_forwarder_builds() {
         for kind in ProviderKind::ALL {
@@ -1662,10 +1661,6 @@ mod tests {
                 rolter_core::upstream::RequestKind::Embeddings => {
                     ("/v1/embeddings", Bytes::from(r#"{"input":"x"}"#))
                 }
-                rolter_core::upstream::RequestKind::Decision => (
-                    rolter_core::upstream::SYSTEM_ONE_PATH,
-                    Bytes::from(r#"{"model":"m","state":"x","questions":{}}"#),
-                ),
             };
             let plan =
                 TranslationPlan::resolve(gateway_path, kind, rolter_core::RoleProfile::Openai);

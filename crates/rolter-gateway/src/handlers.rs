@@ -971,24 +971,6 @@ pub async fn rerank(
     proxy(state, headers, request_id, body, "/v1/rerank").await
 }
 
-/// `POST /v1/systemone`: a System One typed decision, forwarded unchanged to a
-/// decision server (#3150).
-pub async fn system_one(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    request_id: RequestId,
-    body: Bytes,
-) -> Response {
-    proxy(
-        state,
-        headers,
-        request_id,
-        body,
-        rolter_core::upstream::SYSTEM_ONE_PATH,
-    )
-    .await
-}
-
 pub async fn images_generations(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -1731,13 +1713,6 @@ async fn proxy(
     }
     if let Err(denial) = authorize_route(vk.as_ref(), entry) {
         return refuse.log(denial.into_response());
-    }
-    // a decision model answers only decisions, and a chat api has no decision
-    // endpoint: refuse the crossing rather than forward a request the upstream
-    // would 404 (#3150)
-    if let Some(refusal) = crate::system_one::endpoint_refusal(path, &entry.route, &snap.providers)
-    {
-        return refuse.log(refusal.into_response());
     }
     // the route survived every access check: record what was chosen and close
     // the stage, so what follows is not nested under route selection
@@ -3267,11 +3242,6 @@ async fn proxy_multipart(
     // route the caller could not address with a chat request (#1485)
     if let Err(denial) = authorize_route(vk.as_ref(), entry) {
         return refuse.log(denial.into_response());
-    }
-    // a decision model transcribes nothing either (#3150)
-    if let Some(refusal) = crate::system_one::endpoint_refusal(path, &entry.route, &snap.providers)
-    {
-        return refuse.log(refusal.into_response());
     }
     // the route's own caps, as on the JSON pipeline (#2936)
     let mut route_permit = match route_limit_refusal(&state, entry).await {

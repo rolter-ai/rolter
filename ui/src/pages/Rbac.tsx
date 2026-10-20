@@ -1,5 +1,5 @@
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
-import { KeySquare, Lock, Pencil, Plus, X } from "lucide-react";
+import { KeySquare, Lock, Pencil, Plus, Trash2, X } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
@@ -11,7 +11,6 @@ import { GatedButton } from "@/components/GatedButton";
 import { LoadError } from "@/components/LoadError";
 import { ListSkeleton } from "@/components/LoadingState";
 import { PageBody, Pill, RowIconButton } from "@/components/screen";
-import { DeleteIconButton } from "@/components/ui/delete-icon-button";
 import { Combobox } from "@/components/ui/combobox";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
@@ -765,12 +764,16 @@ function CustomRolesTab({ matrix, orgId }: { matrix: RbacMatrix; orgId?: string 
                 >
                   <Pencil className="h-4 w-4" />
                 </RowIconButton>
-                <DeleteIconButton
+                <RowIconButton
+                  danger
                   gate="custom_role:delete"
                   control="role-delete"
-                  label={t("pages.rbac.custom.deleteRole", { name: role.name })}
+                  aria-label={t("pages.rbac.custom.deleteRole", { name: role.name })}
+                  title={t("pages.rbac.custom.deleteRole", { name: role.name })}
                   onClick={() => startDelete(role)}
-                />
+                >
+                  <Trash2 className="h-4 w-4" />
+                </RowIconButton>
               </div>
             </div>
           );

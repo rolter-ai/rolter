@@ -16,7 +16,6 @@ By default (`path = "/"`), the probe targets each provider kind's **free, non-in
 | ----------------------------- | ----------------------------------------------------------------------- |
 | `openai`, `openai_compatible` | `GET {api_base}/v1/models`                                              |
 | `anthropic`                   | `GET {api_base}/v1/models` with the required `anthropic-version` header |
-| `system_one`                  | `GET {api_base}/v1/models`                                              |
 
 Set an explicit `path` (e.g. `/healthz`) to override this for every provider and probe that exact route instead.
 
@@ -80,7 +79,7 @@ By default the probe hits a free liveness endpoint that burns no tokens. If you 
   The upstream model id the check calls (e.g. `gpt-4o-mini`). **Required** when the flag is on; without it (or a resolvable api key) the checker logs a warning and falls back to the free probe.
 </ParamField>
 
-The check calls the same endpoint a forwarded request would reach, in that provider's own format: the Messages API for `anthropic`, `generateContent` for `gemini_native`, an embedding for a `tei` server, one yes/no question for a `system_one` decision server, and a chat completion for the rest. It follows your `api_base` exactly as routing does, so a base that already ends in `/v1` is not given a second one.
+The check calls the same endpoint a forwarded request would reach, in that provider's own format: the Messages API for `anthropic`, `generateContent` for `gemini_native`, an embedding for a `tei` server, and a chat completion for the rest. It follows your `api_base` exactly as routing does, so a base that already ends in `/v1` is not given a second one.
 
 ### What counts as healthy for an LLM-call check
 

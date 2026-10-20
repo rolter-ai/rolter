@@ -61,7 +61,13 @@ import {
 } from "@/lib/api";
 import { errorText } from "@/lib/error-copy";
 import { readEffectivePolicy } from "@/lib/guardrail-policy";
-import { keptRatePatches, type KeptRates } from "@/lib/cache-write-rate";
+import {
+  audioInputPatch,
+  cacheWrite1hPatch,
+  cacheWritePatch,
+  imagePatch,
+  speechPatch,
+} from "@/lib/cache-write-rate";
 import { useErrorVisibility } from "@/lib/error-visibility";
 import { providersUsableFrom } from "@/lib/provider-scope";
 import type { RouteTargetView } from "@/lib/route-targets";
@@ -149,10 +155,6 @@ interface ModelDraft {
     image: string;
     audioInput: string;
     speech: string;
-    /** the audio token rates of a realtime or audio model (#3145); empty falls back to text */
-    audioInputTokens: string;
-    audioOutputTokens: string;
-    cachedAudio: string;
     cacheRead: string;
     currency: string;
   };
@@ -283,9 +285,6 @@ function blankDraft(
       image: "",
       audioInput: "",
       speech: "",
-      audioInputTokens: "",
-      audioOutputTokens: "",
-      cachedAudio: "",
       cacheRead: "",
       currency: "USD",
     },
@@ -649,17 +648,28 @@ function paramsToApi(draft: ModelDraft): {
  * confirmation of fields the sheet then dropped (#1189). Every key below is a
  * body the save actually puts on the wire.
  */
-/** the kept rates the price row opened with, to tell an edit from an input left alone */
-type SeededRates = KeptRates;
+/** the cache-write rates the price row opened with, to tell an edit from an input left alone */
+interface SeededRates {
+  cacheWrite: string;
+  cacheWrite1h: string;
+  image: string;
+  audioInput: string;
+  speech: string;
+}
 
 /**
  * what a save says about the rates the form does not always replace: the two
- * cache-write rates (#2876, #2902), the per-unit rates (#2937) and the audio
- * token rates (#3145). Only those that were edited are named, so an input left
- * alone keeps what is stored.
+ * cache-write rates (#2876, #2902) and the per-unit rates (#2937). Only those
+ * that were edited are named, so an input left alone keeps what is stored.
  */
 function cacheWritePatches(draft: ModelDraft, seeded: SeededRates) {
-  return keptRatePatches(draft.price, seeded);
+  return {
+    ...cacheWritePatch(draft.price.cacheWrite, seeded.cacheWrite),
+    ...cacheWrite1hPatch(draft.price.cacheWrite1h, seeded.cacheWrite1h),
+    ...imagePatch(draft.price.image, seeded.image),
+    ...audioInputPatch(draft.price.audioInput, seeded.audioInput),
+    ...speechPatch(draft.price.speech, seeded.speech),
+  };
 }
 
 /**
@@ -668,16 +678,7 @@ function cacheWritePatches(draft: ModelDraft, seeded: SeededRates) {
  */
 function pricesAnything(draft: ModelDraft) {
   const p = draft.price;
-  return [
-    p.input,
-    p.output,
-    p.image,
-    p.audioInput,
-    p.speech,
-    p.audioInputTokens,
-    p.audioOutputTokens,
-    p.cachedAudio,
-  ].some((v) => v.trim() !== "");
+  return [p.input, p.output, p.image, p.audioInput, p.speech].some((v) => v.trim() !== "");
 }
 
 function buildPreview(
@@ -1061,10 +1062,7 @@ type FieldKey =
   | "cacheWrite1h"
   | "image"
   | "audioInput"
-  | "speech"
-  | "audioInputTokens"
-  | "audioOutputTokens"
-  | "cachedAudio";
+  | "speech";
 
 export interface ModelSheetProps {
   open: boolean;
@@ -1141,9 +1139,6 @@ export function ModelSheet({
     image: "",
     audioInput: "",
     speech: "",
-    audioInputTokens: "",
-    audioOutputTokens: "",
-    cachedAudio: "",
   });
 
   // data for edit-mode prefill
@@ -1231,9 +1226,6 @@ export function ModelSheet({
         d.price.image = price.image_per_unit ?? "";
         d.price.audioInput = price.audio_input_per_minute ?? "";
         d.price.speech = price.speech_per_mchar ?? "";
-        d.price.audioInputTokens = price.audio_input_per_mtok ?? "";
-        d.price.audioOutputTokens = price.audio_output_per_mtok ?? "";
-        d.price.cachedAudio = price.cached_audio_input_per_mtok ?? "";
         d.price.currency = price.currency || "USD";
       }
     } else if (mode === "view" && configModel) {
@@ -1248,9 +1240,6 @@ export function ModelSheet({
       image: d.price.image,
       audioInput: d.price.audioInput,
       speech: d.price.speech,
-      audioInputTokens: d.price.audioInputTokens,
-      audioOutputTokens: d.price.audioOutputTokens,
-      cachedAudio: d.price.cachedAudio,
     };
     visibility.reset();
     setRefusal(null);
@@ -1413,9 +1402,6 @@ export function ModelSheet({
   const errImage = unitRateError(draft.price.image, "image");
   const errAudioInput = unitRateError(draft.price.audioInput, "audio");
   const errSpeech = unitRateError(draft.price.speech, "audio");
-  const errAudioInputTokens = unitRateError(draft.price.audioInputTokens, "audio");
-  const errAudioOutputTokens = unitRateError(draft.price.audioOutputTokens, "audio");
-  const errCachedAudio = unitRateError(draft.price.cachedAudio, "audio");
   const errParam = draft.params.some(paramRowInvalid) ? t("modelSheet.errors.param") : "";
   const errHeader = draft.headers.some(headerRowInvalid) ? t("modelSheet.errors.header") : "";
   const found: Record<FieldKey, string> = {
@@ -1434,9 +1420,6 @@ export function ModelSheet({
     image: errImage,
     audioInput: errAudioInput,
     speech: errSpeech,
-    audioInputTokens: errAudioInputTokens,
-    audioOutputTokens: errAudioOutputTokens,
-    cachedAudio: errCachedAudio,
   };
   const problems = (Object.keys(found) as FieldKey[]).filter((key) => found[key]);
   // what the sheet says under each field: its error, once it may be shown
@@ -1483,12 +1466,6 @@ export function ModelSheet({
     audioInputErr: `${fid}-audio-input-err`,
     speechHint: `${fid}-speech-hint`,
     speechErr: `${fid}-speech-err`,
-    audioInputTokensHint: `${fid}-audio-input-tokens-hint`,
-    audioInputTokensErr: `${fid}-audio-input-tokens-err`,
-    audioOutputTokensHint: `${fid}-audio-output-tokens-hint`,
-    audioOutputTokensErr: `${fid}-audio-output-tokens-err`,
-    cachedAudioHint: `${fid}-cached-audio-hint`,
-    cachedAudioErr: `${fid}-cached-audio-err`,
   };
 
   // -- persistence ----------------------------------------------------------
@@ -1630,16 +1607,7 @@ export function ModelSheet({
         pricing:
           open.pricing ||
           problems.some((p) =>
-            [
-              "cacheWrite",
-              "cacheWrite1h",
-              "image",
-              "audioInput",
-              "speech",
-              "audioInputTokens",
-              "audioOutputTokens",
-              "cachedAudio",
-            ].includes(p),
+            ["cacheWrite", "cacheWrite1h", "image", "audioInput", "speech"].includes(p),
           ),
       }));
       return;
@@ -1779,9 +1747,6 @@ export function ModelSheet({
       | "image"
       | "audioInput"
       | "speech"
-      | "audioInputTokens"
-      | "audioOutputTokens"
-      | "cachedAudio"
       | "cacheRead",
     label: string,
   ) => {
@@ -1812,16 +1777,7 @@ export function ModelSheet({
                 hintId: ids[`${key}Hint`],
                 errId: ids[`${key}Err`],
               }
-            : key === "audioInputTokens" || key === "audioOutputTokens" || key === "cachedAudio"
-              ? {
-                  // empty is not "not billed" here: it falls back to the text rate
-                  field: key,
-                  placeholder: t(`modelSheet.pricing.${key}Placeholder`),
-                  hint: t(`modelSheet.pricing.${key}Hint`),
-                  hintId: ids[`${key}Hint`],
-                  errId: ids[`${key}Err`],
-                }
-              : null;
+            : null;
     const writeError = write ? shownError(write.field) : "";
     return (
       <div className="space-y-1">
@@ -2235,15 +2191,6 @@ export function ModelSheet({
               <>
                 {priceInput("audioInput", t("modelSheet.pricing.audioInput", { currency: cur }))}
                 {priceInput("speech", t("modelSheet.pricing.speech", { currency: cur }))}
-                {priceInput(
-                  "audioInputTokens",
-                  t("modelSheet.pricing.audioInputTokens", { currency: cur }),
-                )}
-                {priceInput(
-                  "audioOutputTokens",
-                  t("modelSheet.pricing.audioOutputTokens", { currency: cur }),
-                )}
-                {priceInput("cachedAudio", t("modelSheet.pricing.cachedAudio", { currency: cur }))}
               </>
             )}
           </div>

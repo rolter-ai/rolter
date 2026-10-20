@@ -1,7 +1,5 @@
 # Observability
 
-Status-page polling redacts URL credentials from both request and body-read error logs. A transport failure still skips that poll without changing provider health.
-
 ## Metrics
 
 - The gateway exposes Prometheus metrics at `GET /metrics`: counters (`rolter_requests_total`, `rolter_upstream_errors_total`, `rolter_auth_failures_total`, reload/log/budget/rate-limit/retry/cooldown/health/breaker/scrape counters), gauges (`rolter_config_version`, `rolter_breaker_entries`), and per-model **latency histograms** — `rolter_request_latency_ms` (total) and `rolter_request_ttft_ms` (time-to-first-token), each labelled `{model=...}` with the standard `_bucket`/`_sum`/`_count` series. Histograms are observed once per completed request from the log sink, off the response hot path.

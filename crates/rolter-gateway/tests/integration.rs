@@ -2790,39 +2790,6 @@ async fn builtin_fake_llm_serves_rerank() {
 }
 
 #[tokio::test]
-async fn builtin_fake_llm_serves_system_one_decisions() {
-    // no routes configured: the built-in fake-llm answers /v1/systemone locally
-    // with one typed answer per question id (#3150)
-    let gw = serve_gateway(&GatewayConfig::default()).await;
-    let resp = reqwest::Client::new()
-        .post(format!("http://{gw}/v1/systemone"))
-        .json(&json!({
-            "model": "fake-llm",
-            "state": "Our checkout has returned 500 errors since 9am.",
-            "questions": {
-                "department": {
-                    "type": "choice",
-                    "instructions": "Which team owns this?",
-                    "criteria": {"billing": "payments", "engineering": "software errors"}
-                },
-                "is_urgent": {"type": "noul", "instructions": "Is it urgent?"},
-                "impact": {"type": "score", "instructions": "How wide?", "criteria": ["one", "many"]}
-            }
-        }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 200);
-    let body: Value = resp.json().await.unwrap();
-    let choice = body["answers"]["department"]["choice"].as_str().unwrap();
-    assert!(["billing", "engineering"].contains(&choice));
-    assert!(body["answers"]["is_urgent"]["noul"].is_number());
-    assert!(body["answers"]["impact"]["score"].is_number());
-    assert!(body["usage"]["input_tokens"].as_u64().unwrap() > 0);
-    assert_eq!(body["usage"]["output_tokens"], 0);
-}
-
-#[tokio::test]
 async fn builtin_fake_llm_serves_images() {
     // no routes configured: the built-in fake-llm answers image generations locally
     let gw = serve_gateway(&GatewayConfig::default()).await;
