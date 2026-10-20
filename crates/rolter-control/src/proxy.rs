@@ -142,6 +142,7 @@ async fn proxy_http(
         Err(error) => {
             // the driver's message carries the gateway's internal address, and
             // this route answers callers who hold no session (#1840)
+            let error = rolter_core::redact::redact_urls_in_text(&error.to_string());
             tracing::warn!(%error, "gateway unreachable through the /gw proxy");
             return gw_error(StatusCode::BAD_GATEWAY, "gateway unreachable");
         }
