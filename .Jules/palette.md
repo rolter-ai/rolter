@@ -67,3 +67,8 @@
 
 **Learning:** Hand-rolled delete buttons using `RowIconButton` with an ignored `danger` prop lack standard design system hover traits (`hover:border-[color:var(--status-danger)]` and `hover:text-[color:var(--status-danger-text)]`).
 **Action:** Always replace hand-rolled delete buttons on list and card items with `DeleteIconButton` from `@/components/ui/delete-icon-button`.
+
+## 2026-10-20 - GroupMappings DeleteIconButton Primitive
+
+**Learning:** Hand-rolled row icon buttons using `RowIconButton` with an inline `Trash2` icon manually recreate delete button styling and miss standardized hover states (`hover:border-[color:var(--status-danger)]` / `hover:text-[color:var(--status-danger-text)]`) and pending spinner feedback.
+**Action:** Replace hand-rolled row delete buttons with `DeleteIconButton` from `@/components/ui/delete-icon-button`, ensuring `pending={remove.isPending && remove.variables === row.id}` is set to localize spinner visual state.
