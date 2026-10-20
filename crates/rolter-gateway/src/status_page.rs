@@ -166,30 +166,67 @@ mod tests {
         assert_eq!(classify(&s), Some("critical".to_string()));
     }
 
+    #[derive(Clone, Default)]
+    struct Captured(std::sync::Arc<parking_lot::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Captured {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
     #[tokio::test]
     async fn status_page_error_redacts_credentials_in_urls() {
-        let secret = format!("secret-{}", uuid::Uuid::new_v4().simple());
-        let mut config = GatewayConfig::default();
-        config.providers.push(rolter_core::ProviderConfig {
-            name: "provider-with-secret-status-url".to_string(),
-            status_page_url: Some(format!("http://127.0.0.1:1/status?token={secret}")),
-            ..Default::default()
-        });
-        let state = crate::state::AppState::new(&config);
+        use tokio::io::AsyncWriteExt;
+        use tracing::instrument::WithSubscriber;
 
-        let provider = &config.providers[0].name;
-        let url = config.providers[0].status_page_url.as_ref().unwrap();
+        for body_failure in [false, true] {
+            let secret = format!("secret-{}", uuid::Uuid::new_v4().simple());
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                if body_failure {
+                    socket
+                        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1000\r\nConnection: close\r\n\r\n{")
+                        .await
+                        .unwrap();
+                }
+            });
+            let url = format!("http://svc:{secret}@{addr}/status?token={secret}");
+            let state = crate::state::AppState::new(&GatewayConfig::default());
+            let captured = Captured::default();
+            let writer = captured.clone();
+            let subscriber = tracing_subscriber::fmt()
+                .without_time()
+                .with_ansi(false)
+                .with_writer(move || writer.clone())
+                .finish();
 
-        // Run poll_one on closed port 1
-        poll_one(&state, provider, url).await;
+            poll_one(&state, "test-provider", &url)
+                .with_subscriber(subscriber)
+                .await;
+            server.await.unwrap();
 
-        // Verify that redact_urls_in_text removes the secret from reqwest error
-        let err_str = format!("error sending request for url ({url}): connection refused");
-        let redacted = rolter_core::redact::redact_urls_in_text(&err_str);
-        assert!(
-            !redacted.contains(&secret),
-            "secret was leaked in error string"
-        );
-        assert!(redacted.contains("token=***"), "token was not redacted");
+            let seen = String::from_utf8(captured.0.lock().clone()).unwrap();
+            let expected = if body_failure {
+                "status-page body read failed"
+            } else {
+                "status-page request failed"
+            };
+            assert!(
+                seen.contains(expected),
+                "the expected failure was not logged: {seen}"
+            );
+            assert!(
+                !seen.contains(&secret),
+                "a credential reached the status-page log"
+            );
+        }
     }
 }
