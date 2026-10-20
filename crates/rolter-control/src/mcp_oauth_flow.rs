@@ -936,7 +936,11 @@ async fn complete_consent(
         Some(recorded) => ResourceUri::parse(recorded),
         None => ResourceUri::parse(&server.url),
     }
-    .map_err(|e| failed(NotConfigured, server_id)(invalid(e.to_string())))?;
+    .map_err(|e| {
+        failed(NotConfigured, server_id)(invalid(rolter_core::redact::redact_urls_in_text(
+            &e.to_string(),
+        )))
+    })?;
     // never probes: whatever this resolves, the recorded endpoint wins. it is
     // consulted for the client id, and for the token endpoint of a login row
     // written before #1347 recorded one
@@ -1255,7 +1259,7 @@ pub(crate) async fn refresh_session(
     let resource = ResourceUri::parse(&server.url).map_err(|e| {
         // the row would have been refused at registration, so this is a URL
         // that changed under a live session: a permanent answer, not a blip
-        TokenError::Refused(e.to_string())
+        TokenError::Refused(rolter_core::redact::redact_urls_in_text(&e.to_string()))
     })?;
     // the sweeper runs with nobody watching, so it never probes an upstream for
     // metadata: it uses what the last interactive consent cached
@@ -1429,7 +1433,8 @@ async fn exchange_endpoint(
         .await?
         .ok_or_else(|| invalid("session is revoked, expired, or its consent was withdrawn"))?;
     let server = McpServerRepo(pool(&state)).get(context.server_id).await?;
-    let resource = ResourceUri::parse(&server.url).map_err(|e| invalid(e.to_string()))?;
+    let resource = ResourceUri::parse(&server.url)
+        .map_err(|e| invalid(rolter_core::redact::redact_urls_in_text(&e.to_string())))?;
     // a service-to-service call has nobody waiting on a discovery round trip
     // either, so it reads the cache rather than probing
     let client = resolve_client(&state, &server, &resource, false).await?;
@@ -1734,6 +1739,19 @@ mod tests {
         assert!(error.contains("carries userinfo"), "{error}");
         assert!(error.contains("mcp.example.com"), "{error}");
         assert!(!error.contains(&password), "{error}");
+    }
+
+    #[test]
+    fn resource_parse_errors_on_server_url_are_redacted() {
+        let password = format!("pw-{}", Uuid::new_v4().simple());
+        let invalid_url = format!("https://svc:{password}@mcp.example.com/mcp");
+        let err = ResourceUri::parse(&invalid_url).unwrap_err();
+        let redacted = rolter_core::redact::redact_urls_in_text(&err.to_string());
+        assert!(!redacted.contains(&password), "{redacted}");
+        assert!(
+            redacted.contains("https://***@mcp.example.com/mcp"),
+            "{redacted}"
+        );
     }
 
     /// #2919: a store fault in the refresh path used to be laundered into a 400
