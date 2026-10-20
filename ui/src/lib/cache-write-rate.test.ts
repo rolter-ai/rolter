@@ -8,6 +8,8 @@ import {
   cacheWrite1hPatch,
   cacheWritePatch,
   imagePatch,
+  keptRatePatches,
+  type KeptRates,
   speechPatch,
 } from "@/lib/cache-write-rate";
 
@@ -82,5 +84,43 @@ describe("audio token rate patches (#1882)", () => {
     expect(cachedAudioPatch("0.400000", "0.400000")).toEqual({});
     expect(cachedAudioPatch("0.5", "0.400000")).toEqual({ cached_audio_input_per_mtok: "0.5" });
     expect(JSON.stringify(audioOutputTokenPatch("", "64"))).toBe('{"audio_output_per_mtok":null}');
+  });
+});
+
+describe("keptRatePatches", () => {
+  const stored: KeptRates = {
+    cacheWrite: "",
+    cacheWrite1h: "",
+    image: "",
+    audioInput: "0.006000",
+    speech: "",
+    audioInputTokens: "32.000000",
+    audioOutputTokens: "64.000000",
+    cachedAudio: "0.400000",
+  };
+
+  test("names nothing when no input changed, so every stored rate is kept", () => {
+    expect(keptRatePatches(stored, stored)).toEqual({});
+    expect(JSON.stringify(keptRatePatches({ ...stored }, stored))).toBe("{}");
+  });
+
+  test("names only the audio token rates that were set or emptied (#3145)", () => {
+    const typed = { ...stored, audioInputTokens: "40", cachedAudio: "" };
+    expect(keptRatePatches(typed, stored)).toEqual({
+      audio_input_per_mtok: "40",
+      cached_audio_input_per_mtok: null,
+    });
+  });
+
+  test("a rate typed on a model that had none is set, the rest left out", () => {
+    const blank: KeptRates = { ...stored, audioInputTokens: "", audioOutputTokens: "" };
+    expect(keptRatePatches({ ...blank, audioOutputTokens: "80" }, blank)).toEqual({
+      audio_output_per_mtok: "80",
+    });
+  });
+
+  test("reads a draft's price object as it is, extra fields and all", () => {
+    const price = { ...stored, input: "2.5", output: "10", currency: "USD", speech: "15" };
+    expect(keptRatePatches(price, stored)).toEqual({ speech_per_mchar: "15" });
   });
 });

@@ -113,6 +113,14 @@ pub fn document() -> Value {
                     "responses": {"200": {"description": "ranked results", "content": {"application/json": {"schema": {"type": "object"}}}}, "400": error_response}
                 }
             },
+            "/v1/systemone": {
+                "post": {
+                    "summary": "System One typed decisions (choice, score and yes/no questions)",
+                    "operationId": "createDecision",
+                    "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["model", "state", "questions"], "properties": {"model": {"type": "string"}, "state": {"description": "the content the questions are about: a string, an object or an array"}, "questions": {"type": "object", "description": "questions keyed by ids the caller chooses; each has a `type` (`choice`, `score`, `noul`, or another the model supports), `instructions` and usually `criteria`", "additionalProperties": {"type": "object", "required": ["type"], "properties": {"type": {"type": "string"}, "instructions": {}, "criteria": {}}}}}}}}},
+                    "responses": {"200": {"description": "one typed answer per question id, plus usage", "content": {"application/json": {"schema": {"type": "object", "properties": {"model": {"type": "string"}, "answers": {"type": "object"}, "usage": {"type": "object", "properties": {"input_tokens": {"type": "integer"}, "output_tokens": {"type": "integer"}}}}}}}}, "400": error_response}
+                }
+            },
             "/v1/images/generations": {
                 "post": {
                     "summary": "OpenAI image generation",
@@ -307,6 +315,7 @@ mod tests {
             "/v1/messages",
             "/v1/embeddings",
             "/v1/rerank",
+            "/v1/systemone",
             "/v1/images/generations",
             "/v1/audio/speech",
             "/v1/audio/transcriptions",

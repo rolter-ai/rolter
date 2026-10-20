@@ -3,7 +3,8 @@
 //! The gateway's forwarder (`rolter_proxy`) turns a client request path into an
 //! upstream path per kind: Anthropic's API is `/v1/messages`, native Gemini
 //! embeds the model in the path, Gemini Interactions is one model-less
-//! endpoint, and the rest speak OpenAI's chat completions. The dashboard shows
+//! endpoint, a System One decision server answers `/v1/systemone`, and the rest
+//! speak OpenAI's chat completions. The dashboard shows
 //! the resulting address while an operator types an API base, and a preview
 //! that disagrees with the forwarder is worse than none: it is the one place
 //! the URL is checked before a route depends on it (#2811, which found the
@@ -36,6 +37,11 @@ pub const EMBEDDINGS_PATH: &str = "/v1/embeddings";
 /// body.
 pub const GEMINI_INTERACTIONS_PATH: &str = "/interactions";
 
+/// System One typed decisions: one endpoint for every decision model, the
+/// model travels in the body. The gateway serves the same path and forwards it
+/// unchanged.
+pub const SYSTEM_ONE_PATH: &str = "/v1/systemone";
+
 /// Gemini native `generateContent`. `{model}` stands for the upstream model
 /// name the forwarder substitutes per request; streaming swaps the method for
 /// `streamGenerateContent?alt=sse`.
@@ -49,19 +55,47 @@ pub enum RequestKind {
     Chat,
     /// a text embedding
     Embeddings,
+    /// a System One typed decision
+    Decision,
 }
 
 impl ProviderKind {
     /// What this kind is chiefly called for.
     ///
-    /// Only a text-embeddings server answers something other than chat, so the
-    /// request the dashboard previews for it is an embedding, not a completion
-    /// it would answer `404` to.
+    /// A text-embeddings server and a System One decision server are the two
+    /// that answer something other than chat, so the request the dashboard
+    /// previews for them is an embedding or a decision, not a completion they
+    /// would answer `404` to.
     pub fn primary_request(self) -> RequestKind {
         match self {
             ProviderKind::Tei => RequestKind::Embeddings,
+            ProviderKind::SystemOne => RequestKind::Decision,
             _ => RequestKind::Chat,
         }
+    }
+
+    /// Whether this kind answers only System One decisions.
+    ///
+    /// A decision model cannot generate text, embed or call tools, so the
+    /// gateway refuses any other endpoint for a route whose targets are all of
+    /// this kind instead of forwarding a request the upstream would `404`.
+    pub fn decision_only(self) -> bool {
+        self == ProviderKind::SystemOne
+    }
+
+    /// Whether a request for [`SYSTEM_ONE_PATH`] can be forwarded to this kind.
+    ///
+    /// The dedicated kind, and the two self-hosted kinds known to serve the
+    /// same endpoint beside their chat api: an openai-compatible server (which
+    /// is what another gateway fronting decision models looks like) and Ollama,
+    /// which runs decision models over it. Every other kind either translates
+    /// the request into its own dialect or is a hosted chat api that has no
+    /// such endpoint.
+    pub fn serves_decisions(self) -> bool {
+        matches!(
+            self,
+            ProviderKind::SystemOne | ProviderKind::OpenaiCompatible | ProviderKind::Ollama
+        )
     }
 
     /// The upstream path, before the `/v1` rule of
@@ -72,6 +106,7 @@ impl ProviderKind {
             ProviderKind::Anthropic => ANTHROPIC_MESSAGES_PATH,
             ProviderKind::GeminiNative => GEMINI_GENERATE_PATH,
             ProviderKind::GeminiInteractions => GEMINI_INTERACTIONS_PATH,
+            ProviderKind::SystemOne => SYSTEM_ONE_PATH,
             _ => CHAT_COMPLETIONS_PATH,
         }
     }
@@ -98,18 +133,32 @@ mod tests {
             "/models/{model}:generateContent"
         );
         assert_eq!(path(ProviderKind::GeminiInteractions), "/interactions");
+        assert_eq!(path(ProviderKind::SystemOne), "/v1/systemone");
     }
 
     #[test]
-    fn only_tei_is_called_for_embeddings() {
+    fn only_tei_embeds_and_only_system_one_decides() {
         for kind in ProviderKind::ALL {
-            let expected = if kind == ProviderKind::Tei {
-                RequestKind::Embeddings
-            } else {
-                RequestKind::Chat
+            let expected = match kind {
+                ProviderKind::Tei => RequestKind::Embeddings,
+                ProviderKind::SystemOne => RequestKind::Decision,
+                _ => RequestKind::Chat,
             };
             assert_eq!(kind.primary_request(), expected, "{kind:?}");
         }
+    }
+
+    #[test]
+    fn a_decision_only_kind_serves_decisions() {
+        for kind in ProviderKind::ALL {
+            if kind.decision_only() {
+                assert!(kind.serves_decisions(), "{kind:?}");
+                assert_eq!(kind.primary_request(), RequestKind::Decision, "{kind:?}");
+            }
+        }
+        assert!(!ProviderKind::Anthropic.serves_decisions());
+        assert!(!ProviderKind::GeminiInteractions.serves_decisions());
+        assert!(!ProviderKind::OpenaiCompatible.decision_only());
     }
 
     /// The preview is the stripping rule applied to the kind's own path, so a
@@ -137,6 +186,10 @@ mod tests {
             ProviderKind::GeminiInteractions
                 .primary_upstream_url("https://generativelanguage.googleapis.com/v1beta"),
             "https://generativelanguage.googleapis.com/v1beta/interactions"
+        );
+        assert_eq!(
+            ProviderKind::SystemOne.primary_upstream_url("https://api.typesafe.ai"),
+            "https://api.typesafe.ai/v1/systemone"
         );
     }
 
