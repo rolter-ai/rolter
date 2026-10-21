@@ -67,3 +67,8 @@
 
 **Learning:** Hand-rolled delete buttons using `RowIconButton` with an ignored `danger` prop lack standard design system hover traits (`hover:border-[color:var(--status-danger)]` and `hover:text-[color:var(--status-danger-text)]`).
 **Action:** Always replace hand-rolled delete buttons on list and card items with `DeleteIconButton` from `@/components/ui/delete-icon-button`.
+
+## 2026-10-21 - GroupMappings DeleteIconButton Primitive
+
+**Learning:** `GroupMappings.tsx` previously used `RowIconButton` with `danger` prop and an inline `Trash2` icon for group mapping removals, missing standardized `DeleteIconButton` hover states and gating refusal wrappers.
+**Action:** Replace hand-rolled `RowIconButton` delete controls on mapping list rows with `DeleteIconButton` from `@/components/ui/delete-icon-button`.
