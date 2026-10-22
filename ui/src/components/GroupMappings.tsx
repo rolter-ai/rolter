@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Loader2, Trash2 } from "lucide-react";
+import { Loader2 } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
@@ -16,8 +16,8 @@ import {
   useOrgScope,
   type ScopeTarget,
 } from "@/components/OrgScopePicker";
-import { RowIconButton } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
+import { DeleteIconButton } from "@/components/ui/delete-icon-button";
 import { Combobox } from "@/components/ui/combobox";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
@@ -244,18 +244,15 @@ export function GroupMappings({
               </span>
               <OrgScopePill scope={scope} value={mapping} />
               <Badge tone="neutral">{roleLabel(t, mapping.role)}</Badge>
-              <RowIconButton
-                danger
+              <DeleteIconButton
                 className="ml-auto"
                 gate={gate.delete}
                 control="mapping-remove"
                 title={t("groupMappings.remove")}
-                aria-label={t("groupMappings.removeNamed", { group: mapping.group_name })}
-                disabled={remove.isPending}
+                label={t("groupMappings.removeNamed", { group: mapping.group_name })}
+                pending={remove.isPending && removeTarget?.id === mapping.id}
                 onClick={() => startRemove(mapping)}
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-              </RowIconButton>
+              />
             </li>
           ))}
         </ul>
