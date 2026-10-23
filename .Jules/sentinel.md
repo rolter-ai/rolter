@@ -45,3 +45,8 @@
 
 **Learning:** `query_failed` in `crates/rolter-control/src/analytics.rs` previously passed raw `err` strings to `tracing::warn!` without URL redaction, and `my_usage` in `crates/rolter-control/src/me.rs` echoed internal database errors (`err.to_string()`) in `500` JSON responses when fetching virtual keys failed.
 **Prevention:** Redact URLs in text using `rolter_core::redact::redact_urls_in_text` when logging ClickHouse/HTTP errors, log database failures internally via `tracing::warn!`, and return a sanitized static error message (such as `"internal server error"`) in HTTP error response bodies.
+
+## 2026-10-23 - Redact Internal ClickHouse Error Messages in Alert Evaluation Responses
+
+**Learning:** `describe_query_error` in `crates/rolter-control/src/alerting.rs` previously formatted non-reqwest ClickHouse query errors into `SignalError` using `truncate(&error.to_string(), ...)`. When an alert evaluation query failed, this raw ClickHouse error message (carrying SQL query details or database exception traces) was stored on the rule and echoed directly in HTTP 500 error response bodies from `POST /api/v1/alert-rules/{id}/evaluate`.
+**Prevention:** Always log detailed internal query/database errors via `tracing::warn!` with URL redaction and return generic, sanitized error strings (such as `"analytics query failed"`) in API HTTP error response bodies.
