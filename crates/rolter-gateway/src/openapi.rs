@@ -160,6 +160,19 @@ pub fn document() -> Value {
                     "responses": {"200": {"description": "model list", "content": {"application/json": {"schema": {"type": "object"}}}}}
                 }
             },
+            "/v1/realtime": {
+                "get": {
+                    "summary": "OpenAI Realtime WebSocket session",
+                    "operationId": "realtimeSession",
+                    "parameters": [
+                        {"name": "model", "in": "query", "required": true, "schema": {"type": "string"}, "description": "a public model name served by this gateway"}
+                    ],
+                    "responses": {
+                        "101": {"description": "WebSocket upgrade"},
+                        "400": error_response, "401": error_response, "429": error_response, "503": error_response
+                    }
+                }
+            },
             "/mcp/{server}": {
                 "parameters": [
                     {"name":"server","in":"path","required":true,"schema":{"type":"string"},"description":"organization-scoped MCP server slug"}
@@ -321,6 +334,7 @@ mod tests {
             "/v1/audio/transcriptions",
             "/v1/audio/translations",
             "/v1/models",
+            "/v1/realtime",
             "/mcp/{server}",
             "/mcp/{server}/{path}",
             "/healthz",
