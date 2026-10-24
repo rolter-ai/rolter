@@ -13,6 +13,10 @@ When no virtual keys are configured the gateway runs open (useful for local dev)
 
 ## Endpoints (v1)
 
+The served OpenAPI document includes `GET /v1/realtime` with its required
+`model` query parameter, WebSocket upgrade response and pre-upgrade admission
+failures.
+
 | Method            | Path                             | Notes                                                                                                |
 | ----------------- | -------------------------------- | ---------------------------------------------------------------------------------------------------- |
 | POST              | `/v1/chat/completions`           | OpenAI chat; streaming via `"stream": true` (SSE)                                                    |
