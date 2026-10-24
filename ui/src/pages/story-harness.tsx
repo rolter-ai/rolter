@@ -851,14 +851,17 @@ export function sheet(): HTMLElement {
 }
 
 /**
- * `inner`, with the deployment's logging settings answering at `rate`, the
- * request-log sample rate the analytics screens note when it is below 1
- * (#2231). Mount the screen as `superadmin`: the settings are readable by no
- * other role, so a screen asks nobody else.
+ * `inner`, with the request-log sample rate answering at `rate`, the rate the
+ * analytics screens note when it is below 1 (#2231). Every role that reads
+ * analytics learns it from `GET /api/v1/analytics/sampling` (#3057); the full
+ * logging settings, a superadmin's alone, answer at the same rate for a screen
+ * that reads them too.
  */
 export function withSampleRate(inner: FetchStub, rate: number): FetchStub {
   return async (input, init) => {
-    if (new URL(String(input), "http://localhost").pathname === "/api/v1/logging-settings") {
+    const path = new URL(String(input), "http://localhost").pathname;
+    if (path === "/api/v1/analytics/sampling") return json({ sample_rate: rate });
+    if (path === "/api/v1/logging-settings") {
       return json({
         sample_rate: rate,
         payload_capture_enabled: false,
