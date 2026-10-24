@@ -237,6 +237,10 @@ export const Loaded: Story = {
     await expect(within(canvasElement).queryByText("Immutable")).toBeNull();
     // the shell's ScreenHeader owns the page's only h1 (#2241)
     await expect(within(canvasElement).queryAllByRole("heading", { level: 1 })).toHaveLength(0);
+    // DeleteIconButton control present in repository header
+    await expect(
+      within(canvasElement).getByRole("button", { name: "Delete Incident coordinator" }),
+    ).toBeVisible();
   },
 };
 
