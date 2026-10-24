@@ -193,14 +193,14 @@ jobs:
         run: cargo fetch --locked
       - name: initialize codeql
         if: matrix.leg != 'rust' || steps.scope.outputs.analyze != 'false'
-        uses: github/codeql-action/init@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        uses: github/codeql-action/init@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
         with:
           languages: ${{ matrix.languages }}
           build-mode: none
           config-file: ./.github/codeql/codeql-config.yml
       - name: analyze
         if: matrix.leg == 'rust' && steps.scope.outputs.analyze != 'false'
-        uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        uses: github/codeql-action/analyze@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
         with:
           category: "/language:rust"
       # analyze takes one `category` for every language it ran, and the cli
@@ -211,7 +211,7 @@ jobs:
       # failed analyze still uploads its debugging sarif (`failure-only`)
       - name: analyze (actions, javascript-typescript, python)
         if: matrix.leg != 'rust'
-        uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        uses: github/codeql-action/analyze@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
         with:
           upload: failure-only
           output: ${{ runner.temp }}/codeql-sarif
