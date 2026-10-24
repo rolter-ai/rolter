@@ -1208,9 +1208,9 @@ fn reading(signal: &str, value: Option<f64>, samples: Option<f64>) -> Option<f64
 /// A bounded description of a failed signal query that is safe to store.
 ///
 /// A transport error's message carries the request URL, and `CLICKHOUSE_URL`
-/// may hold a password, so those are reduced to their class. A ClickHouse error
-/// response is kept, truncated: its status and exception text are what an
-/// operator needs to fix the query, and neither names the endpoint.
+/// may hold a password, so those are reduced to their class. ClickHouse error
+/// responses may expose SQL or internal schema details, so their text stays in
+/// the URL-redacted server log rather than reaching API clients.
 fn describe_query_error(error: &anyhow::Error) -> SignalError {
     if let Some(error) = error.downcast_ref::<reqwest::Error>() {
         let (code, class) = if error.is_timeout() {
@@ -1805,6 +1805,14 @@ mod tests {
         assert_eq!(held_state("error", &[row("resolved")]), "ok");
         assert_eq!(held_state("error", &[]), "unknown");
         assert_eq!(held_state("ok", &[row("firing")]), "ok");
+    }
+
+    #[test]
+    fn query_errors_do_not_expose_internal_exception_details() {
+        let error = anyhow::anyhow!("DB::Exception: unknown table private_schema.requests");
+        let described = describe_query_error(&error);
+        assert_eq!(described.message, "analytics query failed");
+        assert_eq!(described.code, error_code::CLICKHOUSE_ERROR);
     }
 
     #[test]

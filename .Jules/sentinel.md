@@ -50,3 +50,9 @@
 
 **Learning:** `describe_query_error` in `crates/rolter-control/src/alerting.rs` previously formatted non-reqwest ClickHouse query errors into `SignalError` using `truncate(&error.to_string(), ...)`. When an alert evaluation query failed, this raw ClickHouse error message (carrying SQL query details or database exception traces) was stored on the rule and echoed directly in HTTP 500 error response bodies from `POST /api/v1/alert-rules/{id}/evaluate`.
 **Prevention:** Always log detailed internal query/database errors via `tracing::warn!` with URL redaction and return generic, sanitized error strings (such as `"analytics query failed"`) in API HTTP error response bodies.
+
+
+## 2026-10-24 - Redact Sensitive URL Credentials in WebSocket Proxy Error Logs
+
+**Learning:** `proxy_ws` in `crates/rolter-control/src/proxy.rs` previously logged raw `tungstenite` error messages with `tracing::warn!(%error, ...)` when WebSocket client requests failed URL parsing. Because `tungstenite` quotes the entire URL in its error message, any sensitive query parameters (like virtual keys or session tokens) were logged unredacted in server log streams.
+**Prevention:** Always run error strings generated from client or upstream URL parsing through `rolter_core::redact::redact_urls_in_text` before logging them with `tracing`.

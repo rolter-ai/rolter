@@ -1,5 +1,7 @@
 # Observability
 
+The [environment variable reference](../../user-docs/configuration/environment-variables.mdx#shared-variables) lists the general OTLP endpoint and each signal override. Metrics export independently; the log bridge is installed alongside an active trace exporter, so a logs-only endpoint does not activate it. Stdout logs and Prometheus scraping remain available.
+
 ## Metrics
 
 - The gateway exposes Prometheus metrics at `GET /metrics`: counters (`rolter_requests_total`, `rolter_upstream_errors_total`, `rolter_auth_failures_total`, reload/log/budget/rate-limit/retry/cooldown/health/breaker/scrape counters), gauges (`rolter_config_version`, `rolter_breaker_entries`), and per-model **latency histograms** — `rolter_request_latency_ms` (total) and `rolter_request_ttft_ms` (time-to-first-token), each labelled `{model=...}` with the standard `_bucket`/`_sum`/`_count` series. Histograms are observed once per completed request from the log sink, off the response hot path.
@@ -751,8 +753,9 @@ newline from a file would otherwise fail every delivery with no hint.
 A failed evaluation writes `state = 'error'` and a `last_error` that is safe to
 show: a transport error is reduced to its class (`reqwest`'s message carries
 the URL, and `CLICKHOUSE_URL` can hold a password), while a ClickHouse error
-response keeps its status and exception text, cut at 512 bytes. The raw error
-goes to the log as `alert signal query failed`.
+response becomes `analytics query failed` with code `clickhouse_error`. SQL and
+exception details stay in the server log as `alert signal query failed`, with
+URL credentials redacted, rather than reaching the stored rule or API response.
 
 ## Request & cost logs
 

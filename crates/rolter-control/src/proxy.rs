@@ -142,6 +142,7 @@ async fn proxy_http(
         Err(error) => {
             // the driver's message carries the gateway's internal address, and
             // this route answers callers who hold no session (#1840)
+            let error = rolter_core::redact::redact_urls_in_text(&error.to_string());
             tracing::warn!(%error, "gateway unreachable through the /gw proxy");
             return gw_error(StatusCode::BAD_GATEWAY, "gateway unreachable");
         }
@@ -184,6 +185,7 @@ fn proxy_ws(
             request
         }
         Err(error) => {
+            let error = rolter_core::redact::redact_urls_in_text(&error.to_string());
             tracing::warn!(%error, "invalid realtime url for the /gw proxy");
             return gw_error(StatusCode::BAD_GATEWAY, "invalid realtime url");
         }
@@ -400,5 +402,15 @@ mod tests {
             ws_url("https://gw.example.com/", "/v1/realtime", ""),
             "wss://gw.example.com/v1/realtime"
         );
+    }
+
+    #[test]
+    fn a_realtime_proxy_url_error_redacts_sensitive_urls() {
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+        let secret = format!("sk-test-{}", uuid::Uuid::new_v4().simple());
+        let bad_url = format!("ws://invalid url space/v1/realtime?api_key={secret}");
+        let err = bad_url.into_client_request().unwrap_err();
+        let redacted = rolter_core::redact::redact_urls_in_text(&err.to_string());
+        assert!(!redacted.contains(&secret), "{redacted}");
     }
 }
