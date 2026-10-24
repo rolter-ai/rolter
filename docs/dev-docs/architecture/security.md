@@ -11,6 +11,8 @@
 
 Password-hashing failures are server faults: user CRUD returns a curated HTTP 500 (`failed to hash password`) and logs the Argon2 diagnostic internally. Invalid password lengths remain HTTP 400 validation errors.
 
+The `/gw` proxy also redacts URL credentials in HTTP transport errors and invalid realtime WebSocket URL errors before logging them. Client-facing proxy errors remain fixed messages with no upstream address.
+
 ## Transport
 
 - Upstream calls use rustls (no OpenSSL). HTTP/2 keep-alive with connection pooling.

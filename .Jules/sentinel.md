@@ -50,3 +50,9 @@
 
 **Learning:** `hash_password` in `crates/rolter-control/src/crud.rs` previously wrapped Argon2 password hashing failures in `ApiError::Core(Error::Config(format!("failed to hash password: {e}")))`, which rendered as HTTP 400 Bad Request with raw Argon2 error details echoed to clients.
 **Prevention:** Log internal cryptographic library errors with `tracing::error!` and return `ApiError::Curated("failed to hash password".into())` so clients receive a sanitized HTTP 500 response.
+
+
+## 2026-10-24 - Redact Sensitive URL Credentials in WebSocket Proxy Error Logs
+
+**Learning:** `proxy_ws` in `crates/rolter-control/src/proxy.rs` previously logged raw `tungstenite` error messages with `tracing::warn!(%error, ...)` when WebSocket client requests failed URL parsing. Because `tungstenite` quotes the entire URL in its error message, any sensitive query parameters (like virtual keys or session tokens) were logged unredacted in server log streams.
+**Prevention:** Always run error strings generated from client or upstream URL parsing through `rolter_core::redact::redact_urls_in_text` before logging them with `tracing`.
