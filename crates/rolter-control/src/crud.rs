@@ -250,6 +250,8 @@ pub(crate) enum ApiError {
     /// purpose, such as a store that is not configured or a write it refused.
     /// Rendered verbatim, so it must never carry anything a driver said.
     Curated(String),
+    /// The deployment cannot seal a credential until its KEK is configured (503).
+    KekUnavailable(String),
     /// A [`ApiError::Curated`] failure (500) that also carries a stable `code`
     /// a client can translate. `code` is part of the API and never renamed
     CodedInternal { code: &'static str, message: String },
@@ -313,6 +315,7 @@ impl IntoResponse for ApiError {
             | Self::CodedForbidden { code, .. }
             | Self::CodedInternal { code, .. }
             | Self::BadGateway { code, .. } => Some(*code),
+            Self::KekUnavailable(_) => Some("kek_unavailable"),
             Self::InvalidField { .. } => Some(INVALID_FIELD),
             Self::InvalidBody(_) => Some(INVALID_BODY),
             Self::InvalidQuery(_) => Some(INVALID_QUERY),
@@ -359,6 +362,7 @@ impl IntoResponse for ApiError {
             Self::Curated(message) | Self::CodedInternal { message, .. } => {
                 (StatusCode::INTERNAL_SERVER_ERROR, message)
             }
+            Self::KekUnavailable(message) => (StatusCode::SERVICE_UNAVAILABLE, message),
             Self::BadGateway { message, .. } => (StatusCode::BAD_GATEWAY, message),
             Self::InvalidField { message, .. }
             | Self::InvalidBody(message)
@@ -3261,14 +3265,14 @@ fn seal_api_key(api_key: &str) -> ApiResult<(Vec<u8>, Vec<u8>)> {
     use rolter_store::postgres::crypto::{Kek, KEK_ENV};
     require_non_empty(api_key, "api_key")?;
     let Some(kek) = Kek::from_env() else {
-        return Err(ApiError::Core(Error::Config(format!(
+        return Err(ApiError::KekUnavailable(format!(
             // only the control plane holds the KEK: it unseals provider keys
             // when it builds the snapshot, and gateways receive them over the
             // token-guarded /internal/snapshot, so naming the gateway here
             // would send operators to copy the KEK where it is not needed
             "storing provider keys requires the {KEK_ENV} environment variable on the \
              control plane to seal them at rest"
-        ))));
+        )));
     };
     Ok(kek.encrypt(api_key)?)
 }
@@ -7606,6 +7610,16 @@ mod cap_edit_tests {
 #[cfg(test)]
 mod error_body_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn missing_kek_is_a_coded_deployment_refusal() {
+        let (status, body) =
+            rendered(ApiError::KekUnavailable("configure ROLTER_KEK".into())).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body["error"]["code"], "kek_unavailable");
+        assert_eq!(body["error"]["message"], "configure ROLTER_KEK");
+        assert!(body["error"].get("field").is_none());
+    }
 
     async fn rendered(err: ApiError) -> (StatusCode, serde_json::Value) {
         let response = err.into_response();

@@ -118,11 +118,11 @@ fn kek(state: &ControlState) -> ApiResult<Kek> {
     Kek::from_env()
         .filter(|_| !state.mfa_without_kek)
         .ok_or_else(|| {
-            ApiError::Core(Error::Config(
+            ApiError::KekUnavailable(
                 "enrolling a second factor requires the ROLTER_KEK environment variable on the \
                  control plane, so the shared secret is sealed at rest"
                     .to_string(),
-            ))
+            )
         })
 }
 

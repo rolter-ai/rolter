@@ -214,6 +214,7 @@ fn api_error_message(err: ApiError) -> String {
         | ApiError::CodedConflict { message: msg, .. }
         | ApiError::BadGateway { message: msg, .. }
         | ApiError::InvalidField { message: msg, .. }
+        | ApiError::KekUnavailable(msg)
         | ApiError::InvalidBody(msg)
         | ApiError::InvalidQuery(msg)
         | ApiError::CodedForbidden { message: msg, .. } => msg,
@@ -1292,9 +1293,8 @@ async fn create_provider(
     let sealed = match &body.client_secret {
         Some(secret) if !secret.is_empty() => {
             let kek = Kek::from_env().ok_or_else(|| {
-                invalid_field(
-                    "client_secret",
-                    "ROLTER_KEK must be configured to store a client secret",
+                ApiError::KekUnavailable(
+                    "ROLTER_KEK must be configured to store a client secret".into(),
                 )
             })?;
             Some(kek.encrypt(secret)?)
@@ -1441,9 +1441,8 @@ async fn update_provider(
     let sealed = match &body.client_secret {
         Some(secret) if !secret.is_empty() => {
             let kek = Kek::from_env().ok_or_else(|| {
-                invalid_field(
-                    "client_secret",
-                    "ROLTER_KEK must be configured to store a client secret",
+                ApiError::KekUnavailable(
+                    "ROLTER_KEK must be configured to store a client secret".into(),
                 )
             })?;
             Some(kek.encrypt(secret)?)

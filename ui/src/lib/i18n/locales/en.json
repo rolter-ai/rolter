@@ -310,6 +310,7 @@
       "generic": "The server rejected this request.",
       "invalidFieldNamed": "The value of {{field}} is not accepted. Correct it and try again.",
       "codes": {
+        "kek_unavailable": "The control plane cannot seal credentials. Ask an operator to configure ROLTER_KEK and restart it.",
         "analytics_query_timeout": "The analytics query took too long. Narrow the time range and try again.",
         "analytics_query_failed": "The analytics query failed.",
         "internal": "The control plane hit an internal error.",

@@ -115,7 +115,15 @@ Operations that can refuse this way list the `409` in the schema.
 `message` is English text for the person reading it and may change between
 releases. `code` is part of the API and is never renamed, so branch on it — the
 dashboard uses it to show the refusal in the reader's language. The status code
-of each refusal is unchanged; the code only adds to it.
+of each refusal is listed below.
+
+Credential-sealing requests without a configured `ROLTER_KEK` return `503` and
+`error.code: "kek_unavailable"`, not a field-validation `400`. Configure the
+existing deployment key on the control plane and restart it before retrying;
+do not generate a replacement key for a store that already contains sealed
+secrets. This applies to provider keys, MCP credentials, SSO client-secret
+writes, connector/channel credentials and second-factor enrolment. Existing
+sign-in and policy lockout refusals keep their own contracts.
 
 | Code                               | Status | When                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | ---------------------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |

@@ -389,10 +389,9 @@ fn validate_rule(input: &RuleInput) -> ApiResult<()> {
 
 fn seal(secret: &str) -> ApiResult<(Vec<u8>, Vec<u8>)> {
     let Some(kek) = Kek::from_env() else {
-        return Err(invalid_field(
-            "managed_secret",
-            format!("storing channel credentials requires {KEK_ENV}"),
-        ));
+        return Err(ApiError::KekUnavailable(format!(
+            "storing channel credentials requires {KEK_ENV}"
+        )));
     };
     kek.encrypt(secret)
         .map_err(|_| ApiError::Curated("failed to encrypt channel credential".into()))

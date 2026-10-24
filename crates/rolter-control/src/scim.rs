@@ -886,6 +886,9 @@ impl From<ApiError> for ScimError {
             ApiError::Curated(message) | ApiError::CodedInternal { message, .. } => {
                 Self::new(StatusCode::INTERNAL_SERVER_ERROR, None, message)
             }
+            ApiError::KekUnavailable(message) => {
+                Self::new(StatusCode::SERVICE_UNAVAILABLE, None, message)
+            }
             ApiError::BadGateway { message, .. } => {
                 Self::new(StatusCode::BAD_GATEWAY, None, message)
             }
