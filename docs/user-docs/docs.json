@@ -170,6 +170,7 @@
               "api/version",
               "api/public-url",
               "api/change-password",
+              "api/tenancy",
               "api/member-management",
               "api/org-projects",
               "api/teams",

@@ -1,0 +1,138 @@
+---
+title: "Organizations, Teams and Projects"
+sidebarTitle: "Tenancy"
+description: "Navigate the organization, team and project hierarchy, create its resources, and grant scoped roles through the control plane API."
+---
+
+The control plane groups configuration and access into three nested resources:
+
+```text
+organization
+└── team
+    └── project
+        ├── routes
+        └── virtual keys
+```
+
+An organization is the tenant boundary. A team groups projects within that
+organization; a project is the scope for its routes and virtual keys. Providers
+and provider groups belong to an organization and can optionally be restricted
+to one project. A project-scoped provider cannot be used by another project's
+route. See [Providers](/api/providers) and [Roles and permissions](/security/rbac).
+
+Resource ids are UUIDs. Use the ids returned by creation or listing rather than
+matching names: different teams can each contain a project named `prod`.
+
+## Navigate the hierarchy
+
+All calls below go to the **control plane**, not the gateway. Authenticate with
+a dashboard session or the deployment admin token. The API is available in
+Postgres-backed deployments; see the [control-plane reference](/api/control-plane-openapi).
+
+| Request                                | Result                                                                      |
+| -------------------------------------- | --------------------------------------------------------------------------- |
+| `GET /api/v1/orgs`                     | Organizations the caller can reach through an org, team or project role     |
+| `GET /api/v1/orgs/{org_id}/teams`      | Visible teams in the organization                                           |
+| `GET /api/v1/teams/{team_id}/projects` | Visible projects in one team                                                |
+| `GET /api/v1/orgs/{org_id}/projects`   | Visible projects across the organization, including each owning team's name |
+
+Lists follow the caller's scope. An org-wide reader can list all its projects;
+a team- or project-scoped reader gets only projects covered by their grants,
+not a wider view merely because the URL names the organization. A caller with
+no permitted projects is refused rather than given another tenant's inventory.
+A superadmin or deployment admin token has deployment-wide access.
+
+Use the [organization-wide project list](/api/org-projects) for a cross-team
+picker instead of issuing one request per team. Use the per-team list when the
+team is already known. [Project settings](/api/project-settings) documents the
+settings of an individual project.
+
+## Create an organization, team and project
+
+Create parents before children and retain each response's `id`:
+
+| Request                                 | JSON body                       | Required authority                |
+| --------------------------------------- | ------------------------------- | --------------------------------- |
+| `POST /api/v1/orgs`                     | `{"name":"Acme","slug":"acme"}` | Deployment superadmin             |
+| `POST /api/v1/orgs/{org_id}/teams`      | `{"name":"Platform"}`           | `team:create` at the organization |
+| `POST /api/v1/teams/{team_id}/projects` | `{"name":"prod"}`               | `project:create` at the team      |
+
+Creation returns `200` with the new row. An organization carries `id`, `name`,
+`slug` and `created_at`; a team carries `org_id`; a project carries `team_id`.
+A name must not be blank. A duplicate name within the parent's namespace, or
+a duplicate organization slug, is refused with `409 name_taken`.
+
+For example, after creating the organization and setting `ORG_ID` from its
+response, create a team:
+
+```bash
+curl -s -X POST "$ROLTER_CONTROL_URL/api/v1/orgs/$ORG_ID/teams" \
+  -H "Authorization: Bearer $ROLTER_ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Platform"}'
+```
+
+Take `id` from that response as `TEAM_ID`, then create the project:
+
+```bash
+curl -s -X POST "$ROLTER_CONTROL_URL/api/v1/teams/$TEAM_ID/projects" \
+  -H "Authorization: Bearer $ROLTER_ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"prod"}'
+```
+
+Creating the hierarchy does not grant an existing account membership in it.
+Create a role grant separately, or use an invitation for someone joining it.
+
+## Grant access at the right scope
+
+An account can hold independent grants at organization, team and project scope.
+A role inherited from a parent applies below it; a project grant does not grant
+access to its sibling projects. Roles are `viewer`, `member` and `admin`.
+
+`POST /api/v1/orgs/{org_id}/memberships` grants an existing user a role:
+
+```json
+{
+  "user_id": "11111111-1111-4111-8111-111111111111",
+  "scope_type": "project",
+  "scope_id": "22222222-2222-4222-8222-222222222222",
+  "role": "member"
+}
+```
+
+`scope_type` is `org`, `team` or `project`; `scope_id` names a resource of that
+type inside the organization in the URL. The caller needs `membership:create`
+at that target scope. Being admin of one team does not allow granting an
+organization-wide role.
+
+`GET /api/v1/orgs/{org_id}/memberships` lists grants within the caller's permitted
+scope. Update a grant with `PUT /api/v1/memberships/{id}` or revoke it with
+`DELETE /api/v1/memberships/{id}`. The [member-management page](/api/member-management)
+covers role changes, last-admin protection and invitations. Membership removal
+revokes the grant, not the account or its grants elsewhere.
+
+Consult `GET /api/v1/rbac/matrix` for the capability requirements and
+`GET /api/v1/rbac/effective?org_id=...` for the caller's effective permissions.
+
+## Rename and remove resources
+
+- `PUT /api/v1/teams/{id}` renames a team without changing its id or projects.
+  See [Teams](/api/teams) for the body, authorization and audit entry.
+- `DELETE /api/v1/projects/{id}` removes a project. It requires authority at
+  the owning team, not just admin of that project.
+- `DELETE /api/v1/teams/{id}` removes a team and its dependent hierarchy. It
+  requires authority at the organization, not just admin of the team itself.
+- `DELETE /api/v1/orgs/{id}` removes the organization and its dependent data.
+
+Successful deletion returns `204`. These are destructive operations, not a way
+to move resources between parents. Back up the deployment before deleting a
+hierarchy. Deleting a project, or a team that contains it, is refused with
+`409 referenced` while it owns project-scoped providers or provider groups;
+remove those resources or explicitly make them organization-wide first.
+
+Reads and writes are authorized separately. Expect `401` without valid
+credentials, `403` without the capability at the required scope, and `404` for
+a missing resource. Validation errors use `400`; conflicts use `409`. The
+[control-plane error reference](/api/control-plane-openapi)
+describes their machine-readable codes.
