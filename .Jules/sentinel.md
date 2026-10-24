@@ -46,10 +46,16 @@
 **Learning:** `query_failed` in `crates/rolter-control/src/analytics.rs` previously passed raw `err` strings to `tracing::warn!` without URL redaction, and `my_usage` in `crates/rolter-control/src/me.rs` echoed internal database errors (`err.to_string()`) in `500` JSON responses when fetching virtual keys failed.
 **Prevention:** Redact URLs in text using `rolter_core::redact::redact_urls_in_text` when logging ClickHouse/HTTP errors, log database failures internally via `tracing::warn!`, and return a sanitized static error message (such as `"internal server error"`) in HTTP error response bodies.
 
+## 2026-10-24 - Redact Argon2 Password Hashing Error Details in Control Plane
+
+**Learning:** `hash_password` in `crates/rolter-control/src/crud.rs` previously wrapped Argon2 password hashing failures in `ApiError::Core(Error::Config(format!("failed to hash password: {e}")))`, which rendered as HTTP 400 Bad Request with raw Argon2 error details echoed to clients.
+**Prevention:** Log internal cryptographic library errors with `tracing::error!` and return `ApiError::Curated("failed to hash password".into())` so clients receive a sanitized HTTP 500 response.
+
 ## 2026-10-24 - Redact URL Credentials in Status Page Polling Logs
 
 **Learning:** `poll_one` in `crates/rolter-gateway/src/status_page.rs` previously logged raw `reqwest::Error` strings using `tracing::warn!`. Because `reqwest::Error` includes the request URL (which may contain query credentials or basic auth userinfo in `status_page_url`), logging raw error strings can leak operator secrets into system logs.
 **Prevention:** Always pass error strings through `rolter_core::redact::redact_urls_in_text(&err.to_string())` when logging network or HTTP request failures that include URLs.
+
 
 ## 2026-10-23 - Redact Internal ClickHouse Error Messages in Alert Evaluation Responses
 

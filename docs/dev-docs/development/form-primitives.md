@@ -1,5 +1,7 @@
 # Dashboard form primitives
 
+Group mappings on SSO and SCIM use `DeleteIconButton`: the pending spinner follows `remove.variables`, while every remove control stays disabled until the mutation finishes.
+
 The prompt and skill workbench headers use `DeleteIconButton` with their existing delete capabilities. Prompt variable and decorator removal use its ungated form because they only edit the unsaved draft.
 
 Custom label removal in `LabelSheet` uses `DeleteIconButton`; only the label being deleted shows its pending spinner, and the existing confirmation remains in place.
