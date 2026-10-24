@@ -169,7 +169,9 @@ pub fn document() -> Value {
                     ],
                     "responses": {
                         "101": {"description": "WebSocket upgrade"},
-                        "400": error_response, "401": error_response, "429": error_response, "503": error_response
+                        "400": error_response, "401": error_response, "402": error_response,
+                        "403": error_response, "404": error_response, "429": error_response,
+                        "502": error_response, "503": error_response
                     }
                 }
             },
@@ -344,6 +346,23 @@ mod tests {
         // security schemes are declared and referenced
         assert!(doc["components"]["securitySchemes"]["bearerAuth"].is_object());
         assert!(doc["components"]["schemas"]["Error"].is_object());
+    }
+
+    #[test]
+    fn realtime_documents_the_upgrade_and_admission_failures() {
+        let doc = document();
+        let operation = &doc["paths"]["/v1/realtime"]["get"];
+        assert_eq!(operation["parameters"][0]["name"], "model");
+        assert_eq!(operation["parameters"][0]["in"], "query");
+        assert_eq!(operation["parameters"][0]["required"], true);
+        for status in [
+            "101", "400", "401", "402", "403", "404", "429", "502", "503",
+        ] {
+            assert!(
+                operation["responses"][status].is_object(),
+                "missing {status}"
+            );
+        }
     }
 
     #[test]
