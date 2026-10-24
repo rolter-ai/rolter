@@ -3846,6 +3846,18 @@ export function fetchLoggingSettings(): Promise<LoggingSettingsDto> {
   return getJson<LoggingSettingsDto>("/api/v1/logging-settings");
 }
 
+/**
+ * The request log's sample rate alone, which every role that reads analytics
+ * may learn, unlike the rest of the logging policy (#3057).
+ */
+export interface LogSamplingDto {
+  sample_rate: number;
+}
+
+export function fetchLogSampling(): Promise<LogSamplingDto> {
+  return getJson<LogSamplingDto>("/api/v1/analytics/sampling");
+}
+
 export function updateLoggingSettings(
   input: UpdateLoggingSettingsInput,
 ): Promise<LoggingSettingsDto> {
