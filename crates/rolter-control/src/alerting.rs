@@ -66,8 +66,6 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const QUERY_TIMEOUT: Duration = Duration::from_secs(30);
 /// Why a rule fired or resolved on a window with nothing to measure.
 const NO_DATA_DETAIL: &str = "no data in window";
-/// Longest `last_error` stored, in bytes.
-const MAX_ERROR_LEN: usize = 512;
 /// How many of a rule's newest history rows the retry decision reads: enough
 /// to count the failed attempts behind the longest [`retry_delay`].
 const HISTORY_WINDOW: i64 = 16;
@@ -1170,7 +1168,11 @@ async fn read_signal_from(
     let rows = match tokio::time::timeout(QUERY_TIMEOUT, ch.query(&sql, &[])).await {
         Ok(Ok(rows)) => rows,
         Ok(Err(error)) => {
-            tracing::warn!(error = %error, signal, "alert signal query failed");
+            tracing::warn!(
+                error = %rolter_core::redact::redact_urls_in_text(&format!("{error:#}")),
+                signal,
+                "alert signal query failed"
+            );
             return Err(describe_query_error(&error));
         }
         Err(_) => {
@@ -1206,9 +1208,9 @@ fn reading(signal: &str, value: Option<f64>, samples: Option<f64>) -> Option<f64
 /// A bounded description of a failed signal query that is safe to store.
 ///
 /// A transport error's message carries the request URL, and `CLICKHOUSE_URL`
-/// may hold a password, so those are reduced to their class. A ClickHouse error
-/// response is kept, truncated: its status and exception text are what an
-/// operator needs to fix the query, and neither names the endpoint.
+/// may hold a password, so those are reduced to their class. ClickHouse error
+/// responses may expose SQL or internal schema details, so their text stays in
+/// the URL-redacted server log rather than reaching API clients.
 fn describe_query_error(error: &anyhow::Error) -> SignalError {
     if let Some(error) = error.downcast_ref::<reqwest::Error>() {
         let (code, class) = if error.is_timeout() {
@@ -1228,21 +1230,7 @@ fn describe_query_error(error: &anyhow::Error) -> SignalError {
         };
         return SignalError::new(code, class);
     }
-    SignalError::new(
-        error_code::CLICKHOUSE_ERROR,
-        truncate(&error.to_string(), MAX_ERROR_LEN),
-    )
-}
-
-fn truncate(text: &str, max: usize) -> String {
-    if text.len() <= max {
-        return text.to_string();
-    }
-    let mut end = max;
-    while !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    format!("{}…", &text[..end])
+    SignalError::new(error_code::CLICKHOUSE_ERROR, "analytics query failed")
 }
 
 fn metric_sql(signal: &str, window_secs: i32) -> ApiResult<String> {
@@ -1820,6 +1808,14 @@ mod tests {
     }
 
     #[test]
+    fn query_errors_do_not_expose_internal_exception_details() {
+        let error = anyhow::anyhow!("DB::Exception: unknown table private_schema.requests");
+        let described = describe_query_error(&error);
+        assert_eq!(described.message, "analytics query failed");
+        assert_eq!(described.code, error_code::CLICKHOUSE_ERROR);
+    }
+
+    #[test]
     fn a_no_data_payload_says_so_and_carries_no_made_up_value() {
         let mut rule = stored("above", "fire");
         rule.state = "firing".into();
@@ -2177,15 +2173,6 @@ mod tests {
     fn the_retry_delay_doubles_up_to_an_hour() {
         let minutes: Vec<i64> = (0..10).map(|f| retry_delay(f).num_minutes()).collect();
         assert_eq!(minutes, [0, 0, 1, 3, 7, 15, 31, 59, 59, 59]);
-    }
-
-    #[test]
-    fn a_long_query_error_is_truncated_on_a_char_boundary() {
-        let long = "é".repeat(MAX_ERROR_LEN);
-        let cut = truncate(&long, MAX_ERROR_LEN + 1);
-        assert!(cut.len() <= MAX_ERROR_LEN + 1 + '…'.len_utf8());
-        assert!(cut.ends_with('…'));
-        assert_eq!(truncate("short", MAX_ERROR_LEN), "short");
     }
 
     #[test]
@@ -3209,9 +3196,7 @@ mod tests {
             assert_eq!(errored.state, "error");
             assert_eq!(errored.last_value, Some(0.9));
             let last_error = errored.last_error.expect("last_error is set");
-            assert!(last_error.contains("500"), "{last_error}");
-            assert!(last_error.contains("DB::Exception"), "{last_error}");
-            assert!(!last_error.contains(&stub.url), "{last_error}");
+            assert_eq!(last_error, "analytics query failed");
             assert_eq!(errored.last_error_code.as_deref(), Some("clickhouse_error"));
 
             // no clickhouse configured at all

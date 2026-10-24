@@ -753,8 +753,9 @@ newline from a file would otherwise fail every delivery with no hint.
 A failed evaluation writes `state = 'error'` and a `last_error` that is safe to
 show: a transport error is reduced to its class (`reqwest`'s message carries
 the URL, and `CLICKHOUSE_URL` can hold a password), while a ClickHouse error
-response keeps its status and exception text, cut at 512 bytes. The raw error
-goes to the log as `alert signal query failed`.
+response becomes `analytics query failed` with code `clickhouse_error`. SQL and
+exception details stay in the server log as `alert signal query failed`, with
+URL credentials redacted, rather than reaching the stored rule or API response.
 
 ## Request & cost logs
 
