@@ -1151,6 +1151,7 @@ export const AddRowFitsInRussian: Story = {
 };
 
 const deletedMappings: string[] = [];
+let finishMappingDelete: () => void;
 
 // removing a mapping withdraws a role from everyone in the group, so it goes
 // through ConfirmDialog and says so before the DELETE goes out (#1179)
@@ -1162,6 +1163,9 @@ export const RemoveMappingConfirmsFirst: Story = {
       async (init) => {
         if (init?.method === "DELETE") {
           deletedMappings.push("deleted");
+          await new Promise<void>((resolve) => {
+            finishMappingDelete = resolve;
+          });
           return new Response(null, { status: 204 });
         }
         return json(deletedMappings.length ? [] : [mapping()]);
@@ -1171,15 +1175,18 @@ export const RemoveMappingConfirmsFirst: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await userEvent.click(
-      await canvas.findByRole("button", {
-        name: "Remove the mapping for platform-engineering",
-      }),
-    );
+    const remove = await canvas.findByRole("button", {
+      name: "Remove the mapping for platform-engineering",
+    });
+    await userEvent.click(remove);
+    await expect(deletedMappings).toHaveLength(0);
     const modal = within(await within(document.body).findByRole("dialog"));
     await waitFor(() => expect(modal.getByText(/loses Member straight away/)).toBeVisible());
     await userEvent.click(modal.getByRole("button", { name: "Remove mapping" }));
     await waitFor(() => expect(deletedMappings).toHaveLength(1));
+    await waitFor(() => expect(remove).toBeDisabled());
+    await expect(remove.querySelector(".lucide-loader-circle")).not.toBeNull();
+    finishMappingDelete();
     await waitFor(() => expect(canvas.queryByText("platform-engineering")).toBeNull());
   },
 };
