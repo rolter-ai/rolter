@@ -293,6 +293,29 @@ pub async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> R
             .map(|(id, group)| json!({"id": id, "object": "model", "owned_by": group})),
     );
 
+    // endpoint support belongs to the resolved address, including pins and
+    // groups; dashboards must not infer it from a model's spelling
+    for item in &mut data {
+        let id = item["id"].as_str().unwrap_or_default();
+        let capabilities =
+            if id == fake_llm::MODEL_NAME && snap.named_route_for(id, vk.as_ref()).is_none() {
+                Some(json!({"decisions": true, "chat": true}))
+            } else {
+                snap.resolve_for(id, vk.as_ref()).map(|entry| {
+                    json!({
+                        "decisions": crate::system_one::endpoint_refusal(
+                            "/v1/systemone", &entry.route, &snap.providers
+                        ).is_none(),
+                        "chat": crate::system_one::endpoint_refusal(
+                            "/v1/chat/completions", &entry.route, &snap.providers
+                        ).is_none()
+                    })
+                })
+            };
+        if let Some(capabilities) = capabilities {
+            item["rolter_capabilities"] = capabilities;
+        }
+    }
     Json(json!({"object": "list", "data": data})).into_response()
 }
 

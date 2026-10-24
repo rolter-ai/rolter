@@ -51,6 +51,12 @@
 **Learning:** `hash_password` in `crates/rolter-control/src/crud.rs` previously wrapped Argon2 password hashing failures in `ApiError::Core(Error::Config(format!("failed to hash password: {e}")))`, which rendered as HTTP 400 Bad Request with raw Argon2 error details echoed to clients.
 **Prevention:** Log internal cryptographic library errors with `tracing::error!` and return `ApiError::Curated("failed to hash password".into())` so clients receive a sanitized HTTP 500 response.
 
+## 2026-10-24 - Redact URL Credentials in Status Page Polling Logs
+
+**Learning:** `poll_one` in `crates/rolter-gateway/src/status_page.rs` previously logged raw `reqwest::Error` strings using `tracing::warn!`. Because `reqwest::Error` includes the request URL (which may contain query credentials or basic auth userinfo in `status_page_url`), logging raw error strings can leak operator secrets into system logs.
+**Prevention:** Always pass error strings through `rolter_core::redact::redact_urls_in_text(&err.to_string())` when logging network or HTTP request failures that include URLs.
+
+
 ## 2026-10-23 - Redact Internal ClickHouse Error Messages in Alert Evaluation Responses
 
 **Learning:** `describe_query_error` in `crates/rolter-control/src/alerting.rs` previously formatted non-reqwest ClickHouse query errors into `SignalError` using `truncate(&error.to_string(), ...)`. When an alert evaluation query failed, this raw ClickHouse error message (carrying SQL query details or database exception traces) was stored on the rule and echoed directly in HTTP 500 error response bodies from `POST /api/v1/alert-rules/{id}/evaluate`.

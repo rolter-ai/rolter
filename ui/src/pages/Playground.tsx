@@ -21,6 +21,7 @@ import { Link, useSearchParams } from "react-router";
 
 import { CopyAsCodeButton } from "@/components/CodeSnippetDialog";
 import { DocsLink } from "@/components/DocsLink";
+import { DecisionPlayground } from "@/components/DecisionPlayground";
 import { GatedButton } from "@/components/GatedButton";
 import { LoadError } from "@/components/LoadError";
 import { ControlSkeleton } from "@/components/LoadingState";
@@ -84,6 +85,7 @@ export interface ModelOption {
   id: string;
   /** `owned_by` from `/v1/models`; absent when the list came from routes */
   ownedBy?: string;
+  capabilities?: { decisions: boolean; chat: boolean };
 }
 
 /**
@@ -185,7 +187,11 @@ function useModelCatalog(session: KeySession): ModelCatalog {
   const served = configured.filter((model) => !unserved.has(model));
 
   const options: ModelOption[] = gateway.data
-    ? gateway.data.map((m) => ({ id: m.id, ownedBy: m.owned_by }))
+    ? gateway.data.map((m) => ({
+        id: m.id,
+        ownedBy: m.owned_by,
+        capabilities: m.rolter_capabilities,
+      }))
     : served.map((model) => ({ id: model }));
 
   // the built-in always works, so it stays selectable whatever the source
@@ -1972,6 +1978,10 @@ export default function Playground() {
   const catalog = useModelCatalog(session);
   const { options: models, source, ready, preferred, hidden } = catalog;
   const sendGate = useSendGate(session, catalog);
+  const chatModels = models.filter((m) => m.capabilities?.chat !== false);
+  const decisionModels = models.filter(
+    (m) => m.capabilities?.decisions === true || (m.id === FAKE && !m.capabilities),
+  );
 
   // UX stream (#805); the screen key comes from the enclosing UxScreenProvider.
   // Playground is the screen an evaluator spends the most time in, so its
@@ -1988,6 +1998,7 @@ export default function Playground() {
           onChange={setMode}
           tabs={[
             { value: "chat", label: t("pages.playground.modes.chat") },
+            { value: "decisions", label: t("pages.playground.modes.decisions") },
             { value: "embeddings", label: t("pages.playground.modes.embeddings") },
             { value: "image", label: t("pages.playground.modes.image") },
             { value: "audio", label: t("pages.playground.modes.audio") },
@@ -2002,7 +2013,17 @@ export default function Playground() {
             looking at: it is unmounted, which closes the socket, and starts
             over */}
         <div hidden={mode !== "chat"}>
-          <ChatMode models={models} preferred={preferred} />
+          <ChatMode
+            models={chatModels}
+            preferred={chatModels.some((m) => m.id === preferred) ? preferred : null}
+          />
+        </div>
+        <div hidden={mode !== "decisions"}>
+          <DecisionPlayground
+            models={decisionModels}
+            blocked={sendGate.blocked}
+            reason={sendGate.reason}
+          />
         </div>
         <div hidden={mode !== "embeddings"}>
           <EmbeddingsMode models={models} />

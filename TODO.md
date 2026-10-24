@@ -109,6 +109,7 @@ harness shipped. Tick the box, and name the file, job or issue that proves it.
 - [x] `/v1/audio/transcriptions`, `/v1/audio/translations` (multipart passthrough; routes on the `model` form field, forwards the upload verbatim)
 - [x] `/v1/rerank` (Cohere/Jina-compatible passthrough; built-in `fake-llm` ranks deterministically)
 - [x] `/v1/systemone` System One typed decisions behind the `system_one` kind: TypeSafe Jev, vLLM Semantic Router, Ollama (#3150, #2535, ADR-0035; built-in `fake-llm` decides deterministically)
+- [x] Playground Decisions: text/JSON state, typed answers and OpenJev image_data uploads (#3153)
 - [ ] Pluggable custom AI APIs (generic passthrough + balancing) (#275)
 - [x] Served OpenAPI document (`GET /openapi.json`, hand-authored 3.1) + interactive Scalar reference (`GET /docs`, bundle embedded in the binary — air-gapped safe)
 

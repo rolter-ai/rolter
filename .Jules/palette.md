@@ -67,3 +67,8 @@
 
 **Learning:** Hand-rolled delete buttons using `RowIconButton` with an ignored `danger` prop lack standard design system hover traits (`hover:border-[color:var(--status-danger)]` and `hover:text-[color:var(--status-danger-text)]`).
 **Action:** Always replace hand-rolled delete buttons on list and card items with `DeleteIconButton` from `@/components/ui/delete-icon-button`.
+
+## 2026-10-16 - Repository Screens DeleteIconButton Primitive
+
+**Learning:** `PromptRepository.tsx` and `SkillsRepository.tsx` hand-rolled icon delete buttons with `GatedButton` or `Button` and raw `Trash2`, missing standard design system traits like hover border states (`hover:border-[color:var(--status-danger)]`).
+**Action:** Always use the shared `DeleteIconButton` primitive for icon delete buttons across repository headers and editor row items.

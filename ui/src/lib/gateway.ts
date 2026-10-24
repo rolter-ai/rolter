@@ -261,6 +261,7 @@ export interface GatewayModel {
   id: string;
   /** the route, provider or provider group this id belongs to */
   owned_by?: string;
+  rolter_capabilities?: { decisions: boolean; chat: boolean };
 }
 
 /**
@@ -440,6 +441,48 @@ export async function streamChatCompletion(
     }
     if (!finished) throw new GatewayError(i18n.t("errors.gateway.streamEnded"), res.status);
     return { text, usage, elapsedMs: elapsed() };
+  });
+}
+
+export interface DecisionRequest {
+  model: string;
+  state: string | Record<string, unknown> | unknown[];
+  questions: Record<string, { type: string; instructions: string; criteria?: unknown }>;
+  /** OpenJev's single shared image: base64 or an image data URI. */
+  image_data?: string;
+}
+
+export interface DecisionAnswer {
+  type?: string;
+  choice?: string;
+  score?: number;
+  noul?: number;
+  confidence?: number;
+  probabilities?: Record<string, number>;
+  legend?: Record<string, string>;
+  error?: unknown;
+}
+
+export interface DecisionResponse {
+  model?: string;
+  answers: Record<string, DecisionAnswer>;
+  usage?: { input_tokens?: number; output_tokens?: number };
+}
+
+/** Typed decisions use the same session/key split and in-flight tracking as chat. */
+export async function decide(
+  request: DecisionRequest,
+  signal?: AbortSignal,
+): Promise<DecisionResponse> {
+  return tracked(async () => {
+    const res = await fetch(`${GW_BASE}/v1/systemone`, {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify(request),
+      signal,
+    });
+    if (!res.ok) throw await gwError(res);
+    return (await res.json()) as DecisionResponse;
   });
 }
 
