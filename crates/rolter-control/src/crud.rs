@@ -151,7 +151,9 @@ pub fn router() -> Router<ControlState> {
         .route("/api/v1/routes/{id}/params", put(set_route_params))
         .route(
             "/api/v1/routes/{id}/complexity",
-            get(get_route_complexity).put(set_route_complexity),
+            get(get_route_complexity)
+                .put(set_route_complexity)
+                .delete(disable_route_complexity),
         )
         .route("/api/v1/routes/{id}/advanced", put(set_route_advanced))
         .route(
@@ -4753,6 +4755,35 @@ async fn set_route_complexity(
         "route",
         id,
         serde_json::json!({"complexity": policy}),
+    )
+    .await;
+    Ok(Json(row))
+}
+
+/// Remove only the routing policy, preserving ordinary upstream parameters.
+async fn disable_route_complexity(
+    principal: Principal,
+    State(state): State<ControlState>,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<Route>> {
+    let org_id = authorize_route(&state, &principal, id, cap!("route", Update)).await?;
+    let existing = RouteRepo(pool(&state)).get(id).await?;
+    let mut params = normalize_json_object(existing.params, "params")?;
+    if let Some(object) = params.as_object_mut() {
+        object.remove(rolter_balancer::complexity::POLICY_PARAM);
+    }
+    let row = RouteRepo(pool(&state))
+        .set_params(id, &params, &existing.param_policy)
+        .await?;
+    publish_config_change(&state).await?;
+    log_audit(
+        &state,
+        &principal,
+        org_id,
+        "route.set_complexity",
+        "route",
+        id,
+        serde_json::json!({"complexity": null}),
     )
     .await;
     Ok(Json(row))

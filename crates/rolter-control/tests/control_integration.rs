@@ -20801,6 +20801,61 @@ async fn a_viewer_reads_a_route_complexity_policy_but_cannot_write_one() {
         .await
         .unwrap();
     assert_eq!(after["tiers"].as_array().map(Vec::len), Some(2));
+
+    let refused = client
+        .delete(format!("{base}/api/v1/routes/{route_id}/complexity"))
+        .bearer_auth(&viewer_token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        refused.status(),
+        403,
+        "a viewer must not disable the policy"
+    );
+
+    // ordinary parameters and their locks survive the rollback
+    let params = json!({"temperature": 0.4, "_rolter_complexity": policy});
+    let param_policy = json!({"temperature": "locked"});
+    sqlx::query("update routes set params = $1, param_policy = $2 where id = $3")
+        .bind(&params)
+        .bind(&param_policy)
+        .bind(route_id.parse::<uuid::Uuid>().unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+    let before: i64 = sqlx::query_scalar("select version from config_version where id = 1")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let disabled = client
+        .delete(format!("{base}/api/v1/routes/{route_id}/complexity"))
+        .bearer_auth(admin_token())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(disabled.status(), 200);
+    let row: Value = disabled.json().await.unwrap();
+    assert_eq!(row["params"], json!({"temperature": 0.4}));
+    assert_eq!(row["param_policy"], param_policy);
+    let after: i64 = sqlx::query_scalar("select version from config_version where id = 1")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert!(after > before);
+    let policy: Value = client
+        .get(format!("{base}/api/v1/routes/{route_id}/complexity"))
+        .bearer_auth(admin_token())
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(policy, json!({"tiers": []}));
+    let audits: i64 = sqlx::query_scalar("select count(*) from audit_log where action = 'route.set_complexity' and detail->'complexity' = 'null'::jsonb")
+        .fetch_one(&pool).await.unwrap();
+    assert_eq!(audits, 1);
 }
 
 /// `PATCH /api/v1/me/profile` (#1823): any signed-in account, a viewer

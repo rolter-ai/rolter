@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 
 import { IconFrame } from "@/components/ui/icon-frame";
 import { CardStack } from "@/components/ui/card";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { EditorSheet } from "@/components/EditorSheet";
 import { GatedButton } from "@/components/GatedButton";
 import { LoadError } from "@/components/LoadError";
@@ -18,6 +19,7 @@ import { EmptyState, EmptyStateLink } from "@/components/ui/empty-state";
 import { Input } from "@/components/ui/input";
 import { Overline } from "@/components/ui/overline";
 import {
+  disableRouteComplexity,
   fetchRouteComplexity,
   fetchRoutes,
   setRouteComplexity,
@@ -67,6 +69,16 @@ export default function ComplexityRouter() {
   });
 
   const [editing, setEditing] = React.useState<RouteRow | null>(null);
+  const [disabling, setDisabling] = React.useState<RouteRow | null>(null);
+  const qc = useQueryClient();
+  const disable = useMutation({
+    mutationFn: disableRouteComplexity,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["routes"] });
+      void qc.invalidateQueries({ queryKey: ["route-complexity"] });
+      setDisabling(null);
+    },
+  });
   const states = (routes.data ?? []).map((route): PolicyState => {
     if (!route.complexity) return { kind: "unread", route };
     const tiers = route.complexity.tiers ?? [];
@@ -186,9 +198,23 @@ export default function ComplexityRouter() {
                 })}
               </p>
             )}
-            <div className="flex items-center justify-end border-t border-[color:var(--border-subtle)] pt-3">
+            <div className="flex items-center justify-end gap-2 border-t border-[color:var(--border-subtle)] pt-3">
               {/* a complexity policy is stored on the route, so editing one
                   is the route's own update capability (#1258) */}
+              <GatedButton
+                gate="route:update"
+                control="complexity-policy-disable"
+                size="sm"
+                variant="outline"
+                aria-label={t("pages.complexityRouter.disableAria", { model: route.model })}
+                disabled={disable.isPending}
+                onClick={() => {
+                  disable.reset();
+                  setDisabling(route);
+                }}
+              >
+                {t("pages.complexityRouter.disable")}
+              </GatedButton>
               <GatedButton
                 gate="route:update"
                 control="complexity-policy-edit"
@@ -233,6 +259,25 @@ export default function ComplexityRouter() {
         </>
       )}
 
+      <ConfirmDialog
+        name="complexity-policy-disable"
+        open={!!disabling}
+        onOpenChange={(open) => {
+          if (!open) {
+            setDisabling(null);
+            disable.reset();
+          }
+        }}
+        title={t("pages.complexityRouter.disableTitle", { model: disabling?.model ?? "" })}
+        description={t("pages.complexityRouter.disableBody")}
+        confirmLabel={t("pages.complexityRouter.disable")}
+        tone="default"
+        pending={disable.isPending}
+        error={disable.error ? errorText(disable.error, t) : undefined}
+        onConfirm={() => {
+          if (disabling) disable.mutate(disabling.id);
+        }}
+      />
       {editing && (
         <PolicyDialog
           route={editing}

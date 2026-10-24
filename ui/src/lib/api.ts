@@ -4739,6 +4739,10 @@ export function fetchRouteComplexity(routeId: string): Promise<ComplexityPolicy>
   return getJson<ComplexityPolicy>(`/api/v1/routes/${routeId}/complexity`);
 }
 
+export function disableRouteComplexity(routeId: string): Promise<RouteRow> {
+  return sendJson<RouteRow>("DELETE", `/api/v1/routes/${routeId}/complexity`);
+}
+
 export function setRouteComplexity(routeId: string, policy: ComplexityPolicy): Promise<RouteRow> {
   return sendJson<RouteRow>("PUT", `/api/v1/routes/${routeId}/complexity`, policy);
 }

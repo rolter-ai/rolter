@@ -2285,7 +2285,13 @@ async fn complexity_policy_selects_routes_for_openai_and_anthropic_requests() {
             tenancy: None,
         });
     }
-    let gw = serve_gateway(&config).await;
+    let state = rolter_gateway::AppState::with_logging(&config, None);
+    let gw = serve(rolter_gateway::build_router(
+        state.clone(),
+        "/metrics",
+        32 * 1024 * 1024,
+    ))
+    .await;
     let client = reqwest::Client::new();
 
     let short = client
@@ -2309,6 +2315,24 @@ async fn complexity_policy_selects_routes_for_openai_and_anthropic_requests() {
         .unwrap();
     assert_eq!(long.status(), 200);
     assert_eq!(long.headers()["x-rolter-provider"], "capable");
+
+    config.routes[0]
+        .targets
+        .retain(|target| target.provider == "capable");
+    config.routes[0].params.remove("_rolter_complexity");
+    state.reload(&config, 1);
+    let ordinary = client
+        .post(format!("http://{gw}/v1/chat/completions"))
+        .json(&json!({"model": "router", "messages": [{"role": "user", "content": "hi"}]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(ordinary.status(), 200);
+    assert_eq!(
+        ordinary.headers()["x-rolter-provider"],
+        "capable",
+        "after reload the short request follows its original route, not the small tier"
+    );
 }
 
 #[tokio::test]

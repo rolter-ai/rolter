@@ -82,6 +82,81 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 
+let finishDisable: (() => void) | undefined;
+let disableCalls = 0;
+let disabledPolicy = false;
+export const DisablesPolicyAfterConfirmation: Story = {
+  render: () => {
+    disableCalls = 0;
+    disabledPolicy = false;
+    finishDisable = undefined;
+    const stub: FetchStub = (input, init) => {
+      if (String(input).includes("/routes/r-1/complexity") && init?.method === "DELETE") {
+        disableCalls++;
+        return new Promise<Response>((resolve) => {
+          finishDisable = () => {
+            disabledPolicy = true;
+            resolve(json(route()));
+          };
+        });
+      }
+      return serving((id) => (id === "r-1" && !disabledPolicy ? SMALL : { tiers: [] }))(
+        input,
+        init,
+      );
+    };
+    return (
+      <Harness fetchStub={stub}>
+        <ComplexityRouter />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "Disable policy for gpt-4o" }));
+    const dialog = within(await within(document.body).findByRole("dialog"));
+    await waitFor(() =>
+      expect(dialog.getByRole("button", { name: "Disable policy" })).toBeVisible(),
+    );
+    await expect(disableCalls).toBe(0);
+    await userEvent.click(dialog.getByRole("button", { name: "Disable policy" }));
+    await waitFor(() => expect(disableCalls).toBe(1));
+    await waitFor(() =>
+      expect(dialog.getByRole("button", { name: "Disable policy" })).toBeDisabled(),
+    );
+    finishDisable?.();
+    await waitFor(() => expect(within(document.body).queryByRole("dialog")).toBeNull());
+    await waitFor(() =>
+      expect(canvas.queryByRole("button", { name: "Disable policy for gpt-4o" })).toBeNull(),
+    );
+  },
+};
+
+export const DisableRefusedStaysOpen: Story = {
+  render: () => (
+    <Harness
+      fetchStub={(input, init) =>
+        init?.method === "DELETE"
+          ? Promise.resolve(json({ error: { message: "refused" } }, 403))
+          : loaded(input, init)
+      }
+    >
+      <ComplexityRouter />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "Disable policy for gpt-4o" }));
+    const dialog = within(await within(document.body).findByRole("dialog"));
+    await waitFor(() =>
+      expect(dialog.getByRole("button", { name: "Disable policy" })).toBeVisible(),
+    );
+    await userEvent.click(dialog.getByRole("button", { name: "Disable policy" }));
+    await expect(await dialog.findByRole("alert")).toBeVisible();
+    await expect(within(document.body).getByRole("dialog")).toBeVisible();
+  },
+};
+
 export const Loaded: Story = {
   render: () => (
     <Harness fetchStub={loaded}>
@@ -181,6 +256,7 @@ export const RefusedToAViewer: Story = {
   ),
   play: async ({ canvasElement }) => {
     await expectRefused(canvasElement, "Edit the complexity policy for gpt-4o");
+    await expectRefused(canvasElement, "Disable policy for gpt-4o");
   },
 };
 
