@@ -101,6 +101,44 @@ async fn post_json(gateway: SocketAddr, path: &str, body: &Value) -> reqwest::Re
 }
 
 #[tokio::test]
+async fn openjev_pixels_and_structured_state_survive_the_proxy() {
+    let request = json!({
+        "model": "openjev-v5",
+        "state": {"text": "An image: <<IMG>>", "metadata": [1, 2]},
+        "image_data": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
+        "questions": {"parcel/risk": {"type": "noul", "instructions": "Is the parcel damaged?", "extension": true}}
+    });
+    let expected = request.clone();
+    let addr = serve(Router::new().route(
+        "/v1/systemone",
+        post(move |Json(body): Json<Value>| {
+            let expected = expected.clone();
+            async move {
+                assert_eq!(body, expected);
+                Json(json!({"answers": {"parcel/risk": {"type": "noul", "noul": 0.9}}}))
+            }
+        }),
+    ))
+    .await;
+    let mut config = GatewayConfig::default();
+    config.providers.push(provider(
+        "openjev",
+        ProviderKind::SystemOne,
+        format!("http://{addr}"),
+    ));
+    config
+        .routes
+        .push(route("parcel", "round_robin", &[("openjev", "openjev-v5")]));
+    let gateway = serve(rolter_gateway::build_router_from_config(&config)).await;
+    let mut public_request = request;
+    public_request["model"] = json!("parcel");
+    let response = post_json(gateway, "/v1/systemone", &public_request).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value = response.json().await.unwrap();
+    assert_eq!(body["answers"]["parcel/risk"]["noul"], 0.9);
+}
+
+#[tokio::test]
 async fn a_decision_reaches_the_upstream_and_comes_back_typed() {
     let (addr, upstream) = upstream().await;
     let mut config = GatewayConfig::default();

@@ -2790,6 +2790,45 @@ async fn builtin_fake_llm_serves_rerank() {
 }
 
 #[tokio::test]
+async fn models_report_decision_support_for_routes_pins_and_the_builtin() {
+    let mut config = GatewayConfig::default();
+    config.providers.push(ProviderConfig {
+        name: "decision-server".into(),
+        slug: Some("openjev".into()),
+        kind: ProviderKind::SystemOne,
+        api_base: "http://127.0.0.1:1".into(),
+        ..Default::default()
+    });
+    config.routes.push(
+        serde_json::from_value(json!({
+            "model": "parcel",
+            "targets": [{ "provider": "decision-server", "model": "openjev-v5", "weight": 1 }]
+        }))
+        .unwrap(),
+    );
+    let gw = serve_gateway(&config).await;
+    let body: Value = reqwest::get(format!("http://{gw}/v1/models"))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let rows = body["data"].as_array().unwrap();
+    for id in ["parcel", "openjev/openjev-v5"] {
+        let row = rows.iter().find(|r| r["id"] == id).unwrap();
+        assert_eq!(
+            row["rolter_capabilities"],
+            json!({"decisions": true, "chat": false})
+        );
+    }
+    let builtin = rows.iter().find(|r| r["id"] == "fake-llm").unwrap();
+    assert_eq!(
+        builtin["rolter_capabilities"],
+        json!({"decisions": true, "chat": true})
+    );
+}
+
+#[tokio::test]
 async fn builtin_fake_llm_serves_system_one_decisions() {
     // no routes configured: the built-in fake-llm answers /v1/systemone locally
     // with one typed answer per question id (#3150)
