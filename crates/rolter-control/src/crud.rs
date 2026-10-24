@@ -3202,7 +3202,7 @@ struct CreateProvider {
     project_id: Option<Uuid>,
 }
 
-const PROVIDER_KINDS: [&str; 48] = [
+const PROVIDER_KINDS: [&str; 49] = [
     "openai",
     "anthropic",
     "openai_compatible",
@@ -3251,6 +3251,7 @@ const PROVIDER_KINDS: [&str; 48] = [
     "sarvam",
     "krutrim",
     "falcon",
+    "system_one",
 ];
 
 /// Seal `api_key` with the deployment KEK for at-rest storage. An empty or

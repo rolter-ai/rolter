@@ -342,7 +342,7 @@ impl ProviderKind {
     ///
     /// `kind_is_listed_in_all` keeps this honest: it matches exhaustively, so
     /// adding a variant without adding it here fails to compile.
-    pub const ALL: [ProviderKind; 48] = [
+    pub const ALL: [ProviderKind; 49] = [
         ProviderKind::Openai,
         ProviderKind::Anthropic,
         ProviderKind::OpenaiCompatible,
@@ -391,6 +391,7 @@ impl ProviderKind {
         ProviderKind::Sarvam,
         ProviderKind::Krutrim,
         ProviderKind::Falcon,
+        ProviderKind::SystemOne,
     ];
 
     /// Whether a configured `api_base` is expected to already carry the API
@@ -784,6 +785,10 @@ pub enum ProviderKind {
     Krutrim,
     /// g42/tii falcon hosted openai-compatible api
     Falcon,
+    /// a System One decision endpoint (`POST /v1/systemone`): typed answers to
+    /// choice, score and yes/no questions instead of generated text. TypeSafe's
+    /// Jev, vLLM Semantic Router's decision models and Ollama's all speak it
+    SystemOne,
 }
 
 /// Instruction-role semantics supported by an upstream target.
@@ -1731,6 +1736,16 @@ impl ModelRoute {
     /// target pool.
     pub fn has_variants(&self) -> bool {
         !self.variants.is_empty()
+    }
+
+    /// Every target this route can forward to: the classic pool's and each
+    /// variant's.
+    pub fn every_target(&self) -> impl Iterator<Item = &Target> {
+        self.targets.iter().chain(
+            self.variants
+                .iter()
+                .flat_map(|variant| variant.targets.iter()),
+        )
     }
 
     /// Whether this route opts into response caching (the global `[cache]`
@@ -5673,10 +5688,11 @@ mod tests {
                 ProviderKind::Sarvam => "sarvam",
                 ProviderKind::Krutrim => "krutrim",
                 ProviderKind::Falcon => "falcon",
+                ProviderKind::SystemOne => "system_one",
             };
             assert!(!named.is_empty());
         }
-        assert_eq!(ProviderKind::ALL.len(), 48);
+        assert_eq!(ProviderKind::ALL.len(), 49);
     }
 
     /// #2806: the scheme per kind, checked across every kind so a new variant

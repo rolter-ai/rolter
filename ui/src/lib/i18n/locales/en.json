@@ -467,7 +467,16 @@
       "unitPlaceholder": "not billed this way",
       "imageHint": "For a model billed per generated image. Added to the token price; leave empty if the model is billed by tokens.",
       "audioInputHint": "For a transcription or translation model billed by the minute. Leave empty if it is not.",
-      "speechHint": "For a text-to-speech model billed per million input characters. Leave empty if it is not."
+      "speechHint": "For a text-to-speech model billed per million input characters. Leave empty if it is not.",
+      "audioInputTokens": "Audio input {{currency}}/Mtok",
+      "audioInputTokensPlaceholder": "input rate",
+      "audioInputTokensHint": "For a realtime or audio model that bills the audio tokens it is sent above its text tokens. Leave empty to price them at the input rate.",
+      "audioOutputTokens": "Audio output {{currency}}/Mtok",
+      "audioOutputTokensPlaceholder": "output rate",
+      "audioOutputTokensHint": "The audio tokens the model speaks. Leave empty to price them at the output rate.",
+      "cachedAudio": "Cached audio input {{currency}}/Mtok",
+      "cachedAudioPlaceholder": "cache-read rate",
+      "cachedAudioHint": "Audio tokens served from the provider's prompt cache. Leave empty to price them at the cache-read rate, or the audio input rate when that is empty too."
     },
     "net": {
       "timeout": "Timeout (ms)",
@@ -4162,6 +4171,7 @@
       "includesV1": "Include the version prefix — {{kind}} expects it in the base, e.g. https://api.example.com/v1",
       "resolvesTo": {
         "chat": "Chat requests resolve to",
+        "decision": "Decision requests resolve to",
         "embeddings": "Embedding requests resolve to"
       }
     },
@@ -4401,6 +4411,10 @@
       "falcon": {
         "name": "Falcon",
         "description": "G42 and TII's hosted Falcon models"
+      },
+      "system_one": {
+        "name": "System One (decisions)",
+        "description": "Typed decision models on POST /v1/systemone: TypeSafe Jev, vLLM Semantic Router, Ollama"
       }
     },
     "telemetry": {
