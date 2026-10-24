@@ -2071,6 +2071,17 @@ fn operations() -> Vec<Op> {
             )
             .clickhouse_read()
             .query(WINDOW_QUERY),
+            Op::get(
+                "/api/v1/analytics/sampling",
+                "getAnalyticsSampling",
+                "The request log's sample rate, for every caller the analytics reads serve. Below \
+                 `1` the gateway logs one request in about `1 / sample_rate` and the counts, \
+                 tokens and spend the other analytics reads return are scaled up from that \
+                 sample, so they are estimates. Read from the store rather than ClickHouse, and \
+                 only the rate: the rest of the logging policy stays behind \
+                 `GET /api/v1/logging-settings`",
+            )
+            .ok(Payload::Ref("LogSampling")),
         ],
     ));
 
@@ -3659,6 +3670,18 @@ fn governance_schemas(p: &Prim) -> Value {
                 "currency": {"type": "string", "default": "USD"}
             },
             "additionalProperties": false
+        },
+        "LogSampling": {
+            "type": "object",
+            "required": ["sample_rate"],
+            "properties": {
+                "sample_rate": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1,
+                    "description": "share of requests the gateway writes to the request log; 1 logs every request"
+                }
+            }
         }
     })
 }

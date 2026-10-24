@@ -43,7 +43,39 @@ Other types (Vela's `span` and `set`, for example) are forwarded as written; whe
 
 </ParamField>
 
-Fields beyond these, such as `images` for a multimodal decision model, are forwarded as written too.
+Fields beyond these are forwarded as written too. Their names are upstream-specific.
+
+### Images with OpenJev
+
+The Playground's **Decisions** mode accepts text or JSON state, a questions object,
+and one JPEG, PNG or WebP image. It sends the image separately as `image_data`
+(a base64 data URI), not as chat `messages`, `image_url`, or an `images` array:
+
+```json
+{
+  "model": "openjev",
+  "state": "An image: <<IMG>>",
+  "image_data": "data:image/png;base64,<image bytes>",
+  "questions": {
+    "damaged": { "type": "noul", "instructions": "Is the parcel visibly damaged?" }
+  }
+}
+```
+
+This follows [AlexWortega's OpenJev image-serving contract](https://huggingface.co/AlexWortega/openjev/blob/main/code/serving/IMAGE-SERVING.md),
+used by the image and frame-scoring examples in the [OpenJev Space](https://huggingface.co/spaces/AlexWortega/openjev).
+The image is shared by all questions; `<<IMG>>` is optional and positions it in the
+premise. OpenJev appends it when absent. Limits are 4 MiB decoded and 12 million
+pixels. Remote image URLs and server file paths are not accepted. Vision needs a
+compatible upstream; `fake-llm` exercises the request shape but does not inspect pixels.
+The Space's video example samples frames and scores each separately; it is not a
+native video payload for this endpoint.
+
+The Playground renders choice probabilities, score legends, yes probabilities,
+confidence and per-question errors, with the full JSON response available below.
+Its model picker uses `rolter_capabilities` from the gateway model list, so a
+decision-only address is not offered in Chat. Older gateways without that metadata
+still offer `fake-llm` in Decisions; update the gateway to discover configured routes.
 
 ### Example
 

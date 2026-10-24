@@ -72,3 +72,9 @@
 
 **Learning:** Hand-rolled row icon buttons using `RowIconButton` with an inline `Trash2` icon manually recreate delete button styling and miss standardized hover states (`hover:border-[color:var(--status-danger)]` / `hover:text-[color:var(--status-danger-text)]`) and pending spinner feedback.
 **Action:** Replace hand-rolled row delete buttons with `DeleteIconButton` from `@/components/ui/delete-icon-button`, ensuring `pending={remove.isPending && remove.variables === row.id}` is set to localize spinner visual state.
+
+## 2026-10-16 - Repository Screens DeleteIconButton Primitive
+
+**Learning:** `PromptRepository.tsx` and `SkillsRepository.tsx` hand-rolled icon delete buttons with `GatedButton` or `Button` and raw `Trash2`, missing standard design system traits like hover border states (`hover:border-[color:var(--status-danger)]`).
+**Action:** Always use the shared `DeleteIconButton` primitive for icon delete buttons across repository headers and editor row items.
+

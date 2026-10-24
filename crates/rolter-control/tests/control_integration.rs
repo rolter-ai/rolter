@@ -7213,6 +7213,100 @@ async fn logging_settings_are_superadmin_only_and_audited() {
     assert_eq!(action.as_deref(), Some("logging_settings.update"));
 }
 
+/// The analytics screens say their figures are estimates when the request log
+/// is sampled, and every role that opens them must be able to learn the rate,
+/// not only the superadmin who reads the logging policy (#3057).
+#[tokio::test]
+async fn every_analytics_reader_learns_the_sample_rate_and_nothing_else() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app =
+        rolter_control::test_app_with_admin_token(pool.clone(), Some(admin_token().to_string()))
+            .await
+            .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let sampling = format!("{base}/api/v1/analytics/sampling");
+
+    let org: uuid::Uuid =
+        sqlx::query_scalar("insert into orgs (name, slug) values ('Acme', 'acme') returning id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let viewer = seed_user(&pool, "viewer@sampling.test", false).await;
+    seed_membership(&pool, viewer, Some(org), None, None, "viewer").await;
+    let viewer_token = seed_session(&pool, viewer, "sampling_viewer").await;
+
+    assert_eq!(
+        client.get(&sampling).send().await.unwrap().status(),
+        401,
+        "an anonymous caller learns nothing"
+    );
+
+    let unsampled: Value = client
+        .get(&sampling)
+        .bearer_auth(&viewer_token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(unsampled, json!({"sample_rate": 1.0}));
+
+    let updated = client
+        .put(format!("{base}/api/v1/logging-settings"))
+        .bearer_auth(admin_token())
+        .json(&json!({
+            "sample_rate": 0.25,
+            "payload_capture_enabled": true,
+            "payload_capture_max_bytes": 4096,
+            "payload_capture_redact_fields": ["authorization"],
+            "payload_capture_models": ["gpt-4o"],
+            "payload_capture_virtual_key_ids": [],
+            "retention_days": 30,
+            "payload_retention_hours": 24
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(updated.status(), 200);
+
+    // the viewer still cannot read the policy itself
+    let policy = client
+        .get(format!("{base}/api/v1/logging-settings"))
+        .bearer_auth(&viewer_token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(policy.status(), 403);
+
+    // but learns the rate, and only the rate
+    let sampled: Value = client
+        .get(&sampling)
+        .bearer_auth(&viewer_token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(sampled, json!({"sample_rate": 0.25}));
+
+    let as_admin_token: Value = client
+        .get(&sampling)
+        .bearer_auth(admin_token())
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(as_admin_token, json!({"sample_rate": 0.25}));
+}
+
 #[tokio::test]
 async fn runtime_policy_is_superadmin_only_and_audited() {
     skip_without_db!();

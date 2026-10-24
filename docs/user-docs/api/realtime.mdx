@@ -24,6 +24,10 @@ the life of the session.
 
 ## Connect
 
+The gateway's `GET /openapi.json` describes this upgrade as `GET /v1/realtime`,
+including its required `model` query parameter, the `101` response and the HTTP
+admission failures returned before a session is accepted.
+
 Send the usual gateway virtual key and the public route model as a query
 parameter:
 

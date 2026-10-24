@@ -160,6 +160,21 @@ pub fn document() -> Value {
                     "responses": {"200": {"description": "model list", "content": {"application/json": {"schema": {"type": "object"}}}}}
                 }
             },
+            "/v1/realtime": {
+                "get": {
+                    "summary": "OpenAI Realtime WebSocket session",
+                    "operationId": "realtimeSession",
+                    "parameters": [
+                        {"name": "model", "in": "query", "required": true, "schema": {"type": "string"}, "description": "a public model name served by this gateway"}
+                    ],
+                    "responses": {
+                        "101": {"description": "WebSocket upgrade"},
+                        "400": error_response, "401": error_response, "402": error_response,
+                        "403": error_response, "404": error_response, "429": error_response,
+                        "502": error_response, "503": error_response
+                    }
+                }
+            },
             "/mcp/{server}": {
                 "parameters": [
                     {"name":"server","in":"path","required":true,"schema":{"type":"string"},"description":"organization-scoped MCP server slug"}
@@ -321,6 +336,7 @@ mod tests {
             "/v1/audio/transcriptions",
             "/v1/audio/translations",
             "/v1/models",
+            "/v1/realtime",
             "/mcp/{server}",
             "/mcp/{server}/{path}",
             "/healthz",
@@ -330,6 +346,23 @@ mod tests {
         // security schemes are declared and referenced
         assert!(doc["components"]["securitySchemes"]["bearerAuth"].is_object());
         assert!(doc["components"]["schemas"]["Error"].is_object());
+    }
+
+    #[test]
+    fn realtime_documents_the_upgrade_and_admission_failures() {
+        let doc = document();
+        let operation = &doc["paths"]["/v1/realtime"]["get"];
+        assert_eq!(operation["parameters"][0]["name"], "model");
+        assert_eq!(operation["parameters"][0]["in"], "query");
+        assert_eq!(operation["parameters"][0]["required"], true);
+        for status in [
+            "101", "400", "401", "402", "403", "404", "429", "502", "503",
+        ] {
+            assert!(
+                operation["responses"][status].is_object(),
+                "missing {status}"
+            );
+        }
     }
 
     #[test]
