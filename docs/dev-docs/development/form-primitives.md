@@ -2,6 +2,8 @@
 
 Group mappings on SSO and SCIM use `DeleteIconButton`: the pending spinner follows `remove.variables`, while every remove control stays disabled until the mutation finishes.
 
+Custom label removal in `LabelSheet` uses `DeleteIconButton`; only the label being deleted shows its pending spinner, and the existing confirmation remains in place.
+
 A sheet in the dashboard is a long, dense form: forty-odd controls in six
 collapsible sections, most of them a label, a control and a conditional error.
 `Field` (`ui/src/components/ui/field.tsx`) assembles one of those rows on a
