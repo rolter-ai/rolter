@@ -116,7 +116,7 @@ fn invalid(message: impl Into<String>) -> ApiError {
 /// in step.
 pub(crate) fn kek() -> ApiResult<Kek> {
     Kek::from_env().ok_or_else(|| {
-        invalid(format!(
+        ApiError::KekUnavailable(format!(
             "storing an MCP credential requires the {KEK_ENV} environment variable on the \
              control plane to seal it at rest"
         ))

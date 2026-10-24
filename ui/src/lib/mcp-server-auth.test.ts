@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 
-import type { McpServerRow } from "@/lib/api";
+import { ApiError, type McpServerRow } from "@/lib/api";
 import {
   authDraft,
   authDraftValid,
@@ -171,6 +171,12 @@ describe("transport overrides", () => {
 });
 
 describe("isKekMissing", () => {
+  it("uses the stable code without depending on the message", () => {
+    expect(isKekMissing(new ApiError("Sealing is unavailable", 503, "kek_unavailable"))).toBe(true);
+    expect(isKekMissing(new ApiError("ROLTER_KEK is not a field", 400, "invalid_field"))).toBe(
+      false,
+    );
+  });
   it("recognises the control plane's refusal by the variable it names", () => {
     expect(
       isKekMissing(

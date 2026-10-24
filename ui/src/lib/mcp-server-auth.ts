@@ -1,4 +1,5 @@
 import {
+  ApiError,
   MCP_RESERVED_AUTH_HEADERS,
   type McpAuthKind,
   type McpServerAuthInput,
@@ -144,8 +145,10 @@ export function overridesPatch(
 
 /**
  * Whether an API refusal is the missing deployment KEK rather than anything
- * the operator typed. The control plane sends no machine code for it, so this
- * matches the environment variable's name, which is a stable identifier.
+ * the operator typed. Older control planes have no code, so only those
+ * refusals fall back to the environment variable's name.
  */
 export const isKekMissing = (error: unknown): boolean =>
-  error instanceof Error && error.message.includes("ROLTER_KEK");
+  error instanceof ApiError && error.code
+    ? error.code === "kek_unavailable"
+    : error instanceof Error && error.message.includes("ROLTER_KEK");

@@ -11,6 +11,11 @@ import ru from "@/lib/i18n/locales/ru.json";
 const t = ((key: string) => key) as never;
 
 describe("describeError", () => {
+  it("translates a missing deployment KEK independently of server wording", () => {
+    expect(describeError(new ApiError("sealing unavailable", 503, "kek_unavailable"), t)).toEqual({
+      message: "errors.api.codes.kek_unavailable",
+    });
+  });
   it("translates a known code and never shows the server's message", () => {
     const copy = describeError(
       new ApiError("last superadmin (internal)", 409, "last_superadmin"),

@@ -22,6 +22,7 @@ export const KNOWN_ERROR_CODES = [
   "invalid_field",
   "invalid_query",
   "invalid_time_bound",
+  "kek_unavailable",
   "last_org_admin",
   "last_superadmin",
   "mfa_enrolment_required",

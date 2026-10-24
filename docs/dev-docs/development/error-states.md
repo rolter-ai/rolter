@@ -385,7 +385,17 @@ API renders as `409 name_taken` with a generic message, so a write that loses a
 race, or hits a constraint nobody checked first, never surfaces as a 500
 (#2567). A query that bypasses the repositories maps its `sqlx` error through
 `rolter_store::postgres::store_err` for the same reason, never through
-`Error::Store(e.to_string())` (#2729). Status codes do not change when a code is added. The codes are listed
-in `docs/user-docs/api/control-plane-openapi.mdx`. `invalid_field` is the one
+`Error::Store(e.to_string())` (#2729). Adding a code normally preserves the status;
+a deployment refusal such as a missing KEK uses `503` rather than a validation `400`. The codes are listed
+in `docs/user-docs/api/control-plane-openapi.mdx`.
+
+A missing deployment KEK is not invalid user input: credential-sealing paths use
+`ApiError::KekUnavailable` and return `503` with `error.code: "kek_unavailable"`.
+Provider keys, MCP credentials, SSO client-secret writes, connector/channel
+credentials and MFA enrolment share this contract. Existing sign-in and policy
+lockout guards retain their specific refusals. The MCP editor checks the code
+first, falling back to `ROLTER_KEK` in the message only for older uncoded servers.
+
+`invalid_field` is the one
 known code whose server message `describeError` keeps as `detail`, because the
 translated line cannot say which field was wrong.

@@ -131,7 +131,7 @@ fn seal(secret: &str) -> ApiResult<(Vec<u8>, Vec<u8>)> {
         return Err(invalid("managed_auth_secret must not be empty"));
     }
     let Some(kek) = Kek::from_env() else {
-        return Err(invalid(format!(
+        return Err(ApiError::KekUnavailable(format!(
             "storing connector credentials requires {KEK_ENV}"
         )));
     };
