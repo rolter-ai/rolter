@@ -1939,7 +1939,9 @@ export const OtherRepeatedControlsNameTheirColumn: Story = {
     await expect(canvas.queryByRole("button", { name: "Show raw text" })).toBeNull();
     await expect(canvas.queryByRole("button", { name: "Attach image" })).toBeNull();
 
-    const files = canvasElement.querySelectorAll<HTMLInputElement>('input[type="file"]');
+    const files = canvasElement.querySelectorAll<HTMLInputElement>(
+      'input[type="file"][accept="image/*"]',
+    );
     expect(files).toHaveLength(2);
     for (const input of files) {
       await userEvent.upload(input, new File(["x"], "pic.png", { type: "image/png" }));

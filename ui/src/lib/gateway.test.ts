@@ -4,6 +4,7 @@ import {
   GatewayError,
   awaitingMintedKey,
   chatCompletion,
+  decide,
   fetchGatewayModels,
   gatewayBase,
   getGatewayCallsInFlight,
@@ -320,6 +321,38 @@ describe("the session and the key on /gw calls (#2486)", () => {
  * A re-mint waits while this is above zero (#2608), so everything that holds
  * the key for longer than a tick has to be in it (#2758).
  */
+describe("decision calls", () => {
+  it("sends the OpenJev envelope and releases in-flight tracking on refusal", async () => {
+    let sent: RequestInit | undefined;
+    let url = "";
+    let release!: (response: Response) => void;
+    globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+      url = String(input);
+      sent = init;
+      return new Promise<Response>((resolve) => {
+        release = resolve;
+      });
+    }) as typeof fetch;
+    setPlaygroundKey("sk-decision-test");
+    const signal = new AbortController().signal;
+    const body = {
+      model: "openjev",
+      state: "An image: <<IMG>>",
+      image_data: "data:image/png;base64,eA==",
+      questions: { q: { type: "noul", instructions: "Visible?" } },
+    };
+    const pending = decide(body, signal);
+    expect(url).toBe("/gw/v1/systemone");
+    expect(JSON.parse(String(sent?.body))).toEqual(body);
+    expect(sent?.signal).toBe(signal);
+    expect(new Headers(sent?.headers).get("x-rolter-gateway-key")).toBe("sk-decision-test");
+    expect(getGatewayCallsInFlight()).toBe(1);
+    release(new Response(JSON.stringify({ error: { message: "refused" } }), { status: 403 }));
+    await expect(pending).rejects.toThrow("refused");
+    expect(getGatewayCallsInFlight()).toBe(0);
+  });
+});
+
 describe("gateway calls in flight", () => {
   it("counts the model probe until it settles, refused or not", async () => {
     let answer!: (r: Response) => void;

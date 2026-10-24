@@ -11,6 +11,16 @@ What this surface guarantees across releases is the _dialect_, not a frozen sche
 
 When no virtual keys are configured the gateway runs open (useful for local dev).
 
+## Playground decision discovery
+
+`GET /v1/models` adds `rolter_capabilities: { decisions, chat }` to each resolved
+address, including provider pins and groups. The values reuse the System One
+endpoint-refusal policy rather than guessing from names. The built-in `fake-llm`
+supports both unless a configured route shadows it. Playground filters Decisions
+on explicit support and excludes decision-only addresses from Chat. The Decisions
+panel preserves JSON state and question ids, sends OpenJev pixels in `image_data`,
+and tracks/cancels requests through the shared gateway client.
+
 ## Endpoints (v1)
 
 | Method            | Path                             | Notes                                                                                                |
