@@ -1,5 +1,7 @@
 # Observability
 
+Status-page polling redacts URL credentials from both request and body-read error logs. A transport failure still skips that poll without changing provider health.
+
 The [environment variable reference](../../user-docs/configuration/environment-variables.mdx#shared-variables) lists the general OTLP endpoint and each signal override. Metrics export independently; the log bridge is installed alongside an active trace exporter, so a logs-only endpoint does not activate it. Stdout logs and Prometheus scraping remain available.
 
 ## Metrics
