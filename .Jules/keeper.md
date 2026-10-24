@@ -42,3 +42,8 @@
 
 **Learning:** Provider-specific runtime environment variables read directly via `std::env::var` (such as `OPENROUTER_HTTP_REFERER` or `OPENROUTER_X_TITLE` in `crates/rolter-proxy`) can quietly drift from `docs/user-docs/configuration/environment-variables.mdx` if drift guard tests only scan for `"ROLTER_"` string literals.
 **Action:** Include all provider-specific runtime environment variables in `all_binary_cli_env_vars_are_documented_in_reference` inside `crates/rolter/tests/env_var_names.rs` to assert completeness in reference documentation.
+
+## 2026-10-12 - Signal-specific OTLP environment variables drifting from reference docs
+
+**Learning:** Signal-specific OpenTelemetry environment variables (`OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`, `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT`) read via `std::env::var` in `crates/rolter-core/src/telemetry.rs` can quietly drift from `docs/user-docs/configuration/environment-variables.mdx` if drift guard tests only explicitly list `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`.
+**Action:** Guard all OTLP signal-specific environment variable documentation completeness using `all_binary_cli_env_vars_are_documented_in_reference` in `crates/rolter/tests/env_var_names.rs`.
