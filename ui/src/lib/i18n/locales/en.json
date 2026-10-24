@@ -3024,6 +3024,10 @@
       }
     },
     "complexityRouter": {
+      "disable": "Disable policy",
+      "disableAria": "Disable policy for {{model}}",
+      "disableTitle": "Disable complexity policy for {{model}}?",
+      "disableBody": "Requests will use the original route instead of complexity tiers. Other route settings are preserved. You can configure a new policy later.",
       "emptyTitle": "No routes to give a policy",
       "emptyBody": "A complexity policy hangs off a route, so create a route first — its input-size tiers are set from here afterwards.",
       "emptyAction": "Open routing rules",

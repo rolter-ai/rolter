@@ -97,6 +97,22 @@ permission as the list, and a route an access profile hides from the caller is
 left out of the list together with its targets. The per-route endpoints keep
 working.
 
+## Disabling complexity routing
+
+`DELETE /api/v1/routes/{id}/complexity` removes the route's complexity policy
+and returns the updated route row. It needs `route:update`, the same permission
+as configuring tiers. No request body is needed.
+
+Only `_rolter_complexity` is removed from `params`. Other inference parameters,
+parameter locks, targets and the route itself stay unchanged. After the next
+snapshot reload, requests use the original route and its balancing strategy
+instead of being redirected to a tier. Calling it again is safe.
+
+In **Complexity Router**, choose **Disable policy** on the route and confirm.
+The dialog names the route and explains the rollback; a refused request leaves
+it open with the error. Reconfigure a policy through **No policy yet** to enable
+tiering again. The audit action is `route.set_complexity` with `complexity: null`.
+
 ## Models and their targets
 
 `GET /api/v1/models` returns one entry per public model name the gateway

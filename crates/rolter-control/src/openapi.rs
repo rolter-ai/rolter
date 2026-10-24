@@ -1304,6 +1304,11 @@ fn operations() -> Vec<Op> {
                 "setRouteComplexity",
                 "Replace a route's complexity-routing tiers",
             ),
+            Op::delete(
+                "/api/v1/routes/{id}/complexity",
+                "disableRouteComplexity",
+                "Disable complexity routing while preserving ordinary route parameters",
+            ).ok(Payload::Ref("Route")),
             Op::get(
                 "/api/v1/routes/{route_id}/targets",
                 "listRouteTargets",
