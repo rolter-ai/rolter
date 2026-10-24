@@ -178,9 +178,36 @@ fn the_scan_finds_the_names_the_binaries_read() {
     assert!(files.iter().any(|p| p.ends_with("_helpers.tpl")));
 }
 
+/// Every `"OTEL_…"` string literal in the crates' sources: standard OpenTelemetry
+/// environment variables read by the runtime telemetry exporters.
+fn otel_names() -> BTreeSet<String> {
+    let mut sources = Vec::new();
+    for entry in std::fs::read_dir(workspace_root().join("crates"))
+        .expect("crates/ is readable")
+        .flatten()
+    {
+        files_under(&entry.path().join("src"), &["rs"], &mut sources);
+    }
+    let mut names = BTreeSet::new();
+    for path in sources {
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        for (at, _) in text.match_indices("\"OTEL_") {
+            let name: String = text[at + 1..]
+                .chars()
+                .take_while(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || *c == '_')
+                .collect();
+            if text[at + 1 + name.len()..].starts_with('"') {
+                names.insert(name);
+            }
+        }
+    }
+    names
+}
+
 #[test]
 fn all_binary_cli_env_vars_are_documented_in_reference() {
     let mut vars = prefixed_names();
+    vars.extend(otel_names());
     vars.insert("CLICKHOUSE_URL".to_string());
     vars.insert("OPENROUTER_HTTP_REFERER".to_string());
     vars.insert("OPENROUTER_X_TITLE".to_string());
