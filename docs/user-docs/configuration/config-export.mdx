@@ -35,6 +35,21 @@ The export deliberately carries only the sections the importer consumes, so noth
 | `[logging]` `ui_events`                                                             | whether the control plane records dashboard usage events                                   |
 | `[logging.payload_capture]`                                                         | the capture policy, its size cap and its redaction and model filters                       |
 
+### Import warnings
+
+When importing a hand-written file, `rolter-seed --import` warns once for each
+recognised section it does not apply. The warning names the section and the
+dashboard screen or API that manages it. For example, `[adaptive_routing]`
+points to `PUT /api/v1/adaptive-routing-policy`. An exit status of zero means
+the supported sections imported successfully, not that every declared setting
+was written to the database.
+
+`[server]`, `[tls]` and `schema_version` stay quiet: they configure the local
+gateway or the file format, not database rows. `[logging]` stays quiet when it
+contains only `ui_events` and `payload_capture`; other recognised logging
+settings produce one warning for `logging`. Unknown keys still receive the
+separate typo warning. Warnings never print section values or credentials.
+
 ### What is deliberately left out
 
 An export that carried rows the importer ignores would promise more than a re-import delivers, so those rows are not written at all. The emitted file states this in a header comment, so the omission is visible in the artifact rather than only in this page.
