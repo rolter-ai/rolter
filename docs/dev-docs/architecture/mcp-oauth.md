@@ -18,6 +18,8 @@ mcp_servers (org-scoped)
 
 ## Token handling
 
+Resource-identifier parse failures redact URL credentials at the parser boundary, including unsupported schemes and missing hosts. Every OAuth caller receives the same safe diagnostic; consent, refresh and token exchange also redact errors before forwarding them.
+
 Access and refresh tokens are sealed with AES-256-GCM under the deployment KEK (`ROLTER_KEK`), the same mechanism as upstream provider credentials — there is deliberately no plaintext column for either. Ciphertext and nonce sit side by side; the KEK never reaches the database.
 
 The store exposes tokens through two credential-only paths. `McpOAuthRepo::open_session` opens one explicitly selected live session for lifecycle code. The Postgres config store opens only the newest live session per `(server, user)` whose scopes remain within its live grant and cover the server's required scopes; those records travel through the token-guarded `/internal/snapshot` channel already used for decrypted provider credentials. Public API DTOs carry only metadata and a `has_refresh_token` boolean.

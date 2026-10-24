@@ -50,3 +50,9 @@
 
 **Learning:** `poll_one` in `crates/rolter-gateway/src/status_page.rs` previously logged raw `reqwest::Error` strings using `tracing::warn!`. Because `reqwest::Error` includes the request URL (which may contain query credentials or basic auth userinfo in `status_page_url`), logging raw error strings can leak operator secrets into system logs.
 **Prevention:** Always pass error strings through `rolter_core::redact::redact_urls_in_text(&err.to_string())` when logging network or HTTP request failures that include URLs.
+
+
+## 2026-10-24 - Redact Sensitive URL Credentials in WebSocket Proxy Error Logs
+
+**Learning:** `proxy_ws` in `crates/rolter-control/src/proxy.rs` previously logged raw `tungstenite` error messages with `tracing::warn!(%error, ...)` when WebSocket client requests failed URL parsing. Because `tungstenite` quotes the entire URL in its error message, any sensitive query parameters (like virtual keys or session tokens) were logged unredacted in server log streams.
+**Prevention:** Always run error strings generated from client or upstream URL parsing through `rolter_core::redact::redact_urls_in_text` before logging them with `tracing`.

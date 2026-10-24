@@ -1,10 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Sparkles, Tag, Trash2 } from "lucide-react";
+import { Sparkles, Tag } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { GatedButton } from "@/components/GatedButton";
+import { DeleteIconButton } from "@/components/ui/delete-icon-button";
 import { LoadError } from "@/components/LoadError";
 import { ListSkeleton } from "@/components/LoadingState";
 import { Badge } from "@/components/ui/badge";
@@ -264,16 +265,13 @@ export function LabelSheet({
                       if (next !== (row.value ?? "")) rename.mutate({ row, next });
                     }}
                   />
-                  <GatedButton
+                  <DeleteIconButton
                     gate={api.deleteGate}
                     control="label-remove"
-                    variant="ghost"
-                    size="sm"
-                    aria-label={t("labels.removeOne", { label: labelText(row) })}
+                    label={t("labels.removeOne", { label: labelText(row) })}
+                    pending={remove.isPending && remove.variables?.id === row.id}
                     onClick={() => setDeleting(row)}
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </GatedButton>
+                  />
                 </div>
               ))}
             </div>

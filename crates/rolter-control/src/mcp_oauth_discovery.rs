@@ -102,8 +102,9 @@ impl ResourceUri {
         } else if lower.starts_with("http://") {
             "http://".len()
         } else {
+            let shown = rolter_core::redact::redact_urls_in_text(raw);
             return Err(DiscoveryError::Resource(format!(
-                "'{raw}' is not an absolute http(s) uri, so it cannot be a resource identifier"
+                "'{shown}' is not an absolute http(s) uri, so it cannot be a resource identifier"
             )));
         };
         let (scheme, rest) = without_fragment.split_at(scheme_len);
@@ -112,7 +113,8 @@ impl ResourceUri {
             None => (rest, ""),
         };
         if authority.is_empty() {
-            return Err(DiscoveryError::Resource(format!("'{raw}' has no host")));
+            let shown = rolter_core::redact::redact_urls_in_text(raw);
+            return Err(DiscoveryError::Resource(format!("'{shown}' has no host")));
         }
         if authority.contains('@') {
             // userinfo in a resource identifier would put a credential into an
