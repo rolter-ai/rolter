@@ -1549,8 +1549,7 @@ export const AStaleRefreshRecordsOneErrorStatePerAppearance: Story = {
 
 /**
  * #2231: below 100 % the figures are scaled up from a sample (#2239), and the
- * screen says so with the share the log keeps. The settings are a superadmin's
- * to read, so that is the role the story mounts as.
+ * screen says so with the share the log keeps.
  */
 export const ASampledLogSaysTheFiguresAreEstimates: Story = {
   render: () => render(withSampleRate(loaded, 0.25), "superadmin"),
@@ -1573,24 +1572,29 @@ export const AFullLogShowsNoSamplingNote: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect((await canvas.findAllByText(fmt.number(132))).length).toBeGreaterThan(0);
-    await fullLog.expectSent("GET", "/api/v1/logging-settings");
+    await fullLog.expectSent("GET", "/api/v1/analytics/sampling");
     // the answer is in the cache a beat after the request leaves
     await sleep(100);
     await expect(canvas.queryByTestId("sampled-log-notice")).toBeNull();
   },
 };
 
-const adminOfSampledLog = recording(withSampleRate(loaded, 0.25));
+const viewerOfSampledLog = recording(withSampleRate(loaded, 0.25));
 
-// the rate is not an admin's to read: the screen asks for nothing and says nothing
-export const AnAdminIsNotToldTheRate: Story = {
-  render: () => render(adminOfSampledLog.stub, "admin"),
+/**
+ * #3057: a viewer reads the same estimates, so they get the same note. The rate
+ * comes from the analytics read every role makes, never from the logging
+ * settings, which stay a superadmin's.
+ */
+export const AViewerIsToldTheRateToo: Story = {
+  render: () => render(viewerOfSampledLog.stub, "viewer"),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect((await canvas.findAllByText(fmt.number(132))).length).toBeGreaterThan(0);
-    await expectGateAnswered();
-    adminOfSampledLog.expectNotSent("GET", "/api/v1/logging-settings");
-    await expect(canvas.queryByTestId("sampled-log-notice")).toBeNull();
+    const notice = await canvas.findByTestId("sampled-log-notice");
+    await expect(notice).toHaveTextContent("The request log keeps about 1 in 4 requests.");
+    await expect(notice).toHaveTextContent(/estimates scaled up from that sample/);
+    await viewerOfSampledLog.expectSent("GET", "/api/v1/analytics/sampling");
+    viewerOfSampledLog.expectNotSent("GET", "/api/v1/logging-settings");
   },
 };
 

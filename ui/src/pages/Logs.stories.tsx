@@ -3533,11 +3533,12 @@ export const SmallPhoneInRussian: Story = logsFit("small", "ru");
 
 /**
  * #2231: the list is the sampled rows themselves, so below 100 % it says that a
- * request missing from it was still served.
+ * request missing from it was still served. A viewer is told as well: the rate
+ * is no longer read from the superadmin's logging settings (#3057).
  */
 export const ASampledLogSaysTheListIsPartial: Story = {
   render: () => (
-    <Harness fetchStub={withSampleRate(withLogs(ROWS), 0.1)} role="superadmin">
+    <Harness fetchStub={withSampleRate(withLogs(ROWS), 0.1)} role="viewer">
       <Logs />
     </Harness>
   ),
