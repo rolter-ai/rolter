@@ -37,7 +37,7 @@ When spend read off the Dashboard has to be the real spend, keep the rate at `1`
 
 Below 100 %, **Logs Settings** states the consequence under the field: the share the log keeps, such as "about 1 in 4 requests", and that counts, spend and tokens on the screens that read the log are estimates scaled up from the sample. The warning follows the form, so it shows for an unsaved edit as well as for a rate already saved. A cleared field is refused rather than saved as `0`, which would log nothing. Text that is not a plain decimal, such as `0x10`, is refused too.
 
-The **Dashboard**, **Business Units**, **Customers** and **LLM Logs** carry the same note whenever the saved rate is below 100 %: the figures are estimates scaled up from a sample, and the LLM Logs list shows only the sampled requests. Only a superadmin can read the logging settings, so other roles do not see the note.
+The **Dashboard**, **Business Units**, **Customers** and **LLM Logs** carry the same note whenever the saved rate is below 100 %: the figures are estimates scaled up from a sample, and the LLM Logs list shows only the sampled requests. Every role that can open those screens sees the note: they read the rate from [`GET /api/v1/analytics/sampling`](/api/dashboard-analytics#sampling), which answers the rate alone, while the rest of the logging settings stays a superadmin's.
 
 ---
 
