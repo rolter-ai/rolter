@@ -144,7 +144,7 @@ pub async fn seed(pool: &PgPool, opts: &SeedOptions) -> anyhow::Result<SeedSumma
     })
 }
 
-/// Warn about keys in the bootstrap file that the config model ignores.
+/// Warn about unknown keys and recognised sections the bootstrap importer skips.
 ///
 /// Returns how many were reported, so the emission is assertable without a
 /// database. Nothing here can fail the import: an unknown key never stopped the
@@ -152,9 +152,70 @@ pub async fn seed(pool: &PgPool, opts: &SeedOptions) -> anyhow::Result<SeedSumma
 /// all is reported with the error it deserves by the import itself.
 fn lint_import_file(path: &Path) -> usize {
     match std::fs::read_to_string(path) {
-        Ok(raw) => rolter_core::config_lint::warn_unknown_keys_once(path, &raw),
+        Ok(raw) => {
+            let unknown = rolter_core::config_lint::warn_unknown_keys_once(path, &raw);
+            unknown + warn_skipped_sections(path, &raw)
+        }
         Err(_) => 0,
     }
+}
+
+/// Warn once per declared section that the bootstrap importer does not write.
+/// Gateway-local settings and the schema stamp are intentionally quiet.
+fn warn_skipped_sections(path: &Path, raw: &str) -> usize {
+    let Ok(toml::Value::Table(declared)) = toml::from_str(raw) else {
+        return 0;
+    };
+    let Ok(serde_json::Value::Object(known)) = serde_json::to_value(GatewayConfig::default())
+    else {
+        return 0;
+    };
+    let logging_fields = known.get("logging").and_then(serde_json::Value::as_object);
+    let mut count = 0;
+    for (section, value) in declared {
+        if matches!(
+            section.as_str(),
+            "schema_version"
+                | "server"
+                | "tls"
+                | "providers"
+                | "provider_groups"
+                | "routes"
+                | "model_prices"
+                | "prompt_templates"
+        ) {
+            continue;
+        }
+        if section == "logging" {
+            if value.as_table().is_some_and(|fields| {
+                fields.keys().all(|key| {
+                    matches!(key.as_str(), "ui_events" | "payload_capture")
+                        || logging_fields.is_none_or(|known| !known.contains_key(key))
+                })
+            }) {
+                continue;
+            }
+        } else if !known.contains_key(&section) {
+            // unknown keys belong to config_lint, not the skipped-section warning
+            continue;
+        }
+        let managed_in = match section.as_str() {
+            "adaptive_routing" => "dashboard Adaptive Routing or PUT /api/v1/adaptive-routing-policy",
+            "budgets" | "rate_limits" => "dashboard Limits",
+            "virtual_keys" | "db_virtual_keys" => "dashboard Virtual Keys",
+            "mcp_servers" | "mcp_oauth_sessions" => "dashboard MCP Servers and MCP OAuth",
+            "logging" => "dashboard Logs Settings; only ui_events and payload_capture are imported",
+            "plugins" => "dashboard Plugins",
+            "models" => "dashboard Models",
+            "guardrails" | "guardrail_webhook" | "pii_sanitizer" => "dashboard Guardrails",
+            "feature_flags" => "dashboard Feature Flags",
+            "security" | "egress" => "dashboard Security",
+            _ => "the matching dashboard settings screen, or the gateway configuration for a file-backed deployment",
+        };
+        tracing::warn!(file = %path.display(), section = %section, managed_in, "bootstrap import does not apply this section");
+        count += 1;
+    }
+    count
 }
 
 fn slugify(name: &str) -> String {
@@ -1070,6 +1131,66 @@ api_key_evn = "LOCAL_API_KEY"
         let config =
             rolter_core::GatewayConfig::load(&path).expect("an unknown key never blocks the load");
         assert_eq!(config.providers.len(), 1);
+    }
+
+    #[test]
+    fn a_recognised_but_skipped_import_section_is_reported() {
+        let dir = tempdir("skipped-import");
+        let path = dir.join("rolter.toml");
+        std::fs::write(&path, "[adaptive_routing]\nenabled = true\n").unwrap();
+        let output = std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
+        #[derive(Clone)]
+        struct Capture(std::sync::Arc<parking_lot::Mutex<Vec<u8>>>);
+        impl std::io::Write for Capture {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let captured = output.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_max_level(tracing::Level::WARN)
+            .with_writer(move || Capture(captured.clone()))
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            assert_eq!(lint_import_file(&path), 1);
+        });
+        let log = String::from_utf8(output.lock().clone()).unwrap();
+        assert_eq!(
+            log.matches("bootstrap import does not apply this section")
+                .count(),
+            1
+        );
+        assert!(log.contains("adaptive_routing"), "{log}");
+        assert!(log.contains("PUT /api/v1/adaptive-routing-policy"), "{log}");
+    }
+
+    #[test]
+    fn skipped_sections_warn_once_and_unknown_logging_keys_are_not_double_reported() {
+        let path = std::path::Path::new("bootstrap.toml");
+        assert_eq!(super::warn_skipped_sections(path, "[retry]\nmax_retries = 3\n[queue]\nenabled = true\n[logging]\nui_events = false\nsample_rate = 0.1\n"), 3);
+        assert_eq!(
+            super::warn_skipped_sections(path, "[logging]\nui_evnts = false\n"),
+            0
+        );
+        assert_eq!(
+            super::warn_skipped_sections(path, "[invented]\nvalue = 1\n"),
+            0
+        );
+        assert_eq!(super::warn_skipped_sections(path, "not valid toml"), 0);
+    }
+
+    #[test]
+    fn imported_and_gateway_local_sections_do_not_warn() {
+        let dir = tempdir("imported-sections");
+        let path = dir.join("rolter.toml");
+        std::fs::write(&path, "schema_version = 2\n[server]\n[tls]\n[logging]\nui_events = false\n[logging.payload_capture]\nenabled = false\n").unwrap();
+        assert_eq!(lint_import_file(&path), 0);
     }
 
     #[test]

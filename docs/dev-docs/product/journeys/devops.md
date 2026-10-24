@@ -65,7 +65,7 @@ D2–D4 run, and SigNoz `rolter · overview` for anything that got slower.
 
 ## D6 — automate
 
-| #    | step                                                          | where                  | expect                                    | status                                      |
-| ---- | ------------------------------------------------------------- | ---------------------- | ----------------------------------------- | ------------------------------------------- |
-| D6.1 | apply configuration from CI with a least-privilege credential | —                      | a scoped control-plane token              | gap — #1836 (the admin token is superadmin) |
-| D6.2 | apply it from a file                                          | `rolter-seed --import` | desired state for the sections it imports | partial — #1818 (silent about the rest)     |
+| #    | step                                                          | where                  | expect                                    | status                                         |
+| ---- | ------------------------------------------------------------- | ---------------------- | ----------------------------------------- | ---------------------------------------------- |
+| D6.1 | apply configuration from CI with a least-privilege credential | —                      | a scoped control-plane token              | gap — #1836 (the admin token is superadmin)    |
+| D6.2 | apply it from a file                                          | `rolter-seed --import` | desired state for the sections it imports | shipped — warns about skipped sections (#1818) |
