@@ -192,7 +192,10 @@ fn store_unless_untouched<T: Default + PartialEq>(store: T, file: T) -> T {
 /// `logging_settings` has no column for the sink or its batching, so
 /// `clickhouse_url`, `batch_max`, `flush_ms` and `queue_capacity` can only ever
 /// come from the file and are kept whichever side wins the rest.
-fn merge_logging(
+///
+/// Public so the control plane can report the rate the snapshot actually
+/// serves without assembling a whole [`ConfigStore::load`] (#3171).
+pub fn merge_logging(
     file: rolter_core::LoggingConfig,
     store: rolter_core::LoggingConfig,
 ) -> rolter_core::LoggingConfig {

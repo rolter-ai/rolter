@@ -534,6 +534,11 @@ struct ControlState {
     /// database and never silently charges the wrong amount (#650)
     #[cfg_attr(not(feature = "postgres"), allow(dead_code))]
     currency: Arc<rolter_core::CurrencyConfig>,
+    /// `[logging]` from the bootstrap config (defaults when there is none). The
+    /// snapshot serves it while `logging_settings` holds its seeded defaults, so
+    /// the sampling read needs it to report the rate gateways apply (#3171)
+    #[cfg_attr(not(feature = "postgres"), allow(dead_code))]
+    file_logging: Arc<rolter_core::LoggingConfig>,
     /// when set, the CRUD API and `/internal/snapshot` require
     /// `Authorization: Bearer <token>`
     admin_token: Option<Arc<String>>,
@@ -680,6 +685,12 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
             .map(|c| c.currency.clone())
             .unwrap_or_default(),
     );
+    let file_logging = Arc::new(
+        bootstrap
+            .as_ref()
+            .map(|c| c.logging.clone())
+            .unwrap_or_default(),
+    );
     // snapshot generation is fleet-wide config-propagation delay and CRUD
     // latency is what makes a slow dashboard write attributable, and neither
     // was measured (#845). `None` — and no cost — without an OTLP endpoint;
@@ -774,6 +785,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         clickhouse,
         egress: egress.clone(),
         currency: currency.clone(),
+        file_logging: file_logging.clone(),
         admin_token,
         internal_token,
         http,
@@ -795,6 +807,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         clickhouse,
         egress: egress.clone(),
         currency: currency.clone(),
+        file_logging: file_logging.clone(),
         admin_token,
         internal_token,
         http,
@@ -1447,6 +1460,7 @@ pub async fn test_app_with_file_config(
     rolter_store::postgres::run_migrations(&pool).await?;
     let mut state = test_state(pool.clone(), admin_token, None);
     state.config_owned = Arc::new(ConfigOwned::from_config(&file_config));
+    state.file_logging = Arc::new(file_config.logging.clone());
     state.store = Arc::new(MergedConfigStore::new(
         file_config,
         Arc::new(rolter_store::PostgresConfigStore::new(pool)),
@@ -1507,6 +1521,7 @@ fn test_state(
         clickhouse: None,
         egress: Arc::new(Default::default()),
         currency: Arc::new(Default::default()),
+        file_logging: Arc::new(Default::default()),
         admin_token: admin_token.map(Arc::new),
         internal_token: None,
         http: reqwest::Client::new(),
@@ -3366,6 +3381,7 @@ mod tests {
             config_owned: Arc::new(ConfigOwned::default()),
             egress: Arc::new(Default::default()),
             currency: Arc::new(Default::default()),
+            file_logging: Arc::new(Default::default()),
             redis: None,
             clickhouse: None,
             admin_token: admin.map(|t| Arc::new(t.to_string())),

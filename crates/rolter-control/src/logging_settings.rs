@@ -37,10 +37,12 @@ struct LogSampling {
     sample_rate: f64,
 }
 
-impl From<&LoggingSettings> for LogSampling {
-    fn from(settings: &LoggingSettings) -> Self {
+impl LogSampling {
+    /// The rate the snapshot serves: the bootstrap file's `[logging]` while the
+    /// stored row still holds its seeded defaults, the row's otherwise (#3171).
+    fn served(settings: &LoggingSettings, file: &rolter_core::LoggingConfig) -> Self {
         Self {
-            sample_rate: settings.sample_rate,
+            sample_rate: settings.served(file).sample_rate,
         }
     }
 }
@@ -59,7 +61,7 @@ async fn get_log_sampling(
     State(state): State<ControlState>,
 ) -> ApiResult<Json<LogSampling>> {
     let settings = LoggingSettingsRepo(pool(&state)).get().await?;
-    Ok(Json(LogSampling::from(&settings)))
+    Ok(Json(LogSampling::served(&settings, &state.file_logging)))
 }
 
 async fn get_logging_settings(
@@ -301,8 +303,39 @@ mod tests {
             ui_events: false,
             updated_at: chrono::Utc::now(),
         };
-        let body = serde_json::to_value(LogSampling::from(&stored)).unwrap();
+        let file = rolter_core::LoggingConfig {
+            sample_rate: 0.5,
+            ..Default::default()
+        };
+        let body = serde_json::to_value(LogSampling::served(&stored, &file)).unwrap();
         assert_eq!(body, serde_json::json!({"sample_rate": 0.25}));
+    }
+
+    /// A control plane started with `--config` whose `[logging]` samples, with
+    /// nobody having saved Logs Settings, serves the file's rate, so the
+    /// dashboard must report that one (#3171).
+    #[test]
+    fn an_untouched_row_reports_the_file_rate() {
+        let seeded = rolter_core::LoggingConfig::default();
+        let untouched = LoggingSettings {
+            sample_rate: seeded.sample_rate,
+            payload_capture_enabled: seeded.payload_capture.enabled,
+            payload_capture_max_bytes: seeded.payload_capture.max_bytes as i32,
+            payload_capture_redact_fields: seeded.payload_capture.redact_fields.clone(),
+            payload_capture_models: Vec::new(),
+            payload_capture_virtual_key_ids: Vec::new(),
+            retention_days: 90,
+            payload_retention_hours: 168,
+            ui_events: seeded.ui_events,
+            updated_at: chrono::Utc::now(),
+        };
+        let file = rolter_core::LoggingConfig {
+            sample_rate: 0.25,
+            ..Default::default()
+        };
+        assert_eq!(LogSampling::served(&untouched, &file).sample_rate, 0.25);
+        // with no file the seeded row is all there is
+        assert_eq!(LogSampling::served(&untouched, &seeded).sample_rate, 1.0);
     }
 
     #[test]

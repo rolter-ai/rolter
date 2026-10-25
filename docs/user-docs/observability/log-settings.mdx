@@ -39,6 +39,8 @@ Below 100 %, **Logs Settings** states the consequence under the field: the share
 
 The **Dashboard**, **Business Units**, **Customers** and **LLM Logs** carry the same note whenever the saved rate is below 100 %: the figures are estimates scaled up from a sample, and the LLM Logs list shows only the sampled requests. Every role that can open those screens sees the note: they read the rate from [`GET /api/v1/analytics/sampling`](/api/dashboard-analytics#sampling), which answers the rate alone, while the rest of the logging settings stays a superadmin's.
 
+A control plane started with `--config` serves the file's `[logging] sample_rate` until someone saves **Logs Settings**, since the stored settings then still hold their seeded defaults. The note follows the rate gateways actually apply, so it shows for a file rate below 100 % too. **Logs Settings** itself shows the stored settings, `100 %` in that state, and saving the form replaces the file's values.
+
 ---
 
 ## Payload capture

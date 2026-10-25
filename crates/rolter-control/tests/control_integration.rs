@@ -7317,6 +7317,71 @@ async fn logging_settings_are_superadmin_only_and_audited() {
     assert_eq!(action.as_deref(), Some("logging_settings.update"));
 }
 
+/// A control plane started with `--config` whose `[logging]` samples, with
+/// nobody having saved Logs Settings, has gateways logging at the file's rate,
+/// so the sampling read reports that rate rather than the seeded row's 100 %
+/// (#3171). Once an admin saves the policy the stored rate wins, as it does in
+/// the snapshot.
+#[tokio::test]
+async fn the_sampling_read_reports_the_file_rate_an_untouched_row_serves() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let mut file = rolter_core::GatewayConfig::default();
+    file.logging.sample_rate = 0.25;
+    let app = rolter_control::test_app_with_file_config(
+        pool.clone(),
+        Some(admin_token().to_string()),
+        file,
+    )
+    .await
+    .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let sampling = format!("{base}/api/v1/analytics/sampling");
+
+    let from_file: Value = client
+        .get(&sampling)
+        .bearer_auth(admin_token())
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(from_file, json!({"sample_rate": 0.25}));
+
+    let updated = client
+        .put(format!("{base}/api/v1/logging-settings"))
+        .bearer_auth(admin_token())
+        .json(&json!({
+            "sample_rate": 0.5,
+            "payload_capture_enabled": false,
+            "payload_capture_max_bytes": 32768,
+            "payload_capture_redact_fields": [],
+            "payload_capture_models": [],
+            "payload_capture_virtual_key_ids": [],
+            "retention_days": 90,
+            "payload_retention_hours": 168
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(updated.status(), 200);
+
+    let stored: Value = client
+        .get(&sampling)
+        .bearer_auth(admin_token())
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(stored, json!({"sample_rate": 0.5}));
+}
+
 /// The analytics screens say their figures are estimates when the request log
 /// is sampled, and every role that opens them must be able to learn the rate,
 /// not only the superadmin who reads the logging policy (#3057).
