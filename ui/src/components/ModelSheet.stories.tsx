@@ -1382,6 +1382,31 @@ export const ShowsAConfigRoutesGuardrailOverridesReadOnly: Story = {
 };
 
 /**
+ * A read-only sheet has nothing to discard, so its footer offers a single
+ * Close rather than a Cancel beside a Close that do the same (#2046).
+ */
+export const ReadOnlyFooterHasOneAction: Story = {
+  render: () => (
+    <Stage
+      mode="view"
+      configModel={{ model: "fake-llm", strategy: "weighted", targets: 1, source: "config" }}
+    />
+  ),
+  play: async () => {
+    const dialog = within(sheet());
+    // the header's X is labelled Close too; the footer's is the one with text
+    const closes = await dialog.findAllByRole("button", { name: "Close" });
+    const close = closes.find((b) => b.textContent === "Close");
+    await expect(close).toBeDefined();
+    const footer = within(close!.parentElement as HTMLElement);
+    await expect(footer.getAllByRole("button")).toHaveLength(1);
+    await expect(dialog.queryByRole("button", { name: "Cancel" })).toBeNull();
+    await userEvent.click(close!);
+    await expectSheetClosed();
+  },
+};
+
+/**
  * The advanced half of the form is written back.
  *
  * Every field under "Limits & network", "Custom request headers" and "Access &

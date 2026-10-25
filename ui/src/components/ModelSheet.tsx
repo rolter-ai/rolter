@@ -2600,18 +2600,21 @@ export function ModelSheet({
             test answers "does the provider answer", which beside a model name
             reads as a claim about the model */}
         <SheetActions>
-          <Button variant="ghost" disabled={locked} onClick={close}>
-            {t("common.cancel")}
-          </Button>
-          {readonly && (
+          {/* a read-only view has nothing to discard, so it offers one way out
+              rather than a Cancel beside a Close that do the same (#2046) */}
+          {readonly ? (
             <Button variant="outline" onClick={() => onOpenChange(false)}>
               {t("common.close")}
             </Button>
-          )}
-          {!readonly && (
-            <Button disabled={editLoading || save.isPending} onClick={requestSave}>
-              {cta}
-            </Button>
+          ) : (
+            <>
+              <Button variant="ghost" disabled={locked} onClick={close}>
+                {t("common.cancel")}
+              </Button>
+              <Button disabled={editLoading || save.isPending} onClick={requestSave}>
+                {cta}
+              </Button>
+            </>
           )}
         </SheetActions>
       </SheetFooter>
