@@ -62,6 +62,12 @@ The release check is the only path that is on without configuration. Each of the
 others stays idle until you set the setting in its row, so a deployment that never
 sets them makes no other outbound call.
 
+Every operator-written URL in the table below, from a provider's `api_base` to an
+alert channel's `endpoint`, also passes the [egress policy](/configuration/egress)
+before it is called. To refuse internal ranges, turn on `block_private` and
+`block_loopback` and list the internal hosts the deployment must still reach in
+`allow_hosts`.
+
 | Path                        | What it reaches                                                                                                                                                                                                                                                                                       | Setting                                                                                                                                     | Default                                              |
 | --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
 | Release check               | `api.github.com`, described above                                                                                                                                                                                                                                                                     | `ROLTER_UPDATE_CHECK=false` turns it off                                                                                                    | **On**                                               |
