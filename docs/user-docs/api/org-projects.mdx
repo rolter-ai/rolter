@@ -85,16 +85,15 @@ publishes the row, and `GET /api/v1/rbac/effective?org_id=...` reports whether
 the calling account holds it here.
 
 A caller without it is refused with `403`, and an unauthenticated one with
-`401`, in the standard error shape:
+`401`. Both bodies carry a message and nothing else, so tell them apart by the
+status rather than by a field:
 
 ```json
-{
-  "error": {
-    "message": "forbidden",
-    "type": "forbidden",
-    "code": "forbidden"
-  }
-}
+{ "error": { "message": "insufficient role for this resource" } }
+```
+
+```json
+{ "error": { "message": "missing or invalid credentials" } }
 ```
 
 ## When to use the per-team route instead

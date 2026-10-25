@@ -90,16 +90,14 @@ error response are still fully described; only the body's inner shape is left
 loose. Treat a generated model for those endpoints as a starting point rather
 than a contract.
 
-Errors use the shape every rolter surface renders:
+Errors use one envelope. `message` is always there; `code` is added when the
+refusal has a stable name a client can branch on (`name_taken`, `invalid_field`,
+`invalid_body`, `store_timeout`, ...), and `field` names the field an
+`invalid_field` refusal is about. A refusal with no stable code, such as a `401`,
+`403` or `404`, carries the message alone:
 
 ```json
-{
-  "error": {
-    "message": "provider not found",
-    "type": "not_found",
-    "code": "not_found"
-  }
-}
+{ "error": { "message": "name must be 1-256 visible characters", "code": "invalid_field", "field": "name" } }
 ```
 
 A write the current state does not allow answers `409` with a message that says
