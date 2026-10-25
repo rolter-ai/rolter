@@ -550,7 +550,7 @@ async fn verify_challenge(
     let user = UserRepo(pool)
         .get(challenge.user_id)
         .await
-        .map_err(|err| AuthError::Internal(err.to_string()))?;
+        .map_err(AuthError::from)?;
     // the password step knew whether it followed a lockout and wrote it on the
     // challenge, so the session it finally mints says so like any other
     crate::auth::issue_session(&state, user, challenge.after_lock)
@@ -648,7 +648,7 @@ async fn mint_challenge(
     MfaRepo(pool)
         .create_challenge(user_id, &token_hash, expires_at, purpose, after_lock)
         .await
-        .map_err(|err| AuthError::Internal(err.to_string()))?;
+        .map_err(AuthError::from)?;
     Ok((token, expires_at))
 }
 
@@ -745,14 +745,14 @@ async fn enrolling_user(
     let user = UserRepo(pool(state))
         .get(challenge.user_id)
         .await
-        .map_err(|err| AuthError::Internal(err.to_string()))?;
+        .map_err(AuthError::from)?;
     if user.deactivated_at.is_some() {
         return Err(AuthError::InvalidCredentials);
     }
     let armed = repo
         .has_armed_factor(user.id)
         .await
-        .map_err(|err| AuthError::Internal(err.to_string()))?;
+        .map_err(AuthError::from)?;
     if armed {
         return Err(AuthError::InvalidCredentials);
     }

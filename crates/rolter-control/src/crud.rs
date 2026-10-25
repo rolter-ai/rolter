@@ -445,7 +445,8 @@ pub(crate) const STORE_TIMEOUT: &str = "store_timeout";
 
 /// what a store timeout says. The driver's own text names a lock or a
 /// statement, which is detail the caller has no use for
-const STORE_TIMEOUT_MESSAGE: &str = "the database did not finish this change in time; it may be \
+pub(crate) const STORE_TIMEOUT_MESSAGE: &str =
+    "the database did not finish this change in time; it may be \
      waiting on another change to the same record, so try again";
 
 /// what a unique violation from the store says. the driver's own text names a
