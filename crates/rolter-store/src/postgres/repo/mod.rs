@@ -5060,7 +5060,10 @@ pub struct AuditLogFilter {
     pub actor_user_id: Option<Uuid>,
     pub action: Option<String>,
     pub target_type: Option<String>,
+    /// Inclusive lower bound on `at`.
     pub start_at: Option<DateTime<Utc>>,
+    /// Exclusive upper bound on `at`, the convention the analytics reads use:
+    /// adjacent windows `[a, b)` and `[b, c)` never count a row twice.
     pub end_at: Option<DateTime<Utc>>,
     pub cursor: Option<AuditLogCursor>,
     pub direction: AuditLogDirection,
@@ -5512,7 +5515,7 @@ impl AuditLogRepo<'_> {
                    and ($3::text is null or action = $3)
                    and ($4::text is null or target_type = $4)
                    and ($5::timestamptz is null or at >= $5)
-                   and ($6::timestamptz is null or at <= $6)
+                   and ($6::timestamptz is null or at < $6)
                    and ($7::timestamptz is null or (at, id) < ($7, $8))
                  order by at desc, id desc limit $9"
                 )
@@ -5529,7 +5532,7 @@ impl AuditLogRepo<'_> {
                    and ($3::text is null or action = $3)
                    and ($4::text is null or target_type = $4)
                    and ($5::timestamptz is null or at >= $5)
-                   and ($6::timestamptz is null or at <= $6)
+                   and ($6::timestamptz is null or at < $6)
                    and ($7::timestamptz is null or (at, id) > ($7, $8))
                  order by at asc, id asc limit $9"
                 )
@@ -5580,7 +5583,7 @@ impl AuditLogRepo<'_> {
                    and ($2::text is null or action = $2)
                    and ($3::text is null or target_type = $3)
                    and ($4::timestamptz is null or at >= $4)
-                   and ($5::timestamptz is null or at <= $5)
+                   and ($5::timestamptz is null or at < $5)
                    and ($6::timestamptz is null or (at, id) < ($6, $7))
                  order by at desc, id desc limit $8"
             }
@@ -5591,7 +5594,7 @@ impl AuditLogRepo<'_> {
                    and ($2::text is null or action = $2)
                    and ($3::text is null or target_type = $3)
                    and ($4::timestamptz is null or at >= $4)
-                   and ($5::timestamptz is null or at <= $5)
+                   and ($5::timestamptz is null or at < $5)
                    and ($6::timestamptz is null or (at, id) > ($6, $7))
                  order by at asc, id asc limit $8"
             }
@@ -5619,7 +5622,7 @@ impl AuditLogRepo<'_> {
                and ($2::text is null or action = $2)
                and ($3::text is null or target_type = $3)
                and ($4::timestamptz is null or at >= $4)
-               and ($5::timestamptz is null or at <= $5)",
+               and ($5::timestamptz is null or at < $5)",
         )
         .bind(filter.actor_user_id)
         .bind(filter.action.as_deref())
@@ -5645,7 +5648,7 @@ impl AuditLogRepo<'_> {
                and ($3::text is null or action = $3)
                and ($4::text is null or target_type = $4)
                and ($5::timestamptz is null or at >= $5)
-               and ($6::timestamptz is null or at <= $6)",
+               and ($6::timestamptz is null or at < $6)",
         ))
         .bind(org_id)
         .bind(filter.actor_user_id)
@@ -7138,6 +7141,58 @@ mod tests {
             .unwrap();
         assert_eq!(previous.entries[0].id, boundary.id);
         assert_eq!(repo.count(org.id, &filter).await.unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn audit_log_end_at_is_exclusive_in_both_directions() {
+        if !super::super::test_database::is_configured() {
+            eprintln!("skipping: {} not set", super::super::test_database::URL_ENV);
+            return;
+        }
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
+        let org = OrgRepo(&pool).create("bounds", "bounds").await.unwrap();
+        let repo = AuditLogRepo(&pool);
+        let end = Utc::now() - chrono::Duration::hours(1);
+        let mut inside = Vec::new();
+        for offset in [2, 1, 0] {
+            let entry = repo
+                .create(Some(org.id), None, "route.create", None, None, None)
+                .await
+                .unwrap();
+            sqlx::query("update audit_log set at = $2 where id = $1")
+                .bind(entry.id)
+                .bind(end - chrono::Duration::seconds(offset))
+                .execute(&pool)
+                .await
+                .unwrap();
+            if offset > 0 {
+                inside.push(entry.id);
+            }
+        }
+        let filter = AuditLogFilter {
+            start_at: Some(end - chrono::Duration::seconds(2)),
+            end_at: Some(end),
+            ..Default::default()
+        };
+        let ids = |page: AuditLogPage| -> Vec<Uuid> {
+            let mut ids: Vec<Uuid> = page.entries.iter().map(|entry| entry.id).collect();
+            ids.sort();
+            ids
+        };
+        inside.sort();
+        for direction in [AuditLogDirection::Next, AuditLogDirection::Previous] {
+            let filter = AuditLogFilter {
+                direction,
+                ..filter.clone()
+            };
+            let page = repo.list_page(org.id, &filter, 10).await.unwrap();
+            assert_eq!(ids(page), inside, "{direction:?}");
+            let page = repo.list_page_all(&filter, 10).await.unwrap();
+            assert_eq!(ids(page), inside, "{direction:?}");
+        }
+        assert_eq!(repo.count(org.id, &filter).await.unwrap(), 2);
+        assert_eq!(repo.count_all(&filter).await.unwrap(), 2);
     }
 
     #[tokio::test]
