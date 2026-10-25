@@ -18,6 +18,15 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 workflow="$root/.github/workflows/ci.yml"
 step_name="no agent session urls (pr body)"
 
+# a git or prek hook runs this with GIT_DIR, GIT_INDEX_FILE and the like pointing
+# at the real repository, and the fixture's `git init`, `git config` and
+# `git commit` below would then act on it instead of on the throwaway one: once
+# it left core.bare=true and the fixture identity in the real config (#3196).
+# scripts/test-git-fixture-isolation.sh runs this under such an environment
+for var in $(git rev-parse --local-env-vars); do
+  unset "$var"
+done
+
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 

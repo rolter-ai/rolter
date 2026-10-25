@@ -273,6 +273,18 @@ language = "system"
 files = "^(scripts/(fleet/.*\\.sh|test-fleet-scripts\\.sh)|\\.claude/hooks/.*\\.sh)$"
 pass_filenames = false
 
+# a hook runs with GIT_DIR, GIT_INDEX_FILE and the like pointing at this repo,
+# so a fixture script that builds a throwaway repo without clearing them writes
+# into this one instead (#3196). this runs every scripts/test-*.sh that builds a
+# git fixture under such an environment and checks a sentinel repo is untouched
+[[repos.hooks]]
+id = "git-fixture-isolation"
+name = "git fixtures isolated from a hook"
+entry = "bash scripts/test-git-fixture-isolation.sh"
+language = "system"
+files = "^scripts/test-.*\\.sh$"
+pass_filenames = false
+
 [[repos.hooks]]
 id = "project-automation"
 name = "board automation retry policy"

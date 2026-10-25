@@ -814,6 +814,15 @@ jobs:
         id: fast-path-fixture
         if: ${{ !cancelled() }}
         run: bash scripts/test-assert-gate-ran.sh
+      # a pre-commit hook hands its scripts GIT_DIR, GIT_INDEX_FILE and the
+      # like, and a fixture script that builds a throwaway repo without clearing
+      # them writes into the real one: from a linked worktree, `git init` left
+      # core.bare=true there (#3196). this runs every such scripts/test-*.sh
+      # under a hook's environment against a sentinel repo
+      - name: git fixtures isolated from a hook
+        id: git-fixture-isolation
+        if: ${{ !cancelled() }}
+        run: bash scripts/test-git-fixture-isolation.sh
 
       # ── storage: migrations are append-only ───────────────────────────────
       # sqlx checksums every applied migration, so editing a shipped file breaks
@@ -1106,6 +1115,7 @@ jobs:
           OUTCOME_SESSION_URLS: ${{ steps.session-urls.outcome }}
           OUTCOME_SESSION_URLS_FIXTURE: ${{ steps.session-urls-fixture.outcome }}
           OUTCOME_FAST_PATH_FIXTURE: ${{ steps.fast-path-fixture.outcome }}
+          OUTCOME_GIT_FIXTURE_ISOLATION: ${{ steps.git-fixture-isolation.outcome }}
           OUTCOME_MIGRATIONS: ${{ steps.migrations.outcome }}
           OUTCOME_TOOL_PINS: ${{ steps.tool-pins.outcome }}
           OUTCOME_DEV_DOCS_LINKS: ${{ steps.dev-docs-links.outcome }}
@@ -1186,6 +1196,8 @@ jobs:
             "prek run agent-session-urls --all-files"
           row "ci-ok fast path" "ci-ok fast path against a fake gh" "${OUTCOME_FAST_PATH_FIXTURE}" yes \
             "prek run assert-gate-ran --all-files"
+          row "git fixtures" "git fixtures isolated from a hook" "${OUTCOME_GIT_FIXTURE_ISOLATION}" yes \
+            "prek run git-fixture-isolation --all-files"
           row "migrations append-only" "migrations append-only" "${OUTCOME_MIGRATIONS}" yes \
             "prek run migrations-immutable --all-files"
           row "uvx tool pins" "uvx tool pins" "${OUTCOME_TOOL_PINS}" yes \
