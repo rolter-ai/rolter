@@ -19,6 +19,7 @@ import {
   expectAllowed,
   expectRefused,
   answerDiscardPrompt,
+  withDocsBase,
   type FetchStub,
   type StoryRole,
 } from "@/pages/story-harness";
@@ -1947,17 +1948,37 @@ export const AdvancedRejected: Story = {
 /**
  * Prices are operator-supplied — rolter ships no pricing catalog — so the
  * pricing section points at our own cost docs rather than at a competitor's
- * datasheet presented as their source (#977).
+ * datasheet presented as their source (#977). The link goes through the
+ * configured docs host like every other docs link, never github.com (#1981).
  */
 export const PricingLinksToRolterDocs: Story = {
+  beforeEach: withDocsBase("https://docs.example.com"),
   render: () => <Stage mode="add" />,
   play: async () => {
     const dialog = within(sheet());
     await userEvent.click(dialog.getByRole("button", { name: "Pricing override" }));
-    const link = dialog.getByRole("link", { name: /Rolter docs/ });
-    await expect(link.getAttribute("href")).toContain("github.com/rolter-ai/rolter");
+    const link = dialog.getByRole("link", { name: /How request cost is calculated/ });
+    await expect(link).toHaveAttribute(
+      "href",
+      "https://docs.example.com/observability/logs-and-cost#cost-tracking",
+    );
     await expect(link).toHaveAttribute("target", "_blank");
     await expect(link).toHaveAttribute("rel", "noreferrer");
+  },
+};
+
+/**
+ * An air-gapped deployment configures no docs host, and the pricing section
+ * then shows no link rather than one that reaches for an unreachable host.
+ */
+export const PricingWithoutDocsHostHasNoLink: Story = {
+  beforeEach: withDocsBase(undefined),
+  render: () => <Stage mode="add" />,
+  play: async () => {
+    const dialog = within(sheet());
+    await userEvent.click(dialog.getByRole("button", { name: "Pricing override" }));
+    await expect(await dialog.findByText(/fields shown match the model type/)).toBeVisible();
+    await expect(dialog.queryByRole("link", { name: /How request cost/ })).toBeNull();
   },
 };
 

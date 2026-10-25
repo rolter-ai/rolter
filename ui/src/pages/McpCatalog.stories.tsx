@@ -884,7 +884,7 @@ export const AuthHeaderRefusesReservedNames: Story = {
     const header = dialog.getByLabelText("Header name");
     await userEvent.clear(header);
     await userEvent.type(header, "Authorization");
-    await expect(dialog.getByText(/Rolter sets Authorization itself/)).toBeVisible();
+    await expect(dialog.getByText(/rolter sets Authorization itself/)).toBeVisible();
     await expect(dialog.getByRole("button", { name: "Save server" })).toBeDisabled();
     await userEvent.clear(header);
     await userEvent.type(header, "X Api Key");

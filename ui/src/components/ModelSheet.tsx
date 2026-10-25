@@ -9,6 +9,7 @@ import { ModelCheckOutcome } from "@/components/ProviderTestOutcome";
 import { RouteTargetList } from "@/components/RouteTargetList";
 import { StrategyPicker } from "@/components/StrategyPicker";
 import { useDiscardGuard } from "@/components/DiscardGuard";
+import { DocsLink } from "@/components/DocsLink";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import { Button } from "@/components/ui/button";
 import { ChipGroup } from "@/components/ui/chip-group";
@@ -179,17 +180,6 @@ interface ModelDraft {
     users: string[];
   };
 }
-
-/**
- * Where the prices in this sheet come from.
- *
- * They come from whoever types them: rolter ships no pricing catalog, so the
- * link points at our own docs for how a request's cost is computed. It used to
- * point at a competing gateway's datasheet, presented as the source of numbers
- * that were never theirs (#977).
- */
-const PRICING_DOCS_URL =
-  "https://github.com/rolter-ai/rolter/blob/master/docs/user-docs/observability/logs-and-cost.mdx#cost-tracking";
 
 const MODALITIES: Modality[] = ["chat", "embedding", "image", "audio"];
 const PARAM_TYPES: ParamType[] = ["string", "int", "float", "boolean", "enum"];
@@ -2261,14 +2251,15 @@ export function ModelSheet({
                 />
               </div>
             )}
-            <a
-              href={PRICING_DOCS_URL}
-              target="_blank"
-              rel="noreferrer"
-              className="pb-2 text-xs text-muted-foreground hover:text-foreground"
-            >
-              {t("modelSheet.pricingDocs")}
-            </a>
+            {/* rolter ships no pricing catalog, so the link explains how a
+                request's cost is computed from the prices typed here (#977). it
+                goes through the configured docs host and renders nothing on a
+                deployment without one (#1981) */}
+            <DocsLink
+              page="costTracking"
+              label={t("docs.link.costTracking")}
+              className="pb-2 text-xs"
+            />
           </div>
           {currencyUnconvertible && (
             <p className="text-xs text-[color:var(--status-warning-text)]">

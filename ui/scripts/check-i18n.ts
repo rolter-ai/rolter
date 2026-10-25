@@ -7,7 +7,7 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
-import { compare, flatten, isClean, type Catalog } from "../src/lib/i18n/parity";
+import { capitalisedBrand, compare, flatten, isClean, type Catalog } from "../src/lib/i18n/parity";
 
 const LOCALES_DIR = join(import.meta.dir, "..", "src", "lib", "i18n", "locales");
 const BASE = "en";
@@ -28,10 +28,14 @@ const problems: string[] = [];
 
 console.log(`base catalog ${BASE}: ${base.size} keys`);
 
+for (const key of capitalisedBrand(base)) problems.push(`${BASE}: capitalised rolter ${key}`);
+
 for (const locale of locales) {
   const catalog = load(locale);
   const d = compare(base, catalog, locale);
 
+  for (const key of capitalisedBrand(catalog))
+    problems.push(`${locale}: capitalised rolter ${key}`);
   for (const key of d.missing) problems.push(`${locale}: missing key    ${key}`);
   for (const key of d.orphaned) problems.push(`${locale}: orphaned key   ${key}`);
   for (const key of d.empty) problems.push(`${locale}: empty value    ${key}`);
@@ -51,7 +55,8 @@ if (problems.length) {
   console.error(`\n${problems.length} catalog problem(s):`);
   for (const p of problems) console.error(`  ${p}`);
   console.error(
-    "\nadd the missing keys to the locale catalog, or remove them from " +
+    "\nwrite the product name as lowercase rolter, even at the start of a sentence. " +
+      "add the missing keys to the locale catalog, or remove them from " +
       "src/lib/i18n/locales/en.json if the copy is gone for good.",
   );
   process.exit(1);

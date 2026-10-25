@@ -46,6 +46,16 @@ export function placeholders(value: string): Set<string> {
   return new Set([...(value.match(/\{\{[^}]+\}\}/g) ?? []), ...(value.match(/<\d+>/g) ?? [])]);
 }
 
+// the brand guidelines write the product name in lowercase everywhere in ui
+// copy, including at the start of a sentence (docs/user-docs/community/brand.mdx,
+// #1987). ROLTER_* environment variables stay upper case and do not match
+const CAPITALISED_BRAND = /\bRolter\b/;
+
+/** keys whose value writes the product name capitalised */
+export function capitalisedBrand(catalog: Map<string, string>): string[] {
+  return [...catalog].filter(([, value]) => CAPITALISED_BRAND.test(value)).map(([key]) => key);
+}
+
 export interface Divergence {
   missing: string[];
   orphaned: string[];
