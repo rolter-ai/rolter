@@ -521,7 +521,7 @@ The checks that read the tree and build nothing run as steps of one job,
 the branch history, the session-url check over the PR's commits, migrations
 append-only, the dev-docs link check, typos, taplo, cargo-deny, unused deps, actionlint, zizmor, ruff
 over `scripts/*.py`, the release handoff checker, its self-test and the release gate scripts' fixture
-test, the board automation retry policy, the dogfood scripts' exit codes and a
+test, the git fixture isolation check, the board automation retry policy, the dogfood scripts' exit codes and a
 shellcheck pass over `integration/`, and the helm chart's appVersion check,
 lint and its renders (`scripts/check-helm-chart.sh`, shared with the `helm-render` prek hook). Until #2025 each was a job of its own. They did 0-15 s
 of work apiece and then waited a median 86-200 s for a runner, since every job
@@ -588,6 +588,34 @@ and `--team` reaching ClickHouse through compose and not http. A new
 script gets a `cases_<name>` function and one `run_cases <name>` line at the
 bottom. The job also runs `shellcheck` over every
 `integration/**/*.sh`; the test alone is the prek hook `dogfood-scripts`.
+
+#### Git fixture scripts clear the hook environment (#3196)
+
+A git hook runs its scripts with `GIT_DIR`, `GIT_INDEX_FILE` and the like
+pointing at the repository being committed to, and every git command inherits
+them, `git -C <dir>` included. A `scripts/test-*.sh` that builds a throwaway
+repository without clearing them commits its fixture history onto the real
+`HEAD` and writes its fixture identity into the real config. From a linked
+worktree, where `GIT_DIR` names `.git/worktrees/<name>`, its `git init` also
+rewrites the shared config with `core.bare=true`, after which every command in
+the main checkout fails with `this operation must be run in a work tree`.
+
+So every fixture script starts by unsetting what git itself names as
+repository-local:
+
+```bash
+for var in $(git rev-parse --local-env-vars); do
+  unset "$var"
+done
+```
+
+`scripts/test-git-fixture-isolation.sh` holds them to it. It finds every
+`scripts/test-*.sh` that runs `git init` or `git -C`, fails one that never reads
+`--local-env-vars`, and then runs each from the main checkout and from a linked
+worktree of a sentinel repository, under the variables git exports to a hook
+there, comparing the sentinel's config, `HEAD`s, refs and both indexes before
+and after. It runs as the _git fixtures isolated from a hook_ step of the
+`static checks` job and as the `git-fixture-isolation` prek hook.
 
 ### The rust lint and rust build jobs
 
