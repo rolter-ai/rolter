@@ -284,8 +284,12 @@ impl RuleInput {
     }
 }
 
+/// Names are stored trimmed, so the limit counts the characters of the
+/// trimmed value, the unit the error text names.
 fn validate_name(value: &str, label: &str) -> ApiResult<()> {
-    if value.trim().is_empty() || value.len() > 128 || value.chars().any(char::is_control) {
+    let trimmed = value.trim();
+    if trimmed.is_empty() || trimmed.chars().count() > 128 || trimmed.chars().any(char::is_control)
+    {
         return Err(invalid_field(
             "name",
             format!("{label} must be 1-128 visible characters"),
@@ -1683,6 +1687,17 @@ async fn audit(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn name_limit_counts_characters_of_the_trimmed_value() {
+        // 128 cyrillic characters are 256 bytes and still fit
+        assert!(validate_name(&"я".repeat(128), "rule name").is_ok());
+        assert!(validate_name(&"я".repeat(129), "rule name").is_err());
+        // surrounding whitespace is trimmed before storing, so it does not count
+        assert!(validate_name(&format!("  {}  ", "a".repeat(128)), "rule name").is_ok());
+        assert!(validate_name("   ", "rule name").is_err());
+        assert!(validate_name("a\u{7}b", "rule name").is_err());
+    }
 
     fn rule(signal: &str, threshold: f64, window_secs: i32) -> RuleInput {
         RuleInput {

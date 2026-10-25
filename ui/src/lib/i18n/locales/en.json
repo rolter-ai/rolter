@@ -168,7 +168,8 @@
       "whichKey": "Which key do I need?",
       "virtualKeys": "About virtual keys",
       "cacheAwareRouting": "About cache-aware routing",
-      "logSettings": "About log settings"
+      "logSettings": "About log settings",
+      "costTracking": "How request cost is calculated"
     }
   },
   "errors": {
@@ -346,7 +347,6 @@
     "currencyUnconvertible": "{{code}} has no conversion rate configured, so this price cannot be converted to {{base}} and will not reach spend or budgets. Add it to [currency.rates] in the bootstrap config, or price in {{base}}.",
     "paramLockMode": "Parameter lock mode",
     "headerLockMode": "Header lock mode",
-    "pricingDocs": "Rolter docs: how request cost is calculated ↗",
     "advancedRejected": "The control plane refused this route's advanced configuration: {{message}}. Everything else was saved.",
     "configPreview": "Config preview",
     "titleAdd": "Add route",
@@ -358,7 +358,7 @@
     "readonlyNotice": "Read-only config route — defined in config and always present. Fields are shown for reference; edits and deletes are rejected with <0>409 Conflict</0>.",
     "dupFrom": {
       "label": "Duplicate from",
-      "info": "Prefill every field from an existing route, then tweak. Handy for adding a second deployment of the same model on another provider.",
+      "info": "Copy the strategy, targets, enabled flag and params of an existing route, then rename and tweak. Handy for adding a second deployment of the same model on another provider.",
       "scratch": "Start from scratch…"
     },
     "sections": {
@@ -370,7 +370,7 @@
       "caps": "Capabilities",
       "capsInfo": "What this route's endpoint supports. Labels for this dashboard: they decide which parameters the sheet offers, and the gateway does not refuse a request because a flag is off. The set shown depends on the model type.",
       "pricing": "Pricing override",
-      "pricingInfo": "Override the datasheet price for accurate cost tracking. All fields optional — blank counts as 0.",
+      "pricingInfo": "rolter ships no price catalogue, so a model is costed only from the prices set here. Once a price is saved, a blank field counts as 0.",
       "advanced": "Limits & network",
       "headers": "Custom request headers",
       "headersInfo": "Extra HTTP headers sent upstream with every request this route makes. A locked header replaces a caller's header of the same name; an unlocked one is only a default. Credentials belong on the provider, so authorization headers are refused.",
@@ -451,7 +451,7 @@
       "reasoningInfo": "Extended-thinking model (o-series, R1). Enables the reasoning_effort parameter."
     },
     "pricing": {
-      "hint": "Optional cost overrides for accurate tracking — fields shown match the model type. Leave blank for free / provider-tracked.",
+      "hint": "Optional prices for cost tracking — fields shown match the model type. Leave them all blank and the model stays unpriced: its traffic is recorded without a cost, not as free.",
       "input": "Input {{currency}}/Mtok",
       "output": "Output {{currency}}/Mtok",
       "cacheWrite": "5 minute cache-write {{currency}}/Mtok",
@@ -629,7 +629,7 @@
   "pages": {
     "gettingStarted": {
       "title": "Getting started",
-      "subtitle": "The shortest path from an empty deployment to a client calling Rolter.",
+      "subtitle": "The shortest path from an empty deployment to a client calling rolter.",
       "dismiss": "Dismiss",
       "reopen": "Getting started",
       "done": "Done",
@@ -651,7 +651,7 @@
         },
         "provider": {
           "title": "Connect a provider",
-          "body": "Point Rolter at OpenAI, Anthropic, vLLM or anything speaking their dialects. The key is sealed in the store, never shown again.",
+          "body": "Point rolter at OpenAI, Anthropic, vLLM or anything speaking their dialects. The key is sealed in the store, never shown again.",
           "action": "Add a provider"
         },
         "route": {
@@ -665,7 +665,7 @@
           "action": "Create a virtual key"
         },
         "client": {
-          "title": "Point a client at Rolter",
+          "title": "Point a client at rolter",
           "body": "The base URL and a virtual key are all any OpenAI-compatible client needs."
         }
       },
@@ -1163,7 +1163,7 @@
       "samples": {
         "embeddings": "reset my password\nupdate the invoice\nread the api docs\ntwo-factor auth setup\nmonthly billing statement\ngetting started guide",
         "imagePrompt": "A cross-stitch folk pattern of a fox, deep red thread on black linen",
-        "speech": "Привет! This is a synthesized voice sample from the Rolter playground."
+        "speech": "Привет! This is a synthesized voice sample from the rolter playground."
       },
       "realtimeLog": {
         "connected": "connected",
@@ -1349,7 +1349,7 @@
       "contentSourceDescription": "Store a complete SKILL.md inline or point to an immutable artifact without credentials.",
       "sourceRadioGroup": "Skill content source",
       "inlineTitle": "Inline SKILL.md",
-      "inlineDescription": "Version the instructions in Rolter",
+      "inlineDescription": "Version the instructions in rolter",
       "referenceTitle": "Artifact reference",
       "referenceDescription": "HTTPS, Git, OCI, or S3",
       "skillMdContent": "SKILL.md content",
@@ -1515,7 +1515,7 @@
     "alerting": {
       "channels": {
         "emptyTitle": "No channels yet",
-        "emptyBody": "Add a webhook endpoint so rules have somewhere to deliver. Each time a rule fires or resolves, Rolter POSTs it there as JSON.",
+        "emptyBody": "Add a webhook endpoint so rules have somewhere to deliver. Each time a rule fires or resolves, rolter POSTs it there as JSON.",
         "add": "Add channel",
         "toggleAria": "Enable {{name}}",
         "deleteAria": "Delete channel {{name}}",
@@ -1537,7 +1537,7 @@
       },
       "rules": {
         "emptyTitle": "No alert rules",
-        "emptyBody": "Add a threshold rule and Rolter evaluates it against gateway analytics every minute, firing when the signal reaches the threshold.",
+        "emptyBody": "Add a threshold rule and rolter evaluates it against gateway analytics every minute, firing when the signal reaches the threshold.",
         "emptyBodyNoChannel": "Add a channel first, then a rule that delivers to it. Rules without a channel evaluate but never notify.",
         "add": "Add rule",
         "toggleAria": "Enable {{name}}",
@@ -1708,7 +1708,7 @@
       "collectorConfig": {
         "open": "Collector config",
         "title": "OpenTelemetry Collector config",
-        "where": "This is the document your collector runs. Rolter exports once, to that one collector; the config below is what fans what it receives out to every enabled connector, each pipeline with its own sampling and auth.",
+        "where": "This is the document your collector runs. rolter exports once, to that one collector; the config below is what fans what it receives out to every enabled connector, each pipeline with its own sampling and auth.",
         "endpoint": "Endpoint",
         "copyEndpoint": "Copy collector config URL",
         "endpointHint": "Reading it takes a superadmin credential, and a collector has no session to present one. Save the document below as the collector's config file instead of pointing the collector here.",
@@ -1854,7 +1854,7 @@
     "mcpCatalog": {
       "oauth": {
         "title": "OAuth client",
-        "lead": "The client Rolter presents to this server's authorization server. Only the client ID is required: Rolter discovers the endpoints from the server itself unless you switch discovery off. Nothing here mints a token.",
+        "lead": "The client rolter presents to this server's authorization server. Only the client ID is required: rolter discovers the endpoints from the server itself unless you switch discovery off. Nothing here mints a token.",
         "authorizeUrl": "Authorization URL",
         "tokenUrl": "Token URL",
         "clientId": "Client ID",
@@ -1877,11 +1877,11 @@
           "label": "Endpoint discovery",
           "auto": {
             "label": "Discover automatically",
-            "hint": "Rolter reads the server's RFC 9728 metadata when someone connects. Endpoints you enter are only a fallback."
+            "hint": "rolter reads the server's RFC 9728 metadata when someone connects. Endpoints you enter are only a fallback."
           },
           "manual": {
             "label": "Configure manually",
-            "hint": "Rolter never probes the server and uses only the endpoints you enter."
+            "hint": "rolter never probes the server and uses only the endpoints you enter."
           }
         },
         "discovered": {
@@ -1965,18 +1965,18 @@
         "enabledInGateway": "Enabled in gateway",
         "description": "Description",
         "tools": "Tools",
-        "toolsHint": "One tool name per line. The names are declared here, not discovered: Rolter does not check them against the server.",
+        "toolsHint": "One tool name per line. The names are declared here, not discovered: rolter does not check them against the server.",
         "scopes": "Required OAuth scopes",
         "scopesHint": "One scope per line."
       },
       "auth": {
         "title": "Authentication",
-        "lead": "How Rolter authenticates to this server on every proxied call. A bearer token or header key is one credential shared by the whole deployment; OAuth mints a token per user.",
+        "lead": "How rolter authenticates to this server on every proxied call. A bearer token or header key is one credential shared by the whole deployment; OAuth mints a token per user.",
         "kindLabel": "Authentication method",
         "kinds": {
           "none": {
             "label": "None — unauthenticated",
-            "hint": "Rolter sends no credential. Use it only for a server that accepts anonymous calls.",
+            "hint": "rolter sends no credential. Use it only for a server that accepts anonymous calls.",
             "badge": "no auth"
           },
           "bearer": {
@@ -2002,7 +2002,7 @@
         "headerName": "Header name",
         "headerPlaceholder": "X-Api-Key",
         "headerHint": "The header the server reads its API key from.",
-        "headerReserved": "Rolter sets {{name}} itself, so it cannot carry an API key. Choose another header, such as X-Api-Key.",
+        "headerReserved": "rolter sets {{name}} itself, so it cannot carry an API key. Choose another header, such as X-Api-Key.",
         "headerShape": "Use a valid HTTP header name of up to 64 characters: letters, digits and - _ . with no spaces or colons.",
         "apiKey": "API key",
         "bearerToken": "Bearer token",
@@ -2011,7 +2011,7 @@
         "credentialPlaceholder": "Sealed — type a new value to replace",
         "dropsOnSave": "Saving with this method deletes the stored credential.",
         "kekTitle": "The control plane has no ROLTER_KEK",
-        "kekBody": "Credentials are sealed with the deployment key before they are stored, and Rolter refuses to keep one in the clear. Set ROLTER_KEK on the control plane, restart it, then save again — nothing in this form needs to change."
+        "kekBody": "Credentials are sealed with the deployment key before they are stored, and rolter refuses to keep one in the clear. Set ROLTER_KEK on the control plane, restart it, then save again — nothing in this form needs to change."
       },
       "overrides": {
         "title": "Transport overrides",
@@ -2025,7 +2025,7 @@
       },
       "confirm": {
         "clearCredentialTitle": "Clear the stored credential for {{name}}?",
-        "clearCredentialBody": "The credential is deleted and the server switches to no authentication, so Rolter calls it unauthenticated from now on. The value cannot be read back — to restore it you must paste it again.",
+        "clearCredentialBody": "The credential is deleted and the server switches to no authentication, so rolter calls it unauthenticated from now on. The value cannot be read back — to restore it you must paste it again.",
         "switchKindBody": "Switching to {{kind}} deletes the stored credential. The value cannot be read back — to go back you must paste it again.",
         "clearCredentialConfirm": "Clear credential",
         "deleteTitle": "Delete server {{name}}?",
@@ -3504,7 +3504,7 @@
         "tokenLabel": "Bearer token"
       },
       "copyToken": "Copy provisioning token",
-      "onceWarning": "This is the only time this token is shown. Rolter stores a hash of it and cannot display or recover it again — if you lose it, issue a new token and revoke this one.",
+      "onceWarning": "This is the only time this token is shown. rolter stores a hash of it and cannot display or recover it again — if you lose it, issue a new token and revoke this one.",
       "pasteHint": "Paste the token into your identity provider's SCIM connector as the bearer token, and point the connector at the base URL. The token carries the org, so no tenant id goes in the URL.",
       "nameLabel": "Name",
       "nameHint": "How you will recognise it later. Usually the identity provider it belongs to.",
@@ -3757,7 +3757,7 @@
       "noOrgBody": "MCP defaults are organization scoped.",
       "savedToast": "MCP settings saved",
       "saveFailed": "Could not save the MCP settings",
-      "lead": "Defaults apply when registering new MCP servers. Runtime authorization still comes from server scopes and each user’s OAuth session.",
+      "lead": "These values are stored, but the MCP proxy does not apply them yet, and registering a server still starts it on streamable HTTP. Runtime authorization comes from server scopes and each user’s OAuth session.",
       "transportDefaults": "Transport defaults",
       "failureMode": "Default failure policy",
       "failureModeHint": "Stored as the intended policy for clients that consume MCP settings.",
@@ -3937,7 +3937,7 @@
       "installed": "Installed",
       "configureLink": "Configure",
       "installedToast": "{{name}} installed",
-      "nextStep": "Open it on MCP Catalog and choose Configure to set up how Rolter authenticates to it.",
+      "nextStep": "Open it on MCP Catalog and choose Configure to set up how rolter authenticates to it.",
       "installFailed": "Could not install {{name}}",
       "emptyTitle": "The library is empty",
       "emptyBody": "This control plane ships no reviewed server definitions. Register a server by hand on MCP Catalog.",
@@ -4067,7 +4067,7 @@
     "compatibility": {
       "version": {
         "title": "Anthropic API Version",
-        "desc": "Sent as the <0>anthropic-version</0> header on every request Rolter translates into the Anthropic dialect. Forwarded verbatim, so it must be a dated release.",
+        "desc": "Sent as the <0>anthropic-version</0> header on every request rolter translates into the Anthropic dialect. Forwarded verbatim, so it must be a dated release.",
         "aria": "Anthropic API version"
       },
       "maxTokens": {
@@ -4161,7 +4161,7 @@
   },
   "playground": {
     "copyAsCode": "Copy as code",
-    "copyAsCodeHint": "The same OpenAI SDK, pointed at Rolter. The key is read from an environment variable so the snippet is safe to paste anywhere.",
+    "copyAsCodeHint": "The same OpenAI SDK, pointed at rolter. The key is read from an environment variable so the snippet is safe to paste anywhere.",
     "language": "Language",
     "key": {
       "title": "Session key",
@@ -4481,8 +4481,8 @@
     "sheetTitle": "Labels",
     "customHeading": "Your labels",
     "autoHeading": "Automatic labels",
-    "autoExplainer": "Rolter recorded these itself. They are observations about a moment, not promises about now, and only the subsystem that made one can change it.",
-    "autoTitle": "Recorded automatically by Rolter.",
+    "autoExplainer": "rolter recorded these itself. They are observations about a moment, not promises about now, and only the subsystem that made one can change it.",
+    "autoTitle": "Recorded automatically by rolter.",
     "observedAt": "{{what}} · observed {{when}}",
     "observationUnknown": "Recorded automatically.",
     "autoChipAria": "{{label}}, automatic label",
@@ -4598,7 +4598,7 @@
     },
     "connectors": {
       "title": "Connectors",
-      "subtitle": "Ship logs to Datadog, Langfuse, S3, and other sinks."
+      "subtitle": "Export traces, metrics and logs over OTLP to your collector."
     },
     "logs-settings": {
       "title": "Logs Settings",
@@ -4606,11 +4606,11 @@
     },
     "model-catalog": {
       "title": "Model Catalog",
-      "subtitle": "Every model reachable through Rolter, grouped by provider."
+      "subtitle": "Every model reachable through rolter."
     },
     "providers": {
       "title": "Model Providers",
-      "subtitle": "Configure upstream providers, keys, weights, and network settings."
+      "subtitle": "Configure upstream providers, their keys, and network settings."
     },
     "provider-groups": {
       "title": "Provider Groups",
@@ -4618,7 +4618,7 @@
     },
     "budgets": {
       "title": "Budgets & Limits",
-      "subtitle": "Spend caps, rate limits, and token budgets by organization, team, project, or key."
+      "subtitle": "Spend caps and rate limits by organization, team, project, or key."
     },
     "routing-rules": {
       "title": "Routing Rules",
@@ -4626,7 +4626,7 @@
     },
     "complexity-router": {
       "title": "Complexity Router",
-      "subtitle": "Route by prompt complexity tier to balance cost and quality."
+      "subtitle": "Route by prompt size to balance cost and quality."
     },
     "circuit-breaker": {
       "title": "Provider Health",
@@ -4634,7 +4634,7 @@
     },
     "pricing-overrides": {
       "title": "Pricing Overrides",
-      "subtitle": "Scoped per-model pricing overrides for accurate cost tracking."
+      "subtitle": "Deployment-wide per-model prices for cost tracking."
     },
     "model-settings": {
       "title": "Model Settings",
@@ -4666,7 +4666,7 @@
     },
     "mcp-settings": {
       "title": "MCP Settings",
-      "subtitle": "Transport, timeouts, and defaults for the MCP gateway."
+      "subtitle": "Stored transport, timeout and default values for the MCP gateway."
     },
     "plugins": {
       "title": "Plugins",
@@ -4698,7 +4698,7 @@
     },
     "gov-users": {
       "title": "Users",
-      "subtitle": "People with access to this Rolter workspace."
+      "subtitle": "People with access to this rolter deployment."
     },
     "gov-teams": {
       "title": "Teams",
@@ -4730,7 +4730,7 @@
     },
     "audit-logs": {
       "title": "Audit Logs",
-      "subtitle": "Immutable record of every configuration change."
+      "subtitle": "Append-only record of changes and sign-ins."
     },
     "guardrails": {
       "title": "Guardrails",
@@ -4746,7 +4746,7 @@
     },
     "cluster": {
       "title": "Cluster Config",
-      "subtitle": "Manage the Rolter cluster, nodes, and replication."
+      "subtitle": "Gateway nodes reporting to this control plane. Drain a node or forget one that is gone."
     },
     "adaptive-routing": {
       "title": "Adaptive Routing",
@@ -4762,7 +4762,7 @@
     },
     "prompt-repo": {
       "title": "Prompt Repository",
-      "subtitle": "Version-controlled prompts with variables and tests."
+      "subtitle": "Versioned prompts with variables and a live preview."
     },
     "skills-repo": {
       "title": "Skills Repository",
@@ -4794,7 +4794,7 @@
     },
     "performance": {
       "title": "Performance Tuning",
-      "subtitle": "Connection pools, timeouts, and concurrency."
+      "subtitle": "Retries, timeouts, and the admission queue."
     },
     "feature-flags": {
       "title": "Feature Flags",

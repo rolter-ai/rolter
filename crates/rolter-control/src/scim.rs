@@ -148,6 +148,16 @@ impl From<rolter_core::Error> for ScimError {
                 Some("uniqueness"),
                 "a resource with that identifier already exists",
             ),
+            // a lock or statement timeout is worth a retry, which a 500 never
+            // says (#3148); the driver's text stays in the log
+            rolter_core::Error::StoreTimeout(text) => {
+                tracing::warn!(error = %text, "scim request timed out in the store");
+                Self::new(
+                    StatusCode::GATEWAY_TIMEOUT,
+                    None,
+                    "the database did not finish in time; try again",
+                )
+            }
             other => {
                 tracing::warn!(error = %other, "internal scim error");
                 Self::new(
@@ -1097,6 +1107,14 @@ mod tests {
         assert_eq!(scim_err.status, StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(scim_err.detail, "internal server error");
         assert!(!scim_err.detail.contains(sensitive));
+    }
+
+    #[test]
+    fn a_store_timeout_answers_504_in_scim_error() {
+        let driver = "canceling statement due to lock timeout on tenant_a.users";
+        let err: ScimError = rolter_core::Error::StoreTimeout(driver.into()).into();
+        assert_eq!(err.status, StatusCode::GATEWAY_TIMEOUT);
+        assert!(!err.detail.contains("tenant_a"));
     }
 
     #[test]

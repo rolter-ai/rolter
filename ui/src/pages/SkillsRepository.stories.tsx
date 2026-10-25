@@ -517,7 +517,7 @@ export const SourceSwitchesFromTheKeyboard: Story = {
   render: () => <Harness fetchStub={loadedStub()} />,
   play: async ({ canvas }) => {
     const group = await canvas.findByRole("radiogroup", { name: "Skill content source" });
-    await expect(group).toHaveAccessibleDescription("Version the instructions in Rolter");
+    await expect(group).toHaveAccessibleDescription("Version the instructions in rolter");
     const inline = within(group).getByRole("radio", { name: "Inline SKILL.md" });
     const reference = within(group).getByRole("radio", { name: "Artifact reference" });
     await expect(inline).toBeChecked();

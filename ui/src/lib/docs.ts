@@ -120,6 +120,8 @@ export const DOCS_PAGES = {
   cacheAwareRouting: "concepts/cache-aware-routing",
   /** sampling, payload capture, retention and the ClickHouse that receives the log (#2092) */
   logSettings: "observability/log-settings",
+  /** how a request's cost is computed from the prices an operator sets (#1981) */
+  costTracking: "observability/logs-and-cost#cost-tracking",
   /** the host-side reset for a member who lost their second factor (#2262) */
   breakGlass: "security/two-factor-authentication#break-glass-a-lost-device",
 } as const;

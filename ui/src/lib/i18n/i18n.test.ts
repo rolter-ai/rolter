@@ -13,7 +13,7 @@ import i18n, {
   setLocale,
 } from "./index";
 import { formattersFor, setChartTimeZone } from "./format";
-import { compare, flatten, type Catalog } from "./parity";
+import { capitalisedBrand, compare, flatten, type Catalog } from "./parity";
 
 // bun's runtime ships no localStorage (which is why the source wraps every
 // access in try/catch), and the api/ux suites install stubs of their own on
@@ -72,6 +72,13 @@ describe("catalogs", () => {
     for (const [key, value] of flatEn) {
       expect(value.trim(), `empty value for ${key}`).not.toBe("");
     }
+  });
+
+  test("the product name is lowercase in every catalog", () => {
+    expect(capitalisedBrand(flatEn)).toEqual([]);
+    expect(capitalisedBrand(flatRu)).toEqual([]);
+    expect(capitalisedBrand(new Map([["k", "Rolter routes it"]]))).toEqual(["k"]);
+    expect(capitalisedBrand(new Map([["k", "set ROLTER_KEK, then restart rolter"]]))).toEqual([]);
   });
 
   test("every routable screen has a label and header copy", () => {

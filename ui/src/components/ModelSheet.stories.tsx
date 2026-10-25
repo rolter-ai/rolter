@@ -19,6 +19,7 @@ import {
   expectAllowed,
   expectRefused,
   answerDiscardPrompt,
+  withDocsBase,
   type FetchStub,
   type StoryRole,
 } from "@/pages/story-harness";
@@ -1381,6 +1382,31 @@ export const ShowsAConfigRoutesGuardrailOverridesReadOnly: Story = {
 };
 
 /**
+ * A read-only sheet has nothing to discard, so its footer offers a single
+ * Close rather than a Cancel beside a Close that do the same (#2046).
+ */
+export const ReadOnlyFooterHasOneAction: Story = {
+  render: () => (
+    <Stage
+      mode="view"
+      configModel={{ model: "fake-llm", strategy: "weighted", targets: 1, source: "config" }}
+    />
+  ),
+  play: async () => {
+    const dialog = within(sheet());
+    // the header's X is labelled Close too; the footer's is the one with text
+    const closes = await dialog.findAllByRole("button", { name: "Close" });
+    const close = closes.find((b) => b.textContent === "Close");
+    await expect(close).toBeDefined();
+    const footer = within(close!.parentElement as HTMLElement);
+    await expect(footer.getAllByRole("button")).toHaveLength(1);
+    await expect(dialog.queryByRole("button", { name: "Cancel" })).toBeNull();
+    await userEvent.click(close!);
+    await expectSheetClosed();
+  },
+};
+
+/**
  * The advanced half of the form is written back.
  *
  * Every field under "Limits & network", "Custom request headers" and "Access &
@@ -1947,17 +1973,39 @@ export const AdvancedRejected: Story = {
 /**
  * Prices are operator-supplied — rolter ships no pricing catalog — so the
  * pricing section points at our own cost docs rather than at a competitor's
- * datasheet presented as their source (#977).
+ * datasheet presented as their source (#977). The link goes through the
+ * configured docs host like every other docs link, never github.com (#1981).
  */
 export const PricingLinksToRolterDocs: Story = {
+  beforeEach: withDocsBase("https://docs.example.com"),
   render: () => <Stage mode="add" />,
   play: async () => {
     const dialog = within(sheet());
     await userEvent.click(dialog.getByRole("button", { name: "Pricing override" }));
-    const link = dialog.getByRole("link", { name: /Rolter docs/ });
-    await expect(link.getAttribute("href")).toContain("github.com/rolter-ai/rolter");
+    const link = dialog.getByRole("link", { name: /How request cost is calculated/ });
+    await expect(link).toHaveAttribute(
+      "href",
+      "https://docs.example.com/observability/logs-and-cost#cost-tracking",
+    );
     await expect(link).toHaveAttribute("target", "_blank");
     await expect(link).toHaveAttribute("rel", "noreferrer");
+  },
+};
+
+/**
+ * An air-gapped deployment configures no docs host, and the pricing section
+ * then shows no link rather than one that reaches for an unreachable host.
+ */
+export const PricingWithoutDocsHostHasNoLink: Story = {
+  beforeEach: withDocsBase(undefined),
+  render: () => <Stage mode="add" />,
+  play: async () => {
+    const dialog = within(sheet());
+    await userEvent.click(dialog.getByRole("button", { name: "Pricing override" }));
+    await waitFor(() =>
+      expect(dialog.getByText(/fields shown match the model type/)).toBeVisible(),
+    );
+    await expect(dialog.queryByRole("link", { name: /How request cost/ })).toBeNull();
   },
 };
 

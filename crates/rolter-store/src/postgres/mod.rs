@@ -1848,14 +1848,7 @@ impl ConfigStore for PostgresConfigStore {
             ..GatewayConfig::default()
         };
         config.apply_feature_flags();
-        config.logging.sample_rate = logging.sample_rate;
-        config.logging.payload_capture.enabled = logging.payload_capture_enabled;
-        config.logging.payload_capture.max_bytes =
-            logging.payload_capture_max_bytes.max(0) as usize;
-        config.logging.payload_capture.redact_fields = logging.payload_capture_redact_fields;
-        config.logging.payload_capture.models = logging.payload_capture_models;
-        config.logging.payload_capture.virtual_key_ids = logging.payload_capture_virtual_key_ids;
-        config.logging.ui_events = logging.ui_events;
+        logging.project_onto(&mut config.logging);
         config.retry.max_retries = runtime_policy.retry_max_retries.max(0) as u32;
         config.retry.base_backoff_ms = runtime_policy.retry_base_ms.max(0) as u64;
         config.retry.max_backoff_ms = runtime_policy.retry_max_ms.max(0) as u64;

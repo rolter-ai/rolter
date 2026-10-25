@@ -75,16 +75,10 @@ it does not find, for example the first eight characters of the uuid.
 Superadmin only: the `deployment_user` capability's read action, published by
 `GET /api/v1/rbac/matrix`. A signed-in superadmin and the admin token may read
 it. Everyone else, organization admins included, is refused with `403` and an
-unauthenticated caller with `401`, in the standard error shape:
+unauthenticated caller with `401`. Both bodies carry a message and nothing else:
 
 ```json
-{
-  "error": {
-    "message": "forbidden",
-    "type": "forbidden",
-    "code": "forbidden"
-  }
-}
+{ "error": { "message": "insufficient role for this resource" } }
 ```
 
 An organization admin has no use for it and may not have it: this list names the

@@ -208,6 +208,11 @@ pub enum AuthError {
     /// operator's. With a KEK the same account gets an enrolment challenge
     /// instead (#1078, #1852)
     MfaEnrolmentRequired,
+    /// the pool's `lock_timeout` or `statement_timeout` ran out (504), coded
+    /// `store_timeout` as the CRUD API codes it, so a sign-in that waited on a
+    /// lock says to retry rather than answering an opaque 500 (#3148). Carries
+    /// the driver's text for the log only
+    StoreTimeout(String),
     Internal(String),
 }
 
@@ -252,6 +257,14 @@ impl IntoResponse for AuthError {
                  and this control plane cannot enrol one because ROLTER_KEK is not set; an \
                  operator must set it, or an administrator must relax the policy",
             ),
+            Self::StoreTimeout(ref msg) => {
+                tracing::warn!(error = %msg, "auth request timed out in the store");
+                (
+                    StatusCode::GATEWAY_TIMEOUT,
+                    crate::crud::STORE_TIMEOUT,
+                    crate::crud::STORE_TIMEOUT_MESSAGE,
+                )
+            }
             Self::Internal(ref msg) => {
                 tracing::error!(error = %msg, "internal auth error");
                 (
@@ -284,7 +297,10 @@ impl IntoResponse for AuthError {
 
 impl From<rolter_core::Error> for AuthError {
     fn from(err: rolter_core::Error) -> Self {
-        Self::Internal(err.to_string())
+        match err {
+            rolter_core::Error::StoreTimeout(msg) => Self::StoreTimeout(msg),
+            other => Self::Internal(other.to_string()),
+        }
     }
 }
 
@@ -764,7 +780,12 @@ async fn change_password(
     }
 
     let verified = PasswordHash::new(stored_hash)
-        .map_err(|e| ApiError::Core(rolter_core::Error::Store(e.to_string())))
+        .map_err(|e| {
+            // a hash the store holds but cannot parse is corrupt data, not a
+            // store failure: log it, and say nothing about it to the caller
+            tracing::error!(error = %e, "stored password hash does not parse");
+            ApiError::Curated(crate::crud::INTERNAL_ERROR.to_string())
+        })
         .map(|parsed| {
             Argon2::default()
                 .verify_password(body.current_password.as_bytes(), &parsed)
@@ -1086,6 +1107,24 @@ mod tests {
         assert_eq!(message, "an internal server error occurred");
         assert!(!message.contains("postgres"));
         assert!(!message.contains(sensitive));
+    }
+
+    /// A repository call on the sign-in path that hits the pool's lock or
+    /// statement timeout answers the coded 504 the CRUD API answers, not an
+    /// opaque 500 (#3148).
+    #[tokio::test]
+    async fn a_store_timeout_on_the_auth_path_answers_store_timeout() {
+        let driver = "canceling statement due to lock timeout on tenant_a.users";
+        let err: AuthError = rolter_core::Error::StoreTimeout(driver.into()).into();
+        let (status, code, message) = rendered(err).await;
+        assert_eq!(status, StatusCode::GATEWAY_TIMEOUT);
+        assert_eq!(code, crate::crud::STORE_TIMEOUT);
+        assert!(!message.contains("tenant_a"), "{message}");
+
+        let other: AuthError = rolter_core::Error::Store(driver.into()).into();
+        let (status, code, _) = rendered(other).await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(code, "internal");
     }
 }
 

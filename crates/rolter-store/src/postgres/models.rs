@@ -839,6 +839,30 @@ pub struct LoggingSettings {
     pub updated_at: DateTime<Utc>,
 }
 
+impl LoggingSettings {
+    /// Write the stored half of `[logging]` onto `logging`, the projection a
+    /// snapshot makes. The sink and batching keys have no column and are left
+    /// as they are.
+    pub fn project_onto(&self, logging: &mut rolter_core::LoggingConfig) {
+        logging.sample_rate = self.sample_rate;
+        logging.payload_capture.enabled = self.payload_capture_enabled;
+        logging.payload_capture.max_bytes = self.payload_capture_max_bytes.max(0) as usize;
+        logging.payload_capture.redact_fields = self.payload_capture_redact_fields.clone();
+        logging.payload_capture.models = self.payload_capture_models.clone();
+        logging.payload_capture.virtual_key_ids = self.payload_capture_virtual_key_ids.clone();
+        logging.ui_events = self.ui_events;
+    }
+
+    /// The `[logging]` a snapshot serves when the bootstrap file holds `file`:
+    /// the file's own while this row still holds its seeded defaults, this
+    /// row's otherwise (see [`crate::merge_logging`]).
+    pub fn served(&self, file: &rolter_core::LoggingConfig) -> rolter_core::LoggingConfig {
+        let mut stored = rolter_core::LoggingConfig::default();
+        self.project_onto(&mut stored);
+        crate::merge_logging(file.clone(), stored)
+    }
+}
+
 /// one ordered built-in or custom regex rule in the global guardrail policy
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct GuardrailRule {
