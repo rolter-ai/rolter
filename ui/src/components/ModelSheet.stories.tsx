@@ -2002,7 +2002,9 @@ export const PricingWithoutDocsHostHasNoLink: Story = {
   play: async () => {
     const dialog = within(sheet());
     await userEvent.click(dialog.getByRole("button", { name: "Pricing override" }));
-    await expect(await dialog.findByText(/fields shown match the model type/)).toBeVisible();
+    await waitFor(() =>
+      expect(dialog.getByText(/fields shown match the model type/)).toBeVisible(),
+    );
     await expect(dialog.queryByRole("link", { name: /How request cost/ })).toBeNull();
   },
 };
