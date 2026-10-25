@@ -2458,6 +2458,110 @@ async fn the_deployment_audit_export_is_a_superadmins() {
     assert_eq!(unauthenticated.status(), 401);
 }
 
+/// `end_at` is exclusive, as `GET /openapi.json` documents and the analytics
+/// reads do: a row stamped exactly at the upper bound belongs to the next
+/// window, in the page read, its total and the export, per org and
+/// deployment-wide alike, while `start_at` keeps its row (#3141).
+#[tokio::test]
+async fn the_audit_logs_end_at_is_exclusive() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("audit".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let org: uuid::Uuid = sqlx::query_scalar(
+        "insert into orgs (name, slug) values ('Acme Corp', 'acme-corp') returning id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let admin = seed_user(&pool, "admin@acme.test", false).await;
+    seed_membership(&pool, admin, Some(org), None, None, "admin").await;
+    let operator = seed_user(&pool, "operator@deploy.test", true).await;
+    // one row on each bound and one just inside the upper one
+    for (action, at) in [
+        ("budget.create", "2026-01-01T00:00:00Z"),
+        ("budget.update", "2026-01-01T23:59:59.999Z"),
+        ("budget.delete", "2026-01-02T00:00:00Z"),
+    ] {
+        sqlx::query(
+            "insert into audit_log (org_id, actor_user_id, action, target_type, at)
+             values ($1, $2, $3, 'budget', $4::timestamptz)",
+        )
+        .bind(org)
+        .bind(admin)
+        .bind(action)
+        .bind(at)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    let admin_session = seed_session(&pool, admin, "bound_admin").await;
+    let operator_session = seed_session(&pool, operator, "bound_operator").await;
+    let window = [
+        ("start_at", "2026-01-01T00:00:00Z"),
+        ("end_at", "2026-01-02T00:00:00Z"),
+    ];
+
+    for (base, session) in [
+        (
+            format!("http://{addr}/api/v1/orgs/{org}/audit-log"),
+            &admin_session,
+        ),
+        (format!("http://{addr}/api/v1/audit-log"), &operator_session),
+    ] {
+        let page: Value = client
+            .get(&base)
+            .query(&window)
+            .query(&[("include_total", "true")])
+            .bearer_auth(session)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let actions: Vec<&str> = page["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["action"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            actions,
+            ["budget.update", "budget.create"],
+            "{base}: {page}"
+        );
+        assert_eq!(page["total"], 2, "{base}: {page}");
+
+        let export: Value = client
+            .get(format!("{base}/export"))
+            .query(&window)
+            .query(&[("format", "json")])
+            .bearer_auth(session)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let actions: Vec<&str> = export
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["action"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            actions,
+            ["budget.update", "budget.create"],
+            "{base}/export: {export}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn org_slug_is_validated() {
     skip_without_db!();
