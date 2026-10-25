@@ -254,7 +254,7 @@ A channel is a named webhook endpoint. `webhook` is the only kind.
 
 | Field            | Meaning                                                                                                                  |
 | ---------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `name`           | Unique, 1 to 128 bytes of UTF-8 (128 ASCII characters, fewer in other scripts).                                          |
+| `name`           | Unique, 1 to 128 characters after trimming surrounding whitespace.                                                       |
 | `kind`           | Always `webhook`, set by the server.                                                                                     |
 | `endpoint`       | An `http` or `https` URL with a host. A URL carrying `user:password@` is rejected; put a credential in `managed_secret`. |
 | `enabled`        | A disabled channel receives nothing; its rules' transitions are recorded as `skipped`. Defaults to `false` in the API.   |
@@ -404,7 +404,7 @@ finishes and is recorded.
 
 | Field         | Meaning                                                                                          |
 | ------------- | ------------------------------------------------------------------------------------------------ |
-| `name`        | Unique, 1 to 128 bytes of UTF-8 (128 ASCII characters, fewer in other scripts).                  |
+| `name`        | Unique, 1 to 128 characters after trimming surrounding whitespace.                               |
 | `signal`      | One of the [signals](#signals) above.                                                            |
 | `threshold`   | A finite number, `0` or above, in the signal's own unit. See `comparison`.                       |
 | `comparison`  | `above` (default) fires at `value >= threshold`, `below` at `value <= threshold`.                |
