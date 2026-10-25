@@ -11,7 +11,6 @@ import {
   Plus,
   Send,
   Square,
-  Trash2,
   Upload,
   Loader2,
 } from "lucide-react";
@@ -31,6 +30,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button, type ButtonProps } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Combobox, type ComboboxOption } from "@/components/ui/combobox";
+import { DeleteIconButton } from "@/components/ui/delete-icon-button";
 import { Input } from "@/components/ui/input";
 import { ScatterPlot, type ScatterPoint } from "@/components/ui/scatter-plot";
 import { StatusRow } from "@/components/ui/status-row";
@@ -1137,15 +1137,10 @@ function ChatColumn({
           <Eraser className="h-3.5 w-3.5" />
         </Button>
         {position !== null && (
-          <Button
-            size="icon"
-            variant="ghost"
-            className="h-8 w-8"
+          <DeleteIconButton
+            label={t("pages.playground.removeColumn", { n: position, model })}
             onClick={onRemove}
-            aria-label={t("pages.playground.removeColumn", { n: position, model })}
-          >
-            <Trash2 className="h-3.5 w-3.5" />
-          </Button>
+          />
         )}
       </div>
       {/* a reply taller than the column scrolls here, and a scroller the keyboard
@@ -1244,17 +1239,14 @@ function ChatColumn({
           {attached && (
             <div className="mb-1 inline-flex items-center gap-1.5 rounded bg-[color:var(--surface-subtle)] px-2 py-1 text-[0.625rem] text-muted-foreground">
               <ImageIcon className="h-3 w-3" /> {t("pages.playground.imageAttached")}
-              <button
-                onClick={() => setImage(null)}
-                aria-label={
+              <DeleteIconButton
+                label={
                   position === null
                     ? t("pages.playground.removeAttachment")
                     : t("pages.playground.removeAttachmentFor", { model: who })
                 }
-                className="focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring rounded"
-              >
-                <Trash2 className="h-3 w-3" />
-              </button>
+                onClick={() => setImage(null)}
+              />
             </div>
           )}
           <ErrorNote error={error} />
@@ -1528,15 +1520,10 @@ function EmbeddingsMode({ models }: { models: ModelOption[] }) {
                 aria-label={t("pages.playground.textRowAria", { n: i + 1 })}
                 className="h-8 text-sm"
               />
-              <Button
-                size="icon"
-                variant="ghost"
-                className="h-8 w-8"
+              <DeleteIconButton
+                label={t("pages.playground.removeText", { n: i + 1 })}
                 onClick={() => removeField(i)}
-                aria-label={t("pages.playground.removeText", { n: i + 1 })}
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-              </Button>
+              />
             </div>
           ))}
         </div>
