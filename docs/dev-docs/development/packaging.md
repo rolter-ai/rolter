@@ -67,28 +67,32 @@ docker compose -f docker/docker-compose.yml up -d          # full stack with pos
 
 ## The version line
 
-The workspace is on **`0.1.0`** (`Cargo.toml`, `[workspace.package]`), and every
+The workspace is on **`1.0.0`** (`Cargo.toml`, `[workspace.package]`), and every
 crate inherits it. The line matters because release-plz derives the next version
 from Cargo's SemVer compatibility rules rather than from the commit type, and
 those rules change meaning below `1.0.0`:
 
-| Current version              | `fix:` | `feat:` | breaking (`!`) |
-| ---------------------------- | ------ | ------- | -------------- |
-| `>= 1.0.0`                   | patch  | minor   | major          |
-| `0.x.y` (x >= 1) — **today** | patch  | patch   | minor          |
-| `0.0.z`                      | patch  | patch   | patch          |
+| Current version        | `fix:` | `feat:` | breaking (`!`) |
+| ---------------------- | ------ | ------- | -------------- |
+| `>= 1.0.0` — **today** | patch  | minor   | major          |
+| `0.x.y` (x >= 1)       | patch  | patch   | minor          |
+| `0.0.z`                | patch  | patch   | patch          |
 
 rolter sat on `0.0.z` until #501, where _every_ commit type collapsed to a patch
 bump: a release could never express that a feature or a breaking change had
-landed. `0.1.0` restores that signal for breaking changes while deliberately
-withholding the stable-API promise `1.0.0` carries — a `feat` is still a patch
-until the 1.0.0 milestone closes and the version line moves again.
+landed. `0.1.0` restored that signal for breaking changes while deliberately
+withholding the stable-API promise `1.0.0` carries. The line then moved to
+`1.0.0` for the first stable release, so from there a `feat` is a minor bump and
+a breaking change is a major one. The compatibility promise that version makes
+is [ADR-0032](../adr/2026-09-09-one-point-oh-compatibility-guarantees.md).
 
 Moving the line is a one-time manual edit of `[workspace.package] version` plus
 the matching `version = "…"` on each internal `[workspace.dependencies]` entry
-(they are path+version deps so the published crates are not wildcards).
-release-plz picks the new line up on the next Release PR and auto-bumps from
-there.
+(they are path+version deps so the published crates are not wildcards), then
+`cargo metadata` to refresh `Cargo.lock` and
+`python3 scripts/sync-chart-appversion.py --fix` for the chart. release-plz sees
+a local version that crates.io does not have yet, releases it as written instead
+of bumping past it, and auto-bumps from there on the releases after it.
 
 ### The helm chart's appVersion
 
