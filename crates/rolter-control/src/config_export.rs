@@ -190,6 +190,11 @@ fn render_provider_tier(out: &mut String, tier: &str, entries: &[ProviderConfig]
         if provider.project_scoped {
             key(out, "project_scoped", &true);
         }
+        // the host-pin opt-out round-trips, or a re-import would leave the
+        // provider out of the snapshot (#1133)
+        if provider.allow_custom_api_base {
+            key(out, "allow_custom_api_base", &true);
+        }
     }
 }
 

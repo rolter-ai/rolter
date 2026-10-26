@@ -32,7 +32,9 @@ export const KNOWN_ERROR_CODES = [
   "open_mode_no_session",
   "password_login_disabled",
   "referenced",
+  "request_timeout",
   "scope_mismatch",
+  "store_timeout",
   "too_many_attempts",
   "unauthenticated",
 ] as const;

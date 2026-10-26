@@ -202,7 +202,6 @@ priorities live on the issues.
 | #2008 | nothing can check that a provider serves an upstream model name (UI: #2009)                                                           | A3.3a                         |
 | #1848 | the Dashboard's setup checklist shows an access error to everyone below admin                                                         | E1, V1, F1                    |
 | #1395 | requests refused before routing (401, 402, 403, 404, 429) never reach LLM Logs                                                        | E5, P5.4                      |
-| #1133 | a database-backed provider cannot opt out of the hosted host pin                                                                      | A3-e                          |
 | #1826 | LDAP is implemented but not reachable from sign-in                                                                                    | A1-c                          |
 | #1827 | no SAML single sign-on                                                                                                                | A1-b (SAML-only IdPs)         |
 | #1828 | invitations are links an admin passes on by hand                                                                                      | A1-a, T2                      |

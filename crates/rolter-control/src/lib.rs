@@ -324,6 +324,13 @@ pub struct Args {
     /// the database bounds so those answer first with their own code
     #[arg(long, env = "ROLTER_REQUEST_TIMEOUT_SECS", default_value_t = 60)]
     pub request_timeout_secs: u64,
+    /// how often the gateways poll for a snapshot, in seconds: the same
+    /// variable the gateway reads, so a deployment that sets it once for both
+    /// tells the dashboard how long a freshly minted key takes to reach them
+    /// (#1916). Only sizes the Playground's wait; the gateways' own value is
+    /// what governs the poll
+    #[arg(long, env = "ROLTER_SNAPSHOT_POLL_SECS", default_value_t = 5)]
+    pub snapshot_poll_secs: u64,
     /// acknowledge running with no `--admin-token` on a non-loopback bind.
     /// Without it the control plane refuses to start in that combination,
     /// because every request would be served as superadmin with no credential
@@ -360,6 +367,7 @@ impl Default for Args {
             ui_docs_base_url: None,
             gateway_url: "http://localhost:4000".to_string(),
             request_timeout_secs: 60,
+            snapshot_poll_secs: 5,
             config: None,
             #[cfg(feature = "postgres")]
             database_url: None,
@@ -862,6 +870,8 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         version: Some(env!("CARGO_PKG_VERSION").to_string()),
         open_mode: open_mode.is_open(),
         docs_base_url: args.ui_docs_base_url.clone(),
+        request_timeout_secs: Some(args.request_timeout_secs),
+        snapshot_poll_secs: Some(args.snapshot_poll_secs),
     };
     if ui_runtime.is_configured() {
         tracing::info!(
@@ -1913,6 +1923,7 @@ async fn seed_default_providers(pool: &sqlx::PgPool, config: &GatewayConfig) -> 
                 provider.lmcache.as_ref(),
                 // `project_scoped` means the default project here (#1919)
                 provider.project_scoped.then_some(project_id),
+                provider.allow_custom_api_base,
             )
             .await?;
         if provider.surplus_api_key_count() > 0 {
@@ -2204,6 +2215,9 @@ struct ProviderKindInfo {
     /// the lowercase header the provider key travels in; `authorization` means
     /// a bearer token
     auth_header: &'static str,
+    /// the `api_base` a hosted kind is pinned to unless the provider sets
+    /// `allow_custom_api_base`, or `null` for a kind with no pin (#1133)
+    pinned_api_base: Option<&'static str>,
 }
 
 /// The per-kind facts the dashboard states instead of guessing: the `api_base`
@@ -2226,6 +2240,7 @@ async fn get_provider_kinds(_: session_guard::AnySession) -> Json<Vec<ProviderKi
                 request: kind.primary_request(),
                 request_path: kind.primary_upstream_path(),
                 auth_header: kind.auth_header("").0,
+                pinned_api_base: kind.pinned_api_base(),
             })
             .collect(),
     )

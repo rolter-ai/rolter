@@ -118,31 +118,23 @@ chart on their own defaults.
   group currently lands on its first member whatever the strategy and weights
   say (#1655). Groups in this file are in the explicit `readonly` tier and
   reach the database through the same import as the providers.
-- **`allow_custom_api_base` does not survive the database, so `openrouter-edge`
-  is served from a file config only.** `dogfood.toml` sets it on the
-  OpenRouter-shaped edge, but the column does not exist yet (#1133), so once the
-  fleet is seeded the control plane omits that provider from the snapshot and
-  the `claude-sonnet-4` route with it. The gateway says so on every reload and
-  the dashboard shows it under config problems; every `claude-sonnet-4` request
-  is a `404 model_not_found` until #1133 lands, and the admin journey's step
-  A3.18 reports it as that gap. The provider's row is seeded all the same, and
-  its **Test connection** passes: the base is `http://127.0.0.1:18002/v1`
-  because the `openrouter` kind appends `/models` and `/chat/completions` to a
-  base that ends in `/v1`, which the fleet serves (a bare origin 404s on
-  `/models`, #2808). Re-running `just dogfood-seed` moves a stack seeded with
-  the old base onto the new one.
+- **`openrouter-edge` opts out of the OpenRouter host pin.** `dogfood.toml`
+  sets `allow_custom_api_base = true` on the OpenRouter-shaped edge, and the
+  seeded database keeps it (#1133), so the `claude-sonnet-4` route is served by
+  the seeded stack as well as by the file. A stack seeded before #1133 stored
+  the provider without the flag; re-running `just dogfood-seed` brings the row
+  in line with the file. The base is `http://127.0.0.1:18002/v1` because the
+  `openrouter` kind appends `/models` and `/chat/completions` to a base that
+  ends in `/v1`, which the fleet serves (a bare origin 404s on `/models`,
+  #2808).
 
-  `just dogfood-file` is the path that honours the flag. It starts the fleet
-  (unless it is already up) and a gateway with `--config integration/dogfood/dogfood.toml`
-  and no snapshot URL, so there is no control plane or Postgres to prune
-  anything, and `claude-sonnet-4` answers through `openrouter-edge`. It accepts
-  any request, since no virtual keys are configured. Pass a port to run it beside
-  `just dogfood` (`just dogfood-file 4010`). That, not the seeded stack, is what
-  exercises the OpenRouter dialect (#925) today. A control plane started with
-  `--config` naming a file that declares `openrouter-edge` in the readonly tier
-  would serve it, and `claude-sonnet-4`, on the database-backed path as well
-  (its snapshot keeps the flag; checked in #2834), but the provider would then
-  be config-owned and locked in the dashboard, so the harness waits for #1133.
+  `just dogfood-file` runs the same edge without a control plane. It starts
+  the fleet (unless it is already up) and a gateway with
+  `--config integration/dogfood/dogfood.toml` and no snapshot URL, so there is
+  no Postgres in the path, and `claude-sonnet-4` answers through
+  `openrouter-edge`. It accepts any request, since no virtual keys are
+  configured. Pass a port to run it beside `just dogfood`
+  (`just dogfood-file 4010`).
 
 - **`just dogfood` waits for the control plane and the gateway to answer.**
   The steps after start-up (minting the sheet's virtual key, the adaptive

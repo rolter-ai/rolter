@@ -42,7 +42,7 @@ import type {
 } from "@/lib/api";
 import en from "@/lib/i18n/locales/en.json";
 import ru from "@/lib/i18n/locales/ru.json";
-import { atMobile } from "@/lib/story-viewport";
+import { atMobile, expectNoHorizontalOverflow } from "@/lib/story-viewport";
 import { UxScreenProvider } from "@/lib/ux-react";
 
 const NOW = "2026-08-01T10:00:00Z";
@@ -722,6 +722,60 @@ export const Empty: Story = {
     // the empty state says what SSO buys them and carries the action
     await expect(canvas.getByText(/company account they already have/)).toBeVisible();
     await expect(canvas.getAllByRole("button", { name: /Add provider/ })).toHaveLength(2);
+  },
+};
+
+/**
+ * #2090: with no provider registered, "Single sign-on" is on in the policy and
+ * used to say nothing about there being no way in through it.
+ */
+export const EmptyPolicySaysSsoHasNoProvider: Story = {
+  render: () => (
+    <Harness fetchStub={api({ providers: () => [] })}>
+      <SingleSignOn />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const sso = await canvas.findByRole("switch", { name: "Single sign-on" });
+    await expect(sso).toBeChecked();
+    await expect(sso).toHaveAccessibleDescription(en.pages.sso.policy.ssoNoProvider);
+  },
+};
+
+/**
+ * #2090: at 375 px in Russian the card header used to share one row between
+ * the name, its pills, the switch and three icon buttons, squeezing the
+ * default-role sentence to a word per line. The actions now wrap below it.
+ */
+export const ProviderCardAtPhoneWidthInRussian: Story = {
+  ...atMobile,
+  globals: { ...atMobile.globals, locale: "ru" },
+  render: () => (
+    <Harness fetchStub={api()}>
+      <SingleSignOn />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const name = await canvas.findByText("Acme Okta");
+    const role = canvas.getByText(ru.pages.sso.providers.noDefaultRole);
+    // the sentence runs at least as wide as the name's row, not one word wide
+    await waitFor(() =>
+      expect(role.getBoundingClientRect().width).toBeGreaterThan(
+        name.getBoundingClientRect().width,
+      ),
+    );
+    const toggle = canvas.getByRole("switch", {
+      name: ru.pages.sso.providers.toggleNamed.replace("{{name}}", "Acme Okta"),
+    });
+    // the actions sit below the title block rather than beside it
+    await expect(toggle.getBoundingClientRect().top).toBeGreaterThan(
+      name.getBoundingClientRect().bottom,
+    );
+    // the group name is the thing being mapped, so it keeps a line of its own
+    await expect(await canvas.findByText("platform-engineering")).toBeVisible();
+    await expectNoHorizontalOverflow();
   },
 };
 

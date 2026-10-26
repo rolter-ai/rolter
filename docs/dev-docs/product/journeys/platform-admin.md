@@ -186,9 +186,9 @@ many places, and does traffic need spreading?**
 
 ### A3-e — a hosted API behind a proxy or a local re-implementation
 
-| #     | step                                                    | where                          | expect                           | status                                                                                               |
-| ----- | ------------------------------------------------------- | ------------------------------ | -------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| A3.18 | point a hosted kind (e.g. `openrouter`) at another host | `allow_custom_api_base = true` | the provider reaches the gateway | works in a gateway-only file; gap in the database — #1133 (the dogfood `claude-sonnet-4` route 404s) |
+| #     | step                                                    | where                          | expect                           | status                                                                                                                                  |
+| ----- | ------------------------------------------------------- | ------------------------------ | -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| A3.18 | point a hosted kind (e.g. `openrouter`) at another host | `allow_custom_api_base = true` | the provider reaches the gateway | works in a file and in the database (#1133): the provider sheet's **Allow a custom base URL** switch, or the field on the providers API |
 
 ## A4 — give access to people and applications
 

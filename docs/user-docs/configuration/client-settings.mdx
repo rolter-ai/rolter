@@ -88,3 +88,5 @@ curl -X PUT -H "Authorization: Bearer $ROLTER_ADMIN_TOKEN" \
 ```
 
 The read response also carries `always_propagated`, `reserved` and `request_id_refused` (every name refused as the request id header), so a client does not have to hard-code any of the lists. The dashboard checks the Request ID header field against `request_id_refused` before you save.
+
+On the **Client Settings** screen each problem is shown under the field it is about, and the footer counts them. **Save changes** stays off until the form differs from what is saved, the footer says when there are unsaved changes, and leaving the screen with unsaved changes asks first. A saved change reaches the gateways on their next config poll, without a restart.

@@ -93,6 +93,8 @@ interface ProviderDraft {
   projectId: string;
   /** the KV-events and LMCache sources the cache-aware strategies read (#2996) */
   tel: TelemetryDraft;
+  /** opted out of the kind's host pin (#1133) */
+  allowCustomBase: boolean;
 }
 
 function blankDraft(): ProviderDraft {
@@ -106,6 +108,7 @@ function blankDraft(): ProviderDraft {
     egressProxy: "",
     projectId: "",
     tel: blankTelemetry(),
+    allowCustomBase: false,
   };
 }
 
@@ -120,6 +123,7 @@ function fromProvider(p: ProviderRow): ProviderDraft {
     egressProxy: p.egress_proxy ?? "",
     projectId: p.project_id ?? "",
     tel: telemetryFrom(p.kv_events, p.lmcache),
+    allowCustomBase: p.allow_custom_api_base ?? false,
   };
 }
 
@@ -202,6 +206,15 @@ export function ProviderSheet({
     ? resolveUpstreamUrl(draft.apiBase, baseIncludesV1, kindInfo.request_path)
     : "";
   const baseDoublesV1 = apiBaseDoublesV1(draft.apiBase, baseIncludesV1);
+  // a hosted kind names one operator, so its base is pinned unless the
+  // provider deliberately opts out (ADR-0029, #1133); the server refuses the
+  // same thing, this only says it before the save
+  const pinnedBase = kindInfo?.pinned_api_base ?? null;
+  const breaksPin =
+    pinnedBase !== null &&
+    !draft.allowCustomBase &&
+    draft.apiBase.trim() !== "" &&
+    draft.apiBase.trim().replace(/\/+$/, "") !== pinnedBase;
 
   const dirty = initialRef.current !== "" && JSON.stringify(draft) !== initialRef.current;
   const { t } = useTranslation();
@@ -253,6 +266,7 @@ export function ProviderSheet({
           project_id: scopeValue || undefined,
           kv_events: draft.tel.kv ? kvPayload(draft.tel) : undefined,
           lmcache: draft.tel.lm ? lmPayload(draft.tel) : undefined,
+          allow_custom_api_base: pinnedBase !== null ? draft.allowCustomBase : undefined,
         });
       }
       const p = stored;
@@ -273,6 +287,10 @@ export function ProviderSheet({
             : null
           : undefined,
         lmcache: sourceChanged("lm", p) ? (draft.tel.lm ? lmPayload(draft.tel) : null) : undefined,
+        allow_custom_api_base:
+          draft.allowCustomBase !== (p.allow_custom_api_base ?? false)
+            ? draft.allowCustomBase
+            : undefined,
       });
     },
     onSuccess: (row) => {
@@ -474,7 +492,13 @@ export function ProviderSheet({
               : "providerSheet.apiBase.excludesV1",
             { kind: draft.kind },
           )}
-          error={baseDoublesV1 ? t("providerSheet.apiBase.doubled") : undefined}
+          error={
+            baseDoublesV1
+              ? t("providerSheet.apiBase.doubled")
+              : breaksPin
+                ? t("providerSheet.apiBase.pinned", { base: pinnedBase })
+                : undefined
+          }
         >
           <Input
             id="provider-api-base"
@@ -501,6 +525,15 @@ export function ProviderSheet({
             </p>
           )}
         </Field>
+
+        {pinnedBase !== null && (
+          <SwitchRow
+            title={t("providerSheet.customBase.title")}
+            hint={t("providerSheet.customBase.hint", { base: pinnedBase, kind: draft.kind })}
+            checked={draft.allowCustomBase}
+            onChange={(allowCustomBase) => set({ allowCustomBase })}
+          />
+        )}
 
         <Field
           label={t("providerSheet.fields.providerKey")}

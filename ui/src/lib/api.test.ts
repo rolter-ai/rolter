@@ -21,6 +21,7 @@ import {
   unservedModels,
   UNNAMED_KEY,
   fetchConfigProblems,
+  clientRequestBoundMs,
   type OmittedEntry,
   type CurrencySettings,
 } from "./api";
@@ -803,5 +804,22 @@ describe("unservedModels", () => {
 
   it("is empty before the problems are known", () => {
     expect(unservedModels(undefined, ["a"]).size).toBe(0);
+  });
+});
+
+// #3147: the dashboard gives up a little after the control plane's own bound,
+// so a hung request ends with the server's coded answer or, failing that, its own
+describe("clientRequestBoundMs", () => {
+  it("waits five seconds past the bound the control plane names", () => {
+    expect(clientRequestBoundMs({ requestTimeoutSecs: 30 })).toBe(35_000);
+  });
+
+  it("assumes the 60 s default from a control plane that names none", () => {
+    expect(clientRequestBoundMs({})).toBe(65_000);
+    expect(clientRequestBoundMs(undefined)).toBe(65_000);
+  });
+
+  it("does not bound a call when the control plane has no bound", () => {
+    expect(clientRequestBoundMs({ requestTimeoutSecs: 0 })).toBeUndefined();
   });
 });

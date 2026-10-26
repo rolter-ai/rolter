@@ -143,7 +143,11 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         config.server.port = port;
     }
 
-    for warning in config.project_scoped_warnings() {
+    for warning in config
+        .project_scoped_warnings()
+        .into_iter()
+        .chain(config.mixed_decision_route_warnings())
+    {
         tracing::warn!("{warning}");
     }
 

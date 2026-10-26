@@ -49,6 +49,14 @@ pub(crate) struct UiRuntimeConfig {
     /// mirror; nothing else in the dashboard reaches the documentation host
     #[serde(skip_serializing_if = "Option::is_none")]
     pub docs_base_url: Option<String>,
+    /// the control plane's per-request bound in seconds, `0` for none, so the
+    /// dashboard gives up just after the server would have (#3147)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_timeout_secs: Option<u64>,
+    /// the gateways' snapshot poll interval, so the Playground waits long
+    /// enough for a key it just minted to reach them (#1916)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snapshot_poll_secs: Option<u64>,
 }
 
 impl UiRuntimeConfig {
@@ -110,7 +118,32 @@ mod tests {
             version: Some("1.4.2".to_string()),
             open_mode: false,
             docs_base_url: None,
+            request_timeout_secs: None,
+            snapshot_poll_secs: None,
         }
+    }
+
+    #[test]
+    fn the_request_bound_reaches_the_dashboard_including_none() {
+        let bounded = UiRuntimeConfig {
+            request_timeout_secs: Some(60),
+            ..Default::default()
+        };
+        assert!(inject("<head></head>", &bounded).contains("\"requestTimeoutSecs\":60"));
+        let unbounded = UiRuntimeConfig {
+            request_timeout_secs: Some(0),
+            ..Default::default()
+        };
+        assert!(inject("<head></head>", &unbounded).contains("\"requestTimeoutSecs\":0"));
+    }
+
+    #[test]
+    fn the_snapshot_poll_interval_reaches_the_dashboard() {
+        let polled = UiRuntimeConfig {
+            snapshot_poll_secs: Some(30),
+            ..Default::default()
+        };
+        assert!(inject("<head></head>", &polled).contains("\"snapshotPollSecs\":30"));
     }
 
     #[test]

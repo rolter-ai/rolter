@@ -16,12 +16,14 @@ import { FieldError } from "@/components/ui/field-error";
 import { Input } from "@/components/ui/input";
 import { SaveBar } from "@/components/ui/save-bar";
 import { SettingsPanel } from "@/components/ui/settings-panel";
+import { Textarea } from "@/components/ui/textarea";
 import { fetchClientSettings, updateClientSettings, type ClientSettingsDto } from "@/lib/api";
 import { errorText } from "@/lib/error-copy";
 import { serverFieldPath } from "@/lib/field-errors";
 import { gatewayBase } from "@/lib/gateway";
 import { useToast } from "@/lib/toast";
 import { useFieldErrors } from "@/lib/use-field-errors";
+import { useLeaveGuard } from "@/lib/use-leave-guard";
 import { CLIENT_SETTINGS_QUERY_KEY } from "@/lib/use-gateway-base";
 import { KEY_ENV } from "@/lib/snippets";
 import { useScreenReady } from "@/lib/ux-react";
@@ -54,6 +56,19 @@ const splitList = (raw: string) =>
     .split(/[\n,]/)
     .map((h) => h.trim().toLowerCase())
     .filter((h) => h.length > 0);
+
+// what a save would send: the form normalised the way the server stores it, so
+// a draft that differs only in spacing or case is not an unsaved change
+const toPayload = (f: FormState) => ({
+  public_base_url: f.publicBaseUrl.trim() === "" ? null : f.publicBaseUrl.trim(),
+  forwarded_headers: splitList(f.forwarded),
+  injected_headers: Object.fromEntries(
+    f.injected
+      .map(({ name, value }) => [name.trim().toLowerCase(), value] as const)
+      .filter(([name]) => name !== ""),
+  ),
+  request_id_header: f.requestIdHeader.trim().toLowerCase(),
+});
 
 const fromDto = (dto: ClientSettingsDto): FormState => ({
   publicBaseUrl: dto.public_base_url ?? "",
@@ -221,17 +236,7 @@ function ClientSettingsScreen() {
   });
 
   const save = useMutation({
-    mutationFn: (f: FormState) =>
-      updateClientSettings({
-        public_base_url: f.publicBaseUrl.trim() === "" ? null : f.publicBaseUrl.trim(),
-        forwarded_headers: splitList(f.forwarded),
-        injected_headers: Object.fromEntries(
-          f.injected
-            .map(({ name, value }) => [name.trim().toLowerCase(), value] as const)
-            .filter(([name]) => name !== ""),
-        ),
-        request_id_header: f.requestIdHeader.trim().toLowerCase(),
-      }),
+    mutationFn: (f: FormState) => updateClientSettings(toPayload(f)),
     onSuccess: (dto) => {
       queryClient.setQueryData(CLIENT_SETTINGS_QUERY_KEY, dto);
       // the cached write alone left every other reader of this key on the
@@ -239,10 +244,12 @@ function ClientSettingsScreen() {
       void queryClient.invalidateQueries({ queryKey: CLIENT_SETTINGS_QUERY_KEY });
       setForm(fromDto(dto));
       fields.clear();
+      // the screen changes gateway behaviour live, so the toast says when it
+      // takes effect rather than leaving a restart to be guessed at (#2076)
       toast.push({
         tone: "success",
         title: t("toast.saved"),
-        detail: t("toast.savedDetail", { what: t("errors.resources.clientSettings") }),
+        detail: t("pages.clientSettings.savedDetail"),
       });
     },
     onError: (error) => {
@@ -254,6 +261,14 @@ function ClientSettingsScreen() {
       });
     },
   });
+
+  // pending versus applied matters on a screen that changes the gateway live:
+  // Save waits for a change, the bar says one is pending, and leaving asks first
+  const dirty =
+    form !== null &&
+    settings.data !== undefined &&
+    JSON.stringify(toPayload(form)) !== JSON.stringify(toPayload(fromDto(settings.data)));
+  const leavePrompt = useLeaveGuard(dirty);
 
   if (settings.isLoading) {
     return (
@@ -306,7 +321,6 @@ function ClientSettingsScreen() {
             </label>
             <Input
               className="sm:min-w-[320px] font-mono text-xs"
-              aria-label={t("pages.clientSettings.publicBaseUrl")}
               {...fields.inputProps("publicBaseUrl")}
               placeholder={BASE_URL_PLACEHOLDER}
               value={form.publicBaseUrl}
@@ -327,10 +341,10 @@ function ClientSettingsScreen() {
       >
         <div className="flex w-full flex-col gap-3.5">
           <div className="flex flex-col gap-1.5">
-            <textarea
+            <Textarea
               aria-label={t("pages.clientSettings.forwarded")}
               {...fields.inputProps("forwarded")}
-              className="min-h-[72px] w-full rounded-md border border-[color:var(--border-default)] bg-transparent px-3 py-2 font-mono text-xs outline-none focus-visible:border-[color:var(--red-folk)]"
+              className="min-h-[72px] font-mono text-xs"
               placeholder={t("pages.clientSettings.forwardedPlaceholder")}
               value={form.forwarded}
               onChange={(e) => edit("forwarded", { forwarded: e.target.value })}
@@ -437,7 +451,6 @@ function ClientSettingsScreen() {
             </label>
             <Input
               className="max-w-[240px] font-mono text-xs"
-              aria-label={t("pages.clientSettings.requestIdHeader")}
               {...fields.inputProps("requestIdHeader")}
               value={form.requestIdHeader}
               onChange={(e) => edit("requestIdHeader", { requestIdHeader: e.target.value })}
@@ -453,8 +466,11 @@ function ClientSettingsScreen() {
       <SaveBar
         invalid={fields.invalid.length}
         pending={save.isPending}
+        disabled={!dirty}
+        status={dirty ? t("pages.clientSettings.unsaved") : undefined}
         onSave={() => fields.submit(() => save.mutate(form))}
       />
+      {leavePrompt}
     </SettingsBody>
   );
 }

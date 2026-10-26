@@ -333,7 +333,9 @@
         "referenced": "Other items still depend on this one. Move or delete them first.",
         "scope_mismatch": "A provider here is scoped to a different project. Use an org-wide provider or one scoped to the same project.",
         "too_many_attempts": "Too many failed attempts. Try again later.",
-        "unauthenticated": "Your session is missing or has expired. Sign in again."
+        "unauthenticated": "Your session is missing or has expired. Sign in again.",
+        "request_timeout": "The control plane took too long to answer. Try again; if it keeps happening, ask an operator to check it.",
+        "store_timeout": "The database was busy and the change was not made. Try again in a moment."
       }
     }
   },
@@ -586,7 +588,7 @@
     "routing-rules": "Routing Rules",
     "complexity-router": "Complexity Router",
     "circuit-breaker": "Provider Health",
-    "pricing-overrides": "Pricing Overrides",
+    "pricing-overrides": "Model Prices",
     "model-settings": "Model Settings",
     "mcp": "MCP Gateway",
     "mcp-catalog": "MCP Catalog",
@@ -1552,6 +1554,7 @@
         "reportedDelivered": "Reported {{state}}; the channel accepted it ({{detail}}).",
         "reportedFailed": "Reported {{state}}, but delivery failed: {{detail}}. It is retried while the state holds.",
         "reportedSkipped": "Recorded {{state}} without delivering it: {{detail}}.",
+        "reportedPending": "Recorded {{state}}; delivery is still in progress.",
         "reportedReading": "It read {{value}} against a threshold of {{threshold}}.",
         "deleteAria": "Delete rule {{name}}",
         "editAria": "Edit rule {{name}}",
@@ -1644,6 +1647,7 @@
         "resolved": "Resolved"
       },
       "deliveries": {
+        "pending": "Pending",
         "delivered": "Delivered",
         "failed": "Failed",
         "skipped": "Skipped"
@@ -1696,7 +1700,8 @@
           "secret_invalid": "channel secret is not a valid header value",
           "client_unavailable": "the webhook client could not be built",
           "no_channel": "no channel configured",
-          "channel_disabled": "channel disabled"
+          "channel_disabled": "channel disabled",
+          "delivery_pending": "delivery in progress"
         },
         "ruleError": {
           "clickhouse_not_configured": "alert evaluation requires CLICKHOUSE_URL",
@@ -2775,6 +2780,8 @@
         "passwordHint": "Members sign in with an email and a password. Turning this off needs an enabled identity provider first — the control plane refuses it otherwise.",
         "ssoLabel": "Single sign-on",
         "ssoHint": "Members sign in through a registered identity provider. The sign-in screen shows one button per enabled provider.",
+        "ssoNoProvider": "No identity provider is registered yet, so single sign-on has nothing to sign in through. Add one under Identity providers below.",
+        "ssoNoEnabledProvider": "Every identity provider is disabled, so single sign-on has nothing to sign in through until one is enabled.",
         "save": "Save policy",
         "bothOff": "At least one sign-in method has to stay on — both off is an outage, not a policy.",
         "mfaLabel": "Second factor",
@@ -3870,7 +3877,9 @@
         "requestIdRefused": "'{{name}}' carries a credential, session state or message framing, so it cannot be the request ID header.",
         "badRequestIdHeader": "Request ID header is not a valid header name."
       },
-      "injectedValuePlaceholder": "value"
+      "injectedValuePlaceholder": "value",
+      "unsaved": "Unsaved changes. Gateways keep the saved settings until you save.",
+      "savedDetail": "Client settings updated. Gateways apply them on their next config poll, without a restart."
     },
     "security": {
       "allowedOrigins": "Allowed origins",
@@ -4210,7 +4219,12 @@
         "chat": "Chat requests resolve to",
         "decision": "Decision requests resolve to",
         "embeddings": "Embedding requests resolve to"
-      }
+      },
+      "pinned": "This kind is pinned to {{base}}. Use that base, or allow a custom base URL below."
+    },
+    "customBase": {
+      "title": "Allow a custom base URL",
+      "hint": "This kind is pinned to {{base}}, so an edit cannot send its key elsewhere. Turn this on only for an egress proxy in front of the vendor, an endpoint that re-implements its API, or a local fake: the provider's key is then sent to whatever host the base names."
     },
     "created": "{{name}} is created but not tested yet",
     "createdNext": "Test connection asks the upstream for its model list. Run it before a route depends on this provider.",
@@ -4639,7 +4653,7 @@
       "subtitle": "Uptime and error-budget burn per provider and target, measured against the SLA."
     },
     "pricing-overrides": {
-      "title": "Pricing Overrides",
+      "title": "Model Prices",
       "subtitle": "Deployment-wide per-model prices for cost tracking."
     },
     "model-settings": {

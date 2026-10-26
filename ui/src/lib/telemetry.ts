@@ -36,6 +36,17 @@ export interface RolterRuntimeConfig {
    * that cannot resolve — see `ui/src/lib/docs.ts` (#1164).
    */
   docsBaseUrl?: string;
+  /**
+   * The control plane's bound on one API request, in seconds; `0` means it has
+   * none. Absent on a control plane older than #3147, which bounds at 60 s.
+   */
+  requestTimeoutSecs?: number;
+  /**
+   * How often the gateways poll for a snapshot, in seconds, which is how long a
+   * freshly minted key can take to reach them (#1916). Absent on an older
+   * control plane, which leaves the gateway default of 5 s.
+   */
+  snapshotPollSecs?: number;
 }
 
 /**

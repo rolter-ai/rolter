@@ -160,9 +160,53 @@ export function isEndpointNotMounted(error: unknown): boolean {
   );
 }
 
+/**
+ * How long the dashboard waits on one control-plane call before giving up, in
+ * milliseconds, or `undefined` for no limit (#3147).
+ *
+ * The control plane answers `504 request_timeout` once a request outlives its
+ * own bound (`ROLTER_REQUEST_TIMEOUT_SECS`, 60 s by default), so this waits a
+ * little longer than that: the server's coded answer is the one to show, and
+ * the client's own abort only covers a connection that never answers at all
+ * (a proxy holding it open, a control plane that died mid-request).
+ */
+export function clientRequestBoundMs(
+  config: { requestTimeoutSecs?: number } | undefined = typeof window === "undefined"
+    ? undefined
+    : window.__ROLTER_CONFIG__,
+): number | undefined {
+  const secs = config?.requestTimeoutSecs ?? DEFAULT_SERVER_BOUND_SECS;
+  if (!Number.isFinite(secs) || secs <= 0) return undefined;
+  return secs * 1000 + CLIENT_BOUND_GRACE_MS;
+}
+
+/** the control plane's default bound, assumed when the served page names none */
+const DEFAULT_SERVER_BOUND_SECS = 60;
+/** how much longer than the server the dashboard waits before aborting */
+const CLIENT_BOUND_GRACE_MS = 5_000;
+
+/// `fetch`, abandoned with a coded `request_timeout` once the control plane has
+/// had longer than its own bound to answer
+async function boundedFetch(url: string, init: RequestInit = {}): Promise<Response> {
+  const bound = clientRequestBoundMs();
+  if (bound === undefined) return fetch(url, init);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), bound);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new ApiError(i18n.t("errors.api.codes.request_timeout"), 504, "request_timeout");
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function getJson<T>(url: string): Promise<T> {
   const headers = authHeaders();
-  const res = await fetch(url, { headers });
+  const res = await boundedFetch(url, { headers });
   if (!res.ok) {
     const err = await apiError(res);
     noteUnauthorized(url, "Authorization" in headers, err);
@@ -176,7 +220,7 @@ async function getJson<T>(url: string): Promise<T> {
 /// parsing it would only be a step towards printing it again
 async function getText(url: string): Promise<string> {
   const headers = authHeaders();
-  const res = await fetch(url, { headers });
+  const res = await boundedFetch(url, { headers });
   if (!res.ok) {
     const err = await apiError(res);
     noteUnauthorized(url, "Authorization" in headers, err);
@@ -225,7 +269,7 @@ async function sendJson<T>(
   body?: unknown,
 ): Promise<T> {
   const auth = authHeaders();
-  const res = await fetch(url, {
+  const res = await boundedFetch(url, {
     method,
     headers: {
       ...auth,
@@ -264,7 +308,7 @@ async function getAnalytics<T>(
   // is a genuine not-found the caller should surface as such
   { notFoundIsUnavailable = true }: { notFoundIsUnavailable?: boolean } = {},
 ): Promise<T> {
-  const res = await fetch(url, { headers: authHeaders() });
+  const res = await boundedFetch(url, { headers: authHeaders() });
   if (!res.ok) {
     const err = await apiError(res);
     if (res.status === 503 || (res.status === 404 && notFoundIsUnavailable)) {
@@ -864,6 +908,12 @@ export interface ProviderKindInfo {
   request_path: string;
   /** the lowercase header the key travels in; `authorization` is a bearer token */
   auth_header: string;
+  /**
+   * the base a hosted kind is pinned to unless the provider opts out with
+   * `allow_custom_api_base`; `null`, or absent from an older control plane, for
+   * a kind with no pin (#1133)
+   */
+  pinned_api_base?: string | null;
 }
 
 export function fetchProviderKinds(): Promise<ProviderKindInfo[]> {
@@ -1474,6 +1524,11 @@ export interface ProviderRow {
   /** the LMCache source `lmcache_aware` reads; `null` when none is set */
   lmcache?: LmCacheConfig | null;
   /**
+   * Whether the provider opted out of its kind's host pin, so `api_base` may
+   * name another host; absent from a control plane older than #1133
+   */
+  allow_custom_api_base?: boolean;
+  /**
    * Whether a sealed key is stored for the provider. An `api_key_env` does not
    * count, and the key itself is never returned. Absent from a control plane
    * that predates the field
@@ -1497,6 +1552,8 @@ export interface CreateProviderInput {
   kv_events?: Partial<KvEventsConfig> & Pick<KvEventsConfig, "endpoint">;
   /** omit for no LMCache source; keys other than `endpoint` take their defaults */
   lmcache?: Partial<LmCacheConfig> & Pick<LmCacheConfig, "endpoint">;
+  /** opt out of the kind's host pin; omit for the pinned default */
+  allow_custom_api_base?: boolean;
 }
 
 export interface UpdateProviderInput {
@@ -1519,6 +1576,8 @@ export interface UpdateProviderInput {
   kv_events?: (Partial<KvEventsConfig> & Pick<KvEventsConfig, "endpoint">) | null;
   /** omit to keep; `null` clears the source; an object replaces the whole setting */
   lmcache?: (Partial<LmCacheConfig> & Pick<LmCacheConfig, "endpoint">) | null;
+  /** omit to keep */
+  allow_custom_api_base?: boolean;
 }
 
 /**
@@ -2731,7 +2790,7 @@ export interface SsoExchangeResponse extends LoginResponse {
  * `code == "invalid_exchange_code"`.
  */
 export async function exchangeSsoCode(code: string): Promise<SsoExchangeResponse> {
-  const res = await fetch("/auth/sso/exchange", {
+  const res = await boundedFetch("/auth/sso/exchange", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ code }),
@@ -3672,7 +3731,7 @@ export async function fetchAuditLogExport(
   const base = scope === "deployment" ? "/api/v1/audit-log" : `/api/v1/orgs/${scope}/audit-log`;
   const url = `${base}/export${auditLogQueryString({ ...query, format })}`;
   const headers = authHeaders();
-  const res = await fetch(url, { headers });
+  const res = await boundedFetch(url, { headers });
   if (!res.ok) {
     const err = await apiError(res);
     noteUnauthorized(url, "Authorization" in headers, err);

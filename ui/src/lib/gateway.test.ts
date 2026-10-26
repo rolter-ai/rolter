@@ -12,6 +12,8 @@ import {
   getPlaygroundKeyState,
   isKeyRefusal,
   keyPropagationDelay,
+  keyPropagationFor,
+  mintedKeyRetryDelay,
   realtimeUrl,
   setKeyPropagationForTests,
   setPlaygroundKey,
@@ -82,6 +84,7 @@ describe("the playground key", () => {
       key: "",
       expiresAt: null,
       minted: false,
+      mintedAt: null,
       models: [],
     });
   });
@@ -99,6 +102,7 @@ describe("the playground key", () => {
       key: "sk-pasted",
       expiresAt: null,
       minted: false,
+      mintedAt: null,
       models: [],
     });
   });
@@ -224,6 +228,37 @@ describe("waiting for a minted key to reach the gateway", () => {
     expect(awaitingMintedKey(2, unauthorized)).toBe(false);
     setKeyPropagationForTests(null);
     expect(keyPropagationDelay(0)).toBe(250);
+  });
+});
+
+// #1916: the wait follows the deployment's poll interval, and a refused chat
+// message on a key minted inside that window is sent once more
+describe("sizing the wait from the snapshot poll interval", () => {
+  afterEach(() => setKeyPropagationForTests(null));
+
+  it("waits two poll intervals, never less than the 5 s default's ten seconds", () => {
+    expect(keyPropagationFor(undefined).budgetMs).toBe(10_000);
+    expect(keyPropagationFor(5).budgetMs).toBe(10_000);
+    expect(keyPropagationFor(2).budgetMs).toBe(10_000);
+    expect(keyPropagationFor(30).budgetMs).toBe(60_000);
+    expect(keyPropagationFor(0).budgetMs).toBe(10_000);
+  });
+
+  it("retries a minted key's refusal inside the window, and nothing else", () => {
+    setKeyPropagationForTests({ budgetMs: 10_000 });
+    const mintedAt = 1_000_000;
+    expect(mintedKeyRetryDelay({ minted: true, mintedAt }, mintedAt + 1_000)).toBe(5_000);
+    expect(mintedKeyRetryDelay({ minted: true, mintedAt }, mintedAt + 8_000)).toBe(2_000);
+    expect(mintedKeyRetryDelay({ minted: true, mintedAt }, mintedAt + 10_000)).toBeNull();
+    expect(mintedKeyRetryDelay({ minted: false, mintedAt: null }, mintedAt)).toBeNull();
+  });
+
+  it("stamps a minted key, and not a pasted one", () => {
+    setPlaygroundKey("sk-minted", { minted: true });
+    expect(getPlaygroundKeyState().mintedAt).not.toBeNull();
+    setPlaygroundKey("sk-pasted");
+    expect(getPlaygroundKeyState().mintedAt).toBeNull();
+    setPlaygroundKey("");
   });
 });
 
