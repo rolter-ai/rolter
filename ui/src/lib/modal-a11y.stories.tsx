@@ -409,60 +409,6 @@ export const ModalsClosingOutOfOrderRestoreThePage: Story = {
   },
 };
 
-/** the logs filter rail's shape: the panel is the fixed box, its scrim beside it */
-function Rail() {
-  const [open, setOpen] = React.useState(false);
-  return (
-    <div className="flex flex-col items-start gap-3">
-      <button type="button" onClick={() => setOpen(true)}>
-        open the filters
-      </button>
-      <Modal
-        open={open}
-        onClose={() => setOpen(false)}
-        label="Filters"
-        className="fixed inset-y-0 left-0 z-50 w-[240px]"
-      >
-        <button type="button">errors only</button>
-      </Modal>
-      {open && (
-        <div
-          data-testid="scrim"
-          aria-hidden
-          className="fixed inset-0 z-40 bg-black/50"
-          onClick={() => setOpen(false)}
-        />
-      )}
-    </div>
-  );
-}
-
-/**
- * A scrim beside the panel rather than around it stays live. Inert hit-tests
- * as `pointer-events: none`, so an inert scrim would pass a real click through
- * to the page and the dismissal it promises would stop working.
- */
-export const AScrimBesideThePanelStaysLive: Story = {
-  render: () => <Rail />,
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    const view = canvasElement.ownerDocument.defaultView as Window;
-    await userEvent.click(canvas.getByRole("button", { name: "open the filters" }));
-    const scrim = await canvas.findByTestId("scrim");
-    await waitFor(() => expect(canvas.getByRole("button", { name: "errors only" })).toHaveFocus());
-    await expect(scrim.closest("[inert]")).toBeNull();
-    await expect(
-      canvas.getByRole("button", { name: "open the filters" }).closest("[inert]"),
-    ).not.toBeNull();
-    // what a real pointer would land on, not what a synthetic click is sent to
-    await expect(
-      canvasElement.ownerDocument.elementFromPoint(view.innerWidth - 20, view.innerHeight / 2),
-    ).toBe(scrim);
-    await userEvent.click(scrim);
-    await waitFor(() => expect(canvas.queryByRole("dialog")).toBeNull());
-  },
-};
-
 /**
  * The toast stack is drawn above every modal and holds live regions, which
  * announce nothing from inside an inert subtree. It opts out with

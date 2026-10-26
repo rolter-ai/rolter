@@ -68,12 +68,6 @@ function layerOf(panel: HTMLElement): HTMLElement {
   return panel;
 }
 
-// a scrim drawn beside the layer rather than inside it (the logs filter rail)
-// stays live too: inert would pass its dismissing click through to the page
-function isScrim(el: Element): boolean {
-  return el.getAttribute("aria-hidden") === "true" && el.querySelector(FOCUSABLE) === null;
-}
-
 // every element that is neither kept nor an ancestor of something kept: the
 // siblings of each kept element and of each of its ancestors, up to <body>
 function outside(keep: Set<Element>): HTMLElement[] {
@@ -102,9 +96,6 @@ function syncInert() {
   const want = new Set<HTMLElement>();
   if (top) {
     const keep = new Set<Element>([top.layer, ...document.querySelectorAll(ABOVE_MODALS)]);
-    for (const sibling of Array.from(top.layer.parentElement?.children ?? [])) {
-      if (isScrim(sibling)) keep.add(sibling);
-    }
     for (const el of outside(keep)) want.add(el);
   }
   for (const el of madeInert) {
