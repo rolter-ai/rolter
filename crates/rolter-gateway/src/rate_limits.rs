@@ -229,7 +229,7 @@ impl RateLimiter {
         match ReconnectingRedis::new(redis_url, RedisConsumer::RateLimits.label()) {
             Ok(redis) => Self { redis: Some(redis) },
             Err(err) => {
-                tracing::warn!(error = %err, "invalid redis url; rate limiting disabled");
+                tracing::warn!(error = %rolter_core::redact::redact_urls_in_text(&err.to_string()), "invalid redis url; rate limiting disabled");
                 Self::disabled()
             }
         }
@@ -361,7 +361,7 @@ impl RateLimiter {
         let verdict: (usize, u8) = match invocation.invoke_async(&mut conn).await {
             Ok(verdict) => verdict,
             Err(err) => {
-                tracing::warn!(error = %err, "rate-limit admission failed; failing open");
+                tracing::warn!(error = %rolter_core::redact::redact_urls_in_text(&err.to_string()), "rate-limit admission failed; failing open");
                 redis.stats().on_fail_open();
                 return None;
             }
@@ -389,7 +389,7 @@ impl RateLimiter {
             .expire(&key, BUCKET_TTL_SECS as i64)
             .ignore();
         if let Err(err) = pipe.query_async::<()>(&mut conn).await {
-            tracing::warn!(error = %err, "failed to record route token rate-limit count");
+            tracing::warn!(error = %rolter_core::redact::redact_urls_in_text(&err.to_string()), "failed to record route token rate-limit count");
         }
     }
 
@@ -424,7 +424,7 @@ impl RateLimiter {
         }
         if has_tok {
             if let Err(err) = pipe.query_async::<()>(&mut conn).await {
-                tracing::warn!(error = %err, "failed to record token rate-limit count");
+                tracing::warn!(error = %rolter_core::redact::redact_urls_in_text(&err.to_string()), "failed to record token rate-limit count");
             }
         }
     }
@@ -510,6 +510,23 @@ mod tests {
     fn bucket_key_partitions_by_scope_kind_and_window() {
         let l = limit(BudgetScope::Key, "vk-9", Some(60), None);
         assert_eq!(bucket_key(&l, "req", 12345), "rolter:rl:key:vk-9:req:12345");
+    }
+
+    #[test]
+    fn invalid_redis_url_error_message_is_redacted() {
+        let secret = format!("pw-{}", uuid::Uuid::new_v4());
+        let raw_err_msg = format!(
+            "failed to connect to redis://user:{secret}@127.0.0.1:6379/0: connection refused"
+        );
+        let redacted = rolter_core::redact::redact_urls_in_text(&raw_err_msg);
+        assert!(
+            !redacted.contains(&secret),
+            "secret password must be redacted from error message"
+        );
+        assert!(
+            redacted.contains("redis://***@127.0.0.1:6379/0"),
+            "redacted message must mask credentials"
+        );
     }
 
     #[tokio::test]
