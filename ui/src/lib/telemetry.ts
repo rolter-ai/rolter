@@ -41,6 +41,12 @@ export interface RolterRuntimeConfig {
    * none. Absent on a control plane older than #3147, which bounds at 60 s.
    */
   requestTimeoutSecs?: number;
+  /**
+   * How often the gateways poll for a snapshot, in seconds, which is how long a
+   * freshly minted key can take to reach them (#1916). Absent on an older
+   * control plane, which leaves the gateway default of 5 s.
+   */
+  snapshotPollSecs?: number;
 }
 
 /**

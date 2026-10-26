@@ -31,10 +31,18 @@ export interface PlaygroundKeyState {
   expiresAt: string | null;
   /** rolter minted this key for this sitting, rather than a person pasting it */
   minted: boolean;
+  /** when rolter minted it, by this tab's clock; `null` for a pasted key */
+  mintedAt: number | null;
   models: readonly string[];
 }
 
-const NO_KEY: PlaygroundKeyState = { key: "", expiresAt: null, minted: false, models: [] };
+const NO_KEY: PlaygroundKeyState = {
+  key: "",
+  expiresAt: null,
+  minted: false,
+  mintedAt: null,
+  models: [],
+};
 
 // deliberately a module variable and not `localStorage` (#944): a gateway
 // credential written to browser storage outlives the sitting that needed it and
@@ -69,6 +77,7 @@ export function setPlaygroundKey(
         key,
         expiresAt: options.expiresAt ?? null,
         minted: options.minted ?? false,
+        mintedAt: options.minted ? Date.now() : null,
         models: options.models ?? [],
       }
     : NO_KEY;
@@ -208,17 +217,29 @@ export interface KeyPropagationTiming {
   maxDelayMs: number;
 }
 
-// the gateway learns about a new key from its snapshot poll, every 5 s by
-// default (`ROLTER_SNAPSHOT_POLL_SECS`). one interval is the worst case when
-// the key lands just after a poll; the second is room for a poll that was slow
-// to answer
-const KEY_PROPAGATION: KeyPropagationTiming = {
-  budgetMs: 10_000,
-  firstDelayMs: 250,
-  maxDelayMs: 2_000,
-};
+/** the gateway's own default for `ROLTER_SNAPSHOT_POLL_SECS` */
+const DEFAULT_POLL_SECS = 5;
 
-let keyPropagation: KeyPropagationTiming = KEY_PROPAGATION;
+/**
+ * The backoff for a deployment whose gateways poll every `pollSecs` (#1916).
+ *
+ * The gateway learns about a new key from its snapshot poll. One interval is
+ * the worst case when the key lands just after a poll; the second is room for
+ * a poll that was slow to answer. A fixed 10 s, sized for the 5 s default,
+ * gave a deployment with a longer interval the #1853 race back on every load.
+ */
+export function keyPropagationFor(pollSecs: number | undefined): KeyPropagationTiming {
+  const secs =
+    pollSecs !== undefined && Number.isFinite(pollSecs) && pollSecs > 0
+      ? pollSecs
+      : DEFAULT_POLL_SECS;
+  return { budgetMs: Math.max(10_000, 2 * secs * 1000), firstDelayMs: 250, maxDelayMs: 2_000 };
+}
+
+const runtimePollSecs = () =>
+  typeof window === "undefined" ? undefined : window.__ROLTER_CONFIG__?.snapshotPollSecs;
+
+let keyPropagation: KeyPropagationTiming = keyPropagationFor(runtimePollSecs());
 
 /**
  * How long to wait before asking the gateway again, after `failures + 1`
@@ -253,7 +274,30 @@ export function awaitingMintedKey(failures: number, error: unknown): boolean {
  * reach the "never accepted" fallback without waiting out ten real seconds.
  */
 export function setKeyPropagationForTests(timing: Partial<KeyPropagationTiming> | null): void {
-  keyPropagation = timing ? { ...KEY_PROPAGATION, ...timing } : KEY_PROPAGATION;
+  const base = keyPropagationFor(runtimePollSecs());
+  keyPropagation = timing ? { ...base, ...timing } : base;
+}
+
+/**
+ * How long to wait before sending a refused chat message once more, or `null`
+ * when the refusal stands (#1916).
+ *
+ * The model list answering is no proof the key is live everywhere: behind a
+ * load balancer the first message can reach a replica that has not polled
+ * since the mint, and get a `401`. Within the propagation window of a key
+ * rolter minted, that refusal is waited out once — for one more poll, or what
+ * is left of the window — rather than shown. A pasted key, or one minted
+ * longer ago than the window, is refused for a reason waiting will not fix.
+ */
+export function mintedKeyRetryDelay(
+  key: Pick<PlaygroundKeyState, "minted" | "mintedAt">,
+  now: number = Date.now(),
+): number | null {
+  if (!key.minted || key.mintedAt === null) return null;
+  const left = keyPropagation.budgetMs - (now - key.mintedAt);
+  if (left <= 0) return null;
+  const poll = keyPropagation.budgetMs / 2;
+  return Math.max(keyPropagation.firstDelayMs, Math.min(poll, left));
 }
 
 /** One addressable id from the gateway's own catalogue. */

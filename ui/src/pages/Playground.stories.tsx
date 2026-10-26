@@ -1205,6 +1205,59 @@ export const FailedSendShowsTheError: Story = {
 };
 
 /**
+ * #1916: the model list answering from one gateway replica is no proof the key
+ * is live on all of them. Behind a load balancer the first message can reach a
+ * replica that has not polled since the mint and get a 401; inside the key's
+ * propagation window that refusal is sent once more instead of shown.
+ */
+const lateReplica = recording(
+  deployment(async () => json(minted()), undefined, undefined, {
+    chat: (_, n) => (n === 0 ? unknownKey() : completion("Through the replica that had polled.")),
+  }),
+);
+
+export const ARefusedFirstMessageOnAFreshKeyIsSentAgain: Story = {
+  beforeEach: shortKeyWait,
+  render: () => <Screen fetchStub={lateReplica.stub} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const composer = await readyComposer(canvas);
+    await sendMessage(canvas, composer, "Hello");
+    await canvas.findByText("Through the replica that had polled.");
+    await expect(canvas.queryByRole("alert")).toBeNull();
+    const [refused, retried] = chatsIn(lateReplica.calls);
+    await expect(retried.messages).toEqual(refused.messages);
+    await expect(chatsIn(lateReplica.calls)).toHaveLength(2);
+  },
+};
+
+/**
+ * Past the window the refusal stands: a key the gateway still turns down after
+ * every replica has had time to poll is turned down for a reason a retry will
+ * not fix, so it is shown at once and sent only the once.
+ */
+const staleRefusal = recording(
+  deployment(async () => json(minted()), undefined, undefined, {
+    chat: () => unknownKey(),
+  }),
+);
+
+export const ARefusalPastThePropagationWindowIsShown: Story = {
+  beforeEach: () => {
+    setKeyPropagationForTests({ budgetMs: 1, firstDelayMs: 1, maxDelayMs: 1 });
+    return () => setKeyPropagationForTests(null);
+  },
+  render: () => <Screen fetchStub={staleRefusal.stub} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const composer = await readyComposer(canvas);
+    await sendMessage(canvas, composer, "Hello");
+    await canvas.findByRole("alert");
+    await expect(chatsIn(staleRefusal.calls)).toHaveLength(1);
+  },
+};
+
+/**
  * A message typed while a reply was on its way is not lost when that reply
  * fails: the failed message comes back ahead of it, the order the two were
  * written in (#2058).

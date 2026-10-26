@@ -53,6 +53,10 @@ pub(crate) struct UiRuntimeConfig {
     /// dashboard gives up just after the server would have (#3147)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub request_timeout_secs: Option<u64>,
+    /// the gateways' snapshot poll interval, so the Playground waits long
+    /// enough for a key it just minted to reach them (#1916)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snapshot_poll_secs: Option<u64>,
 }
 
 impl UiRuntimeConfig {
@@ -115,6 +119,7 @@ mod tests {
             open_mode: false,
             docs_base_url: None,
             request_timeout_secs: None,
+            snapshot_poll_secs: None,
         }
     }
 
@@ -130,6 +135,15 @@ mod tests {
             ..Default::default()
         };
         assert!(inject("<head></head>", &unbounded).contains("\"requestTimeoutSecs\":0"));
+    }
+
+    #[test]
+    fn the_snapshot_poll_interval_reaches_the_dashboard() {
+        let polled = UiRuntimeConfig {
+            snapshot_poll_secs: Some(30),
+            ..Default::default()
+        };
+        assert!(inject("<head></head>", &polled).contains("\"snapshotPollSecs\":30"));
     }
 
     #[test]

@@ -324,6 +324,13 @@ pub struct Args {
     /// the database bounds so those answer first with their own code
     #[arg(long, env = "ROLTER_REQUEST_TIMEOUT_SECS", default_value_t = 60)]
     pub request_timeout_secs: u64,
+    /// how often the gateways poll for a snapshot, in seconds: the same
+    /// variable the gateway reads, so a deployment that sets it once for both
+    /// tells the dashboard how long a freshly minted key takes to reach them
+    /// (#1916). Only sizes the Playground's wait; the gateways' own value is
+    /// what governs the poll
+    #[arg(long, env = "ROLTER_SNAPSHOT_POLL_SECS", default_value_t = 5)]
+    pub snapshot_poll_secs: u64,
     /// acknowledge running with no `--admin-token` on a non-loopback bind.
     /// Without it the control plane refuses to start in that combination,
     /// because every request would be served as superadmin with no credential
@@ -360,6 +367,7 @@ impl Default for Args {
             ui_docs_base_url: None,
             gateway_url: "http://localhost:4000".to_string(),
             request_timeout_secs: 60,
+            snapshot_poll_secs: 5,
             config: None,
             #[cfg(feature = "postgres")]
             database_url: None,
@@ -863,6 +871,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         open_mode: open_mode.is_open(),
         docs_base_url: args.ui_docs_base_url.clone(),
         request_timeout_secs: Some(args.request_timeout_secs),
+        snapshot_poll_secs: Some(args.snapshot_poll_secs),
     };
     if ui_runtime.is_configured() {
         tracing::info!(

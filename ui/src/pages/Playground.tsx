@@ -55,6 +55,7 @@ import {
   getPlaygroundKeyState,
   isKeyRefusal,
   keyPropagationDelay,
+  mintedKeyRetryDelay,
   realtimeUrl,
   setPlaygroundKey,
   streamChatCompletion,
@@ -1031,8 +1032,8 @@ function ChatColumn({
       m.map((msg, i) => (i === m.length - 1 ? { role: "assistant" as const, ...patch } : msg));
     let received = "";
 
-    try {
-      const result = await streamChatCompletion(
+    const ask = () =>
+      streamChatCompletion(
         model,
         thread.map((m) => chatMessage(m, multimodal)),
         (text) => {
@@ -1041,6 +1042,23 @@ function ChatColumn({
         },
         controller.signal,
       );
+
+    try {
+      let result: Awaited<ReturnType<typeof ask>>;
+      try {
+        result = await ask();
+      } catch (e) {
+        // a key minted moments ago can be refused by a replica that has not
+        // polled since: that refusal is waited out once, inside the window the
+        // key needs to propagate, rather than shown (#1916)
+        const delay =
+          !received && !stopped.current && isKeyRefusal(e)
+            ? mintedKeyRetryDelay(getPlaygroundKeyState())
+            : null;
+        if (delay === null) throw e;
+        await pause(delay, controller.signal);
+        result = await ask();
+      }
       const tokens = result.usage?.completion_tokens ?? result.usage?.total_tokens;
       setMsgs(
         reply({
@@ -2025,4 +2043,20 @@ export default function Playground() {
       </PageBody>
     </SendGateContext.Provider>
   );
+}
+
+/** Wait `ms`, or reject the moment `signal` aborts, so Stop is not held up by it. */
+function pause(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) return reject(new DOMException("aborted", "AbortError"));
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new DOMException("aborted", "AbortError"));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
 }
