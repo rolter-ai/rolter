@@ -112,6 +112,8 @@ async function expectPill(
   await expect(within(pill).getByText(label)).toHaveClass(tone.label);
   if (pulse) await expect(dot).toHaveClass("rl-pulse");
   else await expect(dot).not.toHaveClass("rl-pulse");
+  // a status is words, not something to paste: Geist, never Geist Mono (#2015)
+  await expect(getComputedStyle(pill).fontFamily).not.toMatch(/Mono/);
   return pill;
 }
 

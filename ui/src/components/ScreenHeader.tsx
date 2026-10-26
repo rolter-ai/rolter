@@ -26,6 +26,8 @@ const TONE: Record<GatewayHealth, { dot: string; label: string }> = {
 };
 
 // what the gateway's own `/readyz` says, polled through the `/gw` proxy (#1973).
+// set in Geist, not Geist Mono: "gateway healthy" is a sentence nobody pastes
+// anywhere, and mono is kept for what someone would copy (#2015)
 // it breathes only while the latest check came back healthy; an answer held
 // through a failed check keeps its words but goes still, and the title says
 // when it arrived
@@ -45,7 +47,7 @@ function GatewayPill() {
     <span
       role="status"
       title={detail}
-      className="inline-flex items-center gap-[7px] whitespace-nowrap rounded-full border border-[color:var(--border-subtle)] px-2.5 py-[5px] font-mono text-xs"
+      className="inline-flex items-center gap-[7px] whitespace-nowrap rounded-full border border-[color:var(--border-subtle)] px-2.5 py-[5px] text-xs"
     >
       <span
         aria-hidden

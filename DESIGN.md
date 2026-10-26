@@ -445,6 +445,23 @@ The mono uppercase `Pill` (modality, origin and strategy tags) takes the same to
 `HttpStatusBadge`: 2xx and 3xx success, 4xx warning, 5xx and no answer danger. A colour literal
 (`rgba(…)`) in a component fails `ui/scripts/status-tints.test.ts` (#1989).
 
+### Status pill
+
+The gateway pill in every screen header says what the gateway's own `/readyz` answered, in one of
+five states: checking, healthy, degraded, down and unknown. It is a full-round hairline pill with a
+7px dot and a 12px label (`ui/src/components/ScreenHeader.tsx`, the states in
+`ui/src/lib/gateway-health.ts`).
+
+- **The dot** takes the status fill (`--status-*`); checking and unknown use `--text-subtle`, the
+  same as the Logs screen's paused dot. It breathes (`.rl-pulse`) only while the latest check came
+  back healthy.
+- **The label** takes the `-text` half only for degraded and down. Healthy keeps a muted label: it
+  is the resting state on every screen, the green dot already says it, and a green line of text on
+  every header would spend colour on the state that needs no second look.
+- **The face** is Geist, not Geist Mono. "gateway healthy" is a status, not something anyone pastes,
+  so the Copyable-Is-Mono Rule does not reach it, the same call as the Logs streaming indicator
+  (#2015).
+
 ### Tables
 
 Two header shapes ship. `Table` has a Zinc Band header row in 12px medium Muted Zinc; the
