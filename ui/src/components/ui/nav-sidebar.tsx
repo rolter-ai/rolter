@@ -277,7 +277,7 @@ function GroupFlyout({
     >
       <div
         id={headingId}
-        className="px-2 py-1.5 text-[0.6875rem] uppercase tracking-[0.08em] text-[color:var(--text-subtle)]"
+        className="px-2 py-1.5 text-2xs uppercase tracking-[0.08em] text-[color:var(--text-subtle)]"
       >
         {item.label}
       </div>
@@ -292,7 +292,7 @@ function GroupFlyout({
           {c.icon}
           <NavLabel item={c} />
           {c.count != null && (
-            <span className="ml-auto font-mono text-[0.6875rem] text-[color:var(--text-subtle)]">
+            <span className="ml-auto font-mono text-2xs text-[color:var(--text-subtle)]">
               {c.count}
             </span>
           )}
@@ -555,7 +555,7 @@ export function NavSidebar({
           )}
           {!folded && <NavLabel item={it} />}
           {!folded && it.count != null && (
-            <span className="ml-auto font-mono text-[0.6875rem] text-[color:var(--text-subtle)]">
+            <span className="ml-auto font-mono text-2xs text-[color:var(--text-subtle)]">
               {it.count}
             </span>
           )}
@@ -602,7 +602,7 @@ export function NavSidebar({
       return (
         <div className="flex flex-col gap-0.5" key={g.label || gi}>
           {g.label && !folded && (
-            <div className="px-2 py-1.5 text-[0.6875rem] uppercase tracking-[0.08em] text-[color:var(--text-subtle)]">
+            <div className="px-2 py-1.5 text-2xs uppercase tracking-[0.08em] text-[color:var(--text-subtle)]">
               {g.label}
             </div>
           )}
@@ -795,7 +795,7 @@ export function NavSidebar({
             )}
             {version && !folded && (
               <span className="ml-auto flex min-w-0 items-center gap-1.5 pr-1">
-                <span className="font-mono text-[0.6875rem] text-[color:var(--text-subtle)]">
+                <span className="font-mono text-2xs text-[color:var(--text-subtle)]">
                   {version}
                 </span>
                 {update && (
@@ -805,7 +805,7 @@ export function NavSidebar({
                     rel="noreferrer"
                     title={updateHint}
                     aria-label={updateHint}
-                    className="inline-flex min-w-0 items-center gap-1 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] px-1.5 py-px font-mono text-[0.625rem] text-foreground transition-colors hover:border-[color:var(--border-default)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    className="inline-flex min-w-0 items-center gap-1 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] px-1.5 py-px font-mono text-3xs text-foreground transition-colors hover:border-[color:var(--border-default)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                   >
                     <ArrowUpCircle aria-hidden="true" className="h-3 w-3 flex-none" />
                     <span className="truncate">
@@ -855,7 +855,7 @@ export function NavSidebar({
                     {user.name}
                   </span>
                   {user.role && (
-                    <span className="overflow-hidden text-ellipsis whitespace-nowrap text-[0.6875rem] text-muted-foreground">
+                    <span className="overflow-hidden text-ellipsis whitespace-nowrap text-2xs text-muted-foreground">
                       {user.role}
                     </span>
                   )}
@@ -898,7 +898,7 @@ export function NavSidebar({
         role="dialog"
         aria-modal="true"
         aria-label={t("shell.navLabel")}
-        className="rl-drawer-in relative flex h-full w-[min(280px,85vw)] max-w-full shadow-[14px_0_44px_rgba(0,0,0,0.42)] focus-visible:outline-none"
+        className="rl-drawer-in relative flex h-full w-[min(280px,85vw)] max-w-full shadow-drawer focus-visible:outline-none"
         {...a11y}
       >
         {rail}

@@ -164,7 +164,7 @@ function CellMark({
       aria-hidden
       title={title}
       className={cn(
-        "flex items-center justify-center rounded-[6px] border font-mono text-[10px] font-semibold",
+        "flex items-center justify-center rounded-[6px] border font-mono text-3xs font-semibold",
         className,
       )}
       style={CELL_STYLE[state]}
@@ -358,7 +358,7 @@ function MatrixTab({
             <tr>
               <th
                 scope="col"
-                className="px-1.5 py-[11px] align-bottom text-[0.6875rem] font-normal uppercase tracking-[0.07em] text-[color:var(--text-subtle)] first:pl-4 last:pr-4"
+                className="px-1.5 py-[11px] align-bottom text-2xs font-normal uppercase tracking-[0.07em] text-[color:var(--text-subtle)] first:pl-4 last:pr-4"
               >
                 {t("pages.rbac.resourceColumn")}
               </th>
@@ -373,7 +373,7 @@ function MatrixTab({
                       ? t(`shell.roles.${col.key}`, { defaultValue: col.label })
                       : col.label}
                   </span>
-                  <span className="mt-0.5 block text-[10px] text-[color:var(--text-subtle)]">
+                  <span className="mt-0.5 block text-3xs text-[color:var(--text-subtle)]">
                     {col.custom
                       ? t("pages.rbac.viaAccessProfiles")
                       : membershipsFailed
@@ -391,7 +391,7 @@ function MatrixTab({
                 <th
                   scope="rowgroup"
                   colSpan={cols.length + 1}
-                  className="px-4 py-2 text-[0.6875rem] font-normal uppercase tracking-[0.07em] text-[color:var(--text-subtle)]"
+                  className="px-4 py-2 text-2xs font-normal uppercase tracking-[0.07em] text-[color:var(--text-subtle)]"
                 >
                   {t(`pages.rbac.scopes.${scopeKey}`, { defaultValue: scopeKey })}
                 </th>
@@ -448,7 +448,7 @@ function MatrixTab({
       <div className="flex flex-wrap items-center gap-x-3.5 gap-y-2 text-xs text-[color:var(--text-subtle)]">
         {ACTIONS.map((action) => (
           <span key={action} className="inline-flex items-center gap-[5px]">
-            <span className="font-mono text-[10px] font-semibold text-[color:var(--text-secondary)]">
+            <span className="font-mono text-3xs font-semibold text-[color:var(--text-secondary)]">
               {t(`pages.rbac.letters.${action}`)}
             </span>
             {t(`pages.rbac.actions.${action}`)}
@@ -983,13 +983,13 @@ function GrantGrid({
         {byScope(matching).map(([scopeKey, group]) => (
           <div key={scopeKey}>
             <div className="sticky top-0 flex items-center gap-3 border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] px-3.5 py-1.5">
-              <span className="flex-1 text-[0.6875rem] uppercase tracking-[0.07em] text-[color:var(--text-subtle)]">
+              <span className="flex-1 text-2xs uppercase tracking-[0.07em] text-[color:var(--text-subtle)]">
                 {t(`pages.rbac.scopes.${scopeKey}`, { defaultValue: scopeKey })}
               </span>
               {ACTIONS.map((action) => (
                 <span
                   key={action}
-                  className="w-6 text-center font-mono text-[0.6875rem] text-[color:var(--text-subtle)]"
+                  className="w-6 text-center font-mono text-2xs text-[color:var(--text-subtle)]"
                 >
                   {t(`pages.rbac.letters.${action}`)}
                 </span>

@@ -249,7 +249,7 @@ export default function Teams() {
                       <Skeleton width={24} height={16} />
                     )}
                   </div>
-                  <div className="text-[0.6875rem] text-[color:var(--text-subtle)]">
+                  <div className="text-2xs text-[color:var(--text-subtle)]">
                     {t("pages.teams.membersCaption")}
                   </div>
                 </div>

@@ -993,7 +993,7 @@ function DecoratorEditor({
         {decorators.map((decorator, index) => (
           <article key={index} className="py-3">
             <div className="mb-2 flex flex-wrap items-center gap-2">
-              <span className="font-mono text-[0.6875rem] text-[color:var(--text-subtle)]">
+              <span className="font-mono text-2xs text-[color:var(--text-subtle)]">
                 {String(index + 1).padStart(2, "0")}
               </span>
               <Combobox
@@ -1234,7 +1234,7 @@ function PreviewPanel({
                   content={resolved(decorator.content)}
                 />
               ))}
-            <div className="flex items-center gap-2 py-1 text-[0.6875rem] uppercase tracking-[0.12em] text-[color:var(--text-subtle)]">
+            <div className="flex items-center gap-2 py-1 text-2xs uppercase tracking-[0.12em] text-[color:var(--text-subtle)]">
               <span className="h-px flex-1 bg-[color:var(--border-subtle)]" />
               <Braces className="h-3.5 w-3.5" />
               {t("pages.promptRepo.callerMessages")}
@@ -1297,7 +1297,7 @@ function PreviewMessage({
   return (
     <article className="border-b border-[color:var(--border-subtle)] py-2.5">
       <div className="flex items-center justify-between">
-        <span className="text-[0.6875rem] font-semibold uppercase tracking-[0.12em]">
+        <span className="text-2xs font-semibold uppercase tracking-[0.12em]">
           {decoratorRoleLabel(decorator.role, t)}
         </span>
         <Badge tone="outline">{decoratorPositionLabel(decorator.position, t)}</Badge>

@@ -318,11 +318,14 @@ prefixes, config keys, token counts, latency and money.
 - **Body compact** (400, 13px): the document default for everything that does not set its own size.
 - **Label** (500, 12px): `Table` headers, stat-card labels, helper lines.
 - **Overline** (400, 11px, uppercase, 0.07em tracking): `ListTable` headers and small eyebrows,
-  in Subtle Zinc. The `--text-2xs` token carries the size but is not registered with Tailwind yet,
-  so call sites spell it out (#1990).
-- **Badge** (500, 10px): badge text only.
+  in Subtle Zinc. `text-2xs` (`--text-2xs`, registered in `@theme`).
+- **Badge** (500, 10px): badge text only, and the floor for any text. `text-3xs` (`--text-3xs`).
 - **Mono** (400, 12px): identifiers and values inline with body text; sheet subtitles.
 - **Figure** (Geist Mono 500, 28px, tight tracking): the headline number of a stat card.
+  `text-figure` (`--text-figure`).
+
+A size not on this list is not spelled out as `text-[11px]` or `text-[0.625rem]`: it either is one
+of these steps, or it is a new step registered in the `@theme` block of `ui/src/index.css` (#1990).
 
 ### Named Rules
 
@@ -363,11 +366,14 @@ and hairline borders. Cards have no shadow. Shadows exist only on things that fl
 
 - **Overlay** (`box-shadow: 0 4px 12px rgba(0, 0, 0, 0.45)`, `--shadow-md`): the combobox list
   and chart tooltips.
-- **Lifted** (`box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55)`, `--shadow-lg`): meant for dialogs and
-  menus. Those currently use Tailwind's stock `shadow-lg` utility, which is not this token, and the
-  sign-in card rests on a `shadow-2xl`; both are tracked in #1990.
-- **Sheet edge** (`box-shadow: -14px 0 44px rgba(0, 0, 0, 0.42)`): the right-hand sheet over a 50%
-  black scrim, mirrored for the nav drawer below `md`.
+- **Lifted** (`box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55)`, `--shadow-lg`): dialogs and menus.
+- **Sheet edge** (`box-shadow: -14px 0 44px rgba(0, 0, 0, 0.42)`, `--shadow-sheet`): the right-hand
+  sheet over a 50% black scrim, mirrored as `--shadow-drawer` for the nav drawer and the Logs filter
+  rail below `md`.
+
+The four are registered in the `@theme` block of `ui/src/index.css`, so `shadow-md`, `shadow-lg`,
+`shadow-sheet` and `shadow-drawer` are these tokens and not Tailwind's stock shadows of the same
+name. The sign-in card rests on the page and carries no shadow (#1990).
 
 ### Named Rules
 

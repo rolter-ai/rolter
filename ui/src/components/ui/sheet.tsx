@@ -48,7 +48,7 @@ export function Sheet({ open, onOpenChange, onDismiss, children }: SheetProps) {
           // slide-over, it is the screen with a sliver of scrim (#1203)
           "rl-sheet-in relative flex h-full w-full flex-col sm:max-w-[580px]",
           "bg-[color:var(--surface-base)] sm:border-l sm:border-[color:var(--border-default)]",
-          "shadow-[-14px_0_44px_rgba(0,0,0,0.42)] focus-visible:outline-none",
+          "shadow-sheet focus-visible:outline-none",
         )}
         {...a11y}
       >

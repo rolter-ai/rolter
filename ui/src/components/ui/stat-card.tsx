@@ -79,7 +79,7 @@ export function StatCard({
       {...props}
     >
       <span className="flex items-center gap-1.5 text-xs text-muted-foreground">{label}</span>
-      <span className="font-mono text-[1.75rem] font-medium leading-none tracking-tight text-foreground">
+      <span className="font-mono text-figure font-medium leading-none tracking-tight text-foreground">
         {value}
         {unit && <span className="ml-0.5 text-base text-muted-foreground">{unit}</span>}
       </span>

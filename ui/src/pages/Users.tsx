@@ -383,7 +383,7 @@ export default function Users() {
             >
               <ListCell className="flex min-w-0 items-center gap-2.5">
                 <span
-                  className="flex h-8 w-8 flex-none items-center justify-center rounded-full font-mono text-[11px] font-semibold text-white"
+                  className="flex h-8 w-8 flex-none items-center justify-center rounded-full font-mono text-2xs font-semibold text-white"
                   style={{ background: avatarColor(user.id) }}
                 >
                   {initials}
@@ -1550,7 +1550,7 @@ function RoleGrants({
                 <OrgScopePill scope={orgScope} value={grant} />
               )}
               {fromIdp && (
-                <span className="text-[11px] text-[color:var(--text-subtle)]">
+                <span className="text-2xs text-[color:var(--text-subtle)]">
                   {t(grant.source === "sso" ? "pages.users.viaSso" : "pages.users.viaScim")}
                 </span>
               )}

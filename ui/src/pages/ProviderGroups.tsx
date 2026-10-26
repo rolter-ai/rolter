@@ -224,7 +224,7 @@ export default function ProviderGroups() {
                 <Badge tone="warning">{t("pages.providerGroups.noMembers")}</Badge>
               ) : (
                 group.members.map((m) => (
-                  <Badge key={m.provider_id} tone="outline" className="font-mono text-[11px]">
+                  <Badge key={m.provider_id} tone="outline" className="font-mono text-2xs">
                     {usesWeights(group.strategy) && m.weight !== 1
                       ? t("pages.providerGroups.memberWeight", {
                           name: m.provider_name,

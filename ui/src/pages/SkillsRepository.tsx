@@ -907,7 +907,7 @@ function SkillWorkbench({
                 placeholder="oci://registry.example/skills/support@sha256:…"
                 onChange={(event) => onDraftChange({ ...draft, contentRef: event.target.value })}
               />
-              <span className="mt-1 block text-[0.6875rem] font-normal text-muted-foreground">
+              <span className="mt-1 block text-2xs font-normal text-muted-foreground">
                 {t("pages.skillsRepo.contentRefHint")}
               </span>
             </label>
@@ -928,7 +928,7 @@ function SkillWorkbench({
               onChange={(event) => onDraftChange({ ...draft, metadataText: event.target.value })}
             />
           </label>
-          <p className="mt-2 flex items-center gap-1.5 text-[0.6875rem] text-muted-foreground">
+          <p className="mt-2 flex items-center gap-1.5 text-2xs text-muted-foreground">
             <ShieldCheck className="h-3.5 w-3.5" />
             {t("pages.skillsRepo.secretFieldsRejected")}
           </p>
@@ -1013,7 +1013,7 @@ function AccessFields({
       </label>
       <fieldset>
         <legend className="text-xs font-medium">{t("pages.skillsRepo.allowedTeams")}</legend>
-        <p className="mt-0.5 text-[0.6875rem] text-muted-foreground">
+        <p className="mt-0.5 text-2xs text-muted-foreground">
           {t("pages.skillsRepo.allowedTeamsHint")}
         </p>
         <div className="mt-2 grid gap-2 sm:grid-cols-2">

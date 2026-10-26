@@ -324,7 +324,7 @@ function McpRow({ row, onSelect }: { row: McpLogRow; onSelect: () => void }) {
           {mcpStatusLabel(row.status, t)}
         </Pill>
       </ListCell>
-      <ListCell className="truncate font-mono text-[0.6875rem] text-[color:var(--text-subtle)]">
+      <ListCell className="truncate font-mono text-2xs text-[color:var(--text-subtle)]">
         {row.transport}
       </ListCell>
       <ListCell className="text-right font-mono text-xs text-[color:var(--text-secondary)]">

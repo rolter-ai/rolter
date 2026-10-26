@@ -203,7 +203,7 @@ export const AnchoredPanel = React.forwardRef<HTMLDivElement, AnchoredPanelProps
         onBlur={onBlur}
         style={{ ...style, left: pos.left, top: pos.top, width: pos.width || undefined }}
         className={cn(
-          "fixed z-50 max-h-[calc(100vh-1rem)] rounded-lg border border-[color:var(--border-default)] bg-[color:var(--surface-elevated)] shadow-[var(--shadow-lg)]",
+          "fixed z-50 max-h-[calc(100vh-1rem)] rounded-lg border border-[color:var(--border-default)] bg-[color:var(--surface-elevated)] shadow-lg",
           className,
         )}
       >

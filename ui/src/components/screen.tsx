@@ -84,7 +84,7 @@ export function Pill({
     <span
       title={title}
       className={cn(
-        "inline-flex items-center gap-1 rounded-[6px] px-2 py-0.5 font-mono text-[11px] tracking-[0.03em]",
+        "inline-flex items-center gap-1 rounded-[6px] px-2 py-0.5 font-mono text-2xs tracking-[0.03em]",
         verbatim ? "normal-case" : "uppercase",
         className,
       )}
@@ -200,7 +200,7 @@ export function ListHeader({
     <div
       role="rowgroup"
       className={cn(
-        "border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] text-[0.6875rem] uppercase tracking-[0.07em] text-[color:var(--text-subtle)]",
+        "border-b border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] text-2xs uppercase tracking-[0.07em] text-[color:var(--text-subtle)]",
         className,
       )}
       {...props}

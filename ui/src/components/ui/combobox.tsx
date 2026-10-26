@@ -642,7 +642,7 @@ export const Combobox = React.forwardRef<HTMLInputElement, ComboboxProps>(functi
         hidden={!open}
         className={cn(
           "absolute z-50 w-full rounded-md border border-[color:var(--border-default)]",
-          "bg-[color:var(--surface-elevated)] p-1 shadow-[var(--shadow-md)]",
+          "bg-[color:var(--surface-elevated)] p-1 shadow-md",
           above ? "bottom-full mb-1" : "top-full mt-1",
           listClassName,
         )}

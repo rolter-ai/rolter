@@ -361,12 +361,10 @@ function SpendFigure({
 }) {
   return (
     <div className="flex flex-col gap-1">
-      <span className="text-[0.6875rem] uppercase tracking-[0.07em] text-muted-foreground">
-        {label}
-      </span>
+      <span className="text-2xs uppercase tracking-[0.07em] text-muted-foreground">{label}</span>
       <span className="font-mono text-lg leading-none text-foreground">{value}</span>
-      {note && <span className="text-[0.6875rem] text-[color:var(--text-subtle)]">{note}</span>}
-      {hint && <span className="max-w-64 text-[0.6875rem] text-muted-foreground">{hint}</span>}
+      {note && <span className="text-2xs text-[color:var(--text-subtle)]">{note}</span>}
+      {hint && <span className="max-w-64 text-2xs text-muted-foreground">{hint}</span>}
     </div>
   );
 }

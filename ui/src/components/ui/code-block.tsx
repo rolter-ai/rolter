@@ -130,7 +130,7 @@ export function CodeBlock({
         style={maxHeight === undefined ? undefined : { maxHeight }}
         className={cn(
           "rl-code overflow-auto rounded-md border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] leading-relaxed text-[color:var(--text-secondary)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-          density === "compact" ? "p-2.5 text-[0.6875rem]" : "p-3 text-xs",
+          density === "compact" ? "p-2.5 text-2xs" : "p-3 text-xs",
           wrap ? "whitespace-pre-wrap break-words" : "whitespace-pre",
           lineNumbers && "rl-code--numbered",
           // the button floats over the scroll region, so a long first line

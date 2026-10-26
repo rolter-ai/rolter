@@ -801,7 +801,7 @@ export function TargetEditor({
           aria-hidden="true"
           className={cn(
             row,
-            "text-[11px] uppercase tracking-[0.06em] text-[color:var(--text-subtle)] max-sm:hidden",
+            "text-2xs uppercase tracking-[0.06em] text-[color:var(--text-subtle)] max-sm:hidden",
           )}
         >
           <span>{t("modelSheet.targets.provider")}</span>

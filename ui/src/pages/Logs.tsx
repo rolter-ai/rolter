@@ -775,7 +775,7 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
             className={cn(
               "overflow-y-auto border-r border-[color:var(--border-subtle)]",
               railOverlays
-                ? "rl-drawer-in relative h-full w-[min(300px,85vw)] max-w-full bg-[color:var(--surface-app)] shadow-[14px_0_44px_rgba(0,0,0,0.42)] focus-visible:outline-none"
+                ? "rl-drawer-in relative h-full w-[min(300px,85vw)] max-w-full bg-[color:var(--surface-app)] shadow-drawer focus-visible:outline-none"
                 : "w-[248px] flex-none",
             )}
             {...(railOverlays ? filterA11y : {})}
@@ -1087,10 +1087,7 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
                       )}
                     >
                       <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1">
-                        <Badge
-                          tone={verdictTone(st)}
-                          className="font-mono text-[0.6875rem] font-semibold"
-                        >
+                        <Badge tone={verdictTone(st)} className="font-mono text-2xs font-semibold">
                           {st || "ERR"}
                         </Badge>
                         <UpstreamHint row={r} />
@@ -1466,7 +1463,7 @@ function Verdict({ row }: { row: InvocationRow }) {
               refused connection or a timeout, with no http status to show */}
           <Badge
             tone={verdictTone(status)}
-            className={cn("text-[0.6875rem] font-semibold", status !== 0 && "font-mono")}
+            className={cn("text-2xs font-semibold", status !== 0 && "font-mono")}
           >
             {status === 0 ? t("pages.logs.detail.noResponse") : status}
           </Badge>
@@ -1525,7 +1522,7 @@ function UpstreamHint({ row }: { row: InvocationRow }) {
   return (
     <span
       title={sentence}
-      className="inline-flex items-center gap-0.5 font-mono text-[0.6875rem] text-[color:var(--text-subtle)]"
+      className="inline-flex items-center gap-0.5 font-mono text-2xs text-[color:var(--text-subtle)]"
     >
       <ArrowLeft aria-hidden className="h-3 w-3 flex-none" />
       <span aria-hidden>{upstream}</span>
@@ -1561,7 +1558,7 @@ const DETAIL_GRID =
   "grid grid-cols-[minmax(0,1fr)_minmax(0,2fr)] items-baseline gap-x-3 gap-y-1.5 text-xs";
 
 // the overline every group in the drawer is titled with, payloads included
-const GROUP_TITLE = "text-[0.6875rem] uppercase tracking-[0.07em] text-[color:var(--text-subtle)]";
+const GROUP_TITLE = "text-2xs uppercase tracking-[0.07em] text-[color:var(--text-subtle)]";
 
 function DetailId({
   label,

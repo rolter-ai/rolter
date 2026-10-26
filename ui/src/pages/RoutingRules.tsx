@@ -347,7 +347,7 @@ export default function RoutingRules() {
                 <StrategyBadge strategy={r.strategy} />
                 <LabelChips labels={labels.bySubject(r.id)} />
                 {!r.enabled && (
-                  <span className="rounded-[6px] bg-[color:var(--surface-subtle)] px-2 py-[3px] font-mono text-[0.6875rem] uppercase text-[color:var(--text-subtle)]">
+                  <span className="rounded-[6px] bg-[color:var(--surface-subtle)] px-2 py-[3px] font-mono text-2xs uppercase text-[color:var(--text-subtle)]">
                     {t("pages.routing.disabledBadge")}
                   </span>
                 )}

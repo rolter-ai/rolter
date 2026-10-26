@@ -70,7 +70,7 @@ export function LocalePicker({ collapsed = false }: { collapsed?: boolean }) {
       >
         <Globe aria-hidden className="h-4 w-4 flex-none" />
         {!collapsed && (
-          <span className="font-mono text-[0.6875rem] leading-none">{LOCALE_SHORT[active]}</span>
+          <span className="font-mono text-2xs leading-none">{LOCALE_SHORT[active]}</span>
         )}
       </button>
       {open && trigger.current && (

@@ -356,7 +356,7 @@ export default function Models() {
             )}
           >
             {t("pages.models.unpriced.filter")}
-            <span className="font-mono text-[11px] text-[color:var(--text-subtle)]">
+            <span className="font-mono text-2xs text-[color:var(--text-subtle)]">
               {unpricedCount}
             </span>
           </button>
@@ -469,7 +469,7 @@ export default function Models() {
                       rows; the sentence opens with the targets below */}
                   {hintKey && (
                     <span
-                      className="truncate text-[11px] text-[color:var(--status-warning)]"
+                      className="truncate text-2xs text-[color:var(--status-warning)]"
                       title={t(hintKey)}
                     >
                       {t(CAVEAT_LABEL[hintKey] ?? "pages.models.strategyCaveat.other")}
@@ -515,12 +515,12 @@ export default function Models() {
                   {/* health where the rollup has it: a failing target is named in
                   the row, a clean bill is a dot, and no data says nothing */}
                   {failing > 0 ? (
-                    <span className="inline-flex items-center gap-1 text-[11px] text-[color:var(--status-danger-text)]">
+                    <span className="inline-flex items-center gap-1 text-2xs text-[color:var(--status-danger-text)]">
                       <StatusDot color="var(--status-danger)" className="h-1.5 w-1.5" />
                       {t("pages.models.targets.failing", { count: failing })}
                     </span>
                   ) : atRisk > 0 ? (
-                    <span className="inline-flex items-center gap-1 text-[11px] text-[color:var(--status-warning-text)]">
+                    <span className="inline-flex items-center gap-1 text-2xs text-[color:var(--status-warning-text)]">
                       <StatusDot color="var(--status-warning)" className="h-1.5 w-1.5" />
                       {t("pages.models.targets.atRisk", { count: atRisk })}
                     </span>

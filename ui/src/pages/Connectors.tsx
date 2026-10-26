@@ -479,7 +479,7 @@ function ConnectorsScreen() {
                   <time
                     dateTime={c.health_checked_at}
                     title={fmt.dateTime(c.health_checked_at)}
-                    className="text-[0.6875rem] text-[color:var(--text-subtle)]"
+                    className="text-2xs text-[color:var(--text-subtle)]"
                   >
                     {t("pages.connectors.checkedAt", { time: fmt.relative(c.health_checked_at) })}
                   </time>

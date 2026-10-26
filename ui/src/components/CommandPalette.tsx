@@ -40,7 +40,7 @@ import { cn } from "@/lib/utils";
 const RECORDS_PER_KIND = 6;
 
 const SECTION_HEADING =
-  "px-1 py-1.5 text-[0.6875rem] uppercase tracking-[0.08em] text-[color:var(--text-subtle)]";
+  "px-1 py-1.5 text-2xs uppercase tracking-[0.08em] text-[color:var(--text-subtle)]";
 
 export interface CommandPaletteProps {
   open: boolean;
@@ -356,7 +356,7 @@ export function CommandPalette({
                       {entry.label}
                     </span>
                     {entry.hint && (
-                      <span className="flex-none text-[0.6875rem] text-[color:var(--text-subtle)]">
+                      <span className="flex-none text-2xs text-[color:var(--text-subtle)]">
                         {entry.hint}
                       </span>
                     )}

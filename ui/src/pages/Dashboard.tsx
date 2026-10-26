@@ -439,7 +439,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
       <div className="grid gap-3.5 xl:grid-cols-[1.6fr_1fr]">
         <Card data-testid="dashboard-spend">
           <CardHeader>
-            <CardDescription className="text-[0.6875rem] uppercase tracking-[0.07em]">
+            <CardDescription className="text-2xs uppercase tracking-[0.07em]">
               {windowLabel}
             </CardDescription>
             <CardTitle>{t("pages.dashboard.spendTitle")}</CardTitle>
@@ -496,7 +496,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
         </Card>
         <Card data-testid="dashboard-traffic">
           <CardHeader>
-            <CardDescription className="text-[0.6875rem] uppercase tracking-[0.07em]">
+            <CardDescription className="text-2xs uppercase tracking-[0.07em]">
               {windowLabel}
             </CardDescription>
             <CardTitle>{t("pages.dashboard.trafficTitle")}</CardTitle>
@@ -544,7 +544,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
       <div className="grid gap-3.5 xl:grid-cols-2">
         <Card data-testid="dashboard-by-model">
           <CardHeader>
-            <CardDescription className="text-[0.6875rem] uppercase tracking-[0.07em]">
+            <CardDescription className="text-2xs uppercase tracking-[0.07em]">
               {windowLabel}
             </CardDescription>
             <CardTitle>{t("pages.dashboard.byModelTitle")}</CardTitle>
@@ -606,7 +606,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
           <CardHeader>
             <CardDescription
               className={cn(
-                "text-[0.6875rem] uppercase tracking-[0.07em]",
+                "text-2xs uppercase tracking-[0.07em]",
                 recent.isError && "text-[color:var(--status-danger-text)]",
               )}
             >
@@ -696,7 +696,7 @@ function RequestTime({ ts, requestId, model }: { ts: string; requestId: string; 
   const when = (
     <>
       <span className="block">{fmt.time(ts)}</span>
-      {day && <span className="block text-[0.6875rem] text-[color:var(--text-subtle)]">{day}</span>}
+      {day && <span className="block text-2xs text-[color:var(--text-subtle)]">{day}</span>}
     </>
   );
   if (!requestId) return when;
@@ -722,7 +722,7 @@ function StatusBadge({ status }: { status: number }) {
         : ["var(--status-danger-text)", "rgba(229,57,53,.14)"];
   return (
     <span
-      className="inline-flex items-center rounded-[6px] px-[7px] py-0.5 font-mono text-[11px] font-semibold"
+      className="inline-flex items-center rounded-[6px] px-[7px] py-0.5 font-mono text-2xs font-semibold"
       style={{ color: tone[0], background: tone[1] }}
     >
       {status}

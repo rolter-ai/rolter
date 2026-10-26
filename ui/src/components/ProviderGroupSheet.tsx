@@ -164,7 +164,7 @@ function MemberEditor({
       />
       {members.length > 0 && (
         <div
-          className={`hidden gap-2 text-[11px] uppercase tracking-[0.06em] text-[color:var(--text-subtle)] sm:grid ${columns}`}
+          className={`hidden gap-2 text-2xs uppercase tracking-[0.06em] text-[color:var(--text-subtle)] sm:grid ${columns}`}
         >
           <span>{t("common.provider")}</span>
           <span>{t("providerGroupSheet.members.upstreamModel")}</span>

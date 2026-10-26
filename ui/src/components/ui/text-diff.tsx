@@ -80,7 +80,7 @@ function Line({ line, side }: { line: DiffLine; side?: "old" | "new" }) {
 function SkipRow({ count }: { count: number }) {
   const { t } = useTranslation();
   return (
-    <div className="border-y border-[color:var(--border-subtle)] bg-[color:var(--surface-app)] px-3 py-0.5 text-center text-[0.6875rem] text-[color:var(--text-subtle)]">
+    <div className="border-y border-[color:var(--border-subtle)] bg-[color:var(--surface-app)] px-3 py-0.5 text-center text-2xs text-[color:var(--text-subtle)]">
       {t("repository.diff.unchanged", { count })}
     </div>
   );

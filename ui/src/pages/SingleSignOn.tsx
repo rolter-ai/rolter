@@ -88,7 +88,7 @@ function Detail({
 }) {
   return (
     <div className="flex min-w-0 items-start gap-2">
-      <span className="w-[104px] flex-none text-[0.6875rem] uppercase leading-4 tracking-[0.07em] text-[color:var(--text-subtle)]">
+      <span className="w-[104px] flex-none text-2xs uppercase leading-4 tracking-[0.07em] text-[color:var(--text-subtle)]">
         {label}
       </span>
       <div className="min-w-0 flex-1">
@@ -642,7 +642,7 @@ function ProviderMappings({ provider }: { provider: SsoProviderRow }) {
     <div className="flex flex-col gap-2.5 border-t border-[color:var(--border-subtle)] px-4 py-3.5">
       <div className="flex items-center gap-1.5">
         <Users aria-hidden className="h-3.5 w-3.5 text-muted-foreground" />
-        <h3 className="text-[0.6875rem] uppercase tracking-[0.07em] text-[color:var(--text-subtle)]">
+        <h3 className="text-2xs uppercase tracking-[0.07em] text-[color:var(--text-subtle)]">
           {t("pages.sso.mappings.title")}
         </h3>
       </div>
