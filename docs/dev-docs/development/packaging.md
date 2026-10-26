@@ -94,6 +94,11 @@ the matching `version = "…"` on each internal `[workspace.dependencies]` entry
 a local version that crates.io does not have yet, releases it as written instead
 of bumping past it, and auto-bumps from there on the releases after it.
 
+That unpublished version is on `master` from the moment the move merges, so
+`release_always = false` in `.github/config/release-plz.toml` is what keeps it
+from shipping early: `release-plz release` publishes only on the commit that
+merges the release PR, and every other push leaves the version waiting there.
+
 ### The helm chart's appVersion
 
 `charts/rolter/Chart.yaml` carries two numbers and they mean different things.

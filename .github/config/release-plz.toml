@@ -59,6 +59,12 @@ semver_check = false
 # top-level name on crates.io (anti-phishing) and is the crate the pypi wheel
 # ships.
 publish = true
+# only a commit that merges the release PR releases anything. without this,
+# `release-plz release` publishes whatever version on master crates.io lacks,
+# so a hand-moved version line (1.0.0, see the "version line" section of
+# docs/dev-docs/development/packaging.md) would ship from the very next push to
+# master instead of waiting for the release PR to be labelled and merged
+release_always = false
 
 [[package]]
 name = "rolter-gateway"
