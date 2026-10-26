@@ -637,6 +637,18 @@ fn project_scoped_findings(config: &rolter_core::GatewayConfig) -> Vec<Finding> 
         .collect()
 }
 
+/// A route that balances across decision-only and generative targets (#3154).
+///
+/// A warning, not an error: the gateway serves the route, it just sends some
+/// requests to a target that cannot answer them.
+fn mixed_decision_route_findings(config: &rolter_core::GatewayConfig) -> Vec<Finding> {
+    config
+        .mixed_decision_route_warnings()
+        .into_iter()
+        .map(|detail| Finding::warn("route mixes decision-only and generative targets", detail))
+        .collect()
+}
+
 /// Render the migration plan for a config file, and the finding that goes with it.
 ///
 /// This is a preview, not an action: nothing is written, here or at load time.
@@ -740,6 +752,7 @@ pub async fn run(args: CheckArgs) -> anyhow::Result<()> {
                 findings.extend(route_header_findings(&config));
                 findings.extend(example_key_findings(&config));
                 findings.extend(project_scoped_findings(&config));
+                findings.extend(mixed_decision_route_findings(&config));
             }
             Err(error) => findings.push(Finding::error(
                 format!("config file {path} is not usable"),
@@ -1554,5 +1567,18 @@ mod tests {
         )
         .expect("parses");
         assert!(project_scoped_findings(&plain).is_empty());
+    }
+
+    #[test]
+    fn a_route_mixing_decision_and_chat_targets_is_a_warning() {
+        let config = rolter_core::GatewayConfig::from_toml_str(
+            "[[providers]]\nname = \"d\"\nkind = \"system_one\"\napi_base = \"http://d.internal\"\n\
+             [[providers]]\nname = \"c\"\nkind = \"openai\"\napi_base = \"https://api.example.com/v1\"\napi_key_env = \"K\"\n\
+             [[routes]]\nmodel = \"m\"\ntargets = [{ provider = \"d\" }, { provider = \"c\" }]\n",
+        )
+        .expect("parses");
+        let findings = mixed_decision_route_findings(&config);
+        assert_eq!(findings.len(), 1);
+        assert!(!findings[0].fatal);
     }
 }

@@ -3837,6 +3837,56 @@ impl GatewayConfig {
             .collect()
     }
 
+    /// One warning per route whose targets mix decision-only providers with
+    /// ones that are not (#3154).
+    ///
+    /// The gateway refuses a decision for a route none of whose targets serves
+    /// decisions, and any other endpoint for a route whose targets are all
+    /// decision-only. A route that mixes the two is deliberately left to
+    /// balance (ADR-0035), so some chat requests reach a decision server and
+    /// some decisions reach a target that does not answer them. Nothing is
+    /// refused or dropped; the line names the targets on each side so the
+    /// operator can split the route. A target whose provider is unknown is not
+    /// counted on either side.
+    pub fn mixed_decision_route_warnings(&self) -> Vec<String> {
+        let kinds: HashMap<&str, ProviderKind> = self
+            .providers
+            .iter()
+            .map(|p| (p.name.as_str(), p.kind))
+            .collect();
+        let mut warnings = Vec::new();
+        for route in &self.routes {
+            let mut decision: Vec<&str> = Vec::new();
+            let mut generative: Vec<&str> = Vec::new();
+            for target in route.every_target() {
+                let Some(kind) = kinds.get(target.provider.as_str()) else {
+                    continue;
+                };
+                let side = if kind.decision_only() {
+                    &mut decision
+                } else {
+                    &mut generative
+                };
+                if !side.contains(&target.provider.as_str()) {
+                    side.push(target.provider.as_str());
+                }
+            }
+            if decision.is_empty() || generative.is_empty() {
+                continue;
+            }
+            warnings.push(format!(
+                "route '{}' mixes decision-only targets ({}) with targets that are not ({}); \
+                 requests are balanced across both, so some chat and embedding requests reach \
+                 a decision server and some decisions reach a target that may not answer them. \
+                 Split it into one route per kind",
+                route.model,
+                decision.join(", "),
+                generative.join(", ")
+            ));
+        }
+        warnings
+    }
+
     /// Return the CA bundles a provider should trust. An explicit provider
     /// value replaces the global setting. `ROLTER_CA_BUNDLE` replaces the
     /// global config value for container-friendly deployment.
@@ -4106,6 +4156,9 @@ impl GatewayConfig {
                 });
             }
         }
+
+        // a mixed route still serves, so this only says what it will do (#3154)
+        warnings.extend(self.mixed_decision_route_warnings());
 
         // what is left to repair names an omitted provider from outside a
         // route's targets, and is settled after the route pass so a route
@@ -10025,6 +10078,62 @@ mod tests {
         assert!(warnings[0].contains("provider 'scoped'"));
         assert!(warnings[1].contains("provider group 'scoped-group'"));
         assert!(warnings.iter().all(|w| w.contains("rolter-seed --import")));
+    }
+
+    const MIXED_ROUTE: &str = r#"
+        [[providers]]
+        name = "decider"
+        kind = "system_one"
+        api_base = "http://decider.internal:8080"
+
+        [[providers]]
+        name = "chat"
+        kind = "openai"
+        api_base = "https://api.example.com/v1"
+        api_key_env = "K"
+
+        [[providers]]
+        name = "other-decider"
+        kind = "system_one"
+        api_base = "http://decider-2.internal:8080"
+
+        [[routes]]
+        model = "mixed"
+        targets = [{ provider = "decider" }, { provider = "chat" }]
+
+        [[routes]]
+        model = "decisions"
+        targets = [{ provider = "decider" }, { provider = "other-decider" }]
+
+        [[routes]]
+        model = "chatty"
+        targets = [{ provider = "chat" }]
+    "#;
+
+    #[test]
+    fn a_route_mixing_decision_and_generative_targets_is_named() {
+        let cfg = GatewayConfig::from_toml_str(MIXED_ROUTE).expect("parses");
+        let warnings = cfg.mixed_decision_route_warnings();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].starts_with("route 'mixed' mixes"), "{warnings:?}");
+        assert!(warnings[0].contains("decision-only targets (decider)"));
+        assert!(warnings[0].contains("not (chat)"));
+    }
+
+    #[test]
+    fn a_mixed_route_is_reported_by_the_snapshot_but_still_served() {
+        let mut cfg = GatewayConfig::from_toml_str(MIXED_ROUTE).expect("parses");
+        let report = cfg.sanitize_for_snapshot_report();
+        assert!(
+            report
+                .problems
+                .iter()
+                .any(|p| p.starts_with("route 'mixed' mixes")),
+            "{:?}",
+            report.problems
+        );
+        assert!(cfg.routes.iter().any(|r| r.model == "mixed"));
+        assert!(report.omitted.is_empty(), "{:?}", report.omitted);
     }
 
     #[test]

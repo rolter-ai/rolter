@@ -75,7 +75,7 @@ A decision model cannot generate text, embed or transcribe, and a hosted chat AP
 - A route whose targets are all `system_one` answers only `POST /v1/systemone`. A chat, embeddings or audio request for it gets `400` with code `unsupported_endpoint` and a message naming `/v1/systemone`.
 - `POST /v1/systemone` needs a route with at least one target of kind `system_one`, `openai_compatible` or `ollama`. The last two are allowed because a self-hosted server or another gateway behind them may serve the endpoint beside chat. A decision for any other route gets the same `400`.
 
-Keep decision models in routes of their own. A route that mixes decision and chat targets is not refused, and requests of either kind will reach targets that cannot answer them.
+Keep decision models in routes of their own. A route that mixes decision and chat targets is not refused, and requests of either kind will reach targets that cannot answer them. It is reported, though: `rolter check`, the gateway at startup and the dashboard's config problems all name such a route and the targets on each side.
 
 ---
 
