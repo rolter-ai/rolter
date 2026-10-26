@@ -39,7 +39,8 @@ use rolter_store::postgres::repo::{
 
 use crate::access_control::caller_policy;
 use crate::rbac::{
-    authorize, authorize_superadmin, policy_allows, reaches_org, Principal, ScopeChain, ScopeFilter,
+    authorize, authorize_superadmin, policy_allows, reaches_org, PolicyContext, Principal,
+    ScopeChain, ScopeFilter,
 };
 use crate::rbac_matrix::{cap, superadmin_cap, Requirement};
 use crate::tenant_view::TenantView;
@@ -1837,20 +1838,14 @@ async fn list_skills(
         cap!("skill", Read),
     )
     .await?;
-    let mut visible = Vec::new();
-    for skill in SkillRepo(pool(&state)).list_skills(org_id).await? {
-        if policy_allows(
-            &state,
-            &principal,
-            org_id,
-            &skill.allowed_team_ids,
-            &skill.minimum_role,
-        )
+    // the caller's authorization data once, not once per skill (#1098)
+    let policy = PolicyContext::load(&state, &principal, org_id).await?;
+    let visible = SkillRepo(pool(&state))
+        .list_skills(org_id)
         .await?
-        {
-            visible.push(skill);
-        }
-    }
+        .into_iter()
+        .filter(|skill| policy.allows(&skill.allowed_team_ids, &skill.minimum_role))
+        .collect();
     Ok(Json(visible))
 }
 

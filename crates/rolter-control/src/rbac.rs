@@ -575,8 +575,85 @@ pub(crate) async fn holds_admin(
         .is_some_and(|role| role_rank(role) >= role_rank(Role::Admin)))
 }
 
-/// Check a resource-level access profile after ordinary org authorization.
-/// Org admins and superadmins can always inspect policy-bound resources.
+/// The caller's authorization data for resource-level access profiles in one
+/// org, fetched once per request (#1098).
+///
+/// A list filtered by access profile used to call [`policy_allows`] once per
+/// row, and every call re-fetched the same caller's memberships and grants:
+/// 40 skills cost 80 identical queries. Building this once and asking
+/// [`PolicyContext::allows`] per row makes the filter pure over data already in
+/// hand. It is deliberately not a cache: it lives for one request, so an
+/// authorization change still takes effect on the next one.
+pub(crate) enum PolicyContext {
+    /// sees every policy-bound resource
+    Superadmin,
+    User {
+        /// the built-in role the caller effectively holds at the org, from
+        /// memberships and any custom role a profile confers there
+        role: Option<Role>,
+        /// teams the caller belongs to directly, or through a project
+        /// membership's team
+        team_ids: Vec<Uuid>,
+    },
+}
+
+impl PolicyContext {
+    /// Fetch what [`Self::allows`] needs: memberships and grants once, plus one
+    /// batched project-to-team lookup when the caller has project memberships.
+    pub(crate) async fn load(
+        state: &ControlState,
+        principal: &Principal,
+        org_id: Uuid,
+    ) -> ApiResult<Self> {
+        let user = match principal {
+            Principal::Superadmin { .. } => return Ok(Self::Superadmin),
+            Principal::User(user) => user,
+        };
+        let memberships = MembershipRepo(pool(state)).list_for_user(user.id).await?;
+        // a custom role a profile confers at the org counts here too, so an
+        // operator can widen resource visibility without minting a membership
+        let grants = AccessProfileRepo(pool(state))
+            .effective_grants_for_user(user.id)
+            .await?;
+        let role = effective_role_from(&memberships, &grants, ScopeChain::org(org_id));
+        let mut team_ids: Vec<Uuid> = memberships.iter().filter_map(|m| m.team_id).collect();
+        // a role below every requirement never reaches the team scan, so the
+        // project lookup is skipped for it
+        let project_ids: Vec<Uuid> = memberships.iter().filter_map(|m| m.project_id).collect();
+        if role.is_some_and(|role| role != Role::Admin) && !project_ids.is_empty() {
+            let resolved = ProjectRepo(pool(state)).team_ids_for(&project_ids).await?;
+            team_ids.extend(resolved.into_iter().map(|(_, team_id)| team_id));
+        }
+        Ok(Self::User { role, team_ids })
+    }
+
+    /// Whether a resource bound to `allowed_team_ids` and `minimum_role` is
+    /// visible. Org admins and superadmins can always inspect policy-bound
+    /// resources; an empty team list restricts by role alone.
+    pub(crate) fn allows(&self, allowed_team_ids: &[Uuid], minimum_role: &str) -> bool {
+        let (role, team_ids) = match self {
+            Self::Superadmin => return true,
+            Self::User { role, team_ids } => (role, team_ids),
+        };
+        let Some(role) = *role else {
+            return false;
+        };
+        let Some(required_role) = parse_role(minimum_role) else {
+            return false;
+        };
+        if role_rank(role) < role_rank(required_role) {
+            return false;
+        }
+        if role == Role::Admin || allowed_team_ids.is_empty() {
+            return true;
+        }
+        team_ids.iter().any(|id| allowed_team_ids.contains(id))
+    }
+}
+
+/// Check a resource-level access profile after ordinary org authorization,
+/// for a single resource. A list builds one [`PolicyContext`] and asks it per
+/// row instead.
 pub(crate) async fn policy_allows(
     state: &ControlState,
     principal: &Principal,
@@ -584,49 +661,9 @@ pub(crate) async fn policy_allows(
     allowed_team_ids: &[Uuid],
     minimum_role: &str,
 ) -> ApiResult<bool> {
-    let user = match principal {
-        Principal::Superadmin { .. } => return Ok(true),
-        Principal::User(user) => user,
-    };
-    // one fetch each, reused for both the role decision and the team scan. This
-    // used to load memberships, then call `effective_role`, which loaded the
-    // identical set again and discarded the first (#1048)
-    let memberships = MembershipRepo(pool(state)).list_for_user(user.id).await?;
-    // a custom role a profile confers at the org counts here too, so an
-    // operator can widen resource visibility without minting a membership
-    let grants = AccessProfileRepo(pool(state))
-        .effective_grants_for_user(user.id)
-        .await?;
-    let Some(effective_role) = effective_role_from(&memberships, &grants, ScopeChain::org(org_id))
-    else {
-        return Ok(false);
-    };
-    let Some(required_role) = parse_role(minimum_role) else {
-        return Ok(false);
-    };
-    if role_rank(effective_role) < role_rank(required_role) {
-        return Ok(false);
-    }
-    if effective_role == Role::Admin || allowed_team_ids.is_empty() {
-        return Ok(true);
-    }
-    // a direct team membership answers without touching `projects` at all
-    if memberships
-        .iter()
-        .any(|m| m.team_id.is_some_and(|id| allowed_team_ids.contains(&id)))
-    {
-        return Ok(true);
-    }
-    // otherwise resolve every project membership's team in one query rather
-    // than one `ProjectRepo::get` per membership
-    let project_ids: Vec<Uuid> = memberships.iter().filter_map(|m| m.project_id).collect();
-    if project_ids.is_empty() {
-        return Ok(false);
-    }
-    let team_ids = ProjectRepo(pool(state)).team_ids_for(&project_ids).await?;
-    Ok(team_ids
-        .iter()
-        .any(|(_, team_id)| allowed_team_ids.contains(team_id)))
+    Ok(PolicyContext::load(state, principal, org_id)
+        .await?
+        .allows(allowed_team_ids, minimum_role))
 }
 
 /// Require `principal` to be a superadmin. Used for global resources with no
@@ -677,6 +714,34 @@ mod tests {
             source: "manual".into(),
             created_at: Utc::now(),
         }
+    }
+
+    #[test]
+    fn a_policy_context_filters_by_role_then_team() {
+        let team = Uuid::new_v4();
+        let other = Uuid::new_v4();
+        let member = PolicyContext::User {
+            role: Some(Role::Member),
+            team_ids: vec![team],
+        };
+        assert!(member.allows(&[], "member"));
+        assert!(member.allows(&[team], "member"));
+        assert!(!member.allows(&[other], "member"));
+        assert!(!member.allows(&[], "admin"));
+        assert!(!member.allows(&[], "not-a-role"));
+
+        let admin = PolicyContext::User {
+            role: Some(Role::Admin),
+            team_ids: vec![],
+        };
+        assert!(admin.allows(&[other], "member"));
+
+        let outsider = PolicyContext::User {
+            role: None,
+            team_ids: vec![team],
+        };
+        assert!(!outsider.allows(&[team], "member"));
+        assert!(PolicyContext::Superadmin.allows(&[other], "admin"));
     }
 
     #[test]

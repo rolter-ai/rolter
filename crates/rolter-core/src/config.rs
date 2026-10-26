@@ -10115,7 +10115,10 @@ mod tests {
         let cfg = GatewayConfig::from_toml_str(MIXED_ROUTE).expect("parses");
         let warnings = cfg.mixed_decision_route_warnings();
         assert_eq!(warnings.len(), 1, "{warnings:?}");
-        assert!(warnings[0].starts_with("route 'mixed' mixes"), "{warnings:?}");
+        assert!(
+            warnings[0].starts_with("route 'mixed' mixes"),
+            "{warnings:?}"
+        );
         assert!(warnings[0].contains("decision-only targets (decider)"));
         assert!(warnings[0].contains("not (chat)"));
     }
