@@ -12,6 +12,7 @@ import { SampledLogNotice } from "@/components/SampledLogNotice";
 import { LoadError } from "@/components/LoadError";
 import { RowFilterPicker, useAddressRowFilters } from "@/components/RowFilters";
 import { SavedViews } from "@/components/SavedViews";
+import { HttpStatusBadge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Combobox } from "@/components/ui/combobox";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -652,7 +653,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
                       {
                         key: "status",
                         header: t("pages.dashboard.colStatus"),
-                        render: (v) => <StatusBadge status={v as number} />,
+                        render: (v) => <HttpStatusBadge status={v as number} />,
                       },
                       {
                         key: "lat",
@@ -710,22 +711,5 @@ function RequestTime({ ts, requestId, model }: { ts: string; requestId: string; 
     >
       {when}
     </Link>
-  );
-}
-
-function StatusBadge({ status }: { status: number }) {
-  const tone =
-    status < 400
-      ? ["var(--status-success-text)", "rgba(22,163,74,.14)"]
-      : status === 429
-        ? ["var(--status-warning-text)", "rgba(245,158,11,.14)"]
-        : ["var(--status-danger-text)", "rgba(229,57,53,.14)"];
-  return (
-    <span
-      className="inline-flex items-center rounded-[6px] px-[7px] py-0.5 font-mono text-2xs font-semibold"
-      style={{ color: tone[0], background: tone[1] }}
-    >
-      {status}
-    </span>
   );
 }

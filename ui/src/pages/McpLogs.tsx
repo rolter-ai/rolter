@@ -18,6 +18,7 @@ import {
   PageBody,
   Pill,
 } from "@/components/screen";
+import type { BadgeTone } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { CodeBlock } from "@/components/ui/code-block";
 import { Combobox } from "@/components/ui/combobox";
@@ -55,16 +56,15 @@ function payloadLanguage(value: string | null): CodeLanguage {
   }
 }
 
-const STATUS_TONE: Record<string, [string, string]> = {
-  success: ["var(--status-success-text)", "rgba(22,163,74,.14)"],
-  error: ["var(--status-danger-text)", "var(--red-tint)"],
-  timeout: ["var(--status-warning-text)", "rgba(245,158,11,.14)"],
-  auth_denied: ["var(--status-danger-text)", "var(--red-tint)"],
-  transport_error: ["var(--status-warning-text)", "rgba(245,158,11,.14)"],
+const STATUS_TONE: Record<string, BadgeTone> = {
+  success: "success",
+  error: "danger",
+  timeout: "warning",
+  auth_denied: "danger",
+  transport_error: "warning",
 };
 
-const statusTone = (s: string) =>
-  STATUS_TONE[s] ?? ["var(--text-secondary)", "var(--surface-subtle)"];
+const statusTone = (s: string): BadgeTone => STATUS_TONE[s] ?? "neutral";
 
 const GRID = "150px 1.1fr 1.3fr 130px 110px 90px 24px";
 
@@ -320,9 +320,7 @@ function McpRow({ row, onSelect }: { row: McpLogRow; onSelect: () => void }) {
         {row.tool}
       </ListCell>
       <ListCell className="grid">
-        <Pill color={tone[0]} tint={tone[1]}>
-          {mcpStatusLabel(row.status, t)}
-        </Pill>
+        <Pill tone={tone}>{mcpStatusLabel(row.status, t)}</Pill>
       </ListCell>
       <ListCell className="truncate font-mono text-2xs text-[color:var(--text-subtle)]">
         {row.transport}

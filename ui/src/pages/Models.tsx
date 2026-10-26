@@ -545,8 +545,7 @@ export default function Models() {
                     </Pill>
                   ) : (
                     <Pill
-                      color="var(--status-success-text)"
-                      tint="rgba(22,163,74,.14)"
+                      tone="success"
                       border="color-mix(in srgb, var(--status-success) 32%, transparent)"
                     >
                       db

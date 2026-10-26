@@ -440,6 +440,11 @@ is state to show.
 10px medium text on a 20px pill with 6px corners. Status tones tint the status fill at 15% and set
 the label in the `-text` half; the accent tone is Red Tint with Folk Red text.
 
+The mono uppercase `Pill` (modality, origin and strategy tags) takes the same tones through its
+`tone` prop, so a status has one tint whichever shape carries it, and an HTTP status is always
+`HttpStatusBadge`: 2xx and 3xx success, 4xx warning, 5xx and no answer danger. A colour literal
+(`rgba(…)`) in a component fails `ui/scripts/status-tints.test.ts` (#1989).
+
 ### Tables
 
 Two header shapes ship. `Table` has a Zinc Band header row in 12px medium Muted Zinc; the

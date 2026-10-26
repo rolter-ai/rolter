@@ -2,6 +2,7 @@ import { ArrowDown, ArrowUp, Search } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
+import { TONE_CLASSES, type BadgeTone } from "@/components/ui/badge";
 import { RefusalWrap } from "@/components/ui/refusal-wrap";
 import { useGate, type Capability } from "@/lib/can";
 import { isAwaiting, isEmptyAnswer, type ReadState } from "@/lib/read-state";
@@ -63,6 +64,7 @@ export function StatusDot({ color, className }: { color: string; className?: str
 // so it keeps the case it is stored in (Copyable-Is-Mono)
 export function Pill({
   verbatim,
+  tone,
   color,
   tint,
   border,
@@ -72,7 +74,15 @@ export function Pill({
 }: {
   /** show the content as stored: an identifier that is copied back into config or an API call */
   verbatim?: boolean;
-  color: string;
+  /**
+   * a status the pill states, tinted from the same tokens as `Badge` (#1989).
+   * a status is always a tone, never a `tint` literal: retuning a
+   * `--status-*` token has to move every pill that says that status
+   */
+  tone?: BadgeTone;
+  /** the label colour of a pill that states no status, as a token */
+  color?: string;
+  /** the fill of a pill that states no status, as a token */
   tint?: string;
   border?: string;
   className?: string;
@@ -86,6 +96,7 @@ export function Pill({
       className={cn(
         "inline-flex items-center gap-1 rounded-[6px] px-2 py-0.5 font-mono text-2xs tracking-[0.03em]",
         verbatim ? "normal-case" : "uppercase",
+        tone && TONE_CLASSES[tone],
         className,
       )}
       style={{

@@ -29,6 +29,7 @@ import {
   StatusDot,
   Toolbar,
 } from "@/components/screen";
+import type { BadgeTone } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Combobox } from "@/components/ui/combobox";
 import { EmptyState, EmptyStateLink } from "@/components/ui/empty-state";
@@ -89,14 +90,14 @@ import { useNow } from "@/lib/use-now";
 import { cn } from "@/lib/utils";
 import { useScreenReady } from "@/lib/ux-react";
 
-// a state's three colours. the pill label is the -text half of the hue, because
-// a label is a glyph on a tint rather than a shape (#1181); the dot is a shape,
-// so it takes the fill. a rule is `unknown`, `ok`, `firing` or `error` (its
+// a state's colours. the pill is the badge tone of the hue, whose label is the
+// -text half because a label is a glyph on a tint rather than a shape (#1181,
+// #1989); the dot is a shape, so it takes the fill. a rule is `unknown`, `ok`, `firing` or `error` (its
 // evaluation failed); a history row is `firing` or `resolved`
 interface StateTone {
   fill: string;
   text: string;
-  tint: string;
+  pill: BadgeTone;
 }
 
 // `error` is amber and `firing` is red on purpose: a rule that could not be
@@ -107,27 +108,27 @@ const STATE_TONE: Record<string, StateTone> = {
   ok: {
     fill: "var(--status-success)",
     text: "var(--status-success-text)",
-    tint: "rgba(22,163,74,.14)",
+    pill: "success",
   },
   resolved: {
     fill: "var(--status-success)",
     text: "var(--status-success-text)",
-    tint: "rgba(22,163,74,.14)",
+    pill: "success",
   },
   firing: {
     fill: "var(--status-danger)",
     text: "var(--status-danger-text)",
-    tint: "var(--red-tint)",
+    pill: "danger",
   },
   error: {
     fill: "var(--status-warning)",
     text: "var(--status-warning-text)",
-    tint: "rgba(245,158,11,.14)",
+    pill: "warning",
   },
   unknown: {
     fill: "var(--zinc-500)",
     text: "var(--text-secondary)",
-    tint: "var(--surface-subtle)",
+    pill: "neutral",
   },
 };
 
@@ -270,9 +271,7 @@ function AlertChannelsScreen() {
                 {channelKindLabel(c.kind, t)}
               </Pill>
               {c.secret_configured && (
-                <Pill color="var(--status-info-text)" tint="rgba(59,130,246,.14)">
-                  {t("pages.alerting.channels.secretSet")}
-                </Pill>
+                <Pill tone="info">{t("pages.alerting.channels.secretSet")}</Pill>
               )}
               {/* the labels name the channel: a column of cards each
                   offering "Delete channel" is N buttons a screen reader
@@ -641,9 +640,7 @@ function AlertRulesScreen() {
                 <span id={nameId} className="min-w-0 truncate font-mono text-sm font-semibold">
                   {r.name}
                 </span>
-                <Pill color={tone.text} tint={tone.tint}>
-                  {stateLabel(r.state, t)}
-                </Pill>
+                <Pill tone={tone.pill}>{stateLabel(r.state, t)}</Pill>
                 <GatedSwitch
                   gate="alert_rule:update"
                   control="alert-rule-toggle"
@@ -1267,9 +1264,7 @@ function AlertHistoryScreen() {
           return (
             <ListRow key={n.id} grid={HISTORY_GRID}>
               <ListCell className="grid">
-                <Pill color={tone.text} tint={tone.tint}>
-                  {stateLabel(n.state, t)}
-                </Pill>
+                <Pill tone={tone.pill}>{stateLabel(n.state, t)}</Pill>
               </ListCell>
               <ListCell className="grid">
                 <Pill color={deliveryTone(n.delivery_status)} tint="var(--surface-subtle)">

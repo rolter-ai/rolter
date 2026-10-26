@@ -23,7 +23,7 @@ import { LoadError } from "@/components/LoadError";
 import { SampledLogNotice } from "@/components/SampledLogNotice";
 import { SavedViews } from "@/components/SavedViews";
 import { ListSkeleton } from "@/components/LoadingState";
-import { Badge } from "@/components/ui/badge";
+import { Badge, HttpStatusBadge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { CodeBlock } from "@/components/ui/code-block";
 import { Combobox } from "@/components/ui/combobox";
@@ -72,13 +72,6 @@ const num = (v: number | string | undefined): number => {
   const n = Number(v ?? 0);
   return Number.isFinite(n) ? n : 0;
 };
-
-// the verdict of a status, in the badge's own tones, for the table and the drawer
-function verdictTone(status: number): "success" | "warning" | "danger" {
-  if (status === 0 || status >= 500) return "danger";
-  if (status >= 400) return "warning";
-  return "success";
-}
 
 /**
  * What the request did upstream, in the words the drawer and the status cell
@@ -1087,9 +1080,9 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
                       )}
                     >
                       <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1">
-                        <Badge tone={verdictTone(st)} className="font-mono text-2xs font-semibold">
-                          {st || "ERR"}
-                        </Badge>
+                        <HttpStatusBadge status={st} className="font-mono">
+                          {st ? undefined : "ERR"}
+                        </HttpStatusBadge>
                         <UpstreamHint row={r} />
                       </div>
                     </td>
@@ -1461,12 +1454,9 @@ function Verdict({ row }: { row: InvocationRow }) {
           <span className="sr-only">{t("pages.logs.status")}</span>
           {/* status 0 is a request the gateway never got an answer to: a
               refused connection or a timeout, with no http status to show */}
-          <Badge
-            tone={verdictTone(status)}
-            className={cn("text-2xs font-semibold", status !== 0 && "font-mono")}
-          >
-            {status === 0 ? t("pages.logs.detail.noResponse") : status}
-          </Badge>
+          <HttpStatusBadge status={status}>
+            {status === 0 ? t("pages.logs.detail.noResponse") : undefined}
+          </HttpStatusBadge>
           <time dateTime={row.ts} className="font-mono text-xs text-foreground">
             {fmt.dateTimeMs(row.ts)}
           </time>

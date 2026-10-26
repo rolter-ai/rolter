@@ -64,7 +64,12 @@ The `Badge` component in `ui/src/components/ui/badge.tsx` is the reference
 implementation: `/15` tint off the fill hue, label off the matching `-text`
 token. Its `AllTones` story asserts the computed label colour still resolves to
 the token, so a tone that drifts back to a raw palette colour fails the story
-tests.
+tests. `Pill` (`ui/src/components/screen.tsx`) takes the same tone classes
+through its `tone` prop, and `HttpStatusBadge` is the one HTTP-status pill the
+Dashboard and LLM Logs share, so retuning a `--status-*` token moves every
+status the dashboard draws. `ui/scripts/status-tints.test.ts` fails on an
+`rgba(…)` literal anywhere in a component, which is how the second system of
+hand-picked tints came in (#1989).
 
 The delta under a `StatCard` figure (`ui/src/components/ui/stat-card.tsx`)
 takes the same `-text` half, and its colour follows what a change means rather

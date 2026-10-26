@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from "@storybook/react";
 import { expect, within } from "storybook/test";
 
-import { Badge } from "./badge";
+import { Badge, HttpStatusBadge } from "./badge";
 import { resolveColorToken } from "@/lib/story-tokens";
 
 const meta = {
@@ -80,5 +80,36 @@ export const AllTones: Story = {
     for (const badge of canvasElement.querySelectorAll("span")) {
       await expect(badge.className).not.toContain("dark:");
     }
+  },
+};
+
+/**
+ * #1989: the Dashboard and LLM Logs share one HTTP-status pill. A 4xx is the
+ * caller's to fix, a 5xx or no answer at all is the gateway's, and each takes
+ * its label from the same token a `Badge` of that tone does.
+ */
+export const HttpStatuses: Story = {
+  render: () => (
+    <div className="flex flex-wrap gap-2">
+      <HttpStatusBadge status={200} />
+      <HttpStatusBadge status={429} />
+      <HttpStatusBadge status={502} />
+      <HttpStatusBadge status={0}>no response</HttpStatusBadge>
+    </div>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const expected: [string, `--${string}`][] = [
+      ["200", "--status-success-text"],
+      ["429", "--status-warning-text"],
+      ["502", "--status-danger-text"],
+      ["no response", "--status-danger-text"],
+    ];
+    for (const [label, token] of expected) {
+      await expect(getComputedStyle(canvas.getByText(label)).color).toBe(resolveColorToken(token));
+    }
+    // a number is set in mono, words are not
+    await expect(canvas.getByText("200").className).toContain("font-mono");
+    await expect(canvas.getByText("no response").className).not.toContain("font-mono");
   },
 };
