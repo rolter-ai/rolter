@@ -198,6 +198,7 @@ export default function Plugins() {
         />
       ) : plugins.length === 0 ? (
         <EmptyState
+          thread
           uxTarget="plugin-list"
           icon={<Puzzle />}
           title={t("pages.plugins.emptyTitle")}

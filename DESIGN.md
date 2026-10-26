@@ -460,8 +460,11 @@ delta. The KPI tile of every analytics screen.
 ### Вышивка ornament (signature)
 
 `.vyshivka-rule` is a 10px cross-stitch checkerboard in Folk Red; `.vyshivka-dots` is the quieter
-dotted divider. They appear under the screen header, as a short thread in an empty state and on the
-sign-in screen, and nowhere else by default.
+dotted divider. They appear under the screen header, as a short thread under a screen's own empty
+state and on the sign-in screen, and nowhere else. `EmptyState` draws no thread unless it passes
+`thread`, which only a screen-level placeholder does: never one inside a sheet, a table, a form or
+the command palette (#1991). A chart with a single series draws it in neutral zinc (`--chart-2`),
+not the red first series colour, so a spend line does not read as an alarm.
 
 ## Do's and Don'ts
 

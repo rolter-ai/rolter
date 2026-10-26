@@ -461,6 +461,7 @@ export default function SkillsRepository() {
         !selected ? (
           <main className="flex min-h-[32rem] items-center justify-center rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-raised)]">
             <EmptyState
+              thread
               uxTarget="skill-versions"
               icon={<FilePlus2 />}
               title={t("pages.skillsRepo.emptyTitle")}

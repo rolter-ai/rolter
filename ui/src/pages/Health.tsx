@@ -504,6 +504,7 @@ export default function Health() {
         // health rollups are a by-product of traffic, so there is nothing to
         // create here — the honest CTA is the one that produces an event
         <EmptyState
+          thread
           uxTarget="health-rollups"
           icon={<HeartPulse />}
           title={t("pages.health.emptyTitle")}

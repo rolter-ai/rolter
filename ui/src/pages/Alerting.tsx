@@ -231,6 +231,7 @@ function AlertChannelsScreen() {
       )}
       {channels.data && channels.data.length === 0 && (
         <EmptyState
+          thread
           uxTarget="alert-channels"
           icon={<Megaphone />}
           title={t("pages.alerting.channels.emptyTitle")}
@@ -606,6 +607,7 @@ function AlertRulesScreen() {
       )}
       {rules.data && rules.data.length === 0 && (
         <EmptyState
+          thread
           uxTarget="alert-rules"
           icon={<Gavel />}
           title={t("pages.alerting.rules.emptyTitle")}
@@ -1297,6 +1299,7 @@ function AlertHistoryScreen() {
         })}
         <ListEmptyRow read={history} rows={rows.length}>
           <EmptyState
+            thread
             uxTarget="alert-history"
             icon={<History />}
             title={

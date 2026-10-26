@@ -204,6 +204,7 @@ function AdaptiveDashboardScreen() {
       {routes.length === 0 ? (
         switchedOff ? (
           <EmptyState
+            thread
             uxTarget="adaptive-routes-disabled"
             icon={<PowerOff aria-hidden="true" />}
             title={t("pages.adaptiveDashboard.disabledTitle")}
@@ -236,6 +237,7 @@ function AdaptiveDashboardScreen() {
           />
         ) : (
           <EmptyState
+            thread
             uxTarget="adaptive-routes"
             icon={<Activity aria-hidden="true" />}
             title={t("pages.adaptiveDashboard.emptyTitle")}

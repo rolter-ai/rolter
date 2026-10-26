@@ -1169,6 +1169,7 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
               was parked in a hidden tab said "Nothing logged yet" (#1984) */}
           {query.isSuccess && rows.length === 0 && page > 0 && (
             <EmptyState
+              thread
               uxTarget="request-logs"
               icon={<ScrollText />}
               title={t("pages.logs.endTitle")}
@@ -1185,6 +1186,7 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
               so it cannot say which, and neither does this (#1861) */}
           {query.isSuccess && rows.length === 0 && page === 0 && lookup && (
             <EmptyState
+              thread
               uxTarget="request-logs"
               icon={<SearchX />}
               title={t("pages.logs.lookup.missTitle")}
@@ -1209,6 +1211,7 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
           )}
           {query.isSuccess && rows.length === 0 && page === 0 && !lookup && (
             <EmptyState
+              thread
               uxTarget="request-logs"
               icon={<ScrollText />}
               title={filterCount ? t("pages.logs.noMatchTitle") : t("pages.logs.emptyTitle")}

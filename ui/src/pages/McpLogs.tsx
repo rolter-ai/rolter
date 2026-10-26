@@ -258,6 +258,7 @@ function McpLogsScreen() {
           )}
           {rows.length === 0 && logs.isSuccess && (
             <EmptyState
+              thread
               uxTarget="mcp-logs"
               icon={<Wrench />}
               title={
@@ -400,7 +401,6 @@ function DetailDrawer({ eventId, onClose }: { eventId: string; onClose: () => vo
             icon={<SearchX />}
             title={t("pages.mcpLogs.notFoundTitle")}
             description={t("pages.mcpLogs.notFoundBody")}
-            thread={false}
             className="px-0 py-6"
           />
         ) : (

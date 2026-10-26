@@ -301,6 +301,7 @@ export default function RoutingRules() {
         // the copy blames the narrowing and offers to clear it rather than
         // offering to add the first route to a project that already has some
         <EmptyState
+          thread
           uxTarget="routes"
           icon={<Route />}
           title={labelFilter ? t("pages.routing.noMatchTitle") : t("pages.routing.emptyTitle")}

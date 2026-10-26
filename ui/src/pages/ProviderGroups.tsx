@@ -271,6 +271,7 @@ export default function ProviderGroups() {
             running, which blames a filter the operator never set (#1180) */}
         <ListEmptyRow read={groups} rows={rows.length}>
           <EmptyState
+            thread
             uxTarget="provider-groups"
             icon={<Layers />}
             title={

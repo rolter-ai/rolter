@@ -658,6 +658,7 @@ function AttributionScreen<T extends BusinessUnitRow | CustomerRow>({
 
       {rows.length === 0 ? (
         <EmptyState
+          thread
           uxTarget="cost-attribution"
           icon={kind === "unit" ? <Building2 /> : <WalletCards />}
           title={

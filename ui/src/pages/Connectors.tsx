@@ -359,6 +359,7 @@ function ConnectorsScreen() {
           where it sits on every other list */}
       {connectors.data && connectors.data.length === 0 && (
         <EmptyState
+          thread
           uxTarget="connectors"
           icon={<Cable />}
           title={t("pages.connectors.emptyTitle")}

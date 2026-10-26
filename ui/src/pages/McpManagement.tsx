@@ -746,6 +746,7 @@ export function McpCatalog() {
         />
       ) : !query.data?.length ? (
         <EmptyState
+          thread
           uxTarget="mcp-servers"
           icon={<Server />}
           title={t("pages.mcpCatalog.emptyTitle")}
@@ -1645,6 +1646,7 @@ export function ToolGroups() {
         />
       ) : !groups.data?.length ? (
         <EmptyState
+          thread
           uxTarget="tool-groups"
           icon={<Puzzle />}
           title={t("pages.tool-groups.emptyTitle")}

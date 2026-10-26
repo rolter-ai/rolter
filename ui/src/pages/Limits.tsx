@@ -420,6 +420,7 @@ export default function Limits() {
         )}
         {budgetRows?.length === 0 && (
           <EmptyState
+            thread
             uxTarget="budgets"
             icon={<Wallet />}
             title={t(
@@ -518,6 +519,7 @@ export default function Limits() {
         )}
         {rateLimitRows?.length === 0 && (
           <EmptyState
+            thread
             uxTarget="rate-limits"
             icon={<Gauge />}
             title={t(

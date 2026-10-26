@@ -513,6 +513,7 @@ export default function AuditLog() {
               read={page}
               empty={
                 <EmptyState
+                  thread
                   uxTarget="audit-log"
                   icon={<ScrollText />}
                   title={

@@ -504,6 +504,7 @@ export default function Users() {
         })}
         <ListEmptyRow read={listRead} rows={rows.length}>
           <EmptyState
+            thread
             uxTarget="users"
             icon={<UsersRound />}
             title={
@@ -2039,7 +2040,6 @@ function PendingInvitations({
             <EmptyState
               uxTarget="invitations"
               className="py-6"
-              thread={false}
               icon={<Mail />}
               title={t("pages.users.invitations.emptyTitle")}
               description={t("pages.users.invitations.emptyBody")}

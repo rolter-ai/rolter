@@ -637,6 +637,7 @@ export default function Models() {
             one wants a model created, the other wants the filter cleared */}
         <ListEmptyRow read={models} rows={sorted.length}>
           <EmptyState
+            thread
             uxTarget="models"
             icon={<Boxes />}
             title={filtersActive ? t("pages.models.noMatchTitle") : t("pages.models.emptyTitle")}

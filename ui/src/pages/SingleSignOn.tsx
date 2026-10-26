@@ -1315,6 +1315,7 @@ export default function SingleSignOn() {
       {!providers.isError &&
         (rows.length === 0 ? (
           <EmptyState
+            thread
             uxTarget="sso-providers"
             icon={<ShieldCheck />}
             title={t("pages.sso.empty.title")}

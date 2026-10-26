@@ -178,6 +178,7 @@ export default function Teams() {
       )}
       {teams.isSuccess && teams.data.length === 0 && (
         <EmptyState
+          thread
           uxTarget="teams"
           icon={<Building />}
           title={t("pages.teams.emptyTitle")}

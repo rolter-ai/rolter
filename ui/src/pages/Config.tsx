@@ -334,6 +334,7 @@ function ProvidersTable({
         })}
         <ListEmptyRow read={read} rows={providers.length}>
           <EmptyState
+            thread
             uxTarget="config-providers"
             title={t("pages.config.tables.emptyProvidersTitle")}
             description={t("pages.config.tables.emptyProvidersBody")}
@@ -410,6 +411,7 @@ function RoutesTable({
         })}
         <ListEmptyRow read={read} rows={routes.length}>
           <EmptyState
+            thread
             uxTarget="config-routes"
             title={t("pages.config.tables.emptyRoutesTitle")}
             description={t("pages.config.tables.emptyRoutesBody")}

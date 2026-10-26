@@ -392,6 +392,7 @@ export default function Keys() {
         ))}
         <ListEmptyRow read={keys} rows={rows.length}>
           <EmptyState
+            thread
             uxTarget="virtual-keys"
             icon={<Key />}
             title={search ? t("pages.virtualKeys.noMatchTitle") : t("pages.virtualKeys.emptyTitle")}

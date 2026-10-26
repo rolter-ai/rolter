@@ -314,6 +314,7 @@ export default function UserProvisioning() {
           read={tokens}
           empty={
             <EmptyState
+              thread
               uxTarget="provisioning-list"
               icon={<BookUser />}
               title={t("pages.userProvisioning.emptyTitle")}

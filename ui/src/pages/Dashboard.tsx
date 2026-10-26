@@ -480,7 +480,16 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
                   </p>
                 ) : (
                   <LineChart
-                    series={[{ name: t("pages.dashboard.spendTitle"), values: spendPoints }]}
+                    // one series, so it takes the neutral zinc rather than the
+                    // first (red) series colour: a red spend line reads as an
+                    // alarm, and red is the dashboard's one voice (#1991)
+                    series={[
+                      {
+                        name: t("pages.dashboard.spendTitle"),
+                        values: spendPoints,
+                        color: "var(--chart-2)",
+                      },
+                    ]}
                     labels={spendLabels}
                     height={220}
                     label={t("pages.dashboard.spendChartAria", { window: windowLabel })}

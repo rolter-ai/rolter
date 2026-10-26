@@ -496,6 +496,7 @@ export default function PromptRepository() {
         !selected ? (
           <main className="flex min-h-[32rem] items-center justify-center rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-raised)]">
             <EmptyState
+              thread
               uxTarget="prompt-versions"
               icon={<FilePlus2 />}
               title={t("pages.promptRepo.emptyTitle")}

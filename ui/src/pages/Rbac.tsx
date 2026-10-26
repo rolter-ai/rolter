@@ -690,6 +690,7 @@ function CustomRolesTab({ matrix, orgId }: { matrix: RbacMatrix; orgId?: string 
       )}
       {roles.data && roles.data.length === 0 && (
         <EmptyState
+          thread
           uxTarget="custom-roles"
           icon={<KeySquare />}
           title={t("pages.rbac.custom.emptyTitle")}
