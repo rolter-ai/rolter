@@ -8,6 +8,8 @@ import {
   expectSkeleton,
   expectToast,
   Harness as ScreenHarness,
+  expectRetryRecovers,
+  failingThenRecovering,
   json,
   pickOption,
   scopeResponse,
@@ -764,5 +766,24 @@ export const MarksNothingWhenTheListsAreUnavailable: Story = {
         "gpt-4o-mini",
       ),
     ).toBeVisible();
+  },
+};
+
+// the control plane answers 5xx: the retry is on offer, reaches the network,
+// and the screen comes back once the control plane does (#2220)
+const logsSettingsDown = failingThenRecovering("/api/v1/logging-settings", async () => json(BASE));
+export const LoadFailsAndRetries: Story = {
+  render: () => {
+    logsSettingsDown.reset();
+    return <Harness fetchStub={logsSettingsDown.stub} />;
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectRetryRecovers(
+      canvasElement,
+      logsSettingsDown,
+      /failed to return logs settings/,
+      async () => await expect(await canvas.findByRole("note")).toBeVisible(),
+    );
   },
 };

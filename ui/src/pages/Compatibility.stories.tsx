@@ -7,6 +7,8 @@ import {
   expectSkeleton,
   expectToast,
   Harness as ScreenHarness,
+  expectRetryRecovers,
+  failingThenRecovering,
   json,
   Toasted,
   type FetchStub,
@@ -241,5 +243,29 @@ export const RefusedToAViewer: Story = {
   render: () => <Harness fetchStub={async () => json(BASE)} role="viewer" />,
   play: async ({ canvasElement }) => {
     await expectForbidden(canvasElement);
+  },
+};
+
+// the control plane answers 5xx: the retry is on offer, reaches the network,
+// and the screen comes back once the control plane does (#2220)
+const compatibilityDown = failingThenRecovering("/api/v1/compatibility-policy", async () =>
+  json(BASE),
+);
+export const LoadFailsAndRetries: Story = {
+  render: () => {
+    compatibilityDown.reset();
+    return <Harness fetchStub={compatibilityDown.stub} />;
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectRetryRecovers(
+      canvasElement,
+      compatibilityDown,
+      /failed to return compatibility settings/,
+      async () =>
+        await expect(await canvas.findByLabelText("Anthropic API version")).toHaveValue(
+          "2023-06-01",
+        ),
+    );
   },
 };

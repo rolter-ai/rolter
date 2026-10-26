@@ -7,6 +7,8 @@ import {
   expectSkeleton,
   expectToast,
   Harness as ScreenHarness,
+  expectRetryRecovers,
+  failingThenRecovering,
   json,
   Toasted,
   type FetchStub,
@@ -344,3 +346,27 @@ const clientFits = phoneFits({
 export const MobileFits: Story = clientFits("mobile", "en");
 export const SmallPhone: Story = clientFits("small", "en");
 export const SmallPhoneInRussian: Story = clientFits("small", "ru");
+
+// the control plane answers 5xx: the retry is on offer, reaches the network,
+// and the screen comes back once the control plane does (#2220)
+const clientSettingsDown = failingThenRecovering("/api/v1/client-settings", async () =>
+  json(CONFIGURED),
+);
+export const LoadFailsAndRetries: Story = {
+  render: () => {
+    clientSettingsDown.reset();
+    return <Harness fetchStub={clientSettingsDown.stub} />;
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectRetryRecovers(
+      canvasElement,
+      clientSettingsDown,
+      /failed to return client settings/,
+      async () =>
+        await expect(await canvas.findByLabelText("Injected header name 1")).toHaveValue(
+          "x-partner-id",
+        ),
+    );
+  },
+};

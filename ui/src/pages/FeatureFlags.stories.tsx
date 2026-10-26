@@ -10,6 +10,8 @@ import {
   expectSkeleton,
   expectToast,
   Harness as ScreenHarness,
+  expectRetryRecovers,
+  failingThenRecovering,
   json,
   recording,
   Toasted,
@@ -452,5 +454,25 @@ export const LeavingCleanDoesNotAsk: Story = {
     await userEvent.click(canvas.getByRole("link", { name: "Go elsewhere" }));
     await waitFor(() => expect(canvas.getByTestId("pathname")).toHaveTextContent("/elsewhere"));
     await expect(within(document.body).queryByRole("dialog")).toBeNull();
+  },
+};
+
+// the control plane answers 5xx: the retry is on offer, reaches the network,
+// and the screen comes back once the control plane does (#2220)
+const featureFlagsDown = failingThenRecovering("/api/v1/feature-flags", async () => json(BASE));
+export const LoadFailsAndRetries: Story = {
+  render: () => {
+    featureFlagsDown.reset();
+    return <Harness fetchStub={featureFlagsDown.stub} />;
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectRetryRecovers(
+      canvasElement,
+      featureFlagsDown,
+      /failed to return feature flags/,
+      async () =>
+        await expect(await canvas.findByRole("switch", { name: "Circuit Breaker" })).toBeChecked(),
+    );
   },
 };

@@ -7,6 +7,8 @@ import {
   expectSkeleton,
   expectToast,
   Harness as ScreenHarness,
+  expectRetryRecovers,
+  failingThenRecovering,
   json,
   recording,
   Toasted,
@@ -423,3 +425,23 @@ const modelFits = phoneFits({
 export const MobileFits: Story = modelFits("mobile", "en");
 export const SmallPhone: Story = modelFits("small", "en");
 export const SmallPhoneInRussian: Story = modelFits("small", "ru");
+
+// the control plane answers 5xx: the retry is on offer, reaches the network,
+// and the screen comes back once the control plane does (#2220)
+const modelSettingsDown = failingThenRecovering("/api/v1/model-defaults", answering(CONFIGURED));
+export const LoadFailsAndRetries: Story = {
+  render: () => {
+    modelSettingsDown.reset();
+    return <Harness fetchStub={modelSettingsDown.stub} />;
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectRetryRecovers(
+      canvasElement,
+      modelSettingsDown,
+      /failed to return model settings/,
+      async () =>
+        await expect(await canvas.findByLabelText("Default model")).toHaveValue("gpt-4o-mini"),
+    );
+  },
+};
