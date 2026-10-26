@@ -52,8 +52,13 @@ The opt-out relaxes the host pin and nothing else: the key must still come from
 review rather than becoming a copied default. See
 [ADR-0029](../adr/2026-09-02-hosted-provider-host-pin-opt-out.md).
 
-Providers stored in the control-plane database cannot opt out yet; the pin
-applies to them unconditionally.
+A provider stored in the control-plane database carries the same flag
+(`allow_custom_api_base` on `POST /api/v1/orgs/{org}/providers` and
+`PUT /api/v1/providers/{id}`, and the **Allow a custom base URL** switch in the
+dashboard's provider sheet, shown only for a pinned kind). The control plane
+refuses a custom base without it on write, rather than saving a row the
+snapshot would then leave out, and `rolter-seed --import` and
+`rolter config export` carry it (#1133).
 
 The public rolter model (`router-chat`) is rewritten only to the target model
 override. OpenRouter identifiers such as `anthropic/claude-sonnet-4`, including

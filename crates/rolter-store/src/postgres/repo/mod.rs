@@ -1475,7 +1475,7 @@ impl ProviderRepo<'_> {
 
     pub async fn list(&self, org_id: Uuid) -> Result<Vec<Provider>> {
         sqlx::query_as(
-            "select id, org_id, name, slug, kind, api_base, api_key_env, egress_proxy, egress_proxies, kv_events, lmcache, project_id, created_at
+            "select id, org_id, name, slug, kind, api_base, api_key_env, egress_proxy, egress_proxies, kv_events, lmcache, project_id, allow_custom_api_base, created_at
              from providers where org_id = $1 order by name",
         )
         .bind(org_id)
@@ -1486,7 +1486,7 @@ impl ProviderRepo<'_> {
 
     pub async fn get(&self, id: Uuid) -> Result<Provider> {
         sqlx::query_as(
-            "select id, org_id, name, slug, kind, api_base, api_key_env, egress_proxy, egress_proxies, kv_events, lmcache, project_id, created_at
+            "select id, org_id, name, slug, kind, api_base, api_key_env, egress_proxy, egress_proxies, kv_events, lmcache, project_id, allow_custom_api_base, created_at
              from providers where id = $1",
         )
         .bind(id)
@@ -1510,11 +1510,12 @@ impl ProviderRepo<'_> {
         kv_events: Option<&rolter_core::KvEventsConfig>,
         lmcache: Option<&rolter_core::LmCacheConfig>,
         project_id: Option<Uuid>,
+        allow_custom_api_base: bool,
     ) -> Result<Provider> {
         sqlx::query_as(
-            "insert into providers (org_id, name, slug, kind, api_base, api_key_env, egress_proxy, egress_proxies, project_id, kv_events, lmcache)
-             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-             returning id, org_id, name, slug, kind, api_base, api_key_env, egress_proxy, egress_proxies, kv_events, lmcache, project_id, created_at",
+            "insert into providers (org_id, name, slug, kind, api_base, api_key_env, egress_proxy, egress_proxies, project_id, kv_events, lmcache, allow_custom_api_base)
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+             returning id, org_id, name, slug, kind, api_base, api_key_env, egress_proxy, egress_proxies, kv_events, lmcache, project_id, allow_custom_api_base, created_at",
         )
         .bind(org_id)
         .bind(name)
@@ -1527,6 +1528,7 @@ impl ProviderRepo<'_> {
         .bind(project_id)
         .bind(setting_json(kv_events)?)
         .bind(setting_json(lmcache)?)
+        .bind(allow_custom_api_base)
         .fetch_one(self.0)
         .await
         .map_err(store_err)
@@ -1550,6 +1552,7 @@ impl ProviderRepo<'_> {
         kv_events: Option<Option<&rolter_core::KvEventsConfig>>,
         lmcache: Option<Option<&rolter_core::LmCacheConfig>>,
         project_id: Option<Option<Uuid>>,
+        allow_custom_api_base: Option<bool>,
     ) -> Result<Provider> {
         sqlx::query_as(
             "update providers set
@@ -1561,9 +1564,10 @@ impl ProviderRepo<'_> {
                  egress_proxies = case when $9 then $10 else egress_proxies end,
                  project_id = case when $11 then $12 else project_id end,
                  kv_events = case when $13 then $14 else kv_events end,
-                 lmcache = case when $15 then $16 else lmcache end
+                 lmcache = case when $15 then $16 else lmcache end,
+                 allow_custom_api_base = coalesce($17, allow_custom_api_base)
              where id = $1
-             returning id, org_id, name, slug, kind, api_base, api_key_env, egress_proxy, egress_proxies, kv_events, lmcache, project_id, created_at",
+             returning id, org_id, name, slug, kind, api_base, api_key_env, egress_proxy, egress_proxies, kv_events, lmcache, project_id, allow_custom_api_base, created_at",
         )
         .bind(id)
         .bind(slug)
@@ -1581,6 +1585,7 @@ impl ProviderRepo<'_> {
         .bind(setting_json(kv_events.flatten())?)
         .bind(lmcache.is_some())
         .bind(setting_json(lmcache.flatten())?)
+        .bind(allow_custom_api_base)
         .fetch_optional(self.0)
         .await
         .map_err(store_err)?
@@ -6334,6 +6339,7 @@ mod tests {
                 None,
                 None,
                 None,
+                false,
             )
             .await
             .unwrap();
@@ -7504,7 +7510,9 @@ mod tests {
 
         // an update that leaves the pool alone still answers
         let kept = repo
-            .update(id, None, None, None, None, None, None, None, None, None)
+            .update(
+                id, None, None, None, None, None, None, None, None, None, None,
+            )
             .await
             .expect("an update that omits the pool succeeds");
         assert_eq!(kept.egress_proxies.0.len(), 1);
@@ -7519,6 +7527,7 @@ mod tests {
                 None,
                 None,
                 Some(&pool_now),
+                None,
                 None,
                 None,
                 None,
@@ -7565,6 +7574,7 @@ mod tests {
                     None,
                     None,
                     None,
+                    false,
                 )
                 .await
                 .unwrap();

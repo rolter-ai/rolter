@@ -252,6 +252,10 @@ pub struct Provider {
     /// the project the provider is scoped to; `None` is org-wide. Only keys
     /// minted in that project may reach it (#1919)
     pub project_id: Option<Uuid>,
+    /// opt out of the host pin a hosted kind carries, as the file config's
+    /// field of the same name does (ADR-0029, #1133)
+    #[serde(default)]
+    pub allow_custom_api_base: bool,
     pub created_at: DateTime<Utc>,
 }
 

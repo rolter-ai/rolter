@@ -87,6 +87,14 @@ const KINDS = [
     auth_header: "x-goog-api-key",
   },
   {
+    kind: "openrouter",
+    base_includes_v1: true,
+    request: "chat",
+    request_path: CHAT,
+    auth_header: "authorization",
+    pinned_api_base: "https://openrouter.ai/api/v1",
+  },
+  {
     kind: "mistral",
     base_includes_v1: true,
     request: "chat",
@@ -1123,5 +1131,70 @@ export const RefusedEndpointIsShownOnItsField: Story = {
     await expect(endpoint).toHaveAccessibleDescription(
       /lmcache\.endpoint must be an http\(s\) URL/,
     );
+  },
+};
+
+// --- #1133: a hosted kind's host pin and its deliberate opt-out --------------
+
+const OPENROUTER: ProviderRow = {
+  ...PROVIDER,
+  id: "prov-or",
+  name: "openrouter-edge",
+  slug: "openrouter-edge",
+  kind: "openrouter",
+  api_base: "https://openrouter.ai/api/v1",
+  api_key_env: "OPENROUTER_API_KEY",
+  allow_custom_api_base: false,
+};
+
+const pinRecorder = (): Recorder =>
+  recording(async (input) => {
+    if (String(input).includes("/provider-kinds")) return json(KINDS);
+    return json({ ...OPENROUTER, allow_custom_api_base: true });
+  });
+
+let pinCalls: Recorder | null = null;
+
+export const PinnedKindRefusesAnotherHostUntilOptedOut: Story = {
+  render: () => {
+    pinCalls = pinRecorder();
+    return <Harness provider={OPENROUTER} fetchStub={pinCalls.stub} />;
+  },
+  play: async () => {
+    const canvas = screen();
+    const base = await canvas.findByLabelText("API base");
+    const optOut = await canvas.findByRole("switch", { name: "Allow a custom base URL" });
+    await expect(optOut).not.toBeChecked();
+    await userEvent.clear(base);
+    await userEvent.type(base, "http://127.0.0.1:18002/api/v1");
+    await waitFor(() => expect(base).toHaveAttribute("aria-invalid", "true"));
+    await expect(canvas.getByText(/Use that base/)).toBeInTheDocument();
+    await userEvent.click(optOut);
+    await waitFor(() => expect(base).not.toHaveAttribute("aria-invalid", "true"));
+    await userEvent.click(canvas.getByRole("button", { name: "Save provider" }));
+    const sent = await pinCalls!.expectSentBody<Record<string, unknown>>("PUT", "/providers/");
+    await expect(sent.allow_custom_api_base).toBe(true);
+    await expect(sent.api_base).toBe("http://127.0.0.1:18002/api/v1");
+  },
+};
+
+export const UnpinnedKindOffersNoOptOut: Story = {
+  render: () => <Harness fetchStub={stub(async () => json({}))} />,
+  play: async () => {
+    const canvas = screen();
+    await canvas.findByLabelText("API base");
+    await waitFor(() =>
+      expect(canvas.queryByRole("switch", { name: "Allow a custom base URL" })).toBeNull(),
+    );
+  },
+};
+
+export const PinnedKindOptOutInRussian: Story = {
+  globals: { locale: "ru" },
+  render: () => <Harness provider={OPENROUTER} fetchStub={pinRecorder().stub} />,
+  play: async () => {
+    await expect(
+      await screen().findByRole("switch", { name: ru.providerSheet.customBase.title }),
+    ).toBeInTheDocument();
   },
 };

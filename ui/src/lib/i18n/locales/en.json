@@ -4209,7 +4209,12 @@
         "chat": "Chat requests resolve to",
         "decision": "Decision requests resolve to",
         "embeddings": "Embedding requests resolve to"
-      }
+      },
+      "pinned": "This kind is pinned to {{base}}. Use that base, or allow a custom base URL below."
+    },
+    "customBase": {
+      "title": "Allow a custom base URL",
+      "hint": "This kind is pinned to {{base}}, so an edit cannot send its key elsewhere. Turn this on only for an egress proxy in front of the vendor, an endpoint that re-implements its API, or a local fake: the provider's key is then sent to whatever host the base names."
     },
     "created": "{{name}} is created but not tested yet",
     "createdNext": "Test connection asks the upstream for its model list. Run it before a route depends on this provider.",

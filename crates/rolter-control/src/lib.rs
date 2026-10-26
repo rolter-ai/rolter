@@ -1914,6 +1914,7 @@ async fn seed_default_providers(pool: &sqlx::PgPool, config: &GatewayConfig) -> 
                 provider.lmcache.as_ref(),
                 // `project_scoped` means the default project here (#1919)
                 provider.project_scoped.then_some(project_id),
+                provider.allow_custom_api_base,
             )
             .await?;
         if provider.surplus_api_key_count() > 0 {
@@ -2205,6 +2206,9 @@ struct ProviderKindInfo {
     /// the lowercase header the provider key travels in; `authorization` means
     /// a bearer token
     auth_header: &'static str,
+    /// the `api_base` a hosted kind is pinned to unless the provider sets
+    /// `allow_custom_api_base`, or `null` for a kind with no pin (#1133)
+    pinned_api_base: Option<&'static str>,
 }
 
 /// The per-kind facts the dashboard states instead of guessing: the `api_base`
@@ -2227,6 +2231,7 @@ async fn get_provider_kinds(_: session_guard::AnySession) -> Json<Vec<ProviderKi
                 request: kind.primary_request(),
                 request_path: kind.primary_upstream_path(),
                 auth_header: kind.auth_header("").0,
+                pinned_api_base: kind.pinned_api_base(),
             })
             .collect(),
     )

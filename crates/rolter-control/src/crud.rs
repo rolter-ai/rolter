@@ -3202,6 +3202,11 @@ struct CreateProvider {
     /// org-wide provider, usable by every project
     #[serde(default)]
     project_id: Option<Uuid>,
+    /// opt out of the host pin a hosted kind carries, so `api_base` may point
+    /// at an egress proxy, a vendor-compatible endpoint or a local fake
+    /// (ADR-0029). The provider's key then travels to that host
+    #[serde(default)]
+    allow_custom_api_base: bool,
 }
 
 const PROVIDER_KINDS: [&str; 49] = [
@@ -3634,6 +3639,21 @@ fn validate_kind(kind: &str) -> ApiResult<()> {
 /// Refused rather than silently trimmed: the operator pasted that URL from
 /// somewhere, and quietly rewriting it hides the fact that this provider kind
 /// wants a different base than the one they were reading about.
+/// Refuse an `api_base` that breaks the host pin of a hosted kind unless the
+/// provider opts out, as `provider_problems` refuses it in a file (#1133).
+/// Without this the row saves and the snapshot then omits the provider.
+fn require_pinned_api_base(kind: &str, api_base: &str, allow_custom: bool) -> ApiResult<()> {
+    let Ok(parsed) = serde_json::from_value::<rolter_core::ProviderKind>(
+        serde_json::Value::String(kind.to_string()),
+    ) else {
+        return Ok(());
+    };
+    match parsed.host_pin_problem(api_base, allow_custom) {
+        Some(problem) => Err(invalid_field("api_base", problem)),
+        None => Ok(()),
+    }
+}
+
 fn require_wellformed_api_base(kind: &str, api_base: &str) -> ApiResult<()> {
     let Ok(parsed) = serde_json::from_value::<rolter_core::ProviderKind>(
         serde_json::Value::String(kind.to_string()),
@@ -3727,6 +3747,7 @@ async fn create_provider(
     }
     validate_kind(&body.kind)?;
     require_wellformed_api_base(&body.kind, &body.api_base)?;
+    require_pinned_api_base(&body.kind, &body.api_base, body.allow_custom_api_base)?;
     require_valid_telemetry(
         &state,
         &body.name,
@@ -3754,6 +3775,7 @@ async fn create_provider(
             body.kv_events.as_ref(),
             body.lmcache.as_ref(),
             body.project_id,
+            body.allow_custom_api_base,
         )
         .await?;
     let has_stored_key = sealed.is_some();
@@ -3814,6 +3836,8 @@ struct UpdateProvider {
     /// that project; `null` makes it org-wide again
     #[serde(default, deserialize_with = "explicit_null")]
     project_id: Option<Option<Uuid>>,
+    /// omit to leave unchanged; see [`CreateProvider`]
+    allow_custom_api_base: Option<bool>,
 }
 
 /// Hold a provider's `kv_events` and `lmcache` to the rules the file config
@@ -3912,6 +3936,16 @@ async fn update_provider(
         // against the kind this provider will have once the update lands
         require_wellformed_api_base(body.kind.as_deref().unwrap_or(&existing.kind), api_base)?;
     }
+    // only an edit that touches the pin's inputs is held to it, so a row saved
+    // before the check existed can still take an unrelated change
+    if body.kind.is_some() || body.api_base.is_some() || body.allow_custom_api_base.is_some() {
+        require_pinned_api_base(
+            body.kind.as_deref().unwrap_or(&existing.kind),
+            body.api_base.as_deref().unwrap_or(&existing.api_base),
+            body.allow_custom_api_base
+                .unwrap_or(existing.allow_custom_api_base),
+        )?;
+    }
     require_valid_telemetry(
         &state,
         &existing.name,
@@ -3941,6 +3975,7 @@ async fn update_provider(
             body.kv_events.as_ref().map(Option::as_ref),
             body.lmcache.as_ref().map(Option::as_ref),
             body.project_id,
+            body.allow_custom_api_base,
         )
         .await?;
     match sealed {

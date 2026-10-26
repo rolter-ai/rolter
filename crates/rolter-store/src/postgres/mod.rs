@@ -223,6 +223,8 @@ struct ProviderRow {
     lmcache: Option<serde_json::Value>,
     /// the project the provider is scoped to, `None` for org-wide (#1919)
     project_id: Option<Uuid>,
+    /// opt out of the kind's host pin (ADR-0029, #1133)
+    allow_custom_api_base: bool,
     /// sealed runtime credential from `provider_keys`, when one is stored
     ciphertext: Option<Vec<u8>>,
     nonce: Option<Vec<u8>>,
@@ -339,10 +341,7 @@ impl ProviderRow {
             status_page_url: None,
             role_profile: None,
             model_role_profiles: Default::default(),
-            // db-backed providers cannot opt out of the host pin yet: the
-            // column, the crud surface and the dashboard control are tracked
-            // separately, so a stored provider keeps the safe default
-            allow_custom_api_base: false,
+            allow_custom_api_base: row.allow_custom_api_base,
         })
     }
 }
@@ -538,7 +537,8 @@ impl PostgresConfigStore {
     async fn load_providers(&self) -> Result<(Vec<ProviderConfig>, HashSet<String>)> {
         let rows: Vec<ProviderRow> = sqlx::query_as(
             "select p.org_id, p.name, p.slug, p.kind, p.api_base, p.api_key_env, p.egress_proxy,
-                    p.egress_proxies, p.kv_events, p.lmcache, p.project_id, pk.ciphertext, pk.nonce
+                    p.egress_proxies, p.kv_events, p.lmcache, p.project_id,
+                    p.allow_custom_api_base, pk.ciphertext, pk.nonce
              from providers p
              left join provider_keys pk on pk.provider_id = p.id
              order by p.name",
@@ -2762,6 +2762,7 @@ mod tests {
                     None,
                     None,
                     None,
+                    false,
                 )
                 .await
                 .unwrap();

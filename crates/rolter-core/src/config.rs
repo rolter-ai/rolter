@@ -452,6 +452,27 @@ impl ProviderKind {
         }
     }
 
+    /// The `api_base` a hosted kind is pinned to unless its provider sets
+    /// `allow_custom_api_base` (ADR-0029); `None` for a kind with no pin.
+    pub fn pinned_api_base(self) -> Option<&'static str> {
+        match self {
+            ProviderKind::Openrouter => Some("https://openrouter.ai/api/v1"),
+            _ => None,
+        }
+    }
+
+    /// Why `api_base` breaks this kind's host pin, or `None` when it is the
+    /// pinned base, the kind has no pin, or the provider opted out.
+    pub fn host_pin_problem(self, api_base: &str, allow_custom_api_base: bool) -> Option<String> {
+        let pinned = self.pinned_api_base()?;
+        if allow_custom_api_base || api_base.trim().trim_end_matches('/') == pinned {
+            return None;
+        }
+        Some(format!(
+            "api_base must be {pinned} unless the provider sets allow_custom_api_base = true"
+        ))
+    }
+
     /// The doubled-prefix defect, or `None` when the base is well-formed.
     ///
     /// Only reported for kinds that append `/v1` themselves: for the rest a
@@ -4690,14 +4711,11 @@ impl GatewayConfig {
                     provider.name
                 ));
             }
-            if !provider.allow_custom_api_base
-                && provider.api_base.trim_end_matches('/') != "https://openrouter.ai/api/v1"
+            if let Some(problem) = provider
+                .kind
+                .host_pin_problem(&provider.api_base, provider.allow_custom_api_base)
             {
-                problems.push(format!(
-                    "openrouter provider '{}' api_base must be https://openrouter.ai/api/v1 \
-                     unless the provider sets allow_custom_api_base = true",
-                    provider.name
-                ));
+                problems.push(format!("openrouter provider '{}' {problem}", provider.name));
             }
         }
         // hosted adapters authenticated with an env-sourced key enforce the

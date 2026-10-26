@@ -27647,3 +27647,104 @@ async fn the_models_and_config_reads_show_only_the_callers_organizations() {
         }
     }
 }
+
+/// #1133: a stored provider can opt out of its kind's host pin as a file one
+/// can, the opt-out reaches the snapshot, and a custom base without it is
+/// refused on write instead of saving a row the snapshot then leaves out.
+#[tokio::test]
+async fn a_stored_provider_can_opt_out_of_the_host_pin() {
+    skip_without_db!();
+    let (app, _db) = fresh_app().await;
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let org: Value = client
+        .post(format!("{base}/api/v1/orgs"))
+        .json(&json!({"name": "Pinned", "slug": "pinned"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_id = org["id"].as_str().unwrap().to_string();
+    let providers_url = format!("{base}/api/v1/orgs/{org_id}/providers");
+    let draft = |extra: Value| {
+        let mut body = json!({
+            "name": "openrouter-edge", "kind": "openrouter",
+            "api_base": "https://openrouter-edge.example.com/api/v1",
+            "api_key_env": "OPENROUTER_API_KEY"
+        });
+        body.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        body
+    };
+
+    let refused = client
+        .post(&providers_url)
+        .json(&draft(json!({})))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), 400);
+    let body: Value = refused.json().await.unwrap();
+    assert_eq!(body["error"]["field"], "api_base", "{body}");
+
+    let created: Value = client
+        .post(&providers_url)
+        .json(&draft(json!({"allow_custom_api_base": true})))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let provider_id = created["id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{created}"))
+        .to_string();
+    assert_eq!(created["allow_custom_api_base"], true, "{created}");
+
+    let snap: Value = client
+        .get(format!("{base}/internal/snapshot"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let served = snap["config"]["providers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["name"] == "openrouter-edge")
+        .cloned()
+        .unwrap_or_else(|| panic!("provider in snapshot: {snap}"));
+    assert_eq!(served["allow_custom_api_base"], true);
+
+    // dropping the opt-out while the base is still custom is refused, and an
+    // edit that leaves the pin's inputs alone is not held to it
+    let url = format!("{base}/api/v1/providers/{provider_id}");
+    let dropped = client
+        .put(&url)
+        .json(&json!({"allow_custom_api_base": false}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(dropped.status(), 400);
+    let pinned: Value = client
+        .put(&url)
+        .json(&json!({
+            "api_base": "https://openrouter.ai/api/v1",
+            "allow_custom_api_base": false
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(pinned["allow_custom_api_base"], false, "{pinned}");
+}

@@ -201,6 +201,8 @@ Set this when the endpoint really is somewhere else — a corporate egress proxy
 
 `rolter check` reports every provider that sets it, and `rolter check --strict` fails on it, so the opt-out stays visible rather than becoming a copied default.
 
+A provider created in the dashboard has the same opt-out: the provider sheet shows an **Allow a custom base URL** switch for a pinned kind, and the providers API takes `allow_custom_api_base`. A custom base without it is refused when the provider is saved. `rolter-seed --import` keeps the flag, and `rolter config export` writes it back out.
+
 ```toml
 [[providers]]
 name = "openrouter-via-proxy"

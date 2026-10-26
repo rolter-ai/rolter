@@ -534,6 +534,7 @@ async fn import_config(
                     && row.egress_proxies.0 == p.egress_proxies
                     && same_setting(&row.kv_events, &p.kv_events)
                     && same_setting(&row.lmcache, &p.lmcache)
+                    && row.allow_custom_api_base == p.allow_custom_api_base
                     && row.project_id == scope;
                 if unchanged {
                     tracing::info!(provider = %p.name, "provider unchanged");
@@ -567,6 +568,7 @@ async fn import_config(
                             Some(p.kv_events.as_ref()),
                             Some(p.lmcache.as_ref()),
                             Some(scope),
+                            Some(p.allow_custom_api_base),
                         )
                         .await?;
                     tracing::info!(provider = %p.name, "updated provider from file");
@@ -595,6 +597,7 @@ async fn import_config(
                         p.kv_events.as_ref(),
                         p.lmcache.as_ref(),
                         scope,
+                        p.allow_custom_api_base,
                     )
                     .await?;
                 tracing::info!(provider = %p.name, "created provider");

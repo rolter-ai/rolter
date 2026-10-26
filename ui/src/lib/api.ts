@@ -908,6 +908,12 @@ export interface ProviderKindInfo {
   request_path: string;
   /** the lowercase header the key travels in; `authorization` is a bearer token */
   auth_header: string;
+  /**
+   * the base a hosted kind is pinned to unless the provider opts out with
+   * `allow_custom_api_base`; `null`, or absent from an older control plane, for
+   * a kind with no pin (#1133)
+   */
+  pinned_api_base?: string | null;
 }
 
 export function fetchProviderKinds(): Promise<ProviderKindInfo[]> {
@@ -1518,6 +1524,11 @@ export interface ProviderRow {
   /** the LMCache source `lmcache_aware` reads; `null` when none is set */
   lmcache?: LmCacheConfig | null;
   /**
+   * Whether the provider opted out of its kind's host pin, so `api_base` may
+   * name another host; absent from a control plane older than #1133
+   */
+  allow_custom_api_base?: boolean;
+  /**
    * Whether a sealed key is stored for the provider. An `api_key_env` does not
    * count, and the key itself is never returned. Absent from a control plane
    * that predates the field
@@ -1541,6 +1552,8 @@ export interface CreateProviderInput {
   kv_events?: Partial<KvEventsConfig> & Pick<KvEventsConfig, "endpoint">;
   /** omit for no LMCache source; keys other than `endpoint` take their defaults */
   lmcache?: Partial<LmCacheConfig> & Pick<LmCacheConfig, "endpoint">;
+  /** opt out of the kind's host pin; omit for the pinned default */
+  allow_custom_api_base?: boolean;
 }
 
 export interface UpdateProviderInput {
@@ -1563,6 +1576,8 @@ export interface UpdateProviderInput {
   kv_events?: (Partial<KvEventsConfig> & Pick<KvEventsConfig, "endpoint">) | null;
   /** omit to keep; `null` clears the source; an object replaces the whole setting */
   lmcache?: (Partial<LmCacheConfig> & Pick<LmCacheConfig, "endpoint">) | null;
+  /** omit to keep */
+  allow_custom_api_base?: boolean;
 }
 
 /**
