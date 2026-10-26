@@ -62,7 +62,7 @@ export function TestOutcome({
       </div>
       {result.error && <p className="mt-1 text-muted-foreground">{result.error}</p>}
       {result.probed_url && (
-        <p className="mt-1 font-mono text-[11px] text-muted-foreground">{result.probed_url}</p>
+        <p className="mt-1 font-mono text-2xs text-muted-foreground">{result.probed_url}</p>
       )}
     </div>
   );

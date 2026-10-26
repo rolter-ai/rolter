@@ -254,6 +254,16 @@ read that succeeded and a count waits for the data it counts; the
 A screen's error stories assert it with `expectNoFalseEmpty` after
 `expectLoadError`.
 
+**Every screen's retry is tested, not only its 403.** A forbidden story proves
+the screen says why it cannot show anything; it says nothing about the retry a
+5xx or an unreachable control plane offers. `failingThenRecovering(path, loaded)`
+in `ui/src/pages/story-harness.tsx` answers `path` with a 503 until the story
+calls `recover()`, and `expectRetryRecovers` drives the whole path: the
+`LoadError` with the control plane's words under it, the **Try again** press,
+a read that reached the network, and the loaded state back with the failure's
+alert gone. Each screen carries one such story beside its `Forbidden`
+(#2220).
+
 **The control plane's own message is never swallowed.** `LoadError` prints it
 beneath the summary. The dashboard's classification is a helpful gloss, not a
 replacement — #962 happened because the gloss was the only thing on screen and

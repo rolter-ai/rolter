@@ -203,7 +203,7 @@ export function RepositoryIndex({
                 <span className="min-w-0 flex-1 truncate text-sm font-medium">{item.name}</span>
                 {item.badge}
               </span>
-              <span className="mt-0.5 block truncate font-mono text-[0.6875rem] text-[color:var(--text-subtle)]">
+              <span className="mt-0.5 block truncate font-mono text-2xs text-[color:var(--text-subtle)]">
                 {item.slug}
               </span>
             </button>
@@ -217,11 +217,11 @@ export function RepositoryIndex({
 /** the badge an index row ends in: the live version, or "draft" before the first publish */
 export function VersionBadge({ version, draft }: { version?: number | null; draft: string }) {
   return version ? (
-    <span className="text-[0.6875rem] tabular-nums text-[color:var(--status-success-text)]">
+    <span className="text-2xs tabular-nums text-[color:var(--status-success-text)]">
       v{version}
     </span>
   ) : (
-    <span className="text-[0.6875rem] text-[color:var(--text-subtle)]">{draft}</span>
+    <span className="text-2xs text-[color:var(--text-subtle)]">{draft}</span>
   );
 }
 
@@ -346,7 +346,7 @@ export function VersionRail<V extends { version: number; created_at: string }>({
                     <span className="text-sm font-semibold tabular-nums">v{version.version}</span>
                     {published && <Badge tone="success">{t("repository.published")}</Badge>}
                   </div>
-                  <p className="mt-1.5 flex items-center gap-1 text-[0.6875rem] text-muted-foreground">
+                  <p className="mt-1.5 flex items-center gap-1 text-2xs text-muted-foreground">
                     <Clock3 className="h-3 w-3" />
                     {format.date(version.created_at, { dateStyle: "medium", timeStyle: "short" })}
                   </p>
@@ -388,7 +388,7 @@ export function MakeLiveLabel({
 /** the line a version's row ends in, in the muted small type every rail uses */
 export function VersionMeta({ children }: { children: React.ReactNode }) {
   return (
-    <p className="mt-1 flex items-center gap-1 text-[0.6875rem] text-[color:var(--text-subtle)]">
+    <p className="mt-1 flex items-center gap-1 text-2xs text-[color:var(--text-subtle)]">
       {children}
     </p>
   );

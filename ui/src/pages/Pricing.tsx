@@ -287,6 +287,7 @@ export default function Pricing() {
         <ListEmptyRow read={prices} rows={rows.length}>
           {q ? (
             <EmptyState
+              thread
               uxTarget="model-prices"
               icon={<CircleDollarSign />}
               title={t("pages.pricing.noMatchTitle")}
@@ -299,6 +300,7 @@ export default function Pricing() {
             />
           ) : (
             <EmptyState
+              thread
               uxTarget="model-prices"
               icon={<CircleDollarSign />}
               title={t("pages.pricing.emptyTitle")}

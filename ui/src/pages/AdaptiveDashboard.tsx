@@ -204,6 +204,7 @@ function AdaptiveDashboardScreen() {
       {routes.length === 0 ? (
         switchedOff ? (
           <EmptyState
+            thread
             uxTarget="adaptive-routes-disabled"
             icon={<PowerOff aria-hidden="true" />}
             title={t("pages.adaptiveDashboard.disabledTitle")}
@@ -236,6 +237,7 @@ function AdaptiveDashboardScreen() {
           />
         ) : (
           <EmptyState
+            thread
             uxTarget="adaptive-routes"
             icon={<Activity aria-hidden="true" />}
             title={t("pages.adaptiveDashboard.emptyTitle")}
@@ -407,7 +409,7 @@ function AdaptiveDashboardScreen() {
                                     node: node.node_id,
                                   })}
                                 </caption>
-                                <thead className="bg-[color:var(--surface-subtle)] text-left text-[0.6875rem] uppercase tracking-[0.07em] text-muted-foreground">
+                                <thead className="bg-[color:var(--surface-subtle)] text-left text-2xs uppercase tracking-[0.07em] text-muted-foreground">
                                   <tr>
                                     <th scope="col" className="px-3 py-2 font-medium">
                                       {t("pages.adaptiveDashboard.columns.upstream")}

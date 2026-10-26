@@ -778,7 +778,7 @@ function ManualKeyField({ offered, onSaved }: { offered: boolean; onSaved: () =>
           </div>
           {/* three different credentials in this product answer to "api key";
               say which one this field wants (#943) */}
-          <p className="text-[0.6875rem] leading-snug text-[color:var(--text-subtle)]">
+          <p className="text-2xs leading-snug text-[color:var(--text-subtle)]">
             {t("playground.key.hint")}{" "}
             {/* suppressed entirely when no documentation host is configured, so
                 the hint above never trails a dead link (#1164) */}
@@ -1177,7 +1177,7 @@ function ChatColumn({
                 : "flex flex-col gap-1 rounded-md border border-[color:var(--border-subtle)] px-2.5 py-2 text-sm text-[color:var(--text-secondary)]"
             }
           >
-            <span className="font-mono text-[0.625rem] uppercase tracking-wide text-[color:var(--text-subtle)]">
+            <span className="font-mono text-3xs uppercase tracking-wide text-[color:var(--text-subtle)]">
               {t(`pages.playground.roles.${m.role}`)}
             </span>
             {/* markdown, unless the operator asked for the characters. the
@@ -1197,7 +1197,7 @@ function ChatColumn({
               <Markdown source={m.text} />
             )}
             {(m.cutShort || m.stats) && (
-              <span className="font-mono text-[0.625rem] text-[color:var(--text-subtle)]">
+              <span className="font-mono text-3xs text-[color:var(--text-subtle)]">
                 {m.cutShort
                   ? m.cutShort?.byOperator
                     ? t("pages.playground.replyStopped")
@@ -1221,7 +1221,7 @@ function ChatColumn({
             )}
             {/* marked while multimodal is on, which is when the next send carries it again */}
             {multimodal && m.image && (
-              <span className="inline-flex items-center gap-1.5 self-start text-[0.625rem] text-muted-foreground">
+              <span className="inline-flex items-center gap-1.5 self-start text-3xs text-muted-foreground">
                 <ImageIcon aria-hidden className="h-3 w-3" /> {t("pages.playground.imageAttached")}
               </span>
             )}
@@ -1237,7 +1237,7 @@ function ChatColumn({
       {(error || attached) && (
         <div className="px-3 pb-1">
           {attached && (
-            <div className="mb-1 inline-flex items-center gap-1.5 rounded bg-[color:var(--surface-subtle)] px-2 py-1 text-[0.625rem] text-muted-foreground">
+            <div className="mb-1 inline-flex items-center gap-1.5 rounded bg-[color:var(--surface-subtle)] px-2 py-1 text-3xs text-muted-foreground">
               <ImageIcon className="h-3 w-3" /> {t("pages.playground.imageAttached")}
               <DeleteIconButton
                 label={
@@ -1510,7 +1510,7 @@ function EmbeddingsMode({ models }: { models: ModelOption[] }) {
         <div className="flex max-h-[280px] flex-col gap-1.5 overflow-y-auto pr-1">
           {texts.map((row, i) => (
             <div key={i} className="flex items-center gap-1.5">
-              <span className="w-4 flex-none text-right font-mono text-[0.625rem] text-[color:var(--text-subtle)]">
+              <span className="w-4 flex-none text-right font-mono text-3xs text-[color:var(--text-subtle)]">
                 {i + 1}
               </span>
               <Input
@@ -1921,7 +1921,7 @@ function RealtimeMode({ models }: { models: ModelOption[] }) {
             <CardDescription>{t("pages.playground.eventLogSubtitle")}</CardDescription>
           </CardHeader>
           <CardContent>
-            <div className="mb-2.5 flex h-[140px] flex-col gap-1 overflow-auto font-mono text-[0.6875rem] text-[color:var(--text-secondary)]">
+            <div className="mb-2.5 flex h-[140px] flex-col gap-1 overflow-auto font-mono text-2xs text-[color:var(--text-secondary)]">
               {log.length === 0 ? (
                 <span className="text-[color:var(--text-subtle)]">
                   {t("pages.playground.noEvents")}

@@ -40,14 +40,29 @@ const SPEND_CHART = en.pages.dashboard.spendChartAria.replace(
   en.common.timeWindow.last24h,
 );
 
-const loadedWith = (summary: typeof SUMMARY): FetchStub =>
-  routes([
+/** a summary read of the window before the one on screen: it is the one with an `until` (#2010) */
+const isPreviousWindow = (input: RequestInfo | URL) => {
+  const url = new URL(String(input), "http://localhost");
+  return url.pathname === "/api/v1/analytics/summary" && url.searchParams.has("until");
+};
+
+/**
+ * The screen's reads answered with `summary`. The window before answers
+ * `previous`, and by default holds no traffic, so a tile has nothing to
+ * compare with and draws no arrow: the case of a deployment's first day.
+ */
+const loadedWith = (summary: typeof SUMMARY, previous?: typeof SUMMARY): FetchStub => {
+  const current = routes([
     ["/api/v1/analytics/summary", () => ({ data: [summary] })],
     ["/api/v1/analytics/timeseries", () => ({ data: SERIES })],
     ["/api/v1/analytics/by-model", () => ({ data: BY_MODEL })],
     ["/api/v1/analytics/invocations", () => ({ data: RECENT })],
     ["/api/v1/currency", () => ({ base: "USD", codes: ["USD"], rates: {} })],
   ]);
+  return scoped(async (input, init) =>
+    isPreviousWindow(input) ? json({ data: previous ? [previous] : [] }) : current(input, init),
+  );
+};
 
 const loaded = loadedWith(SUMMARY);
 
@@ -133,8 +148,8 @@ export const Loaded: Story = {
     await expect(getComputedStyle(errors).color).not.toBe(
       resolveColorToken("--status-success-text"),
     );
-    // the summary is one window with nothing earlier to compare against, so
-    // the tile draws no arrow: it would claim a movement nobody measured
+    // the window before held no traffic, so there is nothing to compare with
+    // and the tile draws no arrow: it would claim a movement nobody measured
     await expect(errors.querySelector("svg")).toBeNull();
 
     // with requests to average, the latency tile is a measurement: the mean
@@ -179,6 +194,78 @@ export const ErrorsBelowThreshold: Story = {
       resolveColorToken("--status-danger-text"),
     );
     await expect(errors.querySelector("svg")).toBeNull();
+  },
+};
+
+/** the delta line under a figure, which the arrow sits in */
+const deltaOf = (canvas: ReturnType<typeof within>, label: string): HTMLElement =>
+  tile(canvas, label).querySelector("svg")?.parentElement as HTMLElement;
+
+const vsPrevious = (change: string) => en.pages.dashboard.vsPrevious.replace("{{change}}", change);
+
+/**
+ * #2010: each figure is compared with the window before. 132 requests against
+ * 100 is a 32% rise, good news in the success colour; latency down from 250ms
+ * is good news too; an error rate up from 2% is bad news; and spend rising
+ * with traffic is neither, so it stays neutral.
+ */
+export const ComparesWithThePreviousWindow: Story = {
+  render: () =>
+    render(
+      loadedWith(SUMMARY, {
+        ...SUMMARY,
+        requests: 100,
+        errors: 2,
+        avg_latency_ms: 250,
+        cost_usd: 30,
+      }),
+    ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const d = en.pages.dashboard;
+    const requests = await waitFor(() => deltaOf(canvas, d.statRequests));
+    await expect(requests).toHaveTextContent(vsPrevious("+32%"));
+    await expect(getComputedStyle(requests).color).toBe(resolveColorToken("--status-success-text"));
+    const latency = await waitFor(() => deltaOf(canvas, d.statAvgLatency));
+    await expect(latency.textContent).toMatch(/^-|^−/);
+    await expect(getComputedStyle(latency).color).toBe(resolveColorToken("--status-success-text"));
+    const errors = await waitFor(() => deltaOf(canvas, d.statErrorRate));
+    await expect(errors).toHaveTextContent(errorCount(7));
+    await expect(getComputedStyle(errors).color).toBe(resolveColorToken("--status-danger-text"));
+    const spend = await waitFor(() => deltaOf(canvas, d.statSpend));
+    await expect(spend.textContent).toMatch(/^\+/);
+    await expect(getComputedStyle(spend).color).toBe(
+      getComputedStyle(canvas.getByText(d.statSpend)).color,
+    );
+  },
+};
+
+/** A change inside the 1% dead band is flat: a level arrow, neither good nor bad. */
+export const AnUnchangedWindowIsFlat: Story = {
+  render: () => render(loadedWith(SUMMARY, SUMMARY)),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const d = en.pages.dashboard;
+    for (const label of [d.statRequests, d.statAvgLatency, d.statSpend]) {
+      const delta = await waitFor(() => deltaOf(canvas, label));
+      await expect(delta.querySelector("path")).toHaveAttribute("d", "M5 12h14");
+      await expect(getComputedStyle(delta).color).toBe(
+        getComputedStyle(canvas.getByText(label)).color,
+      );
+    }
+  },
+};
+
+/** The comparison is said in the dashboard's language, Russian included. */
+export const ComparesWithThePreviousWindowInRussian: Story = {
+  globals: { locale: "ru" },
+  render: () => render(loadedWith(SUMMARY, { ...SUMMARY, requests: 100 })),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const delta = await waitFor(() => deltaOf(canvas, ru.pages.dashboard.statRequests));
+    await expect(delta.textContent).toContain(
+      ru.pages.dashboard.vsPrevious.replace("{{change}}", "").trim(),
+    );
   },
 };
 
@@ -487,10 +574,15 @@ const ENDPOINTS = [
   "/api/v1/analytics/invocations",
 ];
 
-/** every `since` the screen has sent to `endpoint`, oldest first */
+/**
+ * every `since` the screen has sent to `endpoint` for the window on screen,
+ * oldest first. the summary of the window before, read for the arrows, is
+ * left out: it is the read with an `until` (#2010)
+ */
 const sinceOf = (recorder: Recorder, endpoint: string): number[] =>
   recorder.calls
     .filter((c) => new URL(c.url, "http://localhost").pathname === endpoint)
+    .filter((c) => !isPreviousWindow(c.url))
     .map((c) => Date.parse(new URL(c.url, "http://localhost").searchParams.get("since") ?? ""));
 
 /** how many times the screen has asked `endpoint` */

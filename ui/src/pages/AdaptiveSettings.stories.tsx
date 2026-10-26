@@ -7,6 +7,8 @@ import {
   expectSkeleton,
   expectToast,
   Harness as ScreenHarness,
+  expectRetryRecovers,
+  failingThenRecovering,
   json,
   recording,
   Toasted,
@@ -260,5 +262,26 @@ export const RefusedToAViewer: Story = {
   render: () => <Harness fetchStub={async () => json(BASE)} role="viewer" />,
   play: async ({ canvasElement }) => {
     await expectForbidden(canvasElement);
+  },
+};
+
+// the control plane answers 5xx: the retry is on offer, reaches the network,
+// and the screen comes back once the control plane does (#2220)
+const adaptiveSettingsDown = failingThenRecovering("/api/v1/adaptive-routing-policy", async () =>
+  json(BASE),
+);
+export const LoadFailsAndRetries: Story = {
+  render: () => {
+    adaptiveSettingsDown.reset();
+    return <Harness fetchStub={adaptiveSettingsDown.stub} />;
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectRetryRecovers(
+      canvasElement,
+      adaptiveSettingsDown,
+      /failed to return adaptive routing settings/,
+      async () => await expect(await canvas.findByLabelText("Exploration ratio")).toHaveValue("5"),
+    );
   },
 };

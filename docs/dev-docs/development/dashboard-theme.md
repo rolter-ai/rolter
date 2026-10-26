@@ -64,7 +64,12 @@ The `Badge` component in `ui/src/components/ui/badge.tsx` is the reference
 implementation: `/15` tint off the fill hue, label off the matching `-text`
 token. Its `AllTones` story asserts the computed label colour still resolves to
 the token, so a tone that drifts back to a raw palette colour fails the story
-tests.
+tests. `Pill` (`ui/src/components/screen.tsx`) takes the same tone classes
+through its `tone` prop, and `HttpStatusBadge` is the one HTTP-status pill the
+Dashboard and LLM Logs share, so retuning a `--status-*` token moves every
+status the dashboard draws. `ui/scripts/status-tints.test.ts` fails on an
+`rgba(…)` literal anywhere in a component, which is how the second system of
+hand-picked tints came in (#1989).
 
 The delta under a `StatCard` figure (`ui/src/components/ui/stat-card.tsx`)
 takes the same `-text` half, and its colour follows what a change means rather
@@ -76,7 +81,11 @@ want more of reads, so pass it for any figure that is bad when it rises. Leave
 `trend` out when the delta is not a comparison with an earlier window: the card
 then draws no arrow, since one would claim a movement nobody measured. The
 `BadUp` and `NoComparison` stories assert the computed colour against the
-token, the same way `AllTones` does for `Badge`.
+token, the same way `AllTones` does for `Badge`. The Dashboard reads the
+window before with a second summary query (`previousWindowBounds` in
+`ui/src/lib/time-window.ts`) and turns the pair into a trend with `compare`
+from `ui/src/lib/compare.ts`, whose 1% dead band reads as flat and which says
+nothing when the earlier value is missing or zero (#2010).
 
 When you add a status hue, add both halves, check the ratio against all four
 surfaces _and_ against the tint the text will sit on, and record the worst

@@ -78,6 +78,55 @@ export function windowBounds(window: TimeWindow, now: Date = new Date()): Window
 }
 
 /**
+ * The window just before `window` at `now`, the same length, for a figure to
+ * be compared with (#2010). A rolling window steps back by its own length; the
+ * month so far is compared with the same stretch of last month, so the 10th is
+ * measured against the first ten days of the month before and not against a
+ * whole month; last month is compared with the month before it. The previous
+ * window always has an `until`, since it never runs up to now.
+ */
+export function previousWindowBounds(
+  window: TimeWindow,
+  now: Date = new Date(),
+): Required<WindowBounds> {
+  const hoursBack = (hours: number) => ({
+    since: new Date(now.getTime() - 2 * hours * HOUR).toISOString(),
+    until: new Date(now.getTime() - hours * HOUR).toISOString(),
+  });
+  switch (window) {
+    case "24h":
+      return hoursBack(24);
+    case "7d":
+      return hoursBack(24 * 7);
+    case "30d":
+      return hoursBack(24 * 30);
+    case "mtd": {
+      const since = monthStart(now, -1);
+      // the same wall-clock moment a month back, so a daylight-saving change
+      // between the two does not shift it by an hour. a 31st has no
+      // counterpart in a 30-day month and the Date constructor would carry it
+      // into this one, so the comparison stops at last month's end
+      const sameMoment = new Date(
+        now.getFullYear(),
+        now.getMonth() - 1,
+        now.getDate(),
+        now.getHours(),
+        now.getMinutes(),
+        now.getSeconds(),
+        now.getMilliseconds(),
+      );
+      const until = Math.min(sameMoment.getTime(), monthStart(now).getTime());
+      return { since: since.toISOString(), until: new Date(until).toISOString() };
+    }
+    case "last-month":
+      return {
+        since: monthStart(now, -2).toISOString(),
+        until: monthStart(now, -1).toISOString(),
+      };
+  }
+}
+
+/**
  * The first and the last instant `bounds` covered, for a caption. A window
  * with no `until` ran up to `at`, the moment it was sent; an exclusive `until`
  * ends a millisecond before itself, so last month closes on its last day

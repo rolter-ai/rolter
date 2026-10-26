@@ -12,6 +12,11 @@ export interface EmptyStateProps extends Omit<React.HTMLAttributes<HTMLDivElemen
   title?: React.ReactNode;
   description?: React.ReactNode;
   actions?: React.ReactNode;
+  /**
+   * Draw the вышивка rule under the message. Off by default: the ornament
+   * belongs once or twice per screen, so only a screen's own empty state opts
+   * in, never one inside a sheet, a table, a form or the command palette (#1991).
+   */
   thread?: boolean;
   /**
    * Stable name of the list that came back empty (`virtual-keys`, `plugins`),
@@ -37,7 +42,7 @@ export function EmptyState({
   title,
   description,
   actions,
-  thread = true,
+  thread = false,
   uxTarget,
   inline = false,
   className,

@@ -43,7 +43,7 @@ Once any step is done the card shrinks to one line, such as _2 of 4 · Next: Add
 
 ## The overview figures
 
-The Dashboard's first row is four figures for the last 24 hours: requests, spend, average latency and error rate. Under the error rate, the number of failed requests turns red once errors pass 1% of requests and stays grey below that. None of the four carries an up or down arrow, because none of them is compared with an earlier window.
+The Dashboard's first row is four figures for the last 24 hours: requests, spend, average latency and error rate. Each figure is compared with the window of the same length just before it (for **Month to date**, the same stretch of last month) and carries an arrow and the change, such as _+32% vs. the previous period_. The colour says what the move means rather than which way it went: more requests is good news, higher latency or a higher error rate is bad news, and spend rising or falling is neither, so it stays grey. A change of under 1% is drawn flat. When the window before had no traffic, as on a deployment's first day, there is nothing to compare with and no arrow is drawn. Under the error rate, the number of failed requests is shown too; with no earlier window to compare against it turns red once errors pass 1% of requests and stays grey below that.
 
 Average latency and error rate are measured over the window's requests, so a window with none has nothing to average. Both read **—** with _No requests in this window_ under them, instead of `0 ms` and `0.00 %`, which would read as a measurement of a quiet deployment. The request count and the spend stay real zeros. The line under the spend chart's title names the currency the deployment is configured in, the same one the amounts are written in.
 

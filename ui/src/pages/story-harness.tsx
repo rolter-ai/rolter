@@ -660,6 +660,66 @@ export async function expectLoadError(canvasElement: HTMLElement, says: RegExp):
   );
 }
 
+/** what `failingThenRecovering` answers while the control plane is down */
+export const CONTROL_PLANE_DOWN = "control plane unavailable";
+
+/**
+ * A control plane that answers every read of `path` with a 503 until
+ * `recover()`, then lets `loaded` answer it, keeping the reads it saw so a
+ * story can assert the retry went to the network (#2220).
+ *
+ * Built once at module scope and `reset()` from the story's `render`, since a
+ * play function and its render share no other state.
+ */
+export function failingThenRecovering(path: string, loaded: FetchStub) {
+  let down = true;
+  const reads: string[] = [];
+  return {
+    reads,
+    reset: () => {
+      down = true;
+      reads.length = 0;
+    },
+    recover: () => {
+      down = false;
+    },
+    stub: scoped(async (input, init) => {
+      const url = String(input);
+      if (url.includes(path)) {
+        reads.push(url);
+        if (down) return json({ error: { message: CONTROL_PLANE_DOWN } }, 503);
+      }
+      return loaded(input, init);
+    }),
+  };
+}
+
+/**
+ * The retry path of a screen whose read failed with a 5xx (#2220): the
+ * `LoadError` says `says` with the control plane's own words under it, offers
+ * a retry, and once the control plane is back the retry reaches the network,
+ * that alert goes and `recovered` (the loaded state's own assertion) holds.
+ */
+export async function expectRetryRecovers(
+  canvasElement: HTMLElement,
+  flaky: ReturnType<typeof failingThenRecovering>,
+  says: RegExp,
+  recovered: () => Promise<unknown>,
+): Promise<void> {
+  const canvas = within(canvasElement);
+  await expectLoadError(canvasElement, says);
+  await expect(canvas.getByText(CONTROL_PLANE_DOWN)).toBeInTheDocument();
+  const before = flaky.reads.length;
+  flaky.recover();
+  await userEvent.click(canvas.getByRole("button", { name: en.errors.load.retry }));
+  await recovered();
+  // the failure's alert goes; a screen may carry an alert of its own beside it
+  await waitFor(() =>
+    expect(canvas.queryAllByRole("alert").some((a) => says.test(a.textContent ?? ""))).toBe(false),
+  );
+  await expect(flaky.reads.length).toBeGreaterThan(before);
+}
+
 /**
  * Assert the `AnalyticsUnavailable` panel is on screen under `title`, and that
  * it is not the failure a 500 is (#2016).

@@ -23,7 +23,7 @@ import { LoadError } from "@/components/LoadError";
 import { SampledLogNotice } from "@/components/SampledLogNotice";
 import { SavedViews } from "@/components/SavedViews";
 import { ListSkeleton } from "@/components/LoadingState";
-import { Badge } from "@/components/ui/badge";
+import { Badge, HttpStatusBadge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { CodeBlock } from "@/components/ui/code-block";
 import { Combobox } from "@/components/ui/combobox";
@@ -72,13 +72,6 @@ const num = (v: number | string | undefined): number => {
   const n = Number(v ?? 0);
   return Number.isFinite(n) ? n : 0;
 };
-
-// the verdict of a status, in the badge's own tones, for the table and the drawer
-function verdictTone(status: number): "success" | "warning" | "danger" {
-  if (status === 0 || status >= 500) return "danger";
-  if (status >= 400) return "warning";
-  return "success";
-}
 
 /**
  * What the request did upstream, in the words the drawer and the status cell
@@ -368,6 +361,28 @@ const MODEL_BESIDE_BADGE = "min-w-0 [overflow-wrap:anywhere] @max-[479px]:trunca
 const PROVIDER_COL = "hidden @min-[840px]:table-cell";
 const TOKENS_COL = "hidden @min-[720px]:table-cell";
 const LATENCY_COL = "hidden @min-[600px]:table-cell";
+
+// below `md` the filter rail is a modal: the panel and its scrim share one
+// fixed layer, the shape Sheet and the nav drawer use, so `useModalA11y` keeps
+// the whole layer live and the scrim's dismissing click lands (#2019). at
+// wider widths the rail sits in the flow and needs no layer
+function RailLayer({
+  overlay,
+  onDismiss,
+  children,
+}: {
+  overlay: boolean;
+  onDismiss: () => void;
+  children: React.ReactNode;
+}) {
+  if (!overlay) return <>{children}</>;
+  return (
+    <div className="fixed inset-0 z-50 flex">
+      <div className="rl-fade-in absolute inset-0 bg-black/50" onClick={onDismiss} aria-hidden />
+      {children}
+    </div>
+  );
+}
 
 // LLM logs: collapsible filter rail, full-height
 // streaming request table with sticky headers, and a right detail drawer with
@@ -744,115 +759,110 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
   return (
     <div className="flex h-full min-h-0">
       {filtersOpen && (
-        <div
-          ref={railOverlays ? filterPanel : undefined}
-          role={railOverlays ? "dialog" : undefined}
-          aria-modal={railOverlays ? true : undefined}
-          aria-label={railOverlays ? t("common.filters") : undefined}
-          className={cn(
-            "overflow-y-auto border-r border-[color:var(--border-subtle)]",
-            railOverlays
-              ? "rl-drawer-in fixed inset-y-0 left-0 z-50 w-[min(300px,85vw)] bg-[color:var(--surface-app)] shadow-[14px_0_44px_rgba(0,0,0,0.42)] focus-visible:outline-none"
-              : "w-[248px] flex-none",
-          )}
-          {...(railOverlays ? filterA11y : {})}
-        >
-          <FilterPanel title={t("common.filters")} onHide={() => setFiltersOpen(false)}>
-            {/* always drawn, so the sections below never move when the first
+        <RailLayer overlay={railOverlays} onDismiss={() => setFiltersOpen(false)}>
+          <div
+            ref={railOverlays ? filterPanel : undefined}
+            role={railOverlays ? "dialog" : undefined}
+            aria-modal={railOverlays ? true : undefined}
+            aria-label={railOverlays ? t("common.filters") : undefined}
+            className={cn(
+              "overflow-y-auto border-r border-[color:var(--border-subtle)]",
+              railOverlays
+                ? "rl-drawer-in relative h-full w-[min(300px,85vw)] max-w-full bg-[color:var(--surface-app)] shadow-drawer focus-visible:outline-none"
+                : "w-[248px] flex-none",
+            )}
+            {...(railOverlays ? filterA11y : {})}
+          >
+            <FilterPanel title={t("common.filters")} onHide={() => setFiltersOpen(false)}>
+              {/* always drawn, so the sections below never move when the first
                 filter is picked; it only enables once there is one to clear */}
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={filterCount === 0}
-              onClick={filters.clear}
-              className="w-full justify-start px-2 text-muted-foreground"
-            >
-              <FilterX aria-hidden className="h-3.5 w-3.5" />
-              {t("common.clearFilters")}
-            </Button>
-            {/* one choice of three rather than a pair of checkboxes, which
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={filterCount === 0}
+                onClick={filters.clear}
+                className="w-full justify-start px-2 text-muted-foreground"
+              >
+                <FilterX aria-hidden className="h-3.5 w-3.5" />
+                {t("common.clearFilters")}
+              </Button>
+              {/* one choice of three rather than a pair of checkboxes, which
                 cleared both ticks without a word when a reader checked both
                 (#1985) */}
-            <FilterSection
-              title={t("pages.logs.status")}
-              defaultOpen
-              count={status === "all" ? 0 : 1}
-            >
-              <Segmented
-                ariaLabel={t("pages.logs.status")}
-                value={status}
-                onChange={filters.setStatus}
-                options={[
-                  { value: "all", label: t("pages.logs.statusAll") },
-                  { value: "error", label: t("pages.logs.statusErrors") },
-                  { value: "success", label: t("pages.logs.statusOk") },
-                ]}
-              />
-              {/* the control plane's `success` is any status from 1 to 399,
+              <FilterSection
+                title={t("pages.logs.status")}
+                defaultOpen
+                count={status === "all" ? 0 : 1}
+              >
+                <Segmented
+                  ariaLabel={t("pages.logs.status")}
+                  value={status}
+                  onChange={filters.setStatus}
+                  options={[
+                    { value: "all", label: t("pages.logs.statusAll") },
+                    { value: "error", label: t("pages.logs.statusErrors") },
+                    { value: "success", label: t("pages.logs.statusOk") },
+                  ]}
+                />
+                {/* the control plane's `success` is any status from 1 to 399,
                   so the label cannot promise a 2xx */}
-              <p className="text-xs leading-relaxed text-muted-foreground">
-                {t("pages.logs.statusOkHint")}
-              </p>
-            </FilterSection>
-            {/* the window is a name the address carries, so a saved view can hold it */}
-            <FilterSection
-              title={t("pages.logs.window")}
-              defaultOpen
-              count={logWindow === DEFAULT_TIME_WINDOW ? 0 : 1}
-            >
-              <Combobox
-                aria-label={t("pages.logs.window")}
-                options={windowOptions}
-                value={logWindow}
-                onChange={(next) => filters.setWindow(readTimeWindow(next))}
+                <p className="text-xs leading-relaxed text-muted-foreground">
+                  {t("pages.logs.statusOkHint")}
+                </p>
+              </FilterSection>
+              {/* the window is a name the address carries, so a saved view can hold it */}
+              <FilterSection
+                title={t("pages.logs.window")}
+                defaultOpen
+                count={logWindow === DEFAULT_TIME_WINDOW ? 0 : 1}
+              >
+                <Combobox
+                  aria-label={t("pages.logs.window")}
+                  options={windowOptions}
+                  value={logWindow}
+                  onChange={(next) => filters.setWindow(readTimeWindow(next))}
+                />
+              </FilterSection>
+              <RowFilterSections
+                data={rowData}
+                values={{ model, keyId, units: unitSel, customers: customerSel }}
+                setters={filters}
               />
-            </FilterSection>
-            <RowFilterSections
-              data={rowData}
-              values={{ model, keyId, units: unitSel, customers: customerSel }}
-              setters={filters}
-            />
-            {/* the flag the gateway recorded per request, applied by the server
+              {/* the flag the gateway recorded per request, applied by the server
                 before the page is cut like every other filter here (#1986) */}
-            <FilterSection title={t("pages.logs.cost")} defaultOpen count={unpriced ? 1 : 0}>
-              <FilterCheckList
-                options={[{ value: "unpriced", label: t("pages.logs.unpricedOnly") }]}
-                selected={unpriced ? ["unpriced"] : []}
-                onChange={(picked) => filters.setUnpriced(picked.includes("unpriced"))}
-              />
-            </FilterSection>
-            {/* arrives from a Guardrail Rules card, and is the only way to drop it */}
-            {guardrail && (
-              <FilterSection title={t("pages.logs.guardrail")} defaultOpen count={1}>
+              <FilterSection title={t("pages.logs.cost")} defaultOpen count={unpriced ? 1 : 0}>
                 <FilterCheckList
-                  options={[{ value: guardrail, label: guardrail }]}
-                  selected={[guardrail]}
-                  onChange={(picked) => {
-                    if (picked.length === 0) filters.clearGuardrail();
-                  }}
+                  options={[{ value: "unpriced", label: t("pages.logs.unpricedOnly") }]}
+                  selected={unpriced ? ["unpriced"] : []}
+                  onChange={(picked) => filters.setUnpriced(picked.includes("unpriced"))}
                 />
               </FilterSection>
-            )}
-            {plugin && (
-              <FilterSection title={t("pages.logs.plugin")} defaultOpen count={1}>
-                <FilterCheckList
-                  options={[{ value: plugin, label: plugin }]}
-                  selected={[plugin]}
-                  onChange={(picked) => {
-                    if (picked.length === 0) filters.clearPlugin();
-                  }}
-                />
-              </FilterSection>
-            )}
-          </FilterPanel>
-        </div>
-      )}
-      {filtersOpen && railOverlays && (
-        <div
-          className="rl-fade-in fixed inset-0 z-40 bg-black/50"
-          onClick={() => setFiltersOpen(false)}
-          aria-hidden
-        />
+              {/* arrives from a Guardrail Rules card, and is the only way to drop it */}
+              {guardrail && (
+                <FilterSection title={t("pages.logs.guardrail")} defaultOpen count={1}>
+                  <FilterCheckList
+                    options={[{ value: guardrail, label: guardrail }]}
+                    selected={[guardrail]}
+                    onChange={(picked) => {
+                      if (picked.length === 0) filters.clearGuardrail();
+                    }}
+                  />
+                </FilterSection>
+              )}
+              {plugin && (
+                <FilterSection title={t("pages.logs.plugin")} defaultOpen count={1}>
+                  <FilterCheckList
+                    options={[{ value: plugin, label: plugin }]}
+                    selected={[plugin]}
+                    onChange={(picked) => {
+                      if (picked.length === 0) filters.clearPlugin();
+                    }}
+                  />
+                </FilterSection>
+              )}
+            </FilterPanel>
+          </div>
+        </RailLayer>
       )}
 
       <div className="flex min-w-0 flex-1 flex-col">
@@ -1070,12 +1080,9 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
                       )}
                     >
                       <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1">
-                        <Badge
-                          tone={verdictTone(st)}
-                          className="font-mono text-[0.6875rem] font-semibold"
-                        >
-                          {st || "ERR"}
-                        </Badge>
+                        <HttpStatusBadge status={st} className="font-mono">
+                          {st ? undefined : "ERR"}
+                        </HttpStatusBadge>
                         <UpstreamHint row={r} />
                       </div>
                     </td>
@@ -1162,6 +1169,7 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
               was parked in a hidden tab said "Nothing logged yet" (#1984) */}
           {query.isSuccess && rows.length === 0 && page > 0 && (
             <EmptyState
+              thread
               uxTarget="request-logs"
               icon={<ScrollText />}
               title={t("pages.logs.endTitle")}
@@ -1178,6 +1186,7 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
               so it cannot say which, and neither does this (#1861) */}
           {query.isSuccess && rows.length === 0 && page === 0 && lookup && (
             <EmptyState
+              thread
               uxTarget="request-logs"
               icon={<SearchX />}
               title={t("pages.logs.lookup.missTitle")}
@@ -1202,6 +1211,7 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
           )}
           {query.isSuccess && rows.length === 0 && page === 0 && !lookup && (
             <EmptyState
+              thread
               uxTarget="request-logs"
               icon={<ScrollText />}
               title={filterCount ? t("pages.logs.noMatchTitle") : t("pages.logs.emptyTitle")}
@@ -1447,12 +1457,9 @@ function Verdict({ row }: { row: InvocationRow }) {
           <span className="sr-only">{t("pages.logs.status")}</span>
           {/* status 0 is a request the gateway never got an answer to: a
               refused connection or a timeout, with no http status to show */}
-          <Badge
-            tone={verdictTone(status)}
-            className={cn("text-[0.6875rem] font-semibold", status !== 0 && "font-mono")}
-          >
-            {status === 0 ? t("pages.logs.detail.noResponse") : status}
-          </Badge>
+          <HttpStatusBadge status={status}>
+            {status === 0 ? t("pages.logs.detail.noResponse") : undefined}
+          </HttpStatusBadge>
           <time dateTime={row.ts} className="font-mono text-xs text-foreground">
             {fmt.dateTimeMs(row.ts)}
           </time>
@@ -1508,7 +1515,7 @@ function UpstreamHint({ row }: { row: InvocationRow }) {
   return (
     <span
       title={sentence}
-      className="inline-flex items-center gap-0.5 font-mono text-[0.6875rem] text-[color:var(--text-subtle)]"
+      className="inline-flex items-center gap-0.5 font-mono text-2xs text-[color:var(--text-subtle)]"
     >
       <ArrowLeft aria-hidden className="h-3 w-3 flex-none" />
       <span aria-hidden>{upstream}</span>
@@ -1544,7 +1551,7 @@ const DETAIL_GRID =
   "grid grid-cols-[minmax(0,1fr)_minmax(0,2fr)] items-baseline gap-x-3 gap-y-1.5 text-xs";
 
 // the overline every group in the drawer is titled with, payloads included
-const GROUP_TITLE = "text-[0.6875rem] uppercase tracking-[0.07em] text-[color:var(--text-subtle)]";
+const GROUP_TITLE = "text-2xs uppercase tracking-[0.07em] text-[color:var(--text-subtle)]";
 
 function DetailId({
   label,

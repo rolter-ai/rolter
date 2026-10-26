@@ -95,7 +95,7 @@ export function RouteTargetList({
         ))}
       </ul>
       {health && (
-        <p className="text-[11px] leading-snug text-[color:var(--text-subtle)]">
+        <p className="text-2xs leading-snug text-[color:var(--text-subtle)]">
           {t("routeTargets.healthWindow", { sla: fmt.percent(HEALTH_SLA, 0) })}
         </p>
       )}

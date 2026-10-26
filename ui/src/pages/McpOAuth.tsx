@@ -419,6 +419,7 @@ export function OAuthGrants() {
             />
           ) : rows.length === 0 ? (
             <EmptyState
+              thread
               uxTarget="oauth-grants"
               icon={<Shield />}
               title={t("pages.mcpOAuth.noMatchTitle")}
@@ -880,6 +881,7 @@ export function AuthSessions() {
             />
           ) : rows.length === 0 ? (
             <EmptyState
+              thread
               uxTarget="auth-sessions"
               icon={<KeyRound />}
               title={t("pages.mcpOAuth.noMatchTitle")}

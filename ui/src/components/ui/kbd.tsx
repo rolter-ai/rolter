@@ -21,7 +21,7 @@ export function Kbd({ className, children, ...props }: KbdProps) {
   return (
     <kbd
       className={cn(
-        "inline-flex min-w-[1.5rem] items-center justify-center rounded border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] px-1.5 py-0.5 font-mono text-[0.6875rem] leading-none text-[color:var(--text-subtle)]",
+        "inline-flex min-w-[1.5rem] items-center justify-center rounded border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] px-1.5 py-0.5 font-mono text-2xs leading-none text-[color:var(--text-subtle)]",
         className,
       )}
       {...props}

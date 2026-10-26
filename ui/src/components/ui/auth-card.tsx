@@ -15,14 +15,13 @@ export interface AuthCardProps {
 export function AuthCard({ title, description, descriptionRole, children }: AuthCardProps) {
   return (
     <main className="flex min-h-screen items-center justify-center bg-[color:var(--surface-app)] p-4">
-      <div className="w-[400px] max-w-full overflow-hidden rounded-xl border bg-background shadow-2xl">
+      <div className="w-[400px] max-w-full overflow-hidden rounded-xl border bg-background">
         <div className="vyshivka-rule" aria-hidden />
         <div className="flex flex-col gap-6 p-8">
           <div className="flex items-center gap-3">
             <img src="/logo-mark.svg" alt="" className="h-10 w-10" />
-            <span className="font-mono text-[22px] font-semibold tracking-tight">
-              rolter<span className="text-[color:var(--red-folk-text)]">.</span>
-            </span>
+            {/* the wordmark as the brand guidelines set it (#1992) */}
+            <span className="text-xl font-semibold tracking-[-0.04em]">rolter</span>
           </div>
           <div className="flex flex-col gap-1">
             <h1 className="text-xl font-semibold">{title}</h1>

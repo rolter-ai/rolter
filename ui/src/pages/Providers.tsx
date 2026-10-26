@@ -453,6 +453,7 @@ export default function Providers() {
         ))}
         <ListEmptyRow read={providers} rows={rows.length}>
           <EmptyState
+            thread
             uxTarget="providers"
             icon={<Plug />}
             title={filtering ? t("pages.providers.noMatch") : t("pages.providers.emptyTitle")}

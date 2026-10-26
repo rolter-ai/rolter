@@ -348,6 +348,18 @@ const STATE =
 const IMPORT =
   /\bimport\s+(?:type\s+)?(?:[A-Za-z_$][\w$]*\s*,\s*)?\{([^}]*)\}\s*from\s*(["'])([^"']+)\2/g;
 
+/** a default import, alone or beside a named list: `import copy from "…"`, `import copy, { A } from "…"` */
+const DEFAULT_IMPORT =
+  /\bimport\s+(?!type\b)([A-Za-z_$][\w$]*)\s*(?:,\s*\{[^}]*\}\s*)?from\s*(["'])([^"']+)\2/g;
+/** a namespace import: `import * as copy from "…"` */
+const NAMESPACE_IMPORT = /\bimport\s+\*\s+as\s+([A-Za-z_$][\w$]*)\s+from\s*(["'])([^"']+)\2/g;
+/** a re-export: `export { a, b as c } from "…"` hands on another module's names */
+const REEXPORT = /\bexport\s*\{([^}]*)\}\s*from\s*(["'])([^"']+)\2/g;
+/** a member of a namespace import, and what follows it: `copy.save`, `copy.labelFor(…)` */
+const NAMESPACE_MEMBER = /^\s*([A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*)/;
+/** what a module exports as its default */
+const DEFAULT_EXPORT = /\bexport\s+default\s+/;
+
 /** one entry of a table rendered where copy goes: `{HINTS[mode]}`, `title={COPY.save}` */
 const RENDERED_ENTRY = /^\s*([A-Za-z_$][\w$]*)(?:\.[A-Za-z_$][\w$]*|\[[^\]]+\])\s*$/;
 /** a local binding whose value might be copy held for later */
@@ -1137,6 +1149,11 @@ function childRuns(masked: string, tags: Map<number, number>, inside: Set<number
  * to them. `text` is the function from its parameter list onward.
  */
 function returnsOf(text: string, base: number): Candidate[] {
+  return returnExprs(text, base).flatMap((r) => stringsIn(r.expr, r.at, true));
+}
+
+/** what `returnsOf` reads: each returned expression and where it starts */
+function returnExprs(text: string, base: number): { expr: string; at: number }[] {
   const arrow = /^\s*(?:async\s*)?(?:\([^]*?\)|[A-Za-z_$][\w$]*)\s*(?::[^=]*?)?=>\s*/.exec(text);
   let body: string;
   let at: number;
@@ -1145,7 +1162,7 @@ function returnsOf(text: string, base: number): Candidate[] {
     if (text[at] !== "{") {
       const end = skipExpression(text, at, ",;");
       const expr = text.slice(at, end);
-      return /^\s*\(?\s*</.test(expr) ? [] : stringsIn(expr, base + at, true);
+      return /^\s*\(?\s*</.test(expr) ? [] : [{ expr, at: base + at }];
     }
   } else {
     // `function name(…): Type {`: past the parameters to the body's brace
@@ -1154,14 +1171,27 @@ function returnsOf(text: string, base: number): Candidate[] {
     if (at === -1) return [];
   }
   body = text.slice(at, skipExpression(text, at + 1, "") + 1);
-  const out: Candidate[] = [];
+  const out: { expr: string; at: number }[] = [];
   for (const m of body.matchAll(/\breturn\s+/g)) {
     const from = m.index + m[0].length;
     const expr = body.slice(from, skipExpression(body, from, ";"));
     if (/^\s*\(?\s*</.test(expr)) continue;
-    out.push(...stringsIn(expr, base + at + from, true));
+    out.push({ expr, at: base + at + from });
   }
   return out;
+}
+
+/**
+ * The helper a returned expression hands its value on to, when the whole
+ * expression is one call: `return chordKeys(k)` renders what `chordKeys`
+ * returns, so that helper is read too (#1783).
+ */
+function calledHelper(expr: string): string | null {
+  const call = RENDERED_CALL.exec(expr);
+  if (!call || NOT_A_HELPER.has(call[1])) return null;
+  const open = call.index + call[0].length - 1;
+  const close = skipExpression(expr, open + 1, "");
+  return expr.slice(close + 1).trim() ? null : call[1];
 }
 
 /** what one file renders under names it does not define, keyed by that name */
@@ -1240,6 +1270,26 @@ export function scanFile(source: string, file: string, exported: Uses = noUses()
     for (const c of cs) push(c.index, c.text, kind, c.strict, c.caps);
   };
 
+  // what this file names from other modules, read first so a rendered
+  // namespace member can be told from a local table (#1783)
+  const imports = new Map<string, { from: string; name: string }>();
+  const namedList = (list: string, from: string) => {
+    for (const part of list.split(",")) {
+      const spec = /^\s*(?:type\s+)?([A-Za-z_$][\w$]*)(?:\s+as\s+([A-Za-z_$][\w$]*))?\s*$/.exec(
+        part,
+      );
+      if (spec) imports.set(spec[2] ?? spec[1], { from, name: spec[1] });
+    }
+  };
+  for (const m of scanned.matchAll(IMPORT)) namedList(m[1], m[3]);
+  for (const m of scanned.matchAll(DEFAULT_IMPORT))
+    imports.set(m[1], { from: m[3], name: "default" });
+  // a re-exported name is one this file hands on rather than defines, so what
+  // another file renders of it is followed on to where it is written
+  for (const m of scanned.matchAll(REEXPORT)) namedList(m[1], m[3]);
+  const namespaces = new Map<string, string>();
+  for (const m of scanned.matchAll(NAMESPACE_IMPORT)) namespaces.set(m[1], m[3]);
+
   // identifiers rendered bare where copy goes, with the kind they render as.
   // their bindings are read once every position is known (#1537)
   const rendered = new Map(exported.values);
@@ -1247,21 +1297,62 @@ export function scanFile(source: string, file: string, exported: Uses = noUses()
   const tables = new Map(exported.tables);
   // helpers called where copy goes, whose returns are read (#1765)
   const calls = new Map(exported.calls);
+  // what other files render of this one's default export, read under the name
+  // it is declared with, or as the expression itself (#1783)
+  const defaultExport = DEFAULT_EXPORT.exec(scanned);
+  if (defaultExport) {
+    const at = defaultExport.index + defaultExport[0].length;
+    const rest = scanned.slice(at);
+    const named =
+      /^(?:async\s+)?function\s*\*?\s*([A-Za-z_$][\w$]*)/.exec(rest)?.[1] ??
+      /^([A-Za-z_$][\w$]*)\s*;?\s*(?:\n|$)/.exec(rest)?.[1];
+    const value = scanned.slice(at, skipExpression(scanned, at, ";"));
+    for (const map of [rendered, tables, calls]) {
+      const kind = map.get("default");
+      if (!kind) continue;
+      map.delete("default");
+      if (named) {
+        map.set(named, map.get(named) ?? kind);
+        continue;
+      }
+      if (map === rendered) pushAll(stringsIn(value, at, true), kind);
+      else if (map === tables && /^\s*\{/.test(value)) {
+        for (const e of value.matchAll(MAP_ENTRY))
+          push(at + (e.index ?? 0) + e[0].lastIndexOf(e[4]), e[4], kind, true);
+      } else if (map === calls) {
+        // an anonymous `function (…) {…}` is read from its parameter list
+        const fn = /^\s*(?:async\s+)?function\s*\*?\s*/.exec(value);
+        const from = fn ? fn[0].length : 0;
+        pushAll(returnsOf(value.slice(from), at + from), kind);
+      }
+    }
+  }
   // every expression rendered as children, for `shown` below
   const childTexts: string[] = [];
   /** records a rendered identifier, a table indexed or a helper called where copy goes */
   const noteRendered = (expr: string, kind: Literal["kind"]) => {
     if (kind === "text") childTexts.push(expr);
+    // `{copy.save}`, `{copy.HINTS[k]}`, `{copy.labelFor(r)}` from `import * as
+    // copy`: the member is what renders, under a name only this file uses
+    const member = NAMESPACE_MEMBER.exec(expr);
+    const from = member && namespaces.get(member[1]);
+    if (member && from) {
+      const key = `${member[1]}.${member[2]}`;
+      const rest = expr.slice(member[0].length).trim();
+      imports.set(key, { from, name: member[2] });
+      if (!rest) rendered.set(key, rendered.get(key) ?? kind);
+      else if (rest.startsWith("[") || rest.startsWith("."))
+        tables.set(key, tables.get(key) ?? kind);
+      else if (rest.startsWith("(") && skipExpression(rest, 1, "") === rest.length - 1)
+        calls.set(key, calls.get(key) ?? kind);
+      return;
+    }
     const ident = RENDERED_IDENT.exec(expr);
     if (ident) rendered.set(ident[1], rendered.get(ident[1]) ?? kind);
     const entry = RENDERED_ENTRY.exec(expr);
     if (entry) tables.set(entry[1], tables.get(entry[1]) ?? kind);
-    const call = RENDERED_CALL.exec(expr);
-    if (call && !NOT_A_HELPER.has(call[1])) {
-      const open = call.index + call[0].length - 1;
-      const close = skipExpression(expr, open + 1, "");
-      if (!expr.slice(close + 1).trim()) calls.set(call[1], calls.get(call[1]) ?? kind);
-    }
+    const helper = calledHelper(expr);
+    if (helper) calls.set(helper, calls.get(helper) ?? kind);
   };
   /** the start of capture group `n`'s text inside match `m` */
   const groupAt = (m: RegExpMatchArray, n: number) => (m.index ?? 0) + m[0].lastIndexOf(m[n]);
@@ -1338,7 +1429,22 @@ export function scanFile(source: string, file: string, exported: Uses = noUses()
     rendered.has(name) ||
     childTexts.some((e) => new RegExp(`\\b${escapeRegExp(name)}\\.map\\(`).test(e));
   const sinks = new Set<string>();
-  for (const m of scanned.matchAll(STATE)) if (shown(m[1])) sinks.add(m[2]);
+  for (const m of scanned.matchAll(STATE)) {
+    if (!shown(m[1])) continue;
+    sinks.add(m[2]);
+    // the seed is the first value the reader sees: `useState("Untitled")`.
+    // a lazy initializer is read for what it returns, `useState(() => "…")`
+    // (#1783)
+    let open = m.index + m[0].length;
+    while (WHITESPACE.test(scanned[open] ?? "")) open++;
+    if (scanned[open] === "<") open = skipExpression(scanned, open + 1, ">") + 1;
+    while (WHITESPACE.test(scanned[open] ?? "")) open++;
+    if (scanned[open] !== "(") continue;
+    const at = open + 1;
+    const seed = scanned.slice(at, skipExpression(scanned, at, ","));
+    if (seed.includes("=>")) pushAll(returnsOf(seed, at), "text");
+    else pushAll(stringsIn(seed, at, true), "text");
+  }
   const declared = new Set<string>();
   for (const m of scanned.matchAll(BINDING)) declared.add(m[1]);
   for (const m of scanned.matchAll(FUNCTION_DECL)) declared.add(m[1]);
@@ -1371,8 +1477,6 @@ export function scanFile(source: string, file: string, exported: Uses = noUses()
       const isFunction = value.includes("=>") || /^\s*(?:async\s+)?function\b/.test(value);
       const kind = rendered.get(m[1]);
       if (kind && !isFunction) pushAll(stringsIn(value, at, true), kind);
-      const called = calls.get(m[1]);
-      if (called && isFunction) pushAll(returnsOf(value, at), called);
       const table = tables.get(m[1]);
       // only an object literal is a table; `const remove = useMutation({…})`
       // with `{remove.error}` rendered is a hook result, and its options are code
@@ -1381,24 +1485,44 @@ export function scanFile(source: string, file: string, exported: Uses = noUses()
       for (const e of value.matchAll(MAP_ENTRY))
         push(at + (e.index ?? 0) + e[0].lastIndexOf(e[4]), e[4], table, true);
     }
+  }
+  // a helper's returns, and the returns of every helper one of them hands its
+  // value on to, followed until none is new: `chordText` returns
+  // `chordKeys(…)`, whose `"Ctrl"` is what renders (#1783). each helper is read
+  // once, so two helpers that call each other end the walk
+  if (calls.size) {
+    const bodies = new Map<string, { text: string; at: number }>();
+    for (const m of scanned.matchAll(BINDING)) {
+      const at = m.index + m[0].length;
+      const value = scanned.slice(at, skipExpression(scanned, at, ",;"));
+      if (value.includes("=>") || /^\s*(?:async\s+)?function\b/.test(value))
+        bodies.set(m[1], { text: value, at });
+    }
     for (const m of scanned.matchAll(FUNCTION_DECL)) {
-      const called = calls.get(m[1]);
-      if (!called) continue;
       const at = m.index + m[0].length - 1;
-      pushAll(returnsOf(scanned.slice(at, skipFunction(scanned, at)), at), called);
+      bodies.set(m[1], { text: scanned.slice(at, skipFunction(scanned, at)), at });
+    }
+    const read = new Set<string>();
+    const queue = [...calls.keys()];
+    while (queue.length) {
+      const name = queue.shift()!;
+      if (read.has(name)) continue;
+      read.add(name);
+      const body = bodies.get(name);
+      if (!body) continue;
+      const kind = calls.get(name)!;
+      for (const r of returnExprs(body.text, body.at)) {
+        pushAll(stringsIn(r.expr, r.at, true), kind);
+        const next = calledHelper(r.expr);
+        if (next && !calls.has(next)) {
+          calls.set(next, kind);
+          queue.push(next);
+        }
+      }
     }
   }
   out.sort((a, b) => a.line - b.line);
 
-  const imports = new Map<string, { from: string; name: string }>();
-  for (const m of scanned.matchAll(IMPORT)) {
-    for (const part of m[1].split(",")) {
-      const spec = /^\s*(?:type\s+)?([A-Za-z_$][\w$]*)(?:\s+as\s+([A-Za-z_$][\w$]*))?\s*$/.exec(
-        part,
-      );
-      if (spec) imports.set(spec[2] ?? spec[1], { from: m[3], name: spec[1] });
-    }
-  }
   const uses = noUses();
   const foreign = (map: Map<string, Literal["kind"]>, into: Map<string, Literal["kind"]>) => {
     for (const [name, kind] of map)
@@ -1451,28 +1575,36 @@ function resolveImport(spec: string, from: string, files: Set<string>): string |
  */
 export function findLiteralsInTree(files: Record<string, string>): Literal[] {
   const paths = new Set(Object.keys(files));
-  const first = new Map<string, FileScan>();
-  for (const [path, source] of Object.entries(files)) first.set(path, scanFile(source, path));
+  const scans = new Map<string, FileScan>();
+  for (const [path, source] of Object.entries(files)) scans.set(path, scanFile(source, path));
 
+  // a name rendered in one file can be handed on through others — a re-export,
+  // or a helper that returns another module's helper — so what each file is
+  // asked to read grows until no file adds a name (#1783). every round adds at
+  // least one name or stops, so the walk ends however the modules cycle
   const wanted = new Map<string, Uses>();
-  for (const [path, scan] of first) {
-    for (const [kindOf, map] of Object.entries(scan.uses) as [keyof Uses, Uses[keyof Uses]][]) {
-      for (const [local, kind] of map) {
-        const imp = scan.imports.get(local);
-        const target = imp && resolveImport(imp.from, path, paths);
-        if (!imp || !target) continue;
-        const uses = wanted.get(target) ?? noUses();
-        if (!uses[kindOf].has(imp.name)) uses[kindOf].set(imp.name, kind);
-        wanted.set(target, uses);
+  for (;;) {
+    const grown = new Set<string>();
+    for (const [path, scan] of scans) {
+      for (const [kindOf, map] of Object.entries(scan.uses) as [keyof Uses, Uses[keyof Uses]][]) {
+        for (const [local, kind] of map) {
+          const imp = scan.imports.get(local);
+          const target = imp && resolveImport(imp.from, path, paths);
+          if (!imp || !target) continue;
+          const uses = wanted.get(target) ?? noUses();
+          if (uses[kindOf].has(imp.name)) continue;
+          uses[kindOf].set(imp.name, kind);
+          wanted.set(target, uses);
+          grown.add(target);
+        }
       }
     }
+    if (grown.size === 0) break;
+    for (const path of grown) scans.set(path, scanFile(files[path], path, wanted.get(path)));
   }
 
   const out: Literal[] = [];
-  for (const [path, scan] of first) {
-    const uses = wanted.get(path);
-    out.push(...(uses ? scanFile(files[path], path, uses).literals : scan.literals));
-  }
+  for (const scan of scans.values()) out.push(...scan.literals);
   return out.sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line);
 }
 

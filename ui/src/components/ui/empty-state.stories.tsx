@@ -23,6 +23,31 @@ export const Default: Story = {
   },
 };
 
+// #1991: the вышивка ornament belongs once or twice per screen, so a
+// placeholder draws none unless it is the screen's own empty state and says so
+export const NoOrnamentByDefault: Story = {
+  args: {
+    icon: <Inbox />,
+    title: "No matches",
+    description: "Nothing in the list matches this filter.",
+  },
+  play: async ({ canvasElement }) => {
+    await expect(canvasElement.querySelector(".vyshivka-rule")).toBeNull();
+  },
+};
+
+export const ScreenLevelOptsIntoTheOrnament: Story = {
+  args: {
+    thread: true,
+    icon: <Inbox />,
+    title: "No routes yet",
+    description: "Create a route to start forwarding traffic to your providers.",
+  },
+  play: async ({ canvasElement }) => {
+    await expect(canvasElement.querySelector(".vyshivka-rule")).not.toBeNull();
+  },
+};
+
 export const WithAction: Story = {
   args: {
     icon: <Inbox />,

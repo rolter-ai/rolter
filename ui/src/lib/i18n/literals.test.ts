@@ -1106,3 +1106,109 @@ describe("findLiterals reads a status spelled in capitals (#2023)", () => {
     expect(texts("export const A = () => <span>IN_PROGRESS</span>;")).toEqual([]);
   });
 });
+
+describe("findLiterals reads a useState seed of state that is shown (#1783)", () => {
+  test("a seed and a lazy seed of shown state are copy", () => {
+    const source = [
+      'const [title, setTitle] = React.useState<string>("Untitled prompt");',
+      'const [hint, setHint] = useState(() => "Type a message");',
+      "<h2>{title}</h2><p>{hint}</p>",
+    ].join("\n");
+    expect(texts(source)).toEqual(["Untitled prompt", "Type a message"]);
+  });
+
+  test("a seed of state that is never shown, and a translated seed, are not", () => {
+    const source = [
+      'const [tab, setTab] = React.useState("Chat completions");',
+      "<Tabs value={tab} onChange={setTab} />",
+      'const [title, setTitle] = useState(() => t("pages.prompts.untitled"));',
+      "<h2>{title}</h2>",
+    ].join("\n");
+    expect(texts(source)).toEqual([]);
+  });
+});
+
+describe("findLiterals follows a helper's returns more than one call deep (#1783)", () => {
+  test("reads the helper a rendered helper hands its value on to", () => {
+    const source = [
+      'function chordKeys(mac: boolean) { return mac ? "Command" : "Control key"; }',
+      "const chordText = (mac: boolean) => chordKeys(mac);",
+      "<kbd>{chordText(isMac)}</kbd>",
+    ].join("\n");
+    expect(texts(source)).toEqual(["Command", "Control key"]);
+  });
+
+  test("ends on helpers that call each other", () => {
+    const source = [
+      'function ping(n: number): string { if (n > 3) return "Done waiting"; return pong(n); }',
+      "function pong(n: number): string { return ping(n + 1); }",
+      "<p>{ping(0)}</p>",
+    ].join("\n");
+    expect(texts(source)).toEqual(["Done waiting"]);
+  });
+});
+
+describe("findLiteralsInTree resolves namespaces, defaults and re-exports (#1783)", () => {
+  const found = (files: Record<string, string>) =>
+    findLiteralsInTree(files).map((l) => `${l.file}: ${l.text}`);
+
+  test("a namespace member rendered as a value, a table entry and a call", () => {
+    const files = {
+      "src/lib/copy.ts": [
+        'export const EMPTY = "Nothing here";',
+        'export const STATUS = { pending: "Waiting", done: "Finished" };',
+        'export function roleLabel(r: string) { return r === "admin" ? "Administrator" : "Member"; }',
+        'export const CODE = "Not shown anywhere";',
+      ].join("\n"),
+      "src/pages/A.tsx": [
+        'import * as copy from "@/lib/copy";',
+        "<p>{copy.EMPTY}</p><p>{copy.STATUS[s]}</p><Badge label={copy.roleLabel(r)} />",
+      ].join("\n"),
+    };
+    expect(found(files)).toEqual([
+      "src/lib/copy.ts: Nothing here",
+      "src/lib/copy.ts: Waiting",
+      "src/lib/copy.ts: Finished",
+      "src/lib/copy.ts: Administrator",
+      "src/lib/copy.ts: Member",
+    ]);
+  });
+
+  test("a default export: a named helper, a table and an anonymous helper", () => {
+    const files = {
+      "src/lib/label.ts":
+        'export default function label(on: boolean) { return on ? "Enabled" : "Off"; }',
+      "src/lib/hints.ts": 'export default { save: "Save the route", drop: "Drop it" };',
+      "src/lib/greet.ts": 'export default (name: string) => "Welcome back";',
+      "src/pages/A.tsx": [
+        'import label from "@/lib/label";',
+        'import hints from "@/lib/hints";',
+        'import greet, { other } from "@/lib/greet";',
+        "<p>{label(on)}</p><p>{hints[k]}</p><h1>{greet(user)}</h1>",
+      ].join("\n"),
+    };
+    expect(found(files)).toEqual([
+      "src/lib/greet.ts: Welcome back",
+      "src/lib/hints.ts: Save the route",
+      "src/lib/hints.ts: Drop it",
+      "src/lib/label.ts: Enabled",
+      "src/lib/label.ts: Off",
+    ]);
+  });
+
+  test("a re-export chain, and a helper that returns another module's helper", () => {
+    const files = {
+      "src/lib/keys.ts":
+        'export function chordKeys(mac: boolean) { return mac ? "Command" : "Control key"; }',
+      "src/lib/chord.ts": [
+        'import { chordKeys } from "./keys";',
+        "export const chordText = (mac: boolean) => chordKeys(mac);",
+      ].join("\n"),
+      "src/lib/index.ts": 'export { chordText as shortcut } from "./chord";',
+      "src/pages/A.tsx": ['import { shortcut } from "@/lib";', "<kbd>{shortcut(mac)}</kbd>"].join(
+        "\n",
+      ),
+    };
+    expect(found(files)).toEqual(["src/lib/keys.ts: Command", "src/lib/keys.ts: Control key"]);
+  });
+});

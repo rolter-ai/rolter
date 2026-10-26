@@ -318,16 +318,24 @@ prefixes, config keys, token counts, latency and money.
 - **Body compact** (400, 13px): the document default for everything that does not set its own size.
 - **Label** (500, 12px): `Table` headers, stat-card labels, helper lines.
 - **Overline** (400, 11px, uppercase, 0.07em tracking): `ListTable` headers and small eyebrows,
-  in Subtle Zinc. The `--text-2xs` token carries the size but is not registered with Tailwind yet,
-  so call sites spell it out (#1990).
-- **Badge** (500, 10px): badge text only.
+  in Subtle Zinc. `text-2xs` (`--text-2xs`, registered in `@theme`).
+- **Badge** (500, 10px): badge text only, and the floor for any text. `text-3xs` (`--text-3xs`).
 - **Mono** (400, 12px): identifiers and values inline with body text; sheet subtitles.
 - **Figure** (Geist Mono 500, 28px, tight tracking): the headline number of a stat card.
+  `text-figure` (`--text-figure`).
+
+A size not on this list is not spelled out as `text-[11px]` or `text-[0.625rem]`: it either is one
+of these steps, or it is a new step registered in the `@theme` block of `ui/src/index.css` (#1990).
 
 ### Named Rules
 
 **The Copyable-Is-Mono Rule.** If someone might paste it into a terminal or a config file, set it
 in Geist Mono, verbatim.
+
+**The Wordmark Rule.** The wordmark is the word **rolter** as
+`docs/user-docs/community/brand.mdx` sets it: Geist SemiBold, lowercase, `-0.04em` tracking, nothing
+after it. The sidebar and the sign-in card follow it; the Geist Mono "rolter." the design prototype
+used is retired (#1992).
 
 **The No-Substitute Rule.** Never swap Geist for Inter, Roboto or Arial; fonts are vendored from
 `node_modules`, never fetched from a CDN.
@@ -363,11 +371,14 @@ and hairline borders. Cards have no shadow. Shadows exist only on things that fl
 
 - **Overlay** (`box-shadow: 0 4px 12px rgba(0, 0, 0, 0.45)`, `--shadow-md`): the combobox list
   and chart tooltips.
-- **Lifted** (`box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55)`, `--shadow-lg`): meant for dialogs and
-  menus. Those currently use Tailwind's stock `shadow-lg` utility, which is not this token, and the
-  sign-in card rests on a `shadow-2xl`; both are tracked in #1990.
-- **Sheet edge** (`box-shadow: -14px 0 44px rgba(0, 0, 0, 0.42)`): the right-hand sheet over a 50%
-  black scrim, mirrored for the nav drawer below `md`.
+- **Lifted** (`box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55)`, `--shadow-lg`): dialogs and menus.
+- **Sheet edge** (`box-shadow: -14px 0 44px rgba(0, 0, 0, 0.42)`, `--shadow-sheet`): the right-hand
+  sheet over a 50% black scrim, mirrored as `--shadow-drawer` for the nav drawer and the Logs filter
+  rail below `md`.
+
+The four are registered in the `@theme` block of `ui/src/index.css`, so `shadow-md`, `shadow-lg`,
+`shadow-sheet` and `shadow-drawer` are these tokens and not Tailwind's stock shadows of the same
+name. The sign-in card rests on the page and carries no shadow (#1990).
 
 ### Named Rules
 
@@ -434,6 +445,28 @@ is state to show.
 10px medium text on a 20px pill with 6px corners. Status tones tint the status fill at 15% and set
 the label in the `-text` half; the accent tone is Red Tint with Folk Red text.
 
+The mono uppercase `Pill` (modality, origin and strategy tags) takes the same tones through its
+`tone` prop, so a status has one tint whichever shape carries it, and an HTTP status is always
+`HttpStatusBadge`: 2xx and 3xx success, 4xx warning, 5xx and no answer danger. A colour literal
+(`rgba(…)`) in a component fails `ui/scripts/status-tints.test.ts` (#1989).
+
+### Status pill
+
+The gateway pill in every screen header says what the gateway's own `/readyz` answered, in one of
+five states: checking, healthy, degraded, down and unknown. It is a full-round hairline pill with a
+7px dot and a 12px label (`ui/src/components/ScreenHeader.tsx`, the states in
+`ui/src/lib/gateway-health.ts`).
+
+- **The dot** takes the status fill (`--status-*`); checking and unknown use `--text-subtle`, the
+  same as the Logs screen's paused dot. It breathes (`.rl-pulse`) only while the latest check came
+  back healthy.
+- **The label** takes the `-text` half only for degraded and down. Healthy keeps a muted label: it
+  is the resting state on every screen, the green dot already says it, and a green line of text on
+  every header would spend colour on the state that needs no second look.
+- **The face** is Geist, not Geist Mono. "gateway healthy" is a status, not something anyone pastes,
+  so the Copyable-Is-Mono Rule does not reach it, the same call as the Logs streaming indicator
+  (#2015).
+
 ### Tables
 
 Two header shapes ship. `Table` has a Zinc Band header row in 12px medium Muted Zinc; the
@@ -449,8 +482,11 @@ delta. The KPI tile of every analytics screen.
 ### Вышивка ornament (signature)
 
 `.vyshivka-rule` is a 10px cross-stitch checkerboard in Folk Red; `.vyshivka-dots` is the quieter
-dotted divider. They appear under the screen header, as a short thread in an empty state and on the
-sign-in screen, and nowhere else by default.
+dotted divider. They appear under the screen header, as a short thread under a screen's own empty
+state and on the sign-in screen, and nowhere else. `EmptyState` draws no thread unless it passes
+`thread`, which only a screen-level placeholder does: never one inside a sheet, a table, a form or
+the command palette (#1991). A chart with a single series draws it in neutral zinc (`--chart-2`),
+not the red first series colour, so a spend line does not read as an alarm.
 
 ## Do's and Don'ts
 

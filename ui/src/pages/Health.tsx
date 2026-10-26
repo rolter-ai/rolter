@@ -298,14 +298,14 @@ function Timeline({
         <>
           <div
             aria-hidden="true"
-            className="flex flex-wrap justify-between gap-x-2 font-mono text-[0.6875rem] text-[color:var(--text-subtle)]"
+            className="flex flex-wrap justify-between gap-x-2 font-mono text-2xs text-[color:var(--text-subtle)]"
           >
             <span>{first}</span>
             {buckets.length > 1 && <span className="ml-auto text-right">{last}</span>}
           </div>
           <div
             aria-hidden="true"
-            className="flex flex-wrap gap-x-3 text-[0.6875rem] text-[color:var(--text-subtle)]"
+            className="flex flex-wrap gap-x-3 text-2xs text-[color:var(--text-subtle)]"
           >
             <span className="inline-flex items-center gap-1">
               <span
@@ -504,6 +504,7 @@ export default function Health() {
         // health rollups are a by-product of traffic, so there is nothing to
         // create here — the honest CTA is the one that produces an event
         <EmptyState
+          thread
           uxTarget="health-rollups"
           icon={<HeartPulse />}
           title={t("pages.health.emptyTitle")}
@@ -571,7 +572,7 @@ export default function Health() {
                   <span className={cn("font-mono text-2xl font-medium leading-none")}>
                     {pct(fmt, head.uptime)}
                   </span>
-                  <span className="text-[0.6875rem] uppercase tracking-[0.06em] text-[color:var(--text-subtle)]">
+                  <span className="text-2xs uppercase tracking-[0.06em] text-[color:var(--text-subtle)]">
                     {t("pages.health.uptimeMeta", { events: fmt.number(head.events) })}
                   </span>
                 </div>

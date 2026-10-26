@@ -275,12 +275,12 @@ function FlagCard({
       }
     >
       {unavailable && (
-        <p className="w-full text-[0.6875rem] text-[color:var(--text-subtle)]">
+        <p className="w-full text-2xs text-[color:var(--text-subtle)]">
           {t("pages.featureFlags.unavailableReason", { reason: unavailableReason })}
         </p>
       )}
       {unavailable && storedOn && (
-        <p className="w-full text-[0.6875rem] text-[color:var(--text-subtle)]">
+        <p className="w-full text-2xs text-[color:var(--text-subtle)]">
           {t("pages.featureFlags.stillOn")}
         </p>
       )}

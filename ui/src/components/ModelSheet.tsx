@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Loader2, Lock, Plus, SearchCheck } from "lucide-react";
 import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
+import { Link } from "react-router";
 
 import { FormSkeleton } from "@/components/LoadingState";
 import { GatedButton } from "@/components/GatedButton";
@@ -787,8 +788,21 @@ export function TargetEditor({
           {t("modelSheet.targets.add")}
         </Button>
       </div>
+      {/* the provider a target needs cannot be made from inside this sheet,
+          so the way out is a link to where it can (#1982) */}
       {providers.length === 0 && (
-        <p className="text-xs text-muted-foreground">{t("modelSheet.targets.noProviders")}</p>
+        <p className="text-xs text-muted-foreground">
+          <Trans
+            i18nKey="modelSheet.targets.noProviders"
+            components={[
+              <Link
+                key="providers"
+                to="/providers"
+                className="text-foreground underline underline-offset-2 hover:no-underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              />,
+            ]}
+          />
+        </p>
       )}
       {hidden > 0 && (
         <p className="text-xs text-muted-foreground">
@@ -801,7 +815,7 @@ export function TargetEditor({
           aria-hidden="true"
           className={cn(
             row,
-            "text-[11px] uppercase tracking-[0.06em] text-[color:var(--text-subtle)] max-sm:hidden",
+            "text-2xs uppercase tracking-[0.06em] text-[color:var(--text-subtle)] max-sm:hidden",
           )}
         >
           <span>{t("modelSheet.targets.provider")}</span>
@@ -1913,43 +1927,56 @@ export function ModelSheet({
               </p>
               <FieldError id={ids.nameErr} error={shownError("name")} />
             </div>
-            <div className="space-y-1.5">
-              <FieldLabel
-                label={t("modelSheet.fields.modality")}
-                info={t("modelSheet.fields.modalityInfo")}
-                htmlFor="ms-field-3"
-              />
-              <Combobox
-                id="ms-field-3"
-                className="font-mono"
-                value={draft.modality}
+            {!readonly && (
+              <div className="space-y-1.5">
+                <FieldLabel
+                  label={t("modelSheet.fields.modality")}
+                  info={t("modelSheet.fields.modalityInfo")}
+                  htmlFor="ms-field-3"
+                />
+                <Combobox
+                  id="ms-field-3"
+                  className="font-mono"
+                  value={draft.modality}
+                  disabled={readonly}
+                  onChange={(m) => setModality(m as Modality)}
+                  options={MODALITIES.map((m) => ({ value: m, label: m }))}
+                />
+              </div>
+            )}
+          </div>
+          {readonly && configModel && (
+            <p className="text-xs text-muted-foreground">
+              {configModel.source === "config"
+                ? t("modelSheet.view.sourceConfig")
+                : t("modelSheet.view.sourceDb")}
+            </p>
+          )}
+          {!readonly && (
+            <>
+              <div className="space-y-1.5">
+                <FieldLabel
+                  label={t("modelSheet.fields.description")}
+                  info={t("modelSheet.fields.descriptionInfo")}
+                  htmlFor="ms-field-7"
+                />
+                <Textarea
+                  id="ms-field-7"
+                  value={draft.description}
+                  placeholder={t("modelSheet.fields.descriptionPlaceholder")}
+                  disabled={readonly}
+                  onChange={(e) => set({ description: e.target.value })}
+                />
+              </div>
+              <SwitchRow
+                title={t("modelSheet.fields.enabled")}
+                hint={t("modelSheet.fields.enabledHint")}
+                checked={draft.enabled}
                 disabled={readonly}
-                onChange={(m) => setModality(m as Modality)}
-                options={MODALITIES.map((m) => ({ value: m, label: m }))}
+                onChange={(v) => set({ enabled: v })}
               />
-            </div>
-          </div>
-          <div className="space-y-1.5">
-            <FieldLabel
-              label={t("modelSheet.fields.description")}
-              info={t("modelSheet.fields.descriptionInfo")}
-              htmlFor="ms-field-7"
-            />
-            <Textarea
-              id="ms-field-7"
-              value={draft.description}
-              placeholder={t("modelSheet.fields.descriptionPlaceholder")}
-              disabled={readonly}
-              onChange={(e) => set({ description: e.target.value })}
-            />
-          </div>
-          <SwitchRow
-            title={t("modelSheet.fields.enabled")}
-            hint={t("modelSheet.fields.enabledHint")}
-            checked={draft.enabled}
-            disabled={readonly}
-            onChange={(v) => set({ enabled: v })}
-          />
+            </>
+          )}
         </FormSection>
 
         {/* ===== Routing: how the route spreads traffic (#1979) ===== */}
@@ -2022,473 +2049,490 @@ export function ModelSheet({
           <FieldError id={ids.weightErr} error={weightMessage} />
         </FormSection>
 
-        {/* ===== Default parameters ===== */}
-        <FormSection
-          title={t("modelSheet.sections.params")}
-          info={t("modelSheet.sections.paramsInfo")}
-          open={secOpen.params}
-          onToggle={() => toggleSec("params")}
-          className="space-y-3"
-        >
-          <Segmented
-            ariaLabel={t("modelSheet.paramLockMode")}
-            value={draft.paramMode}
-            options={lockModeOptions}
-            disabled={readonly}
-            onChange={(v) => set({ paramMode: v })}
-          />
-          <p className="text-xs leading-snug text-muted-foreground">{modeNote}</p>
-          <div className="space-y-2">
-            {draft.params.map((p, i) => (
-              <div key={p.custom ? `c${i}` : p.key} className="flex items-center gap-2">
-                {p.custom ? (
-                  <Input
-                    aria-label={t("modelSheet.params.name")}
-                    className="h-[34px] flex-[1.1] font-mono text-xs"
-                    value={p.key}
-                    placeholder={t("modelSheet.params.namePlaceholder")}
-                    disabled={readonly}
-                    // the row the param error is about: a value with no name
-                    aria-invalid={(!!shownError("param") && paramRowInvalid(p)) || undefined}
-                    aria-describedby={describedBy(
-                      !!shownError("param") && paramRowInvalid(p) && ids.paramErr,
-                    )}
-                    onChange={(e) => setParamAt(i, { key: e.target.value })}
-                    onBlur={() => visibility.touch("param")}
-                  />
-                ) : (
-                  <span className="min-w-0 flex-[1.1] truncate font-mono text-sm">{p.key}</span>
-                )}
-                {p.type === "enum" ? (
-                  <Combobox
-                    aria-label={t("modelSheet.params.value")}
-                    size="sm"
-                    className="min-w-0 flex-1 font-mono"
-                    value={p.value}
-                    disabled={readonly}
-                    onChange={(value) => setParamAt(i, { value })}
-                    options={(p.opts ?? ["", "low", "medium", "high"]).map((o) => ({
-                      value: o,
-                      label: o === "" ? t("modelSheet.params.providerDefault") : o,
-                    }))}
-                  />
-                ) : (
-                  <Input
-                    aria-label={t("modelSheet.params.value")}
-                    className="h-[34px] min-w-0 flex-1 font-mono text-xs"
-                    type={p.type === "int" || p.type === "float" ? "number" : "text"}
-                    step="any"
-                    value={p.value}
-                    placeholder={
-                      p.custom
-                        ? t("modelSheet.params.valuePlaceholder")
-                        : t("modelSheet.params.providerDefault")
-                    }
-                    disabled={readonly}
-                    onChange={(e) => setParamAt(i, { value: e.target.value })}
-                    onBlur={() => visibility.touch("param")}
-                  />
-                )}
-                {p.custom && (
-                  <Combobox
-                    aria-label={t("modelSheet.params.type")}
-                    size="sm"
-                    className="w-24 flex-none font-mono"
-                    value={p.type}
-                    disabled={readonly}
-                    onChange={(type) => setParamAt(i, { type: type as ParamType })}
-                    options={PARAM_TYPES.map((k) => ({ value: k, label: k }))}
-                  />
-                )}
-                {paramManual && (
-                  <LockButton
-                    locked={p.locked}
-                    disabled={readonly}
-                    onToggle={() => setParamAt(i, { locked: !p.locked })}
-                  />
-                )}
-                {p.custom && (
-                  <DeleteIconButton
-                    label={t("modelSheet.params.remove")}
-                    title={t("common.remove")}
-                    disabled={readonly}
-                    onClick={() =>
-                      setDraft((d) => ({
-                        ...d,
-                        params: d.params.filter((_, idx) => idx !== i),
-                      }))
-                    }
-                  />
-                )}
-              </div>
-            ))}
-          </div>
-          <FieldError id={ids.paramErr} error={shownError("param")} />
-          {!readonly && (
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() =>
-                setDraft((d) => ({
-                  ...d,
-                  params: [
-                    ...d.params,
-                    {
-                      key: "",
-                      value: "",
-                      type: "string",
-                      locked: d.paramMode === "lockAll",
-                      custom: true,
-                    },
-                  ],
-                }))
-              }
+        {/* a config route's parameters, caps, prices, headers and access are
+            not in what /api/v1/models carries, so view mode shows none of them
+            rather than a disabled form of defaults posing as its config (#1982) */}
+        {!readonly && (
+          <>
+            {/* ===== Default parameters ===== */}
+            <FormSection
+              title={t("modelSheet.sections.params")}
+              info={t("modelSheet.sections.paramsInfo")}
+              open={secOpen.params}
+              onToggle={() => toggleSec("params")}
+              className="space-y-3"
             >
-              <Plus className="h-3.5 w-3.5" />
-              {t("modelSheet.params.add")}
-            </Button>
-          )}
-        </FormSection>
-
-        {/* ===== Capabilities (chat + audio only) ===== */}
-        {showCaps && (
-          <FormSection
-            title={t("modelSheet.sections.caps")}
-            info={t("modelSheet.sections.capsInfo")}
-            open={secOpen.caps}
-            onToggle={() => toggleSec("caps")}
-            className="grid grid-cols-1 gap-2.5 sm:grid-cols-2"
-          >
-            <SwitchRow
-              title={t("modelSheet.caps.streaming")}
-              checked={draft.caps.streaming}
-              disabled={readonly}
-              onChange={(v) => setDeep("caps", { streaming: v })}
-            />
-            {draft.modality === "chat" && (
-              <>
-                <SwitchRow
-                  title={t("modelSheet.caps.tools")}
-                  checked={draft.caps.tools}
-                  disabled={readonly}
-                  onChange={(v) => setDeep("caps", { tools: v })}
-                />
-                <SwitchRow
-                  title={t("modelSheet.caps.vision")}
-                  checked={draft.caps.vision}
-                  disabled={readonly}
-                  onChange={(v) => setDeep("caps", { vision: v })}
-                />
-                <SwitchRow
-                  title={t("modelSheet.caps.json")}
-                  checked={draft.caps.json}
-                  disabled={readonly}
-                  onChange={(v) => setDeep("caps", { json: v })}
-                />
-                <SwitchRow
-                  title={t("modelSheet.caps.reasoning")}
-                  info={t("modelSheet.caps.reasoningInfo")}
-                  checked={draft.caps.reasoning}
-                  disabled={readonly}
-                  onChange={setReasoning}
-                />
-              </>
-            )}
-          </FormSection>
-        )}
-
-        {/* ===== Pricing override ===== */}
-        <FormSection
-          title={t("modelSheet.sections.pricing")}
-          info={t("modelSheet.sections.pricingInfo")}
-          open={secOpen.pricing}
-          onToggle={() => toggleSec("pricing")}
-          className="space-y-3"
-        >
-          <p className="text-xs text-muted-foreground">{t("modelSheet.pricing.hint")}</p>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            {tokenPriced && priceInput("input", t("modelSheet.pricing.input", { currency: cur }))}
-            {draft.modality === "chat" && (
-              <>
-                {priceInput("output", t("modelSheet.pricing.output", { currency: cur }))}
-                {priceInput("cacheWrite", t("modelSheet.pricing.cacheWrite", { currency: cur }))}
-                {priceInput(
-                  "cacheWrite1h",
-                  t("modelSheet.pricing.cacheWrite1h", { currency: cur }),
-                )}
-                {priceInput("cacheRead", t("modelSheet.pricing.cacheRead", { currency: cur }))}
-              </>
-            )}
-            {draft.modality === "image" &&
-              priceInput("image", t("modelSheet.pricing.image", { currency: cur }))}
-            {draft.modality === "audio" && (
-              <>
-                {priceInput("audioInput", t("modelSheet.pricing.audioInput", { currency: cur }))}
-                {priceInput("speech", t("modelSheet.pricing.speech", { currency: cur }))}
-                {priceInput(
-                  "audioInputTokens",
-                  t("modelSheet.pricing.audioInputTokens", { currency: cur }),
-                )}
-                {priceInput(
-                  "audioOutputTokens",
-                  t("modelSheet.pricing.audioOutputTokens", { currency: cur }),
-                )}
-                {priceInput("cachedAudio", t("modelSheet.pricing.cachedAudio", { currency: cur }))}
-              </>
-            )}
-          </div>
-          <div className="flex items-end gap-3">
-            {tokenPriced && (
-              <div className="w-36 space-y-1">
-                <FieldLabel label={t("modelSheet.pricing.currency")} htmlFor="ms-field-9" />
-                <Combobox
-                  id="ms-field-9"
-                  className="font-mono"
-                  value={cur}
-                  disabled={readonly}
-                  onChange={(currency) => setDeep("price", { currency })}
-                  options={currencyOptions.map((c) => ({ value: c, label: c }))}
-                />
+              <Segmented
+                ariaLabel={t("modelSheet.paramLockMode")}
+                value={draft.paramMode}
+                options={lockModeOptions}
+                disabled={readonly}
+                onChange={(v) => set({ paramMode: v })}
+              />
+              <p className="text-xs leading-snug text-muted-foreground">{modeNote}</p>
+              <div className="space-y-2">
+                {draft.params.map((p, i) => (
+                  <div key={p.custom ? `c${i}` : p.key} className="flex items-center gap-2">
+                    {p.custom ? (
+                      <Input
+                        aria-label={t("modelSheet.params.name")}
+                        className="h-[34px] flex-[1.1] font-mono text-xs"
+                        value={p.key}
+                        placeholder={t("modelSheet.params.namePlaceholder")}
+                        disabled={readonly}
+                        // the row the param error is about: a value with no name
+                        aria-invalid={(!!shownError("param") && paramRowInvalid(p)) || undefined}
+                        aria-describedby={describedBy(
+                          !!shownError("param") && paramRowInvalid(p) && ids.paramErr,
+                        )}
+                        onChange={(e) => setParamAt(i, { key: e.target.value })}
+                        onBlur={() => visibility.touch("param")}
+                      />
+                    ) : (
+                      <span className="min-w-0 flex-[1.1] truncate font-mono text-sm">{p.key}</span>
+                    )}
+                    {p.type === "enum" ? (
+                      <Combobox
+                        aria-label={t("modelSheet.params.value")}
+                        size="sm"
+                        className="min-w-0 flex-1 font-mono"
+                        value={p.value}
+                        disabled={readonly}
+                        onChange={(value) => setParamAt(i, { value })}
+                        options={(p.opts ?? ["", "low", "medium", "high"]).map((o) => ({
+                          value: o,
+                          label: o === "" ? t("modelSheet.params.providerDefault") : o,
+                        }))}
+                      />
+                    ) : (
+                      <Input
+                        aria-label={t("modelSheet.params.value")}
+                        className="h-[34px] min-w-0 flex-1 font-mono text-xs"
+                        type={p.type === "int" || p.type === "float" ? "number" : "text"}
+                        step="any"
+                        value={p.value}
+                        placeholder={
+                          p.custom
+                            ? t("modelSheet.params.valuePlaceholder")
+                            : t("modelSheet.params.providerDefault")
+                        }
+                        disabled={readonly}
+                        onChange={(e) => setParamAt(i, { value: e.target.value })}
+                        onBlur={() => visibility.touch("param")}
+                      />
+                    )}
+                    {p.custom && (
+                      <Combobox
+                        aria-label={t("modelSheet.params.type")}
+                        size="sm"
+                        className="w-24 flex-none font-mono"
+                        value={p.type}
+                        disabled={readonly}
+                        onChange={(type) => setParamAt(i, { type: type as ParamType })}
+                        options={PARAM_TYPES.map((k) => ({ value: k, label: k }))}
+                      />
+                    )}
+                    {paramManual && (
+                      <LockButton
+                        locked={p.locked}
+                        disabled={readonly}
+                        onToggle={() => setParamAt(i, { locked: !p.locked })}
+                      />
+                    )}
+                    {p.custom && (
+                      <DeleteIconButton
+                        label={t("modelSheet.params.remove")}
+                        title={t("common.remove")}
+                        disabled={readonly}
+                        onClick={() =>
+                          setDraft((d) => ({
+                            ...d,
+                            params: d.params.filter((_, idx) => idx !== i),
+                          }))
+                        }
+                      />
+                    )}
+                  </div>
+                ))}
               </div>
+              <FieldError id={ids.paramErr} error={shownError("param")} />
+              {!readonly && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() =>
+                    setDraft((d) => ({
+                      ...d,
+                      params: [
+                        ...d.params,
+                        {
+                          key: "",
+                          value: "",
+                          type: "string",
+                          locked: d.paramMode === "lockAll",
+                          custom: true,
+                        },
+                      ],
+                    }))
+                  }
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                  {t("modelSheet.params.add")}
+                </Button>
+              )}
+            </FormSection>
+
+            {/* ===== Capabilities (chat + audio only) ===== */}
+            {showCaps && (
+              <FormSection
+                title={t("modelSheet.sections.caps")}
+                info={t("modelSheet.sections.capsInfo")}
+                open={secOpen.caps}
+                onToggle={() => toggleSec("caps")}
+                className="grid grid-cols-1 gap-2.5 sm:grid-cols-2"
+              >
+                <SwitchRow
+                  title={t("modelSheet.caps.streaming")}
+                  checked={draft.caps.streaming}
+                  disabled={readonly}
+                  onChange={(v) => setDeep("caps", { streaming: v })}
+                />
+                {draft.modality === "chat" && (
+                  <>
+                    <SwitchRow
+                      title={t("modelSheet.caps.tools")}
+                      checked={draft.caps.tools}
+                      disabled={readonly}
+                      onChange={(v) => setDeep("caps", { tools: v })}
+                    />
+                    <SwitchRow
+                      title={t("modelSheet.caps.vision")}
+                      checked={draft.caps.vision}
+                      disabled={readonly}
+                      onChange={(v) => setDeep("caps", { vision: v })}
+                    />
+                    <SwitchRow
+                      title={t("modelSheet.caps.json")}
+                      checked={draft.caps.json}
+                      disabled={readonly}
+                      onChange={(v) => setDeep("caps", { json: v })}
+                    />
+                    <SwitchRow
+                      title={t("modelSheet.caps.reasoning")}
+                      info={t("modelSheet.caps.reasoningInfo")}
+                      checked={draft.caps.reasoning}
+                      disabled={readonly}
+                      onChange={setReasoning}
+                    />
+                  </>
+                )}
+              </FormSection>
             )}
-            {/* rolter ships no pricing catalog, so the link explains how a
+
+            {/* ===== Pricing override ===== */}
+            <FormSection
+              title={t("modelSheet.sections.pricing")}
+              info={t("modelSheet.sections.pricingInfo")}
+              open={secOpen.pricing}
+              onToggle={() => toggleSec("pricing")}
+              className="space-y-3"
+            >
+              <p className="text-xs text-muted-foreground">{t("modelSheet.pricing.hint")}</p>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                {tokenPriced &&
+                  priceInput("input", t("modelSheet.pricing.input", { currency: cur }))}
+                {draft.modality === "chat" && (
+                  <>
+                    {priceInput("output", t("modelSheet.pricing.output", { currency: cur }))}
+                    {priceInput(
+                      "cacheWrite",
+                      t("modelSheet.pricing.cacheWrite", { currency: cur }),
+                    )}
+                    {priceInput(
+                      "cacheWrite1h",
+                      t("modelSheet.pricing.cacheWrite1h", { currency: cur }),
+                    )}
+                    {priceInput("cacheRead", t("modelSheet.pricing.cacheRead", { currency: cur }))}
+                  </>
+                )}
+                {draft.modality === "image" &&
+                  priceInput("image", t("modelSheet.pricing.image", { currency: cur }))}
+                {draft.modality === "audio" && (
+                  <>
+                    {priceInput(
+                      "audioInput",
+                      t("modelSheet.pricing.audioInput", { currency: cur }),
+                    )}
+                    {priceInput("speech", t("modelSheet.pricing.speech", { currency: cur }))}
+                    {priceInput(
+                      "audioInputTokens",
+                      t("modelSheet.pricing.audioInputTokens", { currency: cur }),
+                    )}
+                    {priceInput(
+                      "audioOutputTokens",
+                      t("modelSheet.pricing.audioOutputTokens", { currency: cur }),
+                    )}
+                    {priceInput(
+                      "cachedAudio",
+                      t("modelSheet.pricing.cachedAudio", { currency: cur }),
+                    )}
+                  </>
+                )}
+              </div>
+              <div className="flex items-end gap-3">
+                {tokenPriced && (
+                  <div className="w-36 space-y-1">
+                    <FieldLabel label={t("modelSheet.pricing.currency")} htmlFor="ms-field-9" />
+                    <Combobox
+                      id="ms-field-9"
+                      className="font-mono"
+                      value={cur}
+                      disabled={readonly}
+                      onChange={(currency) => setDeep("price", { currency })}
+                      options={currencyOptions.map((c) => ({ value: c, label: c }))}
+                    />
+                  </div>
+                )}
+                {/* rolter ships no pricing catalog, so the link explains how a
                 request's cost is computed from the prices typed here (#977). it
                 goes through the configured docs host and renders nothing on a
                 deployment without one (#1981) */}
-            <DocsLink
-              page="costTracking"
-              label={t("docs.link.costTracking")}
-              className="pb-2 text-xs"
-            />
-          </div>
-          {currencyUnconvertible && (
-            <p className="text-xs text-[color:var(--status-warning-text)]">
-              {t("modelSheet.currencyUnconvertible", {
-                code: cur,
-                base: currency.data?.base ?? "",
-              })}
-            </p>
-          )}
-        </FormSection>
+                <DocsLink
+                  page="costTracking"
+                  label={t("docs.link.costTracking")}
+                  className="pb-2 text-xs"
+                />
+              </div>
+              {currencyUnconvertible && (
+                <p className="text-xs text-[color:var(--status-warning-text)]">
+                  {t("modelSheet.currencyUnconvertible", {
+                    code: cur,
+                    base: currency.data?.base ?? "",
+                  })}
+                </p>
+              )}
+            </FormSection>
 
-        {/* ===== Limits & network ===== */}
-        <FormSection
-          title={t("modelSheet.sections.advanced")}
-          open={secOpen.advanced}
-          onToggle={() => toggleSec("advanced")}
-          className="space-y-3"
-        >
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            {numInput("timeoutMs", t("modelSheet.net.timeout"), "60000", {
-              id: ids.timeoutHint,
-              text: t("modelSheet.net.timeoutHint"),
-            })}
-            {numInput(
-              "retries",
-              t("modelSheet.net.retries"),
-              "2",
-              { id: ids.retriesHint, text: t("modelSheet.net.retriesHint") },
-              { field: "retries", errId: ids.retriesErr },
-            )}
-            {numInput("maxOutput", t("modelSheet.net.maxOutput"), "16384", {
-              id: ids.maxOutputHint,
-              text: t("modelSheet.net.maxOutputHint"),
-            })}
-            {numInput(
-              "rpm",
-              t("modelSheet.net.rpm"),
-              "600",
-              { id: ids.rpmHint, text: t("modelSheet.net.rpmHint") },
-              { field: "rpm", errId: ids.rpmErr },
-            )}
-            {numInput(
-              "tpm",
-              t("modelSheet.net.tpm"),
-              "200000",
-              { id: ids.tpmHint, text: t("modelSheet.net.tpmHint") },
-              { field: "tpm", errId: ids.tpmErr },
-            )}
-            {numInput(
-              "concurrency",
-              t("modelSheet.net.concurrency"),
-              "8",
-              { id: ids.concurrencyHint, text: t("modelSheet.net.concurrencyHint") },
-              { field: "concurrency", errId: ids.concurrencyErr },
-            )}
-          </div>
-        </FormSection>
+            {/* ===== Limits & network ===== */}
+            <FormSection
+              title={t("modelSheet.sections.advanced")}
+              open={secOpen.advanced}
+              onToggle={() => toggleSec("advanced")}
+              className="space-y-3"
+            >
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                {numInput("timeoutMs", t("modelSheet.net.timeout"), "60000", {
+                  id: ids.timeoutHint,
+                  text: t("modelSheet.net.timeoutHint"),
+                })}
+                {numInput(
+                  "retries",
+                  t("modelSheet.net.retries"),
+                  "2",
+                  { id: ids.retriesHint, text: t("modelSheet.net.retriesHint") },
+                  { field: "retries", errId: ids.retriesErr },
+                )}
+                {numInput("maxOutput", t("modelSheet.net.maxOutput"), "16384", {
+                  id: ids.maxOutputHint,
+                  text: t("modelSheet.net.maxOutputHint"),
+                })}
+                {numInput(
+                  "rpm",
+                  t("modelSheet.net.rpm"),
+                  "600",
+                  { id: ids.rpmHint, text: t("modelSheet.net.rpmHint") },
+                  { field: "rpm", errId: ids.rpmErr },
+                )}
+                {numInput(
+                  "tpm",
+                  t("modelSheet.net.tpm"),
+                  "200000",
+                  { id: ids.tpmHint, text: t("modelSheet.net.tpmHint") },
+                  { field: "tpm", errId: ids.tpmErr },
+                )}
+                {numInput(
+                  "concurrency",
+                  t("modelSheet.net.concurrency"),
+                  "8",
+                  { id: ids.concurrencyHint, text: t("modelSheet.net.concurrencyHint") },
+                  { field: "concurrency", errId: ids.concurrencyErr },
+                )}
+              </div>
+            </FormSection>
 
-        {/* ===== Custom request headers ===== */}
-        <FormSection
-          title={t("modelSheet.sections.headers")}
-          info={t("modelSheet.sections.headersInfo")}
-          open={secOpen.headers}
-          onToggle={() => toggleSec("headers")}
-          className="space-y-3"
-        >
-          <Segmented
-            ariaLabel={t("modelSheet.headerLockMode")}
-            value={draft.headerMode}
-            options={lockModeOptions}
-            disabled={readonly}
-            onChange={(v) => set({ headerMode: v })}
-          />
-          {draft.headers.length > 0 && (
-            <div className="space-y-2">
-              {draft.headers.map((h, i) => (
-                <div key={i} className="flex items-center gap-2">
-                  <Input
-                    aria-label={t("modelSheet.headers.name")}
-                    className="h-[34px] min-w-0 flex-1 font-mono text-xs"
-                    value={h.key}
-                    placeholder={t("modelSheet.headers.namePlaceholder")}
+            {/* ===== Custom request headers ===== */}
+            <FormSection
+              title={t("modelSheet.sections.headers")}
+              info={t("modelSheet.sections.headersInfo")}
+              open={secOpen.headers}
+              onToggle={() => toggleSec("headers")}
+              className="space-y-3"
+            >
+              <Segmented
+                ariaLabel={t("modelSheet.headerLockMode")}
+                value={draft.headerMode}
+                options={lockModeOptions}
+                disabled={readonly}
+                onChange={(v) => set({ headerMode: v })}
+              />
+              {draft.headers.length > 0 && (
+                <div className="space-y-2">
+                  {draft.headers.map((h, i) => (
+                    <div key={i} className="flex items-center gap-2">
+                      <Input
+                        aria-label={t("modelSheet.headers.name")}
+                        className="h-[34px] min-w-0 flex-1 font-mono text-xs"
+                        value={h.key}
+                        placeholder={t("modelSheet.headers.namePlaceholder")}
+                        disabled={readonly}
+                        aria-invalid={(!!shownError("header") && headerRowInvalid(h)) || undefined}
+                        aria-describedby={describedBy(
+                          !!shownError("header") && headerRowInvalid(h) && ids.headerErr,
+                        )}
+                        onChange={(e) => setHeaderAt(i, { key: e.target.value })}
+                        onBlur={() => visibility.touch("header")}
+                      />
+                      <Input
+                        aria-label={t("modelSheet.headers.value")}
+                        className="h-[34px] min-w-0 flex-1 font-mono text-xs"
+                        value={h.value}
+                        placeholder={t("modelSheet.headers.valuePlaceholder")}
+                        disabled={readonly}
+                        onChange={(e) => setHeaderAt(i, { value: e.target.value })}
+                        onBlur={() => visibility.touch("header")}
+                      />
+                      {headerManual && (
+                        <LockButton
+                          locked={h.locked}
+                          disabled={readonly}
+                          onToggle={() => setHeaderAt(i, { locked: !h.locked })}
+                        />
+                      )}
+                      <DeleteIconButton
+                        label={t("modelSheet.headers.remove")}
+                        title={t("common.remove")}
+                        disabled={readonly}
+                        onClick={() =>
+                          setDraft((d) => ({
+                            ...d,
+                            headers: d.headers.filter((_, idx) => idx !== i),
+                          }))
+                        }
+                      />
+                    </div>
+                  ))}
+                </div>
+              )}
+              <FieldError id={ids.headerErr} error={shownError("header")} />
+              {!readonly && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() =>
+                    setDraft((d) => ({
+                      ...d,
+                      headers: [
+                        ...d.headers,
+                        { key: "", value: "", locked: d.headerMode === "lockAll" },
+                      ],
+                    }))
+                  }
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                  {t("modelSheet.headers.add")}
+                </Button>
+              )}
+            </FormSection>
+
+            {/* ===== Access & permissions ===== */}
+            <FormSection
+              title={t("modelSheet.sections.rbac")}
+              open={secOpen.rbac}
+              onToggle={() => toggleSec("rbac")}
+              className="space-y-3.5"
+            >
+              <div className="space-y-1.5">
+                <FieldLabel
+                  label={t("modelSheet.rbac.minRole")}
+                  info={t("modelSheet.rbac.minRoleInfo")}
+                  htmlFor="ms-field-10"
+                />
+                <Combobox
+                  id="ms-field-10"
+                  className="font-mono"
+                  value={draft.rbac.minRole}
+                  disabled={readonly}
+                  onChange={(minRole) => setDeep("rbac", { minRole })}
+                  options={ROLES.map((r) => ({ value: r, label: r }))}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <FieldLabel
+                  label={t("modelSheet.rbac.visibility")}
+                  info={t("modelSheet.rbac.visibilityInfo")}
+                  id="ms-visibility-label"
+                />
+                <Segmented
+                  labelledBy="ms-visibility-label"
+                  value={draft.rbac.visibility}
+                  options={[
+                    { value: "public", label: t("modelSheet.rbac.public") },
+                    { value: "project", label: t("modelSheet.rbac.project") },
+                    { value: "restricted", label: t("modelSheet.rbac.restricted") },
+                  ]}
+                  disabled={readonly}
+                  onChange={(v) => setDeep("rbac", { visibility: v })}
+                />
+              </div>
+              {draft.rbac.visibility === "restricted" && (
+                <div className="space-y-3.5">
+                  <ChipGroup
+                    label={t("modelSheet.rbac.teams")}
+                    options={(teams.data ?? []).map((row) => ({ id: row.id, name: row.name }))}
+                    selected={draft.rbac.teams}
                     disabled={readonly}
-                    aria-invalid={(!!shownError("header") && headerRowInvalid(h)) || undefined}
-                    aria-describedby={describedBy(
-                      !!shownError("header") && headerRowInvalid(h) && ids.headerErr,
-                    )}
-                    onChange={(e) => setHeaderAt(i, { key: e.target.value })}
-                    onBlur={() => visibility.touch("header")}
+                    onToggle={(v) =>
+                      setDeep("rbac", {
+                        teams: draft.rbac.teams.includes(v)
+                          ? draft.rbac.teams.filter((x) => x !== v)
+                          : [...draft.rbac.teams, v],
+                      })
+                    }
                   />
-                  <Input
-                    aria-label={t("modelSheet.headers.value")}
-                    className="h-[34px] min-w-0 flex-1 font-mono text-xs"
-                    value={h.value}
-                    placeholder={t("modelSheet.headers.valuePlaceholder")}
+                  <ChipGroup
+                    label={t("modelSheet.rbac.vkeys")}
+                    options={(vkeys.data ?? []).map((row) => ({
+                      id: row.id,
+                      name: row.name || row.key_prefix,
+                    }))}
+                    selected={draft.rbac.vkeys}
                     disabled={readonly}
-                    onChange={(e) => setHeaderAt(i, { value: e.target.value })}
-                    onBlur={() => visibility.touch("header")}
+                    onToggle={(v) =>
+                      setDeep("rbac", {
+                        vkeys: draft.rbac.vkeys.includes(v)
+                          ? draft.rbac.vkeys.filter((x) => x !== v)
+                          : [...draft.rbac.vkeys, v],
+                      })
+                    }
                   />
-                  {headerManual && (
-                    <LockButton
-                      locked={h.locked}
-                      disabled={readonly}
-                      onToggle={() => setHeaderAt(i, { locked: !h.locked })}
-                    />
-                  )}
-                  <DeleteIconButton
-                    label={t("modelSheet.headers.remove")}
-                    title={t("common.remove")}
+                  <ChipGroup
+                    label={t("modelSheet.rbac.users")}
+                    options={(users.data ?? []).map((row) => ({ id: row.id, name: row.email }))}
+                    selected={draft.rbac.users}
                     disabled={readonly}
-                    onClick={() =>
-                      setDraft((d) => ({
-                        ...d,
-                        headers: d.headers.filter((_, idx) => idx !== i),
-                      }))
+                    onToggle={(v) =>
+                      setDeep("rbac", {
+                        users: draft.rbac.users.includes(v)
+                          ? draft.rbac.users.filter((x) => x !== v)
+                          : [...draft.rbac.users, v],
+                      })
                     }
                   />
                 </div>
-              ))}
-            </div>
-          )}
-          <FieldError id={ids.headerErr} error={shownError("header")} />
-          {!readonly && (
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() =>
-                setDraft((d) => ({
-                  ...d,
-                  headers: [
-                    ...d.headers,
-                    { key: "", value: "", locked: d.headerMode === "lockAll" },
-                  ],
-                }))
-              }
-            >
-              <Plus className="h-3.5 w-3.5" />
-              {t("modelSheet.headers.add")}
-            </Button>
-          )}
-        </FormSection>
-
-        {/* ===== Access & permissions ===== */}
-        <FormSection
-          title={t("modelSheet.sections.rbac")}
-          open={secOpen.rbac}
-          onToggle={() => toggleSec("rbac")}
-          className="space-y-3.5"
-        >
-          <div className="space-y-1.5">
-            <FieldLabel
-              label={t("modelSheet.rbac.minRole")}
-              info={t("modelSheet.rbac.minRoleInfo")}
-              htmlFor="ms-field-10"
-            />
-            <Combobox
-              id="ms-field-10"
-              className="font-mono"
-              value={draft.rbac.minRole}
-              disabled={readonly}
-              onChange={(minRole) => setDeep("rbac", { minRole })}
-              options={ROLES.map((r) => ({ value: r, label: r }))}
-            />
-          </div>
-          <div className="space-y-1.5">
-            <FieldLabel
-              label={t("modelSheet.rbac.visibility")}
-              info={t("modelSheet.rbac.visibilityInfo")}
-              id="ms-visibility-label"
-            />
-            <Segmented
-              labelledBy="ms-visibility-label"
-              value={draft.rbac.visibility}
-              options={[
-                { value: "public", label: t("modelSheet.rbac.public") },
-                { value: "project", label: t("modelSheet.rbac.project") },
-                { value: "restricted", label: t("modelSheet.rbac.restricted") },
-              ]}
-              disabled={readonly}
-              onChange={(v) => setDeep("rbac", { visibility: v })}
-            />
-          </div>
-          {draft.rbac.visibility === "restricted" && (
-            <div className="space-y-3.5">
-              <ChipGroup
-                label={t("modelSheet.rbac.teams")}
-                options={(teams.data ?? []).map((row) => ({ id: row.id, name: row.name }))}
-                selected={draft.rbac.teams}
-                disabled={readonly}
-                onToggle={(v) =>
-                  setDeep("rbac", {
-                    teams: draft.rbac.teams.includes(v)
-                      ? draft.rbac.teams.filter((x) => x !== v)
-                      : [...draft.rbac.teams, v],
-                  })
-                }
-              />
-              <ChipGroup
-                label={t("modelSheet.rbac.vkeys")}
-                options={(vkeys.data ?? []).map((row) => ({
-                  id: row.id,
-                  name: row.name || row.key_prefix,
-                }))}
-                selected={draft.rbac.vkeys}
-                disabled={readonly}
-                onToggle={(v) =>
-                  setDeep("rbac", {
-                    vkeys: draft.rbac.vkeys.includes(v)
-                      ? draft.rbac.vkeys.filter((x) => x !== v)
-                      : [...draft.rbac.vkeys, v],
-                  })
-                }
-              />
-              <ChipGroup
-                label={t("modelSheet.rbac.users")}
-                options={(users.data ?? []).map((row) => ({ id: row.id, name: row.email }))}
-                selected={draft.rbac.users}
-                disabled={readonly}
-                onToggle={(v) =>
-                  setDeep("rbac", {
-                    users: draft.rbac.users.includes(v)
-                      ? draft.rbac.users.filter((x) => x !== v)
-                      : [...draft.rbac.users, v],
-                  })
-                }
-              />
-            </div>
-          )}
-        </FormSection>
+              )}
+            </FormSection>
+          </>
+        )}
 
         {/* ===== Guardrail overrides ===== */}
         <FormSection
@@ -2547,29 +2591,35 @@ export function ModelSheet({
           <p className="text-xs text-muted-foreground">{t("modelSheet.guardrails.hint")}</p>
         </FormSection>
 
-        {/* ===== Config preview ===== */}
-        <FormSection
-          title={t("modelSheet.configPreview")}
-          open={secOpen.preview}
-          onToggle={() => toggleSec("preview")}
-        >
-          {/* the draft as the config it will become, through the shared code
+        {/* the preview is the draft as it would be saved, which a read-only
+            route never is (#1982) */}
+        {!readonly && (
+          <>
+            {/* ===== Config preview ===== */}
+            <FormSection
+              title={t("modelSheet.configPreview")}
+              open={secOpen.preview}
+              onToggle={() => toggleSec("preview")}
+            >
+              {/* the draft as the config it will become, through the shared code
               block so a mistyped key or a stray quote shows up here rather
               than after saving (#949) */}
-          <CodeBlock
-            value={buildPreview(
-              draft,
-              providerName,
-              advancedPayload,
-              seededRatesRef.current,
-              mode === "edit",
-            )}
-            language="json"
-            label={t("modelSheet.configPreview")}
-            maxHeight={280}
-            density="compact"
-          />
-        </FormSection>
+              <CodeBlock
+                value={buildPreview(
+                  draft,
+                  providerName,
+                  advancedPayload,
+                  seededRatesRef.current,
+                  mode === "edit",
+                )}
+                language="json"
+                label={t("modelSheet.configPreview")}
+                maxHeight={280}
+                density="compact"
+              />
+            </FormSection>
+          </>
+        )}
       </SheetBody>
 
       <SheetFooter>

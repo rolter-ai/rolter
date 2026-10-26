@@ -256,7 +256,7 @@ function DiscoveredEndpoints({ server, resets }: { server: McpServerRow | null; 
           {t("pages.mcpCatalog.oauth.discovered.title")}
         </h4>
         {found?.oauth_discovered_at && (
-          <span className="ml-auto font-mono text-[11px] text-muted-foreground">
+          <span className="ml-auto font-mono text-2xs text-muted-foreground">
             {t("pages.mcpCatalog.oauth.discovered.at", {
               when: fmt.dateTime(found.oauth_discovered_at),
             })}
@@ -746,6 +746,7 @@ export function McpCatalog() {
         />
       ) : !query.data?.length ? (
         <EmptyState
+          thread
           uxTarget="mcp-servers"
           icon={<Server />}
           title={t("pages.mcpCatalog.emptyTitle")}
@@ -1645,6 +1646,7 @@ export function ToolGroups() {
         />
       ) : !groups.data?.length ? (
         <EmptyState
+          thread
           uxTarget="tool-groups"
           icon={<Puzzle />}
           title={t("pages.tool-groups.emptyTitle")}

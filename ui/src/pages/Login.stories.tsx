@@ -64,6 +64,29 @@ async function signIn(canvasElement: HTMLElement) {
   await userEvent.click(canvas.getByRole("button", { name: /sign in/i }));
 }
 
+/**
+ * #1992: the wordmark on the sign-in card is the one the brand guidelines set:
+ * the lowercase word in Geist SemiBold, not the prototype's Geist Mono with a
+ * red full stop after it.
+ */
+export const TheWordmarkFollowsTheBrandGuidelines: Story = {
+  render: () => (
+    <Harness fetchStub={loginFails(401, "invalid_credentials")}>
+      <AuthProvider>
+        <Login />
+      </AuthProvider>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const word = await canvas.findByText("rolter", { exact: true });
+    const style = getComputedStyle(word);
+    await expect(style.fontFamily).toMatch(/^"?Geist Variable/);
+    await expect(style.fontWeight).toBe("600");
+    await expect(word.textContent).toBe("rolter");
+  },
+};
+
 export const WrongPassword: Story = {
   render: () => (
     <Harness fetchStub={loginFails(401, "invalid_credentials")}>

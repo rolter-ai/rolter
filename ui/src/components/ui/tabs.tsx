@@ -118,7 +118,7 @@ export function Tabs({ tabs = [], value, onChange, className, ...props }: TabsPr
           >
             {t.label}
             {t.count != null && (
-              <span className="ml-1.5 font-mono text-[0.6875rem] text-[color:var(--text-subtle)]">
+              <span className="ml-1.5 font-mono text-2xs text-[color:var(--text-subtle)]">
                 {t.count}
               </span>
             )}

@@ -127,6 +127,7 @@ export default function ComplexityRouter() {
         // a complexity policy hangs off a route, so with no routes there is
         // nothing on this screen to create — the CTA points where it is made
         <EmptyState
+          thread
           uxTarget="complexity-routes"
           icon={<ArrowLeftRight />}
           title={t("pages.complexityRouter.emptyTitle")}

@@ -307,7 +307,7 @@ export function MenuItem({
             )}
           </span>
           {denied && reason && (
-            <span aria-hidden="true" className="block truncate text-[0.6875rem]">
+            <span aria-hidden="true" className="block truncate text-2xs">
               {reason}
             </span>
           )}

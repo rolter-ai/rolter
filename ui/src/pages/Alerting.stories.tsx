@@ -22,6 +22,7 @@ import {
   pickOption,
   recording,
   routes,
+  failingThenRecovering,
   scoped,
   sheet,
   Toasted,
@@ -2171,36 +2172,9 @@ export const HistoryRuleNameIsReadInFullInRussianOnAPhone = ruleStory(atMobile, 
 
 // --- a control plane that answers with a 5xx: LoadError offers a retry --------
 
-/**
- * A stub that answers every read of `path` with a 503 until `recover()`, and
- * keeps the reads it saw so a story can assert the retry went to the network.
- */
-function flaky(path: string) {
-  let down = true;
-  const reads: string[] = [];
-  return {
-    reads,
-    reset: () => {
-      down = true;
-      reads.length = 0;
-    },
-    recover: () => {
-      down = false;
-    },
-    stub: scoped(async (input, init) => {
-      const url = String(input);
-      if (url.includes(path)) {
-        reads.push(url);
-        if (down) return json({ error: { message: "control plane unavailable" } }, 503);
-      }
-      return loaded(input, init);
-    }),
-  };
-}
-
-const channelsDown = flaky("/alert-channels");
-const rulesDown = flaky("/alert-rules");
-const historyDown = flaky("/alert-notifications");
+const channelsDown = failingThenRecovering("/alert-channels", loaded);
+const rulesDown = failingThenRecovering("/alert-rules", loaded);
+const historyDown = failingThenRecovering("/alert-notifications", loaded);
 
 export const ChannelsLoadFailsAndRetries: Story = {
   render: () => {

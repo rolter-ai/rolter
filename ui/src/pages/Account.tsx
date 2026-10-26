@@ -182,6 +182,7 @@ export default function Account() {
       )}
       {!keys.isLoading && !keys.error && keys.data?.length === 0 && (
         <EmptyState
+          thread
           data-testid="own-keys-empty"
           uxTarget="own-keys"
           icon={<KeyRound />}

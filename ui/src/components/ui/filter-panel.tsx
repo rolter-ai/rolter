@@ -36,7 +36,7 @@ export function FilterSection({ title, defaultOpen, count, children }: FilterSec
         />
         <span className="min-w-0 truncate">{title}</span>
         {count != null && count > 0 && (
-          <span className="ml-auto rounded-full bg-[color:var(--red-tint)] px-1.5 font-mono text-[0.6875rem] text-[color:var(--red-folk-text)]">
+          <span className="ml-auto rounded-full bg-[color:var(--red-tint)] px-1.5 font-mono text-2xs text-[color:var(--red-folk-text)]">
             {count}
           </span>
         )}

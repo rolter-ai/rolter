@@ -851,6 +851,39 @@ export const Mobile: Story = {
 };
 
 /**
+ * #2019: below `md` the filter rail is a modal drawn the way Sheet and the nav
+ * drawer are, its scrim and panel in one fixed layer. The page behind it goes
+ * inert, the scrim stays live, and a real pointer on the scrim closes it.
+ */
+export const MobileFilterScrimCloses: Story = {
+  ...atMobile,
+  render: () => (
+    <Harness fetchStub={withLogs(ROWS)}>
+      <Logs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const doc = canvasElement.ownerDocument;
+    const view = doc.defaultView as Window;
+    await canvas.findByText(fmt.timeMs(ROWS[0].ts));
+    const opener = canvas.getByRole("button", { name: /Filters/ });
+    await userEvent.click(opener);
+    const panel = await canvas.findByRole("dialog", { name: "Filters" });
+    await waitFor(() => expect(opener.closest("[inert]")).not.toBeNull());
+    await expect(panel.closest("[inert]")).toBeNull();
+    // the panel is narrower than the window, so its right edge is scrim
+    const hit = doc.elementFromPoint(view.innerWidth - 10, view.innerHeight / 2);
+    await expect(hit).not.toBeNull();
+    await expect(panel.contains(hit)).toBe(false);
+    await expect(hit!.closest("[inert]")).toBeNull();
+    await userEvent.click(hit!);
+    await waitFor(() => expect(canvas.queryByRole("dialog", { name: "Filters" })).toBeNull());
+    await waitFor(() => expect(opener.closest("[inert]")).toBeNull());
+  },
+};
+
+/**
  * #2446: below 480px a row stacks. The model is on the first line with the
  * status, time and cost on the second, the model is cut with an ellipsis and
  * not wrapped, and its full name is in the row's accessible name.

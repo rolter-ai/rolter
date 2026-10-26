@@ -512,6 +512,7 @@ export default function AccessProfiles() {
       )}
       {profiles.data && profiles.data.length === 0 && (
         <EmptyState
+          thread
           icon={<Shield className="size-5" />}
           title={t("pages.accessProfiles.emptyTitle")}
           description={t("pages.accessProfiles.emptyBody")}
