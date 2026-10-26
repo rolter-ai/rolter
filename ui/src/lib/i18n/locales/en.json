@@ -3869,7 +3869,9 @@
         "requestIdRefused": "'{{name}}' carries a credential, session state or message framing, so it cannot be the request ID header.",
         "badRequestIdHeader": "Request ID header is not a valid header name."
       },
-      "injectedValuePlaceholder": "value"
+      "injectedValuePlaceholder": "value",
+      "unsaved": "Unsaved changes. Gateways keep the saved settings until you save.",
+      "savedDetail": "Client settings updated. Gateways apply them on their next config poll, without a restart."
     },
     "security": {
       "allowedOrigins": "Allowed origins",

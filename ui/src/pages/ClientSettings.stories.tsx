@@ -4,6 +4,7 @@ import { expect, userEvent, waitFor, within } from "storybook/test";
 import ClientSettings from "./ClientSettings";
 import {
   expectForbidden,
+  expectLoadError,
   expectSkeleton,
   expectToast,
   Harness as ScreenHarness,
@@ -143,6 +144,44 @@ export const Loading: Story = {
   },
 };
 
+// a 500 or an unreachable control plane is a failure to load, said as one and
+// with a retry, not an empty form a save would overwrite the settings from
+export const LoadErrorRetries: Story = {
+  render: () => (
+    <Harness fetchStub={async () => json({ error: { message: "store unavailable" } }, 500)} />
+  ),
+  play: async ({ canvasElement }) => {
+    await expectLoadError(canvasElement, /client settings/i);
+    await expect(within(canvasElement).getByRole("button", { name: /try again/i })).toBeVisible();
+    await expect(within(canvasElement).queryByLabelText("Public base URL")).toBeNull();
+  },
+};
+
+/**
+ * Save waits for a change, the bar says one is pending, and undoing the edit
+ * is no change at all (#2076). The screen changes gateway behaviour live, so
+ * what is pending versus applied has to be on screen.
+ */
+export const TracksUnsavedChanges: Story = {
+  render: () => <Harness fetchStub={async () => json(CONFIGURED)} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const url = await canvas.findByLabelText("Public base URL");
+    const save = canvas.getByRole("button", { name: "Save changes" });
+    await expect(save).toBeDisabled();
+    await expect(canvas.queryByText(en.pages.clientSettings.unsaved)).toBeNull();
+    await userEvent.type(url, "/edge");
+    await waitFor(() => expect(save).toBeEnabled());
+    await expect(canvas.getByText(en.pages.clientSettings.unsaved)).toHaveAttribute(
+      "role",
+      "status",
+    );
+    await userEvent.clear(url);
+    await userEvent.type(url, "https://gateway.example.com");
+    await waitFor(() => expect(save).toBeDisabled());
+  },
+};
+
 // a non-superadmin principal gets 403
 export const Forbidden: Story = {
   render: () => <Harness fetchStub={async () => json({ error: { message: "forbidden" } }, 403)} />,
@@ -271,7 +310,7 @@ export const SavesChanges: Story = {
     await userEvent.type(canvas.getByLabelText("Injected header name 1"), "x-partner-id");
     await userEvent.type(canvas.getByLabelText("Injected header value 1"), "acme");
     await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
-    await expectToast(canvasElement, /client settings updated/i);
+    await expectToast(canvasElement, /without a restart/i);
     await expect(canvas.getByLabelText("Injected header value 1")).toHaveValue("acme");
   },
 };
