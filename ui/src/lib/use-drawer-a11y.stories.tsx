@@ -11,8 +11,16 @@ import { useDrawerA11y } from "@/lib/use-drawer-a11y";
 // `bun test`, and directly rather than through a screen, so a regression in the
 // drawer reads as a failure of the drawer (#1603).
 
-function Drawer({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const drawer = useDrawerA11y(open, onClose);
+function Drawer({
+  open,
+  subject,
+  onClose,
+}: {
+  open: boolean;
+  subject: string;
+  onClose: () => void;
+}) {
+  const drawer = useDrawerA11y(open, onClose, subject);
   if (!open) return null;
   return (
     <aside
@@ -21,7 +29,7 @@ function Drawer({ open, onClose }: { open: boolean; onClose: () => void }) {
       aria-label="Request detail"
       className="rounded-md border border-[color:var(--border-default)] p-4"
     >
-      <p>req-1 · 200 · 412 ms</p>
+      <p>{subject} · 200 · 412 ms</p>
       <button type="button" onClick={onClose}>
         close
       </button>
@@ -30,17 +38,19 @@ function Drawer({ open, onClose }: { open: boolean; onClose: () => void }) {
 }
 
 function Harness({ withModal = false }: { withModal?: boolean }) {
-  const [open, setOpen] = React.useState(false);
+  const [subject, setSubject] = React.useState<string | null>(null);
   return (
     <div className="flex flex-col items-start gap-3">
       {/* the table the drawer opens beside: two rows, so "focus went back to
           the one that opened it" is a claim with a wrong answer available */}
-      <button type="button" onClick={() => setOpen(true)}>
+      <button type="button" onClick={() => setSubject("req-1")}>
         row req-1
       </button>
-      <button type="button">row req-2</button>
-      <Drawer open={open} onClose={() => setOpen(false)} />
-      {withModal && open && (
+      <button type="button" onClick={() => setSubject("req-2")}>
+        row req-2
+      </button>
+      <Drawer open={subject !== null} subject={subject ?? ""} onClose={() => setSubject(null)} />
+      {withModal && subject !== null && (
         <div role="dialog" aria-modal="true" aria-label="Confirm">
           <button type="button">delete</button>
         </div>
@@ -97,5 +107,28 @@ export const AModalOverTheDrawerOwnsEscape: Story = {
     await userEvent.keyboard("{Escape}");
     // still there: the dialog is what that Escape was for
     await expect(canvas.getByRole("complementary")).toBeInTheDocument();
+  },
+};
+
+/**
+ * Opening a second row while the drawer is open makes that row the opener
+ * (#2050): focus moves into the drawer again, and closing returns it to row 2,
+ * not to row 1 the user left two steps earlier.
+ */
+export const SwitchingRowsMakesTheNewRowTheOpener: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const row1 = canvas.getByRole("button", { name: "row req-1" });
+    const row2 = canvas.getByRole("button", { name: "row req-2" });
+    row1.focus();
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() => expect(canvas.getByRole("complementary")).toHaveFocus());
+    row2.focus();
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() => expect(canvas.getByText(/req-2 · 200/)).toBeInTheDocument());
+    await waitFor(() => expect(canvas.getByRole("complementary")).toHaveFocus());
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(canvas.queryByRole("complementary")).toBeNull());
+    await waitFor(() => expect(row2).toHaveFocus());
   },
 };

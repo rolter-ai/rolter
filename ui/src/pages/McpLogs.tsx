@@ -368,7 +368,7 @@ function DetailDrawer({ eventId, onClose }: { eventId: string; onClose: () => vo
   // below `lg` a 380px panel beside the table leaves neither of them usable, so
   // the detail comes over the top as a sheet instead (#1203)
   const asSheet = useMediaQuery(BELOW_LG);
-  const drawer = useDrawerA11y(!asSheet, onClose);
+  const drawer = useDrawerA11y(!asSheet, onClose, eventId);
   const detail = useQuery({
     queryKey: ["mcp-log", eventId],
     queryFn: () => fetchMcpLogDetail(eventId),

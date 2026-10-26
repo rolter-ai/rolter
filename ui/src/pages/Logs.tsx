@@ -408,7 +408,11 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
   // widths: the same panels, out of the flow
   const railOverlays = useMediaQuery(BELOW_MD);
   const detailAsSheet = useMediaQuery(BELOW_XL);
-  const drawer = useDrawerA11y(selected != null && !detailAsSheet, () => setSelected(null));
+  const drawer = useDrawerA11y(
+    selected != null && !detailAsSheet,
+    () => setSelected(null),
+    selected?.request_id,
+  );
   const filterPanel = React.useRef<HTMLDivElement>(null);
   const filterA11y = useModalA11y(filterPanel, {
     open: railOverlays && filtersOpen,
