@@ -480,9 +480,19 @@ function SignInPolicyCard({
           checked={password}
           onChange={setPassword}
         />
+        {/* on with nothing to sign in through is a switch that allows
+            nothing, so it says so rather than reading as a working way in */}
         <SwitchRow
           title={t("pages.sso.policy.ssoLabel")}
-          hint={t("pages.sso.policy.ssoHint")}
+          hint={
+            sso && !providers.some((p) => p.enabled)
+              ? t(
+                  providers.length === 0
+                    ? "pages.sso.policy.ssoNoProvider"
+                    : "pages.sso.policy.ssoNoEnabledProvider",
+                )
+              : t("pages.sso.policy.ssoHint")
+          }
           checked={sso}
           onChange={setSso}
         />
@@ -701,9 +711,12 @@ function ProviderCard({
 
   return (
     <SurfacePanel>
-      <header className="flex items-start gap-3 px-4 py-3.5">
+      {/* the title block keeps at least 16rem and the actions wrap below it
+          when the card is narrower, instead of squeezing the default-role
+          sentence to a word per line at phone width (#2090) */}
+      <header className="flex flex-wrap items-start gap-x-3 gap-y-2 px-4 py-3.5">
         <KeyRound aria-hidden className="mt-0.5 h-4 w-4 flex-none text-muted-foreground" />
-        <div className="min-w-0 flex-1">
+        <div className="min-w-0 flex-1 basis-64">
           <div className="flex flex-wrap items-center gap-2">
             <span className="font-medium text-foreground">{provider.name}</span>
             <Pill verbatim color="var(--text-secondary)" tint="var(--surface-subtle)">
@@ -738,61 +751,63 @@ function ProviderCard({
             </p>
           )}
         </div>
-        {/* taking a provider out of service is a routine act — an IdP
+        <div className="ml-auto flex flex-none items-center gap-1">
+          {/* taking a provider out of service is a routine act — an IdP
             migration, a broken secret — and used to require deleting it,
             which took its group mappings with it (#1233). it is an update, the
             same capability as the edit beside it (#2084) */}
-        <GatedSwitch
-          gate="sso_provider:update"
-          control="sso-provider-toggle"
-          checked={provider.enabled}
-          disabled={toggling || lastWayIn}
-          title={lastWayIn ? t("pages.sso.lastMethod.reason") : undefined}
-          aria-describedby={held}
-          onCheckedChange={(next) => onToggle(provider, next)}
-          aria-label={t("pages.sso.providers.toggleNamed", { name: provider.name })}
-        />
-        <RowIconButton
-          gate="sso_provider:update"
-          control="sso-provider-edit"
-          title={t("pages.sso.providers.edit")}
-          aria-label={t("pages.sso.providers.editNamed", { name: provider.name })}
-          onClick={() => onEdit(provider)}
-        >
-          <Pencil className="h-3.5 w-3.5" />
-        </RowIconButton>
-        {/* the only deliberate way to drop a sealed secret. it exists because
+          <GatedSwitch
+            gate="sso_provider:update"
+            control="sso-provider-toggle"
+            checked={provider.enabled}
+            disabled={toggling || lastWayIn}
+            title={lastWayIn ? t("pages.sso.lastMethod.reason") : undefined}
+            aria-describedby={held}
+            onCheckedChange={(next) => onToggle(provider, next)}
+            aria-label={t("pages.sso.providers.toggleNamed", { name: provider.name })}
+          />
+          <RowIconButton
+            gate="sso_provider:update"
+            control="sso-provider-edit"
+            title={t("pages.sso.providers.edit")}
+            aria-label={t("pages.sso.providers.editNamed", { name: provider.name })}
+            onClick={() => onEdit(provider)}
+          >
+            <Pencil className="h-3.5 w-3.5" />
+          </RowIconButton>
+          {/* the only deliberate way to drop a sealed secret. it exists because
             the edit form no longer can: a whitespace-only field there used to
             trim to "" and clear the secret silently, and the first symptom was
             a failed login (#1293). offered only where there is one to remove */}
-        {provider.has_client_secret && (
-          <RowIconButton
-            gate="sso_provider:update"
-            control="sso-provider-secret-clear"
-            title={t("pages.sso.providers.clearSecret")}
-            aria-label={t("pages.sso.providers.clearSecretNamed", {
-              name: provider.name,
-            })}
-            disabled={clearingSecret}
-            onClick={() => onClearSecret(provider)}
-          >
-            {clearingSecret ? (
-              <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" />
-            ) : (
-              <Eraser className="h-3.5 w-3.5" />
-            )}
-          </RowIconButton>
-        )}
-        <DeleteIconButton
-          gate="sso_provider:delete"
-          control="sso-provider-delete"
-          label={t("pages.sso.providers.deleteNamed", { name: provider.name })}
-          title={lastWayIn ? t("pages.sso.lastMethod.reason") : t("pages.sso.providers.delete")}
-          pending={deleting}
-          disabled={lastWayIn}
-          aria-describedby={held}
-          onClick={() => onDelete(provider)}
-        />
+          {provider.has_client_secret && (
+            <RowIconButton
+              gate="sso_provider:update"
+              control="sso-provider-secret-clear"
+              title={t("pages.sso.providers.clearSecret")}
+              aria-label={t("pages.sso.providers.clearSecretNamed", {
+                name: provider.name,
+              })}
+              disabled={clearingSecret}
+              onClick={() => onClearSecret(provider)}
+            >
+              {clearingSecret ? (
+                <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" />
+              ) : (
+                <Eraser className="h-3.5 w-3.5" />
+              )}
+            </RowIconButton>
+          )}
+          <DeleteIconButton
+            gate="sso_provider:delete"
+            control="sso-provider-delete"
+            label={t("pages.sso.providers.deleteNamed", { name: provider.name })}
+            title={lastWayIn ? t("pages.sso.lastMethod.reason") : t("pages.sso.providers.delete")}
+            pending={deleting}
+            disabled={lastWayIn}
+            aria-describedby={held}
+            onClick={() => onDelete(provider)}
+          />
+        </div>
       </header>
 
       <div className="flex flex-col gap-1.5 border-t border-[color:var(--border-subtle)] px-4 py-3">

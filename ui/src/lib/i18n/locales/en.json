@@ -2774,6 +2774,8 @@
         "passwordHint": "Members sign in with an email and a password. Turning this off needs an enabled identity provider first — the control plane refuses it otherwise.",
         "ssoLabel": "Single sign-on",
         "ssoHint": "Members sign in through a registered identity provider. The sign-in screen shows one button per enabled provider.",
+        "ssoNoProvider": "No identity provider is registered yet, so single sign-on has nothing to sign in through. Add one under Identity providers below.",
+        "ssoNoEnabledProvider": "Every identity provider is disabled, so single sign-on has nothing to sign in through until one is enabled.",
         "save": "Save policy",
         "bothOff": "At least one sign-in method has to stay on — both off is an outage, not a policy.",
         "mfaLabel": "Second factor",
