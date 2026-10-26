@@ -582,7 +582,7 @@
     "routing-rules": "Routing Rules",
     "complexity-router": "Complexity Router",
     "circuit-breaker": "Provider Health",
-    "pricing-overrides": "Pricing Overrides",
+    "pricing-overrides": "Model Prices",
     "model-settings": "Model Settings",
     "mcp": "MCP Gateway",
     "mcp-catalog": "MCP Catalog",
@@ -4633,7 +4633,7 @@
       "subtitle": "Uptime and error-budget burn per provider and target, measured against the SLA."
     },
     "pricing-overrides": {
-      "title": "Pricing Overrides",
+      "title": "Model Prices",
       "subtitle": "Deployment-wide per-model prices for cost tracking."
     },
     "model-settings": {

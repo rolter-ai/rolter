@@ -12,7 +12,7 @@ Rolter records the cost of every request it serves, attributes it to the key, pr
 
 <Steps>
   <Step title="Price every model that costs money">
-    A model with no price row is logged at a cost of **zero**, which is indistinguishable from free. Add prices under **Models → Pricing Overrides** (or `[[model_prices]]` in the config file), in any currency your rate table knows. See [Budgets & rate limits](/security/budgets-and-rate-limits).
+    A model with no price row is logged at a cost of **zero**, which is indistinguishable from free. Add prices under **Models → Model Prices** (or `[[model_prices]]` in the config file), in any currency your rate table knows. See [Budgets & rate limits](/security/budgets-and-rate-limits).
   </Step>
   <Step title="Find what is still unpriced">
     **Observability → Dashboard** shows how much of the window's traffic was unpriced, and **LLM Logs** flags each such row, so a partial total is never read as a final one. Price what shows up, or decide per budget whether unpriced traffic counts as zero or is refused.

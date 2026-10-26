@@ -140,7 +140,7 @@ export const Loaded: Story = {
     // every price converts, so nothing is flagged
     await expect(await canvas.findByText("gpt-4o")).toBeInTheDocument();
     await expect(canvas.queryByText(/no conversion rate/i)).not.toBeInTheDocument();
-    await expectListTable(canvasElement, "Pricing Overrides");
+    await expectListTable(canvasElement, "Model Prices");
     // nothing carries unpriced traffic, so there is no list of it
     await expect(canvas.queryByRole("table", { name: "Models with unpriced traffic" })).toBeNull();
   },
