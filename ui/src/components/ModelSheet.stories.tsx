@@ -666,6 +666,34 @@ export const ViewConfigModel: Story = {
     await expect(lines).toHaveLength(2);
     await expect(lines[1]).toHaveTextContent(/sim-b.*fake-llm-canary.*weight 1.*25% of traffic/);
     await expect(dialog.queryByRole("button", { name: "Add target" })).not.toBeInTheDocument();
+    // what the control plane reports is all it shows: the source, and none of
+    // the blank draft's defaults dressed up as this route's config (#1982)
+    await expect(dialog.getByText("Defined in rolter.toml.")).toBeVisible();
+    for (const absent of [
+      "Model type",
+      "Enabled",
+      "Default parameters",
+      "Pricing override",
+      "Config preview",
+    ]) {
+      await expect(dialog.queryByText(absent)).toBeNull();
+    }
+  },
+};
+
+/**
+ * #1982: with no provider yet a target has nothing to point at, and the sheet
+ * cannot make one, so it links to the screen that can instead of leaving the
+ * operator at a disabled button.
+ */
+export const NoProvidersLinksToAddingOne: Story = {
+  render: () => <Stage mode="add" providers={[]} />,
+  play: async () => {
+    const dialog = within(sheet());
+    const link = await dialog.findByRole("link", { name: /Add one under Model Providers/ });
+    await expect(link).toHaveAttribute("href", "/providers");
+    // story-wait-allow: disabled by its own prop from the first paint, with no provider to add
+    await expect(dialog.getByRole("button", { name: "Add target" })).toBeDisabled();
   },
 };
 

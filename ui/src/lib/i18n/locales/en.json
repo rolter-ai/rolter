@@ -355,7 +355,11 @@
     "subtitleAdd": "Name the route clients call and where it sends traffic.",
     "ctaAdd": "Add route",
     "ctaSave": "Save route",
-    "readonlyNotice": "Read-only config route — defined in config and always present. Fields are shown for reference; edits and deletes are rejected with <0>409 Conflict</0>.",
+    "readonlyNotice": "Read-only config route — defined in config and always present. Shown here is what the control plane reports for it: its name, strategy and targets. Edits and deletes are rejected with <0>409 Conflict</0>.",
+    "view": {
+      "sourceConfig": "Defined in rolter.toml.",
+      "sourceDb": "Defined in the dashboard."
+    },
     "dupFrom": {
       "label": "Duplicate from",
       "info": "Copy the strategy, targets, enabled flag and params of an existing route, then rename and tweak. Handy for adding a second deployment of the same model on another provider.",
@@ -399,7 +403,7 @@
       "title": "Targets",
       "info": "A target is a provider and the model id sent to it. Each request goes to one target, picked by the strategy.",
       "add": "Add target",
-      "noProviders": "No providers yet. Add one under Model Providers first.",
+      "noProviders": "No providers yet. <0>Add one under Model Providers</0> first.",
       "provider": "Provider",
       "upstream": "Upstream model",
       "weight": "Weight",
