@@ -20,9 +20,8 @@ export function AuthCard({ title, description, descriptionRole, children }: Auth
         <div className="flex flex-col gap-6 p-8">
           <div className="flex items-center gap-3">
             <img src="/logo-mark.svg" alt="" className="h-10 w-10" />
-            <span className="font-mono text-[22px] font-semibold tracking-tight">
-              rolter<span className="text-[color:var(--red-folk-text)]">.</span>
-            </span>
+            {/* the wordmark as the brand guidelines set it (#1992) */}
+            <span className="text-xl font-semibold tracking-[-0.04em]">rolter</span>
           </div>
           <div className="flex flex-col gap-1">
             <h1 className="text-xl font-semibold">{title}</h1>

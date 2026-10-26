@@ -667,9 +667,10 @@ export function NavSidebar({
       >
         {logoSrc ? <img className="block h-6 w-6 flex-none" src={logoSrc} alt="" /> : null}
         {!folded && (
-          <span className="font-mono text-lg font-semibold leading-none tracking-[-0.03em] text-foreground">
+          // the wordmark as the brand guidelines set it: Geist SemiBold,
+          // lowercase, -0.04em, and nothing after the word (#1992)
+          <span className="text-lg font-semibold lowercase leading-none tracking-[-0.04em] text-foreground">
             {brand}
-            <span className="text-[color:var(--red-folk-text)]">.</span>
           </span>
         )}
         {collapsible && !folded && !isDrawer && (

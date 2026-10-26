@@ -332,6 +332,11 @@ of these steps, or it is a new step registered in the `@theme` block of `ui/src/
 **The Copyable-Is-Mono Rule.** If someone might paste it into a terminal or a config file, set it
 in Geist Mono, verbatim.
 
+**The Wordmark Rule.** The wordmark is the word **rolter** as
+`docs/user-docs/community/brand.mdx` sets it: Geist SemiBold, lowercase, `-0.04em` tracking, nothing
+after it. The sidebar and the sign-in card follow it; the Geist Mono "rolter." the design prototype
+used is retired (#1992).
+
 **The No-Substitute Rule.** Never swap Geist for Inter, Roboto or Arial; fonts are vendored from
 `node_modules`, never fetched from a CDN.
 
