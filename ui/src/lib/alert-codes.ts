@@ -22,6 +22,7 @@ const DELIVERY_CODES = {
   client_unavailable: [],
   no_channel: [],
   channel_disabled: [],
+  delivery_pending: [],
 } as const satisfies Record<string, readonly string[]>;
 
 const RULE_ERROR_CODES = {

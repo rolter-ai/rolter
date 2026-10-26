@@ -24,6 +24,14 @@ describe("describeError", () => {
     expect(copy).toEqual({ message: "errors.api.codes.last_superadmin" });
   });
 
+  it("translates both timeout codes rather than the server's words (#3147)", () => {
+    for (const code of ["request_timeout", "store_timeout"]) {
+      expect(describeError(new ApiError("timed out (internal)", 504, code), t)).toEqual({
+        message: `errors.api.codes.${code}`,
+      });
+    }
+  });
+
   it("keeps an invalid_field message as detail, since only it names the field", () => {
     const copy = describeError(new ApiError("slug must match ^[a-z0-9]", 400, "invalid_field"), t);
     expect(copy).toEqual({

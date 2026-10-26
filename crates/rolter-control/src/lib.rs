@@ -862,6 +862,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         version: Some(env!("CARGO_PKG_VERSION").to_string()),
         open_mode: open_mode.is_open(),
         docs_base_url: args.ui_docs_base_url.clone(),
+        request_timeout_secs: Some(args.request_timeout_secs),
     };
     if ui_runtime.is_configured() {
         tracing::info!(

@@ -134,8 +134,10 @@ const STATE_TONE: Record<string, StateTone> = {
 const stateTone = (state: string) => STATE_TONE[state] ?? STATE_TONE.unknown;
 
 // a `failed` delivery is an alert nobody received, so it reads as danger; a
-// `skipped` one is a rule with no live channel, which is a choice, not a fault
+// `skipped` one is a rule with no live channel, which is a choice, not a fault;
+// a `pending` one is still being sent and has no outcome yet
 const DELIVERY_TONE: Record<string, string> = {
+  pending: "var(--status-info-text)",
   delivered: "var(--status-success-text)",
   failed: "var(--status-danger-text)",
   skipped: "var(--text-secondary)",
@@ -544,7 +546,9 @@ function AlertRulesScreen() {
                 ? t("pages.alerting.rules.reportedDelivered", vars)
                 : n.delivery_status === "failed"
                   ? t("pages.alerting.rules.reportedFailed", vars)
-                  : t("pages.alerting.rules.reportedSkipped", vars),
+                  : n.delivery_status === "pending"
+                    ? t("pages.alerting.rules.reportedPending", vars)
+                    : t("pages.alerting.rules.reportedSkipped", vars),
               measured,
             ]
               .filter(Boolean)

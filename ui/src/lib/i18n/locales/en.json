@@ -333,7 +333,9 @@
         "referenced": "Other items still depend on this one. Move or delete them first.",
         "scope_mismatch": "A provider here is scoped to a different project. Use an org-wide provider or one scoped to the same project.",
         "too_many_attempts": "Too many failed attempts. Try again later.",
-        "unauthenticated": "Your session is missing or has expired. Sign in again."
+        "unauthenticated": "Your session is missing or has expired. Sign in again.",
+        "request_timeout": "The control plane took too long to answer. Try again; if it keeps happening, ask an operator to check it.",
+        "store_timeout": "The database was busy and the change was not made. Try again in a moment."
       }
     }
   },
@@ -1546,6 +1548,7 @@
         "reportedDelivered": "Reported {{state}}; the channel accepted it ({{detail}}).",
         "reportedFailed": "Reported {{state}}, but delivery failed: {{detail}}. It is retried while the state holds.",
         "reportedSkipped": "Recorded {{state}} without delivering it: {{detail}}.",
+        "reportedPending": "Recorded {{state}}; delivery is still in progress.",
         "reportedReading": "It read {{value}} against a threshold of {{threshold}}.",
         "deleteAria": "Delete rule {{name}}",
         "editAria": "Edit rule {{name}}",
@@ -1638,6 +1641,7 @@
         "resolved": "Resolved"
       },
       "deliveries": {
+        "pending": "Pending",
         "delivered": "Delivered",
         "failed": "Failed",
         "skipped": "Skipped"
@@ -1690,7 +1694,8 @@
           "secret_invalid": "channel secret is not a valid header value",
           "client_unavailable": "the webhook client could not be built",
           "no_channel": "no channel configured",
-          "channel_disabled": "channel disabled"
+          "channel_disabled": "channel disabled",
+          "delivery_pending": "delivery in progress"
         },
         "ruleError": {
           "clickhouse_not_configured": "alert evaluation requires CLICKHOUSE_URL",

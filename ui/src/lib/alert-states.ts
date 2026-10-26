@@ -7,8 +7,8 @@
 //   - a rule is `unknown` (never evaluated), `ok`, `firing` or `error` (its last
 //     evaluation failed);
 //   - a history row records the state a rule moved to, `firing` or `resolved`,
-//     and whether telling the channel worked: `delivered`, `failed` or
-//     `skipped`;
+//     and whether telling the channel worked: `pending` while the request is
+//     in flight, then `delivered`, `failed` or `skipped`;
 //   - a channel has a `kind`, which is `webhook` today.
 //
 // A value this build does not know prints as stored rather than as a blank or a
@@ -18,7 +18,7 @@ type Translate = (key: string, options?: Record<string, unknown>) => string;
 
 export const RULE_STATES = ["unknown", "ok", "firing", "error"] as const;
 export const HISTORY_STATES = ["firing", "resolved"] as const;
-export const DELIVERY_STATUSES = ["delivered", "failed", "skipped"] as const;
+export const DELIVERY_STATUSES = ["pending", "delivered", "failed", "skipped"] as const;
 export const CHANNEL_KINDS = ["webhook"] as const;
 
 // the catalog names a state once, whichever list it came from

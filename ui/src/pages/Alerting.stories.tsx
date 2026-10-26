@@ -1823,6 +1823,63 @@ export const HistoryTranslatesDeliveryCodesInRussian: Story = {
   },
 };
 
+// --- #3147: a delivery still in flight ---------------------------------------
+
+const PENDING: AlertNotificationRow[] = [
+  {
+    id: "note-p1",
+    rule_id: "rule-1",
+    channel_id: "chan-1",
+    state: "firing",
+    delivery_status: "pending",
+    detail: "fallback for delivery_pending",
+    detail_code: "delivery_pending",
+    detail_params: null,
+    value: 0.11,
+    threshold: 0.05,
+    sent_at: "2026-08-11T12:05:00Z",
+  },
+];
+
+const pendingDelivery = routes([
+  ["/alert-notifications", () => PENDING],
+  ["/alert-channels", () => CHANNELS],
+  ["/alert-rules", () => RULES],
+  ["/api/v1/currency", () => ({ base: "EUR", codes: ["EUR"], rates: {} })],
+]);
+
+export const HistoryShowsAPendingDelivery: Story = {
+  render: () => (
+    <Harness fetchStub={pendingDelivery} route="/alerting-history">
+      <HistoryScreen />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("delivery in progress")).toBeInTheDocument();
+    await expect(canvas.queryByText("fallback for delivery_pending")).toBeNull();
+    await expect(canvas.queryByText("pending")).toBeNull();
+    await expect(canvas.getAllByText("Pending").length).toBeGreaterThan(0);
+  },
+};
+
+export const HistoryShowsAPendingDeliveryInRussian: Story = {
+  globals: { locale: "ru" },
+  render: () => (
+    <Harness fetchStub={pendingDelivery} route="/alerting-history">
+      <HistoryScreen />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const { alerting } = ru.pages;
+    await expect(
+      await canvas.findByText(alerting.codes.delivery.delivery_pending),
+    ).toBeInTheDocument();
+    await expect(canvas.getAllByText(alerting.deliveries.pending).length).toBeGreaterThan(0);
+  },
+};
+
 export const HistoryShowsEachReadingInItsUnit: Story = {
   render: () => (
     <Harness fetchStub={coded} route="/alerting-history">
