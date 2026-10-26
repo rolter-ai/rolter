@@ -684,6 +684,8 @@
       "statErrorRate": "Error rate",
       "notMeasured": "—",
       "noRequestsInWindow": "No requests in this window",
+      "vsPrevious": "{{change}} vs. the previous period",
+      "withChange": "{{detail}} · {{change}}",
       "errors_one": "{{count}} error",
       "errors_other": "{{count}} errors",
       "live": "Live",

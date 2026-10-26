@@ -704,6 +704,8 @@
       "statErrorRate": "Доля ошибок",
       "notMeasured": "—",
       "noRequestsInWindow": "За этот период запросов не было",
+      "vsPrevious": "{{change}} к предыдущему периоду",
+      "withChange": "{{detail}} · {{change}}",
       "errors_one": "{{count}} ошибка",
       "errors_few": "{{count}} ошибки",
       "errors_many": "{{count}} ошибок",

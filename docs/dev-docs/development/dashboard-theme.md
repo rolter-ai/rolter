@@ -81,7 +81,11 @@ want more of reads, so pass it for any figure that is bad when it rises. Leave
 `trend` out when the delta is not a comparison with an earlier window: the card
 then draws no arrow, since one would claim a movement nobody measured. The
 `BadUp` and `NoComparison` stories assert the computed colour against the
-token, the same way `AllTones` does for `Badge`.
+token, the same way `AllTones` does for `Badge`. The Dashboard reads the
+window before with a second summary query (`previousWindowBounds` in
+`ui/src/lib/time-window.ts`) and turns the pair into a trend with `compare`
+from `ui/src/lib/compare.ts`, whose 1% dead band reads as flat and which says
+nothing when the earlier value is missing or zero (#2010).
 
 When you add a status hue, add both halves, check the ratio against all four
 surfaces _and_ against the tint the text will sit on, and record the worst

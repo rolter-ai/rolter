@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import {
   DEFAULT_TIME_WINDOW,
   isTimeWindow,
+  previousWindowBounds,
   readTimeWindow,
   TIME_WINDOWS,
   windowBounds,
@@ -130,6 +131,52 @@ describe("windowBounds: calendar months in the viewer's zone", () => {
         since: "2026-07-31T15:00:00.000Z",
         until: "2026-08-31T15:00:00.000Z",
       });
+    });
+  });
+});
+
+describe("previousWindowBounds (#2010)", () => {
+  inZone("America/New_York");
+  const iso = (d: Date) => d.toISOString();
+
+  it("steps a rolling window back by its own length", () => {
+    const now = new Date("2026-03-10T12:00:00Z");
+    expect(previousWindowBounds("24h", now)).toEqual({
+      since: "2026-03-08T12:00:00.000Z",
+      until: "2026-03-09T12:00:00.000Z",
+    });
+    expect(previousWindowBounds("7d", now)).toEqual({
+      since: "2026-02-24T12:00:00.000Z",
+      until: "2026-03-03T12:00:00.000Z",
+    });
+  });
+
+  it("ends where the current rolling window begins", () => {
+    const now = new Date("2026-03-10T12:00:00Z");
+    for (const w of ["24h", "7d", "30d"] as const) {
+      expect(previousWindowBounds(w, now).until).toBe(windowBounds(w, now).since);
+    }
+  });
+
+  it("compares the month so far with the same stretch of last month", () => {
+    const now = local(2026, 3, 10, 6);
+    expect(previousWindowBounds("mtd", now)).toEqual({
+      since: iso(local(2026, 2, 1)),
+      until: iso(local(2026, 2, 10, 6)),
+    });
+  });
+
+  it("stops at last month's end when this month has more days", () => {
+    expect(previousWindowBounds("mtd", local(2026, 3, 31, 12))).toEqual({
+      since: iso(local(2026, 2, 1)),
+      until: iso(local(2026, 3, 1)),
+    });
+  });
+
+  it("compares last month with the month before it, across a year", () => {
+    expect(previousWindowBounds("last-month", local(2026, 2, 15))).toEqual({
+      since: iso(local(2025, 12, 1)),
+      until: iso(local(2026, 1, 1)),
     });
   });
 });

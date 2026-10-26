@@ -42,9 +42,11 @@ import {
   readTimeWindow,
   useAddressWindow,
   useTimeWindowOptions,
+  previousWindowBounds,
   windowBounds,
   type TimeWindow,
 } from "@/lib/time-window";
+import { compare, toneOfChange, type Comparison } from "@/lib/compare";
 import { cn } from "@/lib/utils";
 import { useErrorState, useScreenReady } from "@/lib/ux-react";
 import { staleTarget } from "@/lib/ux";
@@ -58,6 +60,12 @@ const num = (v: number | string | undefined): number => Number(v ?? 0);
 // the name is what the query keys carry
 const readWindow = (name: TimeWindow, filters: AnalyticsRowFilters) => ({
   ...windowBounds(name),
+  bucket: "hour",
+  ...filters,
+});
+// the same figures over the window before, for each tile's arrow (#2010)
+const readPrevious = (name: TimeWindow, filters: AnalyticsRowFilters) => ({
+  ...previousWindowBounds(name),
   bucket: "hour",
   ...filters,
 });
@@ -230,6 +238,16 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
     retry: false,
   });
 
+  // the window before, read beside the figures and never in their way: it has
+  // no card, no loading state and no error of its own, and while it is out or
+  // has failed a tile simply draws no arrow (#2010)
+  const previous = useQuery({
+    queryKey: ["analytics", "summary", "previous", timeWindow, filterKey],
+    queryFn: () => fetchAnalyticsSummary(readPrevious(timeWindow, rowFilters.query)),
+    refetchInterval: overviewPoll,
+    retry: false,
+  });
+
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
   // `summary` is the query the user is actually waiting on for this screen
   useScreenReady(!summary.isLoading);
@@ -387,15 +405,54 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
             const errorRate = measured ? (errors / requests) * 100 : undefined;
             const unmeasured = t("pages.dashboard.notMeasured");
             const why = t("pages.dashboard.noRequestsInWindow");
+            // the window before, when it answered and held any traffic: a
+            // first day compares with nothing rather than rising from zero
+            const p = previous.isSuccess ? previous.data : undefined;
+            const prevRequests = p ? num(p.requests) : 0;
+            const before = prevRequests > 0 ? p : undefined;
+            const was = (v: number | string | undefined) => (before ? num(v) : undefined);
+            const latency = measured ? num(s?.avg_latency_ms) : undefined;
+            const changes = {
+              requests: compare(requests, was(before?.requests)),
+              spend: compare(num(s?.cost_usd), was(before?.cost_usd)),
+              latency: compare(latency, was(before?.avg_latency_ms)),
+              errorRate: compare(
+                errorRate,
+                before ? (num(before.errors) / prevRequests) * 100 : undefined,
+              ),
+            };
+            const said = (c: Comparison) =>
+              t("pages.dashboard.vsPrevious", {
+                change: fmt.number(c.ratio, {
+                  style: "percent",
+                  signDisplay: "exceptZero",
+                  maximumFractionDigits: 1,
+                }),
+              });
             return (
               <div className={STAT_GRID}>
-                <StatCard label={t("pages.dashboard.statRequests")} value={fmt.number(requests)} />
-                <StatCard label={t("pages.dashboard.statSpend")} value={money(num(s?.cost_usd))} />
+                <StatCard
+                  label={t("pages.dashboard.statRequests")}
+                  value={fmt.number(requests)}
+                  trend={changes.requests?.trend}
+                  tone={changes.requests ? toneOfChange(changes.requests.trend, "good") : undefined}
+                  delta={changes.requests ? said(changes.requests) : undefined}
+                />
+                <StatCard
+                  label={t("pages.dashboard.statSpend")}
+                  value={money(num(s?.cost_usd))}
+                  // more spend is not bad news on its own: it follows traffic
+                  trend={changes.spend?.trend}
+                  tone="neutral"
+                  delta={changes.spend ? said(changes.spend) : undefined}
+                />
                 <StatCard
                   label={t("pages.dashboard.statAvgLatency")}
                   value={measured ? fmt.number(Math.round(num(s?.avg_latency_ms))) : unmeasured}
                   unit={measured ? t("pages.dashboard.colMs") : undefined}
-                  delta={measured ? undefined : why}
+                  trend={changes.latency?.trend}
+                  tone={changes.latency ? toneOfChange(changes.latency.trend, "bad") : undefined}
+                  delta={measured ? (changes.latency ? said(changes.latency) : undefined) : why}
                 />
                 <StatCard
                   label={t("pages.dashboard.statErrorRate")}
@@ -408,18 +465,32 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
                         })
                   }
                   unit={errorRate === undefined ? undefined : "%"}
-                  // no `trend`: the summary is one window with nothing earlier to
-                  // compare against, so an arrow would claim a movement nobody
-                  // measured. above 1% of requests the count reads as the problem it
-                  // is rather than as growth (#1974)
-                  tone={errorRate !== undefined && errorRate > 1 ? "bad" : "neutral"}
+                  // an arrow only for a change measured against the window
+                  // before (#2010). with nothing to compare, above 1% of
+                  // requests the count reads as the problem it is rather than
+                  // as growth (#1974)
+                  trend={changes.errorRate?.trend}
+                  tone={
+                    changes.errorRate
+                      ? toneOfChange(changes.errorRate.trend, "bad")
+                      : errorRate !== undefined && errorRate > 1
+                        ? "bad"
+                        : "neutral"
+                  }
                   // russian needs four plural forms here where english needs two
                   delta={
                     errorRate === undefined
                       ? why
-                      : errors > 0
-                        ? t("pages.dashboard.errors", { count: errors })
-                        : undefined
+                      : errors > 0 && changes.errorRate
+                        ? t("pages.dashboard.withChange", {
+                            detail: t("pages.dashboard.errors", { count: errors }),
+                            change: said(changes.errorRate),
+                          })
+                        : errors > 0
+                          ? t("pages.dashboard.errors", { count: errors })
+                          : changes.errorRate
+                            ? said(changes.errorRate)
+                            : undefined
                   }
                 />
               </div>
