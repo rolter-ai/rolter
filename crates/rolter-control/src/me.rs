@@ -20,8 +20,8 @@ use uuid::Uuid;
 use rolter_store::postgres::models::User;
 use rolter_store::postgres::models::{OwnedVirtualKey, VirtualKey};
 use rolter_store::postgres::repo::{
-    AuditLogRepo, OrgRepo, RouteRepo, ScimIdentityRepo, UserPreferencesRepo, UserRepo,
-    VirtualKeyRepo,
+    AuditLogRepo, NewVirtualKey, OrgRepo, RouteRepo, ScimIdentityRepo, UserPreferencesRepo,
+    UserRepo, VirtualKeyRepo,
 };
 
 use crate::analytics::{
@@ -596,16 +596,18 @@ async fn mint_my_key(
     let row = VirtualKeyRepo(pool(&state))
         .create(
             project_id,
-            &key_hash,
-            &key_prefix,
-            Some(name.as_str()),
-            &body.models,
-            &body.providers,
-            body.cache,
-            Some(current.user.id),
-            expires_at,
-            // minted by hand from the self-service panel
-            None,
+            NewVirtualKey {
+                key_hash: &key_hash,
+                key_prefix: &key_prefix,
+                name: Some(name.as_str()),
+                models: &body.models,
+                providers: &body.providers,
+                cache_enabled: body.cache,
+                created_by: Some(current.user.id),
+                expires_at,
+                // minted by hand from the self-service panel
+                purpose: None,
+            },
         )
         .await?;
     publish_config_change(&state).await?;
@@ -673,18 +675,20 @@ async fn mint_playground_key(
     let row = VirtualKeyRepo(pool(&state))
         .create(
             project_id,
-            &key_hash,
-            &key_prefix,
-            Some("Playground"),
-            &models,
-            // no provider narrowing: the routes already decide which providers
-            // a model reaches, and pinning providers here would make the
-            // playground key behave unlike the traffic it is meant to imitate
-            &[],
-            None,
-            Some(current.user.id),
-            Some(expires_at),
-            Some(PLAYGROUND_PURPOSE),
+            NewVirtualKey {
+                key_hash: &key_hash,
+                key_prefix: &key_prefix,
+                name: Some("Playground"),
+                models: &models,
+                // no provider narrowing: the routes already decide which providers
+                // a model reaches, and pinning providers here would make the
+                // playground key behave unlike the traffic it is meant to imitate
+                providers: &[],
+                cache_enabled: None,
+                created_by: Some(current.user.id),
+                expires_at: Some(expires_at),
+                purpose: Some(PLAYGROUND_PURPOSE),
+            },
         )
         .await?;
     publish_config_change(&state).await?;
@@ -714,18 +718,20 @@ async fn rotate_my_key(
     let row = VirtualKeyRepo(pool(&state))
         .create(
             old.project_id,
-            &key_hash,
-            &key_prefix,
-            old.name.as_deref(),
-            &old.models,
-            &old.providers,
-            old.cache_enabled,
-            Some(current.user.id),
-            // a rotation replaces a secret, it does not renew a decision: the
-            // fresh key expires exactly when the one it replaces would have
-            old.expires_at,
-            // and it stays the same kind of key it was
-            old.purpose.as_deref(),
+            NewVirtualKey {
+                key_hash: &key_hash,
+                key_prefix: &key_prefix,
+                name: old.name.as_deref(),
+                models: &old.models,
+                providers: &old.providers,
+                cache_enabled: old.cache_enabled,
+                created_by: Some(current.user.id),
+                // a rotation replaces a secret, it does not renew a decision: the
+                // fresh key expires exactly when the one it replaces would have
+                expires_at: old.expires_at,
+                // and it stays the same kind of key it was
+                purpose: old.purpose.as_deref(),
+            },
         )
         .await?;
     VirtualKeyRepo(pool(&state)).set_disabled(id, true).await?;

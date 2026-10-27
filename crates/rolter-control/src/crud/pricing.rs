@@ -8,7 +8,7 @@ use serde::Deserialize;
 
 use rolter_core::Error;
 use rolter_store::postgres::models::ModelPrice;
-use rolter_store::postgres::repo::{ModelPriceRepo, UnitRates};
+use rolter_store::postgres::repo::{ModelPriceRepo, NewModelPrice, UnitRates};
 
 use super::{explicit_null, invalid_field, pool, require_non_empty, ApiError, ApiResult, SafeJson};
 use crate::rbac::{authorize, authorize_superadmin, Principal, ScopeChain};
@@ -168,14 +168,17 @@ async fn upsert_model_price(
     require_known_currency(&state, &body.currency)?;
     Ok(Json(
         ModelPriceRepo(pool(&state))
-            .upsert_with_units(
-                &body.model,
-                &body.input_per_mtok,
-                &body.output_per_mtok,
-                body.cached_input_per_mtok.as_deref(),
-                body.cache_write_per_mtok.as_ref().map(Option::as_deref),
-                body.cache_write_1h_per_mtok.as_ref().map(Option::as_deref),
-                UnitRates {
+            .upsert(NewModelPrice {
+                model: &body.model,
+                input_per_mtok: &body.input_per_mtok,
+                output_per_mtok: &body.output_per_mtok,
+                cached_input_per_mtok: body.cached_input_per_mtok.as_deref(),
+                cache_write_per_mtok: body.cache_write_per_mtok.as_ref().map(Option::as_deref),
+                cache_write_1h_per_mtok: body
+                    .cache_write_1h_per_mtok
+                    .as_ref()
+                    .map(Option::as_deref),
+                units: UnitRates {
                     image_per_unit: body.image_per_unit.as_ref().map(Option::as_deref),
                     audio_input_per_minute: body
                         .audio_input_per_minute
@@ -192,8 +195,8 @@ async fn upsert_model_price(
                         .as_ref()
                         .map(Option::as_deref),
                 },
-                &body.currency,
-            )
+                currency: &body.currency,
+            })
             .await?,
     ))
 }

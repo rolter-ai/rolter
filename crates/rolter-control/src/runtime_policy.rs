@@ -7,7 +7,7 @@ use serde::Deserialize;
 
 use rolter_core::{BackpressurePolicy, Error};
 use rolter_store::postgres::models::RuntimePolicy;
-use rolter_store::postgres::repo::{AuditLogRepo, RuntimePolicyRepo};
+use rolter_store::postgres::repo::{AuditLogRepo, RuntimePolicyRepo, RuntimePolicyUpdate};
 
 use crate::crud::{pool, publish_config_change, ApiError, ApiResult, SafeJson};
 use crate::rbac::{authorize_superadmin, Principal};
@@ -93,22 +93,22 @@ async fn update_runtime_policy(
     authorize_superadmin(&principal, superadmin_cap!("runtime_policy", Update))?;
     validate_policy(&body)?;
     let row = RuntimePolicyRepo(pool(&state))
-        .update(
-            body.retry_max_retries,
-            body.retry_base_ms,
-            body.retry_max_ms,
-            body.timeout_connect_s,
-            body.timeout_request_s,
-            body.queue_enabled,
-            body.queue_capacity,
-            body.queue_workers,
-            match body.queue_backpressure {
+        .update(RuntimePolicyUpdate {
+            retry_max_retries: body.retry_max_retries,
+            retry_base_ms: body.retry_base_ms,
+            retry_max_ms: body.retry_max_ms,
+            timeout_connect_s: body.timeout_connect_s,
+            timeout_request_s: body.timeout_request_s,
+            queue_enabled: body.queue_enabled,
+            queue_capacity: body.queue_capacity,
+            queue_workers: body.queue_workers,
+            queue_backpressure: match body.queue_backpressure {
                 BackpressurePolicy::Drop => "drop",
                 BackpressurePolicy::Block => "block",
                 BackpressurePolicy::Error => "error",
             },
-            body.queue_block_ms,
-        )
+            queue_block_ms: body.queue_block_ms,
+        })
         .await?;
     publish_config_change(&state).await?;
     let actor = principal.account_id();

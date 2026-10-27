@@ -1909,21 +1909,23 @@ async fn seed_default_providers(pool: &sqlx::PgPool, config: &GatewayConfig) -> 
         let row = repo
             .create(
                 org_id,
-                &provider.name,
-                &slug,
-                provider_kind_str(&provider.kind),
-                &provider.api_base,
-                // either credential spelling, so a `[[providers.default]]`
-                // written as `api_keys = [{ env = "..." }]` seeds with its key
-                // instead of none (#1514)
-                provider.api_key_env_name(),
-                provider.egress_proxy.as_deref(),
-                &provider.egress_proxies,
-                provider.kv_events.as_ref(),
-                provider.lmcache.as_ref(),
-                // `project_scoped` means the default project here (#1919)
-                provider.project_scoped.then_some(project_id),
-                provider.allow_custom_api_base,
+                rolter_store::postgres::repo::NewProvider {
+                    name: &provider.name,
+                    slug: &slug,
+                    kind: provider_kind_str(&provider.kind),
+                    api_base: &provider.api_base,
+                    // either credential spelling, so a `[[providers.default]]`
+                    // written as `api_keys = [{ env = "..." }]` seeds with its key
+                    // instead of none (#1514)
+                    api_key_env: provider.api_key_env_name(),
+                    egress_proxy: provider.egress_proxy.as_deref(),
+                    egress_proxies: &provider.egress_proxies,
+                    kv_events: provider.kv_events.as_ref(),
+                    lmcache: provider.lmcache.as_ref(),
+                    // `project_scoped` means the default project here (#1919)
+                    project_id: provider.project_scoped.then_some(project_id),
+                    allow_custom_api_base: provider.allow_custom_api_base,
+                },
             )
             .await?;
         if provider.surplus_api_key_count() > 0 {

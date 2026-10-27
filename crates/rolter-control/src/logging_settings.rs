@@ -13,7 +13,7 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
 use rolter_store::postgres::models::LoggingSettings;
-use rolter_store::postgres::repo::{AuditLogRepo, LoggingSettingsRepo};
+use rolter_store::postgres::repo::{AuditLogRepo, LoggingSettingsRepo, LoggingSettingsUpdate};
 
 use crate::analytics_access::AnalyticsAccess;
 use crate::crud::{invalid_field, pool, publish_config_change, ApiResult, SafeJson};
@@ -174,17 +174,17 @@ async fn update_logging_settings(
     authorize_superadmin(&principal, superadmin_cap!("logging_settings", Update))?;
     validate_settings(&body)?;
     let row = LoggingSettingsRepo(pool(&state))
-        .update(
-            body.sample_rate,
-            body.payload_capture_enabled,
-            body.payload_capture_max_bytes,
-            &body.payload_capture_redact_fields,
-            &body.payload_capture_models,
-            &body.payload_capture_virtual_key_ids,
-            body.retention_days,
-            body.payload_retention_hours,
-            body.ui_events,
-        )
+        .update(LoggingSettingsUpdate {
+            sample_rate: body.sample_rate,
+            payload_capture_enabled: body.payload_capture_enabled,
+            payload_capture_max_bytes: body.payload_capture_max_bytes,
+            payload_capture_redact_fields: &body.payload_capture_redact_fields,
+            payload_capture_models: &body.payload_capture_models,
+            payload_capture_virtual_key_ids: &body.payload_capture_virtual_key_ids,
+            retention_days: body.retention_days,
+            payload_retention_hours: body.payload_retention_hours,
+            ui_events: body.ui_events,
+        })
         .await?;
     publish_config_change(&state).await?;
     // clickhouse owns expiry; a failure here leaves the stored policy in place

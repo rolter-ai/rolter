@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use rolter_core::Error;
 use rolter_store::postgres::models::VirtualKey;
-use rolter_store::postgres::repo::{BusinessUnitRepo, CustomerRepo, VirtualKeyRepo};
+use rolter_store::postgres::repo::{BusinessUnitRepo, CustomerRepo, NewVirtualKey, VirtualKeyRepo};
 
 use super::{
     authorize_virtual_key, invalid_field, log_audit, pool, publish_config_change, ApiError,
@@ -124,17 +124,19 @@ async fn create_virtual_key(
     let row = VirtualKeyRepo(pool(&state))
         .create(
             project_id,
-            &key_hash,
-            &key_prefix,
-            Some(name.as_str()),
-            &body.models,
-            &body.providers,
-            body.cache,
-            None,
-            expires_at,
-            // an operator minted this deliberately; `purpose` marks the keys
-            // the dashboard mints for itself (#1640)
-            None,
+            NewVirtualKey {
+                key_hash: &key_hash,
+                key_prefix: &key_prefix,
+                name: Some(name.as_str()),
+                models: &body.models,
+                providers: &body.providers,
+                cache_enabled: body.cache,
+                created_by: None,
+                expires_at,
+                // an operator minted this deliberately; `purpose` marks the keys
+                // the dashboard mints for itself (#1640)
+                purpose: None,
+            },
         )
         .await?;
     publish_config_change(&state).await?;

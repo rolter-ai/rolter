@@ -12,7 +12,9 @@ use uuid::Uuid;
 use rolter_core::Error;
 use rolter_store::postgres::crypto::{Kek, KEK_ENV};
 use rolter_store::postgres::models::Provider;
-use rolter_store::postgres::repo::{ProjectRepo, ProviderDeletion, ProviderKeyRepo, ProviderRepo};
+use rolter_store::postgres::repo::{
+    NewProvider, ProjectRepo, ProviderDeletion, ProviderKeyRepo, ProviderRepo, ProviderUpdate,
+};
 
 use super::{
     explicit_null, invalid_field, log_audit, pool, publish_config_change, require_allowed_egress,
@@ -830,17 +832,19 @@ async fn create_provider(
     let row = ProviderRepo(pool(&state))
         .create(
             org_id,
-            &body.name,
-            &slug,
-            &body.kind,
-            &body.api_base,
-            body.api_key_env.as_deref(),
-            body.egress_proxy.as_deref(),
-            &body.egress_proxies,
-            body.kv_events.as_ref(),
-            body.lmcache.as_ref(),
-            body.project_id,
-            body.allow_custom_api_base,
+            NewProvider {
+                name: &body.name,
+                slug: &slug,
+                kind: &body.kind,
+                api_base: &body.api_base,
+                api_key_env: body.api_key_env.as_deref(),
+                egress_proxy: body.egress_proxy.as_deref(),
+                egress_proxies: &body.egress_proxies,
+                kv_events: body.kv_events.as_ref(),
+                lmcache: body.lmcache.as_ref(),
+                project_id: body.project_id,
+                allow_custom_api_base: body.allow_custom_api_base,
+            },
         )
         .await?;
     let has_stored_key = sealed.is_some();
@@ -1031,16 +1035,18 @@ async fn update_provider(
     let row = ProviderRepo(pool(&state))
         .update(
             id,
-            slug_change.as_deref(),
-            body.kind.as_deref(),
-            body.api_base.as_deref(),
-            tri_state(&body.api_key_env),
-            tri_state(&body.egress_proxy),
-            body.egress_proxies.as_deref(),
-            body.kv_events.as_ref().map(Option::as_ref),
-            body.lmcache.as_ref().map(Option::as_ref),
-            body.project_id,
-            body.allow_custom_api_base,
+            ProviderUpdate {
+                slug: slug_change.as_deref(),
+                kind: body.kind.as_deref(),
+                api_base: body.api_base.as_deref(),
+                api_key_env: tri_state(&body.api_key_env),
+                egress_proxy: tri_state(&body.egress_proxy),
+                egress_proxies: body.egress_proxies.as_deref(),
+                kv_events: body.kv_events.as_ref().map(Option::as_ref),
+                lmcache: body.lmcache.as_ref().map(Option::as_ref),
+                project_id: body.project_id,
+                allow_custom_api_base: body.allow_custom_api_base,
+            },
         )
         .await?;
     match sealed {

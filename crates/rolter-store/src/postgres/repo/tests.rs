@@ -1,0 +1,1536 @@
+use super::*;
+use rolter_core::Error;
+use uuid::Uuid;
+
+use crate::postgres::models::RouteTarget;
+// the mcp domain took the only non-test use of `Duration` with it
+use chrono::{Duration, Utc};
+
+/// An isolated, migrated schema of this test's own. Bind the guard for the
+/// whole test: the schema is dropped with it.
+async fn fresh_db() -> super::super::test_schema::TestSchema {
+    let url = super::super::test_database::url()
+        .await
+        .expect("ROLTER_TEST_DATABASE_URL not set; skipping");
+    super::super::test_schema::TestSchema::migrated(&url).await
+}
+
+#[tokio::test]
+async fn crud_roundtrip_across_the_tenancy_and_routing_tables() {
+    if !super::super::test_database::is_configured() {
+        eprintln!("skipping: {} not set", super::super::test_database::URL_ENV);
+        return;
+    }
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+
+    let orgs = OrgRepo(&pool);
+    let org = orgs.create("acme", "acme").await.unwrap();
+    assert_eq!(orgs.get(org.id).await.unwrap().slug, "acme");
+    assert_eq!(orgs.list().await.unwrap().len(), 1);
+
+    let teams = TeamRepo(&pool);
+    let team = teams.create(org.id, "core").await.unwrap();
+    assert_eq!(teams.list(org.id).await.unwrap().len(), 1);
+
+    let projects = ProjectRepo(&pool);
+    let project = projects.create(team.id, "default").await.unwrap();
+    assert_eq!(projects.list(team.id).await.unwrap().len(), 1);
+
+    let providers = ProviderRepo(&pool);
+    let provider = providers
+        .create(
+            org.id,
+            NewProvider {
+                name: "openai",
+                slug: "openai",
+                kind: "openai",
+                api_base: "https://api.openai.com",
+                api_key_env: Some("OPENAI_API_KEY"),
+                egress_proxy: None,
+                egress_proxies: &[],
+                kv_events: None,
+                lmcache: None,
+                project_id: None,
+                allow_custom_api_base: false,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(providers.list(org.id).await.unwrap().len(), 1);
+
+    let routes = RouteRepo(&pool);
+    let route = routes
+        .create(project.id, "gpt-4o", "power_of_two")
+        .await
+        .unwrap();
+    assert!(route.enabled);
+    let disabled = routes.set_enabled(route.id, false).await.unwrap();
+    assert!(!disabled.enabled);
+
+    let targets = RouteTargetRepo(&pool);
+    let target = targets
+        .create(route.id, provider.id, Some("gpt-4o-2024-08-06"), 2)
+        .await
+        .unwrap();
+    assert_eq!(targets.list(route.id).await.unwrap().len(), 1);
+    targets.delete(target.id).await.unwrap();
+    assert!(targets.list(route.id).await.unwrap().is_empty());
+
+    let keys = VirtualKeyRepo(&pool);
+    let vk = keys
+        .create(
+            project.id,
+            NewVirtualKey {
+                key_hash: "hash123",
+                key_prefix: "sk-abc",
+                name: Some("ci key"),
+                models: &["gpt-4o".to_string()],
+                providers: &[],
+                cache_enabled: None,
+                created_by: None,
+                expires_at: Some(Utc::now() + Duration::days(30)),
+                purpose: None,
+            },
+        )
+        .await
+        .unwrap();
+    // defaults to inherit-the-route (NULL) on create
+    assert_eq!(vk.cache_enabled, None);
+    // the ttl the caller chose reaches the column the gateway reads, so a
+    // minted key is not immortal by construction (#945)
+    assert!(vk.expires_at.is_some());
+    assert_eq!(
+        keys.find_by_hash("hash123").await.unwrap().map(|k| k.id),
+        Some(vk.id)
+    );
+    let disabled_key = keys.set_disabled(vk.id, true).await.unwrap();
+    assert!(disabled_key.disabled);
+    // the cache override round-trips: force off, then clear back to inherit
+    let off = keys.set_cache(vk.id, Some(false)).await.unwrap();
+    assert_eq!(off.cache_enabled, Some(false));
+    let cleared = keys.set_cache(vk.id, None).await.unwrap();
+    assert_eq!(cleared.cache_enabled, None);
+
+    let budgets = BudgetRepo(&pool);
+    let budget = budgets
+        .create("project", project.id, "100.5000", "30d", None)
+        .await
+        .unwrap();
+    assert_eq!(budget.limit_usd, "100.5000");
+    // no override means "inherit the deployment-wide unpriced policy", and
+    // it round-trips as null rather than as a guessed default (#996)
+    assert_eq!(budget.unpriced_policy, None);
+    let strict = budgets
+        .create("project", project.id, "10.0000", "30d", Some("block"))
+        .await
+        .unwrap();
+    assert_eq!(strict.unpriced_policy, Some("block".to_string()));
+    assert_eq!(
+        budgets.get(strict.id).await.unwrap().unpriced_policy,
+        Some("block".to_string())
+    );
+    // both budgets belong to the project scope, the inherited one and the
+    // strict one, so the scope lists two
+    assert_eq!(
+        budgets
+            .list_for_scope("project", project.id)
+            .await
+            .unwrap()
+            .len(),
+        2
+    );
+
+    let limits = RateLimitRepo(&pool);
+    let limit = limits
+        .create("project", project.id, Some(60), Some(100_000))
+        .await
+        .unwrap();
+    assert_eq!(limit.rpm, Some(60));
+    // a limit with no positive cap admits everything, so it is never
+    // stored, whichever way the caps are missing (#1903)
+    for (rpm, tpm) in [
+        (None, None),
+        (Some(0), None),
+        (None, Some(-5)),
+        (Some(0), Some(0)),
+    ] {
+        assert!(
+            matches!(
+                limits.create("project", project.id, rpm, tpm).await,
+                Err(Error::Config(_))
+            ),
+            "{rpm:?} / {tpm:?} should be refused"
+        );
+    }
+    assert_eq!(
+        limits
+            .list_for_scope("project", project.id)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let prices = ModelPriceRepo(&pool);
+    let price = prices
+        .upsert(NewModelPrice {
+            model: "gpt-4o",
+            input_per_mtok: "2.500000",
+            output_per_mtok: "10.000000",
+            cached_input_per_mtok: None,
+            cache_write_per_mtok: None,
+            cache_write_1h_per_mtok: None,
+            currency: "USD",
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(price.input_per_mtok, "2.500000");
+    let updated = prices
+        .upsert(NewModelPrice {
+            model: "gpt-4o",
+            input_per_mtok: "3.000000",
+            output_per_mtok: "10.000000",
+            cached_input_per_mtok: None,
+            cache_write_per_mtok: None,
+            cache_write_1h_per_mtok: None,
+            currency: "USD",
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(updated.input_per_mtok, "3.000000");
+    assert_eq!(prices.list().await.unwrap().len(), 1);
+
+    // deletes cascade top-down; exercise the not-found error path too
+    orgs.delete(org.id).await.unwrap();
+    assert!(matches!(orgs.get(org.id).await, Err(Error::NotFound(_))));
+}
+
+/// The cache-write rate (#2876) is the one price column an upsert does not
+/// replace by default: a client that predates it sends a body without it,
+/// and that must not wipe a rate set since.
+#[tokio::test]
+async fn a_price_keeps_its_cache_write_rate_unless_told_otherwise() {
+    if !super::super::test_database::is_configured() {
+        eprintln!("skipping: {} not set", super::super::test_database::URL_ENV);
+        return;
+    }
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let prices = ModelPriceRepo(&pool);
+
+    // a new row with no rate has none, which prices writes as input
+    let bare = prices
+        .upsert(NewModelPrice {
+            model: "claude",
+            input_per_mtok: "3",
+            output_per_mtok: "15",
+            cached_input_per_mtok: Some("0.3"),
+            cache_write_per_mtok: None,
+            cache_write_1h_per_mtok: None,
+            currency: "USD",
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(bare.cache_write_per_mtok, None);
+
+    // setting it
+    let set = prices
+        .upsert(NewModelPrice {
+            model: "claude",
+            input_per_mtok: "3",
+            output_per_mtok: "15",
+            cached_input_per_mtok: Some("0.3"),
+            cache_write_per_mtok: Some(Some("3.75")),
+            cache_write_1h_per_mtok: None,
+            currency: "USD",
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(set.cache_write_per_mtok.as_deref(), Some("3.750000"));
+    assert_eq!(set.id, bare.id, "an upsert edits the row in place");
+
+    // replacing the rest of the row without naming it keeps the rate
+    let kept = prices
+        .upsert(NewModelPrice {
+            model: "claude",
+            input_per_mtok: "4",
+            output_per_mtok: "20",
+            cached_input_per_mtok: None,
+            cache_write_per_mtok: None,
+            cache_write_1h_per_mtok: None,
+            currency: "USD",
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(kept.input_per_mtok, "4.000000");
+    assert_eq!(kept.cached_input_per_mtok, None, "the others still replace");
+    assert_eq!(kept.cache_write_per_mtok.as_deref(), Some("3.750000"));
+
+    // and it is what a read and the snapshot see
+    let listed = prices.list().await.unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].cache_write_per_mtok.as_deref(), Some("3.750000"));
+    use crate::ConfigStore as _;
+    let config = crate::postgres::PostgresConfigStore::new(pool.clone())
+        .load()
+        .await
+        .unwrap();
+    assert_eq!(
+        config.model_prices[0].cache_write_per_mtok,
+        Some("3.75".parse().unwrap())
+    );
+
+    // clearing is its own, explicit request
+    let cleared = prices
+        .upsert(NewModelPrice {
+            model: "claude",
+            input_per_mtok: "4",
+            output_per_mtok: "20",
+            cached_input_per_mtok: None,
+            cache_write_per_mtok: Some(None),
+            cache_write_1h_per_mtok: None,
+            currency: "USD",
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(cleared.cache_write_per_mtok, None);
+    let config = crate::postgres::PostgresConfigStore::new(pool)
+        .load()
+        .await
+        .unwrap();
+    assert_eq!(config.model_prices[0].cache_write_per_mtok, None);
+}
+
+/// The 1 hour rate (#2891) follows the same rule as the 5 minute one, and
+/// the two are independent: naming one leaves the other where it was.
+#[tokio::test]
+async fn a_price_keeps_its_one_hour_cache_write_rate_unless_told_otherwise() {
+    if !super::super::test_database::is_configured() {
+        eprintln!("skipping: {} not set", super::super::test_database::URL_ENV);
+        return;
+    }
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let prices = ModelPriceRepo(&pool);
+
+    let bare = prices
+        .upsert(NewModelPrice {
+            model: "claude",
+            input_per_mtok: "3",
+            output_per_mtok: "15",
+            cached_input_per_mtok: None,
+            cache_write_per_mtok: None,
+            cache_write_1h_per_mtok: None,
+            currency: "USD",
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(bare.cache_write_1h_per_mtok, None);
+
+    let set = prices
+        .upsert(NewModelPrice {
+            model: "claude",
+            input_per_mtok: "3",
+            output_per_mtok: "15",
+            cached_input_per_mtok: None,
+            cache_write_per_mtok: Some(Some("3.75")),
+            cache_write_1h_per_mtok: Some(Some("6")),
+            currency: "USD",
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(set.cache_write_per_mtok.as_deref(), Some("3.750000"));
+    assert_eq!(set.cache_write_1h_per_mtok.as_deref(), Some("6.000000"));
+
+    // omitted keeps both
+    let kept = prices
+        .upsert(NewModelPrice {
+            model: "claude",
+            input_per_mtok: "4",
+            output_per_mtok: "20",
+            cached_input_per_mtok: None,
+            cache_write_per_mtok: None,
+            cache_write_1h_per_mtok: None,
+            currency: "USD",
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(kept.input_per_mtok, "4.000000");
+    assert_eq!(kept.cache_write_per_mtok.as_deref(), Some("3.750000"));
+    assert_eq!(kept.cache_write_1h_per_mtok.as_deref(), Some("6.000000"));
+
+    // naming the 5 minute rate leaves the 1 hour one alone, and back
+    let only_5m = prices
+        .upsert(NewModelPrice {
+            model: "claude",
+            input_per_mtok: "4",
+            output_per_mtok: "20",
+            cached_input_per_mtok: None,
+            cache_write_per_mtok: Some(Some("5")),
+            cache_write_1h_per_mtok: None,
+            currency: "USD",
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(only_5m.cache_write_per_mtok.as_deref(), Some("5.000000"));
+    assert_eq!(only_5m.cache_write_1h_per_mtok.as_deref(), Some("6.000000"));
+    let only_1h = prices
+        .upsert(NewModelPrice {
+            model: "claude",
+            input_per_mtok: "4",
+            output_per_mtok: "20",
+            cached_input_per_mtok: None,
+            cache_write_per_mtok: None,
+            cache_write_1h_per_mtok: Some(Some("8")),
+            currency: "USD",
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(only_1h.cache_write_per_mtok.as_deref(), Some("5.000000"));
+    assert_eq!(only_1h.cache_write_1h_per_mtok.as_deref(), Some("8.000000"));
+
+    // what a read and the snapshot see
+    assert_eq!(
+        prices.list().await.unwrap()[0]
+            .cache_write_1h_per_mtok
+            .as_deref(),
+        Some("8.000000")
+    );
+    use crate::ConfigStore as _;
+    let config = crate::postgres::PostgresConfigStore::new(pool.clone())
+        .load()
+        .await
+        .unwrap();
+    assert_eq!(
+        config.model_prices[0].cache_write_1h_per_mtok,
+        Some("8".parse().unwrap())
+    );
+
+    // clearing is its own, explicit request, and only for the rate named
+    let cleared = prices
+        .upsert(NewModelPrice {
+            model: "claude",
+            input_per_mtok: "4",
+            output_per_mtok: "20",
+            cached_input_per_mtok: None,
+            cache_write_per_mtok: None,
+            cache_write_1h_per_mtok: Some(None),
+            currency: "USD",
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(cleared.cache_write_1h_per_mtok, None);
+    assert_eq!(cleared.cache_write_per_mtok.as_deref(), Some("5.000000"));
+    let config = crate::postgres::PostgresConfigStore::new(pool)
+        .load()
+        .await
+        .unwrap();
+    assert_eq!(config.model_prices[0].cache_write_1h_per_mtok, None);
+}
+
+/// The unit rates (#2937) are kept by an upsert that does not name them, set
+/// and cleared one at a time by one that does, and a negative one is refused
+/// by the database.
+#[tokio::test]
+async fn a_price_keeps_its_unit_rates_unless_told_otherwise() {
+    if !super::super::test_database::is_configured() {
+        eprintln!("skipping: {} not set", super::super::test_database::URL_ENV);
+        return;
+    }
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let prices = ModelPriceRepo(&pool);
+
+    let set = prices
+        .upsert(NewModelPrice {
+            model: "media",
+            input_per_mtok: "0",
+            output_per_mtok: "0",
+            cached_input_per_mtok: None,
+            cache_write_per_mtok: None,
+            cache_write_1h_per_mtok: None,
+            units: UnitRates {
+                image_per_unit: Some(Some("0.04")),
+                audio_input_per_minute: Some(Some("0.006")),
+                speech_per_mchar: Some(Some("15")),
+                ..UnitRates::default()
+            },
+            currency: "USD",
+        })
+        .await
+        .unwrap();
+    assert_eq!(set.image_per_unit.as_deref(), Some("0.040000"));
+    assert_eq!(set.speech_per_mchar.as_deref(), Some("15.000000"));
+
+    // the plain upsert names none of them
+    let kept = prices
+        .upsert(NewModelPrice {
+            model: "media",
+            input_per_mtok: "1",
+            output_per_mtok: "2",
+            cached_input_per_mtok: None,
+            cache_write_per_mtok: None,
+            cache_write_1h_per_mtok: None,
+            currency: "USD",
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(kept.input_per_mtok, "1.000000");
+    assert_eq!(kept.image_per_unit.as_deref(), Some("0.040000"));
+    assert_eq!(kept.audio_input_per_minute.as_deref(), Some("0.006000"));
+    assert_eq!(kept.speech_per_mchar.as_deref(), Some("15.000000"));
+
+    let cleared = prices
+        .upsert(NewModelPrice {
+            model: "media",
+            input_per_mtok: "1",
+            output_per_mtok: "2",
+            cached_input_per_mtok: None,
+            cache_write_per_mtok: None,
+            cache_write_1h_per_mtok: None,
+            units: UnitRates {
+                image_per_unit: Some(None),
+                ..UnitRates::default()
+            },
+            currency: "USD",
+        })
+        .await
+        .unwrap();
+    assert_eq!(cleared.image_per_unit, None);
+    assert_eq!(cleared.speech_per_mchar.as_deref(), Some("15.000000"));
+
+    let negative = prices
+        .upsert(NewModelPrice {
+            model: "media",
+            input_per_mtok: "1",
+            output_per_mtok: "2",
+            cached_input_per_mtok: None,
+            cache_write_per_mtok: None,
+            cache_write_1h_per_mtok: None,
+            units: UnitRates {
+                speech_per_mchar: Some(Some("-1")),
+                ..UnitRates::default()
+            },
+            currency: "USD",
+        })
+        .await;
+    assert!(negative.is_err(), "a negative rate must be refused");
+}
+
+/// The audio token rates (#1882) are kept by an upsert that does not name
+/// them, set and cleared one at a time by one that does, and a negative one
+/// is refused by the database.
+#[tokio::test]
+async fn a_price_keeps_its_audio_rates_unless_told_otherwise() {
+    if !super::super::test_database::is_configured() {
+        eprintln!("skipping: {} not set", super::super::test_database::URL_ENV);
+        return;
+    }
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let prices = ModelPriceRepo(&pool);
+
+    let set = prices
+        .upsert(NewModelPrice {
+            model: "voice",
+            input_per_mtok: "4",
+            output_per_mtok: "16",
+            cached_input_per_mtok: Some("0.4"),
+            cache_write_per_mtok: None,
+            cache_write_1h_per_mtok: None,
+            units: UnitRates {
+                audio_input_per_mtok: Some(Some("32")),
+                audio_output_per_mtok: Some(Some("64")),
+                cached_audio_input_per_mtok: Some(Some("0.4")),
+                ..UnitRates::default()
+            },
+            currency: "USD",
+        })
+        .await
+        .unwrap();
+    assert_eq!(set.audio_input_per_mtok.as_deref(), Some("32.000000"));
+    assert_eq!(set.audio_output_per_mtok.as_deref(), Some("64.000000"));
+
+    // a client that predates the fields replaces the row without them
+    let kept = prices
+        .upsert(NewModelPrice {
+            model: "voice",
+            input_per_mtok: "5",
+            output_per_mtok: "20",
+            cached_input_per_mtok: None,
+            cache_write_per_mtok: None,
+            cache_write_1h_per_mtok: None,
+            currency: "USD",
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(kept.input_per_mtok, "5.000000");
+    assert_eq!(kept.audio_input_per_mtok.as_deref(), Some("32.000000"));
+    assert_eq!(kept.audio_output_per_mtok.as_deref(), Some("64.000000"));
+    assert_eq!(
+        kept.cached_audio_input_per_mtok.as_deref(),
+        Some("0.400000")
+    );
+
+    let cleared = prices
+        .upsert(NewModelPrice {
+            model: "voice",
+            input_per_mtok: "5",
+            output_per_mtok: "20",
+            cached_input_per_mtok: None,
+            cache_write_per_mtok: None,
+            cache_write_1h_per_mtok: None,
+            units: UnitRates {
+                audio_output_per_mtok: Some(None),
+                ..UnitRates::default()
+            },
+            currency: "USD",
+        })
+        .await
+        .unwrap();
+    assert_eq!(cleared.audio_output_per_mtok, None);
+    assert_eq!(cleared.audio_input_per_mtok.as_deref(), Some("32.000000"));
+
+    let negative = prices
+        .upsert(NewModelPrice {
+            model: "voice",
+            input_per_mtok: "5",
+            output_per_mtok: "20",
+            cached_input_per_mtok: None,
+            cache_write_per_mtok: None,
+            cache_write_1h_per_mtok: None,
+            units: UnitRates {
+                cached_audio_input_per_mtok: Some(Some("-1")),
+                ..UnitRates::default()
+            },
+            currency: "USD",
+        })
+        .await;
+    assert!(negative.is_err(), "a negative rate must be refused");
+}
+
+/// The column carries the same floor as the others (0084): a negative rate
+/// would be a credit against a budget, and `NaN` sorts above every number,
+/// so a row written around the API is refused by the database itself.
+#[tokio::test]
+async fn a_negative_one_hour_rate_is_refused_by_the_database() {
+    if !super::super::test_database::is_configured() {
+        eprintln!("skipping: {} not set", super::super::test_database::URL_ENV);
+        return;
+    }
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let prices = ModelPriceRepo(&pool);
+    for bad in ["-1", "NaN"] {
+        let refused = prices
+            .upsert(NewModelPrice {
+                model: "claude",
+                input_per_mtok: "3",
+                output_per_mtok: "15",
+                cached_input_per_mtok: None,
+                cache_write_per_mtok: None,
+                cache_write_1h_per_mtok: Some(Some(bad)),
+                currency: "USD",
+                ..Default::default()
+            })
+            .await;
+        assert!(refused.is_err(), "{bad}: {refused:?}");
+    }
+    assert!(prices.list().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn prompt_template_versions_publish_and_scope_round_trip() {
+    if !super::super::test_database::is_configured() {
+        eprintln!("skipping: {} not set", super::super::test_database::URL_ENV);
+        return;
+    }
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let org = OrgRepo(&pool).create("acme", "acme").await.unwrap();
+
+    let repo = PromptTemplateRepo(&pool);
+    let template = repo
+        .create_template(
+            org.id,
+            "support assistant",
+            "support-assistant",
+            Some("tier 1 support guardrails"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(template.published_version, None);
+    assert_eq!(repo.list_templates(org.id).await.unwrap().len(), 1);
+
+    let v1 = repo
+        .create_version(template.id, &serde_json::json!([]), &serde_json::json!([]))
+        .await
+        .unwrap();
+    let v2 = repo
+        .create_version(
+            template.id,
+            &serde_json::json!([{"name":"tier","required":true}]),
+            &serde_json::json!([{"role":"system","position":"prepend","content":"{{ tier }} mode"}]),
+        )
+        .await
+        .unwrap();
+    assert_eq!(v1.version, 1);
+    assert_eq!(v2.version, 2);
+    let empty_variables = serde_json::json!([]);
+    let empty_decorators = serde_json::json!([]);
+    let (v3, v4) = tokio::join!(
+        repo.create_version(template.id, &empty_variables, &empty_decorators),
+        repo.create_version(template.id, &empty_variables, &empty_decorators)
+    );
+    let mut concurrent_versions = [v3.unwrap().version, v4.unwrap().version];
+    concurrent_versions.sort();
+    assert_eq!(concurrent_versions, [3, 4]);
+    let versions = repo.list_versions(template.id).await.unwrap();
+    assert_eq!(versions.len(), 4);
+    assert_eq!(versions[0].version, 4);
+    assert_eq!(versions[3].version, 1);
+
+    let project = ProjectRepo(&pool)
+        .create(
+            TeamRepo(&pool).create(org.id, "core").await.unwrap().id,
+            "gateway",
+        )
+        .await
+        .unwrap();
+    repo.set_scopes(
+        template.id,
+        2,
+        &[
+            ("org".to_string(), org.id),
+            ("project".to_string(), project.id),
+        ],
+    )
+    .await
+    .unwrap();
+    let scopes = repo.list_scopes(template.id, 2).await.unwrap();
+    assert_eq!(scopes.len(), 2);
+    assert_eq!(scopes[0].scope_type, "org");
+    assert_eq!(scopes[1].scope_type, "project");
+
+    let published = repo.publish_version(template.id, v2.version).await.unwrap();
+    assert_eq!(published.published_version, Some(2));
+    assert!(repo
+        .set_scopes(template.id, 2, &[("org".to_string(), org.id)])
+        .await
+        .is_err());
+
+    repo.delete_template(template.id).await.unwrap();
+    assert!(matches!(
+        repo.get_template(template.id).await,
+        Err(Error::NotFound(_))
+    ));
+}
+
+#[tokio::test]
+async fn skill_versions_publish_and_retire_round_trip() {
+    if !super::super::test_database::is_configured() {
+        eprintln!("skipping: {} not set", super::super::test_database::URL_ENV);
+        return;
+    }
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let org = OrgRepo(&pool).create("acme", "acme").await.unwrap();
+
+    let repo = SkillRepo(&pool);
+    let skill = repo
+        .create_skill(
+            org.id,
+            "classification baseline",
+            "classification-baseline",
+            Some("first skill"),
+            &[],
+            "viewer",
+        )
+        .await
+        .unwrap();
+    assert_eq!(skill.published_version, None);
+    assert_eq!(repo.list_skills(org.id).await.unwrap().len(), 1);
+
+    let v1 = repo
+        .create_version(
+            skill.id,
+            Some("content-v1"),
+            None,
+            &serde_json::json!({"author":"ops"}),
+        )
+        .await
+        .unwrap();
+    let v2 = repo
+        .create_version(
+            skill.id,
+            None,
+            Some("oci://registry.example/skills/classification@sha256:abc"),
+            &serde_json::json!({"author":"ops"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(v1.version, 1);
+    assert_eq!(v2.version, 2);
+    let metadata = serde_json::json!({"author":"ops"});
+    let (v3, v4) = tokio::join!(
+        repo.create_version(skill.id, Some("content-v3"), None, &metadata),
+        repo.create_version(skill.id, Some("content-v4"), None, &metadata)
+    );
+    let mut concurrent_versions = [v3.unwrap().version, v4.unwrap().version];
+    concurrent_versions.sort();
+    assert_eq!(concurrent_versions, [3, 4]);
+    let versions = repo.list_versions(skill.id).await.unwrap();
+    assert_eq!(versions.len(), 4);
+    assert_eq!(versions[0].version, 4);
+    assert_eq!(versions[3].version, 1);
+
+    let published = repo.publish_version(skill.id, 2).await.unwrap();
+    assert_eq!(published.published_version, Some(2));
+    let resolved = repo.resolve_published(skill.id).await.unwrap();
+    assert_eq!(resolved.version, 2);
+    assert!(resolved.content.is_none());
+    assert_eq!(
+        resolved.content_ref.as_deref(),
+        Some("oci://registry.example/skills/classification@sha256:abc")
+    );
+
+    let retired = repo
+        .update_skill(
+            skill.id,
+            Some("classification baseline"),
+            None,
+            Some(true),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(retired.retired_at.is_some());
+    assert!(repo.resolve_published(skill.id).await.is_err());
+
+    repo.delete_skill(skill.id).await.unwrap();
+    assert!(matches!(
+        repo.get_skill(skill.id).await,
+        Err(Error::NotFound(_))
+    ));
+}
+
+#[tokio::test]
+async fn plugin_instances_round_trip_at_org_and_project_scope() {
+    if !super::super::test_database::is_configured() {
+        eprintln!("skipping: {} not set", super::super::test_database::URL_ENV);
+        return;
+    }
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let org = OrgRepo(&pool).create("plugins", "plugins").await.unwrap();
+    let team = TeamRepo(&pool).create(org.id, "platform").await.unwrap();
+    let project = ProjectRepo(&pool).create(team.id, "gateway").await.unwrap();
+    let repo = PluginRepo(&pool);
+    let org_plugin = repo
+        .create(
+            org.id,
+            NewPlugin {
+                project_id: None,
+                name: "audit",
+                slug: "audit",
+                description: "org audit",
+                kind: "webhook",
+                stage: "post_response",
+                enabled: false,
+                position: 20,
+                failure_mode: "fail_open",
+                endpoint: "https://plugins.internal/audit",
+                secret_env: None,
+                config: &serde_json::json!({}),
+            },
+        )
+        .await
+        .unwrap();
+    let project_plugin = repo
+        .create(
+            org.id,
+            NewPlugin {
+                project_id: Some(project.id),
+                name: "audit override",
+                slug: "audit",
+                description: "project audit",
+                kind: "webhook",
+                stage: "pre_upstream",
+                enabled: true,
+                position: 10,
+                failure_mode: "fail_closed",
+                endpoint: "https://plugins.internal/project-audit",
+                secret_env: Some("PLUGIN_TOKEN"),
+                config: &serde_json::json!({"sample": 1.0}),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(repo.list(org.id).await.unwrap().len(), 2);
+    let updated = repo
+        .update(
+            project_plugin.id,
+            PluginUpdate {
+                project_id: Some(project.id),
+                name: "audit override",
+                description: "updated",
+                stage: "pre_route",
+                enabled: false,
+                position: 5,
+                failure_mode: "fail_open",
+                endpoint: "https://plugins.internal/project-audit",
+                secret_env: None,
+                config: &serde_json::json!({"sample": 0.5}),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(updated.stage, "pre_route");
+    assert_eq!(updated.position, 5);
+    repo.delete(org_plugin.id).await.unwrap();
+    assert_eq!(repo.list(org.id).await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn audit_log_keyset_pages_filter_without_shifting_boundaries() {
+    if !super::super::test_database::is_configured() {
+        eprintln!("skipping: {} not set", super::super::test_database::URL_ENV);
+        return;
+    }
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let org = OrgRepo(&pool).create("audit", "audit").await.unwrap();
+    let actor = UserRepo(&pool)
+        .create("audit@example.com", None, false)
+        .await
+        .unwrap();
+    let repo = AuditLogRepo(&pool);
+    let now = Utc::now();
+    for (offset, action) in [
+        (3, "route.create"),
+        (2, "route.create"),
+        (1, "route.delete"),
+    ] {
+        let entry = repo
+            .create(
+                Some(org.id),
+                Some(actor.id),
+                action,
+                Some("route"),
+                Some(Uuid::new_v4()),
+                None,
+            )
+            .await
+            .unwrap();
+        sqlx::query("update audit_log set at = $2 where id = $1")
+            .bind(entry.id)
+            .bind(now - chrono::Duration::seconds(offset))
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    let filter = AuditLogFilter {
+        actor_user_id: Some(actor.id),
+        action: Some("route.create".to_string()),
+        target_type: Some("route".to_string()),
+        ..Default::default()
+    };
+    let first = repo.list_page(org.id, &filter, 1).await.unwrap();
+    assert_eq!(first.entries.len(), 1);
+    assert!(first.has_more);
+    let boundary = first.entries[0].clone();
+    let second = repo
+        .list_page(
+            org.id,
+            &AuditLogFilter {
+                cursor: Some(AuditLogCursor {
+                    at: boundary.at,
+                    id: boundary.id,
+                }),
+                ..filter.clone()
+            },
+            1,
+        )
+        .await
+        .unwrap();
+    assert_eq!(second.entries.len(), 1);
+    assert_ne!(second.entries[0].id, boundary.id);
+    let previous = repo
+        .list_page(
+            org.id,
+            &AuditLogFilter {
+                cursor: Some(AuditLogCursor {
+                    at: second.entries[0].at,
+                    id: second.entries[0].id,
+                }),
+                direction: AuditLogDirection::Previous,
+                ..filter.clone()
+            },
+            1,
+        )
+        .await
+        .unwrap();
+    assert_eq!(previous.entries[0].id, boundary.id);
+    assert_eq!(repo.count(org.id, &filter).await.unwrap(), 2);
+}
+
+#[tokio::test]
+async fn audit_log_end_at_is_exclusive_in_both_directions() {
+    if !super::super::test_database::is_configured() {
+        eprintln!("skipping: {} not set", super::super::test_database::URL_ENV);
+        return;
+    }
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let org = OrgRepo(&pool).create("bounds", "bounds").await.unwrap();
+    let repo = AuditLogRepo(&pool);
+    let end = Utc::now() - chrono::Duration::hours(1);
+    let mut inside = Vec::new();
+    for offset in [2, 1, 0] {
+        let entry = repo
+            .create(Some(org.id), None, "route.create", None, None, None)
+            .await
+            .unwrap();
+        sqlx::query("update audit_log set at = $2 where id = $1")
+            .bind(entry.id)
+            .bind(end - chrono::Duration::seconds(offset))
+            .execute(&pool)
+            .await
+            .unwrap();
+        if offset > 0 {
+            inside.push(entry.id);
+        }
+    }
+    let filter = AuditLogFilter {
+        start_at: Some(end - chrono::Duration::seconds(2)),
+        end_at: Some(end),
+        ..Default::default()
+    };
+    let ids = |page: AuditLogPage| -> Vec<Uuid> {
+        let mut ids: Vec<Uuid> = page.entries.iter().map(|entry| entry.id).collect();
+        ids.sort();
+        ids
+    };
+    inside.sort();
+    for direction in [AuditLogDirection::Next, AuditLogDirection::Previous] {
+        let filter = AuditLogFilter {
+            direction,
+            ..filter.clone()
+        };
+        let page = repo.list_page(org.id, &filter, 10).await.unwrap();
+        assert_eq!(ids(page), inside, "{direction:?}");
+        let page = repo.list_page_all(&filter, 10).await.unwrap();
+        assert_eq!(ids(page), inside, "{direction:?}");
+    }
+    assert_eq!(repo.count(org.id, &filter).await.unwrap(), 2);
+    assert_eq!(repo.count_all(&filter).await.unwrap(), 2);
+}
+
+#[tokio::test]
+async fn sso_sweeps_drop_expired_rows_nobody_used_and_keep_live_ones() {
+    if !super::super::test_database::is_configured() {
+        eprintln!("skipping: {} not set", super::super::test_database::URL_ENV);
+        return;
+    }
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let org = OrgRepo(&pool).create("sso", "sso").await.unwrap();
+    let user = UserRepo(&pool)
+        .create("sso@example.com", None, false)
+        .await
+        .unwrap();
+    let repo = SsoRepo(&pool);
+    let provider = repo
+        .create_provider(
+            org.id,
+            NewSsoProvider {
+                name: "idp",
+                slug: "idp",
+                issuer: "https://idp.example.com",
+                client_id: "client",
+                secret: None,
+                scopes: &[],
+                group_claim: "groups",
+                default_role: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    // the oidc nonce is generated, never a literal: a fixed value here reads
+    // to codeql as a hard-coded cryptographic nonce
+    let nonce = Uuid::new_v4().to_string();
+    // three abandoned logins, backdated past the ttl, and one in flight
+    for state in ["old-1", "old-2", "old-3", "live"] {
+        repo.start_login(state, provider.id, "verifier", &nonce, "https://cb")
+            .await
+            .unwrap();
+    }
+    sqlx::query(
+        "update sso_login_states set created_at = now() - interval '1 hour' \
+         where state like 'old-%'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    // two codes nobody redeemed, one already expired
+    repo.issue_exchange("expired-code", user.id, provider.id, &[], 60)
+        .await
+        .unwrap();
+    repo.issue_exchange("live-code", user.id, provider.id, &[], 60)
+        .await
+        .unwrap();
+    sqlx::query(
+        "update sso_exchange_codes set expires_at = now() - interval '1 second' \
+         where code_hash = 'expired-code'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let states = || async {
+        sqlx::query_scalar::<_, String>("select state from sso_login_states order by state")
+            .fetch_all(&pool)
+            .await
+            .unwrap()
+    };
+    // the batch bound holds: one pass of two leaves the third expired row
+    assert_eq!(repo.sweep_login_states(600, 2).await.unwrap(), 2);
+    assert_eq!(states().await.len(), 2);
+    assert_eq!(repo.sweep_login_states(600, 2).await.unwrap(), 1);
+    assert_eq!(states().await, vec!["live".to_string()]);
+    assert_eq!(repo.sweep_login_states(600, 2).await.unwrap(), 0);
+
+    assert_eq!(repo.sweep_exchange_codes(10).await.unwrap(), 1);
+    let codes: Vec<String> = sqlx::query_scalar("select code_hash from sso_exchange_codes")
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    assert_eq!(codes, vec!["live-code".to_string()]);
+
+    // the live rows are still usable after a sweep
+    assert!(repo.consume_login("live", 600).await.unwrap().is_some());
+    assert!(repo.redeem_exchange("live-code").await.unwrap().is_some());
+
+    // an expired state is refused even when the bounded sweep stops short
+    // of it: a full batch of older rows sits in front, and the row is
+    // spent all the same
+    repo.start_login("stale", provider.id, "verifier", &nonce, "https://cb")
+        .await
+        .unwrap();
+    sqlx::query("update sso_login_states set created_at = now() - interval '1 hour'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "insert into sso_login_states (state, provider_id, code_verifier, nonce, redirect_uri, created_at) \
+         select 'backlog-' || n, $1, 'v', 'n', 'https://cb', now() - interval '2 hours' \
+         from generate_series(1, $2) as n",
+    )
+    .bind(provider.id)
+    .bind(SSO_SWEEP_BATCH as i32)
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert!(repo.consume_login("stale", 600).await.unwrap().is_none());
+    assert!(states().await.is_empty());
+}
+
+#[tokio::test]
+async fn mfa_and_mcp_sweeps_drop_expired_rows_nobody_used_and_keep_live_ones() {
+    if !super::super::test_database::is_configured() {
+        eprintln!("skipping: {} not set", super::super::test_database::URL_ENV);
+        return;
+    }
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let org = OrgRepo(&pool).create("sweep", "sweep").await.unwrap();
+    let user = UserRepo(&pool)
+        .create("sweep@example.com", None, false)
+        .await
+        .unwrap();
+
+    // two challenges for logins abandoned at the prompt, one still live
+    let mfa = MfaRepo(&pool);
+    for (hash, ttl) in [("old-1", -60), ("old-2", -30), ("live", 600)] {
+        mfa.create_challenge(
+            user.id,
+            hash,
+            Utc::now() + Duration::seconds(ttl),
+            ChallengePurpose::Verify,
+            false,
+        )
+        .await
+        .unwrap();
+    }
+    // a batch of one leaves the second expired row for the next pass
+    assert_eq!(mfa.sweep_expired_challenges(1).await.unwrap(), 1);
+    assert_eq!(mfa.sweep_expired_challenges(10).await.unwrap(), 1);
+    assert_eq!(mfa.sweep_expired_challenges(10).await.unwrap(), 0);
+    let left: Vec<String> = sqlx::query_scalar("select token_hash from mfa_challenges")
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    assert_eq!(left, vec!["live".to_string()]);
+
+    // the same for consents abandoned at an mcp authorization server
+    let server = McpServerRepo(&pool)
+        .create(NewMcpServer {
+            org_id: org.id,
+            name: "mcp",
+            slug: "mcp",
+            url: "https://mcp.example.com",
+            transport: "streamable_http",
+            description: "",
+            enabled: true,
+            tools: &[],
+            source: "custom",
+            required_scopes: &[],
+        })
+        .await
+        .unwrap();
+    for state in ["old-1", "old-2", "live"] {
+        sqlx::query(
+            "insert into mcp_oauth_login_states \
+                 (state, server_id, user_id, verifier_ciphertext, verifier_nonce, redirect_uri) \
+             values ($1, $2, $3, '\\x00', '\\x00', 'https://cb')",
+        )
+        .bind(state)
+        .bind(server.id)
+        .bind(user.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    sqlx::query(
+        "update mcp_oauth_login_states set created_at = now() - interval '1 hour' \
+         where state like 'old-%'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let mcp = McpOAuthRepo(&pool);
+    let cutoff = Utc::now() - Duration::seconds(600);
+    assert_eq!(mcp.sweep_login_states(cutoff, 1).await.unwrap(), 1);
+    assert_eq!(mcp.sweep_login_states(cutoff, 10).await.unwrap(), 1);
+    assert_eq!(mcp.sweep_login_states(cutoff, 10).await.unwrap(), 0);
+    let left: Vec<String> = sqlx::query_scalar("select state from mcp_oauth_login_states")
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    assert_eq!(left, vec!["live".to_string()]);
+}
+
+fn stored_target(provider_id: Uuid, upstream_model: Option<&str>, weight: i32) -> RouteTarget {
+    RouteTarget {
+        id: Uuid::new_v4(),
+        route_id: Uuid::nil(),
+        provider_id,
+        upstream_model: upstream_model.map(str::to_string),
+        weight,
+        created_at: Utc::now(),
+    }
+}
+
+fn spec(provider_id: Uuid, upstream_model: Option<&str>, weight: i32) -> RouteTargetSpec {
+    RouteTargetSpec {
+        provider_id,
+        upstream_model: upstream_model.map(str::to_string),
+        weight,
+    }
+}
+
+/// #2235: a target is matched by provider and upstream model, so a weight
+/// edit keeps the row, a changed upstream model is a different target, and
+/// an unchanged entry is neither written nor reported.
+#[test]
+fn target_plan_matches_on_provider_and_upstream_model() {
+    let (a, b, c) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+    let stored = vec![
+        stored_target(a, None, 1),
+        stored_target(b, Some("gpt-4o"), 1),
+        stored_target(c, None, 3),
+    ];
+    let desired = vec![
+        // same key, new weight: kept and reweighted
+        spec(a, None, 5),
+        // same provider, other upstream model: a new target, and the old
+        // one goes
+        spec(b, Some("gpt-4o-mini"), 1),
+        // identical: left alone
+        spec(c, None, 3),
+    ];
+    let plan = plan_target_changes(&stored, &desired);
+    assert_eq!(
+        plan.reweight
+            .iter()
+            .map(|(t, w)| (t.id, *w))
+            .collect::<Vec<_>>(),
+        vec![(stored[0].id, 5)]
+    );
+    assert_eq!(plan.insert, vec![&desired[1]]);
+    assert_eq!(
+        plan.delete.iter().map(|t| t.id).collect::<Vec<_>>(),
+        vec![stored[1].id]
+    );
+}
+
+/// Each entry claims at most one stored row, so duplicates are counted
+/// rather than collapsed: naming a twice-held key once drops one of them,
+/// and naming it three times adds one.
+#[test]
+fn target_plan_counts_duplicate_keys() {
+    let a = Uuid::new_v4();
+    let stored = vec![stored_target(a, None, 1), stored_target(a, None, 2)];
+
+    let once = vec![spec(a, None, 2)];
+    let plan = plan_target_changes(&stored, &once);
+    // the first stored row is claimed and reweighted, the second one goes
+    assert_eq!(plan.reweight.len(), 1);
+    assert_eq!(plan.reweight[0].0.id, stored[0].id);
+    assert!(plan.insert.is_empty());
+    assert_eq!(plan.delete.len(), 1);
+    assert_eq!(plan.delete[0].id, stored[1].id);
+
+    let thrice = vec![spec(a, None, 1), spec(a, None, 2), spec(a, None, 1)];
+    let plan = plan_target_changes(&stored, &thrice);
+    assert!(plan.reweight.is_empty());
+    assert_eq!(plan.insert, vec![&thrice[2]]);
+    assert!(plan.delete.is_empty());
+}
+
+/// #2946: a row whose `egress_proxies` holds a non-string used to fail every
+/// read of it, so the provider could neither be listed nor repaired.
+#[tokio::test]
+async fn a_provider_with_a_non_string_proxy_entry_lists_and_can_be_rewritten() {
+    if !super::super::test_database::is_configured() {
+        eprintln!("skipping: {} not set", super::super::test_database::URL_ENV);
+        return;
+    }
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let org = OrgRepo(&pool).create("acme", "acme").await.unwrap();
+    sqlx::query("alter table providers drop constraint providers_egress_proxies_strings")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let id: Uuid = sqlx::query_scalar(
+        "insert into providers (org_id, name, slug, kind, api_base, egress_proxies)
+         values ($1, 'odd', 'odd', 'openai', 'https://api.openai.com',
+                 '[\"http://proxy.example.com:3128\", 7]'::jsonb)
+         returning id",
+    )
+    .bind(org.id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let repo = ProviderRepo(&pool);
+
+    let listed = repo.list(org.id).await.expect("the listing decodes");
+    assert_eq!(listed.len(), 1);
+    assert_eq!(
+        listed[0].egress_proxies.0,
+        ["http://proxy.example.com:3128"],
+        "the string entries are kept"
+    );
+    assert_eq!(repo.get(id).await.unwrap().egress_proxies.0.len(), 1);
+
+    // an update that leaves the pool alone still answers
+    let kept = repo
+        .update(
+            id,
+            ProviderUpdate {
+                slug: None,
+                kind: None,
+                api_base: None,
+                api_key_env: None,
+                egress_proxy: None,
+                egress_proxies: None,
+                kv_events: None,
+                lmcache: None,
+                project_id: None,
+                allow_custom_api_base: None,
+            },
+        )
+        .await
+        .expect("an update that omits the pool succeeds");
+    assert_eq!(kept.egress_proxies.0.len(), 1);
+
+    let pool_now = vec!["http://other.example.com:3128".to_string()];
+    let rewritten = repo
+        .update(
+            id,
+            ProviderUpdate {
+                slug: None,
+                kind: None,
+                api_base: None,
+                api_key_env: None,
+                egress_proxy: None,
+                egress_proxies: Some(&pool_now),
+                kv_events: None,
+                lmcache: None,
+                project_id: None,
+                allow_custom_api_base: None,
+            },
+        )
+        .await
+        .expect("a write that sets the pool succeeds");
+    assert_eq!(rewritten.egress_proxies.0, pool_now);
+    let stored: serde_json::Value =
+        sqlx::query_scalar("select egress_proxies from providers where id = $1")
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(stored, serde_json::json!(pool_now), "the row is repaired");
+}
+
+/// #2235: the strategy and the target list change in one transaction, the
+/// targets that survive keep their ids, and a write that fails part way
+/// leaves the route exactly as it was.
+#[tokio::test]
+async fn route_update_is_one_transaction() {
+    if !super::super::test_database::is_configured() {
+        eprintln!("skipping: {} not set", super::super::test_database::URL_ENV);
+        return;
+    }
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+
+    let org = OrgRepo(&pool).create("acme", "acme").await.unwrap();
+    let team = TeamRepo(&pool).create(org.id, "core").await.unwrap();
+    let project = ProjectRepo(&pool).create(team.id, "default").await.unwrap();
+    let mut provider_ids = Vec::new();
+    for name in ["primary", "secondary"] {
+        let provider = ProviderRepo(&pool)
+            .create(
+                org.id,
+                NewProvider {
+                    name,
+                    slug: name,
+                    kind: "openai",
+                    api_base: "https://api.openai.com",
+                    api_key_env: Some("OPENAI_API_KEY"),
+                    egress_proxy: None,
+                    egress_proxies: &[],
+                    kv_events: None,
+                    lmcache: None,
+                    project_id: None,
+                    allow_custom_api_base: false,
+                },
+            )
+            .await
+            .unwrap();
+        provider_ids.push(provider.id);
+    }
+    let (primary, secondary) = (provider_ids[0], provider_ids[1]);
+    let routes = RouteRepo(&pool);
+    let route = routes
+        .create(project.id, "gpt-4o", "round_robin")
+        .await
+        .unwrap();
+    let targets = RouteTargetRepo(&pool);
+    let kept = targets.create(route.id, primary, None, 1).await.unwrap();
+    let dropped = targets
+        .create(route.id, primary, Some("gpt-4o-mini"), 1)
+        .await
+        .unwrap();
+
+    let desired = vec![spec(primary, None, 3), spec(secondary, None, 1)];
+    let (updated, changes) = routes
+        .update(
+            route.id,
+            &RouteUpdate {
+                strategy: Some("weighted"),
+                targets: Some(&desired),
+                ..RouteUpdate::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(updated.strategy, "weighted");
+    assert!(updated.enabled, "an omitted enabled flag is kept");
+    assert_eq!(changes.reweighted.len(), 1);
+    assert_eq!(changes.reweighted[0].target.id, kept.id);
+    assert_eq!(changes.reweighted[0].previous_weight, 1);
+    assert_eq!(changes.added.len(), 1);
+    assert_eq!(changes.added[0].provider_id, secondary);
+    assert_eq!(
+        changes.removed.iter().map(|t| t.id).collect::<Vec<_>>(),
+        vec![dropped.id]
+    );
+    let listed = targets.list(route.id).await.unwrap();
+    assert_eq!(
+        listed.iter().map(|t| (t.id, t.weight)).collect::<Vec<_>>(),
+        vec![(kept.id, 3), (changes.added[0].id, 1)],
+        "the kept target keeps its id and its place"
+    );
+
+    // the second entry names a provider that does not exist, so its
+    // insert fails after the strategy write and the delete already ran in
+    // the same transaction: none of it may survive
+    let before: i64 = sqlx::query_scalar("select version from config_version where id = 1")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let broken = vec![spec(secondary, None, 1), spec(Uuid::new_v4(), None, 1)];
+    routes
+        .update(
+            route.id,
+            &RouteUpdate {
+                enabled: Some(false),
+                strategy: Some("random"),
+                targets: Some(&broken),
+            },
+        )
+        .await
+        .expect_err("a target on an unknown provider fails the foreign key");
+    let after: i64 = sqlx::query_scalar("select version from config_version where id = 1")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(after, before, "a rolled-back update bumps nothing");
+    let route_now = routes.get(route.id).await.unwrap();
+    assert_eq!(route_now.strategy, "weighted");
+    assert!(route_now.enabled);
+    assert_eq!(
+        targets
+            .list(route.id)
+            .await
+            .unwrap()
+            .iter()
+            .map(|t| t.id)
+            .collect::<Vec<_>>(),
+        listed.iter().map(|t| t.id).collect::<Vec<_>>()
+    );
+
+    // an update naming nothing changes nothing and reports nothing
+    let (same, changes) = routes
+        .update(route.id, &RouteUpdate::default())
+        .await
+        .unwrap();
+    assert_eq!(same.strategy, "weighted");
+    assert!(changes.is_empty());
+
+    let missing = routes
+        .update(Uuid::new_v4(), &RouteUpdate::default())
+        .await
+        .expect_err("unknown route");
+    assert!(matches!(missing, Error::NotFound(_)), "{missing:?}");
+}
