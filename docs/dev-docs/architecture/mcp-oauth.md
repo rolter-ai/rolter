@@ -346,7 +346,7 @@ client, or to let discovery resolve one.
 ### Scope selection and `insufficient_scope` step-up (#1417)
 
 The three MUSTs above are not the whole of the specification's scope guidance.
-The SHOULDs are implemented too, and are not fail-closed: they choose what to
+The SHOULD requirements are implemented too, and are not fail-closed: they choose what to
 ask for, and a resource that publishes nothing leaves the operator's
 configuration in charge.
 
