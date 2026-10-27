@@ -1,12 +1,5 @@
 # syntax=docker/dockerfile:1
 
-# the distroless release the runtime layout sits on: debian12 for every image
-# that is built or published. CI's image smoke passes debian13 for the
-# `runtime-prebuilt` target only, because its binaries come from an ubuntu 24.04
-# runner whose glibc headers make aws-lc link `__isoc23_*` symbols (glibc 2.38),
-# which debian 12's glibc 2.36 does not have (#2037)
-ARG RUNTIME_DISTRO=debian12
-
 # --- build the rust binaries ---
 FROM rust:1-bookworm AS rust-builder
 WORKDIR /app
@@ -67,13 +60,15 @@ RUN bun run build
 # rustls, so no system openssl is needed. its public roots are the system
 # trust store (rustls-platform-verifier), which this base ships as
 # ca-certificates. runs as the built-in nonroot user (uid 65532). pinned by
-# index digest (multi-arch: amd64 + arm64). the debian13 pin exists only for
-# the CI image smoke described above; bump the two together.
-FROM gcr.io/distroless/cc-debian12:nonroot@sha256:9dac0a79194e45a7da0158a9c6da57b217585af0786db3845d1f0ec1a0dd182f AS distroless-debian12
-FROM gcr.io/distroless/cc-debian13:nonroot@sha256:e792ab3d241a468a4fd7519ddbbebe66b49b5f365771716ea688ad40b6c6f1c2 AS distroless-debian13
-# a stage named above, pinned there, so there is no tag for hadolint to see
-# hadolint ignore=DL3006
-FROM distroless-${RUNTIME_DISTRO} AS runtime-base
+# index digest (multi-arch: amd64 + arm64).
+#
+# debian13 (glibc 2.41), not debian12 (glibc 2.36): aws-lc-sys defines
+# _GNU_SOURCE, so a binary built against glibc >= 2.38 headers links
+# `__isoc23_strtol` / `__isoc23_sscanf` (GLIBC_2.38) and cannot start on
+# debian12. the image's own bookworm builder is unaffected, but CI's prebuilt
+# image and any operator building on a modern host are not, and debian12's
+# security support has ended (#2702)
+FROM gcr.io/distroless/cc-debian13:nonroot@sha256:e792ab3d241a468a4fd7519ddbbebe66b49b5f365771716ea688ad40b6c6f1c2 AS runtime-base
 WORKDIR /app
 COPY rolter.example.toml /app/rolter.toml
 ENV ROLTER_CONFIG=/app/rolter.toml \
@@ -97,12 +92,10 @@ CMD ["/usr/local/bin/rolter", "easy-up", "--host", "0.0.0.0", "--config", "/app/
 # than pulling an image called `rolter-bin` from a registry:
 #
 #   docker build -f docker/Dockerfile --target runtime-prebuilt \
-#     --build-arg RUNTIME_DISTRO=debian13 \
 #     --build-context rolter-bin=<dir with rolter, rolter-gateway, rolter-control> \
 #     --build-context rolter-ui=ui/dist -t rolter:dev .
 #
-# the binaries must run on the base's glibc: 2.36 on debian12, 2.41 on
-# debian13, hence RUNTIME_DISTRO=debian13 for binaries built on a newer host.
+# the binaries must run on the base's glibc (2.41), which any host build can.
 # the release image is never built this way: it is `runtime`, the last stage
 FROM scratch AS rolter-bin
 FROM scratch AS rolter-ui

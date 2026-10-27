@@ -381,7 +381,6 @@ jobs:
         if: ${{ !cancelled() && steps.image-ui.outcome == 'success' && steps.image-bins.outcome == 'success' }}
         run: |
           docker build -f docker/Dockerfile --target runtime-prebuilt \
-            --build-arg RUNTIME_DISTRO=debian13 \
             --build-context rolter-bin="${RUNNER_TEMP}/image-bin" \
             --build-context rolter-ui=ui/dist \
             -t rolter:image-smoke .
@@ -556,7 +555,7 @@ jobs:
           row "image smoke (published ports)" "build the image binaries" "${OUTCOME_IMAGE_BINS}" \
             "cargo build --workspace --features postgres --locked"
           row "image smoke (published ports)" "build the image (runtime-prebuilt)" "${OUTCOME_IMAGE_BUILD}" \
-            "docker build -f docker/Dockerfile --target runtime-prebuilt --build-arg RUNTIME_DISTRO=debian13 --build-context rolter-bin=target/debug --build-context rolter-ui=ui/dist -t rolter:image-smoke ."
+            "docker build -f docker/Dockerfile --target runtime-prebuilt --build-context rolter-bin=target/debug --build-context rolter-ui=ui/dist -t rolter:image-smoke ."
           row "image smoke (published ports)" "run it with published ports and curl both planes" "${OUTCOME_IMAGE_SMOKE}" \
             "bash docker/smoke/image-smoke.sh rolter:image-smoke"
           advisory "semver-checks (advisory)" "install cargo-semver-checks" "${OUTCOME_SEMVER_INSTALL}" \
