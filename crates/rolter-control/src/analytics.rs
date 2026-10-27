@@ -224,6 +224,30 @@ impl ClickHouseClient {
         Ok(())
     }
 
+    /// Run one already-built statement that returns no rows — an
+    /// `alter table … delete`, whose predicate cannot be a query parameter.
+    /// Every value in it is a validated id or an escaped string; see
+    /// [`crate::log_erasure`]. A mutation is queued, not finished, when this
+    /// returns.
+    // only reachable via the postgres-gated log-erasure router
+    #[cfg_attr(not(feature = "postgres"), allow(dead_code))]
+    pub(crate) async fn execute_ddl(&self, statement: &str) -> anyhow::Result<()> {
+        let response = self
+            .client
+            .post(format!("{}/", self.base))
+            .body(statement.to_string())
+            .timeout(DDL_TIMEOUT)
+            .send()
+            .await
+            .map_err(strip_url)?;
+        if response.status().is_success() {
+            return Ok(());
+        }
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        anyhow::bail!("clickhouse statement failed ({status}): {body}")
+    }
+
     /// Persist one already-sanitized MCP tool-call event. The table and insert
     /// statement are fixed here rather than supplied by a caller, so event
     /// metadata can never alter ClickHouse SQL.

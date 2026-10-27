@@ -1048,6 +1048,28 @@ pub struct MfaChallenge {
     pub after_lock: bool,
 }
 
+/// one subject-scoped erasure of request logs and captured payloads (#1085)
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct LogErasure {
+    pub id: Uuid,
+    /// `virtual_key`, `user`, `org` or `request`
+    pub scope_kind: String,
+    pub scope_id: String,
+    pub org_id: Option<Uuid>,
+    pub request_ts: Option<DateTime<Utc>>,
+    pub include_logs: bool,
+    pub reason: String,
+    pub requested_by: Option<Uuid>,
+    /// `pending` while clickhouse mutations run, then `completed`; `failed`
+    /// when a statement was refused, `unverified` when completion could not be
+    /// confirmed from `system.mutations`
+    pub status: String,
+    pub statements: i32,
+    pub error: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
+}
+
 /// a record of an admin/CRUD/auth action, for the audit-log API
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct AuditLogEntry {

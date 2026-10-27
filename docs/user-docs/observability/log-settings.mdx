@@ -125,6 +125,8 @@ The two halves of the log expire on separate clocks:
 
 Payloads cannot outlive the metadata they belong to. `payload_retention_hours` must not exceed `retention_days × 24`, and both the dashboard and the API reject a policy that breaks it — otherwise raw prompt content would survive past the point an operator meant it to expire.
 
+To delete one subject's rows on request rather than wait for expiry, see [Log erasure](/observability/log-erasure).
+
 ### How expiry is enforced
 
 There is no purge job. Rolter translates the policy into a ClickHouse **table TTL** (`alter table request_logs modify ttl …`, and the same for `request_payloads`), and ClickHouse drops expired parts itself during merges. Deletion is therefore eventual, not instant: a row past its TTL may survive until its part is next merged.
