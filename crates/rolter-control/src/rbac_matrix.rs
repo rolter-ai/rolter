@@ -800,6 +800,18 @@ const CAPABILITIES: &[Capability] = &[
         action_scopes: NONE,
     },
     Capability {
+        // counts of the gateway fleet and nothing that names a node (#2013),
+        // so the header's gateway pill and the dashboard home can show it to a
+        // viewer. The identities stay behind `cluster_node`
+        resource: "cluster_summary",
+        scope: "deployment",
+        read: ANYONE,
+        create: NA,
+        update: NA,
+        delete: NA,
+        action_scopes: NONE,
+    },
+    Capability {
         resource: "security_settings",
         scope: "deployment",
         read: SUPER,
@@ -1860,7 +1872,9 @@ mod tests {
                 // the fleet's breaker state (#2254): the handler narrows it to
                 // the models the caller sees, so with no membership that is
                 // the deployment's own, as for `model:read`
-                "breaker_state:read"
+                "breaker_state:read",
+                // the fleet's gateway counts (#2013): no node is named
+                "cluster_summary:read"
             ]
         );
     }

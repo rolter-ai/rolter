@@ -2156,6 +2156,11 @@ fn operations() -> Vec<Op> {
                 "listClusterNodes",
                 "List gateway nodes that have registered",
             ),
+            Op::get(
+                "/api/v1/cluster/summary",
+                "getClusterSummary",
+                "Counts of live, stale and lagging gateways, with no node identities",
+            ),
             Op::put(
                 "/api/v1/cluster/nodes/{id}/drain",
                 "setClusterNodeDrain",

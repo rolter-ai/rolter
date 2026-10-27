@@ -21,6 +21,7 @@ mod audit;
 mod auth;
 mod breaker_state;
 mod budgets;
+mod cluster_summary;
 mod crud;
 mod guardrails;
 mod mcp;
