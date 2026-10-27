@@ -16,6 +16,7 @@ const LABELLED_TARGET: &str = "rolter_target_requests_total";
 const LABELLED_VARIANT: &str = "rolter_variant_requests_total";
 const LABELLED_COMPLEXITY: &str = "rolter_complexity_route_requests_total";
 const LABELLED_ROUTE_LIMIT: &str = "rolter_route_limit_blocks_total";
+const LABELLED_REJECTED: &str = "rolter_rejected_requests_total";
 const LABELLED_REDIS_RECONNECTS: &str = "rolter_redis_reconnects_total";
 const LABELLED_REDIS_CONNECT_FAILURES: &str = "rolter_redis_connect_failures_total";
 const LABELLED_FAIL_OPEN: &str = "rolter_fail_open_total";
@@ -45,6 +46,10 @@ pub const LABELLED_FAMILIES: &[rolter_core::telemetry::LabelledFamily] = &[
     (
         LABELLED_ROUTE_LIMIT,
         "requests refused by a route's own rpm, tpm or concurrency cap, per route and cap",
+    ),
+    (
+        LABELLED_REJECTED,
+        "requests refused before a key was resolved, per reason; they leave no request-log row",
     ),
     (
         LABELLED_REDIS_RECONNECTS,
@@ -465,6 +470,9 @@ pub struct Metrics {
     /// refusals by a route's own `advanced.limits` cap, keyed by (route, cap:
     /// `rpm`, `tpm` or `concurrency`). The route label is configuration-bounded
     by_route_limit: DashMap<(String, &'static str), AtomicU64>,
+    /// requests refused before a key was resolved, keyed by reason (#1395).
+    /// The reasons are a fixed set of literals, so the label set is bounded
+    by_rejection: DashMap<&'static str, AtomicU64>,
     /// queue depth, in-flight count and queue wait per provider name. Names
     /// come from the configured providers, so the label set is bounded by the
     /// config
@@ -620,6 +628,20 @@ impl Metrics {
         self.rate_limit_blocks_total.fetch_add(1, Relaxed);
         self.by_route_limit
             .entry((route.to_string(), kind))
+            .or_default()
+            .fetch_add(1, Relaxed);
+    }
+
+    /// Record a request refused before any key was resolved, by `reason`
+    /// (`missing_key`, `invalid_key` or `required_header_missing`). Such a
+    /// request has no owner, so it is counted here and never written to the
+    /// request log, which an unauthenticated caller could otherwise fill
+    /// without limit (#1395). Also counted in `rolter_auth_failures_total`,
+    /// which stays the total.
+    pub fn observe_rejection(&self, reason: &'static str) {
+        self.auth_failures_total.fetch_add(1, Relaxed);
+        self.by_rejection
+            .entry(reason)
             .or_default()
             .fetch_add(1, Relaxed);
     }
@@ -1152,6 +1174,13 @@ impl Metrics {
                 entry.value().load(Relaxed),
             ));
         }
+        for entry in self.by_rejection.iter() {
+            out.push((
+                LABELLED_REJECTED,
+                vec![("reason", (*entry.key()).to_string())],
+                entry.value().load(Relaxed),
+            ));
+        }
         for entry in self.by_provider.iter() {
             let load = entry.value();
             for (family, value) in [
@@ -1266,6 +1295,7 @@ impl Metrics {
         self.render_complexity_counters(&mut out);
         self.render_route_limit_counters(&mut out);
         self.render_guard_series(&mut out);
+        self.render_rejection_counters(&mut out);
         self.render_provider_load(&mut out);
         self.render_redis(&mut out);
         out
@@ -1391,6 +1421,23 @@ impl Metrics {
         for entry in self.by_guard_latency.iter() {
             let provider = escape_label(entry.key());
             write_histogram_series(out, name, "provider", &provider, entry.value());
+        }
+    }
+
+    /// Append the pre-authentication refusal counter, one `{reason}` series per
+    /// reason that has refused something.
+    fn render_rejection_counters(&self, out: &mut String) {
+        let name = LABELLED_REJECTED;
+        let help = family_help(name);
+        let _ = writeln!(out, "# HELP {name} {help}");
+        let _ = writeln!(out, "# TYPE {name} counter");
+        for entry in self.by_rejection.iter() {
+            let _ = writeln!(
+                out,
+                "{name}{{reason=\"{}\"}} {}",
+                entry.key(),
+                entry.value().load(Relaxed)
+            );
         }
     }
 
@@ -1587,6 +1634,7 @@ mod tests {
         m.observe_complexity("gpt-4o", "cheap", "mini", false);
         m.observe_complexity("gpt-4o", "cheap", "mini", true);
         m.observe_route_limit("gpt-4o", "rpm");
+        m.observe_rejection("invalid_key");
         let _queued = QueuedGuard::new(m.provider_load("vllm"));
         let _inflight = QueuedGuard::new(m.provider_load("vllm")).picked();
         watch_all_redis_consumers(&m);
@@ -1608,6 +1656,21 @@ mod tests {
                 "OTLP series absent from prometheus text: {line}"
             );
         }
+    }
+
+    #[test]
+    fn a_rejection_counts_by_reason_and_in_the_auth_failure_total() {
+        let m = Metrics::default();
+        m.observe_rejection("missing_key");
+        m.observe_rejection("invalid_key");
+        m.observe_rejection("invalid_key");
+        assert_eq!(m.auth_failures_total.load(Relaxed), 3);
+        let text = m.render();
+        assert!(
+            text.contains("rolter_rejected_requests_total{reason=\"invalid_key\"} 2"),
+            "{text}"
+        );
+        assert!(text.contains("rolter_rejected_requests_total{reason=\"missing_key\"} 1"));
     }
 
     /// Escaping is a Prometheus text-format concern and must not leak into OTLP.
@@ -1651,10 +1714,11 @@ mod tests {
         m.observe_variant("gpt-4o", "b");
         m.observe_complexity("gpt-4o", "cheap", "mini", false);
         m.observe_route_limit("gpt-4o", "tpm");
+        m.observe_rejection("missing_key");
 
         // one ok + one error per target, one per variant, one per complexity
-        // key, one per route cap that refused
-        assert_eq!(m.labelled_for_export().len(), 2 + 1 + 1 + 1);
+        // key, one per route cap that refused, one per rejection reason
+        assert_eq!(m.labelled_for_export().len(), 2 + 1 + 1 + 1 + 1);
     }
 
     /// Every family the exporter registers must be one the gateway actually
@@ -1668,6 +1732,7 @@ mod tests {
         m.observe_route_limit("gpt-4o", "concurrency");
         m.observe_guard_decision("support", "toxicity", "post_call", "allow");
         m.observe_guard_violation("support", "violence", "block");
+        m.observe_rejection("missing_key");
         let _load = m.provider_load("vllm");
         watch_all_redis_consumers(&m);
 

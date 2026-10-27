@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { AlertTriangle, HeartPulse } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
+import { BreakerBadge } from "@/components/BreakerBadge";
 import { Overline } from "@/components/ui/overline";
 import { LoadError } from "@/components/LoadError";
 import { CardGridSkeleton } from "@/components/LoadingState";
@@ -12,6 +13,10 @@ import {
   fetchHealthTimeline,
   fetchMttr,
   fetchUptime,
+  isTripped,
+  useBreakerState,
+  type BreakerStateDto,
+  type BreakerTargetDto,
   type MttrRow,
   type TimelineRow,
   type UptimeRow,
@@ -367,6 +372,125 @@ function SlaPill({ state }: { state: SlaState }) {
   );
 }
 
+interface ProviderBreakers {
+  provider: string;
+  /** the tripped targets, open ones first */
+  targets: BreakerTargetDto[];
+  /** the worst of them, as a breaker the badge can draw */
+  worst: BreakerTargetDto;
+}
+
+/** the tripped breakers grouped by the provider they sit in front of, open ones first */
+function breakersByProvider(state: BreakerStateDto | undefined): Map<string, ProviderBreakers> {
+  const byProvider = new Map<string, ProviderBreakers>();
+  for (const tg of state?.targets ?? []) {
+    if (!isTripped(tg)) continue;
+    const entry = byProvider.get(tg.provider);
+    if (!entry) byProvider.set(tg.provider, { provider: tg.provider, targets: [tg], worst: tg });
+    else entry.targets.push(tg);
+  }
+  for (const entry of byProvider.values()) {
+    entry.targets.sort((a, b) => (a.state === b.state ? 0 : a.state === "open" ? -1 : 1));
+    // open sorts first, so the first target is the worst one
+    entry.worst = entry.targets[0];
+  }
+  return byProvider;
+}
+
+/**
+ * What the gateways report about their circuit breakers right now. It is each
+ * gateway's in-memory state, reported about every 10 seconds, and says nothing
+ * of the 7-day SLA verdict beside it, which is recorded traffic. A provider
+ * whose breaker is open or probing is listed with the models it affects; with
+ * none, the panel says so, and with no gateway reporting it says that instead.
+ */
+function BreakerPanel({
+  state,
+  byProvider,
+}: {
+  state: BreakerStateDto;
+  byProvider: Map<string, ProviderBreakers>;
+}) {
+  const { t } = useTranslation();
+  const providers = [...byProvider.values()];
+  return (
+    <section
+      aria-labelledby="health-breakers-title"
+      data-testid="health-breakers"
+      className="flex flex-col gap-2.5 rounded-[10px] border bg-card p-4"
+    >
+      <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+        <h2 id="health-breakers-title" className="text-sm font-semibold">
+          {t("pages.health.breakerTitle")}
+        </h2>
+      </div>
+      <p className="text-xs text-muted-foreground">
+        {state.gateways_live > 0
+          ? t("pages.health.breakerNote", { count: state.gateways_live })
+          : t("pages.health.breakerNoGateways")}
+      </p>
+      {state.gateways_live > 0 && providers.length === 0 && (
+        <p className="text-xs text-[color:var(--text-secondary)]">
+          {t("pages.health.breakerNone")}
+        </p>
+      )}
+      {providers.length > 0 && (
+        <ul className="divide-y divide-[color:var(--border-subtle)]">
+          {providers.map((entry) => (
+            <li
+              key={entry.provider}
+              data-testid={`health-breaker-${entry.provider}`}
+              className="flex flex-col gap-1.5 py-2 first:pt-0 last:pb-0"
+            >
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-mono text-sm font-semibold">{entry.provider}</span>
+                <BreakerBadge breaker={entry.worst} />
+              </div>
+              <ul className="flex flex-col gap-1">
+                {entry.targets.map((tg) => (
+                  <li key={`${tg.model}-${tg.target_index}`} className="flex flex-col gap-0.5">
+                    <div className="flex flex-wrap items-center gap-x-2 font-mono text-xs">
+                      <span className="text-[color:var(--text-secondary)]">
+                        {t("pages.health.breakerTarget", {
+                          model: tg.model,
+                          index: tg.target_index + 1,
+                          upstream: tg.upstream_model,
+                        })}
+                      </span>
+                      <BreakerBadge breaker={tg} />
+                    </div>
+                    {tg.nodes.length > 0 && <BreakerNodes nodes={tg.nodes} />}
+                  </li>
+                ))}
+              </ul>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+/** the per-gateway breakers, which only a superadmin's answer carries */
+function BreakerNodes({ nodes }: { nodes: BreakerTargetDto["nodes"] }) {
+  const { t } = useTranslation();
+  const fmt = useFormat();
+  return (
+    <ul className="flex flex-col gap-0.5 pl-3 text-xs text-[color:var(--text-subtle)]">
+      {nodes
+        .filter((n) => n.state !== "closed")
+        .map((n) => (
+          <li key={n.node_id} className="font-mono">
+            {n.node_id} · {t(`breaker.states.${n.state}`)} ·{" "}
+            {t("breaker.failures", { count: n.consecutive_failures })}
+            {n.retry_after_secs !== undefined &&
+              ` · ${t("breaker.retryIn", { duration: fmt.duration(n.retry_after_secs) })}`}
+          </li>
+        ))}
+    </ul>
+  );
+}
+
 function Stat({ label, value }: { label: string; value: string }) {
   return (
     <div>
@@ -450,6 +574,9 @@ export default function Health() {
     queryFn: () => fetchHealthTimeline("hour"),
     refetchInterval: REFETCH_MS,
   });
+  // the gateways' live breakers: optional context, so a failed read draws nothing
+  const breakers = useBreakerState();
+  const breakersByName = breakersByProvider(breakers.data);
   // one clock for every relative time on the screen, so "3 minutes ago" keeps
   // ageing between refetches and the cards do not drift apart
   const now = useNow(30_000);
@@ -487,6 +614,7 @@ export default function Health() {
           </span>
         )}
       </div>
+      {breakers.data && <BreakerPanel state={breakers.data} byProvider={breakersByName} />}
       {isLoading && <CardGridSkeleton cards={4} height={218} min={340} />}
       {error && (
         <LoadError
@@ -565,6 +693,7 @@ export default function Health() {
                         sources: head.sources.map(sourceLabel).join(", ") || "—",
                       })}
                 </span>
+                <BreakerBadge breaker={breakersByName.get(group.provider)?.worst} />
                 <SlaPill state={state} />
               </div>
               <div className="flex items-end gap-3">

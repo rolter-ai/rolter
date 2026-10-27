@@ -29,6 +29,8 @@ mod auth;
 #[cfg(feature = "postgres")]
 mod auth_policy;
 #[cfg(feature = "postgres")]
+mod breaker_state;
+#[cfg(feature = "postgres")]
 mod client_settings;
 #[cfg(feature = "postgres")]
 mod cluster;
@@ -1255,6 +1257,12 @@ fn build_app_with(state: ControlState, mount_internal: bool) -> Router {
     // resolves a `Principal` and checks the caller's role at the resource's
     // scope, so it is NOT behind the blanket admin-token layer. open mode (no
     // admin token) is preserved inside the `Principal` extractor.
+    // answers without a database too, with `inventory: false`, so it is
+    // mounted outside the block below
+    #[cfg(feature = "postgres")]
+    {
+        api = api.merge(cluster::summary_router());
+    }
     #[cfg(feature = "postgres")]
     if state.pool.is_some() {
         alerting::start_evaluator(state.clone());
@@ -1296,6 +1304,7 @@ fn build_app_with(state: ControlState, mount_internal: bool) -> Router {
             .merge(model_defaults::router())
             .merge(adaptive_policy::router())
             .merge(adaptive_telemetry::router())
+            .merge(breaker_state::router())
             .merge(rbac_matrix::router())
             .merge(scim::router())
             .merge(scim_groups::router())
@@ -1344,6 +1353,7 @@ fn internal_routes(state: &ControlState) -> Router<ControlState> {
     #[cfg(feature = "postgres")]
     {
         routes = routes.merge(adaptive_telemetry::internal_router());
+        routes = routes.merge(breaker_state::internal_router());
     }
     routes.layer(axum::middleware::from_fn_with_state(
         state.clone(),
