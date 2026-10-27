@@ -805,6 +805,30 @@ pub struct McpServer {
     /// row of the RFC 9207 §2.4 table a missing `iss` is judged by
     pub oauth_discovered_iss_supported: bool,
     pub oauth_discovered_at: Option<DateTime<Utc>>,
+    /// tools in `tools` that the last successful `tools/list` no longer
+    /// returned. Kept rather than pruned so a tool group that names one still
+    /// validates, and flagged so a card can say it may be gone (#1283)
+    pub tools_stale: Vec<String>,
+    /// `pending` (never asked), `discovered` (the server answered, possibly
+    /// with no tools) or `failed` (the last attempt got no answer)
+    pub tools_discovery_status: String,
+    /// a bounded category for a failed attempt, never the upstream's text
+    pub tools_discovery_error: Option<String>,
+    /// when `tools/list` last succeeded
+    pub tools_discovered_at: Option<DateTime<Utc>>,
+    /// when discovery last ran, whether or not it succeeded
+    pub tools_discovery_attempted_at: Option<DateTime<Utc>>,
+    /// when the control plane last got an MCP handshake out of the server, by
+    /// a status probe or a discovery (#951)
+    pub last_contact_at: Option<DateTime<Utc>>,
+    /// what that handshake negotiated and who answered it
+    pub last_protocol_version: Option<String>,
+    pub last_server_name: Option<String>,
+    /// the reason of the last failed contact (`unreachable`, `handshake_failed`,
+    /// `auth_rejected`, `egress_denied`) and when it happened. Kept after a
+    /// later success, so a status can say when it last broke
+    pub last_error_kind: Option<String>,
+    pub last_error_at: Option<DateTime<Utc>>,
 }
 
 /// One in-flight authorization-code consent, opened by the callback. The PKCE

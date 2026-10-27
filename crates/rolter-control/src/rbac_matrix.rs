@@ -2296,7 +2296,10 @@ mod tests {
         ("login_throttle.rs", include_str!("login_throttle.rs")),
         ("mail.rs", include_str!("mail.rs")),
         ("main.rs", include_str!("main.rs")),
+        ("mcp_client.rs", include_str!("mcp_client.rs")),
+        ("mcp_discovery.rs", include_str!("mcp_discovery.rs")),
         ("mcp_logs.rs", include_str!("mcp_logs.rs")),
+        ("mcp_probe.rs", include_str!("mcp_probe.rs")),
         ("model_defaults.rs", include_str!("model_defaults.rs")),
         ("mcp_oauth.rs", include_str!("mcp_oauth.rs")),
         (
