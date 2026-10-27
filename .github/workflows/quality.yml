@@ -578,7 +578,10 @@ jobs:
   # explicit doc-test pass since nextest does not run doc tests.
   test:
     name: nextest / doctests
-    runs-on: ubuntu-26.04
+    # still 24.04: some tests shell out to the runner's pg_dump and psql against
+    # the postgres:16 service, and 26.04 ships a postgres 18 client whose dumps
+    # a 16 server refuses (`SET transaction_timeout`). moves with #3235
+    runs-on: ubuntu-24.04
     # warm runs take 6-10 min. the limit leaves room for a cold build after a
     # Cargo.lock bump, which pull requests no longer cache for each other, while
     # a hung test fails the gate in half an hour instead of GitHub's 360-minute
@@ -1582,7 +1585,8 @@ jobs:
   coverage:
     name: coverage (informational)
     if: github.event_name == 'pull_request'
-    runs-on: ubuntu-26.04
+    # still 24.04 for the same postgres client reason as the nextest job (#3235)
+    runs-on: ubuntu-24.04
     continue-on-error: true
     # same postgres service as the nextest job so the store + control-plane
     # integration tests actually run under coverage (they self-skip when
