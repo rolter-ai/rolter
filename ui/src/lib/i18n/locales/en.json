@@ -1491,9 +1491,30 @@
       "confirm": {
         "deleteTitle": "Delete virtual key {{name}}?",
         "deleteBody": "<0>{{prefix}}</0> stops authenticating immediately, so every client still sending it is refused. This cannot be undone.",
-        "deleteConfirm": "Delete key"
+        "deleteConfirm": "Delete key",
+        "rotateTitle": "Rotate virtual key {{name}}?",
+        "rotateBody": "A new secret is issued for this key. Its models, providers, limits and attribution stay as they are. Clients must switch to the new secret.",
+        "rotateConfirm": "Rotate key",
+        "overlapLabel": "Keep the old secret working for",
+        "overlap": {
+          "none": "Not at all, revoke it now",
+          "hour": "1 hour",
+          "day": "24 hours",
+          "week": "7 days"
+        },
+        "revokePreviousTitle": "Revoke the old secret of {{name}}?",
+        "revokePreviousBody": "<0>{{prefix}}</0> stops authenticating immediately, so every client still sending it is refused. The new secret is unaffected.",
+        "revokePreviousConfirm": "Revoke old secret"
       },
-      "exportCsvFiltered": "Export matching keys as CSV"
+      "exportCsvFiltered": "Export matching keys as CSV",
+      "rotate": "Rotate key",
+      "rotateKey": "Rotate key {{name}}",
+      "previousSecret": "old secret {{prefix}}… valid until {{date}}",
+      "revokePrevious": "Revoke now",
+      "revokePreviousAria": "Revoke the old secret of {{name}} now",
+      "rotatedTitle": "Key rotated",
+      "rotatedBody": "This is the only time the new key is shown. Copy it now. The old secret stopped authenticating immediately.",
+      "rotatedBodyOverlap": "This is the only time the new key is shown. Copy it now. The old secret keeps working until {{date}}, or until you revoke it."
     },
     "acceptInvite": {
       "invalidLink": "This invitation link is not valid. It may have been used, revoked or expired. If you already accepted it, sign in; otherwise ask whoever invited you for a new link.",

@@ -22,6 +22,7 @@ mod auth;
 mod budgets;
 mod crud;
 mod guardrails;
+mod key_rotation;
 mod log_erasure;
 mod mcp;
 mod profile;

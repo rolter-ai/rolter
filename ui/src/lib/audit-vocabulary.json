@@ -159,6 +159,8 @@
     "user.update",
     "virtual_key.create",
     "virtual_key.delete",
+    "virtual_key.revoke_previous_secret",
+    "virtual_key.rotate",
     "virtual_key.set_attribution",
     "virtual_key.set_cache",
     "virtual_key.set_disabled",

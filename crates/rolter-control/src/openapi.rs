@@ -1427,6 +1427,19 @@ fn operations() -> Vec<Op> {
             )
             .body(Payload::Ref("SetVirtualKeyCache"))
             .ok(Payload::Ref("VirtualKey")),
+            Op::post(
+                "/api/v1/virtual-keys/{id}/rotate",
+                "rotateVirtualKey",
+                "Issue a new secret for a shared key, optionally keeping the old one valid for an overlap",
+            )
+            .body(Payload::Ref("RotateVirtualKey"))
+            .ok(Payload::Ref("CreatedVirtualKey")),
+            Op::delete(
+                "/api/v1/virtual-keys/{id}/previous-secret",
+                "revokeVirtualKeyPreviousSecret",
+                "End a rotation's overlap now so the old secret stops authenticating",
+            )
+            .ok(Payload::Ref("VirtualKey")),
         ],
     ));
 
@@ -3481,7 +3494,9 @@ fn virtual_key_schemas(p: &Prim) -> Value {
                 "created_by": nullable_uuid,
                 "business_unit_id": nullable_uuid,
                 "customer_id": nullable_uuid,
-                "created_at": timestamp
+                "created_at": timestamp,
+                "previous_key_prefix": {"type": ["string", "null"], "description": "first characters of the secret an admin rotation replaced, while its overlap is open"},
+                "previous_expires_at": {"type": ["string", "null"], "format": "date-time", "description": "when the replaced secret stops authenticating; null when no overlap is running"}
             }
         },
         "CreatedVirtualKey": {
@@ -3523,6 +3538,14 @@ fn virtual_key_schemas(p: &Prim) -> Value {
             "type": "object",
             "required": ["disabled"],
             "properties": {"disabled": {"type": "boolean"}},
+            "additionalProperties": false
+        },
+        "RotateVirtualKey": {
+            "type": "object",
+            "description": "the body may be omitted, which rotates with no overlap",
+            "properties": {
+                "overlap_seconds": {"type": "integer", "minimum": 0, "maximum": 2592000, "description": "how long the replaced secret keeps authenticating; 0 or omitted ends it at once"}
+            },
             "additionalProperties": false
         },
         "SetVirtualKeyCache": {

@@ -1058,6 +1058,91 @@ export const DeleteIsConfirmedAndReported: Story = {
   },
 };
 
+/**
+ * Rotating a shared key (#1837) is a confirmation that carries the overlap
+ * choice: the request names it in seconds, the new secret is shown once, and a
+ * rotation with the default choice keeps no old secret alive.
+ */
+let rotations: Recorder;
+export const RotatingAKeySendsTheChosenOverlapAndRevealsTheSecret: Story = {
+  render: () => {
+    rotations = recording(
+      scoped(async (input, init) =>
+        init?.method === "POST"
+          ? json({ ...KEYS[0], key: "sk-rolter-rotated-shown-once" }, 200)
+          : (lookups(String(input)) ?? json(KEYS)),
+      ),
+    );
+    return (
+      <Harness fetchStub={rotations.stub}>
+        <Keys />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, "Rotate key backend service");
+    const dialog = await within(document.body).findByRole("dialog", {
+      name: "Rotate virtual key backend service?",
+    });
+    await pickOption(within(dialog).getByRole("combobox"), "24 hours");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Rotate key" }));
+
+    await expect(await rotations.expectSentBody("POST", "/virtual-keys/vk-1/rotate")).toEqual({
+      overlap_seconds: 86400,
+    });
+    const reveal = await within(document.body).findByRole("dialog", { name: "Key rotated" });
+    await waitFor(() =>
+      expect(within(reveal).getByText("sk-rolter-rotated-shown-once")).toBeInTheDocument(),
+    );
+  },
+};
+
+/**
+ * A key mid-overlap names the old secret and the moment it stops working, and
+ * offers to end it early: the revoke is its own confirmation and its own
+ * `DELETE`, and a cancelled one sends nothing.
+ */
+let revokes: Recorder;
+export const AKeyInOverlapNamesTheOldSecretAndRevokesItEarly: Story = {
+  render: () => {
+    revokes = recording(
+      scoped(async (input, init) =>
+        init?.method === "DELETE"
+          ? json({ ...KEYS[0], previous_key_prefix: null, previous_expires_at: null })
+          : (lookups(String(input)) ??
+            json([
+              {
+                ...KEYS[0],
+                previous_key_prefix: "sk-rolter-oldold",
+                previous_expires_at: "2099-01-01T12:00:00Z",
+              },
+              KEYS[1],
+            ])),
+      ),
+    );
+    return (
+      <Harness fetchStub={revokes.stub}>
+        <Keys />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText(/old secret sk-rolter-oldold… valid until/)).toBeVisible();
+    // only the key mid-overlap offers it
+    await expect(canvas.getAllByRole("button", { name: /Revoke the old secret/ })).toHaveLength(1);
+
+    await clickWhenEnabled(canvasElement, "Revoke the old secret of backend service now");
+    await cancelConfirmation();
+    revokes.expectNotSent("DELETE", "/previous-secret");
+
+    await clickWhenEnabled(canvasElement, "Revoke the old secret of backend service now");
+    await confirmDestructive(/sk-rolter-oldold/, "Revoke old secret");
+    await revokes.expectSent("DELETE", "/virtual-keys/vk-1/previous-secret");
+    await expectSheetClosed();
+  },
+};
+
 // the same screen at a phone's width in both languages: Russian runs a third
 // longer than English and overflowed twice as many screens (#2004)
 const keysFit = phoneFits({

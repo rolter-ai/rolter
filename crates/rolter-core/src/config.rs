@@ -2070,6 +2070,22 @@ pub struct VirtualKeyRecord {
     /// does any key with no owner, since a policy is a property of a user.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub access_policy: Option<crate::access_policy::ModelPolicy>,
+    /// the secret this key was rotated away from, while its overlap window is
+    /// still open (#1837). `None` once the window closes or the old secret is
+    /// revoked early
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous: Option<PreviousKeySecret>,
+}
+
+/// The secret a rotated virtual key used to carry. It authenticates as the same
+/// key, with the same limits and attribution, until `valid_until`.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct PreviousKeySecret {
+    /// `rolter_auth::hash_key(pepper, key)` of the retired secret
+    pub key_hash: String,
+    /// last instant the retired secret authenticates; the key's own
+    /// `expires_at` still caps it when that is earlier
+    pub valid_until: DateTime<Utc>,
 }
 
 /// How the gateway authenticates to an MCP server.
@@ -9030,6 +9046,7 @@ mod tests {
             "#,
         );
         let db_key = |id: &str, providers: &[&str]| VirtualKeyRecord {
+            previous: None,
             key_hash: format!("hash-{id}"),
             id: id.to_string(),
             org_id: String::new(),

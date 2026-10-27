@@ -12,7 +12,7 @@ use super::support::{fetch_optional_or_not_found, require_affected, store_err};
 /// Every column of `virtual_keys` that its row type reads.
 const VIRTUAL_KEY_COLUMNS: &str = "id, project_id, key_hash, key_prefix, name, models, \
     providers, disabled, expires_at, cache_enabled, created_by, business_unit_id, customer_id, \
-    created_at, purpose";
+    created_at, purpose, previous_key_hash, previous_key_prefix, previous_expires_at";
 
 /// Virtual keys, scoped to a project. Callers are responsible for hashing
 /// the presented key before it reaches `key_hash` — this repository never
@@ -147,6 +147,58 @@ impl VirtualKeyRepo<'_> {
             )))
             .bind(id)
             .bind(disabled),
+            self.0,
+            || format!("virtual key {id}"),
+        )
+        .await
+    }
+
+    /// Replace the key's secret on the same row (#1837), so every setting,
+    /// attribution and history row carries over.
+    ///
+    /// With `overlap_until` the secret being replaced keeps authenticating
+    /// until then; without it the old secret stops at once. Either way a
+    /// previous overlap still running is discarded, because a row holds one
+    /// previous secret at most. Only digests are stored.
+    pub async fn rotate(
+        &self,
+        id: Uuid,
+        key_hash: &str,
+        key_prefix: &str,
+        overlap_until: Option<DateTime<Utc>>,
+    ) -> Result<VirtualKey> {
+        fetch_optional_or_not_found(
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "update virtual_keys set
+                    previous_key_hash = case when $4::timestamptz is null then null else key_hash end,
+                    previous_key_prefix = case when $4::timestamptz is null then null else key_prefix end,
+                    previous_expires_at = $4,
+                    key_hash = $2,
+                    key_prefix = $3
+                 where id = $1
+                 returning {VIRTUAL_KEY_COLUMNS}"
+            )))
+            .bind(id)
+            .bind(key_hash)
+            .bind(key_prefix)
+            .bind(overlap_until),
+            self.0,
+            || format!("virtual key {id}"),
+        )
+        .await
+    }
+
+    /// End an overlap now: the previous secret stops authenticating at the next
+    /// snapshot. A no-op, still returning the row, when none is running.
+    pub async fn revoke_previous(&self, id: Uuid) -> Result<VirtualKey> {
+        fetch_optional_or_not_found(
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "update virtual_keys set previous_key_hash = null,
+                    previous_key_prefix = null, previous_expires_at = null
+                 where id = $1
+                 returning {VIRTUAL_KEY_COLUMNS}"
+            )))
+            .bind(id),
             self.0,
             || format!("virtual key {id}"),
         )

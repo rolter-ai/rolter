@@ -26,6 +26,11 @@ export interface VirtualKeyRow {
   /// `playground` for one the Playground issued itself. null for every key an
   /// operator created on purpose
   purpose?: string | null;
+  /// first characters of the secret an admin rotation replaced, while its
+  /// overlap window is open (#1837). null when no overlap is running
+  previous_key_prefix?: string | null;
+  /// when the replaced secret stops authenticating; null when none is running
+  previous_expires_at?: string | null;
   created_at: string;
 }
 
@@ -93,6 +98,23 @@ export function setVirtualKeyAttribution(
   },
 ): Promise<VirtualKeyRow> {
   return sendJson<VirtualKeyRow>("PUT", `/api/v1/virtual-keys/${id}/attribution`, attribution);
+}
+
+/**
+ * Issue a new secret for a shared key on the same row (#1837), so limits,
+ * attribution and allow-lists carry over. `overlapSeconds` keeps the replaced
+ * secret authenticating for that long; 0 ends it at once. The plaintext comes
+ * back once, like a mint.
+ */
+export function rotateVirtualKey(id: string, overlapSeconds: number): Promise<CreatedVirtualKey> {
+  return sendJson<CreatedVirtualKey>("POST", `/api/v1/virtual-keys/${id}/rotate`, {
+    overlap_seconds: overlapSeconds,
+  });
+}
+
+/** End a rotation's overlap now, so the replaced secret stops authenticating. */
+export function revokeVirtualKeyPreviousSecret(id: string): Promise<VirtualKeyRow> {
+  return sendJson<VirtualKeyRow>("DELETE", `/api/v1/virtual-keys/${id}/previous-secret`);
 }
 
 export function deleteVirtualKey(id: string): Promise<void> {

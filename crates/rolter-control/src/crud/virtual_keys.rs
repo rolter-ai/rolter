@@ -2,7 +2,7 @@
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::routing::{get, put};
+use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
@@ -31,6 +31,11 @@ pub(super) fn router() -> Router<ControlState> {
         .route(
             "/api/v1/virtual-keys/{id}",
             put(set_virtual_key_disabled).delete(delete_virtual_key),
+        )
+        .route("/api/v1/virtual-keys/{id}/rotate", post(rotate_virtual_key))
+        .route(
+            "/api/v1/virtual-keys/{id}/previous-secret",
+            delete(revoke_previous_secret),
         )
         .route(
             "/api/v1/virtual-keys/{id}/cache",
@@ -151,6 +156,93 @@ async fn create_virtual_key(
     )
     .await;
     Ok(Json(CreatedVirtualKey { row, key }))
+}
+
+/// Longest an old secret may keep authenticating after a rotation: 30 days.
+/// Past that a "rotation" is two live keys with nobody tracking the second.
+pub(crate) const MAX_ROTATION_OVERLAP_SECONDS: u64 = 30 * 24 * 60 * 60;
+
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct RotateVirtualKey {
+    /// how long the secret being replaced keeps authenticating, in seconds;
+    /// omit or 0 for none, so the old secret stops at once
+    #[serde(default)]
+    overlap_seconds: u64,
+}
+
+/// Issue a new secret for a shared key (#1837): the same row, so limits,
+/// attribution, allow-lists, cache setting and history all carry over, with an
+/// optional window during which the previous secret still authenticates.
+///
+/// Deliberately its own path rather than a variant of the self-service rotate in
+/// `me.rs`, which mints a second row and disables the first.
+async fn rotate_virtual_key(
+    principal: Principal,
+    State(state): State<ControlState>,
+    Path(id): Path<Uuid>,
+    body: Option<SafeJson<RotateVirtualKey>>,
+) -> ApiResult<Json<CreatedVirtualKey>> {
+    let body = body.map(|SafeJson(body)| body).unwrap_or_default();
+    if body.overlap_seconds > MAX_ROTATION_OVERLAP_SECONDS {
+        return Err(invalid_field(
+            "overlap_seconds",
+            "overlap_seconds must be at most 2592000 (30 days)",
+        ));
+    }
+    let org_id = authorize_virtual_key(&state, &principal, id, cap!("virtual_key", Update)).await?;
+    let overlap_until = (body.overlap_seconds > 0).then(|| {
+        chrono::Utc::now()
+            + chrono::Duration::seconds(i64::try_from(body.overlap_seconds).unwrap_or(0))
+    });
+    let (key, key_hash, key_prefix) = generate_virtual_key(&key_pepper());
+    let row = VirtualKeyRepo(pool(&state))
+        .rotate(id, &key_hash, &key_prefix, overlap_until)
+        .await?;
+    publish_config_change(&state).await?;
+    log_audit(
+        &state,
+        &principal,
+        org_id,
+        "virtual_key.rotate",
+        "virtual_key",
+        id,
+        serde_json::json!({
+            "key_prefix": key_prefix,
+            "previous_key_prefix": row.previous_key_prefix,
+            "overlap_until": overlap_until,
+        }),
+    )
+    .await;
+    Ok(Json(CreatedVirtualKey { row, key }))
+}
+
+/// End a rotation's overlap early: the previous secret stops authenticating at
+/// the next snapshot. Idempotent, so a retry after a timeout is safe.
+async fn revoke_previous_secret(
+    principal: Principal,
+    State(state): State<ControlState>,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<VirtualKey>> {
+    let org_id = authorize_virtual_key(&state, &principal, id, cap!("virtual_key", Update)).await?;
+    let repo = VirtualKeyRepo(pool(&state));
+    let before = repo.get(id).await?;
+    let row = repo.revoke_previous(id).await?;
+    publish_config_change(&state).await?;
+    log_audit(
+        &state,
+        &principal,
+        org_id,
+        "virtual_key.revoke_previous_secret",
+        "virtual_key",
+        id,
+        serde_json::json!({
+            "previous_key_prefix": before.previous_key_prefix,
+            "previous_expires_at": before.previous_expires_at,
+        }),
+    )
+    .await;
+    Ok(Json(row))
 }
 
 #[derive(Deserialize)]

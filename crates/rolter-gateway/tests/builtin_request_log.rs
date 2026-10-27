@@ -95,6 +95,7 @@ fn config(clickhouse: SocketAddr) -> GatewayConfig {
     config.logging.flush_ms = 20;
     config.logging.batch_max = 1;
     config.db_virtual_keys.push(VirtualKeyRecord {
+        previous: None,
         access_policy: None,
         key_hash: rolter_auth::hash_key(&config.server.resolve_key_pepper(), KEY),
         id: KEY_ID.into(),

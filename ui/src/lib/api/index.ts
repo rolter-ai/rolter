@@ -625,5 +625,7 @@ export {
   setVirtualKeyProviders,
   setVirtualKeyAttribution,
   deleteVirtualKey,
+  rotateVirtualKey,
+  revokeVirtualKeyPreviousSecret,
 } from "./virtual-keys";
 export type { VirtualKeyRow, CreatedVirtualKey, CreateVirtualKeyInput } from "./virtual-keys";
