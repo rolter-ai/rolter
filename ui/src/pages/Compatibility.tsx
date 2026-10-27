@@ -206,7 +206,7 @@ function CompatibilityScreen() {
       </SettingsPanel>
 
       {restartRequired.length > 0 && (
-        <section className="flex items-start gap-3 rounded-[10px] border border-[color:var(--border-subtle)] p-4">
+        <section className="flex items-start gap-3 rounded-lg border border-[color:var(--border-subtle)] p-4">
           <Badge tone="warning">{t("pages.compatibility.restart")}</Badge>
           <p className="text-sm text-muted-foreground">
             <Trans

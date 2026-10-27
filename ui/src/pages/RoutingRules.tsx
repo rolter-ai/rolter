@@ -330,7 +330,7 @@ export default function RoutingRules() {
           return (
             <div
               key={r.id}
-              className="flex flex-col gap-3.5 rounded-[10px] border border-[color:var(--border-default)] bg-card p-4"
+              className="flex flex-col gap-3.5 rounded-lg border border-[color:var(--border-default)] bg-card p-4"
             >
               <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
                 {/* the name engineers paste into clients; the badges wrap under
@@ -348,7 +348,7 @@ export default function RoutingRules() {
                 <StrategyBadge strategy={r.strategy} />
                 <LabelChips labels={labels.bySubject(r.id)} />
                 {!r.enabled && (
-                  <span className="rounded-[6px] bg-[color:var(--surface-subtle)] px-2 py-[3px] font-mono text-2xs uppercase text-[color:var(--text-subtle)]">
+                  <span className="rounded-sm bg-[color:var(--surface-subtle)] px-2 py-[3px] font-mono text-2xs uppercase text-[color:var(--text-subtle)]">
                     {t("pages.routing.disabledBadge")}
                   </span>
                 )}

@@ -249,7 +249,7 @@ mod tests {
     }
 
     #[test]
-    fn a_caller_leaving_during_the_next_attempt_is_charged_to_that_target() {
+    fn a_caller_leaving_during_the_next_attempt_is_not_charged_to_that_target() {
         let metrics = Arc::new(Metrics::default());
         let mut guard = CancelGuard::new(LogSink::disabled(metrics.clone()), Instant::now(), row());
         guard.attribute("vllm-spot-02", "deepseek-r1", "");
@@ -258,11 +258,14 @@ mod tests {
         guard.attribute("vllm-spot-01", "deepseek-r1", "");
         drop(guard);
 
+        // the 429 was the target's, and is counted once
         assert_eq!(target_errors(&metrics, "vllm-spot-02", "deepseek-r1"), 1);
+        // a caller leaving is nobody's failure (#1933)
         assert_eq!(
             target_errors(&metrics, "vllm-spot-01", "deepseek-r1"),
-            1,
-            "the attempt in flight was never counted, so the drop counts it"
+            0,
+            "a client disconnect was charged to the target it was waiting on"
         );
+        assert_eq!(metrics.client_disconnects_total.load(Relaxed), 1);
     }
 }

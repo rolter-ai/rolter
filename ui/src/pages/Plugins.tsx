@@ -338,7 +338,7 @@ function StageLane({
         <p className="mt-2 text-xs leading-relaxed text-muted-foreground">{stage.description}</p>
       </div>
       {plugins.length === 0 ? (
-        <div className="flex min-h-[116px] items-center justify-center rounded-[10px] border border-dashed border-[color:var(--border-default)] text-xs text-[color:var(--text-subtle)]">
+        <div className="flex min-h-[116px] items-center justify-center rounded-lg border border-dashed border-[color:var(--border-default)] text-xs text-[color:var(--text-subtle)]">
           {t("pages.plugins.stageEmpty")}
         </div>
       ) : (
@@ -346,7 +346,7 @@ function StageLane({
           {plugins.map((plugin) => (
             <article
               key={plugin.id}
-              className="min-w-0 rounded-[10px] border border-[color:var(--border-default)] bg-background p-4"
+              className="min-w-0 rounded-lg border border-[color:var(--border-default)] bg-background p-4"
             >
               <div className="flex items-start gap-3">
                 <div className="min-w-0 flex-1">

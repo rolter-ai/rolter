@@ -80,6 +80,13 @@ const KINDS = [
     auth_header: "authorization",
   },
   {
+    kind: "infinity",
+    base_includes_v1: true,
+    request: "embeddings",
+    request_path: "/v1/embeddings",
+    auth_header: "authorization",
+  },
+  {
     kind: "gemini_native",
     base_includes_v1: false,
     request: "chat",
@@ -832,6 +839,27 @@ export const PreviewForSystemOneDecisions: Story = previewOf(
     kindName: "System One (decisions)",
   },
 );
+
+/**
+ * Infinity's routes sit at the server root unless `--url-prefix` moves them, so
+ * the preview drops the `/v1` and the hint says what the base is instead of a
+ * version rule that fits neither way
+ */
+const infinityPreview = previewOf("infinity", "http://infinity.internal:7997", {
+  url: "http://infinity.internal:7997/embeddings",
+  label: "Embedding requests resolve to",
+  keyHint: "Sent upstream as a bearer token",
+  kindName: "Infinity",
+});
+export const PreviewForInfinity: Story = {
+  ...infinityPreview,
+  play: async (context) => {
+    await infinityPreview.play?.(context);
+    await expect(screen().getByLabelText("API base")).toHaveAccessibleDescription(
+      /--url-prefix it was started with/,
+    );
+  },
+};
 
 /** native gemini carries the model in the path, shown as the placeholder it is */
 export const PreviewForNativeGemini: Story = previewOf(

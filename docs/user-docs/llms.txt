@@ -76,6 +76,7 @@ prompts below, then the quickstart, then the page for whatever it is wiring.
 - [MCP Credentials](/configuration/mcp-servers): How Rolter authenticates to an MCP server — bearer tokens, header API keys, or the OAuth consent flow — how those credentials are sealed at rest, and the per-server timeout overrides.
 - [Gemini Interactions](/configuration/gemini-interactions): Configure the gemini_interactions provider kind, which maps OpenAI Chat, OpenAI Responses and Anthropic Messages requests onto Google's stateful Gemini Interactions API.
 - [System One decisions](/configuration/system-one): Configure the system_one provider kind to put TypeSafe Jev, vLLM Semantic Router decision models or Ollama decision models behind Rolter's keys, budgets, rate limits and balancing.
+- [Infinity](/configuration/infinity): Configure the infinity provider kind to serve embeddings and reranking from a self-hosted michaelfeil/infinity server, many models from one process, behind Rolter's keys, budgets and balancing.
 
 ### Reliability
 

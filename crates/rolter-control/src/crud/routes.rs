@@ -546,6 +546,13 @@ pub(super) fn validate_advanced(advanced: &AdvancedModelConfig) -> ApiResult<()>
             ));
         }
     }
+    // zero is not a window; served on /v1/models, so it must mean something
+    if advanced.context_length == Some(0) {
+        return Err(invalid_field(
+            "context_length",
+            "context_length must be at least 1".to_string(),
+        ));
+    }
     // the same rule the snapshot applies, so a cap accepted here is one the
     // gateway enforces rather than drops (#2936)
     if let Some(problem) = advanced.limits.throughput_problems().into_iter().next() {
