@@ -1,11 +1,13 @@
-# lints the standalone python under scripts/ (#2187). the scripts declare
-# `requires-python = ">=3.9"` in their inline metadata, which ruff does not
-# read, so the target is pinned here rather than inherited from pyproject.toml
+# lints and formats the standalone python under scripts/ (#2187) and integration/
+# (#2669). the scripts declare `requires-python = ">=3.9"` in their inline
+# metadata, which ruff does not read, so the target is pinned here rather than
+# inherited from pyproject.toml. integration/e2e/ruff.toml raises it for the
+# harness, which pins cpython 3.13
 target-version = "py39"
 # the width prettier uses for everything else in the tree (.prettierrc), so a
 # script is wrapped like the markdown and yaml beside it (#2769)
 line-length = 100
-include = ["scripts/**/*.py"]
+include = ["scripts/**/*.py", "integration/**/*.py"]
 
 [lint]
 # the defaults (E4, E7, E9, F) plus pyupgrade and import sorting

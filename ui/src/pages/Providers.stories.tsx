@@ -1085,7 +1085,7 @@ export const ShowsWhichProjectEachProviderIsScopedTo: Story = {
  *
  * `provider` is a project capability, so asked at their own project the
  * effective answer grants the writes, and a page-level gate would offer Edit
- * and Delete on the org-wide row too — which `crud.rs` refuses, because it
+ * and Delete on the org-wide row too — which `crud/providers.rs` refuses, because it
  * checks such a row at the org. Each row is gated at its own scope instead: the
  * project's row is theirs, the org-wide one names the role it takes.
  */

@@ -168,7 +168,7 @@ export interface RowScope {
  *
  * `provider` and `provider_group` are project rows that may also be org-wide,
  * so the page's answer — asked at whatever scope the switcher holds — says
- * "yes" to a project admin on a row `crud.rs` checks at the org. The page-level
+ * "yes" to a project admin on a row `crud/` checks at the org. The page-level
  * gate cannot tell the two rows apart; this can. An org-wide row (`projectId`
  * null) is asked at the org alone, where a project membership reaches nothing,
  * a team row (#2529) at org + team, and a project row at its own org + team +

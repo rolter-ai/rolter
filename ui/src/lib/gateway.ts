@@ -139,7 +139,7 @@ async function tracked<T>(call: () => Promise<T>): Promise<T> {
   }
 }
 
-// the dashboard session token api.ts attaches to every control-plane call. the
+// the dashboard session token api/request.ts attaches to every control-plane call. the
 // /gw proxy takes the same one; open mode has none, and then none is sent
 const SESSION_STORAGE_KEY = "rolter.session.token";
 

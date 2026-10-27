@@ -1,4 +1,11 @@
 # actionlint reads this file on its own, in CI (quality.yml) and in the prek hook
+# `ubuntu-26.04` is a GitHub-hosted label, but actionlint's table of them predates
+# it (v1.7.12 lists up to `ubuntu-24.04`), and an unknown `runs-on` label fails
+# the gate. declaring it here is the documented way to teach actionlint a label.
+# drop it once the pinned actionlint release knows it (#2736)
+self-hosted-runner:
+  labels:
+    - ubuntu-26.04
 paths:
   # `vulnerability-alerts` is the GITHUB_TOKEN scope that lists dependabot
   # alerts (GitHub's workflow-syntax reference documents it), but actionlint's

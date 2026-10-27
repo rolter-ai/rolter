@@ -166,10 +166,11 @@ path uses passes `exclude_pull_requests=true`.
 What counts as "no pass against this base", and is red:
 
 - A pass whose step recorded a different base sha — the case above.
-- A pass that recorded `none`. A run with no pull request in its payload
-  (`workflow_dispatch`, which is how the release PR is gated, and `push`)
-  gated the head on its own, not merged into any base. An `edited` run on such
-  a PR needs a `pull_request` gate run, or a new commit.
+- A pass that recorded `none`. A run with no pull request in its payload and
+  none to resolve (`push`, `merge_group`, or a `workflow_dispatch` of a ref no
+  open pull request has as its head) gated the head on its own, not merged into
+  any base. An `edited` run on such a PR needs a `pull_request` gate run, or a
+  new commit.
 - A pass from a `gate-ok` without the step at all, which is every run made
   before #2649 landed. A PR gated before then and only retitled afterwards
   goes red, and needs a push or a re-run of its gate run followed by a re-run
@@ -179,6 +180,36 @@ What counts as "no pass against this base", and is red:
 A gate run whose `gate-ok` has not concluded has no rendered step yet, so its
 base is unknown while it runs. The fast path waits for it as before and judges
 it by its base once it has concluded.
+
+### A dispatch-gated release PR records its base too (#2657)
+
+The release PR is gated through `workflow_dispatch` (#1025), and a dispatch run
+has no `pull_request` payload, so `gate-ok` recorded `none` for it. After #2649
+that made a human edit to the release PR's title or body leave `ci-ok` red until
+a new commit landed.
+
+A dispatch run now resolves its pull request from the API. `gate-ok` runs
+`scripts/resolve-gated-base.sh` first, on a dispatch only, which lists the open
+pull requests whose head is the dispatched ref (`GET
+/repos/{o}/{r}/pulls?state=open&head={owner}:{ref}`) and prints the base sha of
+the one in this repository. The step is named from it:
+
+```yaml
+- name: gated against base ${{ github.event.pull_request.base.sha || steps.base.outputs.sha || 'none' }}
+```
+
+The job gained `pull-requests: read` for the listing and a sparse checkout of the
+one script; `quality.yml` is untouched and stays secret-free. The resolver never
+fails the run. A ref with no open pull request, or an API that fails three times,
+records `none`, which the fast path never accepts, so a lookup that went wrong
+costs a re-dispatch and never a hollow green.
+
+The recorded base is the one the pull request had when the dispatch ran. If the
+base branch moves on afterwards, the fast path compares against the new tip and
+reads the old pass as another base: re-dispatch the gate (or push) to record the
+current one, exactly as for a `pull_request` run.
+`scripts/test-assert-gate-ran.sh` covers the resolver against a fake `gh` and the
+chain from a dispatch-gated release PR to a green `edited` run.
 
 ## Why that was a hole
 
@@ -805,15 +836,43 @@ will ever merge that sha.
 
 ## Runner image pin
 
-Every workflow runs on `ubuntu-24.04`, never `ubuntu-latest`. GitHub moves the
-`ubuntu-latest` label to Ubuntu 26 on 2026-10-19 (#2662), which changes the
-preinstalled tools, the default Docker and compose versions and the system
-libraries under the gate at once, so the compose smoke test, coverage, the
+Every workflow runs on `ubuntu-26.04`, never `ubuntu-latest`. GitHub moved the
+`ubuntu-latest` label to Ubuntu 26 on 2026-10-19 (#2662), and a floating label
+changes the preinstalled tools, the default Docker and compose versions and the
+system libraries under the gate at once, so the compose smoke test, coverage, the
 Playwright `--with-deps` install and the release image build could all start
-failing on an unrelated pull request. The pin is deliberate. Moving to
-`ubuntu-26.04` is a tracked follow-up (#2736), done on a branch where a
-dispatch run of `quality.yml` and `extended.yml` shows what breaks. New
-workflows and matrix entries use the explicit `ubuntu-24.04` label too.
+failing on an unrelated pull request. The pin is deliberate, and it names the
+release the gate has been verified on. #2662 first pinned `ubuntu-24.04` while
+the label was about to move; #2736 moved every pin to `ubuntu-26.04` on purpose,
+on a branch, instead of letting the label do it underneath the gate, because
+24.04 will eventually leave the hosted-runner support window. New workflows and
+matrix entries use the explicit `ubuntu-26.04` label too, and so do the
+`matrix.os == '…'` conditions in `release.yml` that pick the Linux steps. Two
+jobs still said `ubuntu-latest` when #2736 landed (`ui lockfile audit` in
+`extended.yml` and `sign images` in `release.yml`); they are pinned like the rest.
+
+Three jobs stay on `ubuntu-24.04` for now: `nextest / doctests` and `coverage` in
+`quality.yml`, and `coverage` in `extended.yml`, which shares its cache. Some of their tests shell out to the runner's `pg_dump` and `psql`
+against the `postgres:16` service, and the 26.04 image ships a PostgreSQL 18
+client whose dumps a 16 server refuses (`SET transaction_timeout`). They move
+once the client and the test server agree (#3235).
+
+Moving to the next release repeats the exercise: change every `runs-on` and the
+matrix strings together, dispatch `quality.yml` (open a pull request),
+`extended.yml` and the release workflows on the branch, and look at the four
+things the image change can break first: the compose smoke test, coverage
+(llvm-cov and the system libraries), Playwright's `install --with-deps chromium`
+(apt package names change between releases) and the release image and the maturin
+manylinux wheel builds.
+
+`macos-latest` and `windows-latest` are not pinned. They only run `cargo check`
+(`extended.yml`'s `macos check`) and build the macOS and Windows wheels, where the
+toolchain comes from an action and not from the image's packages, and a hosted
+macOS or Windows label moving on is a risk the wheel smoke test in `release.yml`
+already catches before anything publishes. Pin them the same way if one of those
+jobs starts to depend on something the image provides. The `"runs-on":
+"ubuntu-latest"` in `scripts/check-release-handoff.py` is a fixture for a job the
+checker must reject, not a workflow, and stays.
 
 ## `codeql (rust)` on a pull request with no Rust change
 
@@ -844,6 +903,25 @@ that keep it safe:
 A skipped PR has no `/language:rust` analysis of its own, so GitHub's code
 scanning summary on it may say a configuration present on `master` was not
 found. That is expected and blocks nothing.
+
+## Test fixtures and code scanning (#2749)
+
+Test fixtures raise code-scanning alerts that are not findings: a deliberately
+wrong nonce handed to the stub IdP ("hard-coded cryptographic value") or an
+`http://127.0.0.1` URL to the in-process control plane ("cleartext
+transmission"). A pull request that rewrites a large test file re-raises all of
+them as new, and dismissing them needs `security_events` write, which agent
+sessions do not have.
+
+`paths-ignore` in `.github/codeql/codeql-config.yml` does not help: for a
+compiled language it does not stop the extractor, so test files are analysed with
+every query. Instead the `codeql (rust)` leg runs `analyze` with
+`upload: failure-only`, drops every result whose primary location is under
+`crates/*/tests/` with `scripts/filter-codeql-sarif.sh`, and uploads the
+filtered SARIF under the unchanged `/language:rust` category. Production code
+(`crates/*/src/`, including a `tests` module inside it) keeps the full query
+suite, and `crates/*/tests/` is the only path filtered. A real finding in an
+integration test is therefore not reported; that is the accepted cost.
 
 ## Suites that stay out of `ci-ok`
 

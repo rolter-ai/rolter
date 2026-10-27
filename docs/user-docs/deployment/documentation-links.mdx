@@ -23,6 +23,10 @@ Set `ROLTER_UI_DOCS_BASE_URL` on the control plane (or pass
 ROLTER_UI_DOCS_BASE_URL=https://docs.example.com rolter control
 ```
 
+To link the public documentation, the site you are reading, use
+`https://rolter-ai-rolter.docs7.io`. The value is yours to choose: an internal
+mirror works the same way.
+
 The control plane injects the value into the served `index.html` as
 `window.__ROLTER_CONFIG__.docsBaseUrl`, the same mechanism the dashboard's
 browser tracing uses. The dashboard is built ahead of time and shipped as

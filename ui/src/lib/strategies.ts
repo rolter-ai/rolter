@@ -1,6 +1,6 @@
 // Presentation rules for balancing strategies (#897).
 //
-// `STRATEGIES` in `api.ts` is the contract: every value the control plane will
+// `STRATEGIES` in `api/routes.ts` is the contract: every value the control plane will
 // accept. That is not the same as the menu. Two things have to be true at once:
 //
 //   - a picker must offer everything an operator can meaningfully choose, or

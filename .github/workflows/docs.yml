@@ -1,8 +1,8 @@
 name: docs
 
 # build the contributor mdbook (docs/dev-docs/) and publish it to github pages.
-# the polished user docs (docs/user-docs/, mintlify) deploy separately to the
-# mintlify domain and are not built here — so this workflow triggers on the
+# the polished user docs (docs/user-docs/, docs7) deploy separately to the
+# docs7 domain and are not built here — so this workflow triggers on the
 # dev-docs subtree only, not on all of docs/.
 on:
   push:
@@ -29,7 +29,7 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -62,7 +62,7 @@ jobs:
   deploy:
     needs: build
     if: github.event_name != 'pull_request'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     permissions:
       contents: read
       pages: write # publish the built book to github pages

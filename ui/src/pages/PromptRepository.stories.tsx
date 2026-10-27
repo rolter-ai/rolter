@@ -390,8 +390,9 @@ export const KeepsTheDraftWhenSwitchingVersions: Story = {
     const rail = await versionRail(canvasElement);
     const decorator = await canvas.findByRole("textbox", { name: /Decorator 1 content/ });
     await expect(canvas.queryByText("Unsaved changes")).toBeNull();
-    // a clean workbench switches at once
-    await userEvent.click(rail.getByRole("button", { name: /^v1\b/ }));
+    // a clean workbench switches at once. the rail's versions load beside the
+    // draft, so wait for them rather than read them on the next line
+    await userEvent.click(await rail.findByRole("button", { name: /^v1\b/ }));
     await waitFor(() => expect(canvas.getByText(/editing from immutable v1/)).toBeVisible());
     await userEvent.click(rail.getByRole("button", { name: /^v2\b/ }));
     await waitFor(() => expect(canvas.getByText(/editing from immutable v2/)).toBeVisible());
@@ -879,7 +880,7 @@ export const RequiresSlugToDeleteTemplate: Story = {
 // A viewer reaches the same workbench — `prompt_template:read` is a viewer's —
 // and every control on it that writes is refused before the click rather than
 // after the 403. Publishing, rolling back and saving a version are all one
-// `prompt_template:update` guard in crates/rolter-control/src/crud.rs, so the
+// `prompt_template:update` guard in crates/rolter-control/src/crud/prompts.rs, so the
 // role that would allow them is Admin.
 export const AsViewer: Story = {
   render: () => (

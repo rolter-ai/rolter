@@ -38,8 +38,13 @@ def new_tenant(admin: ControlClient, *, name: str | None = None) -> Fleet:
     return Fleet(org_id=org["id"], team_id=team["id"], project_id=project["id"])
 
 
-def register_fleet(admin: ControlClient, *, models: int = 24, tenant: Fleet | None = None,
-                   strategy: str = "round_robin") -> Fleet:
+def register_fleet(
+    admin: ControlClient,
+    *,
+    models: int = 24,
+    tenant: Fleet | None = None,
+    strategy: str = "round_robin",
+) -> Fleet:
     """create ``models`` routes spread across the three sim engines, each with a
     target per engine, then mint a virtual key scoped to every model.
 

