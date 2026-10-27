@@ -1265,3 +1265,68 @@ async fn sampled_rows_scale_counts_and_sums_but_not_percentiles() {
     let p50 = row["p50_latency_ms"].as_f64().unwrap();
     assert!((100.0..=300.0).contains(&p50), "{p50}");
 }
+
+/// The savings advisor's queries against the real engine (#1581). Its unit
+/// tests answer them from a fake, which cannot show that ClickHouse resolves a
+/// bare column name to a select alias first: a summed column read inside the
+/// grouping key or inside another sum only fails on a real server.
+#[tokio::test]
+async fn the_savings_advisor_reads_real_request_logs() {
+    let ch = skip_without_stack!();
+    let http = reqwest::Client::new();
+    ensure_schema(&http, &ch).await;
+
+    let db = TestSchema::create(&test_database::url().await.unwrap()).await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_clickhouse_and_admin_token(
+        pool.clone(),
+        &ch,
+        Some(ADMIN_TOKEN.to_string()),
+    )
+    .await
+    .unwrap();
+    let addr = serve(app).await;
+    let acme = seed_tenant(&pool, "savings").await;
+
+    // a fresh route name, so rows other tests left in a shared clickhouse are
+    // never counted
+    let route = format!("savings-{}", Uuid::new_v4().simple());
+    let ts = chrono::Utc::now()
+        .format("%Y-%m-%d %H:%M:%S%.3f")
+        .to_string();
+    let row = |status: u16, prompt: u32, completion: u32, cost: f64| {
+        json!({
+            "ts": ts, "request_id": format!("savings-{}", Uuid::new_v4().simple()),
+            "org_id": acme.org.to_string(), "team_id": acme.team.to_string(),
+            "project_id": acme.project_a.to_string(), "model": route, "target": "big-model",
+            "status": status, "prompt_tokens": prompt, "completion_tokens": completion,
+            "total_tokens": prompt + completion, "cost_usd": cost,
+        })
+    };
+    // one small eligible request, one whose prompt is over the threshold, and
+    // one that failed: three reasons in the grouping key
+    insert_rows(
+        &http,
+        &ch,
+        "request_logs",
+        &[
+            row(200, 100, 20, 1.0),
+            row(200, 9000, 20, 2.0),
+            row(500, 100, 0, 0.5),
+        ],
+    )
+    .await;
+
+    let response = http
+        .get(format!("http://{addr}/api/v1/analytics/savings"))
+        .query(&[("route", route.as_str())])
+        .bearer_auth(ADMIN_TOKEN)
+        .send()
+        .await
+        .unwrap();
+    let status = response.status();
+    let report: Value = response.json().await.unwrap_or(Value::Null);
+    assert_eq!(status, 200, "{report}");
+    assert_eq!(report["spend"]["requests"], 3.0, "{report}");
+    assert_eq!(report["spend"]["cost_usd"], 3.5, "{report}");
+}

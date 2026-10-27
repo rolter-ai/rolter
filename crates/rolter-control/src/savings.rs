@@ -183,6 +183,10 @@ const ORG_FILTER: &str = "({org:String} = '' or org_id = {org:String})";
 /// Why a request is or is not counted as substitutable, first match wins. The
 /// order puts the money question first: an unpriced row is unpriced whatever
 /// else is true of it.
+///
+/// The token columns are qualified because [`groups_sql`] also selects their
+/// sums under the same names, and ClickHouse resolves a bare name to a select
+/// alias before a column: unqualified, the grouping key would hold aggregates.
 fn reason_expr(columns: &Columns) -> String {
     let lifecycle = columns.expr("lifecycle_operation");
     format!(
@@ -191,9 +195,9 @@ fn reason_expr(columns: &Columns) -> String {
                  cache_hit = 1, 'cache_hit', \
                  usage_unknown = 1, 'usage_unknown', \
                  {lifecycle} != '', 'not_a_model_call', \
-                 prompt_tokens = 0, 'no_token_usage', \
-                 prompt_tokens > {{max_prompt_tokens:UInt32}}, 'prompt_too_large', \
-                 completion_tokens > {{max_completion_tokens:UInt32}}, 'output_too_large', \
+                 request_logs.prompt_tokens = 0, 'no_token_usage', \
+                 request_logs.prompt_tokens > {{max_prompt_tokens:UInt32}}, 'prompt_too_large', \
+                 request_logs.completion_tokens > {{max_completion_tokens:UInt32}}, 'output_too_large', \
                  'eligible')"
     )
 }
@@ -215,7 +219,7 @@ fn groups_sql(columns: &Columns) -> String {
                 sum(cache_write_tokens * sample_weight) as cache_write_tokens, \
                 sum({write_1h} * sample_weight) as cache_write_1h_tokens, \
                 round(sumIf(sample_weight, {attempts} > 1)) as multi_attempt_requests, \
-                round(sumIf(cost_usd * sample_weight, {attempts} > 1), 6) as multi_attempt_cost_usd \
+                round(sumIf(request_logs.cost_usd * sample_weight, {attempts} > 1), 6) as multi_attempt_cost_usd \
          from request_logs where {WHERE_WINDOW} and {ROW_VISIBLE} and {ROW_FILTERS} and {ORG_FILTER} \
          group by route, target, reason format JSON"
     )
