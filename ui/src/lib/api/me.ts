@@ -1,7 +1,7 @@
 import { type AnalyticsWindow, getAnalytics, windowParams } from "./analytics";
 import { type DataEnvelope, getJson, sendJson } from "./request";
 import { type MembershipRow, type UserRow } from "./users";
-import { type VirtualKeyRow } from "./virtual-keys";
+import { type KeyBudgetCap, type KeyRateCap, type VirtualKeyRow } from "./virtual-keys";
 
 /**
  * A membership as `/auth/me` serialises it (rolter-store `Membership`).
@@ -141,6 +141,10 @@ export interface MintKeyInput {
   /** key lifetime in days. omitted means "never expires" — a choice the
    *  operator makes deliberately, never the result of leaving a field alone */
   expires_in_days?: number;
+  /** optional spend cap, written with the key (#1171) */
+  budget?: KeyBudgetCap;
+  /** optional rate cap, written with the key (#1171) */
+  rate_limit?: KeyRateCap;
 }
 
 export interface MyUsageRow {
