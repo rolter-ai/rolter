@@ -128,6 +128,7 @@ export const PROVIDER_KINDS = [
   "krutrim",
   "falcon",
   "system_one",
+  "infinity",
 ] as const;
 
 /**

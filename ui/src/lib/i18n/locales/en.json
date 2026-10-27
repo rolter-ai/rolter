@@ -4215,6 +4215,7 @@
       "doubled": "This base ends in /v1 and rolter appends /v1 itself, so requests would 404. Remove the trailing /v1.",
       "excludesV1": "Leave off the version prefix — rolter appends /v1 itself for {{kind}}",
       "includesV1": "Include the version prefix — {{kind}} expects it in the base, e.g. https://api.example.com/v1",
+      "urlPrefix": "Use the server address plus any --url-prefix it was started with (none by default, so no /v1); rolter appends /embeddings or /rerank",
       "resolvesTo": {
         "chat": "Chat requests resolve to",
         "decision": "Decision requests resolve to",
@@ -4466,6 +4467,10 @@
       "system_one": {
         "name": "System One (decisions)",
         "description": "Typed decision models on POST /v1/systemone: TypeSafe Jev, vLLM Semantic Router, Ollama"
+      },
+      "infinity": {
+        "name": "Infinity",
+        "description": "Self-hosted michaelfeil/infinity server: embeddings and reranking for many models from one process"
       }
     },
     "telemetry": {
