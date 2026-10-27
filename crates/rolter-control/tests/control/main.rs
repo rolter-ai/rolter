@@ -19,6 +19,7 @@ macro_rules! skip_without_db {
 
 mod audit;
 mod auth;
+mod breaker_state;
 mod budgets;
 mod crud;
 mod guardrails;

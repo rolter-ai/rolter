@@ -29,6 +29,8 @@ mod auth;
 #[cfg(feature = "postgres")]
 mod auth_policy;
 #[cfg(feature = "postgres")]
+mod breaker_state;
+#[cfg(feature = "postgres")]
 mod client_settings;
 #[cfg(feature = "postgres")]
 mod cluster;
@@ -1277,6 +1279,7 @@ fn build_app_with(state: ControlState, mount_internal: bool) -> Router {
             .merge(model_defaults::router())
             .merge(adaptive_policy::router())
             .merge(adaptive_telemetry::router())
+            .merge(breaker_state::router())
             .merge(rbac_matrix::router())
             .merge(scim::router())
             .merge(scim_groups::router())
@@ -1322,6 +1325,7 @@ fn internal_routes(state: &ControlState) -> Router<ControlState> {
     #[cfg(feature = "postgres")]
     {
         routes = routes.merge(adaptive_telemetry::internal_router());
+        routes = routes.merge(breaker_state::internal_router());
     }
     routes.layer(axum::middleware::from_fn_with_state(
         state.clone(),

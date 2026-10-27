@@ -1255,3 +1255,22 @@ pub struct SavedView {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
+
+/// the breaker state one node reported for one `(model, target)` (#2254). A
+/// scoreboard row, replaced by every report from that node rather than appended.
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct BreakerState {
+    pub node_id: String,
+    /// public model name of the route
+    pub model: String,
+    /// position in the route's target list on that node
+    pub target_index: i32,
+    pub provider: String,
+    pub upstream_model: String,
+    /// `closed`, `open` or `half_open`
+    pub state: String,
+    pub consecutive_failures: i32,
+    /// seconds until an open breaker admits its probe
+    pub retry_after_secs: Option<i32>,
+    pub reported_at: DateTime<Utc>,
+}

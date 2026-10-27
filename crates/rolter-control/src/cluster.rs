@@ -173,6 +173,11 @@ fn is_live(node: &ClusterNode, now: DateTime<Utc>) -> bool {
     now.signed_duration_since(node.last_seen_at) <= Duration::seconds(LIVENESS_WINDOW_SECS)
 }
 
+/// Whether `node` is a gateway that polled inside the liveness window.
+pub(crate) fn is_live_gateway(node: &ClusterNode, now: DateTime<Utc>) -> bool {
+    node.role == "gateway" && is_live(node, now)
+}
+
 async fn list_nodes(
     principal: Principal,
     State(state): State<ControlState>,

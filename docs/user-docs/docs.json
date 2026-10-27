@@ -164,6 +164,7 @@
               "api/mcp",
               "api/models",
               "api/health-and-metrics",
+              "api/breaker-state",
               "api/stability",
               "api/config-problems",
               "api/ui-events",

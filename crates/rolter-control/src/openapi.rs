@@ -806,6 +806,11 @@ fn operations() -> Vec<Op> {
                 "ingestAdaptiveTelemetry",
                 "Accept adaptive-routing samples pushed by a gateway",
             ),
+            Op::post(
+                "/internal/breaker-state",
+                "ingestBreakerState",
+                "Accept circuit-breaker state pushed by a gateway",
+            ),
         ],
     ));
 
@@ -2134,6 +2139,11 @@ fn operations() -> Vec<Op> {
                 "/api/v1/adaptive-routing-telemetry",
                 "getAdaptiveTelemetry",
                 "Samples the gateways have pushed back",
+            ),
+            Op::get(
+                "/api/v1/breaker-state",
+                "getBreakerState",
+                "Circuit-breaker state of every target, across the gateway fleet",
             ),
         ],
     ));

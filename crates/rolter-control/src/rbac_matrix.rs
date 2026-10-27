@@ -778,6 +778,19 @@ const CAPABILITIES: &[Capability] = &[
         action_scopes: NONE,
     },
     Capability {
+        // read-only: the data plane writes it over the internal channel. Any
+        // signed-in caller may read it, narrowed in the handler to the models
+        // they see in the catalog (the row has no org to name), and node ids
+        // are shown only to a caller who sees everything (#2254)
+        resource: "breaker_state",
+        scope: "deployment",
+        read: ANYONE,
+        create: NA,
+        update: NA,
+        delete: NA,
+        action_scopes: NONE,
+    },
+    Capability {
         resource: "cluster_node",
         scope: "deployment",
         read: SUPER,
@@ -1843,7 +1856,11 @@ mod tests {
                 "public_url:read",
                 // changing one's own password (#2804): the route writes only
                 // the caller's own row, so there is no membership to hold
-                "my_password:update"
+                "my_password:update",
+                // the fleet's breaker state (#2254): the handler narrows it to
+                // the models the caller sees, so with no membership that is
+                // the deployment's own, as for `model:read`
+                "breaker_state:read"
             ]
         );
     }
@@ -1904,6 +1921,7 @@ mod tests {
         ("audit_export.rs", include_str!("audit_export.rs")),
         ("auth.rs", include_str!("auth.rs")),
         ("auth_policy.rs", include_str!("auth_policy.rs")),
+        ("breaker_state.rs", include_str!("breaker_state.rs")),
         ("cluster.rs", include_str!("cluster.rs")),
         ("client_settings.rs", include_str!("client_settings.rs")),
         ("collector_config.rs", include_str!("collector_config.rs")),

@@ -34,6 +34,26 @@ enum Phase {
     HalfOpen,
 }
 
+/// The phase of a target's breaker, as reported to the control plane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BreakerPhase {
+    Closed,
+    Open,
+    HalfOpen,
+}
+
+/// One target's breaker, copied out of the registry for reporting.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BreakerView {
+    pub model: String,
+    pub target_index: usize,
+    pub state: BreakerPhase,
+    pub consecutive_failures: u32,
+    /// whole seconds until an open breaker admits its probe
+    pub retry_after_secs: Option<u64>,
+}
+
 /// Per-target breaker state: its phase, the running count of consecutive
 /// transient failures observed while closed, and when that count last moved.
 ///
@@ -244,6 +264,46 @@ impl Breaker {
             .unwrap_or(0)
     }
 
+    /// Every `(model, target)` the registry holds an entry for, with the phase
+    /// it is in right now. Absent targets are closed with no failures and are
+    /// not listed. Meant for the periodic fleet report (#2254), never for a
+    /// request: it takes the map lock once and allocates per entry.
+    ///
+    /// An open entry whose window has elapsed is reported `half_open`: the
+    /// registry moves it there on the next `allows`, but nothing is routed to
+    /// it until then and an operator should read it as ready to probe, not as
+    /// still shedding load.
+    pub fn snapshot(&self) -> Vec<BreakerView> {
+        let Some(inner) = &self.inner else {
+            return Vec::new();
+        };
+        let now = Instant::now();
+        let map = inner.map.lock();
+        let mut views = Vec::new();
+        for (model, targets) in map.iter() {
+            for (idx, slot) in targets.iter().enumerate() {
+                let Some(entry) = slot else { continue };
+                let (state, retry_after_secs) = match entry.phase {
+                    Phase::Closed => (BreakerPhase::Closed, None),
+                    Phase::HalfOpen => (BreakerPhase::HalfOpen, None),
+                    Phase::Open(until) if now >= until => (BreakerPhase::HalfOpen, None),
+                    Phase::Open(until) => (
+                        BreakerPhase::Open,
+                        Some(until.saturating_duration_since(now).as_secs().max(1)),
+                    ),
+                };
+                views.push(BreakerView {
+                    model: model.clone(),
+                    target_index: idx,
+                    state,
+                    consecutive_failures: entry.consecutive_failures,
+                    retry_after_secs,
+                });
+            }
+        }
+        views
+    }
+
     /// Whether the registry holds no per-target state.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
@@ -305,6 +365,44 @@ fn record_failure(entry: &mut Entry, failure_threshold: u32, open_until: Instant
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn snapshot_lists_only_targets_with_an_entry_and_their_phase() {
+        let b = Breaker::new(true, 2, 30);
+        assert!(b.snapshot().is_empty(), "a fresh registry reports nothing");
+        // one failure: closed but counting
+        b.on_failure("m", 1);
+        // two failures: tripped open
+        b.on_failure("n", 0);
+        b.on_failure("n", 0);
+        let mut views = b.snapshot();
+        views.sort_by(|a, b| a.model.cmp(&b.model));
+        assert_eq!(views.len(), 2);
+        assert_eq!(views[0].model, "m");
+        assert_eq!(views[0].target_index, 1);
+        assert_eq!(views[0].state, BreakerPhase::Closed);
+        assert_eq!(views[0].consecutive_failures, 1);
+        assert_eq!(views[0].retry_after_secs, None);
+        assert_eq!(views[1].state, BreakerPhase::Open);
+        assert!(views[1]
+            .retry_after_secs
+            .is_some_and(|s| (1..=30).contains(&s)));
+        // a recovered target leaves the report
+        assert!(b.on_success("n", 0));
+        assert_eq!(b.snapshot().len(), 1);
+    }
+
+    #[test]
+    fn an_elapsed_open_window_reads_as_half_open() {
+        let b = Breaker::new(true, 1, 0);
+        b.on_failure("m", 0);
+        assert_eq!(b.snapshot()[0].state, BreakerPhase::HalfOpen);
+    }
+
+    #[test]
+    fn an_inert_registry_reports_nothing() {
+        assert!(Breaker::default().snapshot().is_empty());
+    }
 
     /// A `std::sync::Mutex` would poison here and every later `allows()` would
     /// panic — one transient panic anywhere under the lock would turn into a
