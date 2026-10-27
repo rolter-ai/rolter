@@ -2018,12 +2018,12 @@ fn operations() -> Vec<Op> {
             Op::get(
                 "/api/v1/alert-channels",
                 "listAlertChannels",
-                "List alert channels",
+                "List the alert channels the caller may use: their orgs' and the deployment's",
             ),
             Op::post(
                 "/api/v1/alert-channels",
                 "createAlertChannel",
-                "Create an alert channel",
+                "Create an alert channel, owned by an org (org admin) or the deployment (superadmin)",
             )
             .needs_kek(),
             Op::put(
@@ -2037,11 +2037,15 @@ fn operations() -> Vec<Op> {
                 "deleteAlertChannel",
                 "Delete an alert channel",
             ),
-            Op::get("/api/v1/alert-rules", "listAlertRules", "List alert rules"),
+            Op::get(
+                "/api/v1/alert-rules",
+                "listAlertRules",
+                "List the alert rules the caller owns",
+            ),
             Op::post(
                 "/api/v1/alert-rules",
                 "createAlertRule",
-                "Create an alert rule",
+                "Create an alert rule scoped to an org, team, project, key, business unit or customer",
             ),
             Op::put(
                 "/api/v1/alert-rules/{id}",

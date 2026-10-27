@@ -831,31 +831,38 @@ const CAPABILITIES: &[Capability] = &[
         delete: SUPER,
         action_scopes: NONE,
     },
+    // alerting is delegated to the people who own a slice of spend or
+    // reliability (#1829). A channel belongs to one org, so an org admin owns
+    // it; a rule is scoped to an org, team, project, key, business unit or
+    // customer and is an admin's of that scope. A deployment-wide channel or
+    // rule (no owning org) stays a superadmin's: the handlers refuse it for
+    // anyone else, since no membership could satisfy it
     Capability {
         resource: "alert_channel",
-        scope: "deployment",
-        read: SUPER,
-        create: SUPER,
-        update: SUPER,
-        delete: SUPER,
+        scope: "org",
+        read: ADMIN,
+        create: ADMIN,
+        update: ADMIN,
+        delete: ADMIN,
         action_scopes: NONE,
     },
     Capability {
         resource: "alert_rule",
-        scope: "deployment",
-        read: SUPER,
-        create: SUPER,
-        update: SUPER,
-        delete: SUPER,
+        scope: "project",
+        read: ADMIN,
+        create: ADMIN,
+        update: ADMIN,
+        delete: ADMIN,
         action_scopes: NONE,
     },
     // notification history is append-only; "create" is asking the deployment to
-    // evaluate a rule now, which can emit one
+    // evaluate a rule now, which can emit one. Both are decided at the rule's
+    // own scope
     Capability {
         resource: "alert_history",
-        scope: "deployment",
-        read: SUPER,
-        create: SUPER,
+        scope: "project",
+        read: ADMIN,
+        create: ADMIN,
         update: NA,
         delete: NA,
         action_scopes: NONE,
@@ -951,6 +958,8 @@ const MULTI_SCOPE: &[&str] = &[
     "provider_group",
     "budget",
     "rate_limit",
+    "alert_rule",
+    "alert_history",
     "membership",
     "invitation",
 ];
