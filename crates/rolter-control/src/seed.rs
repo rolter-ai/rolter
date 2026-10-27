@@ -1,5 +1,6 @@
-//! idempotent database bootstrap shared by the `rolter-seed` binary and the
-//! unified launcher's `easy-up` subcommand.
+//! idempotent database bootstrap shared by the `rolter-seed` binary, the unified
+//! launcher's `seed` subcommand (what the published image and wheels ship,
+//! #1897) and its `easy-up` subcommand.
 //!
 //! [`seed`] creates an org (+ a `default`/`default` team/project), an optional
 //! admin user, and imports providers, provider groups, routes, model prices
@@ -52,6 +53,56 @@ use rolter_store::postgres::repo::{
 };
 use sqlx::PgPool;
 use uuid::Uuid;
+
+/// Command-line arguments of `rolter seed` and the standalone `rolter-seed`
+/// binary, so the two cannot drift apart. [`run`] is the whole command.
+#[derive(clap::Args, Debug)]
+pub struct SeedArgs {
+    #[arg(long, env = "ROLTER_DATABASE_URL", hide_env_values = true)]
+    pub database_url: String,
+    /// org display name; created if no org with the derived slug exists yet
+    #[arg(long, default_value = "default")]
+    pub org: String,
+    /// org slug; defaults to a slugified `--org`
+    #[arg(long)]
+    pub org_slug: Option<String>,
+    /// admin user email; combined with --admin-password to create an admin user
+    #[arg(long)]
+    pub admin_email: Option<String>,
+    #[arg(long)]
+    pub admin_password: Option<String>,
+    /// bootstrap rolter.toml to import providers/routes from. The file is the
+    /// desired state: re-importing an edited file updates the rows it already
+    /// created. Never overwrites a credential sealed through the dashboard,
+    /// and never deletes rows the file no longer mentions
+    #[arg(long)]
+    pub import: Option<PathBuf>,
+}
+
+/// Connect, migrate and [`seed`] from command-line arguments, then print which
+/// org was seeded. Shared by `rolter seed` and `rolter-seed`.
+pub async fn run(args: SeedArgs) -> anyhow::Result<()> {
+    let pool = rolter_store::postgres::connect(&args.database_url).await?;
+    rolter_store::postgres::run_migrations(&pool).await?;
+
+    let summary = seed(
+        &pool,
+        &SeedOptions {
+            org: args.org,
+            org_slug: args.org_slug,
+            admin_email: args.admin_email,
+            admin_password: args.admin_password,
+            import: args.import,
+        },
+    )
+    .await?;
+
+    println!(
+        "seeded org '{}' (slug '{}')",
+        summary.org_name, summary.org_slug
+    );
+    Ok(())
+}
 
 /// Options controlling what [`seed`] creates. `org` defaults to `default` when
 /// left empty; `org_slug` defaults to a slugified `org`.
