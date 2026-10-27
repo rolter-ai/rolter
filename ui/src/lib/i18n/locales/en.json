@@ -3467,6 +3467,7 @@
         "budgetOf": "Budgets & Limits of {{name}}",
         "delete": "Delete {{name}}…",
         "rename": "Rename",
+        "renaming": "Renaming…",
         "nameEmpty": "Enter a name for the team.",
         "nameTaken": "A team called {{name}} already exists in this organization."
       },

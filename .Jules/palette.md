@@ -83,3 +83,8 @@
 
 **Learning:** Hand-rolled icon delete controls (`<Button size="icon" variant="ghost">` or `<button>`) for column, attachment, and list-row removals miss standard design system hover border states (`hover:border-[color:var(--status-danger)]` / `hover:text-[color:var(--status-danger-text)]`) and focus indicators.
 **Action:** Replace custom icon delete buttons in complex form and workspace surfaces with `DeleteIconButton` from `@/components/ui/delete-icon-button`.
+
+## 2026-10-22 - TeamSheet Rename Loading State
+
+**Learning:** Form submit buttons in detail sheets like `TeamSheet.tsx` that perform async mutations (`rename.mutate`) disabled the button via `disabled={unchanged || rename.isPending}` but lacked inline `<Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" aria-hidden />` visual feedback.
+**Action:** Pair async form submit buttons in detail sheets with an inline `<Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" aria-hidden />` spinner when `isPending` is true.
