@@ -1951,6 +1951,8 @@ mod tests {
         ("logging_settings.rs", include_str!("logging_settings.rs")),
         ("login_throttle.rs", include_str!("login_throttle.rs")),
         ("main.rs", include_str!("main.rs")),
+        ("mcp_client.rs", include_str!("mcp_client.rs")),
+        ("mcp_discovery.rs", include_str!("mcp_discovery.rs")),
         ("mcp_logs.rs", include_str!("mcp_logs.rs")),
         ("model_defaults.rs", include_str!("model_defaults.rs")),
         ("mcp_oauth.rs", include_str!("mcp_oauth.rs")),

@@ -19,6 +19,28 @@ The virtual key is stripped before forwarding and replaced with the session's
 OAuth bearer. A missing owner, cross-organization server, expired or revoked
 session, or insufficient scope fails before any downstream connection.
 
+### When an upstream asks for a wider scope
+
+If the MCP server refuses a call because the user's token lacks a scope
+(`WWW-Authenticate: Bearer error="insufficient_scope"`) and the server uses
+OAuth, rolter answers `403` with the code `mcp_insufficient_scope`, the scopes
+the server asked for in `error.required_scopes`, and a standard
+`WWW-Authenticate` challenge naming them. The call is recorded in the MCP log as
+`auth_denied`. Nothing is widened automatically: the key's owner has to consent
+again, by calling `POST /api/v1/mcp-servers/{id}/oauth/authorize` with
+`step_up_scopes` set to those scopes. The new consent keeps what they already
+granted and adds the scopes, then the next call works. Until then every such
+call fails the same way. A server with a static credential has no consent to
+repeat, so its `403` is passed through unchanged.
+
+### Which scopes a consent asks for
+
+Unless the request lists `scopes` itself, a consent asks for, in order of
+preference: the `scope` the server names in its `WWW-Authenticate` challenge,
+the server's configured default scopes, then the `scopes_supported` its metadata
+advertises. The server's required scopes are always added to the first and last
+of those.
+
 ## The consent callback
 
 The live OAuth session above comes from a consent the user gives once. The

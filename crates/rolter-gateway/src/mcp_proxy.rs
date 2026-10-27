@@ -307,7 +307,19 @@ async fn proxy(
         )
         .await
     {
-        Ok(response) => upstream_response(response, call),
+        Ok(response) => {
+            // an upstream that says the user's token was valid but too narrow
+            // gets the step-up answer, not a bare 403 (#1417)
+            if matches!(server.auth_kind, McpAuthKind::Oauth) {
+                if let Some(step_up) = insufficient_scope(&response, &server.slug) {
+                    if let Some(call) = call {
+                        call.fail("auth_denied");
+                    }
+                    return step_up;
+                }
+            }
+            upstream_response(response, call)
+        }
         Err(upstream) => {
             let detail = upstream.to_string();
             // the caller gets a fixed sentence: the forwarder's text quotes the
@@ -333,6 +345,57 @@ async fn proxy(
             )
         }
     }
+}
+
+/// The step-up answer for an upstream `403` whose challenge says
+/// `insufficient_scope` (#1417), or `None` for any other response.
+///
+/// The gateway cannot ask the user for consent: that is an interactive flow the
+/// control plane owns. What it can do is stop the failure being opaque and keep
+/// it from widening anything on its own. The caller gets `403` with the code
+/// `mcp_insufficient_scope`, the scopes the upstream named in the body, and a
+/// standard `WWW-Authenticate` challenge, rebuilt rather than relayed because
+/// the upstream's would point `resource_metadata` at the upstream itself. The
+/// key's owner then re-consents with those scopes, through the dashboard or
+/// `POST /api/v1/mcp-servers/{id}/oauth/authorize` with `step_up_scopes`; until
+/// they do, every such call fails the same way and is logged as `auth_denied`.
+fn insufficient_scope(response: &reqwest::Response, slug: &str) -> Option<Response> {
+    use rolter_core::mcp_challenge::{challenge_scopes, is_insufficient_scope};
+
+    if response.status() != reqwest::StatusCode::FORBIDDEN {
+        return None;
+    }
+    let challenge = response
+        .headers()
+        .get(reqwest::header::WWW_AUTHENTICATE)?
+        .to_str()
+        .ok()?;
+    if !is_insufficient_scope(challenge) {
+        return None;
+    }
+    // validated, deduplicated and bounded: the upstream's words never reach the
+    // caller unfiltered
+    let scopes = challenge_scopes(challenge);
+    let mut body = crate::error::ApiError::new(
+        StatusCode::FORBIDDEN,
+        format!(
+            "MCP server '{slug}' refused the call for want of an OAuth scope the user's session \
+             does not hold; the key's owner must authorize it again for the scopes in \
+             required_scopes"
+        ),
+    )
+    .with_code("mcp_insufficient_scope")
+    .body();
+    body["error"]["required_scopes"] = serde_json::json!(scopes);
+    let mut rebuilt = String::from("Bearer error=\"insufficient_scope\"");
+    if !scopes.is_empty() {
+        rebuilt.push_str(&format!(", scope=\"{}\"", scopes.join(" ")));
+    }
+    let mut answer = (StatusCode::FORBIDDEN, axum::Json(body)).into_response();
+    if let Ok(value) = HeaderValue::from_str(&rebuilt) {
+        answer.headers_mut().insert(header::WWW_AUTHENTICATE, value);
+    }
+    Some(answer)
 }
 
 /// A server configured to present a credential that did not reach the snapshot.
@@ -934,5 +997,125 @@ mod tests {
         });
         let forwarded = post(AppState::new(&config), Bytes::from_static(b"{ nope")).await;
         assert_eq!(forwarded.status(), StatusCode::OK);
+    }
+
+    async fn serving(status: u16, challenge: Option<&'static str>) -> String {
+        use axum::routing::any;
+        use axum::Router;
+
+        let app = Router::new().route(
+            "/{*path}",
+            any(move || async move {
+                let mut response = axum::http::Response::builder().status(status);
+                if let Some(challenge) = challenge {
+                    response = response.header(header::WWW_AUTHENTICATE, challenge);
+                }
+                response.body(Body::from("upstream said no")).unwrap()
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        format!("http://{addr}/rpc")
+    }
+
+    /// #1417: an upstream `insufficient_scope` is the defined step-up answer
+    /// for an OAuth server, and a log row, not a bare relayed 403.
+    #[tokio::test]
+    async fn insufficient_scope_from_an_oauth_server_is_the_step_up_answer() {
+        let mut config = config("user-1", &["tools:execute"]);
+        config.mcp_servers[0].url = serving(
+            403,
+            Some(
+                r#"Bearer error="insufficient_scope", scope="repo read:org", resource_metadata="https://upstream.example/prm""#,
+            ),
+        )
+        .await;
+        let mut state = AppState::new(&config);
+        let (sink, mut events) =
+            crate::mcp_log::McpEventSink::capturing(std::sync::Arc::new(Default::default()));
+        state.mcp_events = sink;
+        let response = post(state, call_body("anything")).await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let challenge = response
+            .headers()
+            .get(header::WWW_AUTHENTICATE)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        // rebuilt: the upstream's resource_metadata is not passed on
+        assert_eq!(
+            challenge,
+            r#"Bearer error="insufficient_scope", scope="repo read:org""#
+        );
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["error"]["code"], "mcp_insufficient_scope");
+        assert_eq!(
+            body["error"]["required_scopes"],
+            serde_json::json!(["repo", "read:org"])
+        );
+        assert!(!body.to_string().contains("upstream said no"));
+        let event = events.try_recv().expect("the refusal is logged");
+        assert_eq!(
+            (event.status, event.tool.as_str()),
+            ("auth_denied", "anything")
+        );
+    }
+
+    #[tokio::test]
+    async fn hostile_scope_text_in_the_challenge_never_reaches_the_caller() {
+        let mut config = config("user-1", &["tools:execute"]);
+        config.mcp_servers[0].url = serving(
+            403,
+            Some(r#"Bearer error="insufficient_scope", scope="ok <script> back\slash""#),
+        )
+        .await;
+        let response = post(AppState::new(&config), call_body("anything")).await;
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            body["error"]["required_scopes"],
+            serde_json::json!(["ok", "<script>"])
+        );
+    }
+
+    #[tokio::test]
+    async fn other_refusals_and_other_auth_kinds_are_relayed_untouched() {
+        // a 403 that is not insufficient_scope
+        let mut config = config("user-1", &["tools:execute"]);
+        config.mcp_servers[0].url = serving(403, Some(r#"Bearer error="invalid_token""#)).await;
+        let response = post(AppState::new(&config), call_body("x")).await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        assert_eq!(&body[..], b"upstream said no");
+
+        // insufficient_scope from a server with a static credential: there is no
+        // consent to repeat, so it is the upstream's own answer
+        let mut config = config_static_bearer().await;
+        config.mcp_servers[0].url = serving(
+            403,
+            Some(r#"Bearer error="insufficient_scope", scope="repo""#),
+        )
+        .await;
+        let response = post(AppState::new(&config), call_body("x")).await;
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        assert_eq!(&body[..], b"upstream said no");
+    }
+
+    async fn config_static_bearer() -> GatewayConfig {
+        let mut config = config("user-1", &["tools:execute"]);
+        config.mcp_servers[0].auth_kind = McpAuthKind::Bearer;
+        config.mcp_servers[0].credential = Some("static-token".to_string());
+        config
     }
 }

@@ -150,6 +150,7 @@ trigger); an organization with no row is absent and gets the defaults.
 
 - `GET`/`POST /api/v1/orgs/{org_id}/mcp-servers`, `PATCH`/`DELETE /api/v1/mcp-servers/{id}` — viewer reads, admin writes. A server URL must be `http(s)`; the transport must be one of `stdio`, `sse`, `streamable_http`, `websocket`. `PATCH` updates registry metadata, enabled state, declared tools and required scopes without destroying grants or sessions.
 - `POST /api/v1/mcp-servers/{id}/discover`, `GET /api/v1/mcp-servers/{id}/tools` — ask the server for its tools now (admin), and read the manifest with schemas and stale flags (viewer). See [Tool discovery](#tool-discovery).
+- `POST /api/v1/mcp-servers/{id}/oauth/authorize` — body `{scopes?, step_up_scopes?}`; see [Scope selection](#scope-selection-and-insufficient_scope-step-up-1417).
 - `GET /api/v1/orgs/{org_id}/mcp/library` — curated definitions annotated with whether the slug is installed. Installing one uses the ordinary server create endpoint, so the registry remains the source of truth. See [The curated catalog](#the-curated-catalog) for what an entry declares.
 - `GET`/`POST /api/v1/orgs/{org_id}/mcp/tool-groups`, `PUT`/`DELETE /api/v1/mcp/tool-groups/{id}` — exact server/tool policy manifests, enforced by the proxy as an access boundary (see [Tool groups](#tool-groups-as-an-access-boundary)).
 - `GET`/`PUT /api/v1/orgs/{org_id}/mcp/settings` — organization transport and request defaults. The current HTTP proxy still uses deployment-level transport timeouts, which is why `mcp_settings` carries the `experimental` [stability marker](../development/stability-markers.md).
@@ -300,6 +301,50 @@ did. But an `iss` that arrives for such a row is **refused**, because there is
 nothing authentic to compare it against and accepting it would be validation in
 name only. The fix an operator is told about is to pin `issuer` on the OAuth
 client, or to let discovery resolve one.
+
+### Scope selection and `insufficient_scope` step-up (#1417)
+
+The three MUSTs above are not the whole of the specification's scope guidance.
+The SHOULDs are implemented too, and are not fail-closed: they choose what to
+ask for, and a resource that publishes nothing leaves the operator's
+configuration in charge.
+
+**Which scopes an authorization request asks for**, highest precedence first
+(`select_scopes` in `mcp_oauth_flow.rs`, recorded as `scope_source` in the
+`mcp_oauth_grant.authorize` audit row):
+
+1. `scopes` in the request body, used exactly as given (`explicit`).
+2. `scope` from the `WWW-Authenticate` challenge of an unauthenticated request
+   to the resource, plus the server's `required_scopes` (`challenge`). This is
+   what the resource itself says the request needed, and it outranks whatever
+   the operator configured.
+3. The server's `default_scopes` (`configured`).
+4. `scopes_supported` from the protected resource metadata, plus
+   `required_scopes` (`supported`). It is the resource's whole vocabulary, not
+   a statement of need, so it only answers when nothing more specific does.
+5. `required_scopes` alone (`required`), which can be empty.
+
+The challenge and metadata are read at authorize time only, by the person who
+is waiting; they are not cached on the row and the refresher never probes for
+them. Every scope token from either source is validated (RFC 6749 §3.3
+charset, at most 128 bytes, at most 32 tokens), so a hostile resource cannot
+smuggle a quote or a space into the authorization URL. Challenge parsing lives
+in `rolter_core::mcp_challenge`, shared with the gateway.
+
+**Step-up.** When an upstream answers a proxied call `403` with
+`WWW-Authenticate: Bearer error="insufficient_scope"`, the gateway, for an
+`oauth` server only, replies `403` with the code `mcp_insufficient_scope`, the
+scopes it named (validated) in `error.required_scopes`, and a rebuilt
+`WWW-Authenticate` challenge without the upstream's `resource_metadata`. The
+call is logged as `auth_denied`. The gateway cannot consent on anyone's
+behalf, so it does not try: the owner of the key re-consents with
+`POST /api/v1/mcp-servers/{id}/oauth/authorize` and `step_up_scopes`, which asks
+for the live grant's scopes, the new ones and the server's `required_scopes`
+together so the re-consent widens the grant rather than replacing it. Until they
+do, every such call fails the same way, which is also what an operator who is
+not present sees: no scope is ever added without a person consenting to it. A
+server with a static credential has no consent to repeat, so its `403` is
+relayed as the upstream sent it.
 
 ### Fetching from the control plane, and SSRF
 
