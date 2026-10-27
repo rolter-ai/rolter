@@ -66,16 +66,15 @@ impl BudgetRepo<'_> {
 
     pub async fn get(&self, id: Uuid) -> Result<Budget> {
         fetch_optional_or_not_found(
-sqlx::query_as(
-            "select id, scope_type, scope_id, limit_usd::text as limit_usd, period, unpriced_policy, created_at
-             from budgets where id = $1",
+            sqlx::query_as(
+                "select id, scope_type, scope_id, limit_usd::text as limit_usd, period, \
+                 unpriced_policy, created_at from budgets where id = $1",
+            )
+            .bind(id),
+            self.0,
+            || format!("budget {id}"),
         )
-        .bind(id)
-        ,
-self.0,
-|| format!("budget {id}"),
-)
-.await
+        .await
     }
 
     /// `unpriced_policy` is `None` for a budget that inherits the
