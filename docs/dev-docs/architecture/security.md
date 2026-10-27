@@ -154,9 +154,10 @@ first the operator hears of it.
   keeps the pairs as a map and one of the two values would vanish. `security-lists.test.ts` reads
   `security.rs` and fails when the forbidden-character sets or the `/v1/` prefix change there, so a
   rule widened on one side shows up as a red test rather than as a toast.
-- **`ui/src/lib/security-loosening.ts` decides which saves ask first.** Only one edit loosens:
-  a path added to `auth_bypass_routes`. It compares the draft with what the store held at the last load or save,
-  and a save that only tightens goes out without a dialog (see
+- **`ui/src/lib/security-loosening.ts` decides which saves ask first.** Two edits loosen:
+  a path added to `auth_bypass_routes`, and a name removed from `required_headers` (#2358). It
+  compares the draft with what the store held at the last load or save, and a save that only
+  tightens goes out without a dialog. An allowed origin added does not ask, on purpose (see
   [destructive actions](../development/destructive-actions.md)).
 - **`ui/src/lib/gateway-pickup.ts` reads the fleet after a save.** The write bumps `config_version`
   (the table's trigger), each gateway reports the version it runs on its snapshot poll, and

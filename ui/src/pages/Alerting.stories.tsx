@@ -709,7 +709,7 @@ export const ThePercentThresholdRoundTrips: Story = {
     await userEvent.clear(threshold);
     await userEvent.type(threshold, "101");
     await waitFor(() => expect(threshold).toHaveAttribute("aria-invalid", "true"));
-    await expect(create).toBeDisabled();
+    await expect(create).toHaveAttribute("aria-disabled", "true");
     percentCreates.expectNotSent("POST", "/alert-rules");
 
     await userEvent.clear(threshold);
@@ -816,7 +816,7 @@ export const TheRuleWindowHoldsToTheApiBounds: Story = {
       await userEvent.clear(windowInput);
       await userEvent.type(windowInput, outside);
       await waitFor(() => expect(windowInput).toHaveAttribute("aria-invalid", "true"));
-      await expect(create).toBeDisabled();
+      await expect(create).toHaveAttribute("aria-disabled", "true");
       await waitFor(() =>
         expect(within(form).getByText("From 60 to 86400 seconds.")).toBeVisible(),
       );

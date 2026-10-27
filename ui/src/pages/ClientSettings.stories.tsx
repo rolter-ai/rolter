@@ -171,13 +171,10 @@ export const TracksUnsavedChanges: Story = {
     const url = await canvas.findByLabelText("Public base URL");
     const save = canvas.getByRole("button", { name: "Save changes" });
     await expect(save).toBeDisabled();
-    await expect(canvas.queryByText(en.pages.clientSettings.unsaved)).toBeNull();
+    await expect(canvas.queryByText(/change not saved yet/)).toBeNull();
     await userEvent.type(url, "/edge");
     await waitFor(() => expect(save).toBeEnabled());
-    await expect(canvas.getByText(en.pages.clientSettings.unsaved)).toHaveAttribute(
-      "role",
-      "status",
-    );
+    await expect(canvas.getByText(/1 change not saved yet/)).toHaveAttribute("role", "status");
     await userEvent.clear(url);
     await userEvent.type(url, "https://gateway.example.com");
     await waitFor(() => expect(save).toBeDisabled());

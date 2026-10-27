@@ -1138,10 +1138,10 @@ function BudgetSheet({
       saveLabel={t(budget ? "common.save" : "common.create")}
       canSave={Boolean(limitUsd.trim() && periodKind(period)) && (!budget || dirty)}
       saving={save.isPending}
-      onSave={() => save.mutate()}
+      onSubmit={() => save.mutate()}
     >
       <div className="space-y-3">
-        <Field label={t("pages.limits.budgetLimitLabel", { currency })}>
+        <Field label={t("pages.limits.budgetLimitLabel", { currency })} required>
           {/* the ceiling is the numeric(12,4) column's; the server refuses above it */}
           <Input
             type="number"
@@ -1295,7 +1295,7 @@ function RateLimitSheet({
       saveLabel={t(limit ? "common.save" : "common.create")}
       canSave={Boolean(rpm.trim() || tpm.trim()) && (!limit || dirty)}
       saving={save.isPending}
-      onSave={() => save.mutate()}
+      onSubmit={() => save.mutate()}
     >
       <div className="space-y-3">
         <Field label={t("pages.limits.rpmLabel")}>

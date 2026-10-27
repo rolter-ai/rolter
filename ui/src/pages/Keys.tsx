@@ -598,7 +598,7 @@ function AddKeyDialog({
       saveLabel={create.isPending ? t("pages.virtualKeys.creating") : t("common.create")}
       canSave={keyNameProblem(name) === null}
       saving={create.isPending}
-      onSave={() => create.mutate()}
+      onSubmit={() => create.mutate()}
     >
       <div className="space-y-3">
         <KeyNameField value={name} onChange={setName} />
@@ -723,7 +723,7 @@ function EditKeyDialog({
       saveLabel={save.isPending ? t("pages.virtualKeys.saving") : t("pages.virtualKeys.save")}
       canSave={providersChanged || attributionChanged}
       saving={save.isPending}
-      onSave={() => save.mutate()}
+      onSubmit={() => save.mutate()}
     >
       <div className="space-y-3">
         <p className="text-xs text-muted-foreground">{t("pages.virtualKeys.editSubtitleHint")}</p>

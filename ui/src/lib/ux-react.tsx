@@ -32,6 +32,17 @@ import {
 
 const ScreenContext = React.createContext<string>("");
 
+/**
+ * The screen key of a surface that belongs to the app shell rather than to a
+ * route: the scope switcher in the rail, whose confirmations and create dialogs
+ * render outside the `UxScreenProvider` every screen is mounted under (#1895).
+ *
+ * Reserved: no route may take it as its id. The control plane accepts it like
+ * any other key (`crates/rolter-control/src/ui_events.rs`), and a shell surface
+ * wraps itself in `<UxScreenProvider screen={SHELL_SCREEN}>`.
+ */
+export const SHELL_SCREEN = "shell";
+
 /** Names the screen every nested emitter attributes its events to. */
 export function UxScreenProvider({
   screen,

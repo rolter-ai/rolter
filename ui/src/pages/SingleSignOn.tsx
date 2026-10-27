@@ -1041,7 +1041,7 @@ function ProviderSheet({
       saveLabel={editing ? t("pages.sso.edit.save") : t("pages.sso.create.save")}
       canSave={canSave}
       saving={save.isPending}
-      onSave={() => save.mutate()}
+      onSubmit={() => save.mutate()}
     >
       <Field label={t("pages.sso.create.name")} hint={t("pages.sso.create.nameHint")}>
         <Input

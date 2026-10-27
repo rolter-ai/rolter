@@ -5,7 +5,7 @@ import { expect, userEvent, waitFor, within } from "storybook/test";
 import { CreateProjectHost, ScopeSwitcher } from "./ScopeSwitcher";
 import en from "@/lib/i18n/locales/en.json";
 import { openCreateProject } from "@/lib/scope";
-import { UxScreenProvider } from "@/lib/ux-react";
+import { SHELL_SCREEN } from "@/lib/ux-react";
 import {
   Harness,
   NEEDS_ADMIN,
@@ -477,6 +477,7 @@ export const RowMenusOfferWhatTheLevelCanDo: Story = {
  * under the level above — a team under the org in scope.
  */
 export const CreatesATeam: Story = {
+  beforeEach: recordUxEvents,
   render: () => {
     const recorder = recording(chain());
     calls = recorder;
@@ -500,6 +501,43 @@ export const CreatesATeam: Story = {
     await userEvent.click(dialog.getByRole("button", { name: "Create" }));
     const body = await calls.expectSentBody("POST", `/orgs/${ORG.id}/teams`);
     await expect(body).toEqual({ name: "Research" });
+    // the create dialog is a shell surface: its rows carry the shell's own
+    // screen key, with no screen supplied around the story (#1895)
+    const submit = await expectUxEvent("form_submit", "team-create");
+    await expect(submit.screen).toBe(SHELL_SCREEN);
+    const saved = await expectUxEvent("save_confirmed", "team-create");
+    await expect(saved.screen).toBe(SHELL_SCREEN);
+  },
+};
+
+/**
+ * Closing the create dialog with a name typed in is an `abandon_dirty` of the
+ * level that was being created, somebody who gave up rather than a misclick
+ * (#1895).
+ */
+export const CreateCancelledAfterTypingIsAnAbandon: Story = {
+  beforeEach: recordUxEvents,
+  render: () => {
+    const recorder = recording(chain());
+    calls = recorder;
+    return (
+      <Harness fetchStub={recorder.stub}>
+        <Rail>
+          <ScopeSwitcher />
+        </Rail>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const { popover } = await openScope(canvasElement);
+    await chooseAction(popover, ACTIONS.team, en.scope.newTeam);
+    const dialog = within(await confirmation());
+    await userEvent.type(await dialog.findByLabelText("Name"), "Resea");
+    await userEvent.click(dialog.getByRole("button", { name: "Cancel" }));
+    const abandon = await expectUxEvent("abandon_dirty", "team-create");
+    await expect(abandon.screen).toBe(SHELL_SCREEN);
+    calls.expectNotSent("POST", `/orgs/${ORG.id}/teams`);
+    expectNoUxEvent("form_submit", "team-create");
   },
 };
 
@@ -510,6 +548,7 @@ export const CreatesATeam: Story = {
  * dialog belongs to `CreateProjectHost`, which the shell always mounts.
  */
 export const OpensCreateProjectFromElsewhere: Story = {
+  beforeEach: recordUxEvents,
   render: () => {
     const recorder = recording(chain());
     calls = recorder;
@@ -534,6 +573,8 @@ export const OpensCreateProjectFromElsewhere: Story = {
     await userEvent.click(dialog.getByRole("button", { name: "Create" }));
     const body = await calls.expectSentBody("POST", `/teams/${TEAM.id}/projects`);
     await expect(body).toEqual({ name: "Search" });
+    const submit = await expectUxEvent("form_submit", "project-create");
+    await expect(submit.screen).toBe(SHELL_SCREEN);
   },
 };
 
@@ -542,6 +583,7 @@ export const OpensCreateProjectFromElsewhere: Story = {
  * the title names the org, and the body says it takes everything under it.
  */
 export const DeleteNamesWhatItTakes: Story = {
+  beforeEach: recordUxEvents,
   render: () => {
     const recorder = recording(chain());
     calls = recorder;
@@ -566,6 +608,12 @@ export const DeleteNamesWhatItTakes: Story = {
     await confirmDestructive(/everything under it/i, en.scope.deleteOrg);
     await calls.expectSent("DELETE", `/orgs/${ORG.id}`);
     await expectSheetClosed();
+    // deleting an organization is the most destructive action in the dashboard,
+    // and the UX stream sees it under the shell's key (#1895)
+    const submit = await expectUxEvent("form_submit", "org-delete");
+    await expect(submit.screen).toBe(SHELL_SCREEN);
+    const saved = await expectUxEvent("save_confirmed", "org-delete");
+    await expect(saved.screen).toBe(SHELL_SCREEN);
   },
 };
 
@@ -574,9 +622,9 @@ export const DeleteNamesWhatItTakes: Story = {
  * level that was asked about, and gives focus back to the trigger the dialog
  * was raised from.
  *
- * The screen key here is only so the story can read *which* form the cancel is
- * filed under: the target row is gone by the closing edge, and a key that
- * followed it would name another level.
+ * No screen is supplied around it: the switcher reports under the shell's key
+ * itself, and the target row is gone by the closing edge, so the form's name
+ * must not follow it to another level.
  */
 export const DeleteCanBeCancelled: Story = {
   beforeEach: recordUxEvents,
@@ -585,11 +633,9 @@ export const DeleteCanBeCancelled: Story = {
     calls = recorder;
     return (
       <Harness fetchStub={recorder.stub}>
-        <UxScreenProvider screen="providers">
-          <Rail>
-            <ScopeSwitcher />
-          </Rail>
-        </UxScreenProvider>
+        <Rail>
+          <ScopeSwitcher />
+        </Rail>
       </Harness>
     );
   },
@@ -608,6 +654,7 @@ export const DeleteCanBeCancelled: Story = {
     await waitFor(() => expect(trigger).toHaveFocus());
     const abandon = await expectUxEvent("form_abandon", "team-delete");
     await expect(abandon.outcome).toBe("cancelled");
+    await expect(abandon.screen).toBe(SHELL_SCREEN);
     expectNoUxEvent("form_submit", "team-delete");
     expectNoUxEvent("form_abandon", "project-delete");
   },

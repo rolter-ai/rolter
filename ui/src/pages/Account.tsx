@@ -502,7 +502,7 @@ function MintKeyDialog({
       saveLabel={t("account.keys.mint.save")}
       canSave={keyNameProblem(name) === null}
       saving={mint.isPending}
-      onSave={() => mint.mutate()}
+      onSubmit={() => mint.mutate()}
     >
       <div className="space-y-3">
         <KeyNameField value={name} onChange={setName} />

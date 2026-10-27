@@ -23,8 +23,32 @@ export function PageBody({ className, ...props }: React.HTMLAttributes<HTMLDivEl
  * 840px reading cap. Left-aligned, never centred, so content does not jump
  * sideways between a list screen and a settings one (#3053).
  */
-export function SettingsBody({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
-  return <PageBody className={cn("max-w-[840px] gap-3.5", className)} {...props} />;
+export function SettingsBody({
+  className,
+  onSubmit,
+  ...props
+}: Omit<React.HTMLAttributes<HTMLDivElement>, "onSubmit"> & {
+  /**
+   * The screen is one form: Enter in a field and the footer's Save (a
+   * `type="submit"` `SaveBar`) both run this, and nothing else does (#1205).
+   * The browser's own validation bubble is off; the fields say what is wrong.
+   */
+  onSubmit?: () => void;
+}) {
+  const body = <PageBody className={cn("max-w-[840px] gap-3.5", className)} {...props} />;
+  if (!onSubmit) return body;
+  return (
+    <form
+      noValidate
+      className="contents"
+      onSubmit={(event) => {
+        event.preventDefault();
+        onSubmit();
+      }}
+    >
+      {body}
+    </form>
+  );
 }
 
 export function SearchInput({ className, ...props }: React.InputHTMLAttributes<HTMLInputElement>) {

@@ -607,7 +607,7 @@ export const SaveWaitsForAnEdit: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const save = await canvas.findByRole("button", { name: "Save changes" });
-    await expect(canvas.getByText(/Last changed/)).toBeVisible();
+    await expect(canvas.getByText(/Last saved/)).toBeVisible();
     await expect(save).toBeDisabled();
     await userEvent.type(canvas.getByLabelText("Sample rate percent"), "5");
     await waitFor(() => expect(save).toBeEnabled());
@@ -785,5 +785,19 @@ export const LoadFailsAndRetries: Story = {
       /failed to return logs settings/,
       async () => await expect(await canvas.findByRole("note")).toBeVisible(),
     );
+  },
+};
+
+// both switches wait for Save, and each says so beside its own title (#2214)
+export const SwitchesWaitForSave: Story = {
+  render: () => <Harness fetchStub={withClickHouse} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const events = await canvas.findByRole("switch", { name: "Dashboard usage events" });
+    await expect(canvas.queryByText("Not saved")).toBeNull();
+    await userEvent.click(events);
+    await expect(canvas.getAllByText("Not saved")).toHaveLength(1);
+    await userEvent.click(canvas.getByRole("button", { name: "Discard changes" }));
+    await expect(canvas.queryByText("Not saved")).toBeNull();
   },
 };

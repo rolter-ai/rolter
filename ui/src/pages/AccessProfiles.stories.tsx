@@ -295,7 +295,7 @@ export const RefusesAStarThatIsNotTheLastCharacter: Story = {
     const refusal = await form.findByText(/o1-\*-mini: a \* only works as the last character/);
     await waitFor(() => expect(refusal).toBeVisible());
     await expect(form.getByLabelText("Allowed models")).toBeInvalid();
-    await waitFor(() => expect(save).toBeDisabled());
+    await waitFor(() => expect(save).toHaveAttribute("aria-disabled", "true"));
 
     // a trailing glob is what the hint promises, and it saves
     await userEvent.clear(form.getByLabelText("Allowed models"));
@@ -900,7 +900,10 @@ export const AssignsAUser: Story = {
     const form = within(sheet());
     // an already-assigned account is not offered twice, and the save waits for a pick
     // story-wait-allow: disabled by the sheet's own empty pick, not by the gate
-    await expect(form.getByRole("button", { name: "Assign profile" })).toBeDisabled();
+    await expect(form.getByRole("button", { name: "Assign profile" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
     const listbox = await openOptions(await form.findByRole("combobox", { name: "User" }));
     await waitFor(() =>
       expect(within(listbox).getByRole("option", { name: /Grace Hopper/ })).toBeVisible(),

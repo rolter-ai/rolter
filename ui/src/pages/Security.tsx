@@ -29,12 +29,18 @@ import {
   listToText,
   normalizeRequiredHeaders,
   parseLists,
+  parseRequiredHeaders,
   problemCount,
   requiredHeadersPayload,
   requiredHeadersToText,
   type EntryProblem,
 } from "@/lib/security-lists";
-import { loosenings, type Loosening, type SecurityPolicy } from "@/lib/security-loosening";
+import {
+  loosenings,
+  looseningSubject,
+  type Loosening,
+  type SecurityPolicy,
+} from "@/lib/security-loosening";
 import { useToast } from "@/lib/toast";
 import { useDraft, type FieldEquality } from "@/lib/use-draft";
 import { useScreenReady } from "@/lib/ux-react";
@@ -77,6 +83,8 @@ const SECTIONS: (keyof FormState)[][] = [
 
 const policyOf = (form: FormState): SecurityPolicy => ({
   authBypassRoutes: entriesOf(form.bypassRoutes),
+  // a line that does not parse blocks the save, so only the headers that do count
+  requiredHeaders: parseRequiredHeaders(form.requiredHeaders).entries.map((entry) => entry.name),
 });
 
 // the request body, from a form whose lists all parse. Save is out of reach
@@ -319,7 +327,7 @@ function SecurityScreen() {
       >
         <ul className="flex flex-col gap-2.5">
           {confirming.items.map((item) => (
-            <LooseningRow key={item.route} item={item} />
+            <LooseningRow key={`${item.kind}:${looseningSubject(item)}`} item={item} />
           ))}
         </ul>
       </ConfirmDialog>
@@ -359,7 +367,7 @@ function LooseningRow({ item }: { item: Loosening }) {
     <li className="flex flex-col gap-0.5">
       <span className="text-sm font-medium">
         {t(`pages.security.confirm.${item.kind}.label`)}{" "}
-        <code className="font-mono text-xs">{item.route}</code>
+        <code className="font-mono text-xs">{looseningSubject(item)}</code>
       </span>
       <span className="text-sm text-muted-foreground">
         {t(`pages.security.confirm.${item.kind}.effect`)}

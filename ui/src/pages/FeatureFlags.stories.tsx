@@ -293,11 +293,11 @@ export const SaveWaitsForAChange: Story = {
     await expect(canvas.getByRole("button", { name: "Save changes" })).toBeDisabled();
     await expect(canvas.getByText(/last saved/i)).toBeVisible();
     await userEvent.click(complexity);
-    await expect(canvas.getByText("Changed")).toBeVisible();
+    await expect(canvas.getByText("Not saved")).toBeVisible();
     await expect(canvas.getByRole("button", { name: "Save changes" })).toBeEnabled();
     // flipped back to the stored value, it is no longer a change
     await userEvent.click(complexity);
-    await expect(canvas.queryByText("Changed")).toBeNull();
+    await expect(canvas.queryByText("Not saved")).toBeNull();
     await expect(canvas.getByRole("button", { name: "Save changes" })).toBeDisabled();
   },
 };
