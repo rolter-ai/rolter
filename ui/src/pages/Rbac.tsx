@@ -92,12 +92,16 @@ interface RoleColumn {
 // --text-subtle at 0.45 is about 2.3:1, and an empty tint already reads as "not
 // granted" (#1181). the hue is never the only difference (#2081): the glyph
 // tells allowed from not allowed from superadmin-only, and a custom grant's
-// dashed border tells it from a base-role allow in a greyscale render too
+// dashed border tells it from a base-role allow in a greyscale render too.
+// allowed is neutral on purpose (#2250): a loaded matrix draws hundreds of
+// them, and red is the colour of danger and of a view's one red action. the
+// letter is --text-primary on --surface-subtle (14.27:1) and the border is
+// --zinc-500, 3.90:1 on --surface-base and 3.60:1 on the scope band
 const CELL_STYLE: Record<CellState, React.CSSProperties> = {
   allowed: {
-    color: "var(--red-folk-text)",
-    background: "var(--red-tint)",
-    borderColor: "color-mix(in srgb, var(--red-folk) 30%, transparent)",
+    color: "var(--text-primary)",
+    background: "var(--surface-subtle)",
+    borderColor: "var(--zinc-500)",
   },
   granted: {
     color: "var(--status-info-text)",

@@ -291,7 +291,8 @@ closer than CIE76 ΔE 17, also under the three colour-vision deficiencies.
 **The One Red Voice Rule.** A view has one red action at most: the Folk Red brand button, or a
 single destructive action. Otherwise Folk Red marks state (the active page, a switch that is on)
 and Accent Red marks a selection. If two things on a screen are red for different reasons, one of
-them is wrong.
+them is wrong. A state that a screen draws hundreds of times is therefore never red: the allowed
+cells of the permission matrix are neutral (see Permission matrix).
 
 **The Shape-or-Glyph Rule.** Every hue that colours both shapes and text comes as a pair. Pick the
 half by what it paints: a dot, bar or border takes the fill; a letter takes the `-text` token.
@@ -483,6 +484,24 @@ Two header shapes ship. `Table` has a Zinc Band header row in 12px medium Muted 
 `ListTable` grid used by most list screens has an 11px uppercase Overline header in Subtle Zinc.
 Body cells are 14px Soft Zinc with `border-subtle` between rows and hover to the Zinc Band. Mono
 columns drop to 12px Near White.
+
+### Permission matrix
+
+Roles & Permissions draws one small chip per (role, resource, action): about 53 resources by every
+role makes hundreds of them, so the common state, allowed, is the quietest one that still reads.
+Allowed is the action letter in Near White on the Zinc Band with a Zinc Shape border: 14.27:1 for
+the letter, and 3.90:1 on Graphite and 3.60:1 on the scope band for the border (#2250). It is
+neutral on purpose. Red is the colour of danger and of a view's one red action, and an allowed
+cell is neither, so the state is carried by the glyphs and the legend, never by hue:
+
+- **Allowed:** the letter, solid border.
+- **Granted by a custom role:** the letter in Info Blue on a blue wash, dashed border, so it stays
+  distinct from allowed in a greyscale render.
+- **Superadmin only:** a lock, in Warning amber.
+- **Not allowed:** a cross, in Subtle Zinc with a hairline border and no fill.
+- **No such action:** a dash, with no fill and no border.
+
+Every chip's value is also in text for a screen reader, so no state is told by colour alone.
 
 ### Stat card
 
