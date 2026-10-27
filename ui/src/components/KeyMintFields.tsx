@@ -354,7 +354,6 @@ export function KeyReachSummary({
 }) {
   const { t } = useTranslation();
   const format = useFormat();
-  const currency = useCurrencyCode();
   const days = ttlToDays(ttl);
   const expiryDate = days === undefined ? null : new Date(Date.now() + days * 86_400_000);
 
@@ -384,16 +383,21 @@ export function KeyReachSummary({
             ? t("keyMint.reach.never")
             : t("keyMint.reach.until", { date: format.date(expiryDate) })}
         </li>
-        {caps && <CapSummaryLines caps={caps} currency={currency} />}
+        {caps && <CapSummaryLines caps={caps} />}
       </ul>
     </div>
   );
 }
 
-/** the cap lines of the reach summary: what the key may spend and how fast */
-function CapSummaryLines({ caps, currency }: { caps: CapDraft; currency: string }) {
+/**
+ * the cap lines of the reach summary: what the key may spend and how fast. the
+ * currency is read here rather than by the summary, so a summary without caps
+ * needs no query client
+ */
+function CapSummaryLines({ caps }: { caps: CapDraft }) {
   const { t } = useTranslation();
   const format = useFormat();
+  const currency = useCurrencyCode();
   const problems = capProblems(caps);
   const kind = periodKind(caps.period);
   const rate = [
