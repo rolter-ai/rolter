@@ -2063,6 +2063,31 @@
         "deleteTitle": "Delete server {{name}}?",
         "deleteBody": "Deleting this server also removes every OAuth grant and token session attached to it. This cannot be undone.",
         "deleteConfirm": "Delete server"
+      },
+      "discovery": {
+        "discover": "Discover now",
+        "discovering": "Discovering…",
+        "discoverAria": "Discover tools of server {{name}}",
+        "running": "Discovering tools…",
+        "pending": "Not discovered yet. The tools shown are the catalog's list, not the server's.",
+        "pendingWhy": "Not discovered yet: {{reason}}.",
+        "declaresNone": "Declares no tools. Last discovered {{when}}.",
+        "discovered": "Last discovered {{when}}.",
+        "failed": "Last discovery failed: {{reason}}.",
+        "lastSuccess": "Last succeeded {{when}}.",
+        "failedToast": "Could not discover tools of {{name}}",
+        "staleTitle": "Not returned by the last discovery; kept so tool groups naming it keep working.",
+        "staleHint_one": "{{count}} tool was not returned by the last discovery. It is kept so tool groups naming it keep working.",
+        "staleHint_other": "{{count}} tools were not returned by the last discovery. They are kept so tool groups naming them keep working.",
+        "reasons": {
+          "unreachable": "the server could not be reached",
+          "auth_rejected": "the server rejected the credential",
+          "handshake_failed": "the server did not complete the MCP handshake",
+          "egress_denied": "the egress policy blocks this address",
+          "needs_session": "waiting for a user to connect",
+          "credential_unavailable": "the stored credential could not be read",
+          "unknown": "unknown reason"
+        }
       }
     },
     "mcpOAuth": {

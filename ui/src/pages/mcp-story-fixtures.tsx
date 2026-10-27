@@ -41,6 +41,23 @@ export const UNDISCOVERED = {
   oauth_discovered_iss_supported: false,
   oauth_discovered_at: null,
 } as const;
+// tools/list discovery has not answered (#1283): a never-attempted row, the
+// state every server is in before the background discovery after an install
+export const NOT_PROBED = {
+  tools_discovery_status: "pending",
+  tools_discovery_error: null,
+  tools_discovered_at: null,
+  tools_discovery_attempted_at: null,
+  tools_stale: [] as string[],
+} as const;
+// the server answered tools/list; what a settled row looks like
+export const DISCOVERED_OK = {
+  tools_discovery_status: "discovered",
+  tools_discovery_error: null,
+  tools_discovered_at: "2026-09-12T08:30:00Z",
+  tools_discovery_attempted_at: "2026-09-12T08:30:00Z",
+  tools_stale: [] as string[],
+} as const;
 export const SERVERS: McpServerRow[] = [
   {
     id: "server-github",
@@ -62,6 +79,7 @@ export const SERVERS: McpServerRow[] = [
     has_client_secret: false,
     ...NO_AUTH,
     ...UNDISCOVERED,
+    ...DISCOVERED_OK,
   },
   {
     id: "server-sentry",
@@ -83,6 +101,7 @@ export const SERVERS: McpServerRow[] = [
     has_client_secret: false,
     ...NO_AUTH,
     ...UNDISCOVERED,
+    ...DISCOVERED_OK,
   },
 ];
 // a server whose OAuth client is already registered: Connect needs a client id,

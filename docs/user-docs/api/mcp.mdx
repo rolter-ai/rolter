@@ -87,6 +87,21 @@ or install a reviewed definition from MCP Library. Turning a server off removes
 it from the next gateway snapshot; its grants and sessions remain stored until
 the server is deleted.
 
+### Tool discovery
+
+A registered server's tool list comes from the server itself. rolter asks it
+with `tools/list` in the background after you install it, after you set its
+credential, and after a user completes OAuth consent; **Discover now** on the
+card (or `POST /api/v1/mcp-servers/{id}/discover`) asks again. The list a
+catalog entry ships with is only the fallback until the server has answered.
+
+A server that is down never blocks the install: the card says when it was last
+discovered, or that it has not been discovered yet and why. A tool the server
+stops returning is kept and marked stale rather than removed, so a Tool Group
+that names it keeps working until you decide otherwise. A server behind OAuth
+is asked with the signed-in user's own session, so it waits until that user has
+connected.
+
 Tool Groups bundle exact `server/tool` references into named policy manifests.
 They are useful to MCP-aware clients and future project assignment, but the
 current proxy does not enforce group membership as an access boundary. Access

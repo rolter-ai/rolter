@@ -23,6 +23,7 @@ mod budgets;
 mod crud;
 mod guardrails;
 mod mcp;
+mod mcp_discovery;
 mod profile;
 mod rbac;
 mod scim;

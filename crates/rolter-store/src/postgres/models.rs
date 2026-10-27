@@ -726,6 +726,19 @@ pub struct McpServer {
     /// row of the RFC 9207 §2.4 table a missing `iss` is judged by
     pub oauth_discovered_iss_supported: bool,
     pub oauth_discovered_at: Option<DateTime<Utc>>,
+    /// tools in `tools` that the last successful `tools/list` no longer
+    /// returned. Kept rather than pruned so a tool group that names one still
+    /// validates, and flagged so a card can say it may be gone (#1283)
+    pub tools_stale: Vec<String>,
+    /// `pending` (never asked), `discovered` (the server answered, possibly
+    /// with no tools) or `failed` (the last attempt got no answer)
+    pub tools_discovery_status: String,
+    /// a bounded category for a failed attempt, never the upstream's text
+    pub tools_discovery_error: Option<String>,
+    /// when `tools/list` last succeeded
+    pub tools_discovered_at: Option<DateTime<Utc>>,
+    /// when discovery last ran, whether or not it succeeded
+    pub tools_discovery_attempted_at: Option<DateTime<Utc>>,
 }
 
 /// One in-flight authorization-code consent, opened by the callback. The PKCE

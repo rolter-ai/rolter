@@ -1824,6 +1824,16 @@ fn operations() -> Vec<Op> {
                 "setMcpServerAuth",
                 "Set how rolter authenticates to an MCP server",
             ),
+            Op::post(
+                "/api/v1/mcp-servers/{id}/discover",
+                "discoverMcpServerTools",
+                "Ask an MCP server for its tools with tools/list",
+            ),
+            Op::get(
+                "/api/v1/mcp-servers/{id}/tools",
+                "listMcpServerTools",
+                "List an MCP server's tools with their input schemas",
+            ),
             Op::get(
                 "/api/v1/mcp-servers/{id}/oauth-client",
                 "getMcpOauthClient",

@@ -1000,6 +1000,9 @@ async fn complete_consent(
         }),
     )
     .await;
+    // a session now exists for this user, which is what a server behind OAuth
+    // needs before it will answer tools/list (#1283)
+    crate::mcp_discovery::discover_in_background(state, server.id, Some(login.user_id));
     Ok(ConsentCompleted {
         grant_id: grant.id,
         session_id: session.id,

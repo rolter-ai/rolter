@@ -10,7 +10,9 @@ import {
   BEARER,
   BY_KIND,
   CONNECTABLE,
+  DISCOVERED_OK,
   HEADER,
+  NOT_PROBED,
   Harness,
   KEK_REFUSAL,
   SERVERS,
@@ -1099,6 +1101,7 @@ export const GatedForViewer: Story = {
   play: async ({ canvasElement }) => {
     await expectRefused(canvasElement, "Register server");
     await expectRefused(canvasElement, "Configure server Context7");
+    await expectRefused(canvasElement, "Discover tools of server Context7");
   },
 };
 
@@ -1487,3 +1490,187 @@ const sheetFits = (locale: "en" | "ru") => ({
 });
 export const RegisterSheetOnAPhone: Story = sheetFits("en");
 export const RegisterSheetOnAPhoneInRussian: Story = sheetFits("ru");
+
+// ---------------------------------------------------------------------------
+// tools/list discovery (#1283): a manifest is pending, answered (possibly
+// empty), failed with the last answer kept, and may carry stale names
+
+const FAILED_AT = "2026-09-13T10:00:00Z";
+const oneServer = (over: Partial<McpServerRow>): McpServerRow => ({
+  ...SERVERS[0],
+  ...DISCOVERED_OK,
+  ...over,
+});
+const withRows = (rows: McpServerRow[]) => (
+  <Harness fetchStub={routed({ servers: async () => json(rows) })}>
+    <McpCatalog />
+  </Harness>
+);
+
+// never answered: the tools shown are the catalog's, and the card says so
+export const DiscoveryPending: Story = {
+  render: () => withRows([oneServer({ ...NOT_PROBED, tools_discovery_attempted_at: FAILED_AT })]),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText(/^Not discovered yet\./)).toBeVisible();
+    await expect(canvas.queryByText(/Declares no tools/)).not.toBeInTheDocument();
+  },
+};
+
+// OAuth server nobody has connected to: the reason is the dashboard's own words
+export const DiscoveryPendingNeedsSession: Story = {
+  render: () =>
+    withRows([
+      oneServer({
+        ...NOT_PROBED,
+        tools_discovery_attempted_at: FAILED_AT,
+        tools_discovery_error: "needs_session",
+      }),
+    ]),
+  play: async ({ canvasElement }) => {
+    await expect(
+      await within(canvasElement).findByText("Not discovered yet: waiting for a user to connect."),
+    ).toBeVisible();
+  },
+};
+
+// the background discovery after an install has not run yet: the list is read
+// again until it has, and the result appears without a reload
+export const DiscoveryPollsUntilAttempted: Story = {
+  render: () => {
+    let reads = 0;
+    return (
+      <Harness
+        fetchStub={routed({
+          servers: async () => {
+            reads += 1;
+            return json([
+              reads < 2 ? oneServer({ ...NOT_PROBED }) : oneServer({ tools: ["search_code"] }),
+            ]);
+          },
+        })}
+      >
+        <McpCatalog />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("Discovering tools…")).toBeVisible();
+    await waitFor(() => expect(canvas.getByText(/^Last discovered /)).toBeVisible(), {
+      timeout: 6000,
+    });
+  },
+};
+
+export const DiscoveryDiscovered: Story = {
+  render: () => withRows([oneServer({})]),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText(/^Last discovered /)).toBeVisible();
+    await expect(canvas.getByText("search_code")).toBeVisible();
+  },
+};
+
+// an answer with nothing in it is not "not discovered"
+export const DiscoveryDeclaresNoTools: Story = {
+  render: () => withRows([oneServer({ tools: [] })]),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText(/^Declares no tools\./)).toBeVisible();
+    await expect(canvas.queryByText(/Not discovered yet/)).not.toBeInTheDocument();
+  },
+};
+
+export const DiscoveryFailedAfterSuccess: Story = {
+  render: () =>
+    withRows([
+      oneServer({
+        tools_discovery_status: "failed",
+        tools_discovery_error: "unreachable",
+        tools_discovery_attempted_at: FAILED_AT,
+      }),
+    ]),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(
+      await canvas.findByText(/^Last discovery failed: the server could not be reached\./),
+    ).toBeVisible();
+    await expect(canvas.getByText(/Last succeeded /)).toBeVisible();
+    // the last manifest is kept
+    await expect(canvas.getByText("search_code")).toBeVisible();
+  },
+};
+
+export const DiscoveryFlagsStaleTools: Story = {
+  render: () => withRows([oneServer({ tools_stale: ["create_issue"] })]),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const stale = await canvas.findByText("create_issue");
+    await expect(stale.closest("span")).toHaveAttribute(
+      "title",
+      expect.stringMatching(/kept so tool groups naming it keep working/),
+    );
+    await expect(canvas.getByText(/^1 tool was not returned by the last discovery/)).toBeVisible();
+  },
+};
+
+const discoverNow = (() => {
+  let discovered = false;
+  return recording(
+    routed({
+      servers: async (input, init) => {
+        if (urlOf(input).endsWith("/discover") && init?.method === "POST") {
+          discovered = true;
+          return json(oneServer({ tools: ["search_code", "open_pr"] }));
+        }
+        return json([
+          discovered
+            ? oneServer({ tools: ["search_code", "open_pr"] })
+            : oneServer({ ...NOT_PROBED, tools_discovery_attempted_at: FAILED_AT }),
+        ]);
+      },
+    }),
+  );
+})();
+export const DiscoverNow: Story = {
+  render: () => (
+    <Harness fetchStub={discoverNow.stub}>
+      <McpCatalog />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText(/^Not discovered yet\./)).toBeVisible();
+    await userEvent.click(canvas.getByRole("button", { name: "Discover tools of server GitHub" }));
+    await discoverNow.expectSent("POST", "/mcp-servers/server-github/discover");
+    await waitFor(() => expect(canvas.getByText("open_pr")).toBeVisible());
+    await expect(canvas.getByText(/^Last discovered /)).toBeVisible();
+  },
+};
+
+export const DiscoverNowFails: Story = {
+  render: () => (
+    <Harness
+      fetchStub={routed({
+        servers: async (input, init) =>
+          urlOf(input).endsWith("/discover") && init?.method === "POST"
+            ? json({ error: { message: "registry offline" } }, 503)
+            : json([oneServer({})]),
+      })}
+    >
+      <Toasts>
+        <McpCatalog />
+      </Toasts>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(
+      await canvas.findByRole("button", { name: "Discover tools of server GitHub" }),
+    );
+    await waitFor(() =>
+      expect(within(document.body).getByText("Could not discover tools of GitHub")).toBeVisible(),
+    );
+  },
+};

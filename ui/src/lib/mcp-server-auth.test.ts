@@ -45,6 +45,11 @@ const row = (over: Partial<McpServerRow> = {}): McpServerRow => ({
   oauth_discovered_token_url: null,
   oauth_discovered_iss_supported: false,
   oauth_discovered_at: null,
+  tools_discovery_status: "discovered",
+  tools_discovery_error: null,
+  tools_discovered_at: "2026-09-12T08:30:00Z",
+  tools_discovery_attempted_at: "2026-09-12T08:30:00Z",
+  tools_stale: [],
   ...over,
 });
 

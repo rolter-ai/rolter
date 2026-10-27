@@ -255,6 +255,10 @@ async fn create_server(
         serde_json::json!({"slug": server.slug, "transport": server.transport}),
     )
     .await;
+    // ask the server for its tools without holding this response: a server
+    // that is down, or one that needs a credential that is set next, only
+    // leaves a note on the row (#1283)
+    crate::mcp_discovery::discover_in_background(&state, server.id, None);
     Ok(Json(server))
 }
 
@@ -565,6 +569,10 @@ async fn set_auth(
         }),
     )
     .await;
+    // a credential the server now accepts is what discovery was waiting for
+    if matches!(server.auth_kind.as_str(), "bearer" | "header") {
+        crate::mcp_discovery::discover_in_background(&state, server.id, None);
+    }
     Ok(Json(server))
 }
 
@@ -622,13 +630,15 @@ struct LibraryDefinition {
 /// The curated catalog.
 ///
 /// Every entry is a **snapshot** of what the upstream server published, taken
-/// by hand. It is not discovered: nothing here is re-checked against the live
-/// server, so a tool renamed upstream goes stale here until someone edits this
-/// list. That is a deliberate, cheap first step — an empty list was worse,
-/// because it made a card claim the server declares no tools at all, left the
-/// installed server contributing nothing to the tool tally, and made the entry
-/// unpickable in a tool group (#1252). Replacing this with a `tools/list` call
-/// on install is tracked separately.
+/// by hand, and since #1283 it is only the **fallback**: an installed server
+/// is asked for its tools with `tools/list` (see [`crate::mcp_discovery`]), and
+/// what it answers replaces this list on the row. The snapshot is what a server
+/// carries until that has happened, and what stays if the server cannot be
+/// reached, so an empty list never makes a card claim the server declares no
+/// tools at all (#1252). Because it is not re-checked against the live server,
+/// a tool renamed upstream stays here until someone edits this list; the row's
+/// `tools_discovery_status` says whether its manifest is this fallback
+/// (`pending`) or the server's own answer (`discovered`).
 ///
 /// The install path in [`create_server`] compares a `library` request against
 /// these lists element for element, so filling them in here is what makes an

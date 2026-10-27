@@ -154,6 +154,47 @@ export interface McpServerRow {
   /// whether that metadata advertised `authorization_response_iss_parameter_supported`
   oauth_discovered_iss_supported: boolean;
   oauth_discovered_at: string | null;
+  /// whether the server ever answered `tools/list`. `pending` means `tools` is
+  /// only the catalog's fallback list (or what an operator typed); `discovered`
+  /// means the server answered, so an empty `tools` is "declares no tools";
+  /// `failed` means a later attempt got no answer and the last manifest is kept
+  tools_discovery_status: McpToolsDiscoveryStatus;
+  /// a bounded code for the last attempt, `null` after a success
+  tools_discovery_error: McpToolsDiscoveryError | null;
+  /// the last successful discovery
+  tools_discovered_at: string | null;
+  /// the last attempt of any outcome; `null` means discovery has not run yet
+  tools_discovery_attempted_at: string | null;
+  /// names in `tools` the last successful discovery no longer returned. they
+  /// are kept, never pruned, so a tool group naming one keeps working
+  tools_stale: string[];
+}
+
+export type McpToolsDiscoveryStatus = "pending" | "discovered" | "failed";
+
+export const MCP_TOOLS_DISCOVERY_ERRORS = [
+  "unreachable",
+  "auth_rejected",
+  "handshake_failed",
+  "egress_denied",
+  "needs_session",
+  "credential_unavailable",
+] as const;
+
+export type McpToolsDiscoveryError = (typeof MCP_TOOLS_DISCOVERY_ERRORS)[number];
+
+export interface McpServerToolRow {
+  name: string;
+  description: string | null;
+  input_schema: unknown;
+  stale: boolean;
+}
+
+export interface McpServerToolsResponse {
+  status: McpToolsDiscoveryStatus;
+  error: McpToolsDiscoveryError | null;
+  discovered_at: string | null;
+  tools: McpServerToolRow[];
 }
 
 export const MCP_OAUTH_DISCOVERY_MODES = ["auto", "manual"] as const;
@@ -304,6 +345,17 @@ export function updateMcpServer(
 // credential in the clear
 export function setMcpServerAuth(id: string, input: McpServerAuthInput): Promise<McpServerRow> {
   return sendJson<McpServerRow>("PUT", `/api/v1/mcp-servers/${id}/auth`, input);
+}
+
+// asks the server for its tool manifest now. a discovery that got an error
+// code answers 200 with the row carrying it, so a rejection here is the
+// request itself failing
+export function discoverMcpServerTools(id: string): Promise<McpServerRow> {
+  return sendJson<McpServerRow>("POST", `/api/v1/mcp-servers/${id}/discover`);
+}
+
+export function fetchMcpServerTools(id: string): Promise<McpServerToolsResponse> {
+  return getJson<McpServerToolsResponse>(`/api/v1/mcp-servers/${id}/tools`);
 }
 
 export function deleteMcpServer(id: string): Promise<void> {

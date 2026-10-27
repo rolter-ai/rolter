@@ -75,6 +75,7 @@
     "mcp_oauth_session.revoke",
     "mcp_server.create",
     "mcp_server.delete",
+    "mcp_server.discover",
     "mcp_server.set_auth",
     "mcp_server.update",
     "mcp_settings.update",

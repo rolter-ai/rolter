@@ -72,6 +72,10 @@ pub mod ldap;
 mod logging_settings;
 mod login_throttle;
 #[cfg(feature = "postgres")]
+mod mcp_client;
+#[cfg(feature = "postgres")]
+mod mcp_discovery;
+#[cfg(feature = "postgres")]
 mod mcp_logs;
 #[cfg(feature = "postgres")]
 mod mcp_oauth;
@@ -1262,6 +1266,7 @@ fn build_app_with(state: ControlState, mount_internal: bool) -> Router {
             .merge(plugins::router())
             .merge(public_url::router())
             .merge(mcp_logs::router())
+            .merge(mcp_discovery::router())
             .merge(ui_events::router())
             .merge(mcp_oauth::router())
             .merge(mcp_oauth_flow::router())

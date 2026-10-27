@@ -53,19 +53,58 @@ empty (#1252) an install produced a server that declared nothing at all.
 
 Two properties are worth stating plainly:
 
-- **The lists are a hand-taken snapshot, not discovery.** Nothing re-checks them
-  against the live server, so a tool renamed upstream is stale here until
-  someone edits the file. Calling `tools/list` on the server after install is
-  the real fix and is tracked separately; this is the cheap step that stops the
-  catalog from asserting something false.
+- **The lists are the fallback, not the source of truth.** An installed server
+  is asked for its tools with `tools/list` (see
+  [Tool discovery](#tool-discovery)) and what it answers replaces this list on
+  the row. The snapshot is what a server carries until then, and what stays if
+  the server cannot be reached; nothing re-checks it against the live server on
+  its own, so a tool renamed upstream is stale here until someone edits the
+  file.
 - **An empty `required_scopes` can be the accurate answer.** Notion's remote
   server grants access to the pages the user picks on its consent screen rather
   than to named scopes, so it asks for none. Every other entry declaring an
   empty list would be an unfilled row, and a test enforces that distinction.
 
+## Tool discovery
+
+`crates/rolter-control/src/mcp_discovery.rs` asks a registered server what
+tools it has, through the small client in `mcp_client.rs` (`initialize`,
+`notifications/initialized`, then `tools/list` following `nextCursor`; JSON or
+SSE replies). The answer is written back to the server row (#1283):
+
+- **When.** Best effort and never blocking: in the background after a server is
+  installed, after a `bearer`/`header` credential is set, and after an OAuth
+  consent produces a session; and on demand with
+  `POST /api/v1/mcp-servers/{id}/discover`.
+- **As whom.** A static-credential server is asked with its credential. A server
+  behind OAuth is asked with the _caller's own_ live session on it, so discovery
+  there is per grant and borrows nobody else's token. With no session the row
+  stays `pending` with `tools_discovery_error = needs_session`.
+- **Reconciliation.** Discovered tools come first, in the server's order. A tool
+  the row already had that the server no longer returns is **kept** and listed
+  in `tools_stale`, never pruned, so a tool group that names it still validates
+  and an operator decides what to do. A tool that returns is unflagged.
+- **Status.** `tools_discovery_status` is `pending` (never answered, so `tools`
+  is the catalog's fallback or whatever the operator typed), `discovered` (the
+  server answered, possibly with no tools, which is "declares no tools") or
+  `failed` (a later attempt got no answer; the last manifest is kept).
+  `tools_discovery_error` carries a bounded code (`unreachable`,
+  `auth_rejected`, `handshake_failed`, `egress_denied`, `needs_session`,
+  `credential_unavailable`), never the upstream's text. `tools_discovered_at`
+  is the last success.
+- **Egress.** The address is checked against the egress policy before any
+  connection and again at connect time, and no redirect is followed, exactly as
+  for the OAuth client.
+- **Schemas.** Descriptions and input schemas are stored beside the manifest and
+  served by `GET /api/v1/mcp-servers/{id}/tools`, not by the listing.
+
+The `streamable_http` transport is what is spoken; a server registered as `sse`
+is asked the same way, since the gateway proxies both as plain HTTP.
+
 ## Endpoints
 
 - `GET`/`POST /api/v1/orgs/{org_id}/mcp-servers`, `PATCH`/`DELETE /api/v1/mcp-servers/{id}` — viewer reads, admin writes. A server URL must be `http(s)`; the transport must be one of `stdio`, `sse`, `streamable_http`, `websocket`. `PATCH` updates registry metadata, enabled state, declared tools and required scopes without destroying grants or sessions.
+- `POST /api/v1/mcp-servers/{id}/discover`, `GET /api/v1/mcp-servers/{id}/tools` — ask the server for its tools now (admin), and read the manifest with schemas and stale flags (viewer). See [Tool discovery](#tool-discovery).
 - `GET /api/v1/orgs/{org_id}/mcp/library` — curated definitions annotated with whether the slug is installed. Installing one uses the ordinary server create endpoint, so the registry remains the source of truth. See [The curated catalog](#the-curated-catalog) for what an entry declares.
 - `GET`/`POST /api/v1/orgs/{org_id}/mcp/tool-groups`, `PUT`/`DELETE /api/v1/mcp/tool-groups/{id}` — exact server/tool policy manifests. These definitions are not yet enforced by the proxy, which is why `mcp_tool_groups` carries the `experimental` [stability marker](../development/stability-markers.md).
 - `GET`/`PUT /api/v1/orgs/{org_id}/mcp/settings` — organization transport and request defaults. The current HTTP proxy still uses deployment-level transport timeouts, which is why `mcp_settings` carries the `experimental` [stability marker](../development/stability-markers.md).
