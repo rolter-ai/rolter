@@ -37,7 +37,9 @@ use rolter_core::AdaptiveRoutingConfig;
 use crate::scorer::{
     CheapestScorer, FastestScorer, LatencySource, LeastLoadScorer, Pipeline, Scorer,
 };
-use crate::{AdaptiveTelemetry, DecisionCounts, LoadBalancer, RouteContext, TargetTelemetry};
+use crate::{
+    AdaptiveTelemetry, DecisionCounts, LoadBalancer, RouteContext, TargetTelemetry, Usable,
+};
 
 /// Latency samples needed before the blend is trusted to rank targets: ranking
 /// is relative, so a single sampled target says nothing about the others.
@@ -231,7 +233,7 @@ impl Adaptive {
     /// wide route warms its targets evenly instead of draining one budget at a
     /// time. Only reached while the blend is disengaged, and only until the
     /// evidence is in, so it costs the hot path nothing in steady state.
-    fn warmup_probe(&self) -> Option<usize> {
+    fn warmup_probe(&self, usable: &dyn Fn(usize) -> bool) -> Option<usize> {
         if !self.cfg.enabled || !self.cfg.has_signal() || self.cfg.latency_weight <= 0.0 {
             return None;
         }
@@ -244,7 +246,7 @@ impl Adaptive {
         let candidate = latencies
             .iter()
             .enumerate()
-            .filter(|(_, ms)| **ms <= 0.0)
+            .filter(|(i, ms)| **ms <= 0.0 && usable(*i))
             .filter_map(|(i, _)| {
                 let spent = self.warmup_probes.get(i)?.load(Relaxed);
                 (spent < MAX_WARMUP_PROBES).then_some((spent, i))
@@ -255,6 +257,48 @@ impl Adaptive {
             spent.fetch_add(1, Relaxed);
         }
         Some(target)
+    }
+
+    /// A uniformly random target among the usable ones, for an exploration pick.
+    fn explore_target(&self, usable: Option<&Usable>) -> Option<usize> {
+        let mut rng = rand::rng();
+        match usable {
+            Some(usable) => usable.nth(rng.random_range(0..usable.count().max(1))),
+            None => Some(rng.random_range(0..self.n)),
+        }
+    }
+
+    /// One pick, restricted to `usable` when given. `pick` passes `None`;
+    /// `pick_eligible` passes the caller's answer, asked once.
+    fn pick_among(
+        &self,
+        ctx: &RouteContext,
+        loads: &[u64],
+        usable: Option<&Usable>,
+    ) -> Option<usize> {
+        let allowed = |i: usize| usable.is_none_or(|usable| usable.contains(i));
+        let route = |pipeline: &Pipeline| match usable {
+            Some(_) => pipeline.pick_eligible(ctx, loads, &allowed),
+            None => pipeline.pick(ctx, loads),
+        };
+        let engaged = self.engaged();
+        self.engaged_now.store(engaged, Relaxed);
+        if !engaged {
+            // a warm-up probe is exploration in the same sense as the ratio
+            // below — a pick spent on evidence rather than on the best target
+            if let Some(target) = self.warmup_probe(&allowed) {
+                self.exploration_picks.fetch_add(1, Relaxed);
+                return Some(target);
+            }
+            self.fallback_picks.fetch_add(1, Relaxed);
+            return route(&self.fallback);
+        }
+        if self.explore() {
+            self.exploration_picks.fetch_add(1, Relaxed);
+            return self.explore_target(usable);
+        }
+        self.blend_picks.fetch_add(1, Relaxed);
+        route(&self.blend)
     }
 
     /// Whether this pick is spent on exploration rather than exploitation.
@@ -271,24 +315,27 @@ impl LoadBalancer for Adaptive {
     }
 
     fn pick(&self, ctx: &RouteContext, loads: &[u64]) -> Option<usize> {
-        let engaged = self.engaged();
-        self.engaged_now.store(engaged, Relaxed);
-        if !engaged {
-            // a warm-up probe is exploration in the same sense as the ratio
-            // below — a pick spent on evidence rather than on the best target
-            if let Some(target) = self.warmup_probe() {
-                self.exploration_picks.fetch_add(1, Relaxed);
-                return Some(target);
-            }
-            self.fallback_picks.fetch_add(1, Relaxed);
-            return self.fallback.pick(ctx, loads);
+        self.pick_among(ctx, loads, None)
+    }
+
+    /// The same decision as `pick`, over the targets the caller can use: a
+    /// warm-up probe and an exploration pick land on a usable target, and the
+    /// pipeline that decides forwards the caller's eligibility (#1942).
+    fn pick_eligible(
+        &self,
+        ctx: &RouteContext,
+        loads: &[u64],
+        eligible: &dyn Fn(usize) -> bool,
+    ) -> Option<usize> {
+        if self.n == 0 {
+            return None;
         }
-        if self.explore() {
-            self.exploration_picks.fetch_add(1, Relaxed);
-            return Some(rand::rng().random_range(0..self.n));
-        }
-        self.blend_picks.fetch_add(1, Relaxed);
-        self.blend.pick(ctx, loads)
+        let usable = Usable::ask(self.n, eligible);
+        self.pick_among(ctx, loads, Some(&usable))
+    }
+
+    fn reads_prompt(&self) -> bool {
+        self.fallback.reads_prompt() || self.blend.reads_prompt()
     }
 
     fn decisions(&self) -> Option<DecisionCounts> {
@@ -693,5 +740,72 @@ mod tests {
         .sanitized();
         assert_eq!(policy.cost_weight, 0.0);
         assert_eq!(policy.exploration_ratio, 0.0);
+    }
+
+    /// #1942: the fallback stack scores only the targets the caller can use,
+    /// so a dead target's empty queue is not the pool's best.
+    #[test]
+    fn fallback_pick_eligible_skips_a_dead_target_at_load_zero() {
+        let lb = Adaptive::new(&[1, 1, 1], &[1.0; 3], None, &cfg(false, 0));
+        let ctx = RouteContext::default();
+        let loads = [0, 9, 9];
+        assert_eq!(lb.pick(&ctx, &loads), Some(0));
+        for _ in 0..50 {
+            let pick = lb.pick_eligible(&ctx, &loads, &|i| i != 0);
+            assert!(matches!(pick, Some(1 | 2)), "{pick:?}");
+        }
+    }
+
+    /// #1942: an engaged blend ranks only the usable targets, so the fastest
+    /// target being the dead one does not decide the pick.
+    #[test]
+    fn blend_pick_eligible_skips_a_dead_fast_target() {
+        let lb = Adaptive::new(
+            &[1, 1, 1],
+            &[1.0; 3],
+            Some(Arc::new(FixedLatency(vec![10.0, 500.0, 600.0]))),
+            &cfg(true, 5),
+        );
+        warm(&lb, 5);
+        let ctx = RouteContext::default();
+        assert_eq!(lb.pick(&ctx, &[]), Some(0));
+        for _ in 0..50 {
+            assert_eq!(lb.pick_eligible(&ctx, &[], &|i| i != 0), Some(1));
+        }
+    }
+
+    /// #1942: exploration and warm-up probes are spent on a usable target too.
+    #[test]
+    fn exploration_and_warm_up_probes_land_on_a_usable_target() {
+        let policy = AdaptiveRoutingConfig {
+            exploration_ratio: 1.0,
+            ..cfg(true, 5)
+        };
+        let lb = Adaptive::new(
+            &[1, 1, 1],
+            &[1.0; 3],
+            Some(Arc::new(FixedLatency(vec![10.0, 500.0, 600.0]))),
+            &policy,
+        );
+        warm(&lb, 5);
+        let ctx = RouteContext::default();
+        // the ratio is clamped to a small bound, so run enough picks for some
+        // of them to explore
+        for _ in 0..2000 {
+            assert_ne!(lb.pick_eligible(&ctx, &[], &|i| i != 0), Some(0));
+        }
+        assert!(lb.decision_counts().exploration > 0);
+
+        // no latency sample yet: warm-up probes the unsampled targets, and
+        // skips the one that cannot take traffic
+        let cold = Adaptive::new(
+            &[1, 1, 1],
+            &[1.0; 3],
+            Some(Arc::new(WarmingLatency::new(3))),
+            &cfg(true, 5),
+        );
+        for _ in 0..30 {
+            assert_ne!(cold.pick_eligible(&ctx, &[], &|i| i != 0), Some(0));
+        }
     }
 }

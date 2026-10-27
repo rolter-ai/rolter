@@ -12,6 +12,10 @@ const buttonVariants = cva(
         outline: "border border-input bg-background hover:bg-accent hover:text-accent-foreground",
         ghost: "hover:bg-accent hover:text-accent-foreground",
         destructive: "bg-destructive text-destructive-foreground hover:bg-destructive/90",
+        // the one action a screen exists for (sign in, accept an invite, turn on
+        // two-factor): the folk-red fill with white text, pressing to --red-700.
+        // 6.69:1 for the label on --red-folk. one red action per view (DESIGN.md)
+        brand: "bg-brand-folk text-white hover:bg-brand-press",
       },
       size: {
         // a coarse pointer (a finger) gets a 44px floor (#2040); desktop density is unchanged
