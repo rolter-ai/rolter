@@ -76,6 +76,10 @@ pub struct GatewayConfig {
     /// protected internal snapshot channel and are never exposed publicly.
     #[serde(default)]
     pub mcp_oauth_sessions: Vec<McpOAuthSessionConfig>,
+    /// enabled MCP tool groups. The proxy treats them as an access boundary:
+    /// a server named by any of them only serves the tools they list (#1403)
+    #[serde(default)]
+    pub mcp_tool_groups: Vec<McpToolGroupConfig>,
     #[serde(default)]
     pub model_prices: Vec<ModelPriceConfig>,
     /// settlement currency and rate table. Budgets and accumulated spend are
@@ -2133,6 +2137,29 @@ impl std::fmt::Debug for McpServerConfig {
             .field("max_retries", &self.max_retries)
             .finish()
     }
+}
+
+/// One tool of one server, as a tool group names it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+pub struct McpToolRefConfig {
+    pub server_id: String,
+    pub tool: String,
+}
+
+/// An enabled, organization-owned bundle of MCP tools (#1403).
+///
+/// Only enabled groups reach the snapshot. A server that at least one of them
+/// names is *governed*: the proxy forwards a `tools/call` for it only when the
+/// tool is in the union of the groups that name it, and refuses the rest. A
+/// server no group names is not governed by this and falls back to its declared
+/// manifest.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct McpToolGroupConfig {
+    pub id: String,
+    pub org_id: String,
+    pub slug: String,
+    #[serde(default)]
+    pub tools: Vec<McpToolRefConfig>,
 }
 
 /// A live OAuth session the gateway may spend for one user and MCP server.

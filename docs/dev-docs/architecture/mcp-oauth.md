@@ -101,12 +101,38 @@ SSE replies). The answer is written back to the server row (#1283):
 The `streamable_http` transport is what is spoken; a server registered as `sse`
 is asked the same way, since the gateway proxies both as plain HTTP.
 
+## Tool groups as an access boundary
+
+The gateway enforces enabled tool groups (#1403) in `crates/rolter-gateway/src/mcp_policy.rs`,
+after the caller is authenticated and before anything is forwarded.
+
+- **Snapshot.** Enabled groups travel as `mcp_tool_groups`; `mcp_tool_groups`
+  carries a `bump_config_version()` statement trigger (migration `0113`), so an
+  edit reaches a running gateway. The gateway indexes them into
+  `Snapshot::mcp_governed_tools`, server id to allowed tool names, counting only
+  references whose server is in the group's own organization.
+- **Rule.** A server named by at least one enabled group is governed: a
+  `tools/call` is forwarded only for a tool in the union of those groups, and
+  anything else (including a call that names no tool) is refused `403`
+  `mcp_tool_denied`. A server no group names is not governed here. "The caller's
+  effective groups" is the organization's enabled set, since groups have no
+  per-key or per-project assignment.
+- **Parsing.** When the rule applies the body is parsed in full, as one message
+  or a batch, with no substring shortcut: `tools\/call` and `\u`-escaped spellings
+  are the same JSON string, so a byte search would be a bypass. A batch is
+  refused whole if any call in it is. A `tools/call` notification (no id) is
+  refused too. A body that is not JSON is refused `400`
+  `mcp_request_unreadable`; an empty body is not a call and is forwarded.
+- **Logging.** Each refused call becomes an `auth_denied` row in
+  `mcp_tool_call_logs` with the tool name and the caller's attribution, via
+  `PendingCall::from_request`; the closed status set is unchanged.
+
 ## Endpoints
 
 - `GET`/`POST /api/v1/orgs/{org_id}/mcp-servers`, `PATCH`/`DELETE /api/v1/mcp-servers/{id}` — viewer reads, admin writes. A server URL must be `http(s)`; the transport must be one of `stdio`, `sse`, `streamable_http`, `websocket`. `PATCH` updates registry metadata, enabled state, declared tools and required scopes without destroying grants or sessions.
 - `POST /api/v1/mcp-servers/{id}/discover`, `GET /api/v1/mcp-servers/{id}/tools` — ask the server for its tools now (admin), and read the manifest with schemas and stale flags (viewer). See [Tool discovery](#tool-discovery).
 - `GET /api/v1/orgs/{org_id}/mcp/library` — curated definitions annotated with whether the slug is installed. Installing one uses the ordinary server create endpoint, so the registry remains the source of truth. See [The curated catalog](#the-curated-catalog) for what an entry declares.
-- `GET`/`POST /api/v1/orgs/{org_id}/mcp/tool-groups`, `PUT`/`DELETE /api/v1/mcp/tool-groups/{id}` — exact server/tool policy manifests. These definitions are not yet enforced by the proxy, which is why `mcp_tool_groups` carries the `experimental` [stability marker](../development/stability-markers.md).
+- `GET`/`POST /api/v1/orgs/{org_id}/mcp/tool-groups`, `PUT`/`DELETE /api/v1/mcp/tool-groups/{id}` — exact server/tool policy manifests, enforced by the proxy as an access boundary (see [Tool groups](#tool-groups-as-an-access-boundary)).
 - `GET`/`PUT /api/v1/orgs/{org_id}/mcp/settings` — organization transport and request defaults. The current HTTP proxy still uses deployment-level transport timeouts, which is why `mcp_settings` carries the `experimental` [stability marker](../development/stability-markers.md).
 - `GET /api/v1/orgs/{org_id}/mcp/grants`, `DELETE /api/v1/mcp/grants/{id}`
 - `GET /api/v1/orgs/{org_id}/mcp/sessions`, `DELETE /api/v1/mcp/sessions/{id}`

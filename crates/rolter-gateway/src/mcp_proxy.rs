@@ -15,6 +15,7 @@ use rolter_core::{McpAuthKind, McpServerConfig};
 use rolter_proxy::{McpTransportOverrides, McpUpstreamAuth};
 
 use crate::mcp_log::{CallContext, PendingCall};
+use crate::mcp_policy::Verdict;
 use crate::state::AppState;
 use crate::trace::RequestId;
 
@@ -241,6 +242,51 @@ async fn proxy(
             )
         }
     };
+
+    // the tool groups an organization enabled are an access boundary: a call
+    // naming a tool outside them is refused before anything is forwarded, and
+    // recorded in the MCP log like any other denial (#1403)
+    if method == Method::POST {
+        match crate::mcp_policy::enforce(&snapshot, server, &body) {
+            Verdict::Allow => {}
+            Verdict::Denied(refused) => {
+                let context = CallContext {
+                    server: &server.slug,
+                    transport: &server.transport,
+                    org_id: &key.org_id,
+                    team_id: &key.team_id,
+                    project_id: &key.project_id,
+                    virtual_key_id: &key.id,
+                    user_id: &key.user_id,
+                    request_id: request_id.as_str(),
+                    capture: &snapshot.logging.payload_capture,
+                };
+                let message = refused
+                    .first()
+                    .map(|call| call.message(&server.slug))
+                    .unwrap_or_default();
+                for call in refused {
+                    if let Some(call) =
+                        PendingCall::from_request(&state.mcp_events, call.request, &context)
+                    {
+                        call.fail("auth_denied");
+                    }
+                }
+                return error(StatusCode::FORBIDDEN, message, "mcp_tool_denied");
+            }
+            Verdict::Unreadable => {
+                return error(
+                    StatusCode::BAD_REQUEST,
+                    format!(
+                        "the request to MCP server '{}' could not be read as JSON-RPC, so the \
+                         organization's tool groups cannot be applied to it",
+                        server.slug
+                    ),
+                    "mcp_request_unreadable",
+                );
+            }
+        }
+    }
 
     let Some(url) = downstream_url(&server.url, tail.as_deref(), query) else {
         return error(
@@ -603,6 +649,150 @@ mod tests {
         let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(body["error"]["code"], "mcp_upstream_error");
         assert_eq!(body["error"]["message"], MCP_UPSTREAM_FAILED);
+    }
+
+    fn with_group(tools: &[&str]) -> GatewayConfig {
+        let mut config = config("user-1", &["tools:execute"]);
+        config
+            .mcp_tool_groups
+            .push(rolter_core::McpToolGroupConfig {
+                id: "group-1".to_string(),
+                org_id: "org-1".to_string(),
+                slug: "reviewers".to_string(),
+                tools: tools
+                    .iter()
+                    .map(|tool| rolter_core::McpToolRefConfig {
+                        server_id: "server-1".to_string(),
+                        tool: (*tool).to_string(),
+                    })
+                    .collect(),
+            });
+        config
+    }
+
+    fn call_body(tool: &str) -> Bytes {
+        Bytes::from(format!(
+            r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"{tool}","arguments":{{}}}}}}"#
+        ))
+    }
+
+    async fn post(state: AppState, body: Bytes) -> Response {
+        proxy(
+            state,
+            "github".to_string(),
+            None,
+            None,
+            Method::POST,
+            bearer(),
+            RequestId::default(),
+            body,
+        )
+        .await
+    }
+
+    async fn code_of(response: Response) -> (StatusCode, String) {
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
+        (
+            status,
+            body["error"]["code"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+        )
+    }
+
+    /// #1403: a tool outside the organization's groups is refused before
+    /// anything is forwarded, and the refusal is a row in the MCP log.
+    #[tokio::test]
+    async fn a_tool_outside_the_tool_groups_is_refused_and_logged() {
+        let mut state = AppState::new(&with_group(&["get_issue"]));
+        let (sink, mut events) =
+            crate::mcp_log::McpEventSink::capturing(std::sync::Arc::new(Default::default()));
+        state.mcp_events = sink;
+        // the default server url is a closed port: a 403 proves nothing was dialled
+        let (status, code) = code_of(post(state, call_body("delete_repo")).await).await;
+        assert_eq!(
+            (status, code.as_str()),
+            (StatusCode::FORBIDDEN, "mcp_tool_denied")
+        );
+        let event = events.try_recv().expect("the refusal is recorded");
+        assert_eq!(
+            (event.tool.as_str(), event.status, event.server.as_str()),
+            ("delete_repo", "auth_denied", "github")
+        );
+        assert_eq!(
+            (event.org_id.as_str(), event.user_id.as_str()),
+            ("org-1", "user-1")
+        );
+        assert_eq!(event.error, "authentication denied");
+    }
+
+    #[tokio::test]
+    async fn a_batch_holding_one_refused_call_is_refused_whole() {
+        let mut state = AppState::new(&with_group(&["get_issue"]));
+        let (sink, mut events) =
+            crate::mcp_log::McpEventSink::capturing(std::sync::Arc::new(Default::default()));
+        state.mcp_events = sink;
+        let body = Bytes::from(format!(
+            "[{},{}]",
+            String::from_utf8_lossy(&call_body("get_issue")),
+            String::from_utf8_lossy(&call_body("drop")),
+        ));
+        let (status, code) = code_of(post(state, body).await).await;
+        assert_eq!(
+            (status, code.as_str()),
+            (StatusCode::FORBIDDEN, "mcp_tool_denied")
+        );
+        assert_eq!(events.try_recv().unwrap().tool, "drop");
+        assert!(
+            events.try_recv().is_err(),
+            "the allowed call was not refused"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_body_is_refused_while_a_group_governs_the_server() {
+        let state = AppState::new(&with_group(&["get_issue"]));
+        let (status, code) =
+            code_of(post(state, Bytes::from_static(b"{\"method\": tools/call")).await).await;
+        assert_eq!(
+            (status, code.as_str()),
+            (StatusCode::BAD_REQUEST, "mcp_request_unreadable")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_tool_in_a_group_is_forwarded() {
+        use axum::routing::any;
+        use axum::Router;
+
+        let app = Router::new().route("/{*path}", any(|| async { "ok" }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let mut config = with_group(&["get_issue"]);
+        config.mcp_servers[0].url = format!("http://{addr}/rpc");
+        let response = post(AppState::new(&config), call_body("get_issue")).await;
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn a_server_no_group_names_still_serves_every_tool() {
+        use axum::routing::any;
+        use axum::Router;
+
+        let app = Router::new().route("/{*path}", any(|| async { "ok" }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let mut config = config("user-1", &["tools:execute"]);
+        config.mcp_servers[0].url = format!("http://{addr}/rpc");
+        let response = post(AppState::new(&config), call_body("anything")).await;
+        assert_eq!(response.status(), StatusCode::OK);
     }
 
     #[test]

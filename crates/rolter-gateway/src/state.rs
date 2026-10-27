@@ -210,6 +210,10 @@ pub struct Snapshot {
     pub keys: HashMap<String, KeyMeta>,
     /// MCP servers keyed by `(org_id, slug)` for tenant-safe path resolution
     pub mcp_servers: HashMap<(String, String), rolter_core::McpServerConfig>,
+    /// for each MCP server named by an enabled tool group, the tools those
+    /// groups allow, keyed by server id (#1403). A server absent from the map
+    /// is not governed by a group
+    pub mcp_governed_tools: HashMap<String, std::collections::HashSet<String>>,
     /// newest live session keyed by `(server_id, user_id)`
     pub mcp_oauth_sessions: HashMap<(String, String), rolter_core::McpOAuthSessionConfig>,
     /// deployment secret used to derive the key digests above
@@ -572,6 +576,26 @@ impl Snapshot {
             .cloned()
             .map(|server| ((server.org_id.clone(), server.slug.clone()), server))
             .collect();
+        // a group only governs servers of its own organization: the control
+        // plane refuses a cross-organization reference when it is written, and
+        // this keeps a row written around that from reaching another tenant
+        let org_of_server: HashMap<&str, &str> = config
+            .mcp_servers
+            .iter()
+            .map(|server| (server.id.as_str(), server.org_id.as_str()))
+            .collect();
+        let mut mcp_governed_tools: HashMap<String, std::collections::HashSet<String>> =
+            HashMap::new();
+        for group in &config.mcp_tool_groups {
+            for reference in &group.tools {
+                if org_of_server.get(reference.server_id.as_str()) == Some(&group.org_id.as_str()) {
+                    mcp_governed_tools
+                        .entry(reference.server_id.clone())
+                        .or_default()
+                        .insert(reference.tool.clone());
+                }
+            }
+        }
         let mcp_oauth_sessions = config
             .mcp_oauth_sessions
             .iter()
@@ -591,6 +615,7 @@ impl Snapshot {
             routes,
             keys,
             mcp_servers,
+            mcp_governed_tools,
             mcp_oauth_sessions,
             pepper,
             require_auth: config.server.require_auth,

@@ -24,6 +24,7 @@ mod crud;
 mod guardrails;
 mod mcp;
 mod mcp_discovery;
+mod mcp_enforcement;
 mod profile;
 mod rbac;
 mod scim;

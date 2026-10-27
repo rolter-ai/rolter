@@ -11,11 +11,11 @@ use rolter_core::{
     AdvancedModelConfig, BackpressurePolicy, BalancingStrategy, BudgetConfig, BudgetPeriod,
     BudgetScope, BuiltinRule, Decorator, Error, FailureMode, FeatureFlagsConfig, GatewayConfig,
     GroupMember, GuardAction, GuardStage, GuardrailRule, GuardrailWebhookConfig, GuardrailsConfig,
-    McpAuthKind, McpOAuthSessionConfig, McpServerConfig, ModelPolicy, ModelPriceConfig, ModelRoute,
-    ParamPolicy, PluginInstanceConfig, PluginStage, PluginsConfig, PromptTemplate,
-    PromptTemplateActivationScope, PromptTemplatesConfig, ProviderConfig, ProviderGroupConfig,
-    ProviderKind, RateLimitConfig, Result, Target, TemplateVariable, Tenancy, UnpricedPolicy,
-    VirtualKeyRecord, WebhookAuth, WebhookStage,
+    McpAuthKind, McpOAuthSessionConfig, McpServerConfig, McpToolGroupConfig, McpToolRefConfig,
+    ModelPolicy, ModelPriceConfig, ModelRoute, ParamPolicy, PluginInstanceConfig, PluginStage,
+    PluginsConfig, PromptTemplate, PromptTemplateActivationScope, PromptTemplatesConfig,
+    ProviderConfig, ProviderGroupConfig, ProviderKind, RateLimitConfig, Result, Target,
+    TemplateVariable, Tenancy, UnpricedPolicy, VirtualKeyRecord, WebhookAuth, WebhookStage,
 };
 use rust_decimal::Decimal;
 use sqlx::postgres::PgPoolOptions;
@@ -447,6 +447,14 @@ struct McpServerSnapshotRow {
     connect_timeout_ms: Option<i32>,
     request_timeout_ms: Option<i32>,
     max_retries: Option<i32>,
+}
+
+#[derive(FromRow)]
+struct McpToolGroupSnapshotRow {
+    id: Uuid,
+    org_id: Uuid,
+    slug: String,
+    tools: serde_json::Value,
 }
 
 #[derive(FromRow)]
@@ -1139,6 +1147,42 @@ impl PostgresConfigStore {
             .collect())
     }
 
+    /// Enabled tool groups for the snapshot (#1403). A disabled group governs
+    /// nothing, so it is not carried. A reference that does not parse is left
+    /// out with a warning rather than failing the snapshot; the API only ever
+    /// writes well-formed ones, so this is a row written around it.
+    async fn load_mcp_tool_groups(&self) -> Result<Vec<McpToolGroupConfig>> {
+        let rows: Vec<McpToolGroupSnapshotRow> = sqlx::query_as(
+            "select id, org_id, slug, tools from mcp_tool_groups where enabled \
+             order by org_id, slug",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(store_err)?;
+        Ok(rows
+            .into_iter()
+            .map(|row| {
+                let tools = match serde_json::from_value::<Vec<McpToolRefConfig>>(row.tools) {
+                    Ok(tools) => tools,
+                    Err(error) => {
+                        tracing::warn!(
+                            group_id = %row.id,
+                            error = %error,
+                            "MCP tool group holds references that do not parse; ignoring them"
+                        );
+                        Vec::new()
+                    }
+                };
+                McpToolGroupConfig {
+                    id: row.id.to_string(),
+                    org_id: row.org_id.to_string(),
+                    slug: row.slug,
+                    tools,
+                }
+            })
+            .collect())
+    }
+
     async fn load_mcp_oauth_sessions(&self) -> Result<Vec<McpOAuthSessionConfig>> {
         let rows: Vec<McpSessionSnapshotRow> = sqlx::query_as(
             "select distinct on (g.server_id, g.user_id) \
@@ -1818,6 +1862,7 @@ impl ConfigStore for PostgresConfigStore {
         let db_virtual_keys = self.load_virtual_keys().await?;
         let mcp_servers = self.load_mcp_servers().await?;
         let mcp_oauth_sessions = self.load_mcp_oauth_sessions().await?;
+        let mcp_tool_groups = self.load_mcp_tool_groups().await?;
         let budgets = self.load_budgets().await?;
         let rate_limits = self.load_rate_limits().await?;
         let prompt_templates = self.load_prompt_templates().await?;
@@ -1831,6 +1876,7 @@ impl ConfigStore for PostgresConfigStore {
             db_virtual_keys,
             mcp_servers,
             mcp_oauth_sessions,
+            mcp_tool_groups,
             budgets,
             rate_limits,
             prompt_templates,

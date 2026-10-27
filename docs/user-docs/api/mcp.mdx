@@ -102,11 +102,18 @@ that names it keeps working until you decide otherwise. A server behind OAuth
 is asked with the signed-in user's own session, so it waits until that user has
 connected.
 
-Tool Groups bundle exact `server/tool` references into named policy manifests.
-They are useful to MCP-aware clients and future project assignment, but the
-current proxy does not enforce group membership as an access boundary. Access
-continues to be decided by virtual-key owner, server, live OAuth session and
-required scopes.
+Tool Groups bundle exact `server/tool` references into named policy manifests,
+and the proxy enforces them. A server that at least one enabled group names
+serves only the tools those groups list: a `tools/call` for any other tool is
+refused with `403` and the code `mcp_tool_denied` before anything is forwarded,
+and the refusal is recorded in the MCP log as an `auth_denied` row naming the
+tool. A server no group names is not narrowed by groups. The groups an
+organization enables apply to every caller in it; there is no per-key or
+per-project assignment yet. Batches are refused as a whole when any call in
+them is refused, and while a group governs a server a request body that cannot
+be read as JSON-RPC is refused with `400` (`mcp_request_unreadable`) rather than
+forwarded unchecked. Disabling or deleting a group lifts its restriction on the
+next snapshot.
 
 MCP Settings stores organization defaults for transport, timeout intent,
 retries, failure policy and undeclared tools. The current HTTP proxy continues
@@ -114,9 +121,9 @@ to use deployment-level transport timeouts; the screen calls this out rather
 than implying a saved value has already changed request-path behavior.
 
 <Warning>
-  **Tool Groups and MCP Settings are experimental** and may change shape or be
-  removed in a minor release. Both are management surfaces the proxy does not
-  read yet, so the shape each stores is likely to move when it starts to. The
+  **MCP Settings is experimental** and may change shape or be
+  removed in a minor release. It is a management surface the proxy does not read
+  yet, so the shape it stores is likely to move when it starts to. The
   MCP proxy itself — `/mcp/{server}`, its authorization and its logs — is not
   experimental.
 </Warning>

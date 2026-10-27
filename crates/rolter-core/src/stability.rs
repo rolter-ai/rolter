@@ -120,14 +120,6 @@ pub const SUBSYSTEMS: &[SubsystemStability] = &[
         nav_keys: &["mcp-settings"],
     },
     SubsystemStability {
-        id: "mcp_tool_groups",
-        stability: Stability::Experimental,
-        note: "tool-group manifests are stored and published to MCP-aware \
-               clients, but the proxy does not enforce group membership as an \
-               access boundary",
-        nav_keys: &["tool-groups"],
-    },
-    SubsystemStability {
         id: "plugins",
         stability: Stability::Experimental,
         note: "the webhook payload a plugin receives carries no version of its \

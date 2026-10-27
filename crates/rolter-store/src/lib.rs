@@ -345,6 +345,7 @@ impl ConfigStore for MergedConfigStore {
         // control-plane-managed snapshot.
         merged.mcp_servers = db.mcp_servers;
         merged.mcp_oauth_sessions = db.mcp_oauth_sessions;
+        merged.mcp_tool_groups = db.mcp_tool_groups;
         merged
             .model_prices
             .extend(db.model_prices.into_iter().filter(|p| {
