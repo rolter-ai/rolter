@@ -117,7 +117,10 @@ jobs:
   # steps identical, or the keys drift and PR coverage builds cold
   coverage:
     name: coverage
-    runs-on: ubuntu-26.04
+    # still 24.04, like quality.yml's coverage job: some tests shell out to the
+    # runner's pg_dump and psql against the postgres:16 service, and the 26.04
+    # postgres 18 client writes dumps a 16 server refuses. moves with #3235
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     services:
       postgres:

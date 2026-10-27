@@ -851,8 +851,8 @@ matrix entries use the explicit `ubuntu-26.04` label too, and so do the
 jobs still said `ubuntu-latest` when #2736 landed (`ui lockfile audit` in
 `extended.yml` and `sign images` in `release.yml`); they are pinned like the rest.
 
-Two jobs stay on `ubuntu-24.04` for now: `nextest / doctests` and `coverage` in
-`quality.yml`. Some of their tests shell out to the runner's `pg_dump` and `psql`
+Three jobs stay on `ubuntu-24.04` for now: `nextest / doctests` and `coverage` in
+`quality.yml`, and `coverage` in `extended.yml`, which shares its cache. Some of their tests shell out to the runner's `pg_dump` and `psql`
 against the `postgres:16` service, and the 26.04 image ships a PostgreSQL 18
 client whose dumps a 16 server refuses (`SET transaction_timeout`). They move
 once the client and the test server agree (#3235).
