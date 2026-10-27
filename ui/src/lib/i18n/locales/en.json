@@ -12,6 +12,11 @@
     "noMethod": "No login method is enabled for this deployment.",
     "selfHosted": "Self-hosted · sessions are local to this deployment.",
     "sessionExpired": "Your session expired — sign in again.",
+    "adminToken": {
+      "label": "Admin token",
+      "hint": "This control plane runs without a database, so it has no accounts. Enter the ROLTER_ADMIN_TOKEN it was started with.",
+      "submit": "Use token"
+    },
     "sso": {
       "exchangeExpired": "That sign-in expired before it finished. Try signing in again.",
       "errors": {
@@ -197,6 +202,11 @@
     "load": {
       "retry": "Try again",
       "signIn": "Sign in again",
+      "adminTokenAction": "Enter the admin token",
+      "adminToken": {
+        "title": "{{resource}} needs the admin token",
+        "body": "This control plane runs without a database, so it has no sessions and the admin token is the only credential it accepts here. None was sent, or the one sent is wrong. Signing in with an email will not fix this: enter ROLTER_ADMIN_TOKEN on the sign-in screen."
+      },
       "unauthenticated": {
         "title": "Sign in to see {{resource}}",
         "body": "Your session is missing or has expired, so the control plane refused the request. This is not a problem with the data."
@@ -3615,6 +3625,9 @@
       "linkBody": "Shown once and not recoverable after you close this dialog.",
       "linkSendTo": "Send this link to <0>{{email}}</0>. It works once and expires in seven days.",
       "linkGrants": "Accepting it grants {{role}} on {{scope}}.",
+      "linkMailSent": "We also emailed this link to {{email}}.",
+      "linkMailFailed": "We could not email it: {{reason}}. Send the link yourself.",
+      "linkMailNotConfigured": "Nothing was emailed: this control plane has no mail relay configured (ROLTER_SMTP_URL). Send the link yourself.",
       "copyLink": "Copy link",
       "done": "Done",
       "inviteTitle": "Invite user",
@@ -3679,6 +3692,8 @@
         "title": "Pending invitations",
         "summary_one": "{{count}} not accepted yet · a link works once and expires after seven days",
         "summary_other": "{{count}} not accepted yet · a link works once and expires after seven days",
+        "mailSent": "Emailed",
+        "mailFailed": "Not emailed",
         "colInvitee": "Invitee",
         "colRole": "Role",
         "colScope": "Scope",

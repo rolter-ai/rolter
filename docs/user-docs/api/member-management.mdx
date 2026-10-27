@@ -51,6 +51,14 @@ the invitation was sent with the admin token or its sender's account was deleted
 (in which case `invited_by` is `null` too). Only the list carries it; creating or
 revoking an invitation returns it as `null`.
 
+## See whether an invitation was emailed
+
+Each invitation row carries `mail_status` (`sent`, `failed`, or `not_configured`
+when the control plane has no mail relay), `mail_attempted_at` and, for a
+failure, `mail_error`, a short reason that is safe to show. Creating an
+invitation always returns the link, whatever the status says. See
+[Emailing invitations](/security/rbac#emailing-invitations).
+
 ## Reset a member's password
 
 `POST /api/v1/orgs/{org_id}/users/{id}/password-reset` issues a one-time link
