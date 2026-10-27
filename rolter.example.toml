@@ -335,8 +335,9 @@ weight = 1
 # sheet. the gateway applies `limits.timeout_secs`, `limits.retries`,
 # `limits.output_tokens`, `limits.rpm`, `limits.tpm`, `limits.concurrency`, `headers` / `locked_headers`, `visibility` and the
 # `guardrails` selection (see the guardrails block below). `model_type`,
-# `capabilities` and `description` are labels the dashboard reads; the gateway
-# does not enforce them. `base_url`, `insecure_tls`, `[routes.advanced.pricing]`
+# `capabilities` and `context_length` are labels the dashboard reads and
+# `GET /v1/models` serves; `description` is dashboard-only. the gateway does
+# not enforce any of them. `base_url`, `insecure_tls`, `[routes.advanced.pricing]`
 # and the `context_window` limit never took effect and were removed (#2924): a file that still sets one loads, the key
 # ignored and reported as unknown. a second endpoint is a second provider, and a
 # private CA is [tls] ca_bundles.
@@ -345,6 +346,7 @@ weight = 1
 # [routes.advanced]
 # model_type = "chat"             # dashboard label, e.g. chat or embedding
 # capabilities = ["vision"]       # dashboard label, not enforced
+# context_length = 128000         # context window in tokens, served on /v1/models, not enforced
 # description = "gpt-4o for the platform team"
 # headers = { "x-team" = "platform" }         # sent upstream; credentials belong on the provider
 # locked_headers = ["x-team"]                 # a caller's x-team (if forwarded) may not replace it
@@ -625,6 +627,8 @@ disabled = false # revoke without deleting
 # recovery_success_threshold = 2      # probe successes before it recovers
 # status_page_interval_secs = 60      # status-page polls; only providers with a
 #                                     # status_page_url, even with enabled = false
+# catalogue_interval_secs = 900       # model-catalogue refresh behind /v1/models,
+#                                     # even with enabled = false; 0 turns it off
 
 # --- per-target circuit breaker ---
 # complements the short per-failure cooldown with a longer-lived state machine.

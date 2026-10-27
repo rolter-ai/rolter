@@ -275,11 +275,17 @@ routes, providers and groups, the same boundary the route authorization
 contract enforces on a call (#1844); a key from the gateway's config file sees
 them all:
 
-| Id                    | `owned_by`          | Where it comes from                                                                                              |
-| --------------------- | ------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| a route name (`chat`) | `rolter`            | every configured route, plus the built-in `fake-llm` unless a route the key can use shadows it                   |
-| `provider-slug/model` | the provider's name | the upstream models the provider's routes name, **plus** the catalogue the provider reported to its health probe |
-| `group-slug/model`    | the group's name    | the union of its member providers' models (a member with an explicit model rewrite contributes that one)         |
+| Id                    | `owned_by`          | Where it comes from                                                                                                  |
+| --------------------- | ------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| a route name (`chat`) | `rolter`            | every configured route, plus the built-in `fake-llm` unless a route the key can use shadows it                       |
+| `provider-slug/model` | the provider's name | the upstream models the provider's routes name, **plus** the catalogue the provider reported to its model-list probe |
+| `group-slug/model`    | the group's name    | the union of its member providers' models (a member with an explicit model rewrite contributes that one)             |
+
+A route's entry also carries `capabilities`, `model_type` and `context_length`
+when the route sets them (`handlers.rs`, `add_model_metadata`; #2939). They are
+advertised, never enforced. `description` is never served: it is free text
+written for the team and may hold internal routing notes. Provider-pinned and
+group addresses have no route, so they carry none of these.
 
 The provider-pinned half used to be derived from route targets alone, which
 under-reported a fleet: `provider-slug/model` resolves for **any** model the
@@ -287,10 +293,15 @@ provider serves (ADR-0017), so a provider with five models behind one route
 answered `200` for all five but listed two. A client that builds a model picker
 from `/v1/models` could not offer the rest (#1647).
 
-The catalogue comes from the probe the health sweep already sends. For every
-provider kind whose liveness endpoint is a model list — everything except TEI,
-and except a provider whose `health.path` was overridden — the sweep now parses
-that response instead of discarding it, and caches the model ids per provider.
+The catalogue comes from the provider's free model-list probe
+(`rolter_core::probe::probe_request`). For every provider kind whose liveness
+endpoint is a model list — everything except TEI — the response is parsed
+instead of discarded, and the model ids are cached per provider. Two writers
+fill the cache: a dedicated refresher (`model_catalog::spawn_refresher`) that
+runs whether or not active health checks are on (#1729), and the health sweep,
+which parses the body it already fetched while `[health] enabled = true`. The
+refresher always probes the kind's default path, so an overridden `health.path`
+does not stop it.
 The probe carries the provider's key, presented the way the provider kind
 expects it (`x-api-key` for Anthropic, a bearer token for OpenAI, and so on; see
 [How the provider key is presented](../deployment/configuration.md#how-the-provider-key-is-presented)).
@@ -298,15 +309,25 @@ An `openai` or `anthropic` provider answers a keyless model list with `401`,
 which still counts as healthy but has no catalogue to read, so these two kinds
 listed no extra models until the sweep sent their key (#2806).
 
-Two consequences follow from reusing the probe:
+An id is listed **whole**. Infinity and vLLM report Hugging Face ids such as
+`BAAI/bge-small-en-v1.5` and refuse the bare `bge-small-en-v1.5`, so the listing
+is `provider-slug/BAAI/bge-small-en-v1.5` and `resolve_pinned` (which splits at
+the first slash) sends `model = "BAAI/bge-small-en-v1.5"` upstream (#3245). Only a
+google resource name loses its `models/` prefix. `rolter_core::probe::catalogue_names`
+still cuts to the last segment; the control plane's model check uses it to match
+names, never to build an address.
 
-- **The wider listing needs `[health] enabled = true`.** Without active probing
-  nothing ever asks a provider what it serves, and the listing stays exactly
-  route-derived. Addressing is unaffected either way: an unlisted
-  `provider-slug/model` still routes.
-- **It costs no extra upstream traffic and no new configuration.** The probe
-  interval is the refresh interval; the cache survives config reloads and drops
-  a provider a reload removed.
+Two consequences follow:
+
+- **The wider listing does not depend on `[health]`.** The refresher runs every
+  `[health] catalogue_interval_secs` (default `900`; `0` turns it off, leaving
+  only the sweep). It works for a config-file-only deployment. A provider with
+  no catalogue yet is fetched within 30 seconds, and a failed fetch keeps the
+  previous catalogue rather than emptying the listing. Addressing is unaffected
+  either way: an unlisted `provider-slug/model` still routes.
+- **It is one free, non-inference GET per provider per interval.** The cache
+  survives config reloads and drops a provider a reload removed. Fetches are
+  bounded by `probe_concurrency` and a 10 second timeout.
 
 Two bounds keep the listing from growing without limit, since it is the product
 of the fleet and each provider's catalogue:

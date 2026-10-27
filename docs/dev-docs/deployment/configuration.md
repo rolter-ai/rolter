@@ -324,6 +324,7 @@ Deployment-wide policy for routes using the `adaptive` strategy. See [load balan
 - `probe_concurrency` (usize, default `2`) — max probes in flight at once during a sweep, so probing never stampedes upstreams
 - `consecutive_failure_threshold` (u32, default `3`) — consecutive probe failures before a provider is marked unhealthy
 - `recovery_success_threshold` (u32, default `2`) — consecutive successes before an unhealthy provider recovers
+- `catalogue_interval_secs` (u64, default `900`) — seconds between refreshes of each provider's model catalogue for `GET /v1/models`; runs even when `enabled = false`, `0` turns it off
 - `status_page_interval_secs` (u64, default `60`) — seconds between provider status-page polls; only providers with a `status_page_url` are polled, and the poller runs even when `enabled = false`
 - probes are jittered across the first quarter of the interval (per-provider stable offset), and a `429` on the probe itself pauses that provider's probing with exponential backoff (1, 2, 4, 8 sweeps) without marking it unhealthy
 

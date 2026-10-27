@@ -100,6 +100,7 @@
 - [The ci-ok gate and the title-edit fast path](development/ci-gating.md)
 - [API stability and the semver gate](development/api-stability.md)
 - [Stability markers](development/stability-markers.md)
+- [Deprecating a control-plane operation or field](development/deprecations.md)
 - [Config export and the import round trip](development/config-export-round-trip.md)
 - [Packaging (uv / cargo / docker)](development/packaging.md)
 - [Competitive study: an open-source gateway](development/experiential-comparison.md)
