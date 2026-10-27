@@ -1684,6 +1684,124 @@ async fn provider_test_reports_whether_a_model_is_listed() {
     assert!(liveness["model_listed"].is_null(), "{liveness}");
 }
 
+/// #984: the cache probe records a reporting provider, a non-reporting one and
+/// leaves a provider that never answered unprobed; the listing carries only
+/// the verdicts that exist.
+#[tokio::test]
+async fn cache_probe_records_a_verdict_per_provider_and_lists_only_probed_ones() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let app = rolter_control::test_app(db.pool().clone()).await.unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let reporting = serve(axum::Router::new().fallback(|| async {
+        axum::Json(json!({"usage": {"prompt_tokens": 8, "completion_tokens": 1,
+            "prompt_tokens_details": {"cached_tokens": 0}}}))
+    }))
+    .await;
+    let silent = serve(axum::Router::new().fallback(|| async {
+        axum::Json(json!({"usage": {"prompt_tokens": 8, "completion_tokens": 1}}))
+    }))
+    .await;
+    let broken = serve(
+        axum::Router::new()
+            .fallback(|| async { (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "down") }),
+    )
+    .await;
+
+    let org: Value = client
+        .post(format!("{base}/api/v1/orgs"))
+        .json(&json!({"name": "Acme", "slug": "acme"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_id = org["id"].as_str().expect("org id");
+    let mut ids = Vec::new();
+    for (name, upstream) in [
+        ("reports", reporting),
+        ("silent", silent),
+        ("broken", broken),
+    ] {
+        let created: Value = client
+            .post(format!("{base}/api/v1/orgs/{org_id}/providers"))
+            .json(&json!({
+                "name": name,
+                "kind": "openai_compatible",
+                "api_base": format!("http://{upstream}"),
+            }))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        ids.push(created["id"].as_str().expect("provider id").to_string());
+    }
+    let probe = |id: String| {
+        let client = client.clone();
+        let base = base.clone();
+        async move {
+            client
+                .post(format!("{base}/api/v1/providers/{id}/probe-cache?model=m"))
+                .send()
+                .await
+                .unwrap()
+                .json::<Value>()
+                .await
+                .unwrap()
+        }
+    };
+    let listing = || {
+        let client = client.clone();
+        let base = base.clone();
+        let org_id = org_id.to_string();
+        async move {
+            client
+                .get(format!("{base}/api/v1/orgs/{org_id}/provider-cache-probes"))
+                .send()
+                .await
+                .unwrap()
+                .json::<Value>()
+                .await
+                .unwrap()
+        }
+    };
+    assert_eq!(listing().await, json!([]), "nothing is probed yet");
+
+    let yes = probe(ids[0].clone()).await;
+    assert_eq!(yes["recorded"], true, "{yes}");
+    assert_eq!(yes["verdict"]["reports"], true, "{yes}");
+    assert_eq!(
+        yes["verdict"]["spelling"], "/prompt_tokens_details/cached_tokens",
+        "{yes}"
+    );
+    let no = probe(ids[1].clone()).await;
+    assert_eq!(no["recorded"], true, "{no}");
+    assert_eq!(no["verdict"]["reports"], false, "{no}");
+    assert!(no["verdict"]["spelling"].is_null(), "{no}");
+    let unknown = probe(ids[2].clone()).await;
+    assert_eq!(unknown["recorded"], false, "{unknown}");
+    assert_eq!(unknown["status"], 500, "{unknown}");
+
+    let listed = listing().await;
+    let listed = listed.as_array().expect("a list");
+    assert_eq!(listed.len(), 2, "the failed probe left no verdict");
+    assert!(listed.iter().all(|row| row["probed_at"].is_string()));
+    assert!(listed.iter().all(|row| row["provider_id"] != json!(ids[2])));
+
+    let refused = client
+        .post(format!("{base}/api/v1/providers/{}/probe-cache", ids[0]))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), 400, "the model is required");
+}
+
 /// #3085: a provider cannot name a control-plane secret as its credential
 /// variable, on save or on test, and a row that already does is never read.
 #[tokio::test]

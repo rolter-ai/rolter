@@ -397,6 +397,12 @@ const PROVIDER_TEST_QUERY: &[QueryParam] = &[QueryParam::new(
      `model_listed`: true or false, or null when the provider has no catalogue to check",
 )];
 
+const PROVIDER_CACHE_PROBE_QUERY: &[QueryParam] = &[QueryParam::new(
+    "model",
+    "string",
+    "the upstream model to ask for one token (required); the probe is a completion, so it costs a token",
+)];
+
 /// The MCP call log's query string. The same keyset-paging problem as the
 /// invocation log below, and the one #1412 names first: `next_cursor` comes
 /// back in the body, and a caller who does not know to send it as `cursor`
@@ -1260,6 +1266,20 @@ fn operations() -> Vec<Op> {
             )
             .query(PROVIDER_TEST_QUERY)
             .body(Payload::Empty),
+            Op::post(
+                "/api/v1/providers/{id}/probe-cache",
+                "probeProviderCache",
+                "Ask a provider for one token and record whether the answer's usage carries prompt-cache metrics (needs provider:update)",
+            )
+            .query(PROVIDER_CACHE_PROBE_QUERY)
+            .body(Payload::Empty)
+            .ok(Payload::Open),
+            Op::get(
+                "/api/v1/orgs/{org_id}/provider-cache-probes",
+                "listProviderCacheProbes",
+                "List the stored prompt-cache reporting verdicts of an org's providers; a provider with no entry was never probed",
+            )
+            .ok(Payload::Open),
             Op::get(
                 "/api/v1/providers/{id}/models",
                 "listProviderModels",

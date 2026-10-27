@@ -1088,18 +1088,30 @@ fn anthropic_block_to_openai(block: Value) -> Value {
 /// that states `prompt_tokens` or the Responses API's `input_tokens` with the
 /// details block.
 pub fn cached_prompt_tokens(usage: &Value) -> Option<u64> {
-    const SPELLINGS: [&str; 6] = [
-        "/prompt_tokens_details/cached_tokens",
-        "/input_tokens_details/cached_tokens",
-        "/prompt_cache_hit_tokens",
-        "/cached_tokens",
-        "/precached_prompt_tokens",
-        "/cache_read_input_tokens",
-    ];
-    SPELLINGS
+    CACHE_HIT_SPELLINGS
         .iter()
         .find_map(|pointer| usage.pointer(pointer)?.as_u64())
 }
+
+/// The JSON pointer of the first prompt-cache hit spelling `usage` carries,
+/// a zero included (#984). A provider that states `cached_tokens: 0` reports
+/// cache metrics; one that omits the field does not, and the control plane's
+/// probe tells the two apart with this.
+pub fn cached_prompt_tokens_spelling(usage: &Value) -> Option<&'static str> {
+    CACHE_HIT_SPELLINGS
+        .iter()
+        .copied()
+        .find(|pointer| usage.pointer(pointer).and_then(Value::as_u64).is_some())
+}
+
+const CACHE_HIT_SPELLINGS: [&str; 6] = [
+    "/prompt_tokens_details/cached_tokens",
+    "/input_tokens_details/cached_tokens",
+    "/prompt_cache_hit_tokens",
+    "/cached_tokens",
+    "/precached_prompt_tokens",
+    "/cache_read_input_tokens",
+];
 
 /// The response header Fireworks puts the prompt-cache hit in, for dedicated
 /// deployments (#2882). The count is "out of" the prompt tokens, so it is
@@ -5276,6 +5288,25 @@ mod tests {
             "cache_read_input_tokens":80
         });
         assert_eq!(cached_prompt_tokens(&both), Some(64));
+    }
+
+    /// #984: a stated zero is a provider that reports, an absent field is not
+    #[test]
+    fn the_spelling_found_is_named_and_a_zero_counts() {
+        let zero = json!({"prompt_tokens":9,"prompt_tokens_details":{"cached_tokens":0}});
+        assert_eq!(
+            cached_prompt_tokens_spelling(&zero),
+            Some("/prompt_tokens_details/cached_tokens")
+        );
+        let flat = json!({"prompt_tokens":9,"cache_read_input_tokens":0});
+        assert_eq!(
+            cached_prompt_tokens_spelling(&flat),
+            Some("/cache_read_input_tokens")
+        );
+        let none = json!({"prompt_tokens":9,"completion_tokens":1});
+        assert_eq!(cached_prompt_tokens_spelling(&none), None);
+        let null = json!({"prompt_tokens_details":{"cached_tokens":null}});
+        assert_eq!(cached_prompt_tokens_spelling(&null), None);
     }
 
     #[test]
