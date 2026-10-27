@@ -582,6 +582,49 @@ pub struct SsoGroupMapping {
     pub created_at: DateTime<Utc>,
 }
 
+/// an LDAP directory registered for one org (#1826).
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct LdapDirectory {
+    pub id: Uuid,
+    pub org_id: Uuid,
+    pub name: String,
+    pub url: String,
+    pub bind_dn: String,
+    /// sealed service-account password. read only by the directory bind,
+    /// through [`super::repo::LdapRepo::bind_password`]; what is serialized in
+    /// its place is the derived boolean `has_bind_password`, so an operator can
+    /// see that one is stored without anything being able to see it
+    #[serde(rename = "has_bind_password", serialize_with = "is_present")]
+    #[serde(skip_deserializing)]
+    pub bind_secret_ciphertext: Option<Vec<u8>>,
+    #[serde(skip)]
+    pub bind_secret_nonce: Option<Vec<u8>>,
+    pub base_dn: String,
+    pub user_filter: String,
+    pub email_attr: String,
+    pub display_name_attr: String,
+    pub group_attr: String,
+    pub require_tls: bool,
+    /// role granted when no group mapping matches; `None` denies login to a
+    /// user the directory has not put in a mapped group
+    pub default_role: Option<String>,
+    pub enabled: bool,
+    pub created_at: DateTime<Utc>,
+}
+
+/// a directory group granting a role at a scope
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct LdapGroupMapping {
+    pub id: Uuid,
+    pub directory_id: Uuid,
+    pub group_name: String,
+    pub org_id: Option<Uuid>,
+    pub team_id: Option<Uuid>,
+    pub project_id: Option<Uuid>,
+    pub role: String,
+    pub created_at: DateTime<Utc>,
+}
+
 /// one in-flight authorization-code login
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct SsoLoginState {

@@ -22,6 +22,7 @@ mod auth;
 mod budgets;
 mod crud;
 mod guardrails;
+mod ldap;
 mod mcp;
 mod profile;
 mod rbac;

@@ -2321,6 +2321,47 @@ fn operations() -> Vec<Op> {
     ));
 
     ops.extend(tagged(
+        "ldap",
+        vec![
+            Op::get(
+                "/api/v1/orgs/{org_id}/ldap-directories",
+                "listLdapDirectories",
+                "Read an organization's LDAP directory",
+            ),
+            Op::post(
+                "/api/v1/orgs/{org_id}/ldap-directories",
+                "createLdapDirectory",
+                "Register an LDAP directory",
+            ),
+            Op::put(
+                "/api/v1/ldap-directories/{id}",
+                "updateLdapDirectory",
+                "Update an LDAP directory in place",
+            ),
+            Op::delete(
+                "/api/v1/ldap-directories/{id}",
+                "deleteLdapDirectory",
+                "Delete an LDAP directory",
+            ),
+            Op::get(
+                "/api/v1/ldap-directories/{id}/group-mappings",
+                "listLdapGroupMappings",
+                "List an LDAP directory's group mappings",
+            ),
+            Op::post(
+                "/api/v1/ldap-directories/{id}/group-mappings",
+                "createLdapGroupMapping",
+                "Map a directory group to a role at a scope",
+            ),
+            Op::delete(
+                "/api/v1/ldap-group-mappings/{id}",
+                "deleteLdapGroupMapping",
+                "Delete an LDAP group mapping",
+            ),
+        ],
+    ));
+
+    ops.extend(tagged(
         "sso",
         vec![
             Op::get(
@@ -2546,6 +2587,7 @@ fn tags() -> Value {
         {"name": "settings", "description": "deployment-wide singletons the gateway reads from the snapshot"},
         {"name": "invitations", "description": "email invitations into an organization"},
         {"name": "sso", "description": "SSO providers, group mappings and the login redirect"},
+        {"name": "ldap", "description": "LDAP directories and the group mappings that turn directory groups into roles"},
         {"name": "scim", "description": "SCIM 2.0 provisioning and the tokens that authenticate it"},
         {"name": "proxy", "description": "the dashboard Playground's authenticated passthrough to the data plane"}
     ])

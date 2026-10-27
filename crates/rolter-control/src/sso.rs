@@ -969,7 +969,7 @@ async fn complete_login(
         // to take those away: being dropped from every mapped group is how an
         // operator deprovisions through the IdP
         if let Some(user) = &known {
-            reconcile_grants(state, provider.org_id, &[], user.id)
+            reconcile_grants(state, provider.org_id, &[], user.id, "sso")
                 .await
                 .map_err(failed(InternalError, named))?;
         }
@@ -1117,7 +1117,7 @@ fn normalize_group(group: &str) -> String {
 
 /// One membership a login should produce: `(org, team, project, role)`, with
 /// the same "most specific non-null id" convention as `memberships`.
-type ScopedGrant = (Option<Uuid>, Option<Uuid>, Option<Uuid>, String);
+pub(crate) type ScopedGrant = (Option<Uuid>, Option<Uuid>, Option<Uuid>, String);
 
 /// Reconcile the memberships this login implies: the matched mappings, or the
 /// provider's default role when nothing matched.
@@ -1144,16 +1144,18 @@ async fn apply_mappings(
             wanted.push((Some(provider.org_id), None, None, role.clone()));
         }
     }
-    reconcile_grants(state, provider.org_id, &wanted, user_id).await
+    reconcile_grants(state, provider.org_id, &wanted, user_id, "sso").await
 }
 
-/// Make the user's `sso`-sourced memberships inside `org_id` be exactly
-/// `wanted`, leaving `manual` rows alone, and return the roles now in force.
-async fn reconcile_grants(
+/// Make the user's memberships of `source` (`sso`, or `ldap` for a directory
+/// sign-in) inside `org_id` be exactly `wanted`, leaving every other source
+/// alone, and return the roles now in force.
+pub(crate) async fn reconcile_grants(
     state: &ControlState,
     org_id: Uuid,
     wanted: &[ScopedGrant],
     user_id: Uuid,
+    source: &str,
 ) -> ApiResult<Vec<String>> {
     let repo = MembershipRepo(pool(state));
     // scoped to the provider's org tree: another org's sso grants belong to
@@ -1167,7 +1169,7 @@ async fn reconcile_grants(
     let mut granted = Vec::new();
     for stale in existing
         .iter()
-        .filter(|m| m.source == "sso")
+        .filter(|m| m.source == source)
         .filter(|m| !wanted.iter().any(|w| grant_matches(m, w)))
     {
         // the org's last admin grant outlives the group change rather than
@@ -1182,7 +1184,7 @@ async fn reconcile_grants(
         if existing.iter().any(|m| grant_matches(m, want)) {
             continue;
         }
-        repo.create_with_source(user_id, want.0, want.1, want.2, &want.3, "sso")
+        repo.create_with_source(user_id, want.0, want.1, want.2, &want.3, source)
             .await?;
     }
     Ok(granted)

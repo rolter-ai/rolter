@@ -1117,6 +1117,60 @@
       ]
     },
     {
+      "resource": "ldap_directory",
+      "scope": "org",
+      "actions": [
+        {
+          "action": "read",
+          "minimum_role": "admin",
+          "superadmin_only": false,
+          "authenticated_only": false
+        },
+        {
+          "action": "create",
+          "minimum_role": "admin",
+          "superadmin_only": false,
+          "authenticated_only": false
+        },
+        {
+          "action": "update",
+          "minimum_role": "admin",
+          "superadmin_only": false,
+          "authenticated_only": false
+        },
+        {
+          "action": "delete",
+          "minimum_role": "admin",
+          "superadmin_only": false,
+          "authenticated_only": false
+        }
+      ]
+    },
+    {
+      "resource": "ldap_group_mapping",
+      "scope": "org",
+      "actions": [
+        {
+          "action": "read",
+          "minimum_role": "admin",
+          "superadmin_only": false,
+          "authenticated_only": false
+        },
+        {
+          "action": "create",
+          "minimum_role": "admin",
+          "superadmin_only": false,
+          "authenticated_only": false
+        },
+        {
+          "action": "delete",
+          "minimum_role": "admin",
+          "superadmin_only": false,
+          "authenticated_only": false
+        }
+      ]
+    },
+    {
       "resource": "org_auth_policy",
       "scope": "org",
       "actions": [

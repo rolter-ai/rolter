@@ -674,6 +674,28 @@ const CAPABILITIES: &[Capability] = &[
         delete: ADMIN,
         action_scopes: NONE,
     },
+    // LDAP sign-in: a directory and its group mappings decide who gets which
+    // role at sign-in, so they need the same admin bar as single sign-on
+    Capability {
+        resource: "ldap_directory",
+        scope: "org",
+        read: ADMIN,
+        create: ADMIN,
+        // editing a directory can rotate its bind password and take it in and
+        // out of service, which is the same grant as registering one
+        update: ADMIN,
+        delete: ADMIN,
+        action_scopes: NONE,
+    },
+    Capability {
+        resource: "ldap_group_mapping",
+        scope: "org",
+        read: ADMIN,
+        create: ADMIN,
+        update: NA,
+        delete: ADMIN,
+        action_scopes: NONE,
+    },
     Capability {
         resource: "org_auth_policy",
         scope: "org",

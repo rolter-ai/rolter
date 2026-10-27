@@ -497,6 +497,8 @@ Rolter ships with **local user accounts** secured with email and password. You c
 
 **OAuth2 / OIDC single sign-on** — with group-to-role mapping for identity providers such as Okta, Auth0, and Google Workspace — is available today, and **SCIM** provisions and deprovisions accounts from the same providers. See [Single sign-on](/security/single-sign-on) and [User provisioning](/security/user-provisioning). A first SSO sign-in gives an account that has no display name the one your identity provider sends; the user can still change it.
 
+**LDAP / Active Directory sign-in** is available too: an org registers a directory, maps its groups to roles, and its users sign in with their directory password. See [LDAP](/security/ldap).
+
 <Info>
-  LDAP and SAML sign-in are not available. Rolter contains the beginnings of an LDAP directory provider, but no configuration, sign-in route or dashboard screen reaches it, so a directory user cannot sign in through it today. If your organisation requires LDAP or SAML-based authentication, reach out to discuss the enterprise roadmap.
+  SAML sign-in is not available. If your organisation requires SAML-based authentication, reach out to discuss the enterprise roadmap.
 </Info>

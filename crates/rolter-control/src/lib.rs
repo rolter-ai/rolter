@@ -50,6 +50,8 @@ mod cors;
 #[cfg(feature = "postgres")]
 mod crud;
 #[cfg(feature = "postgres")]
+mod expiry_sweep;
+#[cfg(feature = "postgres")]
 mod feature_flags;
 #[cfg(feature = "postgres")]
 mod guardrail_trial;
@@ -62,12 +64,11 @@ mod ingest_failure;
 mod invitations;
 #[cfg(feature = "postgres")]
 mod labels;
-#[cfg(feature = "postgres")]
-mod password_reset;
-// not reachable from any sign-in route yet (#1826); see the module docs
-#[cfg(feature = "postgres")]
-mod expiry_sweep;
 pub mod ldap;
+/// LDAP sign-in: the stored directories, their admin API and the step the
+/// password login takes through them (#1826)
+#[cfg(feature = "postgres")]
+mod ldap_signin;
 #[cfg(feature = "postgres")]
 mod logging_settings;
 mod login_throttle;
@@ -92,6 +93,8 @@ pub mod mfa;
 mod model_defaults;
 mod open_mode;
 mod openapi;
+#[cfg(feature = "postgres")]
+mod password_reset;
 #[cfg(feature = "postgres")]
 mod plugins;
 mod proxy;
@@ -599,6 +602,10 @@ struct ControlState {
     /// `test_app_without_kek` reaches the no-KEK branches through this instead
     #[cfg_attr(not(feature = "postgres"), allow(dead_code))]
     mfa_without_kek: bool,
+    /// opens the directory an org's LDAP settings describe (#1826). The real
+    /// `ldap3` client in production, a stub in the integration suite
+    #[cfg_attr(not(feature = "postgres"), allow(dead_code))]
+    ldap: Arc<dyn ldap::DirectoryFactory>,
 }
 
 /// Log that a datastore endpoint is in use. Every startup line that names a
@@ -805,6 +812,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         trust_forwarded_for: args.login_trust_forwarded_for,
         update_check: update_check.clone(),
         mfa_without_kek: false,
+        ldap: Arc::new(ldap::Ldap3Factory),
         pool: pool.clone(),
     };
     #[cfg(not(feature = "postgres"))]
@@ -827,6 +835,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         trust_forwarded_for: args.login_trust_forwarded_for,
         update_check: update_check.clone(),
         mfa_without_kek: false,
+        ldap: Arc::new(ldap::Ldap3Factory),
     };
 
     // converge the clickhouse ttl with the stored retention policy. spawned
@@ -1281,6 +1290,7 @@ fn build_app_with(state: ControlState, mount_internal: bool) -> Router {
             .merge(scim::router())
             .merge(scim_groups::router())
             .merge(sso::router())
+            .merge(ldap_signin::router())
             .merge(cluster::router())
             .merge(connectors::router())
             .merge(collector_config::router())
@@ -1509,6 +1519,21 @@ pub async fn test_app_without_kek(pool: sqlx::PgPool) -> anyhow::Result<Router> 
     Ok(build_app_with(state, true))
 }
 
+/// [`test_app`] whose LDAP directories are opened through `factory` instead of
+/// the network, so sign-in through a directory is tested end to end against a
+/// stub that answers from a fixed list of entries (#1826).
+#[cfg(feature = "postgres")]
+pub async fn test_app_with_directory(
+    pool: sqlx::PgPool,
+    admin_token: Option<String>,
+    factory: Arc<dyn ldap::DirectoryFactory>,
+) -> anyhow::Result<Router> {
+    rolter_store::postgres::run_migrations(&pool).await?;
+    let mut state = test_state(pool, admin_token, None);
+    state.ldap = factory;
+    Ok(build_app_with(state, true))
+}
+
 /// [`test_app`] with the migrations deliberately *not* run, for exercising
 /// `/readyz` against a database whose schema is behind the binary (#1081).
 #[cfg(feature = "postgres")]
@@ -1547,6 +1572,7 @@ fn test_state(
         // what the integration test asserts
         update_check: update_check::UpdateChecker::disabled(),
         mfa_without_kek: false,
+        ldap: Arc::new(ldap::Ldap3Factory),
         pool: Some(pool),
     }
 }
@@ -3412,6 +3438,7 @@ mod tests {
             trust_forwarded_for: false,
             update_check: update_check::UpdateChecker::disabled(),
             mfa_without_kek: false,
+            ldap: Arc::new(ldap::Ldap3Factory),
             #[cfg(feature = "postgres")]
             pool: None,
         }
