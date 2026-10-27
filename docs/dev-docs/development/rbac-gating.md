@@ -82,11 +82,11 @@ chain is specified here.
 
 `provider` and `provider_group` are `project` rows although a row may also be
 org-wide (#1919, #2519). The matrix answers for the chain the caller queried, so
-a project admin asked at `(org, team, project)` gets the writes `crud.rs` allows
+a project admin asked at `(org, team, project)` gets the writes `crud/` allows
 on a provider scoped to that project, and an org admin still passes through the
 org membership. The page-level answer cannot tell an org-wide row from a scoped
 one: a project admin would see Edit on an org-wide provider and the handler
-would answer `403`, because `crud.rs` checks such a row at the org. That check,
+would answer `403`, because `crud/` checks such a row at the org. That check,
 not this table, is the authority, so the two list screens gate each row at the
 row's own scope (#2522), see
 [Gating a row at its own scope](#gating-a-row-at-its-own-scope). Asked at the org alone (no `project_id`) a project
@@ -200,7 +200,7 @@ backstop it always was. `ui/src/lib/can.test.ts` pins both.
   Publish and Roll back are all one `<resource>:update` — publishing moves a
   version pointer through the same `PUT` guard as an edit
   (`set_prompt_template_version` / `set_skill_version` in
-  `crates/rolter-control/src/crud.rs`), and there is no `:publish` action in
+  `crates/rolter-control/src/crud/`), and there is no `:publish` action in
   the capability table to gate on instead — and Delete is the one control that
   takes `<resource>:delete` (#1297). The `AsViewer` story on each screen
   asserts all five are refused and name the Admin role.

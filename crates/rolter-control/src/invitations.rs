@@ -32,7 +32,8 @@ use uuid::Uuid;
 
 use rolter_store::postgres::models::{Invitation, User};
 use rolter_store::postgres::repo::{
-    InvitationRepo, MembershipRepo, OrgRepo, ProjectRepo, SessionRepo, TeamRepo, UserRepo,
+    InvitationRepo, MembershipRepo, NewInvitation, OrgRepo, ProjectRepo, SessionRepo, TeamRepo,
+    UserRepo,
 };
 
 use crate::auth::{generate_session_token, session_pepper};
@@ -127,13 +128,15 @@ async fn create_invitation(
     let (invitation, replaced) = InvitationRepo(pool_ref)
         .create(
             org_id,
-            &email,
-            &body.role,
-            team,
-            project,
-            &token_hash,
-            invited_by,
-            Utc::now() + Duration::hours(INVITE_TTL_HOURS),
+            NewInvitation {
+                email: &email,
+                role: &body.role,
+                team_id: team,
+                project_id: project,
+                token_hash: &token_hash,
+                invited_by,
+                expires_at: Utc::now() + Duration::hours(INVITE_TTL_HOURS),
+            },
         )
         .await?;
 

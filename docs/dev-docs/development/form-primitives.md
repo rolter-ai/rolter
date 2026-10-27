@@ -16,20 +16,21 @@ themselves are components.
 They live in `ui/src/components/ui/` beside the other primitives, and their
 stories are grouped under **Forms/** in Storybook.
 
-| Primitive       | File                 | What it is                                                                              |
-| --------------- | -------------------- | --------------------------------------------------------------------------------------- |
-| `FieldLabel`    | `field-label.tsx`    | the compact label a sheet row carries, with the optional required marker and (i) note   |
-| `FieldError`    | `field-error.tsx`    | the message under a control, carrying the id the control points at                      |
-| `describedBy`   | `field-error.tsx`    | joins the ids a control actually has into one `aria-describedby`                        |
-| `FormSection`   | `form-section.tsx`   | one collapsible group of fields, open state owned by the caller                         |
-| `Segmented`     | `segmented.tsx`      | a two-to-four way choice rendered inline as a `radiogroup`                              |
-| `LockButton`    | `lock-button.tsx`    | the padlock toggle beside a parameter or header                                         |
-| `ChipGroup`     | `chip-group.tsx`     | a multi-select over a short, fully visible list                                         |
-| `SwitchRow`     | `switch-row.tsx`     | a boolean as a full-width row: title, hint, switch                                      |
-| `SettingsPanel` | `settings-panel.tsx` | a titled group of settings controls that can be switched off as a block                 |
-| `CopyableValue` | `copyable-value.tsx` | a labelled value to copy again: mono, `select-all`, wrapping, with hint and note        |
-| `Checkbox`      | `checkbox.tsx`       | a native checkbox drawn by the tokens: neutral when ticked, with an indeterminate state |
-| `AuthCard`      | `auth-card.tsx`      | the signed-out card: `<main>`, wordmark, вышивка rule, `h1`, description, then the form |
+| Primitive       | File                 | What it is                                                                               |
+| --------------- | -------------------- | ---------------------------------------------------------------------------------------- |
+| `FieldLabel`    | `field-label.tsx`    | the compact label a sheet row carries, with the optional required marker and (i) note    |
+| `FieldError`    | `field-error.tsx`    | the message under a control, carrying the id the control points at                       |
+| `describedBy`   | `field-error.tsx`    | joins the ids a control actually has into one `aria-describedby`                         |
+| `FormSection`   | `form-section.tsx`   | one collapsible group of fields, open state owned by the caller                          |
+| `Segmented`     | `segmented.tsx`      | a two-to-four way choice rendered inline as a `radiogroup`                               |
+| `LockButton`    | `lock-button.tsx`    | the padlock toggle beside a parameter or header                                          |
+| `ChipGroup`     | `chip-group.tsx`     | a multi-select over a short, fully visible list                                          |
+| `SwitchRow`     | `switch-row.tsx`     | a boolean as a full-width row: title, hint, switch                                       |
+| `SettingsPanel` | `settings-panel.tsx` | a titled group of settings controls that can be switched off as a block                  |
+| `CopyableValue` | `copyable-value.tsx` | a labelled value to copy again: mono, `select-all`, wrapping, with hint and note         |
+| `Checkbox`      | `checkbox.tsx`       | a native checkbox drawn by the tokens: neutral when ticked, with an indeterminate state  |
+| `AuthCard`      | `auth-card.tsx`      | the signed-out card: `<main>`, wordmark, вышивка rule, `h1`, description, then the form  |
+| `SubmitForm`    | `submit-form.tsx`    | the `<form>` an editor sheet or dialog sits in: Enter submits, a refused submit says why |
 
 ## Which one to reach for
 
@@ -108,6 +109,19 @@ easy to lose when the shape is retyped in the next sheet:
 
 Every one of those is asserted in the primitive's own story, so a rewrite that
 drops one fails the story rather than shipping.
+
+## Editors are forms
+
+`EditorSheet` and a `Dialog` given an `onSubmit` render a real `<form>` (`SubmitForm`, `ui/src/components/ui/submit-form.tsx`, #1205). Enter in a field submits it, a footer button of `type="submit"` means it, and `Button` defaults to `type="button"` so a Cancel or a row's delete placed inside never does.
+
+- `EditorSheet` takes `onSubmit` (it was `onSave`) and `canSave`. A `Dialog` takes `onSubmit`, `canSubmit` and `busy`, and its footer's primary button is `type="submit"` by hand.
+- The primary button is never natively `disabled` for a validation error. While `canSave` is false it is `aria-disabled` and still pressable, because pressing it, or Enter in a field, is how the form is asked why. Only `saving` really disables it.
+- A required field is `<Field required>`: the control gets the native `required` and `aria-required`, the label a marker. After a refused submit a still-empty required control says "Required" under itself (`role="alert"`, wired through `aria-describedby`), focus moves to the first field at fault, and `SubmitFormStatus` in the footer counts them (`N fields need attention`, a polite `role="status"`). Typing into the field clears its message. A value of spaces counts as empty, since every save trims it.
+- Only `required` is read from the attributes. A range, a charset or a clash with another field stays with the screen's own check (`useFieldErrors`, `FieldError`), which says more than a browser message can, in the dashboard's language. The browser's own bubble is off (`noValidate`).
+- A refusal that comes from the caller's rule rather than a field (a pick that is not an input) passes `blockedMessage` to `EditorSheet`, which the status line shows when no field is at fault.
+- A native `<button>` written by hand inside an editor carries `type="button"`, or it submits the form. `filter-panel.tsx` was the one that did not.
+
+Stories submit with Enter and assert the refused submit: `EnterSubmits` and `BlockedSubmitNamesTheField` under **Overlays/EditorSheet**, `EditorSubmitsWithEnter` under **Overlays/Dialog**, `DoesNotSubmitAFormUnlessAskedTo` under **Primitives/Button**. A story asserting that a sheet's Save is held reads `aria-disabled="true"`, not `toBeDisabled()`.
 
 ## Footers and bodies on small screens
 
@@ -385,8 +399,49 @@ const { draft, saved, changed, dirty, set, reset, commit } = useDraft(source, EQ
   Discard.
 
 The reducer and `changedKeys` are plain functions with unit tests beside them, since the tree has no
-React test renderer. The Security screen is the first consumer. The shared field errors are `useFieldErrors` above. The saved-at line that #2214 asks every settings
-screen to carry is not here yet; it belongs beside this hook rather than in each screen.
+React test renderer. The Security screen was the first consumer. The shared field errors are `useFieldErrors` above.
+
+### One form state for the settings screens
+
+`useSettingsForm` (`ui/src/lib/use-settings-form.ts`, #2214) is `useDraft`, `useFieldErrors` and the
+leave guard (`useLeaveGuard`) as one hook, and `SettingsSaveBar` (`ui/src/components/SettingsSaveBar.tsx`)
+is the footer that reads it. Adaptive Routing, Model Settings, Performance, Client Settings, Logs
+Settings, Compatibility and Feature Flags use them; a new deployment-settings screen does too.
+
+```tsx
+const source = React.useMemo(() => (query.data ? fromDto(query.data) : undefined), [query.data]);
+const sf = useSettingsForm<FormState, FieldKey>({
+  source,
+  equals: EQUALS, // optional, as for useDraft
+  fieldErrors: (draft) => ({ order, wire, idOf, local: draft ? translateErrors(validate(draft), t) : {} }),
+});
+const { draft: form, fields, changed, set } = sf;
+// a field:   value={form.x}  onChange={(e) => set({ x: e.target.value })}
+// a save:    onSuccess: (dto) => sf.commit(fromDto(dto))
+// the page:  <SettingsBody onSubmit={() => fields.submit(() => save.mutate(form))}> … </SettingsBody>
+// the foot:  <SettingsSaveBar form={sf} pending={save.isPending} updatedAt={query.data?.updated_at} />
+```
+
+- `set(patch)` also answers the control plane's complaint about the fields it touches. `commit` adopts
+  the answer as both the form and the baseline, clears the complaints and stamps `savedAt`; `discard`
+  restores the baseline.
+- **Dirty, reset, leave.** Save is disabled until a field differs from what the server holds (a value
+  typed back to the stored one is no edit), Discard is the way back, and leaving with an edit asks first
+  (`form.leavePrompt`, rendered by the footer).
+- **Errors.** A wrong field is a `FieldError` with `aria-invalid` and `aria-describedby` through
+  `fields.inputProps`, as above; the footer counts them, and Save stays pressable and moves focus to the first.
+- **The line beside Save** says which state the screen is in: `N changes not saved yet`, or `Saved at
+14:03.` followed by `Applied to 1 of 2 live gateways`, or `Last saved <date>` from the DTO's `updated_at`
+  on a fresh load. The applied line reads the config versions the Cluster screen reads
+  (`useSettingsPickup`, `gatewayPickup`), polls while a gateway is behind, and is left out with
+  `gateways={false}` for a setting no running gateway reads (Compatibility, while a field there needs a restart).
+- **Enter saves.** `SettingsBody` given `onSubmit` is one `<form>` (#1205); the footer's Save is its submit
+  button. Feature Flags opens its confirmation from the same handler.
+- **A switch is not immediate.** The panel's or row's switch moves at once and the gateways still run
+  the old value until Save, so `SettingsPanel unsaved` and `SwitchRow unsaved` draw a `Not saved` chip
+  (`UnsavedBadge`) beside the title while the field differs from the baseline: `unsaved={changed.includes("enabled")}`.
+
+The Security screen predates this and keeps its own footer; it can move onto the same pieces.
 
 ## The versioned-repository kit
 

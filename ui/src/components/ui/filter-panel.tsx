@@ -24,6 +24,7 @@ export function FilterSection({ title, defaultOpen, count, children }: FilterSec
   return (
     <div className="flex flex-col">
       <button
+        type="button"
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
         className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm font-medium text-foreground transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
@@ -61,6 +62,7 @@ export function FilterCheckList({ options, selected, onChange }: FilterCheckList
         const checked = selected.includes(o.value);
         return (
           <button
+            type="button"
             key={o.value}
             role="checkbox"
             aria-checked={checked}
@@ -139,6 +141,7 @@ function FilterCheckListInner({ options, selected, onChange }: FilterCheckListPr
         const checked = selected.includes(o.value);
         return (
           <button
+            type="button"
             key={o.value}
             role="checkbox"
             aria-checked={checked}
@@ -195,6 +198,7 @@ export function FilterPanel({
         </span>
         {onHide && (
           <button
+            type="button"
             title={t("common.hideFilters")}
             aria-label={t("common.hideFilters")}
             onClick={onHide}

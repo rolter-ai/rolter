@@ -56,11 +56,11 @@ export function KeyNameField({
   return (
     <Field
       label={t("keyMint.name")}
+      required
       error={tooLong ? t("keyMint.nameTooLong", { max: MAX_KEY_NAME_LEN }) : undefined}
       hint={tooLong ? undefined : t("keyMint.nameHint")}
     >
       <Input
-        required
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={t("keyMint.namePlaceholder")}

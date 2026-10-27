@@ -382,13 +382,13 @@ Password panel words `invalid_field` per input and the `429` throttle itself, an
 every other code, `no_local_password` included, reads from the shared copy (#2841).
 
 On the control plane, a refusal earns a code by going through the helpers in
-`crates/rolter-control/src/crud.rs` rather than a bare `Error::Config` or
+`crates/rolter-control/src/crud/` rather than a bare `Error::Config` or
 `ApiError::Conflict`: `invalid_field(field, message)` for a 400 about one field
 (the body then carries `field` too: a bare wire name, or a path into a list or
 map such as `forwarded_headers[2]` or `injected_headers.x-team`, so the dashboard
 marks the row without matching message text; module validators call it rather
 than keeping a local `invalid`), `ApiError::InvalidBody` (`invalid_body`) for a
-body that does not parse, `ApiError::InvalidQuery` (`invalid_query`) for a query string that does not deserialize (use the `Query` extractor in `crud.rs`, not axum's, so the rejection is coded), `name_taken(message)` for a taken name, and
+body that does not parse, `ApiError::InvalidQuery` (`invalid_query`) for a query string that does not deserialize (use the `Query` extractor in `crud/`, not axum's, so the rejection is coded), `name_taken(message)` for a taken name, and
 `ApiError::CodedConflict` with `REFERENCED` or `SCOPE_MISMATCH` for the other
 409s. A unique violation the store reports is `Error::AlreadyExists`, which the
 API renders as `409 name_taken` with a generic message, so a write that loses a

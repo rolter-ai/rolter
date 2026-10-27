@@ -204,7 +204,7 @@ export function AssignSubjectProfileSheet({
       saveLabel={t("pages.accessProfiles.assign.save")}
       canSave={profileId !== ""}
       saving={assign.isPending}
-      onSave={() => assign.mutate()}
+      onSubmit={() => assign.mutate()}
     >
       <Field label={t("subjectProfiles.field")} hint={t("subjectProfiles.fieldHint")}>
         <Combobox

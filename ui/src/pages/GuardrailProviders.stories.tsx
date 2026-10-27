@@ -392,7 +392,7 @@ export const RegistersProvider: Story = {
 
     await userEvent.type(dialog.getByLabelText("Provider name"), "Policy service");
     const save = dialog.getByRole("button", { name: "Save provider" });
-    await expect(save).toBeDisabled();
+    await expect(save).toHaveAttribute("aria-disabled", "true");
 
     // leaving the field says what it needs, tied to the field
     await userEvent.click(url);
@@ -404,7 +404,7 @@ export const RegistersProvider: Story = {
     await userEvent.type(url, "policy.corp.internal/evaluate");
     await userEvent.tab();
     await expect(url).toHaveAccessibleDescription("Start the URL with http:// or https://.");
-    await expect(save).toBeDisabled();
+    await expect(save).toHaveAttribute("aria-disabled", "true");
 
     await userEvent.clear(url);
     await userEvent.type(url, "https://policy.corp.internal/evaluate");

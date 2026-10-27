@@ -1414,7 +1414,10 @@ export const AGrantAlreadyHeldIsRefusedBeforeSending: Story = {
       ).toBeVisible(),
     );
     // story-wait-allow: disabled by the sheet's own canSave, which the held grant sets
-    await expect(form.getByRole("button", { name: "Grant" })).toBeDisabled();
+    await expect(form.getByRole("button", { name: "Grant" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
   },
 };
 

@@ -429,7 +429,7 @@ function PolicyDialog({
         !!tiers && tiers.length > 0 && invalidRows === 0 && !existing.isPending && !existing.error
       }
       saving={save.isPending}
-      onSave={() => tiers && save.mutate(tiers)}
+      onSubmit={() => tiers && save.mutate(tiers)}
     >
       {/* the editor seeds itself from the same read the list makes, so it holds
           nothing in the same two ways: still waiting, and failed. it rendered

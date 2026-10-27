@@ -738,7 +738,7 @@ function UpsertPriceDialog({
       saveLabel={t("common.save")}
       canSave
       saving={submit.isPending}
-      onSave={() => {
+      onSubmit={() => {
         // the refusal is shown at the fields, not by greying the button out
         visibility.attempt();
         if (!invalid) submit.mutate();

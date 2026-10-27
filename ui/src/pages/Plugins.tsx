@@ -580,7 +580,12 @@ function PluginDialog({
     );
   };
   return (
-    <Dialog open={open} onOpenChange={(value) => !value && onClose()}>
+    <Dialog
+      open={open}
+      onOpenChange={(value) => !value && onClose()}
+      onSubmit={save}
+      busy={mutation.isPending}
+    >
       <DialogHeader>
         <DialogTitle>
           {initial ? t("pages.plugins.dialogTitleEdit") : t("pages.plugins.dialogTitleNew")}
@@ -730,7 +735,7 @@ function PluginDialog({
         <Button variant="ghost" onClick={onClose}>
           {t("pages.plugins.cancel")}
         </Button>
-        <Button disabled={mutation.isPending} onClick={save}>
+        <Button type="submit" disabled={mutation.isPending}>
           {mutation.isPending
             ? t("pages.plugins.saving")
             : initial

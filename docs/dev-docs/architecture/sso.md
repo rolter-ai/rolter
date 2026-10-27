@@ -232,7 +232,7 @@ is enforced in three places that have to agree (#2304):
   what will be saved; it only suggests a corrected value.
 
 `sso_slug_outside_the_charset_is_a_400_that_states_the_rule` in
-`crates/rolter-control/tests/control_integration.rs` asks the store and the
+`crates/rolter-control/tests/control/` asks the store and the
 endpoint about the same table of slugs and requires the same answer, and
 `sso-slug.test.ts` reads the migration and compares the pattern, so a change to
 one is caught by the others. Widening the rule means a new migration (the

@@ -904,6 +904,25 @@ A skipped PR has no `/language:rust` analysis of its own, so GitHub's code
 scanning summary on it may say a configuration present on `master` was not
 found. That is expected and blocks nothing.
 
+## Test fixtures and code scanning (#2749)
+
+Test fixtures raise code-scanning alerts that are not findings: a deliberately
+wrong nonce handed to the stub IdP ("hard-coded cryptographic value") or an
+`http://127.0.0.1` URL to the in-process control plane ("cleartext
+transmission"). A pull request that rewrites a large test file re-raises all of
+them as new, and dismissing them needs `security_events` write, which agent
+sessions do not have.
+
+`paths-ignore` in `.github/codeql/codeql-config.yml` does not help: for a
+compiled language it does not stop the extractor, so test files are analysed with
+every query. Instead the `codeql (rust)` leg runs `analyze` with
+`upload: failure-only`, drops every result whose primary location is under
+`crates/*/tests/` with `scripts/filter-codeql-sarif.sh`, and uploads the
+filtered SARIF under the unchanged `/language:rust` category. Production code
+(`crates/*/src/`, including a `tests` module inside it) keeps the full query
+suite, and `crates/*/tests/` is the only path filtered. A real finding in an
+integration test is therefore not reported; that is the accepted cost.
+
 ## Suites that stay out of `ci-ok`
 
 Three workflows run heavy suites that `ci-ok` never waits on: `extended.yml`

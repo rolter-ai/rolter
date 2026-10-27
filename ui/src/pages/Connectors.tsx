@@ -727,7 +727,7 @@ function ConnectorSheet({
       saveLabel={existing ? t("common.save") : t("common.create")}
       canSave={!!name.trim() && !!endpoint.trim() && parsed.ok}
       saving={save.isPending}
-      onSave={() => {
+      onSubmit={() => {
         if (!parsed.ok) return;
         // a field left as it opened sends the stored rate itself: its text is
         // a reading of the rate, and a rate with more digits than it shows
@@ -738,10 +738,10 @@ function ConnectorSheet({
       }}
     >
       <div className="space-y-3">
-        <Field label={t("pages.connectors.form.name")}>
+        <Field label={t("pages.connectors.form.name")} required>
           <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="datadog" />
         </Field>
-        <Field label={t("pages.connectors.form.endpoint")}>
+        <Field label={t("pages.connectors.form.endpoint")} required>
           <Input
             className="font-mono"
             value={endpoint}

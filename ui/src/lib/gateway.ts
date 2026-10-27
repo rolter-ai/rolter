@@ -16,6 +16,13 @@ import i18n from "@/lib/i18n";
 const GW_BASE = "/gw";
 
 /**
+ * The built-in model the gateway answers with no upstream or secrets. A
+ * configured route of the same name shadows it, so a picker must not assume it
+ * is on offer.
+ */
+export const FAKE_MODEL = "fake-llm";
+
+/**
  * The key the Playground is currently sending, and when it stops working.
  *
  * `expiresAt` is set for a key rolter minted; a key the operator pasted by

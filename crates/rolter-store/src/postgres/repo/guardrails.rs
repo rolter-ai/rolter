@@ -5,7 +5,7 @@
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use rolter_core::{Error, Result};
+use rolter_core::Result;
 
 use super::super::models::{GuardrailProvider, GuardrailRule};
 use super::support::{fetch_optional_or_not_found, require_affected, store_err};
@@ -200,26 +200,27 @@ impl GuardrailRepo<'_> {
         }
         // not fetch_optional_or_not_found: the row is read on the transaction,
         // which must still be committed on the hit
-        let row = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        let row = fetch_optional_or_not_found(
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "update guardrail_providers set name=$2, enabled=$3, url=$4, stage=$5, timeout_ms=$6, \
              max_retries=$7, failure_mode=$8, max_body_bytes=$9, auth_kind=$10, auth_env=$11, \
              updated_at=now() where id=$1 returning {GUARDRAIL_PROVIDER_COLUMNS}"
         )))
-        .bind(id)
-        .bind(provider.name)
-        .bind(provider.enabled)
-        .bind(provider.url)
-        .bind(provider.stage)
-        .bind(provider.timeout_ms)
-        .bind(provider.max_retries)
-        .bind(provider.failure_mode)
-        .bind(provider.max_body_bytes)
-        .bind(provider.auth_kind)
-        .bind(provider.auth_env)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(store_err)?
-        .ok_or_else(|| Error::NotFound(format!("guardrail provider {id}")))?;
+            .bind(id)
+            .bind(provider.name)
+            .bind(provider.enabled)
+            .bind(provider.url)
+            .bind(provider.stage)
+            .bind(provider.timeout_ms)
+            .bind(provider.max_retries)
+            .bind(provider.failure_mode)
+            .bind(provider.max_body_bytes)
+            .bind(provider.auth_kind)
+            .bind(provider.auth_env),
+            &mut *tx,
+            || format!("guardrail provider {id}"),
+        )
+        .await?;
         tx.commit().await.map_err(store_err)?;
         Ok(row)
     }

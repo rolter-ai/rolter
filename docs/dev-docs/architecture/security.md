@@ -154,9 +154,10 @@ first the operator hears of it.
   keeps the pairs as a map and one of the two values would vanish. `security-lists.test.ts` reads
   `security.rs` and fails when the forbidden-character sets or the `/v1/` prefix change there, so a
   rule widened on one side shows up as a red test rather than as a toast.
-- **`ui/src/lib/security-loosening.ts` decides which saves ask first.** Only one edit loosens:
-  a path added to `auth_bypass_routes`. It compares the draft with what the store held at the last load or save,
-  and a save that only tightens goes out without a dialog (see
+- **`ui/src/lib/security-loosening.ts` decides which saves ask first.** Two edits loosen:
+  a path added to `auth_bypass_routes`, and a name removed from `required_headers` (#2358). It
+  compares the draft with what the store held at the last load or save, and a save that only
+  tightens goes out without a dialog. An allowed origin added does not ask, on purpose (see
   [destructive actions](../development/destructive-actions.md)).
 - **`ui/src/lib/gateway-pickup.ts` reads the fleet after a save.** The write bumps `config_version`
   (the table's trigger), each gateway reports the version it runs on its snapshot poll, and
@@ -403,7 +404,7 @@ sqlx text on, which can name relations, schemas, hosts and the credentials in a
 connection URL.
 
 A message that is safe and useful to show goes through `ApiError::Curated`
-instead (`crates/rolter-control/src/crud.rs`), and is rendered verbatim:
+instead (`crates/rolter-control/src/crud/`), and is rendered verbatim:
 
 | Message                                               | Where                                            |
 | ----------------------------------------------------- | ------------------------------------------------ |
@@ -411,7 +412,7 @@ instead (`crates/rolter-control/src/crud.rs`), and is rendered verbatim:
 | the reason an alert rule's signal read failed         | `alerting.rs`, worded by `read_signal`           |
 | failed to encrypt a connector or channel credential   | `connectors.rs`, `alerting.rs`                   |
 | failed to query observability connectors              | `collector_config.rs`                            |
-| unknown provider kind in a stored row                 | `crud.rs`                                        |
+| unknown provider kind in a stored row                 | `crud/`                                          |
 
 `4xx` answers are untouched: validation (`Error::Config`) and lookups
 (`Error::NotFound`) are written for the caller. A new message that has to reach
@@ -622,11 +623,11 @@ SCIM bearer) are not on the list: anonymously they answer `401`, and the guard r
   empty-looking reason.
 
 That is the one anonymous-route guard. It replaced a GET-only sweep in
-`tests/control_integration.rs` (#1820) that read `.public()` from the document
+`tests/control/` (#1820) that read `.public()` from the document
 and exempted `/gw`; the allowlist guard covers every method, needs no
 database, and `/gw` takes a session since #2463 (#2464).
 
-What stays in `tests/control_integration.rs` is the one case the guard cannot
+What stays in `tests/control/` is the one case the guard cannot
 reach: `every_route_the_spec_does_not_mark_public_refuses_a_forged_bearer`. A
 bearer that is present but is not the admin token is looked up as a session
 token, and that lookup needs a real database, so against the guard's
@@ -753,7 +754,7 @@ Two limits are known and tracked:
 
 What keeps this from regressing is
 `every_route_the_spec_does_not_mark_public_refuses_an_anonymous_caller` in
-`crates/rolter-control/tests/control_integration.rs`: it walks the served
+`crates/rolter-control/tests/control/`: it walks the served
 `/openapi.json` with no credentials and a forged bearer and requires a `401`
 from every GET the document does not mark public. The routes that are open by
 design are listed in `PUBLIC_ROUTES` (see above) and marked `.public()` in

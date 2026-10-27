@@ -802,11 +802,12 @@ function InviteUserDialog({
       saveLabel={t("pages.users.inviteSave")}
       canSave={Boolean(email.trim())}
       saving={create.isPending}
-      onSave={() => create.mutate()}
+      onSubmit={() => create.mutate()}
     >
       <div className="space-y-3">
         <Field
           label={t("pages.users.email")}
+          required
           hint={replaces ? t("pages.users.inviteReplaces", { email: email.trim() }) : undefined}
         >
           <Input
@@ -1095,7 +1096,7 @@ function EditUserSheet({
       saveLabel={t("common.save")}
       canSave
       saving={saving}
-      onSave={() => onSave({ email, password, isSuperadmin })}
+      onSubmit={() => onSave({ email, password, isSuperadmin })}
     >
       <div className="space-y-3">
         <Field label={t("pages.users.email")}>
@@ -1429,7 +1430,7 @@ function AddRoleDialog({
       saveLabel={t("pages.users.grantSave")}
       canSave={!held}
       saving={create.isPending}
-      onSave={() => create.mutate()}
+      onSubmit={() => create.mutate()}
     >
       <div className="space-y-3">
         <Field label={t("pages.users.scope")}>

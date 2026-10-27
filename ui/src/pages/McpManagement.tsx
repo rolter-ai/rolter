@@ -29,6 +29,7 @@ import { ChipGroup } from "@/components/ui/chip-group";
 import { Combobox } from "@/components/ui/combobox";
 import {
   Dialog as BaseDialog,
+  type DialogProps,
   DialogBody,
   DialogDescription,
   DialogFooter,
@@ -132,13 +133,14 @@ const lines = (value: string) => [
 function Dialog({
   onClose,
   children,
+  ...form
 }: {
   open?: boolean;
   onClose: () => void;
   children: React.ReactNode;
-}) {
+} & Pick<DialogProps, "onSubmit" | "canSubmit" | "busy">) {
   return (
-    <BaseDialog open onOpenChange={(open) => !open && onClose()}>
+    <BaseDialog open onOpenChange={(open) => !open && onClose()} {...form}>
       {children}
     </BaseDialog>
   );
@@ -1237,7 +1239,7 @@ function ServerSheet({
         }
         canSave={!!valid}
         saving={pending}
-        onSave={submit}
+        onSubmit={submit}
       >
         <FormSection title={t("pages.mcpCatalog.sections.endpoint")} {...section("endpoint", true)}>
           <div className="grid gap-3 sm:grid-cols-2">
@@ -1780,7 +1782,21 @@ function ToolGroupDialog({
         : [...current, item],
     );
   return (
-    <Dialog open onClose={onClose}>
+    <Dialog
+      open
+      onClose={onClose}
+      onSubmit={() =>
+        onSave({
+          name,
+          slug: initial?.slug ?? slugify(name),
+          description,
+          enabled,
+          tools: selected,
+        })
+      }
+      canSubmit={!!name.trim() && !!selected.length}
+      busy={pending}
+    >
       <DialogHeader>
         <DialogTitle>
           {initial
@@ -1791,7 +1807,7 @@ function ToolGroupDialog({
       </DialogHeader>
       <DialogBody className="grid gap-4 py-4">
         <div className="grid gap-3 sm:grid-cols-2">
-          <Field label={t("pages.mcpCatalog.fields.name")} htmlFor="group-name">
+          <Field label={t("pages.mcpCatalog.fields.name")} htmlFor="group-name" required>
             <Input id="group-name" value={name} onChange={(event) => setName(event.target.value)} />
           </Field>
           <SwitchRow
@@ -1835,16 +1851,10 @@ function ToolGroupDialog({
           {t("common.cancel")}
         </Button>
         <Button
-          disabled={!name.trim() || !selected.length || pending}
-          onClick={() =>
-            onSave({
-              name,
-              slug: initial?.slug ?? slugify(name),
-              description,
-              enabled,
-              tools: selected,
-            })
-          }
+          type="submit"
+          disabled={pending}
+          aria-disabled={!name.trim() || !selected.length || undefined}
+          className="aria-disabled:opacity-50"
         >
           {pending && <Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" aria-hidden />}
           {pending ? t("common.saving") : t("pages.tool-groups.dialog.save")}

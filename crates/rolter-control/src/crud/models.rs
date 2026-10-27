@@ -1,0 +1,107 @@
+//! The effective model list (config plus database) and removing a database model.
+
+use axum::extract::{Path, State};
+use axum::http::StatusCode;
+use axum::routing::{delete, get};
+use axum::{Json, Router};
+use serde::Serialize;
+
+use rolter_store::postgres::repo::RouteRepo;
+
+use super::{pool, publish_config_change, require_not_config_owned, ApiResult};
+use crate::access_control::caller_policy;
+use crate::rbac::{authorize, authorize_superadmin, Principal, ScopeChain};
+use crate::rbac_matrix::{cap, superadmin_cap};
+use crate::tenant_view::TenantView;
+use crate::ControlState;
+
+pub(super) fn router() -> Router<ControlState> {
+    Router::new()
+        .route("/api/v1/models", get(list_models))
+        .route("/api/v1/models/{model}", delete(delete_model))
+}
+
+// --- effective model list (config + db, LiteLLM-style) ---
+
+#[derive(Serialize)]
+struct EffectiveModel {
+    model: String,
+    strategy: rolter_core::BalancingStrategy,
+    targets: usize,
+    /// the targets themselves, in the shape the effective config gives them
+    /// (provider name, upstream model, weight), so the catalog needs no second
+    /// read of `/api/v1/config` to show where a model's traffic goes (#2210)
+    route_targets: Vec<rolter_core::Target>,
+    /// the organization the route belongs to; absent for a route from the
+    /// bootstrap file. Two organizations can each serve a `gpt-4o`, and this is
+    /// what tells their entries apart
+    #[serde(skip_serializing_if = "Option::is_none")]
+    org_id: Option<String>,
+    /// the project the route belongs to; absent for a route from the file
+    #[serde(skip_serializing_if = "Option::is_none")]
+    project_id: Option<String>,
+    /// "config" = declared in the bootstrap file, read-only at runtime;
+    /// "db" = created via this API, full runtime CRUD
+    source: &'static str,
+}
+
+/// The merged model list the gateway effectively serves: bootstrap-config
+/// routes (read-only) plus DB routes, as exposed by the merged store.
+async fn list_models(
+    principal: Principal,
+    State(state): State<ControlState>,
+) -> ApiResult<Json<Vec<EffectiveModel>>> {
+    authorize(
+        &state,
+        &principal,
+        ScopeChain::default(),
+        cap!("model", Read),
+    )
+    .await?;
+    let config = state.store.load().await?;
+    // model visibility carried by the caller's access profiles (#534);
+    // unrestricted for a superadmin and for anyone holding no policy
+    let policy = caller_policy(&state, &principal).await?;
+    // the organizations and projects the caller can see (#3094); a row of
+    // another tenant is not listed, targets and ids included
+    let mut view = TenantView::load(&state, Some(&principal)).await?;
+    let mut routes = Vec::new();
+    for route in &config.routes {
+        if policy.permits_model(&route.model) && view.sees(&state, route.tenancy.as_ref()).await {
+            routes.push(route);
+        }
+    }
+    let models = routes
+        .into_iter()
+        .map(|r| EffectiveModel {
+            model: r.model.clone(),
+            strategy: r.strategy,
+            targets: r.targets.len(),
+            route_targets: r.targets.clone(),
+            org_id: r.tenancy.as_ref().map(|t| t.org_id.clone()),
+            project_id: r.tenancy.as_ref().and_then(|t| t.project_id.clone()),
+            source: if state.config_owned.models.contains(&r.model) {
+                "config"
+            } else {
+                "db"
+            },
+        })
+        .collect();
+    Ok(Json(models))
+}
+
+/// Delete a DB-defined model (all routes with that public name). Config
+/// models are rejected with `409` since the file owns them.
+// deleting a public model name removes routes across potentially many projects,
+// so it cannot be scoped to a single org/team/project and is superadmin-only
+async fn delete_model(
+    principal: Principal,
+    State(state): State<ControlState>,
+    Path(model): Path<String>,
+) -> ApiResult<StatusCode> {
+    authorize_superadmin(&principal, superadmin_cap!("model", Delete))?;
+    require_not_config_owned(&state.config_owned.models, &model, "model")?;
+    RouteRepo(pool(&state)).delete_by_model(&model).await?;
+    publish_config_change(&state).await?;
+    Ok(StatusCode::NO_CONTENT)
+}

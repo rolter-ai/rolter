@@ -5,12 +5,20 @@ import { CodeBlock } from "@/components/ui/code-block";
 import { Combobox } from "@/components/ui/combobox";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
+import { FieldLabel } from "@/components/ui/field-label";
+import { Segmented } from "@/components/ui/segmented";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { DECISION_IMAGE_MAX_BYTES, DECISION_IMAGE_TYPES, decisionRequest } from "@/lib/decisions";
+import {
+  DECISION_IMAGE_MAX_BYTES,
+  DECISION_IMAGE_MAX_PIXELS,
+  DECISION_IMAGE_TYPES,
+  decisionRequest,
+  pickDecisionModel,
+} from "@/lib/decisions";
 import { describeError } from "@/lib/error-copy";
-import { decide, type DecisionResponse } from "@/lib/gateway";
+import { decide, FAKE_MODEL, type DecisionResponse } from "@/lib/gateway";
 import { useFormat } from "@/lib/i18n/format";
 
 interface Props {
@@ -23,7 +31,12 @@ interface Props {
 export function DecisionPlayground({ models, blocked, reason }: Props) {
   const { t } = useTranslation();
   const fmt = useFormat();
-  const [model, setModel] = React.useState("fake-llm");
+  const [chosen, setChosen] = React.useState(FAKE_MODEL);
+  // a configured route named fake-llm shadows the builtin, which then drops out
+  // of `models`: the picker falls back to what is on offer rather than showing
+  // a value that is not among its options
+  const model = pickDecisionModel(models, chosen, FAKE_MODEL);
+  const stateFormatLabel = React.useId();
   const [state, setState] = React.useState("");
   const [jsonState, setJsonState] = React.useState(false);
   const [questions, setQuestions] = React.useState(() =>
@@ -66,7 +79,12 @@ export function DecisionPlayground({ models, blocked, reason }: Props) {
       if (version !== generation.current) return;
       setImagePending(false);
       setImageInvalid(true);
-      setError(t("pages.playground.decisions.imageInvalid"));
+      setError(
+        t("pages.playground.decisions.imageInvalid", {
+          size: fmt.number(DECISION_IMAGE_MAX_BYTES / (1024 * 1024)),
+          pixels: fmt.number(DECISION_IMAGE_MAX_PIXELS / 1_000_000),
+        }),
+      );
     };
     if (!DECISION_IMAGE_TYPES.includes(file.type) || file.size > DECISION_IMAGE_MAX_BYTES) {
       reject();
@@ -80,7 +98,7 @@ export function DecisionPlayground({ models, blocked, reason }: Props) {
       if (version !== generation.current) return;
       try {
         const bitmap = await createImageBitmap(file);
-        const valid = bitmap.width * bitmap.height <= 12_000_000;
+        const valid = bitmap.width * bitmap.height <= DECISION_IMAGE_MAX_PIXELS;
         bitmap.close();
         if (!valid) throw new Error("image");
         if (version === generation.current) {
@@ -95,8 +113,7 @@ export function DecisionPlayground({ models, blocked, reason }: Props) {
   };
 
   const run = async () => {
-    if (blocked || busy || imagePending || imageInvalid || !models.some((m) => m.id === model))
-      return;
+    if (blocked || busy || imagePending || imageInvalid || !model) return;
     let request;
     try {
       request = decisionRequest(model, state, jsonState, questions, image);
@@ -119,19 +136,26 @@ export function DecisionPlayground({ models, blocked, reason }: Props) {
     }
   };
 
+  // nothing on offer serves decisions: say so instead of a picker with nothing in it
+  if (!models.length) {
+    return <EmptyState inline description={t("pages.playground.decisions.noModels")} />;
+  }
+
   return (
     <div className="grid gap-4 lg:grid-cols-2">
       <div className="flex min-w-0 flex-col gap-3">
         <Field label={t("pages.playground.decisions.model")}>
           <Combobox
             value={model}
-            onChange={setModel}
+            onChange={setChosen}
             options={models.map((m) => ({ value: m.id, label: m.id }))}
           />
         </Field>
         <p className="text-xs text-muted-foreground">{t("pages.playground.decisions.protocol")}</p>
-        <Field label={t("pages.playground.decisions.stateFormat")}>
-          <Combobox
+        <div className="space-y-1.5">
+          <FieldLabel label={t("pages.playground.decisions.stateFormat")} id={stateFormatLabel} />
+          <Segmented<"text" | "json">
+            labelledBy={stateFormatLabel}
             value={jsonState ? "json" : "text"}
             onChange={(v) => setJsonState(v === "json")}
             options={[
@@ -139,7 +163,7 @@ export function DecisionPlayground({ models, blocked, reason }: Props) {
               { value: "json", label: "JSON" },
             ]}
           />
-        </Field>
+        </div>
         <Field
           label={t("pages.playground.decisions.state")}
           hint={t("pages.playground.decisions.stateHint")}
@@ -160,7 +184,10 @@ export function DecisionPlayground({ models, blocked, reason }: Props) {
         </Field>
         <Field
           label={t("pages.playground.decisions.image")}
-          hint={t("pages.playground.decisions.imageHint")}
+          hint={t("pages.playground.decisions.imageHint", {
+            size: fmt.number(DECISION_IMAGE_MAX_BYTES / (1024 * 1024)),
+            pixels: fmt.number(DECISION_IMAGE_MAX_PIXELS / 1_000_000),
+          })}
         >
           <Input
             ref={imageInput}
@@ -195,9 +222,7 @@ export function DecisionPlayground({ models, blocked, reason }: Props) {
           <Button
             onClick={() => void run()}
             title={reason}
-            disabled={
-              blocked || busy || imagePending || imageInvalid || !models.some((m) => m.id === model)
-            }
+            disabled={blocked || busy || imagePending || imageInvalid || !model}
           >
             {busy ? t("pages.playground.decisions.running") : t("pages.playground.decisions.run")}
           </Button>

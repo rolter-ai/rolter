@@ -816,3 +816,105 @@ export const MobileKeepsErrorsAndFooterInView: Story = {
     await expectNoHorizontalOverflow();
   },
 };
+
+const removing = securityApi();
+
+/**
+ * Removing a required header stops the ingress filter it stood for from
+ * applying (#2358), so it asks first like a bypass route does. The dialog lists
+ * the header that went, and nothing is sent until it is confirmed.
+ */
+export const RemovingARequiredHeaderIsConfirmed: Story = {
+  beforeEach: recordUxEvents,
+  render: () => (
+    <Harness fetchStub={removing.stub}>
+      <UxScreenProvider screen="security">
+        <Security />
+      </UxScreenProvider>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await enter(await canvas.findByLabelText("Required headers"), "");
+    await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
+
+    const dialogElement = await confirmation();
+    await waitFor(() => expect(dialogElement).toBeVisible());
+    const dialog = within(dialogElement);
+    await expect(
+      dialog.getByRole("heading", { name: "Save a change that loosens security?" }),
+    ).toBeInTheDocument();
+    const rows = await dialog.findAllByRole("listitem");
+    await expect(rows).toHaveLength(1);
+    await expect(rows[0]).toHaveTextContent("Required header removed:");
+    await expect(within(rows[0]).getByText("x-tenant")).toBeInTheDocument();
+    await expect(rows[0]).toHaveTextContent("Requests without it are now served");
+    await expect(puts(removing)).toHaveLength(0);
+
+    await confirmDestructive("Save a change that loosens security?", "Save changes");
+    await expect(await removing.expectSentBody("PUT", SETTINGS)).toEqual({
+      ...BASE_BODY,
+      required_headers: {},
+    });
+    await expect(puts(removing)).toHaveLength(1);
+    await expectUxEvent("save_confirmed", "security-loosen");
+  },
+};
+
+const valueChange = securityApi();
+
+/**
+ * A required header whose value changes, or whose name is retyped in another
+ * case, is still required: it goes out at once.
+ */
+export const ChangingARequiredHeadersValueSavesWithoutAsking: Story = {
+  render: () => (
+    <Harness fetchStub={valueChange.stub}>
+      <Toasted>
+        <Security />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await enter(await canvas.findByLabelText("Required headers"), "X-Tenant: globex");
+    await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
+    await expect(await valueChange.expectSentBody("PUT", SETTINGS)).toEqual({
+      ...BASE_BODY,
+      required_headers: { "X-Tenant": "globex" },
+    });
+    await expect(within(document.body).queryByRole("dialog")).toBeNull();
+  },
+};
+
+const origin = securityApi();
+
+/**
+ * An allowed origin added lets another site's browser code call the control
+ * plane, and still saves at once: it is the routine edit of this screen, and a
+ * dialog on every origin is the click-through the destructive-action rules
+ * warn about (#2358).
+ */
+export const AddingAnAllowedOriginSavesWithoutAsking: Story = {
+  render: () => (
+    <Harness fetchStub={origin.stub}>
+      <Toasted>
+        <Security />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.type(
+      await canvas.findByLabelText("Allowed origins"),
+      "{Enter}https://console.example.com",
+    );
+    await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
+    await expect(await origin.expectSentBody("PUT", SETTINGS)).toEqual({
+      ...BASE_BODY,
+      allowed_origins: ["https://app.example.com", "https://console.example.com"],
+    });
+    await expect(within(document.body).queryByRole("dialog")).toBeNull();
+    await expect(puts(origin)).toHaveLength(1);
+  },
+};
