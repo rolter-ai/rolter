@@ -2,11 +2,18 @@ import { Info } from "lucide-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 
+import { AnchoredPanel } from "@/components/ui/anchored-panel";
 import { cn } from "@/lib/utils";
 
 // small info affordance: an (i) button that reveals a short note on hover,
-// focus, or click. hand-rolled (no radix) to stay dependency- and CDN-free.
+// focus, or click. no radix, so it stays dependency- and CDN-free.
 // accessible: focusable button, aria-describedby wiring, dismissable on blur.
+//
+// the note is an `AnchoredPanel` (#487): fixed and placed from the button's
+// rectangle, so the scroll area of a dialog or sheet cannot clip it, and it
+// slides in or turns over to stay on screen. it used to be `absolute` and
+// centred on the button, which cut it off at the edge of a dialog for a field
+// whose label is short or that sits in the last column
 export interface InfoHintProps {
   // the explanatory note; keep it short — what the field is and what values fit
   text: React.ReactNode;
@@ -18,6 +25,7 @@ export interface InfoHintProps {
 export function InfoHint({ text, label, className }: InfoHintProps) {
   const { t } = useTranslation();
   const [open, setOpen] = React.useState(false);
+  const [trigger, setTrigger] = React.useState<HTMLButtonElement | null>(null);
   const id = React.useId();
   // WCAG 1.4.13 dismissible: Escape closes the note wherever focus is
   React.useEffect(() => {
@@ -33,13 +41,16 @@ export function InfoHint({ text, label, className }: InfoHintProps) {
   }, [open]);
   return (
     // hover lives on the wrapper so the pointer can travel onto the note
-    // (WCAG 1.4.13 hoverable) without it closing
+    // (WCAG 1.4.13 hoverable) without it closing. the note is a DOM child of
+    // the wrapper even though it is drawn fixed, so moving onto it is not
+    // leaving
     <span
       className="relative inline-flex"
       onMouseEnter={() => setOpen(true)}
       onMouseLeave={() => setOpen(false)}
     >
       <button
+        ref={setTrigger}
         type="button"
         aria-label={label ?? t("common.moreInfo")}
         aria-expanded={open}
@@ -54,16 +65,22 @@ export function InfoHint({ text, label, className }: InfoHintProps) {
       >
         <Info className="h-3.5 w-3.5" />
       </button>
-      {open && (
-        <span
+      {open && trigger && (
+        <AnchoredPanel
+          anchor={trigger}
+          side="below"
+          align="center"
           role="tooltip"
           id={id}
-          className="absolute left-1/2 top-full z-50 mt-1.5 w-56 -translate-x-1/2 rounded-md border border-border bg-[color:var(--surface-elevated)] px-2.5 py-1.5 text-xs font-normal leading-snug text-foreground shadow-md"
+          onClose={() => setOpen(false)}
+          className="w-56 rounded-md px-2.5 py-1.5 text-xs font-normal normal-case leading-snug tracking-normal text-foreground shadow-md"
         >
-          {/* bridges the gap so the pointer can reach the note */}
+          {/* bridge the gap on whichever side the button is, so the pointer can
+              reach the note when it has turned over */}
           <span aria-hidden className="absolute inset-x-0 -top-1.5 h-1.5" />
+          <span aria-hidden className="absolute inset-x-0 -bottom-1.5 h-1.5" />
           {text}
-        </span>
+        </AnchoredPanel>
       )}
     </span>
   );

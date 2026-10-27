@@ -28,16 +28,12 @@ fn bench_pick(c: &mut Criterion) {
     let weights: Vec<u32> = (0..n).map(|i| 1 + (i as u32 % 4)).collect();
     // in-flight load snapshot the load-aware strategies rank on
     let loads: Vec<u64> = (0..n).map(|i| (i as u64 * 7) % 13).collect();
-    let ctx = RouteContext {
-        session_key: Some("user-42-session-abcdef0123456789"),
-        prompt: Some(
+    let ctx = RouteContext::new()
+        .with_session_key(Some("user-42-session-abcdef0123456789"))
+        .with_prompt(Some(
             "summarize the following document for me in three concise bullet points: lorem \
              ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor",
-        ),
-        token_ids: None,
-        adapter: None,
-        ..Default::default()
-    };
+        ));
 
     let mut group = c.benchmark_group("pick");
     for (label, strategy) in STRATEGIES {

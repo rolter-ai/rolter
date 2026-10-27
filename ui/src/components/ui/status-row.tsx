@@ -65,7 +65,7 @@ export function StatusRow({
       {...props}
     >
       <span
-        className={cn("flex-none text-3xs leading-none", breathe && "motion-safe:animate-pulse")}
+        className={cn("flex-none text-2xs leading-none", breathe && "motion-safe:animate-pulse")}
         style={{ color }}
         aria-hidden
       >
@@ -78,7 +78,7 @@ export function StatusRow({
         {label}
       </span>
       {chevron && (
-        <span className="ml-auto flex-none text-3xs text-[color:var(--text-subtle)]" aria-hidden>
+        <span className="ml-auto flex-none text-2xs text-[color:var(--text-subtle)]" aria-hidden>
           ▸
         </span>
       )}

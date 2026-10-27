@@ -829,6 +829,21 @@ pub type CompletionObserver = Box<dyn FnOnce(&[u8]) + Send>;
 /// logged as, without adding a column (#1083).
 pub const CLIENT_DISCONNECT_STATUS: u16 = 499;
 
+impl RequestLog {
+    /// Whether this row records a caller who left before the answer finished,
+    /// as opposed to an upstream that answered 499 itself. A disconnect row
+    /// carries [`CLIENT_DISCONNECT_STATUS`] as the gateway's status while its
+    /// `upstream_status` is whatever the upstream sent, or `0`; an upstream's
+    /// own 499 is passed through, so the two statuses agree.
+    ///
+    /// Such a row is never charged to the target it names: not as an error in
+    /// `rolter_target_requests_total`, not as a passive health event, so the
+    /// uptime rollup and the `provider_health_flaps` alert never see it.
+    pub(crate) fn is_client_disconnect(&self) -> bool {
+        self.status == CLIENT_DISCONNECT_STATUS && self.upstream_status != CLIENT_DISCONNECT_STATUS
+    }
+}
+
 /// `error` text on a cancelled request's log row.
 pub const CLIENT_DISCONNECT_ERROR: &str = "client disconnected";
 
@@ -1480,7 +1495,9 @@ impl LogSink {
             record.completion_tokens,
         );
         self.metrics.observe_variant(&record.model, &record.variant);
-        if !attribute_target {
+        // a caller leaving is not the target's verdict, in either direction
+        // (#1933). It stays visible in `rolter_client_disconnects_total`
+        if !attribute_target || record.is_client_disconnect() {
             return;
         }
         self.metrics.observe_target(
@@ -4108,5 +4125,32 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
         )
         .await;
         assert!(req.contains("\"error\":\"\""), "{req}");
+    }
+
+    #[test]
+    fn a_disconnect_row_is_told_from_an_upstream_that_answered_499() {
+        // a caller who left: the gateway's status is the disconnect marker and
+        // the upstream said something else, or nothing
+        for upstream_status in [0, 200, 502] {
+            let row = RequestLog {
+                status: CLIENT_DISCONNECT_STATUS,
+                upstream_status,
+                error: CLIENT_DISCONNECT_ERROR.to_string(),
+                ..Default::default()
+            };
+            assert!(row.is_client_disconnect(), "upstream {upstream_status}");
+        }
+        // an upstream's own 499 is passed through, so both statuses agree
+        let upstream = RequestLog {
+            status: CLIENT_DISCONNECT_STATUS,
+            upstream_status: CLIENT_DISCONNECT_STATUS,
+            ..Default::default()
+        };
+        assert!(!upstream.is_client_disconnect());
+        assert!(!RequestLog {
+            status: 200,
+            ..Default::default()
+        }
+        .is_client_disconnect());
     }
 }

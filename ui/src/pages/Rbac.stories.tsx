@@ -22,6 +22,8 @@ import {
   uxEvents,
 } from "./story-harness";
 import type { AccessProfileDetail, CustomRoleRow, MembershipRow, RbacMatrix } from "@/lib/api";
+import { contrastRatio, parseRgb } from "@/lib/contrast";
+import { resolveColorToken } from "@/lib/story-tokens";
 import { UxScreenProvider } from "@/lib/ux-react";
 
 // a slice of the real CAPABILITIES table, chosen for the four things a cell can
@@ -419,6 +421,67 @@ export const MarksNotApplicableAndSuperadmin: Story = {
     // a catalog open to any authenticated caller is allowed all the way down
     await expect(canvas.getAllByText("Read: allowed").length).toBeGreaterThan(3);
     await expect(canvas.getAllByTitle("Read: allowed").length).toBeGreaterThan(3);
+  },
+};
+
+// #2250: a loaded matrix draws hundreds of allowed cells, so they are neutral
+// (the letter in --text-primary on --surface-subtle) and the glyphs and the
+// legend carry the state, with red left to danger. axe does not check non-text
+// contrast, so the letter and the border are measured here, on the two
+// grounds a cell can sit on: the page and the scope band over it
+export const AllowedCellsAreNeutralAndKeepTheirContrast: Story = {
+  render: () => (
+    <Harness fetchStub={withRoles(CUSTOM_ROLES)}>
+      <Rbac />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const [allowed] = await canvas.findAllByTitle("Read: allowed");
+    const granted = await canvas.findByTitle("Create: granted by this custom role");
+
+    const paint = (chip: HTMLElement) => {
+      const style = getComputedStyle(chip);
+      return {
+        color: style.color,
+        background: style.backgroundColor,
+        border: style.borderTopColor,
+        borderStyle: style.borderTopStyle,
+      };
+    };
+    const cell = paint(allowed);
+    await expect(cell.color).toBe(resolveColorToken("--text-primary"));
+    await expect(cell.background).toBe(resolveColorToken("--surface-subtle"));
+    await expect(cell.borderStyle).toBe("solid");
+
+    // the letter reads on its chip, and the border on the page and on the band.
+    // contrastRatio ignores alpha, so a translucent border (a hairline token)
+    // would measure as its opaque colour: it has to be opaque to be measured
+    await expect(cell.border).toMatch(/^rgb\(/);
+    const base = parseRgb(resolveColorToken("--surface-base"));
+    const subtle = parseRgb(resolveColorToken("--surface-subtle"));
+    const band = `rgb(${base.map((c, i) => 0.6 * c + 0.4 * subtle[i]).join(", ")})`;
+    await expect(contrastRatio(cell.color, cell.background)).toBeGreaterThanOrEqual(4.5);
+    await expect(
+      contrastRatio(cell.border, resolveColorToken("--surface-base")),
+    ).toBeGreaterThanOrEqual(3);
+    await expect(contrastRatio(cell.border, band)).toBeGreaterThanOrEqual(3);
+
+    // none of it is the red family
+    for (const red of ["--red-folk-text", "--red-folk", "--red-500"] as const) {
+      await expect(cell.color).not.toBe(resolveColorToken(red));
+      await expect(cell.border).not.toBe(resolveColorToken(red));
+    }
+
+    // a custom grant is still told apart: another hue and a dashed border
+    const grant = paint(granted);
+    await expect(grant.borderStyle).toBe("dashed");
+    await expect(grant.color).not.toBe(cell.color);
+    await expect(grant.background).not.toBe(cell.background);
+
+    // and the legend's Allowed swatch is drawn the way the matrix draws it
+    const swatch = canvas.getByText("Allowed").firstElementChild as HTMLElement;
+    await expect(paint(swatch)).toEqual(cell);
   },
 };
 

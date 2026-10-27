@@ -72,6 +72,35 @@ jobs:
             -- charts/rolter/Chart.yaml
           git push origin "$branch"
 
+      # the control API's deprecations (ADR-0032, #1423) belong in the release
+      # notes, with each sunset date. release-plz writes the changelog from
+      # commits and cannot read the registry, so the section is appended to the
+      # newest entry of the gateway changelog, which is what the github release
+      # body is taken from. it adds nothing while nothing is deprecated
+      - name: add the deprecations section to the release notes
+        if: steps.release_pr.outputs.prs_created == 'true'
+        env:
+          PRS: ${{ steps.release_pr.outputs.prs }}
+        run: |
+          set -euo pipefail
+          branch="$(printf '%s' "$PRS" | jq -r '.[0].head_branch // ""')"
+          if [ -z "$branch" ]; then
+            echo "::error::release-plz reported a created PR with no head_branch"
+            exit 1
+          fi
+          git fetch origin "$branch"
+          git checkout "$branch"
+          python3 scripts/release-deprecations.py
+          if git diff --quiet -- crates/rolter-gateway/CHANGELOG.md; then
+            echo "no deprecations to announce; nothing to push"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit --no-verify -m "chore(release): announce deprecations" \
+            -- crates/rolter-gateway/CHANGELOG.md
+          git push origin "$branch"
+
   # ── make the release PR gateable ────────────────────────────────────────────
   # `ci-ok` is the only required status check on master, and only ci.yml reports
   # it. release-plz pushes the release branch and opens its PR with the repo
