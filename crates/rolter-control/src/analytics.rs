@@ -734,7 +734,12 @@ pub(crate) const UNPRICED: &str = "round(sumIf(sample_weight, unpriced = 1))";
 /// policy refused to deliver (#1478). Their cost is already inside `cost_usd`;
 /// the figures below say how much of it bought an answer nobody saw (#1774).
 pub(crate) const WITHHELD: &str = "round(sumIf(sample_weight, withheld = 1))";
-pub(crate) const WITHHELD_COST: &str = "round(sumIf(cost_usd * sample_weight, withheld = 1), 6)";
+/// `cost_usd` is qualified because the reads that use this also select `{COST}
+/// as cost_usd`, and ClickHouse resolves a bare name to a select alias before a
+/// column: unqualified, it would nest that sum inside this one and the query
+/// would fail.
+pub(crate) const WITHHELD_COST: &str =
+    "round(sumIf(request_logs.cost_usd * sample_weight, withheld = 1), 6)";
 /// Requests the upstream answered successfully but reported no usage for, so
 /// their zero tokens and cost are unknown rather than free (#1478).
 pub(crate) const USAGE_UNKNOWN: &str = "round(sumIf(sample_weight, usage_unknown = 1))";
@@ -1809,7 +1814,7 @@ mod tests {
         assert_eq!(WITHHELD, "round(sumIf(sample_weight, withheld = 1))");
         assert_eq!(
             WITHHELD_COST,
-            "round(sumIf(cost_usd * sample_weight, withheld = 1), 6)"
+            "round(sumIf(request_logs.cost_usd * sample_weight, withheld = 1), 6)"
         );
         assert_eq!(
             USAGE_UNKNOWN,
