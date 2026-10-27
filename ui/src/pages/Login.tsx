@@ -45,6 +45,7 @@ const SSO_ERRORS = [
   "unknown_provider",
   "no_mapped_group",
   "account_deactivated",
+  "account_outside_org",
   "idp_verification_failed",
   "not_configured",
   "internal_error",
