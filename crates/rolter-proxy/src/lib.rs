@@ -22,8 +22,8 @@ mod translation;
 pub use route::{RouteHeaders, RouteOverrides};
 pub use translation::{
     anthropic_cache_written_tokens, cache_written_one_hour_tokens, cache_written_prompt_tokens,
-    cached_prompt_tokens, reasoning_tokens_beside_completion, Protocol, ThinkingCount,
-    TranslatedStream, TranslationPlan,
+    cached_prompt_tokens, cached_prompt_tokens_header, reasoning_tokens_beside_completion,
+    Protocol, ThinkingCount, TranslatedStream, TranslationPlan, CACHED_PROMPT_TOKENS_HEADER,
 };
 
 use std::path::{Path, PathBuf};

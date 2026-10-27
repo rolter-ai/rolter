@@ -1077,21 +1077,42 @@ fn anthropic_block_to_openai(block: Value) -> Value {
 /// - `cached_tokens` at the top of `usage`: Kimi (Moonshot), beside the details
 ///   block, and gateways that flatten it
 /// - `precached_prompt_tokens`: GigaChat
+/// - `cache_read_input_tokens` at the top of `usage`: Databricks' Claude
+///   endpoints (#2882), last in line and read as inside the prompt total like
+///   any body that carries `prompt_tokens`; the reference does not say
 ///
-/// The first spelling present wins. Anthropic's `cache_read_input_tokens` is
-/// not here on purpose: it sits *beside* `input_tokens`, not inside it, so the
-/// callers that read it also add it back into the prompt.
+/// The first spelling present wins. Anthropic's own `cache_read_input_tokens`
+/// sits *beside* `input_tokens`, not inside it, so the callers that read an
+/// Anthropic-shaped body (`merge_usage`, `TokenUsage::from_anthropic`) read it
+/// themselves and add it back into the prompt; this list is only for a body
+/// that states `prompt_tokens` or the Responses API's `input_tokens` with the
+/// details block.
 pub fn cached_prompt_tokens(usage: &Value) -> Option<u64> {
-    const SPELLINGS: [&str; 5] = [
+    const SPELLINGS: [&str; 6] = [
         "/prompt_tokens_details/cached_tokens",
         "/input_tokens_details/cached_tokens",
         "/prompt_cache_hit_tokens",
         "/cached_tokens",
         "/precached_prompt_tokens",
+        "/cache_read_input_tokens",
     ];
     SPELLINGS
         .iter()
         .find_map(|pointer| usage.pointer(pointer)?.as_u64())
+}
+
+/// The response header Fireworks puts the prompt-cache hit in, for dedicated
+/// deployments (#2882). The count is "out of" the prompt tokens, so it is
+/// inside the prompt total like every body spelling. A header is invisible to
+/// `merge_usage`, which only reads the body, so the gateway reads it with
+/// [`cached_prompt_tokens_header`] and fills the row's `cache_read_tokens`
+/// when the body states none.
+pub const CACHED_PROMPT_TOKENS_HEADER: &str = "fireworks-cached-prompt-tokens";
+
+/// The prompt-cache hit a [`CACHED_PROMPT_TOKENS_HEADER`] value states, `None`
+/// for a value that is not a non-negative integer.
+pub fn cached_prompt_tokens_header(value: &str) -> Option<u64> {
+    value.trim().parse().ok()
 }
 
 /// The prompt tokens an OpenAI-shaped `usage` object says were written to the
@@ -5234,6 +5255,36 @@ mod tests {
             "cached_tokens":64
         });
         assert_eq!(cached_prompt_tokens(&native), Some(64));
+    }
+
+    /// databricks' claude endpoints put `cache_read_input_tokens` at the top of
+    /// an OpenAI-shaped `usage` that states `prompt_tokens` (#2882)
+    #[test]
+    fn databricks_top_level_cache_read_is_read_on_the_openai_path() {
+        let usage = json!({
+            "prompt_tokens":120,"completion_tokens":5,"total_tokens":125,
+            "cache_read_input_tokens":80,"cache_creation_input_tokens":10
+        });
+        assert_eq!(cached_prompt_tokens(&usage), Some(80));
+        let read = TokenUsage::from_openai(&usage);
+        assert_eq!(read.cache_read, Some(80));
+        assert_eq!(read.prompt, 120);
+        // a details block still wins over the flat spelling
+        let both = json!({
+            "prompt_tokens":120,
+            "prompt_tokens_details":{"cached_tokens":64},
+            "cache_read_input_tokens":80
+        });
+        assert_eq!(cached_prompt_tokens(&both), Some(64));
+    }
+
+    #[test]
+    fn fireworks_header_value_is_read_as_a_count() {
+        assert_eq!(cached_prompt_tokens_header("1920"), Some(1920));
+        assert_eq!(cached_prompt_tokens_header(" 0 "), Some(0));
+        assert_eq!(cached_prompt_tokens_header(""), None);
+        assert_eq!(cached_prompt_tokens_header("-3"), None);
+        assert_eq!(cached_prompt_tokens_header("many"), None);
     }
 
     #[test]

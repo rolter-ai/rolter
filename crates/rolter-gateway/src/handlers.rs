@@ -4412,6 +4412,13 @@ async fn stream_response(
     // whether it was a cache hit (ROL-58). this streamed path is always a live
     // upstream response (a miss); cache hits are served by `cached_response`
     let decision = DecisionHeaders::from_log(&log);
+    // the prompt-cache hit a provider states in a response header (Fireworks,
+    // #2882), which the body parser cannot see
+    let header_cache_read = response
+        .headers()
+        .get(rolter_proxy::CACHED_PROMPT_TOKENS_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(rolter_proxy::cached_prompt_tokens_header);
     // a non-streamed body is buffered when something has to see all of it: a
     // response translation, or output guardrails (#591). the guard only exists
     // when a post-call rule applies to this route, so an unguarded route keeps
@@ -4428,8 +4435,11 @@ async fn stream_response(
                 // what the provider charged, read before the guardrails,
                 // plugins and sanitizer below can rewrite or withhold the body
                 // (#1478)
-                let billed =
+                let mut billed =
                     crate::logging::parse_usage_with(false, &bytes, translation.thinking_count());
+                billed.fill_cache_read(
+                    header_cache_read.map(|n| u32::try_from(n).unwrap_or(u32::MAX)),
+                );
                 let policy = DeliveryPolicy {
                     output,
                     plugins: post_response_plugins.as_ref(),
@@ -4501,7 +4511,8 @@ async fn stream_response(
     )
     .with_completion_observer(completion_observer)
     .with_genai_span(genai_span)
-    .with_thinking_count(translation.thinking_count());
+    .with_thinking_count(translation.thinking_count())
+    .with_header_cache_read(header_cache_read);
     let mut builder = Response::builder()
         .status(status)
         .header(header::CONTENT_TYPE, content_type);

@@ -756,6 +756,14 @@ fn merge_usage(usage: &mut Usage, value: &Value, thinking: rolter_proxy::Thinkin
 }
 
 impl Usage {
+    /// Take the cache read a response header stated, when the body stated none
+    /// (#2882). A body that does report one wins.
+    pub fn fill_cache_read(&mut self, header: Option<u32>) {
+        if let (0, Some(read)) = (self.cache_read, header) {
+            self.cache_read = read;
+        }
+    }
+
     /// The audio share of these tokens, as [`rolter_core::ModelPriceConfig::cost_with_audio`]
     /// takes it.
     pub fn audio(&self) -> rolter_core::AudioTokens {
@@ -885,6 +893,9 @@ pub struct UsageLoggingStream {
     billed: Option<Usage>,
     /// how the provider counts its thinking tokens (#2880)
     thinking: rolter_proxy::ThinkingCount,
+    /// the prompt-cache hit the response headers state (Fireworks, #2882),
+    /// used when the body states none
+    header_cache_read: Option<u32>,
 }
 
 impl UsageLoggingStream {
@@ -919,7 +930,16 @@ impl UsageLoggingStream {
             completed: false,
             billed: None,
             thinking: rolter_proxy::ThinkingCount::Stated,
+            header_cache_read: None,
         }
+    }
+
+    /// Fill the row's cache read from a response header when the body states
+    /// none (#2882): `merge_usage` only sees the body, and Fireworks reports a
+    /// dedicated deployment's hit in `fireworks-cached-prompt-tokens`.
+    pub fn with_header_cache_read(mut self, header: Option<u64>) -> Self {
+        self.header_cache_read = header.map(|n| u32::try_from(n).unwrap_or(u32::MAX));
+        self
     }
 
     /// Read the usage of the buffered body the way the provider counts its
@@ -1015,10 +1035,11 @@ impl UsageLoggingStream {
                 .client_disconnects_total
                 .fetch_add(1, Relaxed);
         }
-        let usage = self
+        let mut usage = self
             .billed
             .take()
             .unwrap_or_else(|| parse_usage_with(self.is_sse, &self.buf, self.thinking));
+        usage.fill_cache_read(self.header_cache_read);
         // a request billed by the image, the minute or the character is
         // measured in those, so a provider that reports no tokens for it has
         // not left its usage unknown when the count is read and has a rate
@@ -2214,6 +2235,40 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"
                 ..Usage::default()
             }
         );
+    }
+
+    /// Fireworks' dedicated deployments state the hit in a response header,
+    /// which the body parser cannot see (#2882); the body's own figure wins
+    #[test]
+    fn a_header_cache_read_fills_a_body_that_states_none() {
+        let mut usage = parse_usage(
+            false,
+            r#"{"usage":{"prompt_tokens":2048,"completion_tokens":5}}"#.as_bytes(),
+        );
+        usage.fill_cache_read(Some(1920));
+        assert_eq!(usage.cache_read, 1920);
+        let mut reported = parse_usage(
+            false,
+            r#"{"usage":{"prompt_tokens":2048,"prompt_tokens_details":{"cached_tokens":64}}}"#
+                .as_bytes(),
+        );
+        reported.fill_cache_read(Some(1920));
+        assert_eq!(reported.cache_read, 64);
+        let mut absent = Usage::default();
+        absent.fill_cache_read(None);
+        assert_eq!(absent.cache_read, 0);
+    }
+
+    /// Databricks' Claude endpoints: a flat `cache_read_input_tokens` beside
+    /// `prompt_tokens` (#2882)
+    #[test]
+    fn databricks_flat_cache_read_is_the_cache_read() {
+        let usage = parse_usage(
+            false,
+            r#"{"usage":{"prompt_tokens":120,"completion_tokens":5,"cache_read_input_tokens":80}}"#
+                .as_bytes(),
+        );
+        assert_eq!((usage.prompt, usage.cache_read), (120, 80));
     }
 
     /// GigaChat: `precached_prompt_tokens`
