@@ -333,11 +333,8 @@
       "yourProfile": "ваш профиль",
       "auditLogExport": "экспорт журнала аудита",
       "unpricedModels": "модели без цены",
-<<<<<<< HEAD
-      "priceCatalogue": "каталог цен"
-=======
+      "priceCatalogue": "каталог цен",
       "yourBudget": "ваш бюджет"
->>>>>>> origin/master
     },
     "requestFailed": "запрос не удался: {{status}}",
     "gateway": {
@@ -5858,7 +5855,6 @@
       }
     }
   },
-<<<<<<< HEAD
   "cacheReporting": {
     "reports": "Отдаёт метрики кэша",
     "none": "Нет метрик кэша",
@@ -5885,7 +5881,7 @@
     "lineCatalogue": "Цена из каталога {{source}}, снимок от {{date}} — может измениться.",
     "lineCatalogueUndated": "Цена из каталога {{source}} — может измениться.",
     "lineOverride": "Ваша цена (своя)."
-=======
+  },
   "keyCaps": {
     "spend": "Лимит расходов {{amount}} ({{period}})",
     "left": "потрачено {{spent}} · осталось {{remaining}}",
@@ -5893,6 +5889,5 @@
     "resets": "сброс {{when}}",
     "unknown": "расход пока неизвестен",
     "rate": "Лимит частоты {{caps}}"
->>>>>>> origin/master
   }
 }
