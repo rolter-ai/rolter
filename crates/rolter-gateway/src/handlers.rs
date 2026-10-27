@@ -3052,8 +3052,8 @@ async fn proxy(
                             let mut post_events = Vec::new();
                             let applied = policy.apply(status_code, &mut post_events, bytes).await;
                             log.plugin_events.extend(post_events);
-                            let bytes = match applied {
-                                Delivery::Send(bytes) => bytes,
+                            let (bytes, pre_restore) = match applied {
+                                Delivery::Send { body, pre_restore } => (body, pre_restore),
                                 // the upstream call happened and is billed on
                                 // a refusal as on a delivery (#1478)
                                 Delivery::Refuse { response, reason } => {
@@ -3075,6 +3075,7 @@ async fn proxy(
                             };
                             return buffered_response(
                                 bytes,
+                                pre_restore,
                                 billed,
                                 status,
                                 content_type,
@@ -4440,8 +4441,8 @@ async fn stream_response(
                 let applied = policy.apply(status, &mut post_events, bytes).await;
                 let mut log = log;
                 log.plugin_events.extend(post_events);
-                let bytes = match applied {
-                    Delivery::Send(bytes) => bytes,
+                let (bytes, pre_restore) = match applied {
+                    Delivery::Send { body, pre_restore } => (body, pre_restore),
                     Delivery::Refuse { response, reason } => {
                         return withheld_response(
                             response,
@@ -4461,6 +4462,7 @@ async fn stream_response(
                 };
                 buffered_response(
                     bytes,
+                    pre_restore,
                     billed,
                     status.as_u16(),
                     content_type,
@@ -4538,7 +4540,13 @@ struct PiiResponseLeg<'a> {
 /// are best-effort — a failure returns the body unchanged, which is safe: the
 /// worst case is a caller receiving placeholders instead of plaintext, never
 /// the reverse.
-async fn pii_response_leg_apply(leg: &PiiResponseLeg<'_>, bytes: Bytes) -> Bytes {
+///
+/// Returns the body to deliver and, when a restore replaced placeholders, the
+/// placeholder-bearing body it replaced. That one is what payload capture
+/// stores, so a captured response holds what the request side holds — the
+/// sanitized text — rather than the plaintext the sanitizer exists to keep out
+/// of rolter's stores (#3240).
+async fn pii_response_leg_apply(leg: &PiiResponseLeg<'_>, bytes: Bytes) -> (Bytes, Option<Bytes>) {
     let PiiResponseLeg {
         state,
         config,
@@ -4555,7 +4563,7 @@ async fn pii_response_leg_apply(leg: &PiiResponseLeg<'_>, bytes: Bytes) -> Bytes
     // a body that does not parse is not JSON we can walk; forwarding it
     // untouched is strictly better than failing a successful response
     let Ok(mut parsed) = serde_json::from_slice::<Value>(&bytes) else {
-        return bytes;
+        return (bytes, None);
     };
 
     if config.sanitizes_response() {
@@ -4587,6 +4595,7 @@ async fn pii_response_leg_apply(leg: &PiiResponseLeg<'_>, bytes: Bytes) -> Bytes
         }
     }
 
+    let mut pre_restore = None;
     if will_restore {
         if let Some(ticket) = ticket {
             if let Some(restored) = crate::pii_sanitizer::restore(
@@ -4601,14 +4610,18 @@ async fn pii_response_leg_apply(leg: &PiiResponseLeg<'_>, bytes: Bytes) -> Bytes
             )
             .await
             {
-                parsed = restored;
+                pre_restore = Some(std::mem::replace(&mut parsed, restored));
             }
         }
     }
 
-    serde_json::to_vec(&parsed)
-        .map(Bytes::from)
-        .unwrap_or(bytes)
+    let encode = |value: &Value| serde_json::to_vec(value).map(Bytes::from).ok();
+    // the capture copy is only worth keeping when it differs from what is
+    // delivered; an unchanged restore leaves nothing to tell apart
+    let pre_restore = pre_restore
+        .filter(|before| before != &parsed)
+        .and_then(|before| encode(&before));
+    (encode(&parsed).unwrap_or(bytes), pre_restore)
 }
 
 /// Replay a buffered (already fully received) response body through the same
@@ -4620,6 +4633,7 @@ async fn pii_response_leg_apply(leg: &PiiResponseLeg<'_>, bytes: Bytes) -> Bytes
 #[allow(clippy::too_many_arguments)]
 fn buffered_response(
     bytes: Bytes,
+    pre_restore: Option<Bytes>,
     billed: crate::logging::Usage,
     status: u16,
     content_type: String,
@@ -4650,7 +4664,8 @@ fn buffered_response(
     )
     .with_completion_observer(completion_observer)
     .with_genai_span(genai_span)
-    .with_billed_usage(billed);
+    .with_billed_usage(billed)
+    .with_captured_body(pre_restore);
     let mut builder = Response::builder()
         .status(status)
         .header(header::CONTENT_TYPE, content_type);
@@ -5084,7 +5099,8 @@ async fn cached_response(
         .apply(status, &mut post_events, Bytes::from(hit.body))
         .await;
     let (body, withheld) = match applied {
-        Delivery::Send(body) => (body, None),
+        // a hit captures no payload, so the pre-restore copy has no reader
+        Delivery::Send { body, .. } => (body, None),
         Delivery::Refuse { response, reason } => (Bytes::new(), Some((response, reason))),
     };
     let log = RequestLog {
@@ -5148,7 +5164,10 @@ impl DeliveryPolicy<'_, '_> {
     /// examined; an error body passes through untouched.
     async fn apply(&self, status: StatusCode, events: &mut Vec<String>, bytes: Bytes) -> Delivery {
         if !status.is_success() {
-            return Delivery::Send(bytes);
+            return Delivery::Send {
+                body: bytes,
+                pre_restore: None,
+            };
         }
         let bytes = match self.output {
             Some(guard) => match guard.apply(&bytes) {
@@ -5186,18 +5205,32 @@ impl DeliveryPolicy<'_, '_> {
         };
         // last, so the sanitizer sees the body the caller would have received
         // and a restore is never handed to a plugin
-        Delivery::Send(match self.pii {
-            Some(leg) => pii_response_leg_apply(leg, bytes).await,
-            None => bytes,
-        })
+        match self.pii {
+            Some(leg) => {
+                let (body, pre_restore) = pii_response_leg_apply(leg, bytes).await;
+                Delivery::Send { body, pre_restore }
+            }
+            None => Delivery::Send {
+                body: bytes,
+                pre_restore: None,
+            },
+        }
     }
 }
 
 /// The outcome of [`DeliveryPolicy::apply`]: the finalised body, or the reply
 /// to send instead of it plus the reason recorded on the withheld log row.
 enum Delivery {
-    Send(Bytes),
-    Refuse { response: Response, reason: String },
+    /// `pre_restore` is the placeholder-bearing body a PII restore replaced,
+    /// the one payload capture keeps (#3240); `None` when nothing was restored
+    Send {
+        body: Bytes,
+        pre_restore: Option<Bytes>,
+    },
+    Refuse {
+        response: Response,
+        reason: String,
+    },
 }
 
 /// The reply when a post-call rule refuses to deliver a completion.

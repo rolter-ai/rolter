@@ -885,6 +885,9 @@ pub struct UsageLoggingStream {
     billed: Option<Usage>,
     /// how the provider counts its thinking tokens (#2880)
     thinking: rolter_proxy::ThinkingCount,
+    /// the body payload capture stores instead of the forwarded bytes: the
+    /// placeholder-bearing body a PII restore replaced (#3240)
+    captured_body: Option<Bytes>,
 }
 
 impl UsageLoggingStream {
@@ -919,6 +922,7 @@ impl UsageLoggingStream {
             completed: false,
             billed: None,
             thinking: rolter_proxy::ThinkingCount::Stated,
+            captured_body: None,
         }
     }
 
@@ -940,6 +944,20 @@ impl UsageLoggingStream {
     /// the provider charged.
     pub fn with_billed_usage(mut self, usage: Usage) -> Self {
         self.billed = Some(usage);
+        self
+    }
+
+    /// Capture `body` as the row's `response_payload` instead of the bytes
+    /// this stream forwards (#3240).
+    ///
+    /// The buffered path hands a PII-restored body to this stream, and the
+    /// restored plaintext is what the sanitizer exists to keep out of rolter's
+    /// stores. The captured response is the placeholder-bearing body the
+    /// restore replaced, the same text the captured request holds. `None`
+    /// keeps the default, the forwarded bytes. Usage, billing and the
+    /// completion observer still read the forwarded bytes.
+    pub fn with_captured_body(mut self, body: Option<Bytes>) -> Self {
+        self.captured_body = body;
         self
     }
 
@@ -1080,8 +1098,9 @@ impl UsageLoggingStream {
             observer(&self.buf);
         }
         if log.capture_payloads {
+            let captured = self.captured_body.as_deref().unwrap_or(&self.buf);
             log.response_payload =
-                capture_payload(&self.buf, log.payload_max_bytes, &log.payload_redactor);
+                capture_payload(captured, log.payload_max_bytes, &log.payload_redactor);
         }
         self.buffer_pool.recycle(std::mem::take(&mut self.buf));
         log.prompt_tokens = usage.prompt;
