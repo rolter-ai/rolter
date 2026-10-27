@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { TFunction } from "i18next";
-import { Loader2, PlugZap, Plus, ShieldAlert, ShieldOff, ShieldQuestion } from "lucide-react";
+import { Loader2, PlugZap, Plus, ShieldOff, ShieldQuestion } from "lucide-react";
 import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
 
@@ -41,17 +41,18 @@ import { SwitchRow } from "@/components/ui/switch-row";
 import {
   createGuardrailProvider,
   deleteGuardrailProvider,
-  fetchConfig,
   fetchEffectiveGuardrails,
+  fetchGuardrailPolicies,
   fetchGuardrailProviders,
   updateGuardrailProvider,
+  type GuardrailPolicyRow,
   type GuardrailProviderInput,
   type GuardrailProviderRow,
 } from "@/lib/api";
 import {
+  policyScopeLabel,
   providerStatus,
-  readEffectiveWebhook,
-  readWebhookSource,
+  readSemanticGuards,
   resolveEnforcement,
   type Enforcement,
   type ProviderStatus,
@@ -86,25 +87,26 @@ function GuardrailProvidersScreen() {
   const client = useQueryClient();
   const toast = useToast();
   const { number } = useFormat();
-  // the registry and the effective webhook are read together, so the banner
-  // never pairs a fresh list with a stale webhook between two refetches. an
-  // unreadable config is `null`: the list still renders and the banner says it
-  // cannot confirm enforcement (#2162)
+  // the registry, the effective document and the policies are read together,
+  // so the banner never pairs a fresh list with a stale document between two
+  // refetches. an unreadable document is `null`: the list still renders and the
+  // banner says it cannot confirm enforcement (#2162); unreadable policies are
+  // `null` too, and a confirmation then says it cannot name the traffic
   const query = useQuery({
     queryKey: ["guardrail-providers"],
     queryFn: async () => {
-      const [providers, webhook, source] = await Promise.all([
+      const [providers, semantic, policies] = await Promise.all([
         fetchGuardrailProviders(),
-        fetchConfig().then(readEffectiveWebhook, () => null),
-        // where the webhook comes from (#2249); without it the screen compares
-        // fields, which cannot tell a file copy of the enabled row from the row
-        fetchEffectiveGuardrails().then(readWebhookSource, () => null),
+        // which providers the gateways run (#459); without it the screen would
+        // trust the registry's switch, which is not the same thing
+        fetchEffectiveGuardrails().then(readSemanticGuards, () => null),
+        fetchGuardrailPolicies().catch(() => null),
       ]);
-      return { providers, webhook, source };
+      return { providers, semantic, policies };
     },
     retry: false,
   });
-  // what the active provider did over the last week (#2158)
+  // what the active providers did over the last week (#2158)
   const outcomes = useGuardrailOutcomes();
 
   // UX stream (#805). the screen key comes from the enclosing UxScreenProvider;
@@ -151,21 +153,21 @@ function GuardrailProvidersScreen() {
 
   const providers = query.data?.providers ?? [];
   const enforcement = query.data
-    ? resolveEnforcement(query.data.providers, query.data.webhook, query.data.source)
+    ? resolveEnforcement(query.data.providers, query.data.semantic)
     : null;
-  // `undefined` while the registry has not loaded: "none is active" would be a
-  // guess, and the confirmation below must not guess
-  const active = query.data ? (providers.find((provider) => provider.enabled) ?? null) : undefined;
-  // an enabled config-file webhook wins over the registry, whichever row is on
-  const fileInForce =
-    (enforcement?.state === "enforced" || enforcement?.state === "inert") &&
-    enforcement.provider === null;
+  // the providers running besides the one being edited; `undefined` while the
+  // effective document has not said, since "none" would be a guess
+  const othersOf = (id: string | undefined): string[] | undefined =>
+    enforcement?.state === "enforced"
+      ? enforcement.providers.filter((p) => p.provider_id !== id).map((p) => p.name)
+      : enforcement?.state === "off"
+        ? []
+        : undefined;
 
-  // switching a provider on hands it every request (#2163), and switching the
-  // active one off leaves them to nothing (#2271), so both saves go through a
-  // confirmation naming the provider and what traffic goes through afterwards.
-  // a save that leaves the switch where it was is not a hand-over and saves
-  // directly
+  // switching a provider on adds it to the active set (#459) and switching
+  // one off takes it out of it (#2271), so both saves go through a confirmation
+  // naming the provider and the traffic it sees or stops seeing. a save that
+  // leaves the switch where it was changes neither and saves directly
   const [handingOver, setHandingOver] = React.useState<GuardrailProviderInput | null>(null);
   // not cleared as the confirmation closes: the landing is reported on the
   // closing edge, and a UX stream key that flipped to the activation's there
@@ -179,14 +181,9 @@ function GuardrailProvidersScreen() {
     setPausing(!body.enabled);
     setHandingOver(body);
   };
-  // what requests go through once the active row is paused. no other row
-  // takes its place, so only an enabled config-file webhook still checks
-  // them, and an unreadable effective config cannot say whether one is
-  const pauseConsequence = fileInForce
-    ? t("pages.guardrailProviders.confirm.pauseFileStays", { name: handingOver?.name })
-    : enforcement === null || enforcement.state === "unknown"
-      ? t("pages.guardrailProviders.confirm.pauseUnknown")
-      : t("pages.guardrailProviders.confirm.pauseUnchecked");
+  // pausing the last running provider leaves requests unchecked, which is as
+  // red as the delete; with others still running it changes less
+  const othersRemain = (othersOf(editing?.id) ?? []).length > 0;
 
   return (
     <div className="mx-auto flex max-w-[1120px] flex-col gap-5 p-[22px]">
@@ -274,13 +271,6 @@ function GuardrailProvidersScreen() {
                     count: provider.max_retries,
                     kib: number(Math.round(provider.max_body_bytes / 1024)),
                   })}
-                  {/* said on a paused row too: activating it is how a working
-                      provider gets replaced by one that checks nothing */}
-                  {provider.stage === "post_call" && (
-                    <p className="mt-1 text-[color:var(--status-warning-text)]">
-                      {t("pages.guardrailProviders.postCallCardNote")}
-                    </p>
-                  )}
                   {/* outcomes are recorded under the provider's name, so a card
                       counts its own and a switched-away provider's history
                       stays off the new one's. a paused provider the gateway
@@ -367,7 +357,7 @@ function GuardrailProvidersScreen() {
         key={editing?.id ?? (editing === null ? "new" : "closed")}
         open={editing !== undefined}
         initial={editing ?? null}
-        active={active}
+        others={othersOf(editing?.id)}
         pending={save.isPending}
         error={save.isError ? errorText(save.error, t) : null}
         onClose={() => setEditing(undefined)}
@@ -388,9 +378,8 @@ function GuardrailProvidersScreen() {
         }}
         // activating is a hand-over, not a removal: the provider it pauses can
         // be switched back on. a pause that leaves requests unchecked is as
-        // red as the delete, and one under the config-file webhook changes
-        // nothing for traffic
-        tone={pausing && !fileInForce ? "danger" : "default"}
+        // red as the delete, and one with other providers running is not
+        tone={pausing && !othersRemain ? "danger" : "default"}
         title={
           pausing
             ? t("pages.guardrailProviders.confirm.pauseTitle", { name: handingOver?.name })
@@ -399,12 +388,21 @@ function GuardrailProvidersScreen() {
         description={
           handingOver &&
           (pausing ? (
-            pauseConsequence
+            <PauseConsequence
+              others={othersOf(editing?.id)}
+              reach={providerReach(query.data?.policies ?? null, editing?.id)}
+            />
           ) : (
             <ActivationConsequence
               provider={handingOver}
-              replaces={active === undefined ? undefined : (active?.name ?? null)}
-              fileWins={fileInForce}
+              others={othersOf(editing?.id)}
+              reach={providerReach(query.data?.policies ?? null, editing?.id)}
+              fileWins={
+                enforcement?.state === "enforced" &&
+                enforcement.providers.some(
+                  (p) => p.source === "file" && p.name === handingOver.name,
+                )
+              }
             />
           ))
         }
@@ -425,33 +423,79 @@ function GuardrailProvidersScreen() {
 }
 
 /**
- * What activating `provider` does, for the confirmation: the registry row it
- * pauses, then what every request goes through afterwards. `replaces` is the
- * active row's name, `null` when none is active, and `undefined` when the
- * registry did not load.
+ * Which requests a provider sees, from the policies that list it. A provider no
+ * policy lists, enabled or not, is unattached and runs on every request no
+ * policy matches (reported as "default"); one that policies list runs only for
+ * those policies' scopes, so pausing a policy never widens it.
+ */
+type Reach =
+  | { kind: "unknown" }
+  | { kind: "unattached" }
+  | { kind: "scoped"; enabled: GuardrailPolicyRow[]; paused: GuardrailPolicyRow[] };
+
+function providerReach(policies: GuardrailPolicyRow[] | null, id: string | undefined): Reach {
+  if (policies === null) return { kind: "unknown" };
+  const listing = id ? policies.filter((policy) => policy.provider_ids.includes(id)) : [];
+  if (listing.length === 0) return { kind: "unattached" };
+  return {
+    kind: "scoped",
+    enabled: listing.filter((policy) => policy.enabled),
+    paused: listing.filter((policy) => !policy.enabled),
+  };
+}
+
+/** the scopes of some policies, named, for a sentence */
+function useScopeNames(policies: GuardrailPolicyRow[]): string {
+  const { t } = useTranslation();
+  return policies
+    .map((policy) =>
+      policyScopeLabel(policy, (kind) => t(`pages.guardrailPolicies.scopes.${kind}`)),
+    )
+    .join(", ");
+}
+
+/**
+ * What activating `provider` does, for the confirmation: it joins the active
+ * set without pausing another, then which requests it sees and what a failure
+ * does. `others` is the names of the providers already running, `undefined`
+ * when the effective document did not say.
  *
  * Rendered inside the dialog's description paragraph, so each sentence is a
  * block `span` rather than a `p`.
  */
 function ActivationConsequence({
   provider,
-  replaces,
+  others,
+  reach,
   fileWins,
 }: {
   provider: GuardrailProviderInput;
-  replaces: string | null | undefined;
+  others: string[] | undefined;
+  reach: Reach;
   fileWins: boolean;
 }) {
   const { t } = useTranslation();
   const name = provider.name;
+  const scopes = useScopeNames(reach.kind === "scoped" ? reach.enabled : []);
   return (
     <>
       <span className="block">
-        {replaces === undefined
-          ? t("pages.guardrailProviders.confirm.activateOwnerUnknown")
-          : replaces === null
-            ? t("pages.guardrailProviders.confirm.activateNoneActive")
-            : t("pages.guardrailProviders.confirm.activateReplaces", { current: replaces })}
+        {others === undefined
+          ? t("pages.guardrailProviders.confirm.activateOthersUnknown")
+          : others.length === 0
+            ? t("pages.guardrailProviders.confirm.activateAlone")
+            : t("pages.guardrailProviders.confirm.activateAlongside", {
+                names: others.join(", "),
+              })}
+      </span>
+      <span className="mt-2 block">
+        {reach.kind === "unknown"
+          ? t("pages.guardrailProviders.confirm.reachUnknown")
+          : reach.kind === "unattached"
+            ? t("pages.guardrailProviders.confirm.reachUnattached")
+            : reach.enabled.length === 0
+              ? t("pages.guardrailProviders.confirm.reachPaused")
+              : t("pages.guardrailProviders.confirm.reachScoped", { scopes })}
       </span>
       <span className="mt-2 block">
         {provider.stage === "post_call" ? (
@@ -476,6 +520,32 @@ function ActivationConsequence({
 }
 
 /**
+ * What pausing the provider does: the other active providers keep running, and
+ * the policies that list it lose it. `others` is `undefined` when the effective
+ * document did not say, which is not the same as none.
+ */
+function PauseConsequence({ others, reach }: { others: string[] | undefined; reach: Reach }) {
+  const { t } = useTranslation();
+  const policies = reach.kind === "scoped" ? reach.enabled.map((policy) => policy.name) : [];
+  return (
+    <>
+      <span className="block">
+        {others === undefined
+          ? t("pages.guardrailProviders.confirm.pauseUnknown")
+          : others.length === 0
+            ? t("pages.guardrailProviders.confirm.pauseUnchecked")
+            : t("pages.guardrailProviders.confirm.pauseOthersKeep", { names: others.join(", ") })}
+      </span>
+      {policies.length > 0 && (
+        <span className="mt-2 block">
+          {t("pages.guardrailProviders.confirm.pausePolicies", { policies: policies.join(", ") })}
+        </span>
+      )}
+    </>
+  );
+}
+
+/**
  * The card badge for a row, or `undefined` for the two states `PolicyCard`
  * already says from `enabled` alone.
  */
@@ -484,8 +554,6 @@ function cardStatus(
   t: TFunction,
 ): { tone: "warning" | "neutral"; label: string } | undefined {
   switch (status) {
-    case "inert":
-      return { tone: "warning", label: t("pages.guardrailProviders.statusInert") };
     case "overridden":
       return { tone: "neutral", label: t("pages.guardrailProviders.statusOverridden") };
     case "unknown":
@@ -496,9 +564,9 @@ function cardStatus(
 }
 
 /**
- * What the gateway enforces, read from the effective webhook rather than from
+ * What the gateways enforce, read from the providers they run rather than from
  * the registry's switch. Green only when requests are really sent to a
- * guardrail service before they go upstream (#2162).
+ * guardrail service (#2162); several providers may be running at once (#459).
  */
 function EnforcementBanner({
   enforcement,
@@ -522,46 +590,26 @@ function EnforcementBanner({
     title = t("pages.guardrailProviders.offBanner");
     lines.push(t("pages.guardrailProviders.offBody"));
   } else {
-    const { provider, overridden, webhook } = enforcement;
-    if (enforcement.state === "enforced") {
-      tone = "success";
-      icon = <PlugZap className="h-5 w-5 text-[color:var(--status-success-text)]" aria-hidden />;
-      title = provider
-        ? t("pages.guardrailProviders.activeBanner", { name: provider.name })
-        : t("pages.guardrailProviders.fileBanner");
-    } else {
-      tone = "warning";
-      icon = (
-        <ShieldAlert className="h-5 w-5 text-[color:var(--status-warning-text)]" aria-hidden />
-      );
-      title = provider
-        ? t("pages.guardrailProviders.inertBanner", { name: provider.name })
-        : t("pages.guardrailProviders.fileInertBanner");
+    const { providers, unattached } = enforcement;
+    tone = "success";
+    icon = <PlugZap className="h-5 w-5 text-[color:var(--status-success-text)]" aria-hidden />;
+    title = t("pages.guardrailProviders.activeBanner", {
+      names: providers.map((provider) => provider.name).join(", "),
+    });
+    const closed = providers.filter((p) => p.failure_mode === "fail_closed").map((p) => p.name);
+    const open = providers.filter((p) => p.failure_mode === "fail_open").map((p) => p.name);
+    if (closed.length > 0) {
+      lines.push(t("pages.guardrailProviders.activeFailClosed", { names: closed.join(", ") }));
     }
-    if (!provider) {
-      // the file's webhook is not a row on this screen, so its endpoint is
-      // the only way to tell which service it is
-      lines.push(<span className="font-mono">{webhook.url}</span>);
+    if (open.length > 0) {
+      lines.push(t("pages.guardrailProviders.activeFailOpen", { names: open.join(", ") }));
     }
-    if (enforcement.state === "enforced") {
-      lines.push(
-        webhook.failure_mode === "fail_closed"
-          ? t("pages.guardrailProviders.activeFailClosed")
-          : t("pages.guardrailProviders.activeFailOpen"),
-      );
-    } else {
-      lines.push(
-        provider
-          ? t("pages.guardrailProviders.inertBody")
-          : t("pages.guardrailProviders.fileInertBody"),
-      );
+    if (unattached.length > 0) {
+      lines.push(t("pages.guardrailProviders.unattachedNote", { names: unattached.join(", ") }));
     }
-    if (!provider) {
-      lines.push(
-        overridden
-          ? t("pages.guardrailProviders.overriddenNote", { name: overridden.name })
-          : t("pages.guardrailProviders.fileNote"),
-      );
+    const fromFile = providers.filter((p) => p.source === "file").map((p) => p.name);
+    if (fromFile.length > 0) {
+      lines.push(t("pages.guardrailProviders.fileNote", { names: fromFile.join(", ") }));
     }
   }
 
@@ -588,7 +636,7 @@ function EnforcementBanner({
 function ProviderDialog({
   open,
   initial,
-  active,
+  others,
   pending,
   error,
   onClose,
@@ -596,8 +644,8 @@ function ProviderDialog({
 }: {
   open: boolean;
   initial: GuardrailProviderRow | null;
-  /** the registry's active row, `null` for none, `undefined` before it loads */
-  active: GuardrailProviderRow | null | undefined;
+  /** the other providers running, `undefined` before the effective document says */
+  others: string[] | undefined;
   pending: boolean;
   error: string | null;
   onClose: () => void;
@@ -607,7 +655,6 @@ function ProviderDialog({
   const [form, setForm] = React.useState<GuardrailProviderInput>(initial ?? EMPTY);
   const set = (patch: Partial<GuardrailProviderInput>) =>
     setForm((value) => ({ ...value, ...patch }));
-  const postCall = form.stage === "post_call";
   const [trialOpen, setTrialOpen] = React.useState(false);
   const urlValid = HTTP_URL.test(form.url);
   // said once the field is left, not on the first keystroke of a URL that is
@@ -625,15 +672,16 @@ function ProviderDialog({
     form.timeout_ms > 0 &&
     form.max_body_bytes > 0 &&
     (form.auth_kind === "none" || Boolean(form.auth_env?.trim()));
-  // names the provider the switch would pause; the save that turns it on is
-  // confirmed on the screen, with the failure policy the form ends up with
+  // says the switch adds this provider to the running ones; the save that
+  // flips it is confirmed on the screen, with the failure policy the form ends
+  // up with
   const activateHint = initial?.enabled
     ? t("pages.guardrailProviders.activateHintSelf")
-    : active === undefined
+    : others === undefined
       ? t("pages.guardrailProviders.activateHint")
-      : active === null
+      : others.length === 0
         ? t("pages.guardrailProviders.activateHintNone")
-        : t("pages.guardrailProviders.activateHintReplaces", { name: active.name });
+        : t("pages.guardrailProviders.activateHintAlongside", { names: others.join(", ") });
   return (
     <Dialog
       open={open}
@@ -694,18 +742,10 @@ function ProviderDialog({
                   stage: picked as GuardrailProviderInput["stage"],
                 })
               }
-              aria-describedby={postCall ? "provider-stage-note" : undefined}
               options={[
                 { value: "pre_call", label: t("pages.guardrailProviders.stagePre") },
-                // the gateway runs only the pre-call stage (`consult_pre_call`
-                // returns early for any other), so this is not offered until
-                // it runs the output stage too (#2162)
-                {
-                  value: "post_call",
-                  label: t("pages.guardrailProviders.stagePost"),
-                  description: t("pages.guardrailProviders.stagePostUnsupported"),
-                  disabled: true,
-                },
+                // the gateway checks the response body at this stage too (#459)
+                { value: "post_call", label: t("pages.guardrailProviders.stagePost") },
               ]}
             />
           </Field>
@@ -739,16 +779,6 @@ function ProviderDialog({
             className="rounded-lg bg-[color:var(--status-warning)]/10 p-3 text-xs text-[color:var(--status-warning-text)]"
           >
             {t("pages.guardrailProviders.failOpenWarning")}
-          </p>
-        )}
-        {/* a row can still carry the stage: the API accepts it, and rows saved
-            from this dialog before it was disabled keep it */}
-        {postCall && (
-          <p
-            id="provider-stage-note"
-            className="rounded-lg bg-[color:var(--status-warning)]/10 p-3 text-xs text-[color:var(--status-warning-text)]"
-          >
-            {t("pages.guardrailProviders.postCallDialogNote")}
           </p>
         )}
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">

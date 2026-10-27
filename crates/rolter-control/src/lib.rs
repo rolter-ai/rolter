@@ -53,6 +53,8 @@ pub mod deprecation;
 #[cfg(feature = "postgres")]
 mod feature_flags;
 #[cfg(feature = "postgres")]
+mod guardrail_policies;
+#[cfg(feature = "postgres")]
 mod guardrail_trial;
 #[cfg(feature = "postgres")]
 mod guardrails;
@@ -425,9 +427,10 @@ struct ConfigOwned {
     /// dashboard row that takes one, so they decide where an effective rule
     /// comes from (`GET /api/v1/guardrails/effective`)
     guardrail_rules: std::collections::HashSet<String>,
-    /// whether the file's `[guardrail_webhook]` is on, which keeps the
-    /// registry's provider out of the effective config
-    guardrail_webhook: bool,
+    /// names of the `[[semantic_guards.providers]]` and `.policies` the file
+    /// declares, which win over a registry row of the same name (#459)
+    semantic_providers: std::collections::HashSet<String>,
+    semantic_policies: std::collections::HashSet<String>,
 }
 
 impl ConfigOwned {
@@ -453,7 +456,18 @@ impl ConfigOwned {
                 .iter()
                 .map(|rule| rule.name.clone())
                 .collect(),
-            guardrail_webhook: config.guardrail_webhook.enabled,
+            semantic_providers: config
+                .semantic_guards
+                .providers
+                .iter()
+                .map(|provider| provider.name.trim().to_string())
+                .collect(),
+            semantic_policies: config
+                .semantic_guards
+                .policies
+                .iter()
+                .map(|policy| policy.name.trim().to_string())
+                .collect(),
             groups: config
                 .provider_groups
                 .iter()
@@ -1270,6 +1284,7 @@ fn build_app_with(state: ControlState, mount_internal: bool) -> Router {
             .merge(mcp_oauth_flow::router())
             .merge(feature_flags::router())
             .merge(guardrails::router())
+            .merge(guardrail_policies::router())
             .merge(guardrail_trial::router())
             .merge(labels::router())
             .merge(logging_settings::router())

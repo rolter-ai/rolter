@@ -1,171 +1,162 @@
-import type { GuardrailProviderRow } from "@/lib/api";
+import type { GuardrailPolicyRow, GuardrailProviderRow } from "@/lib/api";
 
 /**
- * The `guardrail_webhook` section of the effective config (`GET /api/v1/config`).
- *
- * This is the webhook the control plane hands every gateway, after the file and
- * the registry are merged: an enabled `[guardrail_webhook]` in the config file
- * wins, and the one enabled registry provider fills in only when it is off
- * (`MergedConfigStore::load` in `crates/rolter-store/src/lib.rs`).
+ * One guardrail provider a gateway runs, as `semantic.providers` of
+ * `GET /api/v1/guardrails/effective` lists it: the config file's
+ * `[guardrail_webhook]` / `[[semantic_guards.providers]]` plus every enabled
+ * registry row (a file provider wins a name collision).
  */
-export interface EffectiveWebhook {
-  enabled: boolean;
+export interface SemanticProvider {
+  name: string;
   url: string;
   stage: "pre_call" | "post_call";
-  timeout_ms: number;
-  max_retries: number;
   failure_mode: "fail_open" | "fail_closed";
-  max_body_bytes: number;
-  /** `{ bearer: { token_env } }` or `{ shared_secret: { secret_env } }`; absent for none */
-  auth?: unknown;
+  timeout_ms: number;
+  source: "file" | "registry";
+  /** the registry row, `null` for a provider the config file defines */
+  provider_id: string | null;
 }
 
-/**
- * What the gateway actually does with external guardrails.
- *
- * A registry row that says `enabled` is not the same thing: the gateway runs
- * only the pre-call stage, and a config-file webhook overrides the registry
- * whenever it is on. The screen reports this instead of the switch (#2162).
- */
-export type Enforcement =
-  /** the effective webhook could not be read, or it contradicts the registry */
-  | { state: "unknown" }
-  /** no webhook is on anywhere, so the gateway consults no guardrail service */
-  | { state: "off" }
-  | {
-      /**
-       * `enforced`: every request goes to the webhook before it goes upstream.
-       * `inert`: a webhook is on at the post-call stage, which the gateway does
-       * not run yet (`consult_pre_call` returns early for it), so it checks
-       * nothing
-       */
-      state: "enforced" | "inert";
-      /** the registry row in force, or `null` when the config-file webhook is */
-      provider: GuardrailProviderRow | null;
-      /** an enabled registry row the config-file webhook is overriding */
-      overridden: GuardrailProviderRow | null;
-      webhook: EffectiveWebhook;
-    };
+/** a policy as the gateways run it; providers are named, not identified */
+export interface SemanticPolicy {
+  name: string;
+  enabled: boolean;
+  scope: GuardrailPolicyRow["scope_kind"];
+  scope_id: string | null;
+  providers: string[];
+  thresholds: Record<string, number>;
+  on_violation: GuardrailPolicyRow["on_violation"];
+  streaming: GuardrailPolicyRow["streaming"];
+  source: "file" | "registry";
+  policy_id: string | null;
+}
 
-/** What one registry row's card says about it. */
-export type ProviderStatus = "enforced" | "inert" | "overridden" | "unknown" | "paused";
+export interface SemanticGuards {
+  providers: SemanticProvider[];
+  policies: SemanticPolicy[];
+  /** enabled providers no enabled policy lists: they run on every request no policy matches */
+  unattached: string[];
+}
 
 const STAGES = new Set(["pre_call", "post_call"]);
 const FAILURE_MODES = new Set(["fail_open", "fail_closed"]);
+const SOURCES = new Set(["file", "registry"]);
+const SCOPES = new Set(["deployment", "org", "project", "route", "key"]);
+const ON_VIOLATION = new Set(["block", "annotate"]);
+const STREAMING = new Set(["reject", "buffer"]);
 
-/**
- * Read the effective webhook out of the config document, or `null` when the
- * section is missing or malformed. A shape this screen does not recognise is
- * treated as unreadable rather than guessed at, since the answer it feeds is a
- * security status.
- */
-export function readEffectiveWebhook(config: unknown): EffectiveWebhook | null {
-  if (!config || typeof config !== "object" || Array.isArray(config)) return null;
-  const section = (config as Record<string, unknown>).guardrail_webhook;
-  if (!section || typeof section !== "object") return null;
-  const hook = section as Record<string, unknown>;
+const isObject = (value: unknown): value is Record<string, unknown> =>
+  !!value && typeof value === "object" && !Array.isArray(value);
+const isString = (value: unknown): value is string => typeof value === "string";
+const isOneOf = (set: Set<string>, value: unknown) => isString(value) && set.has(value);
+const nullableString = (value: unknown) => value === null || isString(value);
+
+function readProvider(value: unknown): SemanticProvider | null {
+  if (!isObject(value)) return null;
   if (
-    typeof hook.enabled !== "boolean" ||
-    typeof hook.url !== "string" ||
-    typeof hook.stage !== "string" ||
-    !STAGES.has(hook.stage) ||
-    typeof hook.failure_mode !== "string" ||
-    !FAILURE_MODES.has(hook.failure_mode) ||
-    typeof hook.timeout_ms !== "number" ||
-    typeof hook.max_retries !== "number" ||
-    typeof hook.max_body_bytes !== "number"
+    !isString(value.name) ||
+    !isString(value.url) ||
+    !isOneOf(STAGES, value.stage) ||
+    !isOneOf(FAILURE_MODES, value.failure_mode) ||
+    typeof value.timeout_ms !== "number" ||
+    !isOneOf(SOURCES, value.source) ||
+    !nullableString(value.provider_id ?? null)
   ) {
     return null;
   }
-  return hook as unknown as EffectiveWebhook;
+  return { ...value, provider_id: value.provider_id ?? null } as unknown as SemanticProvider;
 }
 
-/** Where the effective webhook comes from, as `GET /api/v1/guardrails/effective` says (#2249). */
-export interface WebhookSource {
-  source: "file" | "registry" | "none";
-  /** the registry provider in force, for `registry` */
-  providerId: string | null;
-  /** the enabled registry provider an enabled config-file webhook displaced */
-  overrides: string | null;
-}
-
-/** Read the webhook's source out of the answer of the effective endpoint, or `null` when unreadable. */
-export function readWebhookSource(doc: unknown): WebhookSource | null {
-  if (!doc || typeof doc !== "object" || Array.isArray(doc)) return null;
-  const value = doc as Record<string, unknown>;
-  if (value.source !== "file" && value.source !== "registry" && value.source !== "none") {
+function readPolicy(value: unknown): SemanticPolicy | null {
+  if (!isObject(value)) return null;
+  if (
+    !isString(value.name) ||
+    typeof value.enabled !== "boolean" ||
+    !isOneOf(SCOPES, value.scope) ||
+    !nullableString(value.scope_id ?? null) ||
+    !Array.isArray(value.providers) ||
+    !value.providers.every(isString) ||
+    !isObject(value.thresholds) ||
+    !Object.values(value.thresholds).every((n) => typeof n === "number") ||
+    !isOneOf(ON_VIOLATION, value.on_violation) ||
+    !isOneOf(STREAMING, value.streaming) ||
+    !isOneOf(SOURCES, value.source) ||
+    !nullableString(value.policy_id ?? null)
+  ) {
     return null;
   }
-  const id = (field: unknown) => (typeof field === "string" ? field : null);
   return {
-    source: value.source,
-    providerId: id(value.provider_id),
-    overrides: id(value.overrides),
-  };
+    ...value,
+    scope_id: value.scope_id ?? null,
+    policy_id: value.policy_id ?? null,
+  } as unknown as SemanticPolicy;
 }
 
-/** the credential a hook carries, as `kind:env`, in the shape both sides share */
-function authKey(kind: string, env: string | null | undefined): string {
-  return kind === "none" || !env ? "none" : `${kind}:${env}`;
-}
-
-function webhookAuthKey(auth: unknown): string {
-  if (!auth || typeof auth !== "object") return "none";
-  const value = auth as Record<string, Record<string, unknown> | undefined>;
-  if (typeof value.bearer?.token_env === "string") {
-    return authKey("bearer", value.bearer.token_env);
+function readAll<T>(list: unknown, read: (value: unknown) => T | null): T[] | null {
+  if (!Array.isArray(list)) return null;
+  const out: T[] = [];
+  for (const item of list) {
+    const value = read(item);
+    if (value === null) return null;
+    out.push(value);
   }
-  if (typeof value.shared_secret?.secret_env === "string") {
-    return authKey("shared_secret", value.shared_secret.secret_env);
-  }
-  return "none";
+  return out;
 }
 
 /**
- * Whether the effective webhook is this registry row, field for field, as the
- * postgres store maps a row into one. Anything that differs means the config
- * file supplied the webhook instead.
+ * Read the `semantic` object out of the answer of the effective endpoint, or
+ * `null` when it is missing or not the shape this screen knows. A status screen
+ * must not guess from a document it does not recognise: `null` is "cannot
+ * confirm".
  */
-function isRow(row: GuardrailProviderRow, hook: EffectiveWebhook): boolean {
-  return (
-    row.url === hook.url &&
-    row.stage === hook.stage &&
-    row.failure_mode === hook.failure_mode &&
-    row.timeout_ms === hook.timeout_ms &&
-    row.max_retries === hook.max_retries &&
-    row.max_body_bytes === hook.max_body_bytes &&
-    authKey(row.auth_kind, row.auth_env) === webhookAuthKey(hook.auth)
-  );
+export function readSemanticGuards(doc: unknown): SemanticGuards | null {
+  if (!isObject(doc) || !isObject(doc.semantic)) return null;
+  const providers = readAll(doc.semantic.providers, readProvider);
+  const policies = readAll(doc.semantic.policies, readPolicy);
+  const unattached = readAll(doc.semantic.unattached, (v) => (isString(v) ? v : null));
+  if (!providers || !policies || !unattached) return null;
+  return { providers, policies, unattached };
 }
 
 /**
- * Resolve what the gateway enforces from the registry and the effective
- * webhook. `webhook` is `null` when the effective config could not be read;
- * `source` is `null` when the control plane could not say where it comes from.
+ * What the gateways do with external guardrails. A registry row that says
+ * `enabled` is not the same thing as a provider they run, so the screen reports
+ * `semantic.providers` and not the switch (#2162, #459).
+ */
+export type Enforcement =
+  /** the effective document could not be read, or it contradicts the registry */
+  | { state: "unknown" }
+  /** no provider is enabled anywhere */
+  | { state: "off" }
+  | {
+      state: "enforced";
+      providers: SemanticProvider[];
+      unattached: string[];
+      policies: SemanticPolicy[];
+    };
+
+/** What one registry row's card says about it. */
+export type ProviderStatus = "enforced" | "overridden" | "unknown" | "paused";
+
+/**
+ * Resolve what the gateways enforce from the registry and the effective
+ * document. `semantic` is `null` when it could not be read.
  */
 export function resolveEnforcement(
-  providers: GuardrailProviderRow[],
-  webhook: EffectiveWebhook | null,
-  source: WebhookSource | null = null,
+  rows: GuardrailProviderRow[],
+  semantic: SemanticGuards | null,
 ): Enforcement {
-  if (!webhook) return { state: "unknown" };
-  // the store lets at most one row be enabled (`guardrail_providers_one_enabled`)
-  const active = providers.find((provider) => provider.enabled) ?? null;
-  if (!webhook.enabled) {
-    // an enabled registry row always reaches the effective config, so a
-    // disabled webhook next to one means the two reads disagree
-    return active ? { state: "unknown" } : { state: "off" };
+  if (!semantic) return { state: "unknown" };
+  if (semantic.providers.length === 0) {
+    // an enabled registry row always reaches the effective document, so none
+    // there next to an enabled row means the two reads disagree
+    return rows.some((row) => row.enabled) ? { state: "unknown" } : { state: "off" };
   }
-  // the control plane names the source (#2249); the field comparison only
-  // stands in when it could not be asked, and cannot tell a file webhook that
-  // is a copy of the enabled row from the row itself
-  const fromRegistry =
-    active !== null && (source ? source.source === "registry" : isRow(active, webhook));
   return {
-    state: webhook.stage === "pre_call" ? "enforced" : "inert",
-    provider: fromRegistry ? active : null,
-    overridden: fromRegistry ? null : active,
-    webhook,
+    state: "enforced",
+    providers: semantic.providers,
+    unattached: semantic.unattached,
+    policies: semantic.policies,
   };
 }
 
@@ -175,11 +166,21 @@ export function providerStatus(
   enforcement: Enforcement,
 ): ProviderStatus {
   if (!row.enabled) return "paused";
-  if (enforcement.state === "enforced" || enforcement.state === "inert") {
-    if (enforcement.overridden?.id === row.id) return "overridden";
-    if (enforcement.provider?.id === row.id) return enforcement.state;
+  if (enforcement.state !== "enforced") return "unknown";
+  if (enforcement.providers.some((provider) => provider.provider_id === row.id)) return "enforced";
+  // a config-file provider of the same name wins the collision
+  if (enforcement.providers.some((p) => p.source === "file" && p.name === row.name)) {
+    return "overridden";
   }
-  // whatever the effective config says, the gateway never runs this stage
-  if (row.stage === "post_call") return "inert";
   return "unknown";
+}
+
+/** the scope a policy is pinned to, as a short noun phrase key and its id */
+export function policyScopeLabel(
+  policy: Pick<GuardrailPolicyRow, "scope_kind" | "scope_id">,
+  kindLabel: (kind: GuardrailPolicyRow["scope_kind"]) => string,
+): string {
+  return policy.scope_id
+    ? `${kindLabel(policy.scope_kind)} ${policy.scope_id}`
+    : kindLabel(policy.scope_kind);
 }

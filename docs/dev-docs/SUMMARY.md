@@ -20,6 +20,7 @@
 - [MCP OAuth](architecture/mcp-oauth.md)
 - [SCIM provisioning](architecture/scim-provisioning.md)
 - [Security](architecture/security.md)
+- [Semantic guard policies](architecture/semantic-guards.md)
 - [LDAP authentication (not shipped)](architecture/ldap.md)
 - [Health & readiness](architecture/health-and-readiness.md)
 - [Observability](architecture/observability.md)

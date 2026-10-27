@@ -429,16 +429,16 @@ A vendor-neutral hook to a self-hosted semantic guardrail service (e.g. Guardrai
 
 - `enabled` (bool, default `false`) — master switch
 - `url` (string) — http(s) endpoint the envelope is POSTed to (required when enabled)
-- `stage` (string, default `pre_call`) — `pre_call` inspects the request. `post_call` is validated but not yet enforced (output/SSE stage deferred).
+- `stage` (string, default `pre_call`) — `pre_call` inspects the request, `post_call` the response (#459; a stream is refused or buffered per the policy, ADR-0037).
 - `timeout_ms` (u64, default `2000`) — per-call timeout
-- `max_retries` (u32, default `0`) — extra attempts on a transient failure (connect/timeout/non-2xx)
+- `max_retries` (u32, default `0`) — extra attempts on a transient failure (connect, timeout, unreadable body, `429`/`503`)
 - `failure_mode` (string, default `fail_open`) — `fail_open` forwards unchanged when the service is unreachable; `fail_closed` rejects with an OpenAI-compatible error
 - `max_body_bytes` (usize, default `65536`) — cap on the content forwarded; oversized content is sent as a truncated preview with `truncated: true`
 - `auth` — optional credential resolved from the environment at call time, never inlined:
   - `{ bearer = { token_env = "GUARD_TOKEN" } }` → `Authorization: Bearer <env>`
   - `{ shared_secret = { secret_env = "GUARD_SECRET" } }` → `X-Rolter-Guardrail-Secret: <env>`
 
-**Contract.** Request envelope: `{ direction, stage, model, route, trace_id, tenant: { org, team, project, key }, truncated, content }`. Only these fields are sent; prompt content is never logged by the gateway. Response: `{ "action": "allow" | "block" | "transform" | "annotate", "content"?, "reason"?, "annotations"? }`. An unrecognized or malformed decision defaults to `allow` (transport failures are governed by `failure_mode`). Metrics: `rolter_guardrail_webhook_blocks_total`, `_transforms_total`, `_errors_total`; the trace id is propagated in the `X-Rolter-Trace-Id` header.
+**Contract.** Request envelope: `{ direction, stage, model, route, trace_id, tenant: { org, team, project, key }, truncated, content }`. Only these fields are sent; prompt content is never logged by the gateway. Response: `{ "action": "allow" | "block" | "transform" | "annotate", "content"?, "reason"?, "annotations"? }`. Since #459 the response may carry `categories` (name → score in `[0, 1]`), and an answer that is not a decision follows `failure_mode` like a transport failure rather than reading as `allow`. The webhook is one provider of the [semantic guards](../architecture/semantic-guards.md) and runs beside `[semantic_guards]` and the registry's providers. Metrics: `rolter_guardrail_webhook_blocks_total`, `_transforms_total`, `_errors_total`; the trace id is propagated in the `X-Rolter-Trace-Id` header.
 
 ```toml
 [guardrail_webhook]

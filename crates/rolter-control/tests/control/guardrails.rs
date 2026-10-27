@@ -233,8 +233,139 @@ async fn effective_guardrails_name_the_file_as_the_source_of_an_identical_copy()
     assert_eq!(rules[1]["source"], "registry");
     assert_eq!(rules[1]["rule_id"], extra["id"], "{effective}");
     assert_eq!(effective["source"], "file", "{effective}");
-    assert_eq!(effective["overrides"], provider["id"], "{effective}");
+    // since #459 the file's webhook runs beside the registry's providers
+    // rather than displacing one
+    assert_eq!(effective["overrides"], Value::Null, "{effective}");
     assert_eq!(effective["webhook"]["url"], "https://guard.internal/check");
+    let running = effective["semantic"]["providers"]
+        .as_array()
+        .expect("providers");
+    assert_eq!(running.len(), 2, "{effective}");
+    assert_eq!(running[0]["source"], "file");
+    assert_eq!(running[1]["source"], "registry");
+    assert_eq!(running[1]["provider_id"], provider["id"], "{effective}");
+}
+
+/// Scoped policies (#459): several providers can be enabled at once, a policy
+/// is validated and stored with its ordered providers, one enabled policy per
+/// scope, the snapshot carries it, and a listed provider cannot be deleted.
+#[tokio::test]
+async fn scoped_policies_select_several_enabled_providers() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let app = rolter_control::test_app(db.pool().clone())
+        .await
+        .expect("build app");
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let provider = |name: &str, stage: &str| {
+        json!({
+            "name": name, "enabled": true, "url": format!("https://{name}.internal/check"),
+            "stage": stage, "timeout_ms": 500, "max_retries": 1,
+            "failure_mode": "fail_closed", "max_body_bytes": 65536, "auth_kind": "none"
+        })
+    };
+    let mut ids = Vec::new();
+    for (name, stage) in [("injection", "pre_call"), ("toxicity", "post_call")] {
+        let created = client
+            .post(format!("{base}/api/v1/guardrails/providers"))
+            .json(&provider(name, stage))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(created.status(), 201);
+        let created: Value = created.json().await.unwrap();
+        ids.push(created["id"].as_str().unwrap().to_string());
+    }
+    // both stay enabled: saving one no longer pauses the other
+    let listed: Value = client
+        .get(format!("{base}/api/v1/guardrails/providers"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|p| p["enabled"] == true),
+        "{listed}"
+    );
+
+    let policy = |name: &str, scope_id: &str, thresholds: Value| {
+        json!({
+            "name": name, "enabled": true, "scope_kind": "project", "scope_id": scope_id,
+            "provider_ids": [ids[1], ids[0]], "thresholds": thresholds,
+            "on_violation": "annotate", "streaming": "buffer"
+        })
+    };
+    let bad = client
+        .post(format!("{base}/api/v1/guardrails/policies"))
+        .json(&policy("support", "p-1", json!({"violence": 1.5})))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bad.status(), 400);
+    let created = client
+        .post(format!("{base}/api/v1/guardrails/policies"))
+        .json(&policy(
+            "support",
+            "p-1",
+            json!({"violence": 0.8, "*": 0.95}),
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(created.status(), 201);
+    let created: Value = created.json().await.unwrap();
+    // the order the policy gave is the order it keeps
+    assert_eq!(
+        created["provider_ids"],
+        json!([ids[1], ids[0]]),
+        "{created}"
+    );
+    let clash = client
+        .post(format!("{base}/api/v1/guardrails/policies"))
+        .json(&policy("support-2", "p-1", json!({})))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(clash.status(), 409, "one enabled policy per scope");
+
+    let snapshot = rolter_store::postgres::PostgresConfigStore::new(db.pool().clone());
+    let config = rolter_store::ConfigStore::load(&snapshot).await.unwrap();
+    assert_eq!(config.semantic_guards.providers.len(), 2);
+    let stored = &config.semantic_guards.policies[0];
+    assert_eq!(stored.providers, ["toxicity", "injection"]);
+    assert_eq!(stored.thresholds.get("violence"), Some(&0.8));
+    let problems = config.semantic_guards.validate(&config.guardrail_webhook);
+    assert!(problems.is_empty(), "the snapshot must load: {problems:?}");
+
+    let refused = client
+        .delete(format!("{base}/api/v1/guardrails/providers/{}", ids[0]))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), 409, "a listed provider cannot be deleted");
+    let deleted = client
+        .delete(format!(
+            "{base}/api/v1/guardrails/policies/{}",
+            created["id"].as_str().unwrap()
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(deleted.status(), 204);
+    let freed = client
+        .delete(format!("{base}/api/v1/guardrails/providers/{}", ids[0]))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(freed.status(), 204);
 }
 
 /// A webhook double: answers every POST with `answer` (after `delay`) and hands

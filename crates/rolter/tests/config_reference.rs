@@ -291,6 +291,15 @@ const CHECKS: &[Check] = &[
     plain("#### \\[\\[guardrails.rules\\]\\]", "GuardrailRule"),
     plain("### \\[egress\\]", "EgressPolicy"),
     plain("### \\[guardrail_webhook\\]", "GuardrailWebhookConfig"),
+    plain("### \\[semantic_guards\\]", "SemanticGuardsConfig"),
+    plain(
+        "#### \\[\\[semantic_guards.providers\\]\\]",
+        "GuardrailWebhookConfig",
+    ),
+    plain(
+        "#### \\[\\[semantic_guards.policies\\]\\]",
+        "GuardrailPolicy",
+    ),
     plain("### \\[pii_sanitizer\\]", "PiiSanitizerConfig"),
     plain("### \\[prompt_templates\\]", "PromptTemplatesConfig"),
     with_exempt(
@@ -501,6 +510,7 @@ fn tables() -> Vec<Table> {
         Table::single("guardrails"),
         Table::single("egress"),
         Table::single("guardrail_webhook"),
+        Table::single("semantic_guards"),
         Table::single("pii_sanitizer"),
         Table::single("prompt_templates"),
         Table::single("plugins").owned("/configuration/plugins"),
