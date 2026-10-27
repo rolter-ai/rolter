@@ -26,7 +26,7 @@ Rules do not act alone. Config-file rules run first, then the enabled dashboard 
 
 **Run in the whole policy** in the rule dialog does the same with the rule you are editing slotted in at its position. If a saved rule has the same name, the draft takes its place. Route overrides are not applied; the answer is for the policy, not for one route. Like the single-rule test, it saves nothing, logs nothing and needs the access that editing a rule needs.
 
-The detector and action pickers describe what each choice does. `payment_card` matches any run of 13 to 19 digits and does not check the card number, so a 13-digit timestamp matches too; `phone` matches 8 to 20 digits.
+The detector and action pickers describe what each choice does, and the **Source** and **Stage** fields carry an **(i)** note beside the label that says what they choose between. `payment_card` matches any run of 13 to 19 digits and does not check the card number, so a 13-digit timestamp matches too; `phone` matches 8 to 20 digits.
 
 A response rule that blocks runs after the provider has generated and billed the answer. The caller gets a `403 guardrail_blocked`, but the request is still billed and counts toward budgets. Its log row is marked `withheld` and names the rule, and the blocked text is never stored. See [Withheld responses](/observability/logs-and-cost#withheld-responses).
 
@@ -106,6 +106,8 @@ Rules are matched by their exact name. For a config-file route, set the lists in
 ## External providers
 
 Register any number of vendor-neutral HTTP services, but activate only one at a time. Activating a provider atomically deactivates the previous provider because each gateway has one external guardrail webhook contract.
+
+Each field of the provider dialog that is not obvious from its label carries an **(i)** note: the stage, the failure policy, the timeout, the retries, the body cap and the authentication say what they do, and the defaults where there is one. Point at the **(i)** or focus it to read the note; Escape closes it without closing the dialog.
 
 Choose the failure policy deliberately:
 

@@ -263,6 +263,11 @@ impl Op {
         let mut op = Map::new();
         op.insert("summary".into(), json!(self.summary));
         op.insert("operationId".into(), json!(self.id));
+        // the one registry that also drives the `Deprecation` and `Sunset`
+        // headers (ADR-0032, #1423)
+        if crate::deprecation::deprecates_operation(self.method, self.path) {
+            op.insert("deprecated".into(), json!(true));
+        }
         op.insert("tags".into(), json!([self.tag]));
         if !self.query.is_empty() {
             // operation-level parameters, so they merge with the path item's
@@ -737,14 +742,23 @@ fn tagged(tag: &'static str, ops: Vec<Op>) -> Vec<Op> {
     ops.into_iter().map(|op| Op { tag, ..op }).collect()
 }
 
-/// Whether the served document describes `method` on `path` (the OpenAPI path
-/// template). Lets another module check an endpoint it names in operator-facing
-/// text against the document, so a renamed route fails a test.
-#[cfg(all(test, feature = "postgres"))]
+/// Whether the document publishes `method path` (the OpenAPI path template).
+/// The deprecation registry is held to this so it cannot name an operation that
+/// does not exist, and the seed lint so a renamed route it names fails a test.
+#[cfg(test)]
 pub(crate) fn documents_operation(method: &str, path: &str) -> bool {
     operations()
         .iter()
         .any(|op| op.method.eq_ignore_ascii_case(method) && op.path == path)
+}
+
+/// Whether `components/schemas` has `schema` with a property `field`.
+#[cfg(test)]
+pub(crate) fn schema_has_property(schema: &str, field: &str) -> bool {
+    schemas()
+        .get(schema)
+        .and_then(|s| s.get("properties"))
+        .is_some_and(|p| p.get(field).is_some())
 }
 
 /// Every operation the control plane serves.
@@ -2724,7 +2738,9 @@ fn schemas() -> Value {
             out.extend(entries);
         }
     }
-    Value::Object(out)
+    let mut schemas = Value::Object(out);
+    crate::deprecation::mark_fields(&mut schemas);
+    schemas
 }
 
 /// Alert history rows and rules, where the stable `detail_code` and

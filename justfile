@@ -108,6 +108,12 @@ down:
 bench:
     cargo bench --workspace
 
+# hot-path benches with allocation counting: admission checks, eligible picks
+# and the snapshot read (#1054). Prints an allocs/op table first; compare two
+# refs with `git stash`/checkout and `-- --save-baseline x` / `--baseline x`.
+bench-hot-path:
+    cargo bench -p rolter-gateway --bench hot_path
+
 # compile benches without running them (the CI bit-rot guard)
 bench-check:
     cargo bench --workspace --no-run

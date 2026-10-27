@@ -32,6 +32,7 @@ const MONOGRAM_KINDS = [
   "krutrim",
   "falcon",
   "system_one",
+  "infinity",
 ];
 
 describe("provider logos", () => {
