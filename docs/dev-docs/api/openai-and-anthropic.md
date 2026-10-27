@@ -37,7 +37,7 @@ failures.
 | GET               | `/v1/responses/{id}/input_items` | list input items for a tenant-scoped native Responses resource                                       |
 | POST              | `/v1/messages`                   | Anthropic Messages; streaming supported                                                              |
 | POST              | `/v1/embeddings`                 | OpenAI embeddings; non-streaming                                                                     |
-| POST              | `/v1/rerank`                     | Cohere/Jina rerank; non-streaming                                                                    |
+| POST              | `/v1/rerank`                     | Cohere/Jina rerank; non-streaming; documents reshaped for an `infinity` target                       |
 | POST              | `/v1/systemone`                  | System One typed decisions, forwarded unchanged to a decision server; non-streaming (ADR-0035)       |
 | POST              | `/v1/images/generations`         | OpenAI image generation; non-streaming                                                               |
 | POST              | `/v1/audio/speech`               | OpenAI text-to-speech; binary audio response                                                         |

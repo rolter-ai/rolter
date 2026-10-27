@@ -172,6 +172,17 @@ api_key_env = "OPENROUTER_API_KEY"
 # kind = "system_one"
 # api_base = "http://vllm-sr:8899"
 #
+# infinity fronts a self-hosted michaelfeil/infinity server: /v1/embeddings
+# and /v1/rerank for every model the one process was started with, picked per
+# route by the target's model. api_base is the server root plus any
+# --url-prefix it was started with (empty by default, so no /v1); the key is
+# optional and travels as a bearer token when the server sets --api-key.
+# [[providers]]
+# name = "infinity"
+# kind = "infinity"
+# api_base = "http://infinity:7997"
+# # api_key_env = "INFINITY_API_KEY"
+#
 # [[providers]]
 # name = "mistral"
 # kind = "mistral"

@@ -1258,6 +1258,13 @@ mod tests {
         let body = json_body(&body);
         assert_eq!(body["input"], "ping");
         assert!(body.get("messages").is_none());
+
+        // infinity's routes sit at the server root unless `--url-prefix` moves them
+        let (url, _, body) = llm_call_plan(ProviderKind::Infinity, "http://infinity:7997");
+        assert_eq!(url, "http://infinity:7997/embeddings");
+        let body = json_body(&body);
+        assert_eq!(body["input"], "ping");
+        assert_eq!(body["model"], "probe-model");
     }
 
     /// a decision server cannot complete either; it is asked one yes/no question

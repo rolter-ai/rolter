@@ -4478,6 +4478,7 @@
       "doubled": "Базовый URL заканчивается на /v1, и rolter добавляет /v1 сам — запросы будут возвращать 404. Уберите /v1 в конце.",
       "excludesV1": "Не указывайте /v1 — для {{kind}} rolter добавляет его сам",
       "includesV1": "Укажите версию в адресе — {{kind}} ожидает её в базовом URL, например https://api.example.com/v1",
+      "urlPrefix": "Укажите адрес сервера и --url-prefix, если он задан при запуске (по умолчанию его нет, так что без /v1); rolter сам добавит /embeddings или /rerank",
       "resolvesTo": {
         "chat": "Чат-запросы уходят на",
         "decision": "Запросы решений уходят на",
@@ -4731,6 +4732,10 @@
       "system_one": {
         "name": "System One (решения)",
         "description": "Модели типизированных решений через POST /v1/systemone: TypeSafe Jev, vLLM Semantic Router, Ollama"
+      },
+      "infinity": {
+        "name": "Infinity",
+        "description": "Собственный сервер michaelfeil/infinity: эмбеддинги и реранжирование для многих моделей в одном процессе"
       }
     },
     "telemetry": {
