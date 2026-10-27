@@ -3356,6 +3356,7 @@
         "promptCacheTokens": "{{read}} read · {{write}} written",
         "cacheWriteSplit": "Cache write by lifetime",
         "cacheWriteSplitTokens": "{{short}} to the 5 minute cache · {{long}} to the 1 hour cache",
+        "delivery": "Delivery",
         "attribution": "Attribution",
         "lifecycle": {
           "label": "Stored response call",
@@ -5179,7 +5180,10 @@
     "openDetails": "Open request details for {{model}}",
     "ms": "{{value}} ms",
     "unpriced": "unpriced",
-    "unpricedHint": "No price is configured for this model, so this request was recorded as unpriced rather than as free."
+    "unpricedHint": "No price is configured for this model, so this request was recorded as unpriced rather than as free.",
+    "withheld": "withheld",
+    "withheldHint": "The provider answered and billed for this response, but an output guardrail or plugin refused to deliver it: the caller received a 403. The cost is real; the policy that refused is named in the error.",
+    "usageUnknownHint": "The upstream answered but reported no usage, so the tokens and cost are unknown, not zero."
   },
   "savedViews": {
     "open": "Saved views",
