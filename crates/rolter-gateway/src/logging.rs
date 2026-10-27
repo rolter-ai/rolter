@@ -1659,6 +1659,9 @@ struct PayloadLog<'a> {
     /// the tenancy of the row, so the join can require it on both sides
     org_id: &'a str,
     project_id: &'a str,
+    /// the key that sent the request, so one subject's bodies can be erased by
+    /// their own column (#1085)
+    virtual_key_id: &'a str,
     request_payload: &'a str,
     response_payload: &'a str,
 }
@@ -1671,6 +1674,7 @@ impl<'a> From<&'a RequestLog> for PayloadLog<'a> {
             log_id: log.log_id,
             org_id: &log.org_id,
             project_id: &log.project_id,
+            virtual_key_id: &log.virtual_key_id,
             request_payload: &log.request_payload,
             response_payload: &log.response_payload,
         }
@@ -1859,11 +1863,13 @@ mod tests {
             request_id: "shared-id".to_string(),
             org_id: "org-1".to_string(),
             project_id: "project-1".to_string(),
+            virtual_key_id: "key-1".to_string(),
             request_payload: "{}".to_string(),
             ..Default::default()
         };
         let log: serde_json::Value = serde_json::to_value(&rec).unwrap();
         let payload: serde_json::Value = serde_json::to_value(PayloadLog::from(&rec)).unwrap();
+        assert_eq!(payload["virtual_key_id"], log["virtual_key_id"]);
         assert_eq!(log["log_id"], rec.log_id.to_string());
         assert_eq!(payload["log_id"], log["log_id"]);
         assert_eq!(payload["org_id"], "org-1");
