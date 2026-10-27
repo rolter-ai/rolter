@@ -36,6 +36,11 @@
 //!   written before the column existed — is visible only to the first group,
 //!   so on upgrade the older rows drop out of a tenant's view until they age
 //!   out of the 90-day ttl.
+//!   A role on a project or team adds one more thing: the health rows of the
+//!   providers that a route of that project or team targets, resolved from
+//!   `route_targets`, so an engineer can tell whether the upstream behind their
+//!   own route is down without an org-level role (#1833). The match is the
+//!   same `(org, provider)` pair, and nothing else about the provider opens up.
 //!
 //! # Why a filter rather than a guard
 //!
@@ -83,6 +88,10 @@ pub(crate) struct AnalyticsAccess {
     payload_rank: i8,
     /// orgs whose provider-health rows the caller may read
     health_orgs: Vec<String>,
+    /// providers outside those orgs that a route in a project or team the
+    /// caller holds a role in targets, as `<org id>/<provider name>` (#1833).
+    /// Only their health rows open up, nothing else about the provider
+    health_providers: Vec<String>,
     /// the signed-in user's own id, empty for everyone else. Only the MCP log
     /// reads it: a user always sees the tool calls made under their own OAuth
     /// sessions, whatever tenancy the row carries (#1831)
@@ -151,8 +160,13 @@ pub(crate) const PAYLOAD_VISIBLE: &str = concat!(
 /// one whose provider health they read. Matching the org rather than the bare
 /// provider name keeps a name another org used before out of view, and a row
 /// with no org matches nothing, so it stays with the unrestricted callers.
-pub(crate) const PROVIDER_VISIBLE: &str =
-    "({unrestricted:UInt8} = 1 or (org_id != '' and has({health_org_ids:Array(String)}, org_id)))";
+///
+/// A project member has no org-level role, so a row also shows when its
+/// provider is one that a route of their projects targets (#1833). Org ids are
+/// fixed-width uuids, so `org/provider` cannot be forged by a provider name.
+pub(crate) const PROVIDER_VISIBLE: &str = "({unrestricted:UInt8} = 1 or (org_id != '' and \
+    (has({health_org_ids:Array(String)}, org_id) or \
+     has({health_provider_keys:Array(String)}, concat(org_id, '/', provider)))))";
 
 impl AnalyticsAccess {
     /// No filter: the admin token, a superadmin, and open mode.
@@ -199,6 +213,12 @@ impl AnalyticsAccess {
         params.push(param("payload_rank", self.payload_rank.to_string()));
         let health_orgs: Vec<&str> = self.health_orgs.iter().map(String::as_str).collect();
         params.push(param("health_org_ids", string_array(&health_orgs)));
+        let health_providers: Vec<&str> =
+            self.health_providers.iter().map(String::as_str).collect();
+        params.push(param(
+            "health_provider_keys",
+            string_array(&health_providers),
+        ));
         params.push(param("caller_id", self.caller_id.clone()));
         params
     }
@@ -331,7 +351,9 @@ mod scoped {
     use std::collections::HashMap;
 
     use rolter_store::postgres::models::{EffectiveGrant, Membership, User};
-    use rolter_store::postgres::repo::{AccessProfileRepo, MembershipRepo, ProjectRepo};
+    use rolter_store::postgres::repo::{
+        AccessProfileRepo, MembershipRepo, ProjectRepo, RouteTargetRepo,
+    };
     use uuid::Uuid;
 
     use super::{AnalyticsAccess, NO_RANK};
@@ -463,6 +485,7 @@ mod scoped {
             read_rank,
             payload_rank,
             health_orgs: Vec::new(),
+            health_providers: Vec::new(),
             caller_id: String::new(),
         }
     }
@@ -553,6 +576,14 @@ mod scoped {
         let health = health_orgs(&memberships, &grants, floor(cap!("provider_health", Read)));
         // `health_orgs` returns the ids sorted and deduplicated
         access.health_orgs = health.iter().map(Uuid::to_string).collect();
+        // a role on a team or project reaches the providers its routes target
+        // (#1833). The org-level rule above still applies on top of this
+        access.health_providers = RouteTargetRepo(pool)
+            .targeted_providers(&teams, &projects)
+            .await?
+            .into_iter()
+            .map(|(org, name)| format!("{org}/{name}"))
+            .collect();
         Ok(access)
     }
 }
@@ -567,7 +598,10 @@ mod tests {
         // (config file, or written before the column) matches no restricted caller
         assert!(PROVIDER_VISIBLE.contains("org_id != ''"));
         assert!(PROVIDER_VISIBLE.contains("has({health_org_ids:Array(String)}, org_id)"));
-        assert!(!PROVIDER_VISIBLE.contains("provider)"));
+        // the provider rule is the pair, never the bare name (#1833)
+        assert!(PROVIDER_VISIBLE
+            .contains("has({health_provider_keys:Array(String)}, concat(org_id, '/', provider))"));
+        assert!(!PROVIDER_VISIBLE.contains("}, provider)"));
     }
 
     #[test]

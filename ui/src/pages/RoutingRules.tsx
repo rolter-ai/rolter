@@ -15,6 +15,7 @@ import { Button, buttonVariants } from "@/components/ui/button";
 import { LoadError } from "@/components/LoadError";
 import { CardGridSkeleton, LoadingRegion } from "@/components/LoadingState";
 import { PageBody, StatusDot, Toolbar } from "@/components/screen";
+import { BreakerBadge } from "@/components/BreakerBadge";
 import { healthPresentation } from "@/components/target-health";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -25,6 +26,9 @@ import {
   fetchAnalyticsByModel,
   fetchClusterNodes,
   fetchHealthTimeline,
+  useBreakerState,
+  breakerFor,
+  type BreakerStateDto,
   fetchModels,
   fetchProviders,
   fetchRoutes,
@@ -158,6 +162,10 @@ export default function RoutingRules() {
         ? NODES_POLL_MS
         : false,
   });
+
+  // the gateways' live breakers, beside each target's health where one is
+  // tripped; a failed read leaves the cards as they were
+  const breakers = useBreakerState();
 
   const targetsByRoute = new Map<string, TargetsState>();
   for (const r of routes.data ?? []) {
@@ -358,6 +366,7 @@ export default function RoutingRules() {
                 state={targets}
                 providerName={providerName}
                 healthFor={healthFor}
+                breakers={breakers.data}
               />
               <RouteTrafficLine traffic={traffic} model={r.model} />
               <div className="flex flex-wrap items-center gap-2 border-t border-[color:var(--border-subtle)] pt-3">
@@ -554,8 +563,7 @@ function RouteTrafficLine({
 
 /**
  * One target's uptime against the SLA, in words beside the dot. The state is
- * the 7-day rollup's, not the gateway's live breaker, which no endpoint
- * exposes to the control plane; a target nothing observed says so.
+ * the 7-day rollup's, not the gateway's live breaker, which is drawn beside it; a target nothing observed says so.
  */
 function TargetHealthLine({ health }: { health: TargetHealth | null }) {
   const { t } = useTranslation();
@@ -585,12 +593,15 @@ function RouteTargets({
   state,
   providerName,
   healthFor,
+  breakers,
 }: {
   route: RouteRow;
   state: TargetsState;
   providerName: (id: string) => string;
   /** absent until the rollup and the provider names are both known */
   healthFor?: (target: RouteTargetRow, route: RouteRow) => TargetHealth | null;
+  /** the gateways' live breakers, matched on the route's model and the target's position */
+  breakers?: Pick<BreakerStateDto, "targets">;
 }) {
   const { t } = useTranslation();
   const fmt = useFormat();
@@ -643,6 +654,7 @@ function RouteTargets({
                 )}
               </div>
               {healthFor && <TargetHealthLine health={healthFor(tg, route)} />}
+              <BreakerBadge breaker={breakerFor(breakers, route.model, i)} className="self-start" />
               {weighted && (
                 <div
                   data-testid="target-share"

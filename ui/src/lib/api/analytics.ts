@@ -90,6 +90,12 @@ export interface AnalyticsSummary {
   unpriced_requests: number | string;
   /** how many distinct models those requests hit */
   unpriced_models: number | string;
+  /** requests the provider billed but a guardrail or plugin refused to deliver (403) */
+  withheld_requests?: number | string;
+  /** what those requests were billed; included in `cost_usd` */
+  withheld_cost?: number | string;
+  /** successful requests whose upstream reported no usage, so their cost is unknown */
+  usage_unknown_requests?: number | string;
   errors: number | string;
   avg_latency_ms: number | string;
 }
@@ -108,6 +114,9 @@ export interface AnalyticsByModelRow {
   cost_usd: number | string;
   /** requests recorded with no price for this model; see AnalyticsSummary */
   unpriced_requests: number | string;
+  withheld_requests?: number | string;
+  withheld_cost?: number | string;
+  usage_unknown_requests?: number | string;
   errors: number | string;
   p50_latency_ms: number | string;
   p95_latency_ms: number | string;

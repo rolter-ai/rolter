@@ -1,6 +1,7 @@
 // how a route's targets are read for display (#1979): the effective config
 // names each target's provider and upstream model, and the health rollups key
 // their rows on the same two strings
+import { breakerFor, type BreakerStateDto, type BreakerTargetDto } from "@/lib/api";
 import type { RouteDto, TimelineRow, UptimeRow } from "@/lib/api";
 
 /**
@@ -104,6 +105,12 @@ export interface RouteTargetView {
   upstream: string;
   weight: number;
   health?: TargetHealth | null;
+  /**
+   * The target's live breaker where the gateways report one that is not
+   * closed; absent for a target that is closed everywhere and wherever the
+   * breaker state was not read.
+   */
+  breaker?: BreakerTargetDto;
 }
 
 // a control plane that predates the `grain` column still says which is which
@@ -152,13 +159,17 @@ export function targetViews(
   route: Pick<RouteDto, "model" | "targets">,
   uptime?: UptimeRow[],
   timeline?: TimelineRow[],
+  breakers?: Pick<BreakerStateDto, "targets">,
 ): RouteTargetView[] {
-  return (route.targets ?? []).map((tg) => {
+  return (route.targets ?? []).map((tg, i) => {
     const upstream = tg.model || route.model;
+    // matched on the route's own target list, whose order the gateway reports
+    const breaker = breakerFor(breakers, route.model, i);
     return {
       provider: tg.provider,
       upstream,
       weight: tg.weight,
+      ...(breaker && breaker.state !== "closed" ? { breaker } : {}),
       ...(uptime ? { health: targetHealth(uptime, tg.provider, upstream, timeline) } : {}),
     };
   });

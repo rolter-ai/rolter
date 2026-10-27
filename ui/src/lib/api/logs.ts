@@ -51,6 +51,14 @@ export interface InvocationRow {
   /// gateway against the catalogue that applied then, which is why the
   /// dashboard reads it instead of re-deriving it from today's prices (#1226)
   unpriced: number | string;
+  /// 1 when the provider answered and billed but an output guardrail or
+  /// post_response plugin refused delivery: the caller got a 403, tokens and
+  /// cost are what the provider billed, and `error` names the policy.
+  /// absent from a control plane that predates it
+  withheld?: number | string;
+  /// 1 when the upstream answered successfully but reported no usage, so the
+  /// zero tokens and cost are unknown rather than free
+  usage_unknown?: number | string;
   latency_ms: number | string;
   ttft_ms: number | string;
   error: string;
