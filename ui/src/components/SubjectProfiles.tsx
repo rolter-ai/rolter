@@ -177,7 +177,7 @@ export function AssignSubjectProfileSheet({
   const assign = useMutation({
     mutationFn: () => createAccessProfileAssignment(profileId, subject),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["access-profile", profileId] });
+      void queryClient.invalidateQueries({ queryKey: ["access-profiles"] });
       void queryClient.invalidateQueries({ queryKey: ASSIGNMENTS_KEY(orgId) });
       toast.push({
         tone: "success",
@@ -243,7 +243,7 @@ export function UnassignSubjectProfileDialog({
   const unassign = useMutation({
     mutationFn: (item: UnassignTarget) => deleteAccessProfileAssignment(item.assignment.id),
     onSuccess: (_void, done) => {
-      void queryClient.invalidateQueries({ queryKey: ["access-profile", done.profile.id] });
+      void queryClient.invalidateQueries({ queryKey: ["access-profiles"] });
       void queryClient.invalidateQueries({ queryKey: ASSIGNMENTS_KEY() });
       toast.push({
         tone: "success",

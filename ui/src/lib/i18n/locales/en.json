@@ -1880,7 +1880,6 @@
       "summary_other": "{{count}} profiles · reusable permission bundles",
       "add": "Add profile",
       "unassigned": "Not assigned to anyone yet",
-      "detailUnavailable": "What this profile carries is unavailable",
       "roleCount_one": "{{count}} custom role",
       "roleCount_other": "{{count}} custom roles",
       "policyNone": "No model or route policy",
