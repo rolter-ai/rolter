@@ -651,7 +651,12 @@ function ProviderDialog({
         <DialogDescription>{t("pages.guardrailProviders.dialogBody")}</DialogDescription>
       </DialogHeader>
       <DialogBody className="space-y-4">
-        <Field label={t("pages.guardrailProviders.fieldName")} htmlFor="provider-name" required>
+        <Field
+          label={t("pages.guardrailProviders.fieldName")}
+          htmlFor="provider-name"
+          info={t("pages.guardrailProviders.nameInfo")}
+          required
+        >
           <Input
             id="provider-name"
             value={form.name}
@@ -676,7 +681,11 @@ function ProviderDialog({
           />
         </Field>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <Field label={t("pages.guardrailProviders.fieldStage")} htmlFor="provider-stage">
+          <Field
+            label={t("pages.guardrailProviders.fieldStage")}
+            htmlFor="provider-stage"
+            info={t("pages.guardrailProviders.stageInfo")}
+          >
             <Combobox
               id="provider-stage"
               value={form.stage}
@@ -700,7 +709,11 @@ function ProviderDialog({
               ]}
             />
           </Field>
-          <Field label={t("pages.guardrailProviders.fieldFailure")} htmlFor="provider-failure">
+          <Field
+            label={t("pages.guardrailProviders.fieldFailure")}
+            htmlFor="provider-failure"
+            info={t("pages.guardrailProviders.failureInfo")}
+          >
             <Combobox
               id="provider-failure"
               aria-describedby={
@@ -739,7 +752,11 @@ function ProviderDialog({
           </p>
         )}
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-          <Field label={t("pages.guardrailProviders.fieldTimeout")} htmlFor="provider-timeout">
+          <Field
+            label={t("pages.guardrailProviders.fieldTimeout")}
+            htmlFor="provider-timeout"
+            info={t("pages.guardrailProviders.timeoutInfo")}
+          >
             <Input
               id="provider-timeout"
               type="number"
@@ -748,7 +765,11 @@ function ProviderDialog({
               onChange={(event) => set({ timeout_ms: Number(event.target.value) })}
             />
           </Field>
-          <Field label={t("pages.guardrailProviders.fieldRetries")} htmlFor="provider-retries">
+          <Field
+            label={t("pages.guardrailProviders.fieldRetries")}
+            htmlFor="provider-retries"
+            info={t("pages.guardrailProviders.retriesInfo")}
+          >
             <Input
               id="provider-retries"
               type="number"
@@ -757,7 +778,11 @@ function ProviderDialog({
               onChange={(event) => set({ max_retries: Number(event.target.value) })}
             />
           </Field>
-          <Field label={t("pages.guardrailProviders.fieldBodyCap")} htmlFor="provider-cap">
+          <Field
+            label={t("pages.guardrailProviders.fieldBodyCap")}
+            htmlFor="provider-cap"
+            info={t("pages.guardrailProviders.bodyCapInfo")}
+          >
             <Input
               id="provider-cap"
               type="number"
@@ -767,7 +792,11 @@ function ProviderDialog({
             />
           </Field>
         </div>
-        <Field label={t("pages.guardrailProviders.fieldAuth")} htmlFor="provider-auth">
+        <Field
+          label={t("pages.guardrailProviders.fieldAuth")}
+          htmlFor="provider-auth"
+          info={t("pages.guardrailProviders.authInfo")}
+        >
           <Combobox
             id="provider-auth"
             value={form.auth_kind}

@@ -18,6 +18,7 @@
 //! while disabled it admits every target and records nothing, but keeps its
 //! per-target state so re-enabling resumes where it left off.
 
+use crate::target_mask::TargetMask;
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering::Relaxed};
@@ -163,6 +164,38 @@ impl Breaker {
                 }
             }
         }
+    }
+
+    /// Which of a model's first `n` targets would refuse traffic right now (an
+    /// open breaker whose window has not elapsed), answered with one lock
+    /// acquisition rather than one per target (#1942).
+    ///
+    /// Read-only, unlike [`Breaker::allows`]: a target whose open window has
+    /// elapsed is not in the mask, but is not moved to half-open either. A
+    /// caller that goes on to use such a target calls `allows` for it, which
+    /// admits the probe.
+    pub fn open_mask(&self, model: &str, n: usize) -> TargetMask {
+        let mut mask = TargetMask::new();
+        let Some(inner) = self.active() else {
+            return mask;
+        };
+        let map = inner.map.lock();
+        let Some(targets) = map.get(model) else {
+            return mask;
+        };
+        let mut now = None;
+        for (idx, entry) in targets.iter().enumerate().take(n) {
+            if let Some(Entry {
+                phase: Phase::Open(until),
+                ..
+            }) = entry
+            {
+                if *until > *now.get_or_insert_with(Instant::now) {
+                    mask.insert(idx);
+                }
+            }
+        }
+        mask
     }
 
     /// Record a successful upstream response for `(model, idx)`. Resets the failure
@@ -571,5 +604,31 @@ mod tests {
         // still inert: no backing store to enable
         assert!(b.allows("m", 0));
         assert!(!b.on_failure("m", 0));
+    }
+
+    #[test]
+    fn the_open_mask_lists_only_targets_that_would_refuse() {
+        let b = Breaker::new(true, 1, 3600);
+        b.on_failure("m", 1);
+        b.on_failure("m", 70);
+        let mask = b.open_mask("m", 100);
+        for idx in 0..100 {
+            assert_eq!(mask.contains(idx), idx == 1 || idx == 70, "{idx}");
+        }
+        assert!(b.open_mask("m", 2).contains(1) && !b.open_mask("m", 2).contains(70));
+        assert!(b.open_mask("other", 4).is_empty());
+        // disabled and inert registries refuse nothing
+        b.reconfigure(false, 1, 3600);
+        assert!(b.open_mask("m", 100).is_empty());
+        assert!(Breaker::default().open_mask("m", 4).is_empty());
+    }
+
+    #[test]
+    fn the_open_mask_leaves_an_elapsed_window_for_allows_to_admit() {
+        let b = Breaker::new(true, 1, 0);
+        b.on_failure("m", 0);
+        assert!(b.open_mask("m", 1).is_empty());
+        // only allows moves the target to half-open
+        assert!(b.allows("m", 0));
     }
 }

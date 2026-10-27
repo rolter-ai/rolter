@@ -49,6 +49,8 @@ metrics_path = "/internal/metrics"
 
     A rising rate almost always means client timeouts are tighter than your upstream latency rather than anything being broken in the gateway. Compare `rate(rolter_client_disconnects_total[5m])` against the p95 of `rolter_request_latency_ms`.
 
+    **A client disconnect is never charged to a target.** Whether the caller left while its request was queued in rolter, while the upstream was working, or part-way through a streamed answer, the request is not counted in `rolter_target_requests_total` (neither as `outcome="error"` nor as `ok`) and emits no passive health event, so it does not move the target's uptime or the `provider_health_flaps` alert. This counter is where disconnects show up. An upstream that itself answers with status `499` is not a disconnect and still counts as that target's error.
+
   </Accordion>
 
   <Accordion title="rolter_withheld_responses_total">
@@ -162,7 +164,7 @@ Before 1.0 a provider's workers took turns and sent one request at a time, so if
   <Accordion title="rolter_provider_inflight">
     **Type:** Gauge, per `provider`
 
-    Requests sent to the provider and still waiting for its response headers: at most `workers` while queueing is on, except briefly after a `[queue]` reload under load, when the replaced queue's workers are still draining ([#1932](https://github.com/rolter-ai/rolter/issues/1932)). A streamed body is not counted once its headers arrive — the same point at which a queue worker is released. A floor that never returns to `0` on a quiet gateway means requests are leaving without releasing their slot.
+    Requests sent to the provider and still waiting for its response headers: at most `workers` while queueing is on, except briefly after a `[queue]` change under load, when the replaced queue's workers are still draining its buffered requests: for that window the provider can see the old `workers` plus the new `workers` at once. A request that started before the change never swaps the old settings back in, so this happens once per change. A streamed body is not counted once its headers arrive — the same point at which a queue worker is released. A floor that never returns to `0` on a quiet gateway means requests are leaving without releasing their slot.
 
   </Accordion>
 

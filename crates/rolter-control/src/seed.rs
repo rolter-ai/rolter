@@ -420,6 +420,7 @@ fn provider_kind_column(kind: ProviderKind) -> &'static str {
         ProviderKind::Krutrim => "krutrim",
         ProviderKind::Falcon => "falcon",
         ProviderKind::SystemOne => "system_one",
+        ProviderKind::Infinity => "infinity",
     }
 }
 

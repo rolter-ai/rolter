@@ -90,7 +90,8 @@
               "configuration/labels",
               "configuration/mcp-servers",
               "configuration/gemini-interactions",
-              "configuration/system-one"
+              "configuration/system-one",
+              "configuration/infinity"
             ]
           },
           {

@@ -65,7 +65,7 @@ export function SettingsPanel({
   return (
     <section
       className={cn(
-        "flex flex-col gap-3.5 rounded-[10px] border border-[color:var(--border-subtle)] p-4",
+        "flex flex-col gap-3.5 rounded-lg border border-[color:var(--border-subtle)] p-4",
         className,
       )}
       {...props}

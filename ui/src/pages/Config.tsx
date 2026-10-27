@@ -539,7 +539,7 @@ function RelatedLink({ to, title, desc }: { to: string; title: string; desc: str
   return (
     <Link
       to={to}
-      className="group flex items-center gap-3 rounded-[10px] border border-[color:var(--border-default)] bg-card px-4 py-3.5 transition-colors hover:border-[color:var(--border-strong)]"
+      className="group flex items-center gap-3 rounded-lg border border-[color:var(--border-default)] bg-card px-4 py-3.5 transition-colors hover:border-[color:var(--border-strong)]"
     >
       <div className="min-w-0 flex-1">
         <div className="text-sm">{title}</div>
@@ -599,7 +599,7 @@ function AllSections({ config }: { config: GatewayConfigDto }) {
       )}
       <div
         className={cn(
-          "overflow-hidden rounded-[10px] border border-[color:var(--border-subtle)]",
+          "overflow-hidden rounded-lg border border-[color:var(--border-subtle)]",
           shown.length === 0 && "hidden",
         )}
       >

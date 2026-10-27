@@ -467,7 +467,7 @@ export function checkSource(
  *
  * `flex items-center gap-2` repeats in eighteen files and always will — a stack
  * of generic utilities is a sentence in Tailwind, not a component. What marks a
- * *deliberate* shape is the arbitrary value: `rounded-[10px]`,
+ * *deliberate* shape is the arbitrary value: `p-[22px]`,
  * `text-[color:var(--text-subtle)]`, `max-w-[840px]`. Those are the design
  * system spelled out by hand, and when the same handful of them lands on the
  * same tag in three files, somebody has re-typed a primitive.
@@ -492,7 +492,7 @@ export interface Shape {
   tag: string;
 }
 
-/** `rounded-[10px]`, `text-[color:var(--x)]`, `[grid-template-columns:…]` */
+/** `p-[22px]`, `text-[color:var(--x)]`, `[grid-template-columns:…]` */
 function isArbitrary(token: string): boolean {
   return token.includes("[");
 }

@@ -52,6 +52,17 @@ import {
 export type ProviderSheetMode = "add" | "edit";
 
 /**
+ * The base-URL hint for a kind whose base follows neither `/v1` rule.
+ *
+ * Infinity serves its routes under `--url-prefix`, empty by default, so its base
+ * is the server address plus whatever prefix it was started with, and neither
+ * "include the version" nor "leave it off" says that.
+ */
+const BASE_HINTS: Readonly<Record<string, { hint: string; placeholder: string }>> = {
+  infinity: { hint: "providerSheet.apiBase.urlPrefix", placeholder: "http://infinity:7997" },
+};
+
+/**
  * The result of a connection probe.
  *
  * Always names the URL that was tried. "It failed" is not actionable when the
@@ -487,9 +498,10 @@ export function ProviderSheet({
           label={t("providerSheet.fields.apiBase")}
           htmlFor="provider-api-base"
           hint={t(
-            baseIncludesV1
-              ? "providerSheet.apiBase.includesV1"
-              : "providerSheet.apiBase.excludesV1",
+            BASE_HINTS[draft.kind]?.hint ??
+              (baseIncludesV1
+                ? "providerSheet.apiBase.includesV1"
+                : "providerSheet.apiBase.excludesV1"),
             { kind: draft.kind },
           )}
           error={
@@ -504,7 +516,10 @@ export function ProviderSheet({
             id="provider-api-base"
             value={draft.apiBase}
             onChange={(e) => set({ apiBase: e.target.value })}
-            placeholder={baseIncludesV1 ? "https://api.example.com/v1" : "https://api.example.com"}
+            placeholder={
+              BASE_HINTS[draft.kind]?.placeholder ??
+              (baseIncludesV1 ? "https://api.example.com/v1" : "https://api.example.com")
+            }
           />
           {resolvedUrl && (
             <p
