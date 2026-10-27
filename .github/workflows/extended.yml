@@ -15,9 +15,11 @@ name: extended
 # not on the PR that caused it. coverage also keeps running on every PR, in
 # quality.yml, because testing.md asks for the baseline edit in the same PR.
 #
-# takes no secrets. only `report failure` writes anything, and it holds
-# `issues: write` and `actions: write` at job level with no checkout: at
-# workflow level zizmor rates those scopes high and fails the gate.
+# takes no secrets. only `report failure` writes anything: it calls the shared
+# report-failure.yml, whose job holds `issues: write` and `actions: write` at
+# job level (at workflow level zizmor rates those scopes high and fails the
+# gate) and checks out nothing but scripts/report-failure.sh, without
+# credentials (#2682).
 on:
   workflow_dispatch:
   schedule:
