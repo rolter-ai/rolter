@@ -65,6 +65,7 @@ mod sink_drain;
 mod state;
 mod status_page;
 mod system_one;
+pub mod target_mask;
 mod trace;
 mod unit_billing;
 mod upstream_failure;

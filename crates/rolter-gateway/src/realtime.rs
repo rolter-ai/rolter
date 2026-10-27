@@ -209,15 +209,8 @@ pub async fn realtime(
     // realtime has no request body, so session affinity uses the caller-supplied
     // session id and strategy-aware balancing sees an empty prompt
     let session_key = headers.get("x-session-id").and_then(|v| v.to_str().ok());
-    let context = RouteContext {
-        session_key,
-        prompt: None,
-        prompt_len: None,
-        prompt_digest: None,
-        token_ids: None,
-        // realtime sessions are not adapter-addressed
-        adapter: None,
-    };
+    // realtime sessions are not adapter-addressed, so no adapter either
+    let context = RouteContext::new().with_session_key(session_key);
     let selected = match connect_selected(
         &state,
         &snap,
