@@ -15,6 +15,8 @@ use rolter_core::{
 };
 use serde_json::{json, Map, Value};
 
+use crate::adjustments::{Disposition, ParamAdjustments};
+
 /// Public wire dialect presented by a client or accepted by an upstream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Protocol {
@@ -55,8 +57,9 @@ struct TranslationPair {
     /// Fallible because a dialect with no equivalent for a content part must
     /// fail closed rather than drop it: a translator that silently shortens the
     /// body sends the provider a request the caller never made, and both ends
-    /// return a normal 200 (#882, ADR-0014)
-    request: fn(Value) -> Result<Value>,
+    /// return a normal 200 (#882, ADR-0014). A parameter it does not forward
+    /// as sent is recorded in the [`ParamAdjustments`] instead (#1586)
+    request: fn(Value, &mut ParamAdjustments) -> Result<Value>,
     response: fn(Value) -> Value,
     stream: StreamTranslation,
 }
@@ -65,28 +68,28 @@ static TRANSLATION_PAIRS: &[TranslationPair] = &[
     TranslationPair {
         source: Protocol::OpenAiChat,
         target: Protocol::AnthropicMessages,
-        request: |v| Ok(openai_request(v)),
+        request: |v, adj| Ok(openai_request(v, adj)),
         response: anthropic_response,
         stream: StreamTranslation::AnthropicToOpenAi,
     },
     TranslationPair {
         source: Protocol::OpenAiResponses,
         target: Protocol::OpenAiChat,
-        request: |v| Ok(responses_request(v)),
+        request: |v, adj| Ok(responses_request(v, adj)),
         response: responses_from_openai,
         stream: StreamTranslation::OpenAiToResponses,
     },
     TranslationPair {
         source: Protocol::OpenAiResponses,
         target: Protocol::AnthropicMessages,
-        request: |v| Ok(responses_to_anthropic_request(v)),
+        request: |v, adj| Ok(responses_to_anthropic_request(v, adj)),
         response: responses_from_anthropic,
         stream: StreamTranslation::AnthropicToResponses,
     },
     TranslationPair {
         source: Protocol::AnthropicMessages,
         target: Protocol::OpenAiChat,
-        request: |v| Ok(anthropic_request(v)),
+        request: |v, adj| Ok(anthropic_request(v, adj)),
         response: openai_response,
         stream: StreamTranslation::OpenAiToAnthropic,
     },
@@ -135,7 +138,7 @@ static TRANSLATION_PAIRS: &[TranslationPair] = &[
     TranslationPair {
         source: Protocol::Passthrough,
         target: Protocol::InfinityRerank,
-        request: crate::infinity::rerank_request,
+        request: |v, _| crate::infinity::rerank_request(v),
         response: crate::infinity::rerank_response,
         stream: StreamTranslation::Verbatim,
     },
@@ -354,6 +357,21 @@ impl TranslationPlan {
         body: Bytes,
         compat: &CompatibilityConfig,
     ) -> Result<Bytes> {
+        self.translate_request_reporting(body, compat)
+            .map(|(body, _)| body)
+    }
+
+    /// [`Self::translate_request_with`], also returning every caller parameter
+    /// the translation dropped, clamped or translated (#1586). It is decided
+    /// here, before the upstream is called, so a streamed answer can carry it
+    /// in its headers. Empty, and allocation-free, whenever the plan does not
+    /// translate.
+    pub fn translate_request_reporting(
+        self,
+        body: Bytes,
+        compat: &CompatibilityConfig,
+    ) -> Result<(Bytes, ParamAdjustments)> {
+        let mut adjustments = ParamAdjustments::default();
         // the interactions surface only accepts chat-shaped dialects; any other
         // endpoint (embeddings, audio, …) fails closed rather than being
         // forwarded verbatim to an endpoint that cannot serve it
@@ -367,24 +385,28 @@ impl TranslationPlan {
             ));
         }
         let Ok(mut value) = serde_json::from_slice::<Value>(&body) else {
-            return Ok(body);
+            return Ok((body, adjustments));
         };
         validate_instruction_roles(&value, self.client, self.role_profile)?;
         if !self.is_translation() {
             normalize_openai_roles(&mut value, self.client, self.role_profile);
-            return serde_json::to_vec(&value).map(Bytes::from).map_err(|err| {
-                Error::Config(format!("role_capability: failed to encode request: {err}"))
-            });
+            return serde_json::to_vec(&value)
+                .map(|encoded| (Bytes::from(encoded), adjustments))
+                .map_err(|err| {
+                    Error::Config(format!("role_capability: failed to encode request: {err}"))
+                });
         }
         let Some(pair) = registered_pair(self.client, self.upstream) else {
-            return Ok(body);
+            return Ok((body, adjustments));
         };
-        value = (pair.request)(value)?;
+        value = (pair.request)(value, &mut adjustments)?;
         apply_max_tokens_default(&mut value, self.upstream, compat.default_max_tokens);
         normalize_openai_roles(&mut value, self.upstream, self.role_profile);
-        serde_json::to_vec(&value).map(Bytes::from).map_err(|err| {
-            Error::Config(format!("role_capability: failed to encode request: {err}"))
-        })
+        serde_json::to_vec(&value)
+            .map(|encoded| (Bytes::from(encoded), adjustments))
+            .map_err(|err| {
+                Error::Config(format!("role_capability: failed to encode request: {err}"))
+            })
     }
 
     /// Fill in the deployment's inference defaults on an already-translated
@@ -594,7 +616,7 @@ fn normalize_openai_roles(value: &mut Value, protocol: Protocol, profile: RolePr
 
 /// Lower a Responses request to Chat Completions without dropping text, image,
 /// file, function-tool, or tool-result content that has a Chat equivalent.
-fn responses_request(mut v: Value) -> Value {
+fn responses_request(mut v: Value, adjustments: &mut ParamAdjustments) -> Value {
     let Some(obj) = v.as_object_mut() else {
         return v;
     };
@@ -648,7 +670,7 @@ fn responses_request(mut v: Value) -> Value {
             }
         }
     }
-    remove_keys(
+    drop_keys(
         obj,
         &[
             "background",
@@ -657,6 +679,7 @@ fn responses_request(mut v: Value) -> Value {
             "reasoning",
             "text",
         ],
+        adjustments,
     );
     v
 }
@@ -688,8 +711,9 @@ fn responses_content_to_chat(content: Value) -> Value {
     }
 }
 
-fn responses_to_anthropic_request(v: Value) -> Value {
-    openai_request(responses_request(v))
+fn responses_to_anthropic_request(v: Value, adjustments: &mut ParamAdjustments) -> Value {
+    let chat = responses_request(v, adjustments);
+    openai_request(chat, adjustments)
 }
 
 fn responses_from_openai(v: Value) -> Value {
@@ -754,7 +778,7 @@ fn translate_json(body: Bytes, from: Protocol, to: Protocol, thinking: ThinkingC
         .unwrap_or(body)
 }
 
-fn openai_request(mut v: Value) -> Value {
+fn openai_request(mut v: Value, adjustments: &mut ParamAdjustments) -> Value {
     let Some(obj) = v.as_object_mut() else {
         return v;
     };
@@ -814,7 +838,10 @@ fn openai_request(mut v: Value) -> Value {
             obj.insert("max_tokens".into(), max);
         }
     }
-    obj.remove("max_completion_tokens");
+    // both caps set: `max_tokens` is the one anthropic reads
+    if obj.remove("max_completion_tokens").is_some() {
+        adjustments.record("max_completion_tokens", Disposition::Dropped);
+    }
     if let Some(stop) = obj.remove("stop") {
         obj.insert(
             "stop_sequences".into(),
@@ -850,20 +877,18 @@ fn openai_request(mut v: Value) -> Value {
             other => other,
         };
     }
-    remove_keys(
+    drop_keys(
         obj,
-        &[
-            "n",
-            "presence_penalty",
-            "frequency_penalty",
-            "logprobs",
-            "stream_options",
-        ],
+        &["n", "presence_penalty", "frequency_penalty", "logprobs"],
+        adjustments,
     );
+    // anthropic always reports usage on a stream, which the stream translation
+    // hands on, so `include_usage` is honoured rather than dropped
+    obj.remove("stream_options");
     v
 }
 
-fn anthropic_request(mut v: Value) -> Value {
+fn anthropic_request(mut v: Value, adjustments: &mut ParamAdjustments) -> Value {
     let Some(obj) = v.as_object_mut() else {
         return v;
     };
@@ -932,6 +957,10 @@ fn anthropic_request(mut v: Value) -> Value {
         }
     }
     if let Some(choice) = obj.get_mut("tool_choice") {
+        // chat has no per-choice switch for parallel calls
+        if choice.get("disable_parallel_tool_use").is_some() {
+            adjustments.record("tool_choice", Disposition::Translated);
+        }
         *choice = match choice.take() {
             Value::Object(m) if m.get("type") == Some(&json!("any")) => json!("required"),
             Value::Object(m) if m.get("type") == Some(&json!("tool")) => {
@@ -1685,9 +1714,36 @@ fn data_url(url: &str) -> Option<(&str, &str)> {
     Some((meta.strip_suffix(";base64").unwrap_or(meta), data))
 }
 
-fn remove_keys(obj: &mut Map<String, Value>, keys: &[&str]) {
+/// Remove `keys` the upstream dialect has no equivalent for, recording each
+/// one the caller actually sent.
+fn drop_keys(
+    obj: &mut Map<String, Value>,
+    keys: &[&'static str],
+    adjustments: &mut ParamAdjustments,
+) {
     for key in keys {
-        obj.remove(*key);
+        if obj.remove(*key).is_some() {
+            adjustments.record(key, Disposition::Dropped);
+        }
+    }
+}
+
+/// Record every known parameter still left in `obj` once a translator that
+/// builds its output afresh has taken what it maps: none of them is sent.
+fn record_leftovers(obj: &Map<String, Value>, adjustments: &mut ParamAdjustments) {
+    for key in obj.keys() {
+        adjustments.record_known(key, Disposition::Dropped);
+    }
+}
+
+/// How a function-calling `tool_choice` the caller sent reached a dialect
+/// that knows only a calling mode: a forced function becomes "any function",
+/// and a value with no mode at all is not sent.
+fn record_tool_choice_mode(mode: Option<&str>, choice: &Value, adjustments: &mut ParamAdjustments) {
+    match (mode, choice) {
+        (None, _) => adjustments.record("tool_choice", Disposition::Dropped),
+        (Some(_), Value::Object(_)) => adjustments.record("tool_choice", Disposition::Translated),
+        _ => {}
     }
 }
 
@@ -1699,7 +1755,7 @@ fn remove_keys(obj: &mut Map<String, Value>, keys: &[&str]) {
 /// `functionResponse` parts; OpenAI functions become `tools.functionDeclarations`;
 /// sampling params become `generationConfig`. The `model` and `stream` fields are
 /// dropped here — the forwarder carries the model and streaming method in the URL.
-fn openai_to_gemini(mut v: Value) -> Result<Value> {
+fn openai_to_gemini(mut v: Value, adjustments: &mut ParamAdjustments) -> Result<Value> {
     let Some(obj) = v.as_object_mut() else {
         return Ok(v);
     };
@@ -1797,6 +1853,11 @@ fn openai_to_gemini(mut v: Value) -> Result<Value> {
         Value::Array(a) => Some(a),
         _ => None,
     }) {
+        // a tool that is not a function (a hosted search, say) has no
+        // declaration to become
+        if tools.iter().any(|tool| tool.get("function").is_none()) {
+            adjustments.record("tools", Disposition::Translated);
+        }
         let declarations: Vec<Value> = tools
             .iter()
             .filter_map(|tool| tool.get("function"))
@@ -1828,6 +1889,7 @@ fn openai_to_gemini(mut v: Value) -> Result<Value> {
             Value::Object(_) => Some("ANY"),
             _ => None,
         };
+        record_tool_choice_mode(mode, &choice, adjustments);
         if let Some(mode) = mode {
             out.insert(
                 "toolConfig".into(),
@@ -1835,16 +1897,20 @@ fn openai_to_gemini(mut v: Value) -> Result<Value> {
             );
         }
     }
+    // the output above is built afresh, so whatever is left was not sent
+    record_leftovers(obj, adjustments);
 
     Ok(Value::Object(out))
 }
 
-fn anthropic_to_gemini(v: Value) -> Result<Value> {
-    openai_to_gemini(anthropic_request(v))
+fn anthropic_to_gemini(v: Value, adjustments: &mut ParamAdjustments) -> Result<Value> {
+    let chat = anthropic_request(v, adjustments);
+    openai_to_gemini(chat, adjustments)
 }
 
-fn responses_to_gemini(v: Value) -> Result<Value> {
-    openai_to_gemini(responses_request(v))
+fn responses_to_gemini(v: Value, adjustments: &mut ParamAdjustments) -> Result<Value> {
+    let chat = responses_request(v, adjustments);
+    openai_to_gemini(chat, adjustments)
 }
 
 /// Build Gemini `parts` from an OpenAI message `content` value (string, or an
@@ -1967,7 +2033,7 @@ fn gemini_finish(v: Option<&Value>) -> Value {
 /// explicit `previous_interaction_id` is forwarded as
 /// `previous_interaction_id`, and the interaction id is echoed back as the
 /// response `id`, so a thread is resumed without rolter keeping its own store.
-fn openai_to_interactions(mut v: Value) -> Result<Value> {
+fn openai_to_interactions(mut v: Value, adjustments: &mut ParamAdjustments) -> Result<Value> {
     let Some(obj) = v.as_object_mut() else {
         return Ok(v);
     };
@@ -2088,6 +2154,7 @@ fn openai_to_interactions(mut v: Value) -> Result<Value> {
             Value::Object(_) => Some("any"),
             _ => None,
         };
+        record_tool_choice_mode(mode, &choice, adjustments);
         if let Some(mode) = mode {
             generation.insert("tool_choice".into(), json!(mode));
         }
@@ -2121,30 +2188,36 @@ fn openai_to_interactions(mut v: Value) -> Result<Value> {
             out.insert("tools".into(), Value::Array(declared));
         }
     }
+    // the output above is built afresh, so whatever is left was not sent
+    record_leftovers(obj, adjustments);
 
     Ok(Value::Object(out))
 }
 
-fn anthropic_to_interactions(v: Value) -> Result<Value> {
-    openai_to_interactions(anthropic_request(v))
+fn anthropic_to_interactions(v: Value, adjustments: &mut ParamAdjustments) -> Result<Value> {
+    let chat = anthropic_request(v, adjustments);
+    openai_to_interactions(chat, adjustments)
 }
 
 /// Lower a Responses request onto interactions. `responses_request` drops the
 /// stateful fields on its way to Chat, so they are captured first and restored
 /// as their interactions equivalents.
-fn responses_to_interactions(v: Value) -> Result<Value> {
+fn responses_to_interactions(v: Value, adjustments: &mut ParamAdjustments) -> Result<Value> {
     let previous = v
         .get("previous_response_id")
         .cloned()
         .filter(|v| !v.is_null());
     let store = v.get("store").cloned().filter(|v| !v.is_null());
-    let mut out = openai_to_interactions(responses_request(v))?;
+    let chat = responses_request(v, adjustments);
+    let mut out = openai_to_interactions(chat, adjustments)?;
     if let Some(obj) = out.as_object_mut() {
         if let Some(previous) = previous {
             obj.insert("previous_interaction_id".into(), previous);
+            adjustments.forget("previous_response_id");
         }
         if let Some(store) = store {
             obj.insert("store".into(), store);
+            adjustments.forget("store");
         }
     }
     Ok(out)
@@ -3056,29 +3129,38 @@ mod tests {
     /// identical, which silently drops the field and the leading separator.
     #[test]
     fn an_empty_system_turn_is_still_a_system_turn() {
-        let out = openai_to_interactions(json!({
-            "model": "m",
-            "messages": [{"role": "system"}, {"role": "user", "content": "hi"}]
-        }))
+        let out = openai_to_interactions(
+            json!({
+                "model": "m",
+                "messages": [{"role": "system"}, {"role": "user", "content": "hi"}]
+            }),
+            &mut ParamAdjustments::default(),
+        )
         .unwrap();
         assert_eq!(out.get("system_instruction"), Some(&json!("")));
 
-        let out = openai_to_interactions(json!({
-            "model": "m",
-            "messages": [
-                {"role": "system", "content": ""},
-                {"role": "system", "content": "abc"},
-                {"role": "user", "content": "hi"}
-            ]
-        }))
+        let out = openai_to_interactions(
+            json!({
+                "model": "m",
+                "messages": [
+                    {"role": "system", "content": ""},
+                    {"role": "system", "content": "abc"},
+                    {"role": "user", "content": "hi"}
+                ]
+            }),
+            &mut ParamAdjustments::default(),
+        )
         .unwrap();
         assert_eq!(out.get("system_instruction"), Some(&json!("\nabc")));
 
         // and no system turn at all still omits the field entirely
-        let out = openai_to_interactions(json!({
-            "model": "m",
-            "messages": [{"role": "user", "content": "hi"}]
-        }))
+        let out = openai_to_interactions(
+            json!({
+                "model": "m",
+                "messages": [{"role": "user", "content": "hi"}]
+            }),
+            &mut ParamAdjustments::default(),
+        )
         .unwrap();
         assert!(out.get("system_instruction").is_none());
     }
@@ -5855,5 +5937,156 @@ data: [DONE]
             let v: Value = serde_json::from_slice(&out).unwrap();
             assert_eq!(v["usage"]["output_tokens"], 18, "{kind:?}");
         }
+    }
+
+    /// The adjustments one request gets on `path` against `kind`, and the body
+    /// that was sent.
+    fn reported(path: &str, kind: ProviderKind, body: Value) -> (Value, Vec<String>) {
+        let plan = TranslationPlan::resolve(path, kind, RoleProfile::Openai);
+        let (sent, adjustments) = plan
+            .translate_request_reporting(
+                Bytes::from(serde_json::to_vec(&body).unwrap()),
+                &CompatibilityConfig::default(),
+            )
+            .unwrap();
+        (
+            serde_json::from_slice(&sent).unwrap(),
+            adjustments.log_entries(),
+        )
+    }
+
+    #[test]
+    fn chat_to_anthropic_reports_the_sampling_fields_it_drops() {
+        let (sent, entries) = reported(
+            "/v1/chat/completions",
+            ProviderKind::Anthropic,
+            json!({
+                "model": "m", "messages": [{"role": "user", "content": "hi"}],
+                "n": 2, "presence_penalty": 0.5, "logprobs": true,
+                "max_tokens": 10, "max_completion_tokens": 20,
+                "stream": true, "stream_options": {"include_usage": true}
+            }),
+        );
+        assert_eq!(
+            entries,
+            [
+                "dropped:max_completion_tokens",
+                "dropped:n",
+                "dropped:presence_penalty",
+                "dropped:logprobs"
+            ]
+        );
+        assert!(sent.get("n").is_none());
+        assert_eq!(sent["max_tokens"], 10);
+    }
+
+    #[test]
+    fn a_renamed_parameter_is_not_an_adjustment() {
+        let (sent, entries) = reported(
+            "/v1/chat/completions",
+            ProviderKind::Anthropic,
+            json!({
+                "model": "m", "messages": [{"role": "user", "content": "hi"}],
+                "max_completion_tokens": 20, "stop": "x", "temperature": 0.2,
+                "tool_choice": "required"
+            }),
+        );
+        assert!(entries.is_empty(), "{entries:?}");
+        assert_eq!(sent["max_tokens"], 20);
+        assert_eq!(sent["stop_sequences"], json!(["x"]));
+    }
+
+    #[test]
+    fn anthropic_to_chat_reports_a_tool_choice_it_cannot_carry_whole() {
+        let (_, entries) = reported(
+            "/v1/messages",
+            ProviderKind::Openai,
+            json!({
+                "model": "m", "max_tokens": 5,
+                "messages": [{"role": "user", "content": "hi"}],
+                "tool_choice": {"type": "auto", "disable_parallel_tool_use": true}
+            }),
+        );
+        assert_eq!(entries, ["translated:tool_choice"]);
+    }
+
+    #[test]
+    fn responses_to_chat_reports_the_stateful_fields_it_drops() {
+        let (sent, entries) = reported(
+            "/v1/responses",
+            ProviderKind::Mistral,
+            json!({
+                "model": "m", "input": "hi", "store": true,
+                "reasoning": {"effort": "high"}, "max_output_tokens": 9
+            }),
+        );
+        assert_eq!(entries, ["dropped:store", "dropped:reasoning"]);
+        assert_eq!(sent["max_completion_tokens"], 9);
+    }
+
+    #[test]
+    fn gemini_reports_every_known_field_it_leaves_behind() {
+        let (sent, entries) = reported(
+            "/v1/messages",
+            ProviderKind::GeminiNative,
+            json!({
+                "model": "m", "max_tokens": 5, "stream": true,
+                "messages": [{"role": "user", "content": "hi"}],
+                "top_k": 40, "temperature": 0.3, "x-caller-secret": "v"
+            }),
+        );
+        assert_eq!(entries, ["dropped:top_k"]);
+        assert_eq!(sent["generationConfig"]["temperature"], 0.3);
+    }
+
+    #[test]
+    fn gemini_reports_a_forced_function_sent_as_any_function() {
+        let (sent, entries) = reported(
+            "/v1/chat/completions",
+            ProviderKind::GeminiNative,
+            json!({
+                "model": "m", "messages": [{"role": "user", "content": "hi"}],
+                "tools": [
+                    {"type": "function", "function": {"name": "f"}},
+                    {"type": "web_search"}
+                ],
+                "tool_choice": {"type": "function", "function": {"name": "f"}},
+                "seed": 7
+            }),
+        );
+        assert_eq!(
+            entries,
+            ["translated:tools", "translated:tool_choice", "dropped:seed"]
+        );
+        assert_eq!(
+            sent["toolConfig"]["functionCallingConfig"]["mode"],
+            json!("ANY")
+        );
+    }
+
+    #[test]
+    fn interactions_keeps_the_thread_fields_responses_would_drop() {
+        let (sent, entries) = reported(
+            "/v1/responses",
+            ProviderKind::GeminiInteractions,
+            json!({
+                "model": "m", "input": "hi", "store": true,
+                "previous_response_id": "r1", "reasoning": {"effort": "low"},
+                "tool_choice": "sometimes"
+            }),
+        );
+        assert_eq!(entries, ["dropped:reasoning", "dropped:tool_choice"]);
+        assert_eq!(sent["previous_interaction_id"], json!("r1"));
+        assert_eq!(sent["store"], json!(true));
+    }
+
+    #[test]
+    fn an_untranslated_request_reports_nothing() {
+        let (_, entries) = reported(
+            "/v1/chat/completions",
+            ProviderKind::Openai,
+            json!({"model": "m", "messages": [], "top_k": 5, "n": 3}),
+        );
+        assert!(entries.is_empty());
     }
 }
