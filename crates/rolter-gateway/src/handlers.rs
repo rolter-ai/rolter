@@ -2963,12 +2963,12 @@ async fn proxy(
                 unit_basis: crate::unit_billing::UnitBasis::for_json(path, &parsed),
                 capture_payloads,
                 payload_max_bytes: snap.logging.payload_capture.max_bytes,
-                payload_redact_fields: snap.logging.payload_capture.redact_fields.clone(),
+                payload_redactor: snap.payload_redactor.clone(),
                 request_payload: if capture_payloads {
                     crate::logging::capture_payload(
                         &forward_body,
                         snap.logging.payload_capture.max_bytes,
-                        &snap.logging.payload_capture.redact_fields,
+                        &snap.payload_redactor,
                     )
                 } else {
                     String::new()
@@ -3639,12 +3639,12 @@ async fn proxy_multipart(
                 unit_basis: crate::unit_billing::UnitBasis::for_multipart(path),
                 capture_payloads,
                 payload_max_bytes: snap.logging.payload_capture.max_bytes,
-                payload_redact_fields: snap.logging.payload_capture.redact_fields.clone(),
+                payload_redactor: snap.payload_redactor.clone(),
                 request_payload: if capture_payloads {
                     crate::logging::capture_payload(
                         &body,
                         snap.logging.payload_capture.max_bytes,
-                        &snap.logging.payload_capture.redact_fields,
+                        &snap.payload_redactor,
                     )
                 } else {
                     String::new()

@@ -1201,6 +1201,24 @@
       ]
     },
     {
+      "resource": "log_erasure",
+      "scope": "deployment",
+      "actions": [
+        {
+          "action": "read",
+          "minimum_role": null,
+          "superadmin_only": true,
+          "authenticated_only": false
+        },
+        {
+          "action": "create",
+          "minimum_role": null,
+          "superadmin_only": true,
+          "authenticated_only": false
+        }
+      ]
+    },
+    {
       "resource": "compatibility_policy",
       "scope": "deployment",
       "actions": [

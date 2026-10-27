@@ -725,6 +725,18 @@ const CAPABILITIES: &[Capability] = &[
         delete: NA,
         action_scopes: NONE,
     },
+    // erasing one subject's request logs and captured payloads (#1085):
+    // irreversible, and the one place the control plane deletes log data on
+    // demand, so a superadmin's alone
+    Capability {
+        resource: "log_erasure",
+        scope: "deployment",
+        read: SUPER,
+        create: SUPER,
+        update: NA,
+        delete: NA,
+        action_scopes: NONE,
+    },
     Capability {
         resource: "compatibility_policy",
         scope: "deployment",
@@ -1965,6 +1977,7 @@ mod tests {
         ("invitations.rs", include_str!("invitations.rs")),
         ("ldap.rs", include_str!("ldap.rs")),
         ("lib.rs", include_str!("lib.rs")),
+        ("log_erasure.rs", include_str!("log_erasure.rs")),
         ("logging_settings.rs", include_str!("logging_settings.rs")),
         ("login_throttle.rs", include_str!("login_throttle.rs")),
         ("main.rs", include_str!("main.rs")),
