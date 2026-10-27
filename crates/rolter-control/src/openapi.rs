@@ -577,6 +577,40 @@ const DASHBOARD_QUERY: &[QueryParam] = &[
     PROJECT_FILTER,
 ];
 
+/// The savings advisor's window, scope and thresholds (#1581).
+const SAVINGS_QUERY: &[QueryParam] = &[
+    SINCE,
+    UNTIL,
+    QueryParam::new(
+        "org",
+        "string",
+        "exact org id; omit for every org the caller may read",
+    ),
+    PROJECT_FILTER,
+    QueryParam::new(
+        "route",
+        "string",
+        "exact route (its public model name); omit for every route",
+    ),
+    KEY_FILTER,
+    QueryParam::new(
+        "max_prompt_tokens",
+        "integer",
+        "a request with a longer prompt is not substitutable; defaults to 4000",
+    ),
+    QueryParam::new(
+        "max_completion_tokens",
+        "integer",
+        "a request with a longer output is not substitutable; defaults to 1000",
+    ),
+    QueryParam::new(
+        "output_margin",
+        "number",
+        "how much longer a candidate's answers are assumed to run at the high end of the \
+         range, as a fraction; defaults to 0.25 and is clamped to 0..4",
+    ),
+];
+
 /// The window plus the bucket only the timeseries endpoint reads, and the
 /// dashboard's row filters.
 const TIMESERIES_QUERY: &[QueryParam] = &[
@@ -2131,6 +2165,20 @@ fn operations() -> Vec<Op> {
             )
             .clickhouse_read()
             .query(WINDOW_QUERY),
+            Op::get(
+                "/api/v1/analytics/savings",
+                "getAnalyticsSavings",
+                "The savings advisor: where the window's spend went (by route, upstream model and \
+                 caller, with retries and failovers, failed requests and response-cache misses \
+                 called out), which requests were substitutable, and what they would have cost at \
+                 each cheaper model already in the same route's pool, as a `low`/`high` range. It \
+                 re-prices and never evaluates quality, so it is a shortlist to test, not a \
+                 recommendation; `limits` says so on every answer. A request or a candidate whose \
+                 price is unknown is excluded and counted under `excluded`, never priced at zero",
+            )
+            .clickhouse_read()
+            .query(SAVINGS_QUERY)
+            .ok(Payload::Ref("SavingsReport")),
             Op::get(
                 "/api/v1/analytics/sampling",
                 "getAnalyticsSampling",
@@ -3759,6 +3807,65 @@ fn governance_schemas(p: &Prim) -> Value {
                 "currency": {"type": "string", "default": "USD"}
             },
             "additionalProperties": false
+        },
+        "SavingsReport": {
+            "type": "object",
+            "description": "money is in the deployment's base `currency`; counts and costs are scaled by the sampling weight",
+            "required": ["currency", "limits", "assumptions", "spend", "substitutable", "candidates", "excluded"],
+            "properties": {
+                "currency": {"type": "string"},
+                "limits": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "what the report does not claim, in prose"
+                },
+                "assumptions": {
+                    "type": "object",
+                    "description": "the thresholds and margin the report was built with, after defaults and clamping",
+                    "properties": {
+                        "max_prompt_tokens": {"type": "integer"},
+                        "max_completion_tokens": {"type": "integer"},
+                        "output_margin": {"type": "number"}
+                    }
+                },
+                "spend": {
+                    "type": "object",
+                    "description": "where the money went: totals, `multi_attempt` (requests that took more than one upstream attempt), `failed`, `cache` (hits, and misses on routes that cache), and `by_route`, `by_model` (upstream model) and `by_caller` (project and virtual key, the 50 most expensive)",
+                    "properties": {
+                        "requests": {"type": "number"},
+                        "cost_usd": {"type": "number"},
+                        "unpriced_requests": {"type": "number"},
+                        "multi_attempt": {"type": "object"},
+                        "failed": {"type": "object"},
+                        "cache": {"type": "object"},
+                        "by_route": {"type": "array", "items": {"type": "object"}},
+                        "by_model": {"type": "array", "items": {"type": "object"}},
+                        "by_caller": {"type": "array", "items": {"type": "object"}}
+                    }
+                },
+                "substitutable": {
+                    "type": "object",
+                    "description": "the requests with at least one cheaper candidate, their recorded cost, and the saving at the best candidate of each as `{low, high}`",
+                    "properties": {
+                        "requests": {"type": "number"},
+                        "current_cost_usd": {"type": "number"},
+                        "projected_savings_usd": {"type": "object"}
+                    }
+                },
+                "candidates": {
+                    "type": "array",
+                    "description": "one entry per route and current upstream model, biggest conservative saving first; each lists its `candidates` with `projected_cost_usd` and `savings_usd` as `{low, high}`",
+                    "items": {"type": "object"}
+                },
+                "excluded": {
+                    "type": "object",
+                    "description": "`requests` counts what was not re-priced by reason (`unpriced`, `failed`, `cache_hit`, `usage_unknown`, `not_a_model_call`, `no_token_usage`, `prompt_too_large`, `output_too_large`, `route_not_configured`, `no_cheaper_candidate`); `unknown_candidate_prices` names pool models with no price",
+                    "properties": {
+                        "requests": {"type": "object", "additionalProperties": {"type": "number"}},
+                        "unknown_candidate_prices": {"type": "array", "items": {"type": "string"}}
+                    }
+                }
+            }
         },
         "LogSampling": {
             "type": "object",
