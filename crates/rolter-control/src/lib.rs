@@ -49,6 +49,7 @@ mod connectors;
 mod cors;
 #[cfg(feature = "postgres")]
 mod crud;
+pub mod deprecation;
 #[cfg(feature = "postgres")]
 mod feature_flags;
 #[cfg(feature = "postgres")]
@@ -1299,15 +1300,18 @@ fn build_app_with(state: ControlState, mount_internal: bool) -> Router {
     // per-request spans and latency histograms wrap the whole API, outside the
     // cors layer so a preflight rejection is measured like any other response
     // (#845). inert without an OTLP endpoint
-    api.layer(axum::middleware::from_fn_with_state(
-        state.clone(),
-        cors::apply_cors,
-    ))
-    .layer(axum::middleware::from_fn_with_state(
-        state.clone(),
-        telemetry::record_request,
-    ))
-    .with_state(state)
+    // `Deprecation` and `Sunset` headers on a deprecated operation (ADR-0032).
+    // innermost, so the cors layer sees them like any other header
+    api.layer(axum::middleware::from_fn(deprecation::apply))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            cors::apply_cors,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            telemetry::record_request,
+        ))
+        .with_state(state)
 }
 
 /// The control↔data-plane routes. They carry decrypted provider credentials,
