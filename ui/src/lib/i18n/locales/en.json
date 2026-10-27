@@ -581,6 +581,20 @@
       "summary_other": "{{count}} fields need attention before this route can be saved."
     }
   },
+  "breaker": {
+    "open_one": "Breaker open on {{count}} gateway",
+    "open_other": "Breaker open on {{count}} gateways",
+    "probing_one": "Probing on {{count}} gateway",
+    "probing_other": "Probing on {{count}} gateways",
+    "states": {
+      "open": "open",
+      "half_open": "probing",
+      "closed": "closed"
+    },
+    "failures_one": "{{count}} consecutive failure",
+    "failures_other": "{{count}} consecutive failures",
+    "retryIn": "retries in {{duration}}"
+  },
   "routeTargets": {
     "count_one": "{{count}} target",
     "count_other": "{{count}} targets",
@@ -3183,6 +3197,13 @@
       "subtitle": "Last 7 days against a {{sla}} SLA. SLA at risk means the 7 days still meet it, but the last two hours failed more often than it allows.",
       "targets_one": "{{count}} target",
       "targets_other": "{{count}} targets",
+      "breakerTitle": "Live circuit breakers",
+      "breakerNote_one": "Live state held in memory by {{count}} gateway, reported about every 10 seconds. It is what the gateway is doing now, separate from the 7-day SLA verdict, which comes from recorded traffic.",
+      "breakerNote_other": "Live state held in memory by each of {{count}} gateways, reported about every 10 seconds. It is what the gateways are doing now, separate from the 7-day SLA verdict, which comes from recorded traffic.",
+      "breakerNone": "No breaker is open or probing on any live gateway.",
+      "breakerNoGateways": "No gateway is reporting its breakers, so live breaker state is not shown.",
+      "breakerModels": "Models: {{models}}",
+      "breakerTarget": "{{model}} (target {{index}}) via {{upstream}}",
       "uptimeMeta": "uptime · {{events}} events",
       "bucketTitle": "{{bucket}}: {{ok}} ok, {{errors}} error, {{timeouts}} timeout"
     },
@@ -3394,6 +3415,7 @@
         "promptCacheTokens": "{{read}} read · {{write}} written",
         "cacheWriteSplit": "Cache write by lifetime",
         "cacheWriteSplitTokens": "{{short}} to the 5 minute cache · {{long}} to the 1 hour cache",
+        "delivery": "Delivery",
         "attribution": "Attribution",
         "lifecycle": {
           "label": "Stored response call",
@@ -5289,7 +5311,10 @@
     "openDetails": "Open request details for {{model}}",
     "ms": "{{value}} ms",
     "unpriced": "unpriced",
-    "unpricedHint": "No price is configured for this model, so this request was recorded as unpriced rather than as free."
+    "unpricedHint": "No price is configured for this model, so this request was recorded as unpriced rather than as free.",
+    "withheld": "withheld",
+    "withheldHint": "The provider answered and billed for this response, but an output guardrail or plugin refused to deliver it: the caller received a 403. The cost is real; the policy that refused is named in the error.",
+    "usageUnknownHint": "The upstream answered but reported no usage, so the tokens and cost are unknown, not zero."
   },
   "savedViews": {
     "open": "Saved views",

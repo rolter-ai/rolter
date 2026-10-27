@@ -35,6 +35,7 @@ import { Button } from "@/components/ui/button";
 import { DeleteIconButton } from "@/components/ui/delete-icon-button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Segmented } from "@/components/ui/segmented";
+import { BreakerBadge } from "@/components/BreakerBadge";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { LabelChips, LabelFilterSelect, LabelSheet, useSubjectLabels } from "@/components/Labels";
 import {
@@ -45,6 +46,7 @@ import {
   fetchRoutes,
   fetchHealthTimeline,
   fetchUptime,
+  useBreakerState,
   type EffectiveModelDto,
   type RouteRow,
 } from "@/lib/api";
@@ -181,6 +183,9 @@ export default function Models() {
     enabled: hasModels && healthKnown,
     retry: false,
   });
+  // the gateways' live breakers, drawn beside each target's health where one is
+  // tripped; a failed read leaves the rows as they were
+  const breakers = useBreakerState();
   const [expanded, setExpanded] = React.useState<ReadonlySet<string>>(() => new Set());
   const toggleTargets = (model: string) =>
     setExpanded((open) => {
@@ -225,6 +230,7 @@ export default function Models() {
           { model: entry.model, targets: entry.route_targets },
           healthKnown ? uptime.data : undefined,
           timeline.data,
+          breakers.data,
         )
       : null;
     // the first provider names the column; a route spread over several says so
@@ -458,6 +464,8 @@ export default function Models() {
           const withHealth = (r.targets ?? []).filter((tg) => tg.health);
           const failing = withHealth.filter((tg) => tg.health?.state === "breaching").length;
           const atRisk = withHealth.filter((tg) => tg.health?.state === "atRisk").length;
+          const tripped = (r.targets ?? []).filter((tg) => tg.breaker);
+          const openBreaker = tripped.find((tg) => tg.breaker?.state === "open")?.breaker;
           return (
             <React.Fragment key={r.id}>
               <ListRow grid={GRID} className={open ? "border-b-0" : undefined}>
@@ -540,6 +548,9 @@ export default function Models() {
                   )}
                   {/* health where the rollup has it: a failing target is named in
                   the row, a clean bill is a dot, and no data says nothing */}
+                  {tripped.length > 0 && (
+                    <BreakerBadge breaker={openBreaker ?? tripped[0].breaker} />
+                  )}
                   {failing > 0 ? (
                     <span className="inline-flex items-center gap-1 text-2xs text-[color:var(--status-danger-text)]">
                       <StatusDot color="var(--status-danger)" className="h-1.5 w-1.5" />

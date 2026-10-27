@@ -268,19 +268,21 @@ const stub = (matrix: RbacMatrix) =>
     ["/memberships", () => MEMBERSHIPS],
   ]);
 
-/**
- * The custom-roles tab's own fan-out.
- *
- * Longest path first: `/access-profiles/p-1` has to answer the detail rather
- * than the list it is a prefix of, and both contain `/access-profiles`.
- */
+// the profile list embeds each profile's roles (`?include=roles`), so the tab
+// reads the composition in one request however many profiles there are (#1996)
+const PROFILES: AccessProfileDetail[] = [
+  PROFILE_DETAIL,
+  { ...PROFILE_DETAIL, id: "p-2", slug: "billing", name: "Billing", roles: [] },
+  { ...PROFILE_DETAIL, id: "p-3", slug: "audit", name: "Audit", roles: [] },
+];
+
+/** The custom-roles tab's own reads. */
 const withRoles = (roles: CustomRoleRow[], matrix = WITH_CUSTOM_ROLE) =>
   routes([
     ["/rbac/matrix", () => matrix],
     ["/memberships", () => MEMBERSHIPS],
     ["/custom-roles", () => roles],
-    ["/access-profiles/p-1", () => PROFILE_DETAIL],
-    ["/access-profiles", () => [{ id: "p-1", name: "Support" }]],
+    ["/access-profiles", () => PROFILES],
   ]);
 
 /**
@@ -527,11 +529,29 @@ export const CustomRolesList: Story = {
     // the known grant and the retired one both count: both are stored on the role
     await expect(canvas.getByText("2 grants")).toBeVisible();
     // derived from the profiles that compose it, which is what a 409 would name.
-    // those are their own two requests — the profile list, then a detail call
-    // per profile — so this is awaited rather than read off the roles' settle
-    // point, and the row says nothing about composition until they answer (#1266)
+    // that is its own request, so this is awaited rather than read off the
+    // roles' settle point, and the row says nothing about composition until it
+    // answers (#1266)
     await expect(await canvas.findByText("Composed into Support")).toBeVisible();
     await expect(canvas.getByRole("button", { name: "Delete Support engineer" })).toBeVisible();
+  },
+};
+
+// three profiles are still one profiles request: no read per profile (#1996)
+const usageReads = recording(withRoles(CUSTOM_ROLES));
+export const UsageIsOneRequestForManyProfiles: Story = {
+  render: () => (
+    <Harness fetchStub={usageReads.stub}>
+      <Rbac />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await openCustomTab(canvasElement);
+    await expect(await canvas.findByText("Composed into Support")).toBeVisible();
+    const profileReads = usageReads.calls.filter((c) => c.url.includes("/access-profiles"));
+    await expect(profileReads).toHaveLength(1);
+    await expect(profileReads[0].url).toContain("include=roles");
   },
 };
 

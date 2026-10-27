@@ -53,7 +53,7 @@ Forgetting drops a decommissioned node from the inventory. A node that is still 
 
 ## API
 
-All three endpoints are **superadmin only**, and drain and forget are audited.
+All three endpoints are **superadmin only**, and drain and forget are audited. Any signed-in caller can read the counts-only [fleet summary](/api/cluster-summary) instead.
 
 ```bash
 curl -H "Authorization: Bearer $ROLTER_ADMIN_TOKEN" \

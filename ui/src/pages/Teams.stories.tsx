@@ -463,9 +463,8 @@ function teamsApi(fail: Partial<Record<Part, "pending" | "error">> = {}) {
     if (/\/memberships$/.test(path)) return answer("memberships", GRANTS);
     if (/\/users$/.test(path)) return answer("users", PEOPLE);
     if (/\/orgs\/org-1\/projects$/.test(path)) return answer("projects", PROJECTS);
-    if (path === "/api/v1/budgets") {
-      return answer("budgets", BUDGETS[url.searchParams.get("scope_id") ?? ""] ?? []);
-    }
+    if (/\/orgs\/org-1\/budgets$/.test(path))
+      return answer("budgets", Object.values(BUDGETS).flat());
     return json([]);
   });
 }
@@ -496,6 +495,8 @@ export const NamesAdminsAndCountsPeople: Story = {
     await waitFor(() => expect(research.getAllByText("1")).toHaveLength(2));
     await expect(research.getByText("none yet")).toBeVisible();
     await expect(research.getByText("—")).toBeVisible();
+    // two teams, one budgets request (#1996)
+    await expect(cards.calls.filter((c) => c.url.includes("budgets"))).toHaveLength(1);
   },
 };
 

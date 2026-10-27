@@ -3583,3 +3583,74 @@ export const ASampledLogSaysTheListIsPartial: Story = {
     await expect(await canvas.findAllByText(fmt.timeMs(ROWS[0].ts))).toHaveLength(1);
   },
 };
+
+const WITHHELD_ROW = row({
+  request_id: "req-withheld",
+  model: "guarded-model",
+  status: 403,
+  cost_usd: 0.0456,
+  withheld: 1,
+  error: "output guardrail pii-block refused delivery",
+});
+
+/**
+ * A provider billed for a response an output guardrail refused to deliver: the
+ * row is marked withheld beside its 403, and its cost is still a real cost.
+ */
+export const AWithheldResponseIsMarkedAndStillCostsMoney: Story = {
+  render: () => (
+    <Harness fetchStub={withLogs([WITHHELD_ROW])}>
+      <Logs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const mark = await canvas.findByText("withheld");
+    await expect(mark).toBeVisible();
+    await expect(mark.getAttribute("title")).toMatch(/billed for this response/i);
+    await expect(canvas.getByText(fmt.currency(0.0456, "USD"))).toBeVisible();
+    await userEvent.click(
+      await canvas.findByRole("button", { name: /Open request details for guarded-model/i }),
+    );
+    const panel = await canvas.findByRole("complementary", { name: "Details" });
+    await waitFor(() => expect(panel).toBeVisible());
+    await expect(
+      await within(panel).findByText(/refused to deliver it: the caller received a 403/i),
+    ).toBeVisible();
+    // the policy named in `error` is printed by the highlighted error block
+    await expect(panel).toHaveTextContent(/pii-block/);
+  },
+};
+
+/** An upstream that reported no usage: the cells say unknown, never a free zero. */
+export const AUsageUnknownRequestIsNotShownAsZero: Story = {
+  render: () => (
+    <Harness
+      fetchStub={withLogs([
+        row({
+          request_id: "req-nousage",
+          model: "silent-model",
+          prompt_tokens: 0,
+          completion_tokens: 0,
+          total_tokens: 0,
+          cost_usd: 0,
+          usage_unknown: 1,
+        }),
+      ])}
+    >
+      <Logs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const unknown = await canvas.findAllByTitle(/reported no usage/i);
+    await expect(unknown).toHaveLength(2);
+    await expect(canvas.queryByText(fmt.currency(0, "USD"))).toBeNull();
+    await userEvent.click(
+      await canvas.findByRole("button", { name: /Open request details for silent-model/i }),
+    );
+    const panel = await canvas.findByRole("complementary", { name: "Details" });
+    await waitFor(() => expect(panel).toBeVisible());
+    await expect(await within(panel).findAllByText(/reported no usage/i)).toHaveLength(2);
+  },
+};
