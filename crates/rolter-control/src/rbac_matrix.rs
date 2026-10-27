@@ -417,6 +417,19 @@ const CAPABILITIES: &[Capability] = &[
         delete: NA,
         action_scopes: NONE,
     },
+    // an account reading the caps that count its own keys and what is left of
+    // them (#1830). Every signed-in account's to read, a viewer included: the
+    // route returns only rows whose scope is the caller, so it widens no
+    // `budget:read`, which reads the caps of a place
+    Capability {
+        resource: "my_budget",
+        scope: "deployment",
+        read: ANYONE,
+        create: NA,
+        update: NA,
+        delete: NA,
+        action_scopes: NONE,
+    },
     Capability {
         resource: "business_unit",
         scope: "org",
@@ -709,6 +722,18 @@ const CAPABILITIES: &[Capability] = &[
         read: SUPER,
         create: NA,
         update: SUPER,
+        delete: NA,
+        action_scopes: NONE,
+    },
+    // erasing one subject's request logs and captured payloads (#1085):
+    // irreversible, and the one place the control plane deletes log data on
+    // demand, so a superadmin's alone
+    Capability {
+        resource: "log_erasure",
+        scope: "deployment",
+        read: SUPER,
+        create: SUPER,
+        update: NA,
         delete: NA,
         action_scopes: NONE,
     },
@@ -1869,6 +1894,9 @@ mod tests {
                 // changing one's own password (#2804): the route writes only
                 // the caller's own row, so there is no membership to hold
                 "my_password:update",
+                // reading the caps that count one's own keys (#1830): the route
+                // returns only rows whose scope is the caller
+                "my_budget:read",
                 // the fleet's breaker state (#2254): the handler narrows it to
                 // the models the caller sees, so with no membership that is
                 // the deployment's own, as for `model:read`
@@ -1981,6 +2009,7 @@ mod tests {
         ("invitations.rs", include_str!("invitations.rs")),
         ("ldap.rs", include_str!("ldap.rs")),
         ("lib.rs", include_str!("lib.rs")),
+        ("log_erasure.rs", include_str!("log_erasure.rs")),
         ("logging_settings.rs", include_str!("logging_settings.rs")),
         ("login_throttle.rs", include_str!("login_throttle.rs")),
         ("main.rs", include_str!("main.rs")),

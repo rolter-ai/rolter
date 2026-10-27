@@ -338,6 +338,11 @@ pub struct LoggingSettingsUpdate<'a> {
     pub payload_capture_enabled: bool,
     pub payload_capture_max_bytes: i32,
     pub payload_capture_redact_fields: &'a [String],
+    /// `None` keeps the stored detectors, like `ui_events`
+    pub payload_capture_redact_detectors: Option<&'a [String]>,
+    /// `None` keeps the stored patterns
+    pub payload_capture_redact_patterns:
+        Option<&'a [rolter_core::payload_redaction::RedactPattern]>,
     pub payload_capture_models: &'a [String],
     pub payload_capture_virtual_key_ids: &'a [String],
     pub retention_days: i32,
@@ -349,7 +354,8 @@ impl LoggingSettingsRepo<'_> {
     pub async fn get(&self) -> Result<LoggingSettings> {
         sqlx::query_as(
             "select sample_rate, payload_capture_enabled, payload_capture_max_bytes, \
-                    payload_capture_redact_fields, payload_capture_models, payload_capture_virtual_key_ids, \
+                    payload_capture_redact_fields, payload_capture_redact_detectors, \
+                    payload_capture_redact_patterns, payload_capture_models, payload_capture_virtual_key_ids, \
                     retention_days, payload_retention_hours, ui_events, updated_at \
              from logging_settings where id = true",
         )
@@ -364,12 +370,15 @@ impl LoggingSettingsRepo<'_> {
             payload_capture_enabled,
             payload_capture_max_bytes,
             payload_capture_redact_fields,
+            payload_capture_redact_detectors,
+            payload_capture_redact_patterns,
             payload_capture_models,
             payload_capture_virtual_key_ids,
             retention_days,
             payload_retention_hours,
             ui_events,
         } = values;
+        let patterns = payload_capture_redact_patterns.map(sqlx::types::Json);
         // `None` keeps the stored ui_events: a caller that has no opinion on it
         // (the seed importer, a client written before the column) must not
         // silently re-enable a stream an operator switched off
@@ -379,10 +388,13 @@ impl LoggingSettingsRepo<'_> {
                 payload_capture_redact_fields = $4, payload_capture_models = $5, \
                 payload_capture_virtual_key_ids = $6, retention_days = $7, \
                 payload_retention_hours = $8, ui_events = coalesce($9, ui_events), \
+                payload_capture_redact_detectors = coalesce($10, payload_capture_redact_detectors), \
+                payload_capture_redact_patterns = coalesce($11, payload_capture_redact_patterns), \
                 updated_at = now() \
              where id = true \
              returning sample_rate, payload_capture_enabled, payload_capture_max_bytes, \
-                       payload_capture_redact_fields, payload_capture_models, \
+                       payload_capture_redact_fields, payload_capture_redact_detectors, \
+                       payload_capture_redact_patterns, payload_capture_models, \
                        payload_capture_virtual_key_ids, retention_days, \
                        payload_retention_hours, ui_events, updated_at",
         )
@@ -395,6 +407,8 @@ impl LoggingSettingsRepo<'_> {
         .bind(retention_days)
         .bind(payload_retention_hours)
         .bind(ui_events)
+        .bind(payload_capture_redact_detectors)
+        .bind(patterns)
         .fetch_one(self.0)
         .await
         .map_err(store_err)

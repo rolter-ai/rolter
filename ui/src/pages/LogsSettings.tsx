@@ -23,9 +23,13 @@ import {
   fetchAnalyticsSummary,
   fetchLoggingSettings,
   fetchVirtualKeys,
+  REDACT_DETECTORS,
   updateLoggingSettings,
   type LoggingSettingsDto,
+  type RedactPatternDto,
 } from "@/lib/api";
+import { ChipGroup } from "@/components/ui/chip-group";
+import { RedactionPreview } from "@/components/RedactionPreview";
 import { useFormat } from "@/lib/i18n/format";
 import { errorText } from "@/lib/error-copy";
 import { useScope } from "@/lib/scope";
@@ -41,6 +45,9 @@ interface FormState {
   captureEnabled: boolean;
   maxBytes: string;
   redactFields: string;
+  redactDetectors: string[];
+  /** one `name=pattern` per line */
+  redactPatterns: string;
   models: string[];
   virtualKeyIds: string[];
   retentionDays: string;
@@ -59,13 +66,35 @@ const splitList = (value: string) =>
 // the two lists are edited as chips, so a rebuilt array with the same entries
 // is no edit
 const sameList = (a: string[], b: string[]) => JSON.stringify(a) === JSON.stringify(b);
-const EQUALS: FieldEquality<FormState> = { models: sameList, virtualKeyIds: sameList };
+const EQUALS: FieldEquality<FormState> = {
+  models: sameList,
+  virtualKeyIds: sameList,
+  redactDetectors: sameList,
+};
+
+const patternsToText = (patterns: RedactPatternDto[]) =>
+  patterns.map((p) => `${p.name}=${p.pattern}`).join("\n");
+
+// null when a line is not `name=pattern`; the server still decides whether the
+// name and the expression are usable
+const parsePatterns = (text: string): RedactPatternDto[] | null => {
+  const out: RedactPatternDto[] = [];
+  for (const line of text.split("\n")) {
+    if (!line.trim()) continue;
+    const at = line.indexOf("=");
+    if (at < 1 || at === line.length - 1) return null;
+    out.push({ name: line.slice(0, at).trim(), pattern: line.slice(at + 1) });
+  }
+  return out;
+};
 
 const fromDto = (dto: LoggingSettingsDto): FormState => ({
   samplePercent: samplingPercentText(dto.sample_rate),
   captureEnabled: dto.payload_capture_enabled,
   maxBytes: String(dto.payload_capture_max_bytes),
   redactFields: dto.payload_capture_redact_fields.join(", "),
+  redactDetectors: dto.payload_capture_redact_detectors,
+  redactPatterns: patternsToText(dto.payload_capture_redact_patterns),
   models: dto.payload_capture_models,
   virtualKeyIds: dto.payload_capture_virtual_key_ids,
   retentionDays: String(dto.retention_days),
@@ -90,13 +119,15 @@ const validMaxBytes = (value: string) => {
 // trip; the server stays the authority and its message is surfaced on reject.
 // returns a catalog key, translated by the caller
 // every failing field is reported at once, keyed by field (#2096)
-type FieldKey = "samplePercent" | "maxBytes" | "retentionDays" | "payloadRetentionHours";
+type FieldKey =
+  "samplePercent" | "maxBytes" | "redactPatterns" | "retentionDays" | "payloadRetentionHours";
 type FieldErrors = Partial<Record<FieldKey, string>>;
 
 // the order the fields sit in, so focus lands on the first one that is wrong
 const FIELD_ORDER: FieldKey[] = [
   "samplePercent",
   "maxBytes",
+  "redactPatterns",
   "retentionDays",
   "payloadRetentionHours",
 ];
@@ -105,6 +136,8 @@ const FIELD_ORDER: FieldKey[] = [
 const WIRE_FIELDS: Record<string, FieldKey> = {
   sample_rate: "samplePercent",
   payload_capture_max_bytes: "maxBytes",
+  payload_capture_redact_patterns: "redactPatterns",
+  payload_capture_redact_detectors: "redactPatterns",
   retention_days: "retentionDays",
   payload_retention_hours: "payloadRetentionHours",
 };
@@ -118,6 +151,9 @@ function validate(form: FormState): FieldErrors {
   // not be fixed; it is re-checked once capture is switched back on
   if (form.captureEnabled && !validMaxBytes(form.maxBytes)) {
     errors.maxBytes = "pages.logsSettings.errors.maxBytes";
+  }
+  if (parsePatterns(form.redactPatterns) === null) {
+    errors.redactPatterns = "pages.logsSettings.redaction.patternLine";
   }
   const days = Number(form.retentionDays);
   const daysOk = Number.isInteger(days) && days >= 1 && days <= 3650;
@@ -187,6 +223,7 @@ function LogsSettingsScreen() {
   const ids: Record<FieldKey, string> = {
     samplePercent: `${base}-sample`,
     maxBytes: "logs-max-bytes",
+    redactPatterns: "logs-redact-patterns",
     retentionDays: "logs-retention-days",
     payloadRetentionHours: "logs-payload-retention-hours",
   };
@@ -217,6 +254,9 @@ function LogsSettingsScreen() {
           ? Number(f.maxBytes)
           : (settings.data?.payload_capture_max_bytes ?? 0),
         payload_capture_redact_fields: splitList(f.redactFields),
+        payload_capture_redact_detectors: f.redactDetectors,
+        // validated before a save can start
+        payload_capture_redact_patterns: parsePatterns(f.redactPatterns) ?? [],
         payload_capture_models: f.models,
         payload_capture_virtual_key_ids: f.virtualKeyIds,
         retention_days: Number(f.retentionDays),
@@ -360,6 +400,43 @@ function LogsSettingsScreen() {
           value={form.redactFields}
           placeholder={t("pages.logsSettings.redactedPlaceholder")}
           onChange={(v) => set({ redactFields: v })}
+        />
+        <ChipGroup
+          label={t("pages.logsSettings.redaction.detectors")}
+          options={REDACT_DETECTORS.map((id) => ({ id, name: id }))}
+          selected={form.redactDetectors}
+          onToggle={(id) =>
+            set({
+              redactDetectors: form.redactDetectors.includes(id)
+                ? form.redactDetectors.filter((d) => d !== id)
+                : [...form.redactDetectors, id],
+            })
+          }
+        />
+        <p className="-mt-1 text-xs text-[color:var(--text-subtle)]">
+          {t("pages.logsSettings.redaction.detectorsHint")}
+        </p>
+        <Field
+          label={t("pages.logsSettings.redaction.patterns")}
+          hint={t("pages.logsSettings.redaction.patternsHint")}
+          className="w-full"
+        >
+          <Textarea
+            className="min-h-[64px] w-full font-mono text-xs"
+            {...fields.inputProps("redactPatterns")}
+            value={form.redactPatterns}
+            placeholder={t("pages.logsSettings.redaction.patternsPlaceholder")}
+            onChange={(e) => edit("redactPatterns", e.target.value)}
+          />
+          <FieldError
+            id={fields.errorId("redactPatterns")}
+            error={fields.errorOf("redactPatterns")}
+          />
+        </Field>
+        <RedactionPreview
+          fields={splitList(form.redactFields)}
+          detectors={form.redactDetectors}
+          patterns={parsePatterns(form.redactPatterns) ?? []}
         />
         <CaptureFilter
           label={t("pages.logsSettings.onlyModels")}

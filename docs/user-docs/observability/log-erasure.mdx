@@ -1,0 +1,95 @@
+---
+title: "Erase a Subject's Logs and Captured Payloads"
+sidebarTitle: "Log Erasure"
+description: "Delete one virtual key's, user's or organization's request logs and captured prompt bodies on request, or purge a single request, and confirm when ClickHouse has finished."
+---
+
+[Retention](/observability/log-settings#retention) is a clock: rows leave when their TTL passes. Log erasure is a command. It deletes what Rolter holds about one subject now, without shortening retention for everyone, and it records that it did so.
+
+Use it for two requests: an erasure request ("delete everything you hold about this employee"), and the operational one, an engineer who pasted a secret into a prompt and needs that request's captured body gone before its TTL.
+
+Erasure is **superadmin only**, needs the control plane to have a ClickHouse URL, and is irreversible.
+
+---
+
+## What gets deleted
+
+Rolter keeps two things per request in ClickHouse: the metadata row in `request_logs` (model, tokens, cost, status, the virtual key and its organization) and, when [payload capture](/observability/log-settings#payload-capture) is on, the raw bodies in `request_payloads`. Nothing else is derived from them. There is no rollup or materialized view over either table, and the dashboard's analytics are queries over `request_logs`, so deleting the rows removes the figures that were built from them too.
+
+| Scope         | Rows deleted                                                                               |
+| ------------- | ------------------------------------------------------------------------------------------ |
+| `virtual_key` | every row sent with that key                                                               |
+| `user`        | every row sent with a key that user created and that still exists                          |
+| `org`         | every row of that organization                                                             |
+| `request`     | the rows of one request id in one organization, narrowed to one instant when you give `ts` |
+
+Request logs name a virtual key, never a person, so a `user` scope is resolved through the keys the user created. A key that has since been deleted leaves no record to resolve; erase by organization or by key id for those. A request id is whatever the caller sent and is not unique, so a `request` scope requires the organization, and `ts` (the row's own timestamp, as the LLM Logs list shows it) when a client reuses one id.
+
+Set `include_logs` to `false` to delete the captured bodies only and keep the metadata. That is the usual answer to a secret pasted into a prompt.
+
+Payload rows written before ClickHouse migration `020_request_payloads_key.sql` carry no key. Rolter finds the ones belonging to a key or user through their log rows and deletes them too, up to 10,000 per request; apply the migration so new rows carry the key themselves.
+
+Erasure does not touch the [audit log](/security/rbac), MCP tool-call logs, or the response cache. A cached response expires with its own TTL.
+
+---
+
+## It is not instant
+
+ClickHouse applies `alter table … delete` as a background **mutation**: the statement is queued and the affected parts are rewritten later. Rolter therefore never says "deleted" when it submits the request. It answers `202` with a record whose `status` is `pending`, and `GET /api/v1/log-erasures/{id}` reads `system.mutations` and moves the record to `completed` only once ClickHouse reports every mutation Rolter submitted as done.
+
+| Status       | Meaning                                                                                                                                 |
+| ------------ | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `pending`    | submitted; some mutation is not done yet. `mutations_done` of `statements` shows how far, and `last_error` shows why one is retrying.   |
+| `completed`  | every mutation is done. The rows are gone.                                                                                              |
+| `failed`     | ClickHouse refused a statement at submission. Earlier statements may already be queued; submit again, which is safe to repeat.          |
+| `unverified` | nothing was visible in `system.mutations` an hour after submission (the server was replaced, or pruned its history). Check by querying. |
+
+Until a record says `completed`, treat the data as still present. A deployment with ClickHouse replicas or a distributed table finishes when the mutation has run everywhere; `system.mutations` on the server Rolter talks to is what is read.
+
+---
+
+## The procedure
+
+1. Find the subject's id: the virtual key id from **Virtual Keys**, the user id from **Members**, the organization id, or the `request_id` and `ts` of a row in **LLM Logs**.
+2. Submit the erasure with a reason. The reason is stored and audited, so write the ticket or request reference, not the content.
+3. Poll the record until it reads `completed`, and keep its id as the proof.
+
+```bash
+# erase everything one virtual key sent
+curl -X POST -H "Authorization: Bearer $ROLTER_ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+        "scope": {"kind": "virtual_key", "id": "0c8c0e6e-6a3b-4b1d-9f0a-2d7a5b6c7d8e"},
+        "reason": "erasure request DSR-1042"
+      }' \
+  https://control.example.com/api/v1/log-erasures
+
+# purge only the captured body of one request, keeping its metadata
+curl -X POST -H "Authorization: Bearer $ROLTER_ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+        "scope": {
+          "kind": "request",
+          "request_id": "req_8f2c",
+          "org_id": "5b0b3c1e-0d6c-4c0e-8f53-6a1e2d3c4b5a",
+          "ts": "2026-10-27T12:30:45.123Z"
+        },
+        "reason": "secret pasted into prompt, ticket SEC-77",
+        "include_logs": false
+      }' \
+  https://control.example.com/api/v1/log-erasures
+
+# check on it
+curl -H "Authorization: Bearer $ROLTER_ADMIN_TOKEN" \
+  https://control.example.com/api/v1/log-erasures/$ID
+```
+
+`GET /api/v1/log-erasures` lists the most recent hundred. Without a `clickhouse_url` the endpoints answer `503`.
+
+---
+
+## The record
+
+Every request writes a row to `log_erasures` in the control plane's database and an audit entry (`log_erasure.request`, and `log_erasure.complete` when the first poll sees it finish). Both hold who asked, the scope, the ids that name it, the reason and the outcome. Neither holds a prompt, a completion or a key. They live in Postgres, not ClickHouse, so no erasure removes the record that it happened.
+
+The audit entry for `log_erasure.complete` carries no actor: it is written by whichever poll first observes completion, and the request entry names who asked.

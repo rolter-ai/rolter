@@ -1157,6 +1157,19 @@ impl ProviderConfig {
         self.api_key.as_deref()
     }
 
+    /// Whether this provider carries a credential that is not one environment
+    /// variable: an inline secret in either spelling, or more than one key.
+    ///
+    /// The kinds that [`ProviderKind::requires_env_api_key`] are refused when
+    /// this is true. It reads both spellings because a document migrated to the
+    /// plural form (#1720) holds its one variable as an `api_keys` entry, which
+    /// must keep passing the rule the singular `api_key_env` always passed.
+    pub fn has_non_env_credential(&self) -> bool {
+        self.api_key.is_some()
+            || self.api_keys.len() > 1
+            || self.api_keys.iter().any(|k| k.key.is_some())
+    }
+
     /// How many configured keys a single-credential store cannot hold.
     ///
     /// `providers` carries one `api_key_env` and `provider_keys` one sealed
@@ -2500,6 +2513,43 @@ pub enum BudgetScope {
     BusinessUnit,
     /// customer the key's spend rolls up to (#539)
     Customer,
+    /// the person who minted the key, counted across every key they minted
+    /// (`created_by`), so "each engineer may spend $50 a month however many
+    /// keys they mint" is expressible (#1830)
+    User,
+}
+
+/// Where a [`BudgetScope::User`] cap applies, when it does not apply to the
+/// person's keys everywhere (#1830): only the keys they minted in one org, or
+/// in one project. Meaningless on every other scope, where the id already
+/// names a place.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScopeWithin {
+    /// an org id
+    Org(String),
+    /// a project id
+    Project(String),
+}
+
+impl ScopeWithin {
+    /// The part of a counter key that tells a narrowed cap from the person's
+    /// un-narrowed one, and from the same person's cap in another place: two
+    /// caps on one user must not share a counter.
+    pub fn key_segment(&self) -> String {
+        match self {
+            ScopeWithin::Org(id) => format!("org:{id}"),
+            ScopeWithin::Project(id) => format!("project:{id}"),
+        }
+    }
+
+    /// Whether a request in `org` and `project` is inside this place.
+    pub fn contains(&self, org: &str, project: &str) -> bool {
+        match self {
+            ScopeWithin::Org(id) => !org.is_empty() && id == org,
+            ScopeWithin::Project(id) => !project.is_empty() && id == project,
+        }
+    }
 }
 
 impl BudgetScope {
@@ -2512,6 +2562,7 @@ impl BudgetScope {
             BudgetScope::Key => "key",
             BudgetScope::BusinessUnit => "business_unit",
             BudgetScope::Customer => "customer",
+            BudgetScope::User => "user",
         }
     }
 
@@ -2525,6 +2576,7 @@ impl BudgetScope {
             "virtual_key" => BudgetScope::Key,
             "business_unit" => BudgetScope::BusinessUnit,
             "customer" => BudgetScope::Customer,
+            "user" => BudgetScope::User,
             _ => return None,
         })
     }
@@ -2676,6 +2728,10 @@ pub struct BudgetConfig {
     /// resolution is a `max`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unpriced_policy: Option<UnpricedPolicy>,
+    /// narrows a [`BudgetScope::User`] budget to the keys the person minted in
+    /// one org or project; `None` counts all of them (#1830)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub within: Option<ScopeWithin>,
 }
 
 impl BudgetConfig {
@@ -2685,12 +2741,21 @@ impl BudgetConfig {
     /// The gateway writes and reads it, and the control plane reads it to show
     /// the spend so far, so the layout lives here once.
     pub fn spend_key(&self, now: DateTime<Utc>) -> String {
-        format!(
-            "rolter:budget:{}:{}:{}",
-            self.scope.key_label(),
-            self.id,
-            self.period.bucket(now)
-        )
+        match &self.within {
+            None => format!(
+                "rolter:budget:{}:{}:{}",
+                self.scope.key_label(),
+                self.id,
+                self.period.bucket(now)
+            ),
+            Some(within) => format!(
+                "rolter:budget:{}:{}:{}:{}",
+                self.scope.key_label(),
+                self.id,
+                within.key_segment(),
+                self.period.bucket(now)
+            ),
+        }
     }
 }
 
@@ -2712,6 +2777,10 @@ pub struct RateLimitConfig {
     /// capped
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tpm: Option<u32>,
+    /// narrows a [`BudgetScope::User`] limit to the keys the person minted in
+    /// one org or project; `None` counts all of them (#1830)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub within: Option<ScopeWithin>,
 }
 
 /// Upstream retry policy. On a transient upstream failure (HTTP 408/429/5xx or a
@@ -3631,6 +3700,15 @@ pub struct PayloadCaptureConfig {
     /// case-insensitive and recursive, covering nested tool arguments too.
     #[serde(default = "default_payload_redact_fields")]
     pub redact_fields: Vec<String>,
+    /// built-in value detectors (see [`crate::payload_redaction::detector_names`])
+    /// that scan the text of every captured string and replace a match with a
+    /// typed marker such as `[redacted:aws_key]` (#1835). All on by default;
+    /// an empty list turns the built-ins off.
+    #[serde(default = "crate::payload_redaction::detector_names")]
+    pub redact_detectors: Vec<String>,
+    /// operator-supplied value patterns applied after the built-in detectors
+    #[serde(default)]
+    pub redact_patterns: Vec<crate::payload_redaction::RedactPattern>,
     /// optional public-model allow-list. Empty captures every route when
     /// enabled; non-empty limits capture to the named routes.
     #[serde(default)]
@@ -3647,8 +3725,35 @@ impl Default for PayloadCaptureConfig {
             enabled: false,
             max_bytes: default_payload_capture_max_bytes(),
             redact_fields: default_payload_redact_fields(),
+            redact_detectors: crate::payload_redaction::detector_names(),
+            redact_patterns: Vec::new(),
             models: Vec::new(),
             virtual_key_ids: Vec::new(),
+        }
+    }
+}
+
+impl PayloadCaptureConfig {
+    /// Compile the redaction policy. A value policy that does not compile (a
+    /// hand-edited file; the control plane validates what it stores) degrades to
+    /// the key rule alone rather than to no redaction, and the error is returned
+    /// for the caller to log.
+    pub fn redactor(
+        &self,
+    ) -> (
+        crate::payload_redaction::PayloadRedactor,
+        Option<crate::payload_redaction::RedactionPolicyError>,
+    ) {
+        match crate::payload_redaction::PayloadRedactor::compile(
+            &self.redact_fields,
+            &self.redact_detectors,
+            &self.redact_patterns,
+        ) {
+            Ok(redactor) => (redactor, None),
+            Err(err) => (
+                crate::payload_redaction::PayloadRedactor::fields_only(&self.redact_fields),
+                Some(err),
+            ),
         }
     }
 }
@@ -4711,13 +4816,13 @@ impl GatewayConfig {
             ));
         }
         if provider.kind == ProviderKind::OllamaCloud {
-            if provider.api_key_env.as_deref().is_none_or(str::is_empty) {
+            if provider.api_key_env_name().is_none_or(str::is_empty) {
                 problems.push(format!(
                     "ollama_cloud provider '{}' requires api_key_env",
                     provider.name
                 ));
             }
-            if provider.api_key.is_some() || !provider.api_keys.is_empty() {
+            if provider.has_non_env_credential() {
                 problems.push(format!(
                     "ollama_cloud provider '{}' must source its key from api_key_env",
                     provider.name
@@ -4725,13 +4830,13 @@ impl GatewayConfig {
             }
         }
         if provider.kind == ProviderKind::Openrouter {
-            if provider.api_key_env.as_deref().is_none_or(str::is_empty) {
+            if provider.api_key_env_name().is_none_or(str::is_empty) {
                 problems.push(format!(
                     "openrouter provider '{}' requires api_key_env",
                     provider.name
                 ));
             }
-            if provider.api_key.is_some() || !provider.api_keys.is_empty() {
+            if provider.has_non_env_credential() {
                 problems.push(format!(
                     "openrouter provider '{}' must source its key from api_key_env",
                     provider.name
@@ -4790,13 +4895,13 @@ impl GatewayConfig {
                 ProviderKind::Falcon => "falcon",
                 _ => "unknown",
             };
-            if provider.api_key_env.as_deref().is_none_or(str::is_empty) {
+            if provider.api_key_env_name().is_none_or(str::is_empty) {
                 problems.push(format!(
                     "{kind} provider '{}' requires api_key_env",
                     provider.name
                 ));
             }
-            if provider.api_key.is_some() || !provider.api_keys.is_empty() {
+            if provider.has_non_env_credential() {
                 problems.push(format!(
                     "{kind} provider '{}' must source its key from api_key_env",
                     provider.name
@@ -5731,6 +5836,27 @@ mod tests {
     }
 
     #[test]
+    fn a_narrowed_user_cap_keeps_its_own_counter() {
+        let cap = |within: Option<ScopeWithin>| BudgetConfig {
+            scope: BudgetScope::User,
+            id: "u-1".into(),
+            limit_usd: Default::default(),
+            period: BudgetPeriod::Monthly,
+            unpriced_policy: None,
+            within,
+        };
+        let now = at(2026, 10, 11, 1);
+        let keys = [
+            cap(None).spend_key(now),
+            cap(Some(ScopeWithin::Org("o".into()))).spend_key(now),
+            cap(Some(ScopeWithin::Project("o".into()))).spend_key(now),
+        ];
+        assert_eq!(keys[0], "rolter:budget:user:u-1:202610");
+        assert_eq!(keys[1], "rolter:budget:user:u-1:org:o:202610");
+        assert_ne!(keys[1], keys[2], "an org and a project of one id differ");
+    }
+
+    #[test]
     fn the_spend_key_names_scope_id_and_window() {
         let budget = BudgetConfig {
             scope: BudgetScope::Key,
@@ -5738,6 +5864,7 @@ mod tests {
             limit_usd: Default::default(),
             period: BudgetPeriod::Monthly,
             unpriced_policy: None,
+            within: None,
         };
         assert_eq!(
             budget.spend_key(at(2026, 10, 11, 1)),
@@ -7505,6 +7632,7 @@ mod tests {
             limit_usd: d("100.5"),
             period: BudgetPeriod::default(),
             unpriced_policy: None,
+            within: None,
         };
         let json = serde_json::to_value(&budget).expect("serializes");
         assert!(json["limit_usd"].is_number(), "{json}");

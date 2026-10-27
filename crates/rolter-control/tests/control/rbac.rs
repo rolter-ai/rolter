@@ -1116,6 +1116,7 @@ async fn rbac_matrix_and_effective_permissions_are_api_backed() {
             "stability:read",
             "public_url:read",
             "my_password:update",
+            "my_budget:read",
             // the fleet's breaker state and gateway counts (#2254, #2013): the
             // handlers narrow or count, so they take authentication alone
             "breaker_state:read",
@@ -2074,21 +2075,131 @@ async fn a_viewer_reads_a_route_complexity_policy_but_cannot_write_one() {
         403,
         "a viewer must not disable the policy"
     );
+}
+
+/// Disabling a route's complexity policy removes only that key, and disabling a
+/// route that carries none changes nothing: no version bump, no audit row
+/// (#3221). Before, every stray or repeated disable rewrote the params, forced a
+/// snapshot reload on every gateway and wrote a `{"complexity": null}` row that
+/// read like a real routing change.
+#[tokio::test]
+async fn disabling_a_route_complexity_policy_is_a_no_op_when_none_is_set() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app =
+        rolter_control::test_app_with_admin_token(pool.clone(), Some(admin_token().to_string()))
+            .await
+            .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    async fn post_as(client: &reqwest::Client, url: String, body: Value) -> Value {
+        let response = client
+            .post(url)
+            .bearer_auth(admin_token())
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        let status = response.status();
+        let json: Value = response.json().await.unwrap();
+        assert!(status.is_success(), "{status}: {json}");
+        json
+    }
+
+    let org = post_as(
+        &client,
+        format!("{base}/api/v1/orgs"),
+        json!({"name": "Tiers", "slug": "tiers"}),
+    )
+    .await;
+    let org_id = org["id"].as_str().unwrap().to_string();
+    let team = post_as(
+        &client,
+        format!("{base}/api/v1/orgs/{org_id}/teams"),
+        json!({"name": "Platform"}),
+    )
+    .await;
+    let team_id = team["id"].as_str().unwrap().to_string();
+    let project = post_as(
+        &client,
+        format!("{base}/api/v1/teams/{team_id}/projects"),
+        json!({"name": "Gateway"}),
+    )
+    .await;
+    let project_id = project["id"].as_str().unwrap().to_string();
+    post_as(
+        &client,
+        format!("{base}/api/v1/projects/{project_id}/routes"),
+        json!({"model": "gpt-4o-mini", "strategy": "round_robin"}),
+    )
+    .await;
+    let route = post_as(
+        &client,
+        format!("{base}/api/v1/projects/{project_id}/routes"),
+        json!({"model": "gpt-4o", "strategy": "round_robin"}),
+    )
+    .await;
+    let route_id = route["id"].as_str().unwrap().to_string();
+    let route_uuid: uuid::Uuid = route_id.parse().unwrap();
+
+    async fn version(pool: &sqlx::PgPool) -> i64 {
+        sqlx::query_scalar("select version from config_version where id = 1")
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+    async fn audits(pool: &sqlx::PgPool) -> i64 {
+        sqlx::query_scalar("select count(*) from audit_log where action = 'route.set_complexity'")
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+    let disable = || async {
+        client
+            .delete(format!("{base}/api/v1/routes/{route_id}/complexity"))
+            .bearer_auth(admin_token())
+            .send()
+            .await
+            .unwrap()
+    };
+
+    // no policy: the route comes back as it is and nothing is written
+    let version_before = version(&pool).await;
+    let audits_before = audits(&pool).await;
+    let response = disable().await;
+    assert_eq!(response.status(), 200);
+    let row: Value = response.json().await.unwrap();
+    assert_eq!(row["id"], route["id"]);
+    assert_eq!(row["params"], route["params"]);
+    assert_eq!(
+        version(&pool).await,
+        version_before,
+        "a disable with no policy must not move the config version"
+    );
+    assert_eq!(
+        audits(&pool).await,
+        audits_before,
+        "a disable with no policy must not write an audit row"
+    );
 
     // ordinary parameters and their locks survive the rollback
+    let policy = json!({"tiers": [
+        {"name": "small", "max_input_bytes": 4096, "route": "gpt-4o-mini"},
+        {"name": "large", "route": "gpt-4o"},
+    ]});
     let params = json!({"temperature": 0.4, "_rolter_complexity": policy});
     let param_policy = json!({"temperature": "locked"});
     sqlx::query("update routes set params = $1, param_policy = $2 where id = $3")
         .bind(&params)
         .bind(&param_policy)
-        .bind(route_id.parse::<uuid::Uuid>().unwrap())
+        .bind(route_uuid)
         .execute(&pool)
         .await
         .unwrap();
-    let before: i64 = sqlx::query_scalar("select version from config_version where id = 1")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let before = version(&pool).await;
     let disabled = client
         .delete(format!("{base}/api/v1/routes/{route_id}/complexity"))
         .bearer_auth(admin_token())
@@ -2099,11 +2210,7 @@ async fn a_viewer_reads_a_route_complexity_policy_but_cannot_write_one() {
     let row: Value = disabled.json().await.unwrap();
     assert_eq!(row["params"], json!({"temperature": 0.4}));
     assert_eq!(row["param_policy"], param_policy);
-    let after: i64 = sqlx::query_scalar("select version from config_version where id = 1")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    assert!(after > before);
+    assert!(version(&pool).await > before);
     let policy: Value = client
         .get(format!("{base}/api/v1/routes/{route_id}/complexity"))
         .bearer_auth(admin_token())

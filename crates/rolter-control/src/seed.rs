@@ -8,6 +8,9 @@
 //! and admin steps check for an existing row first, so re-running creates
 //! nothing twice.
 //!
+//! Budgets and rate limits import by the portable name of their scope, not by
+//! database id (#1312); see `import_caps`.
+//!
 //! What this consumes is what [`crate::config_export::render`] emits: the two
 //! are the read and write halves of one round trip, so a section added to one
 //! belongs in the other (#1082).
@@ -46,11 +49,13 @@ use std::path::{Path, PathBuf};
 
 use argon2::password_hash::PasswordHasher;
 use argon2::Argon2;
-use rolter_core::{BalancingStrategy, GatewayConfig, PromptTemplate, ProviderKind};
+use rolter_core::{
+    BalancingStrategy, BudgetPeriod, BudgetScope, GatewayConfig, PromptTemplate, ProviderKind,
+};
 use rolter_store::postgres::repo::{
-    LoggingSettingsRepo, LoggingSettingsUpdate, ModelPriceRepo, NewModelPrice, NewProvider,
-    OrgRepo, ProjectRepo, ProviderGroupRepo, ProviderRepo, ProviderUpdate, RouteRepo,
-    RouteTargetRepo, TeamRepo, UnitRates,
+    BudgetRepo, LoggingSettingsRepo, LoggingSettingsUpdate, ModelPriceRepo, NewModelPrice,
+    NewProvider, OrgRepo, ProjectRepo, ProviderGroupRepo, ProviderRepo, ProviderUpdate,
+    RateLimitRepo, RouteRepo, RouteTargetRepo, TeamRepo, UnitRates, Within,
 };
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -212,6 +217,104 @@ fn lint_import_file(path: &Path) -> usize {
     }
 }
 
+/// Top-level sections the importer writes to the store: one entry per field of
+/// the parsed config that `import_config` / `import_bootstrap_toml` reads. The
+/// skipped-section lint treats these as imported, and a source-scanning test
+/// fails when the importer starts reading a field that is not listed here.
+const IMPORTED_SECTIONS: &[&str] = &[
+    "providers",
+    "provider_groups",
+    "routes",
+    "model_prices",
+    "budgets",
+    "rate_limits",
+    "prompt_templates",
+];
+
+/// Sections that configure the gateway process itself, or stamp the file, so
+/// the bootstrap import has nothing to write and says nothing about them.
+const GATEWAY_LOCAL_SECTIONS: &[&str] = &["schema_version", "server", "tls"];
+
+/// The only `[logging]` keys the importer writes; the rest of the table is
+/// reported as skipped.
+const IMPORTED_LOGGING_KEYS: &[&str] = &["ui_events", "payload_capture"];
+
+/// Where an operator manages a section the importer skips: a dashboard screen,
+/// and where one exists the control-plane endpoint that does the same. The
+/// endpoint is checked against the served OpenAPI document by a test, so a
+/// renamed route fails the build instead of leaving the hint pointing nowhere.
+struct ManagedIn {
+    sections: &'static [&'static str],
+    screen: &'static str,
+    endpoint: Option<(&'static str, &'static str)>,
+}
+
+const MANAGED_IN: &[ManagedIn] = &[
+    ManagedIn {
+        sections: &["adaptive_routing"],
+        screen: "dashboard Adaptive Routing",
+        endpoint: Some(("PUT", "/api/v1/adaptive-routing-policy")),
+    },
+    ManagedIn {
+        sections: &["virtual_keys", "db_virtual_keys"],
+        screen: "dashboard Virtual Keys",
+        endpoint: None,
+    },
+    ManagedIn {
+        sections: &["mcp_servers", "mcp_oauth_sessions"],
+        screen: "dashboard MCP Servers and MCP OAuth",
+        endpoint: None,
+    },
+    ManagedIn {
+        sections: &["logging"],
+        screen: "dashboard Logs Settings; only ui_events and payload_capture are imported",
+        endpoint: None,
+    },
+    ManagedIn {
+        sections: &["plugins"],
+        screen: "dashboard Plugins",
+        endpoint: None,
+    },
+    ManagedIn {
+        sections: &["models"],
+        screen: "dashboard Models",
+        endpoint: None,
+    },
+    ManagedIn {
+        sections: &["guardrails", "guardrail_webhook", "pii_sanitizer"],
+        screen: "dashboard Guardrails",
+        endpoint: None,
+    },
+    ManagedIn {
+        sections: &["feature_flags"],
+        screen: "dashboard Feature Flags",
+        endpoint: None,
+    },
+    ManagedIn {
+        sections: &["security", "egress"],
+        screen: "dashboard Security",
+        endpoint: None,
+    },
+];
+
+const MANAGED_IN_FALLBACK: &str =
+    "the matching dashboard settings screen, or the gateway configuration for a file-backed deployment";
+
+fn managed_in(section: &str) -> String {
+    match MANAGED_IN
+        .iter()
+        .find(|entry| entry.sections.contains(&section))
+    {
+        Some(ManagedIn {
+            screen,
+            endpoint: Some((method, path)),
+            ..
+        }) => format!("{screen} or {method} {path}"),
+        Some(ManagedIn { screen, .. }) => (*screen).to_string(),
+        None => MANAGED_IN_FALLBACK.to_string(),
+    }
+}
+
 /// Warn once per declared section that the bootstrap importer does not write.
 /// Gateway-local settings and the schema stamp are intentionally quiet.
 fn warn_skipped_sections(path: &Path, raw: &str) -> usize {
@@ -225,23 +328,15 @@ fn warn_skipped_sections(path: &Path, raw: &str) -> usize {
     let logging_fields = known.get("logging").and_then(serde_json::Value::as_object);
     let mut count = 0;
     for (section, value) in declared {
-        if matches!(
-            section.as_str(),
-            "schema_version"
-                | "server"
-                | "tls"
-                | "providers"
-                | "provider_groups"
-                | "routes"
-                | "model_prices"
-                | "prompt_templates"
-        ) {
+        if GATEWAY_LOCAL_SECTIONS.contains(&section.as_str())
+            || IMPORTED_SECTIONS.contains(&section.as_str())
+        {
             continue;
         }
         if section == "logging" {
             if value.as_table().is_some_and(|fields| {
                 fields.keys().all(|key| {
-                    matches!(key.as_str(), "ui_events" | "payload_capture")
+                    IMPORTED_LOGGING_KEYS.contains(&key.as_str())
                         || logging_fields.is_none_or(|known| !known.contains_key(key))
                 })
             }) {
@@ -251,20 +346,8 @@ fn warn_skipped_sections(path: &Path, raw: &str) -> usize {
             // unknown keys belong to config_lint, not the skipped-section warning
             continue;
         }
-        let managed_in = match section.as_str() {
-            "adaptive_routing" => "dashboard Adaptive Routing or PUT /api/v1/adaptive-routing-policy",
-            "budgets" | "rate_limits" => "dashboard Limits",
-            "virtual_keys" | "db_virtual_keys" => "dashboard Virtual Keys",
-            "mcp_servers" | "mcp_oauth_sessions" => "dashboard MCP Servers and MCP OAuth",
-            "logging" => "dashboard Logs Settings; only ui_events and payload_capture are imported",
-            "plugins" => "dashboard Plugins",
-            "models" => "dashboard Models",
-            "guardrails" | "guardrail_webhook" | "pii_sanitizer" => "dashboard Guardrails",
-            "feature_flags" => "dashboard Feature Flags",
-            "security" | "egress" => "dashboard Security",
-            _ => "the matching dashboard settings screen, or the gateway configuration for a file-backed deployment",
-        };
-        tracing::warn!(file = %path.display(), section = %section, managed_in, "bootstrap import does not apply this section");
+        let managed_in = managed_in(&section);
+        tracing::warn!(file = %path.display(), section = %section, managed_in = %managed_in, "bootstrap import does not apply this section");
         count += 1;
     }
     count
@@ -439,6 +522,8 @@ async fn import_ui_events(pool: &PgPool, enabled: bool) -> anyhow::Result<()> {
         payload_capture_enabled: current.payload_capture_enabled,
         payload_capture_max_bytes: current.payload_capture_max_bytes,
         payload_capture_redact_fields: &current.payload_capture_redact_fields,
+        payload_capture_redact_detectors: None,
+        payload_capture_redact_patterns: None,
         payload_capture_models: &current.payload_capture_models,
         payload_capture_virtual_key_ids: &current.payload_capture_virtual_key_ids,
         retention_days: current.retention_days,
@@ -477,6 +562,8 @@ async fn import_payload_capture(
         payload_capture_enabled: capture.enabled,
         payload_capture_max_bytes: max_bytes,
         payload_capture_redact_fields: &capture.redact_fields,
+        payload_capture_redact_detectors: Some(&capture.redact_detectors),
+        payload_capture_redact_patterns: Some(&capture.redact_patterns),
         payload_capture_models: &capture.models,
         payload_capture_virtual_key_ids: &capture.virtual_key_ids,
         retention_days: current.retention_days,
@@ -771,6 +858,7 @@ async fn import_config(
     }
     import_provider_groups(pool, org_id, project_id, config, &provider_ids).await?;
     import_model_prices(pool, config).await?;
+    import_caps(pool, config).await?;
     import_prompt_templates(pool, org_id, project_id, config).await?;
 
     Ok(())
@@ -887,6 +975,200 @@ async fn import_provider_groups(
         if !unresolved {
             groups.set_members(row.id, &members).await?;
         }
+    }
+    Ok(())
+}
+
+/// The row a portable `[[budgets]]` / `[[rate_limits]]` reference names on this
+/// deployment, as `(scope_type, scope_id)`; `None` when it names nothing here
+/// (#1312).
+///
+/// The reference is the file's `id`, spelled the way the export writes it:
+/// `acme` for an org slug, `acme/platform` for a team (org slug, team name),
+/// `acme/platform/gateway` for a project, `acme/payments` for a business unit
+/// or customer (org slug, its own slug). A database id is refused rather than
+/// resolved, since it is the thing that does not survive a move; a virtual key
+/// or a person has no name that does, so those are never resolved.
+async fn resolve_cap_scope(
+    pool: &PgPool,
+    scope: BudgetScope,
+    reference: &str,
+) -> anyhow::Result<Option<(&'static str, Uuid)>> {
+    if Uuid::parse_str(reference).is_ok() {
+        return Ok(None);
+    }
+    let parts: Vec<&str> = reference.split('/').collect();
+    let (scope_type, found): (&'static str, Option<Uuid>) = match (scope, parts.as_slice()) {
+        (BudgetScope::Org, [org]) => (
+            "org",
+            sqlx::query_scalar("select id from orgs where slug = $1")
+                .bind(org)
+                .fetch_optional(pool)
+                .await?,
+        ),
+        (BudgetScope::Team, [org, team]) => (
+            "team",
+            sqlx::query_scalar(
+                "select t.id from teams t join orgs o on o.id = t.org_id
+                 where o.slug = $1 and t.name = $2",
+            )
+            .bind(org)
+            .bind(team)
+            .fetch_optional(pool)
+            .await?,
+        ),
+        (BudgetScope::Project, [org, team, project]) => (
+            "project",
+            sqlx::query_scalar(
+                "select p.id from projects p join teams t on t.id = p.team_id
+                 join orgs o on o.id = t.org_id
+                 where o.slug = $1 and t.name = $2 and p.name = $3",
+            )
+            .bind(org)
+            .bind(team)
+            .bind(project)
+            .fetch_optional(pool)
+            .await?,
+        ),
+        (BudgetScope::BusinessUnit, [org, slug]) => (
+            "business_unit",
+            sqlx::query_scalar(
+                "select x.id from business_units x join orgs o on o.id = x.org_id
+                 where o.slug = $1 and x.slug = $2",
+            )
+            .bind(org)
+            .bind(slug)
+            .fetch_optional(pool)
+            .await?,
+        ),
+        (BudgetScope::Customer, [org, slug]) => (
+            "customer",
+            sqlx::query_scalar(
+                "select x.id from customers x join orgs o on o.id = x.org_id
+                 where o.slug = $1 and x.slug = $2",
+            )
+            .bind(org)
+            .bind(slug)
+            .fetch_optional(pool)
+            .await?,
+        ),
+        _ => return Ok(None),
+    };
+    Ok(found.map(|id| (scope_type, id)))
+}
+
+/// Upsert `[[budgets]]` and `[[rate_limits]]` (#1312).
+///
+/// A cap's identity is its scope plus, for a budget, its window; two caps that
+/// share one are matched to the file's entries in order, oldest first, so the
+/// export of a deployment that has two re-imports as two. An entry whose scope
+/// does not resolve here is left alone and reported, never half applied: the
+/// same rule as a provider group with a member the file cannot name. Rows the
+/// file does not mention are not deleted. A value outside what the column or
+/// the gateway can hold fails the import before it writes anything, as a
+/// negative price does.
+async fn import_caps(pool: &PgPool, config: &GatewayConfig) -> anyhow::Result<()> {
+    use rust_decimal::Decimal;
+    let ceiling: Decimal = "99999999.9999".parse()?;
+    for b in &config.budgets {
+        if b.limit_usd.is_sign_negative() || b.limit_usd > ceiling {
+            anyhow::bail!(
+                "budget on {:?} '{}': limit_usd must be from 0 to 99999999.9999",
+                b.scope,
+                b.id
+            );
+        }
+    }
+    for l in &config.rate_limits {
+        if l.rpm == Some(0) || l.tpm == Some(0) || (l.rpm.is_none() && l.tpm.is_none()) {
+            anyhow::bail!(
+                "rate limit on {:?} '{}': needs an rpm cap, a tpm cap or both, each at least 1",
+                l.scope,
+                l.id
+            );
+        }
+    }
+
+    let budgets = BudgetRepo(pool);
+    let mut taken: HashMap<(&'static str, Uuid, BudgetPeriod), usize> = HashMap::new();
+    for b in &config.budgets {
+        let Some((scope_type, scope_id)) = resolve_cap_scope(pool, b.scope, &b.id).await? else {
+            tracing::warn!(scope = ?b.scope, id = %b.id, "budget scope does not resolve on this deployment; left alone");
+            continue;
+        };
+        let nth = taken.entry((scope_type, scope_id, b.period)).or_default();
+        let same_window: Vec<_> = budgets
+            .list_for_scope(scope_type, scope_id)
+            .await?
+            .into_iter()
+            .filter(|row| BudgetPeriod::parse(&row.period) == Some(b.period))
+            .collect();
+        let limit = b.limit_usd.to_string();
+        let policy = b.unpriced_policy.map(|p| match p {
+            rolter_core::UnpricedPolicy::Ignore => "ignore",
+            rolter_core::UnpricedPolicy::Warn => "warn",
+            rolter_core::UnpricedPolicy::Block => "block",
+        });
+        match same_window.get(*nth) {
+            Some(row) => {
+                // the period is left in whatever spelling the row has: `30d`
+                // and `monthly` are one window, and rewriting one into the
+                // other would bump the version for nothing
+                let edit = budgets
+                    .update(row.id, Some(&limit), None, Some(policy))
+                    .await?;
+                if edit.changed {
+                    tracing::info!(scope = ?b.scope, id = %b.id, "updated budget from file");
+                }
+            }
+            None => {
+                let period = match b.period {
+                    BudgetPeriod::Daily => "daily",
+                    BudgetPeriod::Monthly => "monthly",
+                    BudgetPeriod::Total => "total",
+                };
+                budgets
+                    .create(
+                        scope_type,
+                        scope_id,
+                        &limit,
+                        period,
+                        policy,
+                        Within::default(),
+                    )
+                    .await?;
+                tracing::info!(scope = ?b.scope, id = %b.id, "created budget");
+            }
+        }
+        *nth += 1;
+    }
+
+    let limits = RateLimitRepo(pool);
+    let mut taken: HashMap<(&'static str, Uuid), usize> = HashMap::new();
+    for l in &config.rate_limits {
+        let Some((scope_type, scope_id)) = resolve_cap_scope(pool, l.scope, &l.id).await? else {
+            tracing::warn!(scope = ?l.scope, id = %l.id, "rate limit scope does not resolve on this deployment; left alone");
+            continue;
+        };
+        let nth = taken.entry((scope_type, scope_id)).or_default();
+        let existing = limits.list_for_scope(scope_type, scope_id).await?;
+        let rpm = l.rpm.map(i32::try_from).transpose()?;
+        let tpm = l.tpm.map(i32::try_from).transpose()?;
+        match existing.get(*nth) {
+            Some(row) => {
+                let edit = limits.update(row.id, Some(rpm), Some(tpm)).await?;
+                if edit.changed {
+                    tracing::info!(scope = ?l.scope, id = %l.id, "updated rate limit from file");
+                }
+            }
+            None => {
+                limits
+                    .create(scope_type, scope_id, rpm, tpm, Within::default())
+                    .await?;
+                tracing::info!(scope = ?l.scope, id = %l.id, "created rate limit");
+            }
+        }
+        *nth += 1;
     }
     Ok(())
 }
@@ -1246,6 +1528,76 @@ api_key_evn = "LOCAL_API_KEY"
             0
         );
         assert_eq!(super::warn_skipped_sections(path, "not valid toml"), 0);
+    }
+
+    /// The lint's list of imported sections is the importer's own: every
+    /// `config.<field>` the non-test code reads is one the lint stays quiet
+    /// about, and a field the importer stopped reading is no longer claimed.
+    /// Scans the source, so teaching the importer a section without listing it
+    /// in `IMPORTED_SECTIONS` fails here instead of leaving a stale warning.
+    #[test]
+    fn the_imported_sections_are_the_config_fields_the_importer_reads() {
+        let source = include_str!("seed.rs");
+        let production = &source[..source.find("mod tests {").expect("tests module")];
+        let mut read = std::collections::BTreeSet::new();
+        for (at, _) in production.match_indices("config.") {
+            let before = production[..at].chars().next_back();
+            if before.is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '.') {
+                continue;
+            }
+            let field: String = production[at + "config.".len()..]
+                .chars()
+                .take_while(|c| c.is_ascii_lowercase() || *c == '_')
+                .collect();
+            if !field.is_empty() {
+                read.insert(field);
+            }
+        }
+        // `logging` is imported key by key, which IMPORTED_LOGGING_KEYS names
+        read.remove("logging");
+        let listed: std::collections::BTreeSet<String> = super::IMPORTED_SECTIONS
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            read, listed,
+            "IMPORTED_SECTIONS must name exactly the config fields the importer reads"
+        );
+        for key in super::IMPORTED_LOGGING_KEYS {
+            assert!(
+                production.contains(&format!("config.logging.{key}")),
+                "the importer no longer reads logging.{key}"
+            );
+        }
+    }
+
+    /// Every endpoint a skipped-section hint points an operator at is one the
+    /// served OpenAPI document describes, so renaming a route fails here.
+    #[test]
+    fn every_managed_in_endpoint_is_a_documented_control_plane_operation() {
+        for entry in super::MANAGED_IN {
+            if let Some((method, path)) = entry.endpoint {
+                assert!(
+                    crate::openapi::documents_operation(method, path),
+                    "{method} {path} is not in the served OpenAPI document"
+                );
+            }
+        }
+    }
+
+    /// A section named in the hint table is one the lint would report, never
+    /// one it treats as imported or gateway-local.
+    #[test]
+    fn no_hint_is_written_for_a_section_the_lint_never_reports() {
+        for entry in super::MANAGED_IN {
+            for section in entry.sections {
+                assert!(!super::IMPORTED_SECTIONS.contains(section), "{section}");
+                assert!(
+                    !super::GATEWAY_LOCAL_SECTIONS.contains(section),
+                    "{section}"
+                );
+            }
+        }
     }
 
     #[test]

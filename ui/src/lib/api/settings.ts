@@ -146,6 +146,10 @@ export interface LoggingSettingsDto {
   payload_capture_enabled: boolean;
   payload_capture_max_bytes: number;
   payload_capture_redact_fields: string[];
+  /** built-in value detectors scanning captured text (#1835) */
+  payload_capture_redact_detectors: string[];
+  /** operator value patterns, applied after the detectors */
+  payload_capture_redact_patterns: RedactPatternDto[];
   payload_capture_models: string[];
   payload_capture_virtual_key_ids: string[];
   retention_days: number;
@@ -155,7 +159,46 @@ export interface LoggingSettingsDto {
   updated_at: string;
 }
 
+export interface RedactPatternDto {
+  name: string;
+  pattern: string;
+}
+
 export type UpdateLoggingSettingsInput = Omit<LoggingSettingsDto, "updated_at">;
+
+/** the built-in detector ids, in the order the server applies them */
+export const REDACT_DETECTORS = [
+  "private_key",
+  "anthropic_key",
+  "openai_key",
+  "google_api_key",
+  "github_token",
+  "slack_token",
+  "stripe_key",
+  "aws_key",
+  "jwt",
+  "bearer_token",
+  "connection_string",
+] as const;
+
+export interface RedactionPreviewInput {
+  sample: string;
+  redact_fields?: string[];
+  redact_detectors?: string[];
+  redact_patterns?: RedactPatternDto[];
+}
+
+export interface RedactionPreviewDto {
+  output: string;
+  report: { fields: number; detections: Record<string, number> };
+}
+
+/** dry-runs the policy; the server stores and logs nothing (#1835) */
+export function previewPayloadRedaction(
+  input: RedactionPreviewInput,
+): Promise<RedactionPreviewDto> {
+  return sendJson<RedactionPreviewDto>("POST", "/api/v1/logging-settings/redaction-preview", input);
+}
 
 export function fetchLoggingSettings(): Promise<LoggingSettingsDto> {
   return getJson<LoggingSettingsDto>("/api/v1/logging-settings");

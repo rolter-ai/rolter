@@ -19,10 +19,14 @@ rolter check --config rolter.toml --migrations
 It reads the file and reports what the new build would do with it. Nothing is written — not by this command, and not by the gateway at boot.
 
 ```
-config schema: version 1 -> 2, 1 migration(s) pending
+config schema: version 1 -> 3, 2 migration(s) pending
   1 -> 2  rewrite the deprecated [[providers]] / [[provider_groups]] arrays as the tiered { readonly, default } tables (ADR-0022)
       providers: the deprecated [[providers]] array becomes [providers] readonly = [...]; 7 entries moved to the readonly tier
+  2 -> 3  rewrite a provider's api_key / api_key_env as an api_keys entry and its egress_proxy as a one-element egress_proxies (#1720)
+      providers.readonly[0].api_key_env: api_key_env becomes a single entry of api_keys; the provider resolves the same credential
 ```
+
+The second step does not retire anything. `api_key`, `api_key_env` and `egress_proxy` keep working in every file, forever, so a config can still be rolled back onto an older build; they are only deprecated, and Rolter logs a warning that names the plural spelling when it loads a file that still uses them.
 
 The listing is exhaustive. Anything not named there is untouched.
 
@@ -35,7 +39,7 @@ The listing is exhaustive. Anything not named there is untouched.
 A `rolter.toml` may carry a version stamp at the top:
 
 ```toml
-schema_version = 2
+schema_version = 3
 ```
 
 It tells Rolter which spelling of the config the file was written for. You do not have to add it. A file without one is treated as the oldest version, which is correct for every config written before the stamp existed.
@@ -54,7 +58,7 @@ Rolter's config types never reject a key they do not recognise. An older build r
 
 ```
 warn   config is newer than this build
-       The file is stamped schema_version 5, and this build understands 2. It loads
+       The file is stamped schema_version 5, and this build understands 3. It loads
        unchanged and keys this build does not know are ignored, so a rollback still
        starts — but settings written for the newer version are silently inactive.
 ```

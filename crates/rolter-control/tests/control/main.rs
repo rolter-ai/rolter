@@ -25,6 +25,7 @@ mod budgets;
 mod cluster_summary;
 mod crud;
 mod guardrails;
+mod log_erasure;
 mod mcp;
 mod profile;
 mod rbac;
