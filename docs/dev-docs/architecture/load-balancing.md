@@ -14,11 +14,16 @@ pub trait LoadBalancer: Send + Sync {
     ) -> Option<usize> {
         self.pick(ctx, loads)
     }
+    fn reads_prompt(&self) -> bool {
+        true
+    }
     fn observe(&self, target: usize, ctx: &RouteContext) {}
 }
 ```
 
 `pick` returns an index into the route's targets; `observe` lets learning strategies (cache-aware) record what a target served. The gateway calls `pick_eligible`, passing which targets the attempt can use (not tried, not parked, healthy, breaker not open, allowed to the key). The default ignores that and calls `pick`, since the gateway skips an ineligible pick itself. A strategy that weighs targets against each other overrides it, so a target that takes no traffic cannot shape the comparison: `cache_aware`, `power_of_two`, `Pipeline` (and so `pipeline`, `lora_aware`, `predicted_latency`, `cheapest`, `fastest`) and `adaptive` do. `round_robin`, `weighted`, `random` and `consistent_hash` keep the default. Whatever the strategy, with nothing eligible an override behaves as `pick`. `RouteContext` carries an optional `session_key` (from `x-session-id`) and the request `prompt` used for affinity scoring. The gateway bounds `prompt` to the conversation's first 32 KiB and passes the whole prompt's size and identity alongside as `prompt_len` and `prompt_digest` ([caching.md](caching.md#1-kv-cache-affinity-load-balancing)).
+
+`reads_prompt` says whether the strategy looks at `prompt`, `prompt_len` or `prompt_digest`. It defaults to `true`; `round_robin`, `weighted`, `random`, `power_of_two` and any pipeline whose scorers rank only on load, price, latency, weight, session, adapter or token ids answer `false`, and a pipeline answers from its scorers (`Scorer::reads_prompt`, also defaulting to `true`). The gateway builds the prompt text, length and digest (`prompt_affinity::affinity`: a walk over the conversation, a copy of up to 32 KiB and an xxh3 of all of it) only when the route's balancer or one of its variants' balancers reads it (`RouteEntry::reads_prompt`), and also skips the raw-body fallback then (#1929). `consistent_hash` reads it only for a request with no session, but that is per request, so it answers `true`. A new strategy that never reads the prompt should override `reads_prompt` to `false`.
 
 ## Strategies (v1)
 

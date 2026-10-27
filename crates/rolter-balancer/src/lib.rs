@@ -136,6 +136,19 @@ pub trait LoadBalancer: Send + Sync {
         self.pick(ctx, loads)
     }
 
+    /// Whether this strategy reads [`RouteContext::prompt`], `prompt_len` or
+    /// `prompt_digest`. The gateway builds the prompt text, its length and its
+    /// digest (a walk over the conversation and a hash) only for a route whose
+    /// balancer says so, so a strategy that never looks at them should answer
+    /// `false` and spare every request that cost (#1929).
+    ///
+    /// Defaults to `true`: a strategy that does not say is assumed to read it,
+    /// which is correct and merely slower. A pipeline answers from its
+    /// scorers ([`scorer::Scorer::reads_prompt`]).
+    fn reads_prompt(&self) -> bool {
+        true
+    }
+
     /// Record that `target` served the given context. Strategies that learn from
     /// traffic (cache aware) override this; others ignore it.
     fn observe(&self, _target: usize, _ctx: &RouteContext) {}
@@ -362,6 +375,9 @@ impl LoadBalancer for RoundRobin {
     fn name(&self) -> &'static str {
         "round_robin"
     }
+    fn reads_prompt(&self) -> bool {
+        false
+    }
     fn pick(&self, _ctx: &RouteContext, _loads: &[u64]) -> Option<usize> {
         if self.n == 0 {
             return None;
@@ -399,6 +415,9 @@ impl LoadBalancer for WeightedRoundRobin {
     fn name(&self) -> &'static str {
         "weighted"
     }
+    fn reads_prompt(&self) -> bool {
+        false
+    }
     fn pick(&self, _ctx: &RouteContext, _loads: &[u64]) -> Option<usize> {
         let n = self.weights.len();
         if n == 0 {
@@ -434,6 +453,9 @@ impl LoadBalancer for Random {
     fn name(&self) -> &'static str {
         "random"
     }
+    fn reads_prompt(&self) -> bool {
+        false
+    }
     fn pick(&self, _ctx: &RouteContext, _loads: &[u64]) -> Option<usize> {
         if self.n == 0 {
             return None;
@@ -456,6 +478,9 @@ impl PowerOfTwo {
 impl LoadBalancer for PowerOfTwo {
     fn name(&self) -> &'static str {
         "power_of_two"
+    }
+    fn reads_prompt(&self) -> bool {
+        false
     }
     fn pick(&self, _ctx: &RouteContext, loads: &[u64]) -> Option<usize> {
         if self.n == 0 {
@@ -1208,5 +1233,66 @@ mod tests {
             (wide.count(), wide.nth(0), wide.nth(1)),
             (2, Some(3), Some(69))
         );
+    }
+
+    #[test]
+    fn reads_prompt_is_false_only_for_strategies_that_never_look_at_it() {
+        // #1929: the gateway skips building the prompt for these
+        let never = [
+            BalancingStrategy::RoundRobin,
+            BalancingStrategy::Random,
+            BalancingStrategy::PowerOfTwo,
+            BalancingStrategy::Weighted,
+            BalancingStrategy::Cheapest,
+            BalancingStrategy::Fastest,
+            // a pipeline answers from its scorers: no predictor or lmcache
+            // source is wired here, so these are load-only stacks
+            BalancingStrategy::PredictedLatency,
+            BalancingStrategy::LmcacheAware,
+        ];
+        for strategy in never {
+            assert!(
+                !build(strategy, &[1, 1, 1]).reads_prompt(),
+                "{strategy:?} never reads the prompt"
+            );
+        }
+        // the ones that match prefixes, hash the prompt or score its size
+        let reads = [
+            BalancingStrategy::ConsistentHash,
+            BalancingStrategy::CacheAware,
+            BalancingStrategy::Pipeline,
+            BalancingStrategy::LoraAware,
+            // its fallback stack is the default pipeline, which has a prefix scorer
+            BalancingStrategy::Adaptive,
+        ];
+        for strategy in reads {
+            assert!(
+                build(strategy, &[1, 1, 1]).reads_prompt(),
+                "{strategy:?} reads the prompt"
+            );
+        }
+    }
+
+    #[test]
+    fn reads_prompt_defaults_to_true_for_a_strategy_that_does_not_say() {
+        struct Opaque;
+        impl LoadBalancer for Opaque {
+            fn name(&self) -> &'static str {
+                "opaque"
+            }
+            fn pick(&self, _ctx: &RouteContext, _loads: &[u64]) -> Option<usize> {
+                None
+            }
+        }
+        assert!(Opaque.reads_prompt());
+    }
+
+    #[test]
+    fn a_pipeline_reads_the_prompt_when_a_scorer_does() {
+        use crate::scorer::{LeastLoadScorer, Pipeline, PrefixCacheScorer};
+        let load_only = Pipeline::new(2).with(Box::new(LeastLoadScorer::new(2)), 1.0);
+        assert!(!load_only.reads_prompt());
+        let with_prefix = load_only.with(Box::new(PrefixCacheScorer::new(2)), 0.5);
+        assert!(with_prefix.reads_prompt());
     }
 }

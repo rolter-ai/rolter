@@ -2270,14 +2270,16 @@ async fn proxy(
     // prefix affinity reads the conversation, not the JSON envelope every
     // request to the model shares (#1851); a shape it cannot read keeps the
     // raw body, as before
-    let affinity = crate::prompt_affinity::affinity(path, &parsed);
+    let affinity = crate::prompt_affinity::affinity_for(entry, path, &parsed);
     let token_ids = parse_vllm_token_ids(&headers);
     // the affinity text is only the prompt's leading bytes; route_context also
     // hands over the whole prompt's length and digest, which the predictor's
     // token estimate and consistent_hash need
     let ctx = crate::prompt_affinity::route_context(
         affinity.as_ref(),
-        &body,
+        // the raw body stands in for a prompt this cannot read, but only on a
+        // route whose balancers read one (#1929)
+        entry.reads_prompt().then_some(&body[..]),
         session_key,
         token_ids.as_deref(),
         // adapter identity only exists when the request addresses something

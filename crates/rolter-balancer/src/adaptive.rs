@@ -334,6 +334,10 @@ impl LoadBalancer for Adaptive {
         self.pick_among(ctx, loads, Some(&usable))
     }
 
+    fn reads_prompt(&self) -> bool {
+        self.fallback.reads_prompt() || self.blend.reads_prompt()
+    }
+
     fn decisions(&self) -> Option<DecisionCounts> {
         Some(self.decision_counts())
     }

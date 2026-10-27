@@ -54,6 +54,12 @@ pub struct RouteEntry {
 }
 
 impl RouteEntry {
+    /// Whether any balancer of this route, the pool's or a variant's, reads the
+    /// request's prompt. When none does, the gateway does not build it (#1929).
+    pub fn reads_prompt(&self) -> bool {
+        self.balancer.reads_prompt() || self.variant_balancers.iter().any(|b| b.reads_prompt())
+    }
+
     /// Whether this route belongs to the caller at all.
     ///
     /// A route another org owns, or one its admin narrowed to a project the key
