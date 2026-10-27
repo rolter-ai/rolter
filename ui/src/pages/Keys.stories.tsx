@@ -33,7 +33,15 @@ import {
   uxEvents,
   withDocsBase,
 } from "./story-harness";
-import type { BusinessUnitRow, CustomerRow, ProviderRow, RouteRow, VirtualKeyRow } from "@/lib/api";
+import type {
+  BudgetRow,
+  RateLimitRow,
+  BusinessUnitRow,
+  CustomerRow,
+  ProviderRow,
+  RouteRow,
+  VirtualKeyRow,
+} from "@/lib/api";
 import { formattersFor } from "@/lib/i18n/format";
 import en from "@/lib/i18n/locales/en.json";
 import ru from "@/lib/i18n/locales/ru.json";
@@ -1099,3 +1107,181 @@ function createSubtitleIsWhole(locale: "en" | "ru") {
 
 export const CreateSubtitleIsWholeAt1024: Story = createSubtitleIsWhole("en");
 export const CreateSubtitleIsWholeAt1024InRussian: Story = createSubtitleIsWhole("ru");
+
+/** the caps the org-wide reads answer for a key (#1171) */
+const KEY_BUDGET: BudgetRow = {
+  id: "budget-1",
+  scope_type: "virtual_key",
+  scope_id: "vk-1",
+  limit_usd: "50.0000",
+  period: "monthly",
+  unpriced_policy: null,
+  created_at: "2026-07-01T00:00:00Z",
+};
+
+const KEY_RATE: RateLimitRow = {
+  id: "rate-1",
+  scope_type: "virtual_key",
+  scope_id: "vk-1",
+  rpm: 60,
+  tpm: 40000,
+  created_at: "2026-07-01T00:00:00Z",
+};
+
+/**
+ * A row states its key's cap and window from the org-wide reads, one request
+ * each however many keys there are, and what is left of the cap from the one
+ * org-wide spend read (#3128). A budget on another scope is not this key's.
+ */
+export const RowStatesItsCap: Story = {
+  render: () => (
+    <Harness
+      fetchStub={scoped(async (input) => {
+        const url = String(input);
+        if (url.includes("/budgets/spend")) {
+          return json({
+            status: "ok",
+            budgets: [
+              { id: "budget-1", spent_usd: "12.5000", resets_at: "2026-08-01T00:00:00Z" },
+              { id: "budget-2", spent_usd: "1.0000", resets_at: null },
+            ],
+          });
+        }
+        if (url.includes("/budgets")) {
+          return json([
+            KEY_BUDGET,
+            { ...KEY_BUDGET, id: "budget-2", scope_type: "project", scope_id: "vk-2" },
+          ]);
+        }
+        if (url.includes("/rate-limits")) return json([KEY_RATE]);
+        return lookups(url) ?? json(KEYS);
+      })}
+    >
+      <Keys />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText(/Spend cap \$50\.00 \(monthly\)/)).toBeVisible();
+    await expect(await canvas.findByText(/\$12\.50 spent · \$37\.50 left/)).toBeVisible();
+    await expect(canvas.getByText("Rate cap 60 rpm · 40,000 tpm")).toBeVisible();
+    await expect(canvas.getAllByText(/Spend cap/)).toHaveLength(1);
+    await expect(canvas.getAllByText(/left/)).toHaveLength(1);
+  },
+};
+
+/** An unreadable counter is unknown, never a full cap. */
+export const RowSaysSpendIsUnknown: Story = {
+  render: () => (
+    <Harness
+      fetchStub={scoped(async (input) => {
+        const url = String(input);
+        if (url.includes("/budgets/spend")) {
+          return json({
+            status: "unavailable",
+            budgets: [{ id: "budget-1", spent_usd: null, resets_at: null }],
+          });
+        }
+        if (url.includes("/budgets")) return json([KEY_BUDGET]);
+        if (url.includes("/rate-limits")) return json([]);
+        return lookups(url) ?? json(KEYS);
+      })}
+    >
+      <Keys />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("spend so far unknown")).toBeVisible();
+    await expect(canvas.queryByText(/left/)).toBeNull();
+  },
+};
+
+/** The sheet sends a cap only when it was switched on, and the summary says so. */
+export const MintsWithASpendAndRateCap: Story = {
+  render: () => {
+    sentCaps = recording(
+      scoped(async (input, init) =>
+        init?.method === "POST"
+          ? json({ ...KEYS[0], key: MINTED_KEY }, 201)
+          : (lookups(String(input)) ?? json(KEYS)),
+      ),
+    );
+    return (
+      <Harness fetchStub={sentCaps.stub}>
+        <Keys />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, /add virtual key/i);
+    const form = sheet();
+    const inForm = within(form);
+    await expect(inForm.getByText("No spend cap of its own")).toBeVisible();
+    await expect(inForm.getByText("No rate cap of its own")).toBeVisible();
+    await userEvent.type(inForm.getByLabelText("Name"), "ci runner");
+    await userEvent.click(inForm.getByRole("switch", { name: "Spend cap" }));
+    await userEvent.type(inForm.getByLabelText(/^Cap \(USD\)/), "25");
+    await expect(inForm.getByText(/Spend capped at \$25\.00 \(monthly\)/)).toBeVisible();
+    await userEvent.click(inForm.getByRole("switch", { name: "Rate cap" }));
+    await userEvent.type(inForm.getByLabelText("Tokens per minute"), "9000");
+    await expect(inForm.getByText("Rate capped at 9,000 tpm")).toBeVisible();
+    await userEvent.click(inForm.getByRole("button", { name: "Create" }));
+    const body = await sentCaps.expectSentBody<{
+      budget?: { limit_usd: string; period: string };
+      rate_limit?: { rpm?: number; tpm?: number };
+    }>("POST", "/virtual-keys");
+    await expect(body.budget).toEqual({ limit_usd: "25", period: "monthly" });
+    await expect(body.rate_limit).toEqual({ tpm: 9000 });
+  },
+};
+let sentCaps: Recorder;
+
+/** A mint with no cap chosen sends neither field: the default is no cap. */
+export const MintsWithoutACapByDefault: Story = {
+  render: () => {
+    sentCaps = recording(
+      scoped(async (input, init) =>
+        init?.method === "POST"
+          ? json({ ...KEYS[0], key: MINTED_KEY }, 201)
+          : (lookups(String(input)) ?? json(KEYS)),
+      ),
+    );
+    return (
+      <Harness fetchStub={sentCaps.stub}>
+        <Keys />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    await mintAKey(canvasElement);
+    const body = await sentCaps.expectSentBody<Record<string, unknown>>("POST", "/virtual-keys");
+    await expect(body).not.toHaveProperty("budget");
+    await expect(body).not.toHaveProperty("rate_limit");
+  },
+};
+
+/** A cap left wrong names the field and keeps Create refused. */
+export const CapValidationErrors: Story = {
+  render: () => (
+    <Harness fetchStub={withKeys(KEYS)}>
+      <Keys />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, /add virtual key/i);
+    const form = sheet();
+    const inForm = within(form);
+    await userEvent.type(inForm.getByLabelText("Name"), "ci runner");
+    await userEvent.click(inForm.getByRole("switch", { name: "Spend cap" }));
+    await expect(await inForm.findByText("Enter the amount this key may spend")).toBeVisible();
+    await userEvent.type(inForm.getByLabelText(/^Cap \(USD\)/), "1e9");
+    await expect(inForm.getByText(/Enter a plain number/)).toBeVisible();
+    await userEvent.click(inForm.getByRole("switch", { name: "Rate cap" }));
+    await expect(inForm.getByText(/Fill in requests per minute/)).toBeVisible();
+    await expect(inForm.getByRole("button", { name: "Create" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
+  },
+};

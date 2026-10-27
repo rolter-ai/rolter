@@ -80,10 +80,17 @@ const HEADER: &str = "\
 # prompt templates, the payload-capture policy and the dashboard UX-event
 # opt-out.
 #
+# Budgets and rate limits round-trip too, and name what they cap the way the
+# importer finds it, never by database id: `scope = \"team\"` with `id =
+# \"acme/platform\"` is the team called `platform` of the org with slug `acme`
+# (`org`, `org/team`, `org/team/project`, `org/slug` for a business unit or a
+# customer). A cap whose scope does not resolve on the receiving deployment is
+# left alone, not half applied. Caps on a virtual key or on a person have no
+# name that survives a move, so they are not exported.
+#
 # Deliberately not exported, because the importer does not consume them and a
 # file that carried them would promise more than a re-import delivers: virtual
-# keys, budgets and rate limits (both are keyed by database id rather than by
-# slug), MCP servers and OAuth sessions, guardrails, users, teams, projects and
+# keys, MCP servers and OAuth sessions, guardrails, users, teams, projects and
 # memberships, SSO and SCIM configuration, and every operational table —
 # request logs, sessions, audit records and usage.
 #
@@ -100,6 +107,45 @@ const HEADER: &str = "\
 /// rather than failing the whole export, because withholding an operator's
 /// entire configuration over one unrepresentable default helps nobody.
 pub fn render(config: &GatewayConfig) -> String {
+    render_with(config, &ScopeRefs::default())
+}
+
+/// What a budget or rate limit's scope id is called outside this database
+/// (#1312): `id`s as the importer resolves them, by scope. A scope with no
+/// entry has no portable name, which is how a cap is kept out of the file
+/// rather than written under an id that means nothing elsewhere.
+#[derive(Debug, Default, Clone)]
+pub struct ScopeRefs {
+    names: std::collections::HashMap<(rolter_core::BudgetScope, String), String>,
+}
+
+impl ScopeRefs {
+    /// Record that `scope` entity `id` is called `reference` in a portable file.
+    /// A name containing `/` is not recorded: the reference is a `/`-joined
+    /// path, so it could not be told apart from a deeper one.
+    pub fn insert(&mut self, scope: rolter_core::BudgetScope, id: &str, reference: String) {
+        let segments = match scope {
+            rolter_core::BudgetScope::Org | rolter_core::BudgetScope::Key => 1,
+            rolter_core::BudgetScope::Team
+            | rolter_core::BudgetScope::BusinessUnit
+            | rolter_core::BudgetScope::Customer => 2,
+            rolter_core::BudgetScope::Project => 3,
+            rolter_core::BudgetScope::User => return,
+        };
+        // the org slug cannot hold a `/`, so a name that does is what makes
+        // the count wrong
+        if reference.split('/').count() == segments && !reference.split('/').any(str::is_empty) {
+            self.names.insert((scope, id.to_string()), reference);
+        }
+    }
+
+    fn get(&self, scope: rolter_core::BudgetScope, id: &str) -> Option<&str> {
+        self.names.get(&(scope, id.to_string())).map(String::as_str)
+    }
+}
+
+/// [`render`], with the names the caps' scopes go by (#1312).
+pub fn render_with(config: &GatewayConfig, refs: &ScopeRefs) -> String {
     let mut out = String::from(HEADER);
     // the stamp goes before any table header, and is sourced from the constant
     // rather than written as a literal so it cannot drift from the chain. it is
@@ -114,6 +160,7 @@ pub fn render(config: &GatewayConfig) -> String {
     render_provider_groups(&mut out, config);
     render_routes(&mut out, config);
     render_model_prices(&mut out, config);
+    render_caps(&mut out, config, refs);
     render_prompt_templates(&mut out, config);
     render_logging(&mut out, config);
     out
@@ -325,6 +372,73 @@ fn render_model_prices(out: &mut String, config: &GatewayConfig) {
     }
 }
 
+/// `[[budgets]]` and `[[rate_limits]]`, each under the portable name of its
+/// scope, sorted so two exports of an unchanged deployment are byte-identical.
+/// A cap with no portable name is counted in one comment instead of being
+/// written under an id that means nothing on another deployment.
+fn render_caps(out: &mut String, config: &GatewayConfig, refs: &ScopeRefs) {
+    let mut budgets = Vec::new();
+    let mut skipped_budgets = 0usize;
+    for b in &config.budgets {
+        match refs.get(b.scope, &b.id) {
+            Some(reference) => budgets.push((b.scope.key_label(), reference, b)),
+            None => skipped_budgets += 1,
+        }
+    }
+    budgets.sort_by(|a, b| {
+        (a.0, a.1, period_rank(a.2.period), a.2.limit_usd).cmp(&(
+            b.0,
+            b.1,
+            period_rank(b.2.period),
+            b.2.limit_usd,
+        ))
+    });
+    for (_, reference, b) in budgets {
+        out.push_str("\n[[budgets]]\n");
+        key(out, "scope", &b.scope);
+        key(out, "id", reference);
+        key(out, "limit_usd", &b.limit_usd);
+        key(out, "period", &b.period);
+        if let Some(policy) = &b.unpriced_policy {
+            key(out, "unpriced_policy", policy);
+        }
+    }
+    let mut limits = Vec::new();
+    let mut skipped_limits = 0usize;
+    for l in &config.rate_limits {
+        match refs.get(l.scope, &l.id) {
+            Some(reference) => limits.push((l.scope.key_label(), reference, l)),
+            None => skipped_limits += 1,
+        }
+    }
+    limits.sort_by(|a, b| (a.0, a.1, a.2.rpm, a.2.tpm).cmp(&(b.0, b.1, b.2.rpm, b.2.tpm)));
+    for (_, reference, l) in limits {
+        out.push_str("\n[[rate_limits]]\n");
+        key(out, "scope", &l.scope);
+        key(out, "id", reference);
+        if let Some(rpm) = l.rpm {
+            key(out, "rpm", &rpm);
+        }
+        if let Some(tpm) = l.tpm {
+            key(out, "tpm", &tpm);
+        }
+    }
+    if skipped_budgets + skipped_limits > 0 {
+        out.push_str(&format!(
+            "\n# not exported: {skipped_budgets} budget(s) and {skipped_limits} rate limit(s) on a \
+             virtual key, a person or another scope with no name that survives a move\n"
+        ));
+    }
+}
+
+fn period_rank(period: rolter_core::BudgetPeriod) -> u8 {
+    match period {
+        rolter_core::BudgetPeriod::Daily => 0,
+        rolter_core::BudgetPeriod::Monthly => 1,
+        rolter_core::BudgetPeriod::Total => 2,
+    }
+}
+
 fn render_prompt_templates(out: &mut String, config: &GatewayConfig) {
     let templates = &config.prompt_templates.templates;
     if templates.is_empty() {
@@ -441,6 +555,72 @@ fn key<T: Serialize + ?Sized>(out: &mut String, name: &str, value: &T) {
     }
 }
 
+/// The names the deployment's tenancy goes by in a portable file: org slug,
+/// team and project names under it, and business unit and customer slugs.
+/// Read from the tables directly, since the snapshot a [`GatewayConfig`] is
+/// built from carries ids and nothing that names them (#1312).
+#[cfg(feature = "postgres")]
+pub async fn load_scope_refs(pool: &sqlx::PgPool) -> rolter_core::Result<ScopeRefs> {
+    use rolter_core::BudgetScope;
+    use rolter_store::postgres::store_err;
+    let mut refs = ScopeRefs::default();
+    let rows: Vec<(uuid::Uuid, String)> = sqlx::query_as("select id, slug from orgs")
+        .fetch_all(pool)
+        .await
+        .map_err(store_err)?;
+    for (id, slug) in rows {
+        refs.insert(BudgetScope::Org, &id.to_string(), slug);
+    }
+    let rows: Vec<(uuid::Uuid, String, String)> =
+        sqlx::query_as("select t.id, o.slug, t.name from teams t join orgs o on o.id = t.org_id")
+            .fetch_all(pool)
+            .await
+            .map_err(store_err)?;
+    for (id, org, team) in rows {
+        refs.insert(BudgetScope::Team, &id.to_string(), format!("{org}/{team}"));
+    }
+    let rows: Vec<(uuid::Uuid, String, String, String)> = sqlx::query_as(
+        "select p.id, o.slug, t.name, p.name from projects p
+         join teams t on t.id = p.team_id join orgs o on o.id = t.org_id",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(store_err)?;
+    for (id, org, team, project) in rows {
+        refs.insert(
+            BudgetScope::Project,
+            &id.to_string(),
+            format!("{org}/{team}/{project}"),
+        );
+    }
+    for (table, scope) in [
+        ("business_units", BudgetScope::BusinessUnit),
+        ("customers", BudgetScope::Customer),
+    ] {
+        let rows: Vec<(uuid::Uuid, String, String)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "select x.id, o.slug, x.slug from {table} x join orgs o on o.id = x.org_id"
+        )))
+        .fetch_all(pool)
+        .await
+        .map_err(store_err)?;
+        for (id, org, slug) in rows {
+            refs.insert(scope, &id.to_string(), format!("{org}/{slug}"));
+        }
+    }
+    Ok(refs)
+}
+
+/// The deployment's configuration as an importable document, caps included.
+/// The one call both the endpoint and `rolter config export` make, so they
+/// cannot drift.
+#[cfg(feature = "postgres")]
+pub async fn export_document(
+    pool: &sqlx::PgPool,
+    config: &GatewayConfig,
+) -> rolter_core::Result<String> {
+    Ok(render_with(config, &load_scope_refs(pool).await?))
+}
+
 #[cfg(feature = "postgres")]
 pub(crate) fn router() -> Router<ControlState> {
     Router::new().route("/api/v1/config/export", get(export_config))
@@ -459,6 +639,7 @@ async fn export_config(
 ) -> ApiResult<Response> {
     authorize_superadmin(&principal, superadmin_cap!("config_export", Read))?;
     let config = state.store.load().await?;
+    let document = export_document(crate::crud::pool(&state), &config).await?;
     Ok((
         [
             (
@@ -470,7 +651,7 @@ async fn export_config(
                 "attachment; filename=\"rolter.toml\"",
             ),
         ],
-        render(&config),
+        document,
     )
         .into_response())
 }
@@ -561,6 +742,25 @@ enabled = true
 max_bytes = 32768
 redact_fields = ["authorization"]
 models = ["gpt-4o"]
+
+[[budgets]]
+scope = "org"
+id = "acme"
+limit_usd = 500.0
+period = "monthly"
+unpriced_policy = "block"
+
+[[budgets]]
+scope = "project"
+id = "acme/default/default"
+limit_usd = 25.5
+period = "daily"
+
+[[rate_limits]]
+scope = "team"
+id = "acme/default"
+rpm = 600
+tpm = 150000
 "#;
 
     /// `ModelRoute` carries no `Default`, so fixtures spell it out once here
@@ -1140,7 +1340,9 @@ models = ["gpt-4o"]
             .unwrap();
 
             let store = PostgresConfigStore::with_kek(pool.clone(), Some(kek));
-            let first = super::render(&store.load().await.unwrap());
+            let first = super::export_document(&pool, &store.load().await.unwrap())
+                .await
+                .unwrap();
 
             // the decrypted key is in the loaded config; it must not be in the
             // document built from it
@@ -1165,6 +1367,9 @@ models = ["gpt-4o"]
                 "[routes.params]",
                 "[routes.param_policy]",
                 "[[model_prices]]",
+                "[[budgets]]\nscope = \"org\"\nid = \"acme\"",
+                "id = \"acme/default/default\"",
+                "[[rate_limits]]\nscope = \"team\"\nid = \"acme/default\"",
                 // numeric(12,6) comes back with its scale
                 "cache_write_per_mtok = \"3.125000\"",
                 "cache_write_1h_per_mtok = \"5.500000\"",
@@ -1184,12 +1389,159 @@ models = ["gpt-4o"]
             crate::seed::import_bootstrap_toml(&pool, org_id, project_id, &path)
                 .await
                 .unwrap();
-            let second = super::render(&store.load().await.unwrap());
+            let second = super::export_document(&pool, &store.load().await.unwrap())
+                .await
+                .unwrap();
 
             assert_eq!(
                 first, second,
                 "re-importing an export changed the deployment"
             );
+
+            // the caps are the other half of the promotion story: export,
+            // wipe them, import, export again, and nothing differs (#1312)
+            sqlx::query("delete from budgets")
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query("delete from rate_limits")
+                .execute(&pool)
+                .await
+                .unwrap();
+            let wiped = super::export_document(&pool, &store.load().await.unwrap())
+                .await
+                .unwrap();
+            assert!(!wiped.contains("[[budgets]]"), "the wipe left a budget");
+            crate::seed::import_bootstrap_toml(&pool, org_id, project_id, &path)
+                .await
+                .unwrap();
+            let third = super::export_document(&pool, &store.load().await.unwrap())
+                .await
+                .unwrap();
+            assert_eq!(first, third, "export, wipe, import changed the caps");
+            // a database id never stands in for a name
+            let org_uuid = org_id.to_string();
+            assert!(!third.contains(&org_uuid), "{third}");
+        }
+
+        /// A cap whose scope does not resolve is left alone rather than
+        /// half applied, a database id is not a name, and a second import of
+        /// the same file writes nothing.
+        #[tokio::test]
+        async fn a_cap_naming_nothing_here_is_left_alone() {
+            let Some(db) = scratch_db().await else {
+                return;
+            };
+            let pool = db.pool().clone();
+            let (org_id, project_id) = bootstrap_org(&pool).await;
+            let dir = tempdir("export-caps");
+            let path = dir.join("rolter.toml");
+            std::fs::write(
+                &path,
+                format!(
+                    r#"
+[[budgets]]
+scope = "team"
+id = "elsewhere/platform"
+limit_usd = 1.0
+
+[[budgets]]
+scope = "org"
+id = "{org_id}"
+limit_usd = 2.0
+
+[[budgets]]
+scope = "key"
+id = "some-key"
+limit_usd = 3.0
+
+[[budgets]]
+scope = "org"
+id = "acme"
+limit_usd = 4.0
+
+[[rate_limits]]
+scope = "project"
+id = "acme/default/missing"
+rpm = 10
+"#
+                ),
+            )
+            .unwrap();
+            crate::seed::import_bootstrap_toml(&pool, org_id, project_id, &path)
+                .await
+                .unwrap();
+            let rows: Vec<(String, String)> =
+                sqlx::query_as("select scope_type, limit_usd::text from budgets")
+                    .fetch_all(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(rows, vec![("org".to_string(), "4.0000".to_string())]);
+            let limits: i64 = sqlx::query_scalar("select count(*) from rate_limits")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            assert_eq!(limits, 0);
+
+            // desired state: an edit lands on the row, and an unchanged file
+            // does not move the config version
+            let version = || async {
+                sqlx::query_scalar::<_, i64>("select version from config_version where id = 1")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap()
+            };
+            let before = version().await;
+            crate::seed::import_bootstrap_toml(&pool, org_id, project_id, &path)
+                .await
+                .unwrap();
+            assert_eq!(version().await, before, "an unchanged import bumped");
+            let edited = std::fs::read_to_string(&path)
+                .unwrap()
+                .replace("limit_usd = 4.0", "limit_usd = 40.0");
+            std::fs::write(&path, edited).unwrap();
+            crate::seed::import_bootstrap_toml(&pool, org_id, project_id, &path)
+                .await
+                .unwrap();
+            let limit: String =
+                sqlx::query_scalar("select limit_usd::text from budgets where scope_type = 'org'")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(limit, "40.0000");
+            let count: i64 = sqlx::query_scalar("select count(*) from budgets")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            assert_eq!(count, 1, "an edit must not add a row");
+        }
+
+        /// Caps on a key or a person have no name that survives a move, so
+        /// they are counted in a comment instead of written under an id.
+        #[test]
+        fn caps_without_a_portable_name_are_not_exported() {
+            use rolter_core::{BudgetScope, GatewayConfig};
+            let mut config = GatewayConfig::default();
+            config.budgets.push(
+                serde_json::from_value(serde_json::json!({
+                    "scope": "key", "id": "11111111-1111-1111-1111-111111111111",
+                    "limit_usd": 5, "period": "monthly"
+                }))
+                .unwrap(),
+            );
+            let mut refs = super::super::ScopeRefs::default();
+            refs.insert(BudgetScope::Team, "t-1", "acme/a/b".to_string());
+            refs.insert(BudgetScope::Team, "t-2", "acme/platform".to_string());
+            let out = super::super::render_with(&config, &refs);
+            assert!(!out.contains("[[budgets]]"), "{out}");
+            assert!(
+                out.contains("# not exported: 1 budget(s) and 0 rate limit(s)"),
+                "{out}"
+            );
+            // a name with a slash would read as a deeper path, so it is not
+            // recorded at all
+            assert!(refs.get(BudgetScope::Team, "t-1").is_none());
+            assert_eq!(refs.get(BudgetScope::Team, "t-2"), Some("acme/platform"));
         }
 
         fn tempdir(label: &str) -> std::path::PathBuf {

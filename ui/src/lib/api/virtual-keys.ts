@@ -35,6 +35,23 @@ export interface CreatedVirtualKey extends VirtualKeyRow {
   key: string;
 }
 
+/**
+ * A spend cap chosen at mint time (#1171). It becomes an ordinary budget scoped
+ * to the key, so editing it afterwards is the budgets API, not a key edit.
+ */
+export interface KeyBudgetCap {
+  /** decimal text, 0 to 99999999.9999 */
+  limit_usd: string;
+  /** omitted means monthly */
+  period?: "daily" | "monthly" | "total";
+}
+
+/** A request and/or token cap per minute chosen at mint time; at least one, each >= 1. */
+export interface KeyRateCap {
+  rpm?: number | null;
+  tpm?: number | null;
+}
+
 export interface CreateVirtualKeyInput {
   /** required — see MintKeyInput; the same rule applies on the admin path */
   name: string;
@@ -44,6 +61,10 @@ export interface CreateVirtualKeyInput {
   cache?: boolean | null;
   /** key lifetime in days; omitted means "never expires" */
   expires_in_days?: number;
+  /** optional spend cap, written with the key and deleted with it */
+  budget?: KeyBudgetCap;
+  /** optional rate cap, written with the key and deleted with it */
+  rate_limit?: KeyRateCap;
 }
 
 export function fetchVirtualKeys(projectId: string): Promise<VirtualKeyRow[]> {

@@ -12,7 +12,8 @@ use super::labels::{AutoLabelInput, LabelRepo, PRICED_LABEL_KEY};
 use super::support::{fetch_optional_or_not_found, require_affected, store_err};
 
 /// Every column of `rate_limits` that its row type reads.
-const RATE_LIMIT_COLUMNS: &str = "id, scope_type, scope_id, rpm, tpm, created_at";
+const RATE_LIMIT_COLUMNS: &str =
+    "id, scope_type, scope_id, rpm, tpm, created_at, within_org_id, within_project_id";
 
 /// The `where` clause (a literal, so it can sit inside `concat!`) shared by the org-wide budget and rate-limit lists: a row
 /// belongs to org `$1` when its scope is the org, one of its teams, projects or
@@ -30,18 +31,63 @@ macro_rules! in_org {
     or (scope_type = 'business_unit' and scope_id in (
         select id from business_units where org_id = $1))
     or (scope_type = 'customer' and scope_id in (
-        select id from customers where org_id = $1))"
+        select id from customers where org_id = $1))
+    or (scope_type = 'user' and (within_org_id = $1 or within_project_id in (
+        select p.id from projects p join teams t on t.id = p.team_id where t.org_id = $1)))"
     };
 }
 
-/// Budgets, attachable at any scope (org/team/project/virtual_key).
+/// Where a `user`-scoped budget or rate limit applies (#1830): the keys the
+/// person minted in one org, in one project, or (both `None`) anywhere. At most
+/// one is set, and neither is meaningful on any other scope.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct Within {
+    pub org: Option<Uuid>,
+    pub project: Option<Uuid>,
+}
+
+impl Within {
+    /// Narrowed to the keys minted in this org.
+    pub fn org(org: Uuid) -> Self {
+        Self {
+            org: Some(org),
+            project: None,
+        }
+    }
+
+    /// Narrowed to the keys minted in this project.
+    pub fn project(project: Uuid) -> Self {
+        Self {
+            org: None,
+            project: Some(project),
+        }
+    }
+}
+
+/// The checks the table's own constraints make, as a message a caller can show
+/// rather than a database error that surfaces as a 500.
+fn require_user_scope_for_within(scope_type: &str, within: Within) -> Result<()> {
+    if within.org.is_some() && within.project.is_some() {
+        return Err(Error::Config(
+            "a cap is narrowed to an org or to a project, not both".into(),
+        ));
+    }
+    if scope_type != "user" && (within.org.is_some() || within.project.is_some()) {
+        return Err(Error::Config(
+            "only a user cap can be narrowed to an org or a project".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Budgets, attachable at any scope (org/team/project/virtual_key, or a user).
 pub struct BudgetRepo<'a>(pub &'a PgPool);
 
 impl BudgetRepo<'_> {
     /// Every budget set at the org or at anything inside it, oldest first.
     pub async fn list_in_org(&self, org_id: Uuid) -> Result<Vec<Budget>> {
         sqlx::query_as(concat!(
-            "select id, scope_type, scope_id, limit_usd::text as limit_usd, period, unpriced_policy, created_at
+            "select id, scope_type, scope_id, limit_usd::text as limit_usd, period, unpriced_policy, created_at, within_org_id, within_project_id
              from budgets where ",
             in_org!(),
             " order by created_at"
@@ -54,7 +100,7 @@ impl BudgetRepo<'_> {
 
     pub async fn list_for_scope(&self, scope_type: &str, scope_id: Uuid) -> Result<Vec<Budget>> {
         sqlx::query_as(
-            "select id, scope_type, scope_id, limit_usd::text as limit_usd, period, unpriced_policy, created_at
+            "select id, scope_type, scope_id, limit_usd::text as limit_usd, period, unpriced_policy, created_at, within_org_id, within_project_id
              from budgets where scope_type = $1 and scope_id = $2 order by created_at",
         )
         .bind(scope_type)
@@ -64,11 +110,38 @@ impl BudgetRepo<'_> {
         .map_err(store_err)
     }
 
+    /// The budgets on a person narrowed to exactly `within` (#1830): `Within`
+    /// as returned by a row, so a caller authorized for one org's caps never
+    /// sees the same person's caps for another.
+    pub async fn list_for_user(&self, user_id: Uuid, within: Within) -> Result<Vec<Budget>> {
+        sqlx::query_as(
+            "select id, scope_type, scope_id, limit_usd::text as limit_usd, period, unpriced_policy, created_at, within_org_id, within_project_id
+             from budgets
+             where scope_type = 'user' and scope_id = $1
+               and within_org_id is not distinct from $2
+               and within_project_id is not distinct from $3
+             order by created_at",
+        )
+        .bind(user_id)
+        .bind(within.org)
+        .bind(within.project)
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)
+    }
+
+    /// Every budget on a person, whatever it is narrowed to: what the person
+    /// is shown about themselves (#1830).
+    pub async fn list_all_for_user(&self, user_id: Uuid) -> Result<Vec<Budget>> {
+        self.list_for_scope("user", user_id).await
+    }
+
     pub async fn get(&self, id: Uuid) -> Result<Budget> {
         fetch_optional_or_not_found(
             sqlx::query_as(
                 "select id, scope_type, scope_id, limit_usd::text as limit_usd, period, \
-                 unpriced_policy, created_at from budgets where id = $1",
+                 unpriced_policy, created_at, within_org_id, within_project_id \
+                 from budgets where id = $1",
             )
             .bind(id),
             self.0,
@@ -79,6 +152,8 @@ impl BudgetRepo<'_> {
 
     /// `unpriced_policy` is `None` for a budget that inherits the
     /// deployment-wide setting, which is every budget created before #996.
+    /// `within` narrows a `user` budget to one org or project (#1830) and is
+    /// refused on any other scope, where the id already names a place.
     pub async fn create(
         &self,
         scope_type: &str,
@@ -86,17 +161,23 @@ impl BudgetRepo<'_> {
         limit_usd: &str,
         period: &str,
         unpriced_policy: Option<&str>,
+        within: Within,
     ) -> Result<Budget> {
+        require_user_scope_for_within(scope_type, within)?;
         sqlx::query_as(
-            "insert into budgets (scope_type, scope_id, limit_usd, period, unpriced_policy)
-             values ($1, $2, $3::numeric, $4, $5)
-             returning id, scope_type, scope_id, limit_usd::text as limit_usd, period,              unpriced_policy, created_at",
+            "insert into budgets (scope_type, scope_id, limit_usd, period, unpriced_policy,
+                                  within_org_id, within_project_id)
+             values ($1, $2, $3::numeric, $4, $5, $6, $7)
+             returning id, scope_type, scope_id, limit_usd::text as limit_usd, period,
+                       unpriced_policy, created_at, within_org_id, within_project_id",
         )
         .bind(scope_type)
         .bind(scope_id)
         .bind(limit_usd)
         .bind(period)
         .bind(unpriced_policy)
+        .bind(within.org)
+        .bind(within.project)
         .fetch_one(self.0)
         .await
         .map_err(store_err)
@@ -130,7 +211,7 @@ impl BudgetRepo<'_> {
         let mut tx = self.0.begin().await.map_err(store_err)?;
         let current = sqlx::query(
             "select id, scope_type, scope_id, limit_usd::text as limit_usd, period,
-                    unpriced_policy, created_at,
+                    unpriced_policy, created_at, within_org_id, within_project_id,
                     (limit_usd, period, unpriced_policy) is distinct from
                     (coalesce($2::numeric(12, 4), limit_usd), coalesce($3, period),
                      case when $4 then $5 else unpriced_policy end) as moves
@@ -159,7 +240,7 @@ impl BudgetRepo<'_> {
                  unpriced_policy = case when $4 then $5 else unpriced_policy end
              where id = $1
              returning id, scope_type, scope_id, limit_usd::text as limit_usd, period,
-                       unpriced_policy, created_at",
+                       unpriced_policy, created_at, within_org_id, within_project_id",
         )
         .bind(id)
         .bind(limit_usd)
@@ -195,7 +276,7 @@ impl RateLimitRepo<'_> {
     /// Every rate limit set at the org or at anything inside it, oldest first.
     pub async fn list_in_org(&self, org_id: Uuid) -> Result<Vec<RateLimit>> {
         sqlx::query_as(concat!(
-            "select id, scope_type, scope_id, rpm, tpm, created_at
+            "select id, scope_type, scope_id, rpm, tpm, created_at, within_org_id, within_project_id
              from rate_limits where ",
             in_org!(),
             " order by created_at"
@@ -216,6 +297,30 @@ impl RateLimitRepo<'_> {
         .fetch_all(self.0)
         .await
         .map_err(store_err)
+    }
+
+    /// The rate limits on a person narrowed to exactly `within`; see
+    /// [`BudgetRepo::list_for_user`].
+    pub async fn list_for_user(&self, user_id: Uuid, within: Within) -> Result<Vec<RateLimit>> {
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "select {RATE_LIMIT_COLUMNS}
+             from rate_limits
+             where scope_type = 'user' and scope_id = $1
+               and within_org_id is not distinct from $2
+               and within_project_id is not distinct from $3
+             order by created_at"
+        )))
+        .bind(user_id)
+        .bind(within.org)
+        .bind(within.project)
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)
+    }
+
+    /// Every rate limit on a person, whatever it is narrowed to.
+    pub async fn list_all_for_user(&self, user_id: Uuid) -> Result<Vec<RateLimit>> {
+        self.list_for_scope("user", user_id).await
     }
 
     pub async fn get(&self, id: Uuid) -> Result<RateLimit> {
@@ -244,21 +349,26 @@ impl RateLimitRepo<'_> {
         scope_id: Uuid,
         rpm: Option<i32>,
         tpm: Option<i32>,
+        within: Within,
     ) -> Result<RateLimit> {
         if !keeps_a_cap(rpm, tpm) {
             return Err(Error::Config(
                 "a rate limit needs an rpm cap, a tpm cap or both, each at least 1".into(),
             ));
         }
+        require_user_scope_for_within(scope_type, within)?;
         sqlx::query_as(sqlx::AssertSqlSafe(format!(
-            "insert into rate_limits (scope_type, scope_id, rpm, tpm)
-             values ($1, $2, $3, $4)
+            "insert into rate_limits (scope_type, scope_id, rpm, tpm,
+                                      within_org_id, within_project_id)
+             values ($1, $2, $3, $4, $5, $6)
              returning {RATE_LIMIT_COLUMNS}"
         )))
         .bind(scope_type)
         .bind(scope_id)
         .bind(rpm)
         .bind(tpm)
+        .bind(within.org)
+        .bind(within.project)
         .fetch_one(self.0)
         .await
         .map_err(store_err)

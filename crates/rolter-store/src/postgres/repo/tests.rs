@@ -114,7 +114,14 @@ async fn crud_roundtrip_across_the_tenancy_and_routing_tables() {
 
     let budgets = BudgetRepo(&pool);
     let budget = budgets
-        .create("project", project.id, "100.5000", "30d", None)
+        .create(
+            "project",
+            project.id,
+            "100.5000",
+            "30d",
+            None,
+            Within::default(),
+        )
         .await
         .unwrap();
     assert_eq!(budget.limit_usd, "100.5000");
@@ -122,7 +129,14 @@ async fn crud_roundtrip_across_the_tenancy_and_routing_tables() {
     // it round-trips as null rather than as a guessed default (#996)
     assert_eq!(budget.unpriced_policy, None);
     let strict = budgets
-        .create("project", project.id, "10.0000", "30d", Some("block"))
+        .create(
+            "project",
+            project.id,
+            "10.0000",
+            "30d",
+            Some("block"),
+            Within::default(),
+        )
         .await
         .unwrap();
     assert_eq!(strict.unpriced_policy, Some("block".to_string()));
@@ -143,7 +157,13 @@ async fn crud_roundtrip_across_the_tenancy_and_routing_tables() {
 
     let limits = RateLimitRepo(&pool);
     let limit = limits
-        .create("project", project.id, Some(60), Some(100_000))
+        .create(
+            "project",
+            project.id,
+            Some(60),
+            Some(100_000),
+            Within::default(),
+        )
         .await
         .unwrap();
     assert_eq!(limit.rpm, Some(60));
@@ -157,7 +177,9 @@ async fn crud_roundtrip_across_the_tenancy_and_routing_tables() {
     ] {
         assert!(
             matches!(
-                limits.create("project", project.id, rpm, tpm).await,
+                limits
+                    .create("project", project.id, rpm, tpm, Within::default())
+                    .await,
                 Err(Error::Config(_))
             ),
             "{rpm:?} / {tpm:?} should be refused"

@@ -14,7 +14,7 @@ use rolter_store::postgres::repo::{BusinessUnitRepo, CustomerRepo, NewVirtualKey
 
 use super::{
     authorize_virtual_key, invalid_field, log_audit, pool, publish_config_change, ApiError,
-    ApiResult, SafeJson,
+    ApiResult, KeyBudgetBody, KeyCapsBody, KeyRateLimitBody, SafeJson,
 };
 use crate::rbac::{authorize, Principal, ScopeChain};
 use crate::rbac_matrix::cap;
@@ -79,6 +79,13 @@ pub(super) struct CreateVirtualKey {
     /// dashboard only sends for an explicit choice
     #[serde(default)]
     expires_in_days: Option<u32>,
+    /// a spend and/or rate cap the key is born with (#1171); written with the
+    /// key, in one transaction, and edited afterwards through the budgets and
+    /// rate-limits endpoints
+    #[serde(default)]
+    budget: Option<KeyBudgetBody>,
+    #[serde(default)]
+    rate_limit: Option<KeyRateLimitBody>,
 }
 
 #[derive(Serialize)]
@@ -120,9 +127,14 @@ async fn create_virtual_key(
     authorize(&state, &principal, chain, cap!("virtual_key", Create)).await?;
     let (name, expires_at) =
         crate::me::validated_name_and_expiry(&body.name, body.expires_in_days)?;
+    let caps = KeyCapsBody {
+        budget: body.budget,
+        rate_limit: body.rate_limit,
+    };
+    caps.validate()?;
     let (key, key_hash, key_prefix) = generate_virtual_key(&key_pepper());
     let row = VirtualKeyRepo(pool(&state))
-        .create(
+        .create_with_caps(
             project_id,
             NewVirtualKey {
                 key_hash: &key_hash,
@@ -137,6 +149,7 @@ async fn create_virtual_key(
                 // the dashboard mints for itself (#1640)
                 purpose: None,
             },
+            caps.as_new(),
         )
         .await?;
     publish_config_change(&state).await?;
@@ -147,7 +160,7 @@ async fn create_virtual_key(
         "virtual_key.create",
         "virtual_key",
         row.id,
-        serde_json::json!({"name": row.name, "key_prefix": key_prefix}),
+        serde_json::json!({"name": row.name, "key_prefix": key_prefix, "caps": caps.audit()}),
     )
     .await;
     Ok(Json(CreatedVirtualKey { row, key }))
