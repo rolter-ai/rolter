@@ -66,6 +66,7 @@ mod sink_drain;
 mod state;
 mod status_page;
 mod system_one;
+pub mod target_mask;
 mod trace;
 mod unit_billing;
 mod upstream_failure;
@@ -270,6 +271,9 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         tracing::info!("active upstream health probing disabled (enable via config hot-reload)");
     }
     health::spawn_prober(state.clone());
+    // the model catalogue behind /v1/models is refreshed on its own slow loop,
+    // so it does not depend on active health checks being enabled (#1729)
+    model_catalog::spawn_refresher(state.clone());
     // the metrics scraper self-gates on config.metrics_scrape.enabled (its
     // reload-awareness is tracked separately from the prober's)
     upstream_metrics::spawn_scraper(&config, state.clone());

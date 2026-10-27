@@ -57,7 +57,7 @@ typography:
     lineHeight: 1.33
   badge:
     fontFamily: "Geist Variable, ui-sans-serif, system-ui, sans-serif"
-    fontSize: "0.625rem"
+    fontSize: "0.6875rem"
     fontWeight: 500
     lineHeight: 1
   overline:
@@ -291,13 +291,24 @@ closer than CIE76 ΔE 17, also under the three colour-vision deficiencies.
 **The One Red Voice Rule.** A view has one red action at most: the Folk Red brand button, or a
 single destructive action. Otherwise Folk Red marks state (the active page, a switch that is on)
 and Accent Red marks a selection. If two things on a screen are red for different reasons, one of
-them is wrong.
+them is wrong. A state that a screen draws hundreds of times is therefore never red: the allowed
+cells of the permission matrix are neutral (see Permission matrix).
 
 **The Shape-or-Glyph Rule.** Every hue that colours both shapes and text comes as a pair. Pick the
 half by what it paints: a dot, bar or border takes the fill; a letter takes the `-text` token.
 
 **The Token-Only Rule.** No hex, no raw Tailwind palette colour (`text-emerald-600`), no `dark:`
 variant. Reference a token: `text-[color:var(--status-danger-text)]`.
+
+**The One-Source Rule.** A value has one token that carries it. The shadcn names Tailwind reads
+(`bg-background`, `bg-card`, `bg-popover`, `bg-secondary`, `bg-muted`, `bg-accent`,
+`text-muted-foreground`, `border-input`, `ring-ring`) are aliases of the design tokens in
+`ui/src/index.css` (`--surface-base`, `--surface-card`, `--surface-elevated`, `--surface-subtle`,
+`--surface-hover`, `--text-muted`, `--zinc-800`), not second copies of their colours, so retuning
+`--zinc-800` moves `bg-muted` with `--surface-subtle` (#1993). Either spelling is fine at a call
+site; a new value goes in the design tokens first. The default `border` colour stays the opaque
+`--zinc-800`, which is what a bare `border` has always painted; the translucent hairlines are the
+three `--border-*` tokens.
 
 ## Typography
 
@@ -319,13 +330,23 @@ prefixes, config keys, token counts, latency and money.
 - **Label** (500, 12px): `Table` headers, stat-card labels, helper lines.
 - **Overline** (400, 11px, uppercase, 0.07em tracking): `ListTable` headers and small eyebrows,
   in Subtle Zinc. `text-2xs` (`--text-2xs`, registered in `@theme`).
-- **Badge** (500, 10px): badge text only, and the floor for any text. `text-3xs` (`--text-3xs`).
+- **Badge** (500, 11px): badge text, and the floor for any text. It is the same `text-2xs` step as
+  the overline, in medium weight and without the uppercase tracking.
 - **Mono** (400, 12px): identifiers and values inline with body text; sheet subtitles.
 - **Figure** (Geist Mono 500, 28px, tight tracking): the headline number of a stat card.
   `text-figure` (`--text-figure`).
 
 A size not on this list is not spelled out as `text-[11px]` or `text-[0.625rem]`: it either is one
 of these steps, or it is a new step registered in the `@theme` block of `ui/src/index.css` (#1990).
+
+**The 11px floor.** HTML text is never set below 11px. The badge was 10px until the floor was
+raised (#2230): screens put primary data in badges (a price on Pricing, a cap on Limits), and 10px
+text was below the detector's `undersized-ui-text` line on most of them. The alternative, keeping
+10px for status words and moving data out of badges, was rejected: a badge stays free to carry a
+number, so it must stay legible as one. The old `--text-3xs` step is gone with it; a label or
+glyph that was set in it uses `text-2xs`. Two things sit outside the scale: labels drawn inside a
+chart's SVG, which are sized in viewBox units, and the `aria-hidden` provider monogram, which is a
+mark rather than text.
 
 ### Named Rules
 
@@ -389,7 +410,9 @@ A shadow means "this is floating over the page".
 
 Corners are gently rounded and consistent: 6px for badges and small chips, 8px for buttons,
 inputs and nav items, 10px for cards, 14px for large containers, full rounding for status dots,
-pills and switch tracks. The only non-rectangular motif is the cross-stitch: the mark's 29 rounded
+pills and switch tracks. They are the Tailwind scale (`rounded-sm`, `rounded-md`, `rounded-lg`,
+`rounded-xl`, `rounded-full`), which derives from `--radius`; `rounded-[10px]` and `rounded-[6px]`
+restate it and are not written. The only non-rectangular motif is the cross-stitch: the mark's 29 rounded
 squares and the ornament's 45° checkerboard.
 
 ## Components
@@ -405,7 +428,8 @@ is state to show.
 - **Primary:** Near White fill with Graphite text. The default action button is neutral, not red.
 - **Brand:** Folk Red fill with white text, hovering to `red-accent-press`. Reserved for the one
   action a screen exists for, such as signing in, accepting an invite or turning on two-factor.
-  It is hand-written at each call site today rather than a `Button` variant (#1993).
+  It is `variant="brand"` on `Button` (#1993). The sign-in, invitation, reset-password and
+  two-factor screens still spell the same classes out and move over when those screens next change.
 - **Outline / Ghost:** Graphite or transparent with Near White text, hovering to the Zinc Band.
 - **Destructive:** a Folk Red surface; its confirm lives in `ConfirmDialog`.
 - **Focus:** a 1px `focus-ring` ring on `:focus-visible`; disabled drops to 50% opacity. Under
@@ -442,7 +466,7 @@ is state to show.
 
 ### Badges
 
-10px medium text on a 20px pill with 6px corners. Status tones tint the status fill at 15% and set
+11px medium text on a 20px pill with 6px corners. Status tones tint the status fill at 15% and set
 the label in the `-text` half; the accent tone is Red Tint with Folk Red text.
 
 The mono uppercase `Pill` (modality, origin and strategy tags) takes the same tones through its
@@ -473,6 +497,24 @@ Two header shapes ship. `Table` has a Zinc Band header row in 12px medium Muted 
 `ListTable` grid used by most list screens has an 11px uppercase Overline header in Subtle Zinc.
 Body cells are 14px Soft Zinc with `border-subtle` between rows and hover to the Zinc Band. Mono
 columns drop to 12px Near White.
+
+### Permission matrix
+
+Roles & Permissions draws one small chip per (role, resource, action): about 53 resources by every
+role makes hundreds of them, so the common state, allowed, is the quietest one that still reads.
+Allowed is the action letter in Near White on the Zinc Band with a Zinc Shape border: 14.27:1 for
+the letter, and 3.90:1 on Graphite and 3.60:1 on the scope band for the border (#2250). It is
+neutral on purpose. Red is the colour of danger and of a view's one red action, and an allowed
+cell is neither, so the state is carried by the glyphs and the legend, never by hue:
+
+- **Allowed:** the letter, solid border.
+- **Granted by a custom role:** the letter in Info Blue on a blue wash, dashed border, so it stays
+  distinct from allowed in a greyscale render.
+- **Superadmin only:** a lock, in Warning amber.
+- **Not allowed:** a cross, in Subtle Zinc with a hairline border and no fill.
+- **No such action:** a dash, with no fill and no border.
+
+Every chip's value is also in text for a screen reader, so no state is told by colour alone.
 
 ### Stat card
 
