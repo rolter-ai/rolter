@@ -475,6 +475,8 @@ pub(crate) const TOKEN_REFUSED_WRITES: &[&str] = &[
     "api_token",
     "custom_role",
     "invitation",
+    "ldap_directory",
+    "ldap_group_mapping",
     "membership",
     "org_auth_policy",
     "password_reset",
