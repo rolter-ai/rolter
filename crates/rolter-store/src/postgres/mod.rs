@@ -761,7 +761,8 @@ impl PostgresConfigStore {
     async fn load_logging_settings(&self) -> Result<LoggingSettings> {
         sqlx::query_as(
             "select sample_rate, payload_capture_enabled, payload_capture_max_bytes, \
-                    payload_capture_redact_fields, payload_capture_models, payload_capture_virtual_key_ids, \
+                    payload_capture_redact_fields, payload_capture_redact_detectors, \
+                    payload_capture_redact_patterns, payload_capture_models, payload_capture_virtual_key_ids, \
                     retention_days, payload_retention_hours, ui_events, updated_at \
              from logging_settings where id = true",
         )
@@ -3458,6 +3459,8 @@ mod tests {
                 payload_capture_enabled: false,
                 payload_capture_max_bytes: 32768,
                 payload_capture_redact_fields: &[],
+                payload_capture_redact_detectors: None,
+                payload_capture_redact_patterns: None,
                 payload_capture_models: &[],
                 payload_capture_virtual_key_ids: &[],
                 retention_days: 90,
@@ -3473,6 +3476,8 @@ mod tests {
                 payload_capture_enabled: false,
                 payload_capture_max_bytes: 32768,
                 payload_capture_redact_fields: &[],
+                payload_capture_redact_detectors: None,
+                payload_capture_redact_patterns: None,
                 payload_capture_models: &[],
                 payload_capture_virtual_key_ids: &[],
                 retention_days: 90,
@@ -3482,6 +3487,43 @@ mod tests {
             .await
             .unwrap();
         assert!(row.ui_events);
+
+        // the value-redaction policy (#1835) defaults to every built-in
+        // detector, is replaced when given, kept when not, and reaches the
+        // snapshot through the same trigger as the other columns
+        assert_eq!(
+            row.payload_capture_redact_detectors,
+            rolter_core::payload_redaction::detector_names()
+        );
+        let patterns = [rolter_core::payload_redaction::RedactPattern {
+            name: "employee_id".to_string(),
+            pattern: r"EMP-\d{6}".to_string(),
+        }];
+        let detectors = ["aws_key".to_string()];
+        let before = current_version(&pool).await.unwrap();
+        let update = |detectors, patterns| repo::LoggingSettingsUpdate {
+            sample_rate: 1.0,
+            payload_capture_enabled: true,
+            payload_capture_max_bytes: 32768,
+            payload_capture_redact_fields: &[],
+            payload_capture_redact_detectors: detectors,
+            payload_capture_redact_patterns: patterns,
+            payload_capture_models: &[],
+            payload_capture_virtual_key_ids: &[],
+            retention_days: 90,
+            payload_retention_hours: 168,
+            ui_events: None,
+        };
+        repo.update(update(Some(&detectors[..]), Some(&patterns[..])))
+            .await
+            .unwrap();
+        assert!(current_version(&pool).await.unwrap() > before);
+        let row = repo.update(update(None, None)).await.unwrap();
+        assert_eq!(row.payload_capture_redact_detectors, detectors);
+        assert_eq!(row.payload_capture_redact_patterns.0, patterns);
+        let capture = store.load().await.unwrap().logging.payload_capture;
+        assert_eq!(capture.redact_detectors, detectors);
+        assert_eq!(capture.redact_patterns, patterns);
     }
 
     #[tokio::test]

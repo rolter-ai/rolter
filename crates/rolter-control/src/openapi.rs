@@ -2239,6 +2239,11 @@ fn operations() -> Vec<Op> {
                 "updateLoggingSettings",
                 "Replace the request-logging, retention and UX-event settings",
             ),
+            Op::post(
+                "/api/v1/logging-settings/redaction-preview",
+                "previewPayloadRedaction",
+                "Dry-run the payload redaction policy against a pasted sample; stores and logs nothing",
+            ),
             Op::get(
                 "/api/v1/client-settings",
                 "getClientSettings",
