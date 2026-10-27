@@ -375,7 +375,7 @@ every row already written rather than migrating it. Adding one means
    in the same order — `the_action_list_is_the_enum8_in_ordinal_order` pins it,
    so a value sorted into the middle is a failing test rather than a silent
    remapping,
-3. the value added to the `UiEvent["action"]` union in `ui/src/lib/api.ts` and
+3. the value added to the `UiEvent["action"]` union in `ui/src/lib/api/ux.ts` and
    a named emitter in `ux.ts`, so a typo at a call site is a type error.
 
 ## Proving the pipeline end to end
