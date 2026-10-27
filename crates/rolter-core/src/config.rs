@@ -4982,6 +4982,10 @@ impl GatewayConfig {
                 self.pii_sanitizer.restore_url.trim(),
                 "pii_sanitizer.restore_url",
             ));
+            problems.extend(self.egress_problem(
+                self.pii_sanitizer.restore_stream_url.trim(),
+                "pii_sanitizer.restore_stream_url",
+            ));
         }
         for instance in &self.plugins.instances {
             problems.extend(self.egress_problem(
@@ -10104,6 +10108,14 @@ mod tests {
                     c.pii_sanitizer.enabled = true;
                     c.pii_sanitizer.url = "https://presidio.example.com/s".to_string();
                     c.pii_sanitizer.restore_url = METADATA.to_string();
+                }),
+            ),
+            (
+                "pii_sanitizer.restore_stream_url",
+                Box::new(|c| {
+                    c.pii_sanitizer.enabled = true;
+                    c.pii_sanitizer.url = "https://presidio.example.com/s".to_string();
+                    c.pii_sanitizer.restore_stream_url = METADATA.to_string();
                 }),
             ),
             (

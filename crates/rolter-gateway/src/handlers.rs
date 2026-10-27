@@ -2174,15 +2174,19 @@ async fn proxy(
     // a stream that got here is one the operator opted out of masking for
     let output_guard = if stream { None } else { output_guard };
 
-    // the sanitizer's response leg needs the whole body for the same reason the
-    // output guardrails do: an entity — or a placeholder — can straddle any SSE
-    // chunk boundary, and neither detection nor reversal is correct on a
-    // fragment. same trade-off, same resolution as `streaming_post_call` (#848)
+    // the sanitizer's buffered response leg needs the whole body for the same
+    // reason the output guardrails do: an entity — or a placeholder — can
+    // straddle any SSE chunk boundary, and neither detection nor reversal is
+    // correct on a fragment. `streaming` decides what a stream gets: refused,
+    // passed through, or — for restoration only — restored through the
+    // sanitizer's streaming endpoint (#848, #911)
     let pii_touches_response = snap.pii_sanitizer.touches_response(restore_requested);
-    if pii_touches_response
-        && stream
-        && snap.pii_sanitizer.streaming == rolter_core::StreamingResponse::Reject
-    {
+    let pii_stream_mode = if stream {
+        snap.pii_sanitizer.stream_handling(restore_requested)
+    } else {
+        None
+    };
+    if pii_stream_mode == Some(rolter_core::StreamingResponse::Reject) {
         state
             .metrics
             .pii_stream_rejections_total
@@ -2199,7 +2203,8 @@ async fn proxy(
         );
     }
     // a stream that got here is one the operator opted out of the response leg
-    // for; the request leg still ran, so PII still did not reach the provider
+    // for, or one restored below; the request leg still ran, so PII still did
+    // not reach the provider
     let pii_leg = (pii_touches_response && !stream).then(|| PiiResponseLeg {
         state: &state,
         config: &snap.pii_sanitizer,
@@ -2211,6 +2216,27 @@ async fn proxy(
         ticket: pii_ticket.as_ref(),
         will_restore,
     });
+    // a streamed restore needs a token for this request's own scope; with none
+    // (nothing was replaced, or the service cannot reverse) there is nothing to
+    // restore and the stream is served as it is. taken by whichever path
+    // answers
+    let mut pii_stream = if pii_stream_mode == Some(rolter_core::StreamingResponse::Restore) {
+        pii_ticket
+            .as_ref()
+            .and_then(|ticket| ticket.token_for(&pii_scope))
+            .map(|token| {
+                crate::pii_stream::StreamRestore::new(
+                    &snap.pii_sanitizer,
+                    &state.side_client,
+                    &state.metrics,
+                    token,
+                    &pii_trace_id,
+                    pii_tenant.clone(),
+                )
+            })
+    } else {
+        None
+    };
     // set by the ensure_request_id middleware, under whichever header the
     // snapshot names
     let request_id = request_id.as_str().to_string();
@@ -2399,6 +2425,7 @@ async fn proxy(
                     plugins: post_response_plugins.as_ref(),
                     pii: pii_leg.as_ref(),
                 },
+                pii_stream.take(),
             )
             .await;
         }
@@ -2467,6 +2494,7 @@ async fn proxy(
                             plugins: post_response_plugins.as_ref(),
                             pii: pii_leg.as_ref(),
                         },
+                        pii_stream.take(),
                     )
                     .await;
                 }
@@ -3089,6 +3117,7 @@ async fn proxy(
                                 inflight_guard,
                                 response_observer,
                                 genai_span.clone(),
+                                pii_stream.take(),
                             );
                         }
                         Err(err) => return body_read_failed(&state.log, log, started, &err),
@@ -3111,6 +3140,7 @@ async fn proxy(
                 genai_span.clone(),
                 post_response_plugins.clone(),
                 pii_leg.as_ref(),
+                pii_stream.take(),
             )
             .await
         }
@@ -3664,6 +3694,7 @@ async fn proxy_multipart(
                 recorder,
                 token_recorder,
                 inflight_guard,
+                None,
                 None,
                 None,
                 None,
@@ -4400,6 +4431,7 @@ async fn stream_response(
     genai_span: Option<tracing::Span>,
     post_response_plugins: Option<crate::plugin_dispatch::PostResponsePlugins<'_>>,
     pii: Option<&PiiResponseLeg<'_>>,
+    pii_stream: Option<crate::pii_stream::StreamRestore>,
 ) -> Response {
     let status =
         StatusCode::from_u16(response.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
@@ -4476,6 +4508,7 @@ async fn stream_response(
                     inflight_guard,
                     completion_observer,
                     genai_span,
+                    None,
                 )
             }
             Err(err) => body_read_failed(&sink, log, started, &err),
@@ -4505,11 +4538,12 @@ async fn stream_response(
     .with_completion_observer(completion_observer)
     .with_genai_span(genai_span)
     .with_thinking_count(translation.thinking_count());
+    let body = restore_stream_body(body, is_sse, status, pii_stream);
     let mut builder = Response::builder()
         .status(status)
         .header(header::CONTENT_TYPE, content_type);
     decision.apply(builder.headers_mut());
-    builder.body(Body::from_stream(body)).unwrap_or_else(|_| {
+    builder.body(body).unwrap_or_else(|_| {
         error_json(
             StatusCode::INTERNAL_SERVER_ERROR,
             "failed to build response",
@@ -4647,6 +4681,7 @@ fn buffered_response(
     inflight_guard: Option<crate::load::LoadGuard>,
     completion_observer: Option<crate::logging::CompletionObserver>,
     genai_span: Option<tracing::Span>,
+    pii_stream: Option<crate::pii_stream::StreamRestore>,
 ) -> Response {
     let status = StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY);
     let decision = DecisionHeaders::from_log(&log);
@@ -4666,16 +4701,43 @@ fn buffered_response(
     .with_genai_span(genai_span)
     .with_billed_usage(billed)
     .with_captured_body(pre_restore);
+    let body = restore_stream_body(body, is_sse, status, pii_stream);
     let mut builder = Response::builder()
         .status(status)
         .header(header::CONTENT_TYPE, content_type);
     decision.apply(builder.headers_mut());
-    builder.body(Body::from_stream(body)).unwrap_or_else(|_| {
+    builder.body(body).unwrap_or_else(|_| {
         error_json(
             StatusCode::INTERNAL_SERVER_ERROR,
             "failed to build response",
         )
     })
+}
+
+/// The response body for a stream, restored through the sanitizer when
+/// `pii_stream` is set (#911).
+///
+/// The restore wraps the accounting stream rather than sitting inside it, so
+/// usage, billing, the disconnect row and payload capture all read the
+/// upstream's own (placeholder-bearing) bytes, and only the caller sees the
+/// restored ones. Only a successful SSE body is restored; an error body is
+/// passed on as the upstream sent it.
+fn restore_stream_body<S>(
+    body: S,
+    is_sse: bool,
+    status: StatusCode,
+    pii_stream: Option<crate::pii_stream::StreamRestore>,
+) -> Body
+where
+    S: futures_util::Stream<Item = reqwest::Result<Bytes>> + Send + 'static,
+{
+    match pii_stream {
+        // boxed only here, so a stream nothing restores costs no allocation
+        Some(restore) if is_sse && status.is_success() => {
+            Body::from_stream(restore.wrap(Box::pin(body)))
+        }
+        _ => Body::from_stream(body),
+    }
 }
 
 /// Refuse delivery of a response the upstream already produced — and billed —
@@ -5092,6 +5154,7 @@ async fn cached_response(
     sink: &crate::logging::LogSink,
     ctx: RequestLogCtx,
     policy: DeliveryPolicy<'_, '_>,
+    pii_stream: Option<crate::pii_stream::StreamRestore>,
 ) -> Response {
     let status = StatusCode::from_u16(hit.status).unwrap_or(StatusCode::OK);
     let mut post_events = Vec::new();
@@ -5130,11 +5193,25 @@ async fn cached_response(
     }
     let decision = DecisionHeaders::from_log(&log);
     sink.log(log);
+    // a replayed stream is restored with the token of the request being
+    // answered, exactly like a live one (#911)
+    let is_sse = hit.content_type.contains("text/event-stream");
+    let body = match pii_stream {
+        Some(restore) if is_sse && status.is_success() => {
+            Body::from_stream(restore.wrap(Box::pin(futures_util::stream::iter([Ok::<
+                _,
+                reqwest::Error,
+            >(
+                body
+            )]))))
+        }
+        _ => Body::from(body),
+    };
     let mut builder = Response::builder()
         .status(status)
         .header(header::CONTENT_TYPE, hit.content_type);
     decision.apply(builder.headers_mut());
-    builder.body(Body::from(body)).unwrap_or_else(|_| {
+    builder.body(body).unwrap_or_else(|_| {
         error_json(
             StatusCode::INTERNAL_SERVER_ERROR,
             "failed to build response",

@@ -4893,6 +4893,41 @@ async fn a_streamed_request_is_refused_when_the_response_leg_is_active() {
     assert_eq!(body["error"]["param"], "stream");
 }
 
+/// #911: `streaming = "restore"` covers restoration only. A response leg that
+/// also sanitizes what the provider generated is still refused on a stream,
+/// before anything reaches the provider.
+#[tokio::test]
+async fn a_streamed_restore_still_refuses_a_response_side_sanitize() {
+    let upstream = serve(Router::new().route("/v1/chat/completions", post(mock_echo_openai))).await;
+    let calls = Arc::new(AtomicU32::new(0));
+    let sanitizer = serve(stub_sanitizer(calls.clone())).await;
+    let mut config = config_with_sanitizer(
+        upstream,
+        sanitizer,
+        rolter_core::SanitizeDirection::Both,
+        rolter_core::RestorationPolicy::TrustedDownstream,
+    );
+    config.pii_sanitizer.streaming = rolter_core::StreamingResponse::Restore;
+    config.pii_sanitizer.restore_stream_url = format!("http://{sanitizer}/restore-stream");
+    let gw = serve_gateway(&config).await;
+
+    let resp = reqwest::Client::new()
+        .post(format!("http://{gw}/v1/chat/completions"))
+        .json(&json!({
+            "model": "test-model",
+            "stream": true,
+            "messages": [{"role": "user", "content": "ping"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 400);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "pii_streaming_unsupported");
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "only the request leg ran");
+}
+
 #[tokio::test]
 async fn a_streamed_request_passes_through_when_only_the_request_leg_runs() {
     let upstream = serve(Router::new().route("/v1/chat/completions", post(mock_echo_openai))).await;
