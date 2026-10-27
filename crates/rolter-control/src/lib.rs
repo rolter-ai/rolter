@@ -1776,6 +1776,11 @@ async fn seed_default_models(pool: &sqlx::PgPool, config: &GatewayConfig) -> any
                         provider.id,
                         target.model.as_deref(),
                         target.weight as i32,
+                        &target
+                            .takes_over
+                            .iter()
+                            .map(|c| c.to_string())
+                            .collect::<Vec<_>>(),
                     )
                     .await?;
             } else {

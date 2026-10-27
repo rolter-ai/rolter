@@ -206,6 +206,7 @@ fn config_over(clickhouse: SocketAddr, kind: ProviderKind, api_base: SocketAddr)
             provider: "native".into(),
             model: Some("upstream-model".into()),
             weight: 1,
+            takes_over: Vec::new(),
         }],
         params: Default::default(),
         param_policy: Default::default(),

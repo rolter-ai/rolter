@@ -98,6 +98,7 @@
             "group": "Reliability",
             "pages": [
               "reliability/retries-and-cooldowns",
+              "reliability/fallback-targets",
               "reliability/circuit-breakers",
               "reliability/health-checks",
               "reliability/performance-tuning"

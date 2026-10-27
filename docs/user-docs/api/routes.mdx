@@ -23,13 +23,14 @@ route as it is.
 Each entry of `targets` has the same shape as the body of
 `POST /api/v1/routes/{route_id}/targets`:
 
-| Field            | Type    | Meaning                                                                          |
-| ---------------- | ------- | -------------------------------------------------------------------------------- |
-| `provider_id`    | uuid    | a provider of the route's organization (required)                                |
-| `upstream_model` | string  | the model name sent upstream; omitted, `null` or blank forwards the route's name |
-| `weight`         | integer | the target's share for strategies that read weights; at least 1, defaults to 1   |
+| Field            | Type    | Meaning                                                                                                                                           |
+| ---------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `provider_id`    | uuid    | a provider of the route's organization (required)                                                                                                 |
+| `upstream_model` | string  | the model name sent upstream; omitted, `null` or blank forwards the route's name                                                                  |
+| `weight`         | integer | the target's share for strategies that read weights; at least 1, defaults to 1                                                                    |
+| `takes_over`     | array   | the failure classes the target is a fallback for; omitted or empty for an ordinary target (see [Fallback targets](/reliability/fallback-targets)) |
 
-An entry carries only these three fields. A target's `id` is not one of them,
+An entry carries only these four fields. A target's `id` is not one of them,
 and an entry that sends it is refused like any other unknown field.
 
 ## How a target list is applied
@@ -39,7 +40,7 @@ target by **provider and upstream model**, the same key a `rolter.toml` import
 matches on:
 
 - an entry that matches a stored target keeps that target, with its `id`, and
-  takes the entry's weight;
+  takes the entry's weight and `takes_over`;
 - a stored target that no entry matches is removed;
 - an entry that matches no stored target is added.
 
@@ -136,23 +137,28 @@ Changing a route takes the **admin** role on its project (or on the project's
 team or organization), the same as creating one or adding a target. Each target
 entry is checked the way adding a single target is checked.
 
-| status | when                                                                                                      |
-| ------ | --------------------------------------------------------------------------------------------------------- |
-| `200`  | saved                                                                                                     |
-| `400`  | an unknown `strategy`, an empty `targets` list, a `weight` below 1, or a field the endpoint does not take |
-| `401`  | no valid session or admin token                                                                           |
-| `403`  | the caller is not an admin of the route's project                                                         |
-| `404`  | no such route, or a `provider_id` that is not a provider of the route's organization                      |
-| `409`  | `scope_mismatch`: a provider scoped to a different project                                                |
+| status | when                                                                                                                                                                                                                        |
+| ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `200`  | saved                                                                                                                                                                                                                       |
+| `400`  | an unknown `strategy`, an empty `targets` list, a `weight` below 1, an unknown or repeated `takes_over` class, a list whose every entry sets `takes_over` (`all_targets_restricted`), or a field the endpoint does not take |
+| `401`  | no valid session or admin token                                                                                                                                                                                             |
+| `403`  | the caller is not an admin of the route's project                                                                                                                                                                           |
+| `404`  | no such route, or a `provider_id` that is not a provider of the route's organization                                                                                                                                        |
+| `409`  | `scope_mismatch`: a provider scoped to a different project                                                                                                                                                                  |
 
 A refused weight or an empty list answers with the `invalid_field` code and the
 field's path, such as `targets[1].weight`, so a client can point at the entry.
 An empty list is refused because it would leave the route nothing to serve;
-set `enabled` to `false` or delete the route instead.
+set `enabled` to `false` or delete the route instead. A list of only restricted
+targets is refused for the same reason, on the `targets` field: such a route
+could never dial anything. `POST /api/v1/routes/{route_id}/targets` refuses a
+restricted target that would be the route's only kind, on `takes_over`, and
+`DELETE /api/v1/route-targets/{id}` answers `409` rather than remove the last
+ordinary target of a route that has restricted ones.
 
 ## Audit log
 
 An update that sends only `enabled` is recorded as `route.set_enabled`, as it
 always was. Any other update is recorded as `route.update`, with the new and
 previous strategy when it changed, and the targets that were added, reweighted
-(with the previous weight) and removed.
+(with the previous weight and `takes_over`) and removed.

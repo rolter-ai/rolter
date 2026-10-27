@@ -1374,6 +1374,10 @@ fn operations() -> Vec<Op> {
                 "/api/v1/route-targets/{id}",
                 "deleteRouteTarget",
                 "Remove an upstream target from a route",
+            )
+            .conflict(
+                "removing the target would leave the route only targets that set `takes_over`, \
+                 which could never be dialled first (`all_targets_restricted`)",
             ),
         ],
     ));
@@ -2100,7 +2104,11 @@ fn operations() -> Vec<Op> {
                  `cache_write_1h_tokens`, `guardrail_events` (an array of strings, one per guardrail \
                  action) and `plugin_events` (the same for plugin calls) come from ClickHouse files an operator applies by hand \
                  (`clickhouse/015` to `019`): on a table that lacks one the field is still on every row, \
-                 as `0` (an empty string for `lifecycle_operation`), and the list does not fail",
+                 as `0` (an empty string for `lifecycle_operation`), and the list does not fail. \
+                 `fallback_reason` (`clickhouse/023`) is the failure class that sent the request on to \
+                 the target that answered it (`throttled`, `timeout`, `transport`, `server_error`, \
+                 `refusal` or `refusal:<category>`), and an empty string when the first dial answered, \
+                 for a row older than the column, or on a table that lacks it",
             )
             .clickhouse_read()
             .query(INVOCATIONS_QUERY),
@@ -3440,6 +3448,11 @@ fn routing_schemas(p: &Prim) -> Value {
                 "id": uuid, "route_id": uuid, "provider_id": uuid,
                 "upstream_model": nullable_string,
                 "weight": {"type": "integer"},
+                "takes_over": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "the failure classes this target is a fallback for; empty for an ordinary member of the pool. A target with classes is never dialled first and is tried only after another target failed with one of them"
+                },
                 "created_at": timestamp
             }
         },
@@ -3449,7 +3462,16 @@ fn routing_schemas(p: &Prim) -> Value {
             "properties": {
                 "provider_id": uuid,
                 "upstream_model": {"type": ["string", "null"], "description": "the model name sent upstream; omitted, null or blank forwards the route's public name"},
-                "weight": {"type": "integer", "default": 1, "minimum": 1}
+                "weight": {"type": "integer", "default": 1, "minimum": 1},
+                "takes_over": {
+                    "type": "array",
+                    "default": [],
+                    "items": {
+                        "type": "string",
+                        "pattern": "^(throttled|timeout|transport|server_error|refusal(:[a-z0-9_-]{1,64})?)$"
+                    },
+                    "description": "the failure classes this target takes over (`throttled`, `timeout`, `transport`, `server_error`, `refusal` or `refusal:<category>`), each at most once. A target with classes is never dialled first and is tried only after another target failed with one of them. A route may not be left with only such targets: that is refused naming `all_targets_restricted`"
+                }
             },
             "additionalProperties": false
         }

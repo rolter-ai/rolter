@@ -1313,6 +1313,21 @@ pub struct Target {
     pub model: Option<String>,
     #[serde(default = "default_weight")]
     pub weight: u32,
+    /// the failures this target is a fallback for (#1584). A target with a set
+    /// is never dialled first and never picked by ordinary balancing: it is
+    /// tried only after an attempt on another target failed with one of these
+    /// classes. Empty, the default, makes it an ordinary member of the pool.
+    /// See [`crate::failover`]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub takes_over: Vec<crate::failover::FailureClass>,
+}
+
+impl Target {
+    /// Whether this target is a restricted fallback rather than a member of
+    /// the pool.
+    pub fn is_restricted(&self) -> bool {
+        !self.takes_over.is_empty()
+    }
 }
 
 /// Extra settings attached to one public model route. These are deliberately
@@ -1796,6 +1811,29 @@ impl ModelRoute {
                 .iter()
                 .flat_map(|variant| variant.targets.iter()),
         )
+    }
+
+    /// Every problem with the `takes_over` sets of this route's targets, the
+    /// classic pool's and every variant's together: a class listed twice on a
+    /// target, and a route whose every target is restricted, which is refused
+    /// by name ([`crate::failover::ALL_TARGETS_RESTRICTED`]) because it could
+    /// never dial anything.
+    pub fn takes_over_problems(&self) -> Vec<String> {
+        crate::failover::takes_over_problems(
+            &self.model,
+            self.every_target()
+                .map(|t| (t.provider.as_str(), t.takes_over.as_slice())),
+        )
+    }
+
+    /// Whether this route has a target that takes refusals over, which is
+    /// what makes the gateway read a refused attempt's body at all.
+    pub fn takes_over_refusals(&self) -> bool {
+        self.every_target().any(|t| {
+            t.takes_over
+                .iter()
+                .any(|c| c.kind == crate::failover::FailureKind::Refusal)
+        })
     }
 
     /// Whether this route opts into response caching (the global `[cache]`
@@ -5100,6 +5138,7 @@ impl GatewayConfig {
                     route.model
                 ));
             }
+            problems.extend(route.takes_over_problems());
             for target in &route.targets {
                 if !provider_names.contains(target.provider.as_str()) {
                     problems.push(format!(
@@ -6232,6 +6271,7 @@ mod tests {
             provider: "p".to_string(),
             model: None,
             weight: 1,
+            takes_over: Vec::new(),
         }];
         cfg.routes.push(route);
         let problems = cfg.validate().unwrap_err().join("\n");
@@ -6327,6 +6367,7 @@ mod tests {
             provider: "p".to_string(),
             model: None,
             weight: 1,
+            takes_over: Vec::new(),
         }];
         cfg.routes.push(route);
 
@@ -9502,6 +9543,7 @@ mod tests {
                     provider: provider.to_string(),
                     model: None,
                     weight: 1,
+                    takes_over: Vec::new(),
                 })
                 .collect(),
             params: Default::default(),

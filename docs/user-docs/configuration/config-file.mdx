@@ -444,6 +444,10 @@ See [Load balancing](/concepts/load-balancing) for when to pick each.
   The relative traffic weight for `weighted` and `pipeline` strategies. Ignored by other strategies.
 </ParamField>
 
+<ParamField path="takes_over" default="[]" type="string[]">
+  The failures this target is a fallback for: any of `throttled`, `timeout`, `transport`, `server_error`, `refusal` and `refusal:<category>`. A target with classes is never dialled first and takes no ordinary traffic; it is tried only after another target failed with one of them. Empty, the default, makes it an ordinary member of the pool. A route whose every target sets it is rejected (`all_targets_restricted`). See [Fallback targets](/reliability/fallback-targets). Also valid on a variant's targets.
+</ParamField>
+
 #### \[routes.params\]
 
 An optional table of admin-set default inference parameters injected into the request body. Any key accepted by the upstream provider is valid here (`temperature`, `max_tokens`, `stop`, etc.). A parameter you do not set here is passed through from the client untouched.

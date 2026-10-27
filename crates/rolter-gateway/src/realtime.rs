@@ -405,6 +405,9 @@ fn realtime_candidates<'a>(
             model,
             snap.cooldown.enabled(),
             key_meta,
+            // the candidate list is ordered before any attempt fails, so a
+            // restricted fallback is never on it (#1584)
+            None,
         ) {
             entry.balancer.observe(index, context);
             tried.push(index);
@@ -441,6 +444,7 @@ fn realtime_candidates<'a>(
             .filter(|&index| {
                 let target = &variant.targets[index];
                 key_meta.is_none_or(|key| key.provider_allowed(&target.provider))
+                    && !target.is_restricted()
                     && (!snap.cooldown.enabled() || !state.cooldowns.is_parked(&namespace, index))
                     && state.health.is_healthy(&target.provider)
                     && state.breaker.allows(&namespace, index)
@@ -452,7 +456,9 @@ fn realtime_candidates<'a>(
             .iter()
             .copied()
             .filter(|&index| {
-                key_meta.is_none_or(|key| key.provider_allowed(&variant.targets[index].provider))
+                let target = &variant.targets[index];
+                key_meta.is_none_or(|key| key.provider_allowed(&target.provider))
+                    && !target.is_restricted()
             })
             .collect();
         for index in if available.is_empty() {

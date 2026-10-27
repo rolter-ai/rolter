@@ -3542,3 +3542,227 @@ async fn a_stored_provider_can_opt_out_of_the_host_pin() {
         .unwrap();
     assert_eq!(pinned["allow_custom_api_base"], false, "{pinned}");
 }
+
+/// #1584: a route target takes `takes_over`, the failure classes it is a
+/// fallback for. The classes are validated, stored, changed in place by a
+/// route update and served in the snapshot; and the API never leaves a route
+/// with only restricted targets, whether the last one is added alone, sent as
+/// the whole list or left behind by a delete.
+#[tokio::test]
+async fn a_target_takes_over_failure_classes_and_a_route_is_never_left_only_restricted() {
+    skip_without_db!();
+    let (app, _db) = fresh_app().await;
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let send = |method: reqwest::Method, url: String, body: Value| {
+        let client = client.clone();
+        async move {
+            let resp = client
+                .request(method, &url)
+                .json(&body)
+                .send()
+                .await
+                .unwrap();
+            let status = resp.status().as_u16();
+            (status, resp.json::<Value>().await.unwrap_or(Value::Null))
+        }
+    };
+    let post = |url: String, body: Value| send(reqwest::Method::POST, url, body);
+    let put = |url: String, body: Value| send(reqwest::Method::PUT, url, body);
+    let created = |(status, body): (u16, Value)| {
+        assert_eq!(status, 200, "{body}");
+        body["id"].as_str().expect("id").to_string()
+    };
+
+    let org = created(
+        post(
+            format!("{base}/api/v1/orgs"),
+            json!({"name": "Fallback", "slug": "fallback"}),
+        )
+        .await,
+    );
+    let team = created(
+        post(
+            format!("{base}/api/v1/orgs/{org}/teams"),
+            json!({"name": "core"}),
+        )
+        .await,
+    );
+    let project = created(
+        post(
+            format!("{base}/api/v1/teams/{team}/projects"),
+            json!({"name": "app"}),
+        )
+        .await,
+    );
+    let provider = |name: &'static str| {
+        post(
+            format!("{base}/api/v1/orgs/{org}/providers"),
+            json!({"name": name, "kind": "openai_compatible", "api_base": "http://127.0.0.1:9"}),
+        )
+    };
+    let cheap = created(provider("cheap").await);
+    let premium = created(provider("premium").await);
+    let route = created(
+        post(
+            format!("{base}/api/v1/projects/{project}/routes"),
+            json!({"model": "guarded", "strategy": "round_robin"}),
+        )
+        .await,
+    );
+    let route_url = format!("{base}/api/v1/routes/{route}");
+
+    // a restricted target cannot be a route's first
+    let (status, body) = post(
+        format!("{route_url}/targets"),
+        json!({"provider_id": premium, "takes_over": ["refusal"]}),
+    )
+    .await;
+    assert_eq!(status, 400, "{body}");
+    assert_eq!(body["error"]["field"], "takes_over", "{body}");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("all_targets_restricted"),
+        "{body}"
+    );
+
+    let ordinary = created(
+        post(
+            format!("{route_url}/targets"),
+            json!({"provider_id": cheap}),
+        )
+        .await,
+    );
+
+    // an unknown class and a repeated one are refused by field
+    for bad in [json!(["rate_limited"]), json!(["timeout", "timeout"])] {
+        let (status, body) = post(
+            format!("{route_url}/targets"),
+            json!({"provider_id": premium, "takes_over": bad}),
+        )
+        .await;
+        assert_eq!(status, 400, "{body}");
+        assert_eq!(body["error"]["field"], "takes_over", "{body}");
+    }
+
+    let restricted = created(
+        post(
+            format!("{route_url}/targets"),
+            json!({"provider_id": premium, "takes_over": ["refusal:content_policy_violation"]}),
+        )
+        .await,
+    );
+    let listed: Value = client
+        .get(format!("{route_url}/targets"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let by_id = |id: &str| {
+        listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["id"] == id)
+            .cloned()
+            .unwrap()
+    };
+    assert_eq!(by_id(&ordinary)["takes_over"], json!([]));
+    assert_eq!(
+        by_id(&restricted)["takes_over"],
+        json!(["refusal:content_policy_violation"])
+    );
+
+    // the snapshot the gateway polls carries the classes
+    let snap: Value = client
+        .get(format!("{base}/internal/snapshot"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let served = snap["config"]["routes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["model"] == "guarded")
+        .cloned()
+        .expect("the route is served");
+    let premium_target = served["targets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["provider"] == "premium")
+        .cloned()
+        .unwrap();
+    assert_eq!(
+        premium_target["takes_over"],
+        json!(["refusal:content_policy_violation"])
+    );
+
+    // a whole list of restricted targets is refused, and changes nothing
+    let (status, body) = put(
+        route_url.clone(),
+        json!({"targets": [
+            {"provider_id": cheap, "takes_over": ["throttled"]},
+            {"provider_id": premium, "takes_over": ["refusal"]},
+        ]}),
+    )
+    .await;
+    assert_eq!(status, 400, "{body}");
+    assert_eq!(body["error"]["field"], "targets", "{body}");
+
+    // a changed set is applied in place: the target keeps its id
+    let (status, body) = put(
+        route_url.clone(),
+        json!({"targets": [
+            {"provider_id": cheap},
+            {"provider_id": premium, "takes_over": ["refusal", "server_error"]},
+        ]}),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    let listed: Value = client
+        .get(format!("{route_url}/targets"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let premium_row = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["provider_id"] == premium)
+        .cloned()
+        .unwrap();
+    assert_eq!(premium_row["id"], restricted);
+    assert_eq!(
+        premium_row["takes_over"],
+        json!(["refusal", "server_error"])
+    );
+
+    // removing the last ordinary target would strand the route
+    let (status, body) = send(
+        reqwest::Method::DELETE,
+        format!("{base}/api/v1/route-targets/{ordinary}"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, 409, "{body}");
+    // the restricted one goes freely
+    let (status, _) = send(
+        reqwest::Method::DELETE,
+        format!("{base}/api/v1/route-targets/{restricted}"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, 204);
+}

@@ -425,6 +425,7 @@ impl Snapshot {
                     provider: m.provider.clone(),
                     model: m.model.clone(),
                     weight: m.weight,
+                    takes_over: Vec::new(),
                 })
                 .collect();
             let weights: Vec<u32> = targets.iter().map(|t| t.weight).collect();
@@ -698,6 +699,7 @@ impl Snapshot {
                 provider: provider_name.clone(),
                 model: Some(upstream.to_string()),
                 weight: 1,
+                takes_over: Vec::new(),
             };
             let strategy = rolter_core::BalancingStrategy::default();
             // the address inherits the provider's org, so the route gate refuses
@@ -723,6 +725,7 @@ impl Snapshot {
                     provider: m.provider.clone(),
                     model: Some(m.model.clone().unwrap_or_else(|| upstream.to_string())),
                     weight: m.weight,
+                    takes_over: Vec::new(),
                 })
                 .collect();
             if targets.is_empty() {
@@ -1260,6 +1263,7 @@ mod tests {
             provider: provider.to_string(),
             model: model.map(str::to_string),
             weight: 1,
+            takes_over: Vec::new(),
         }
     }
 

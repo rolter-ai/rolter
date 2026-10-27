@@ -808,6 +808,7 @@ models = ["gpt-4o"]
                         provider: "zzz".to_string(),
                         model: Some("upstream".to_string()),
                         weight: 3,
+                        takes_over: Vec::new(),
                     }],
                     ..route("zeta")
                 },

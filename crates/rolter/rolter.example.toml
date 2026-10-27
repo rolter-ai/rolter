@@ -267,6 +267,14 @@ strategy = "round_robin"
 [[routes.targets]]
 provider = "anthropic"
 model = "claude-sonnet-4-20250514"
+# a fallback target that takes no ordinary traffic: it is never dialled first,
+# and is tried only after another target failed with one of these classes
+# (throttled, timeout, transport, server_error, refusal, refusal:<category>).
+# a route needs at least one target without takes_over
+# [[routes.targets]]
+# provider = "openai"
+# model = "gpt-4o"
+# takes_over = ["refusal", "throttled"]
 
 # a self-hosted pool of vllm instances balanced with cache-aware routing
 [[routes]]
