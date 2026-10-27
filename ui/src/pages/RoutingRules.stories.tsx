@@ -32,6 +32,8 @@ import en from "@/lib/i18n/locales/en.json";
 import ru from "@/lib/i18n/locales/ru.json";
 import type {
   AnalyticsByModelRow,
+  BreakerStateDto,
+  BreakerTargetDto,
   ClusterNodeRow,
   LabelRow,
   ProviderRow,
@@ -1248,5 +1250,109 @@ export const LabelPanel: Story = {
     await waitFor(() => expect(panel.getByText(/priced on every target/)).toBeVisible());
     await expect(panel.getByRole("button", { name: "Remove tier=gold" })).toBeVisible();
     await expect(panel.queryByRole("button", { name: "Remove tier=observed-gold" })).toBeNull();
+  },
+};
+
+// ------------------------------------------------ live circuit breakers (#2254)
+
+const breakerTarget = (patch: Partial<BreakerTargetDto>): BreakerTargetDto => ({
+  model: "gpt-4o",
+  target_index: 0,
+  provider: "openai-prod",
+  upstream_model: "gpt-4o-2024-08-06",
+  state: "open",
+  nodes_open: 2,
+  nodes_half_open: 0,
+  nodes: [],
+  ...patch,
+});
+
+const breakerState = (targets: BreakerTargetDto[], gateways_live = 3): BreakerStateDto => ({
+  generated_at: "2026-09-29T08:00:00Z",
+  fresh_window_secs: 40,
+  gateways_live,
+  targets,
+});
+
+const withBreakers = (answerBreakers: () => Response | Promise<Response>) =>
+  scoped(async (input, init) => {
+    if (String(input).includes("/breaker-state")) return answerBreakers();
+    return answer(ROUTES)(input, init);
+  });
+
+/**
+ * A route's target shows its live breaker beside its health: open on a number
+ * of gateways, or probing. The second target is not listed, so it is closed
+ * everywhere and its line stays as it was.
+ */
+export const TargetBreakerOpen: Story = {
+  render: () => (
+    <Harness
+      fetchStub={withBreakers(() =>
+        json(
+          breakerState([
+            breakerTarget({ target_index: 0, nodes_open: 2 }),
+            breakerTarget({
+              model: "claude-sonnet",
+              target_index: 0,
+              state: "closed",
+              nodes_open: 0,
+            }),
+          ]),
+        ),
+      )}
+    >
+      <RoutingRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const list = within(await canvas.findByRole("list", { name: "Targets of gpt-4o" }));
+    const badge = await list.findByText("Breaker open on 2 gateways");
+    await expect(badge).toBeVisible();
+    await expect(list.getAllByTestId("breaker-badge")).toHaveLength(1);
+    await expect(badge.closest("li")).toHaveTextContent(/openai-prod/);
+  },
+};
+
+export const TargetBreakerProbing: Story = {
+  render: () => (
+    <Harness
+      fetchStub={withBreakers(() =>
+        json(
+          breakerState([
+            breakerTarget({
+              target_index: 1,
+              state: "half_open",
+              nodes_open: 0,
+              nodes_half_open: 1,
+            }),
+          ]),
+        ),
+      )}
+    >
+      <RoutingRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const list = within(await canvas.findByRole("list", { name: "Targets of gpt-4o" }));
+    const badge = await list.findByText("Probing on 1 gateway");
+    await expect(badge.closest("li")).toHaveTextContent(/azure-west/);
+  },
+};
+
+/** a failed breaker read leaves the cards exactly as they were, with no error */
+export const BreakerStateUnavailable: Story = {
+  render: () => (
+    <Harness fetchStub={withBreakers(() => json({ error: { message: "no store" } }, 404))}>
+      <RoutingRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByRole("list", { name: "Targets of gpt-4o" });
+    await expect(canvas.queryByTestId("breaker-badge")).toBeNull();
+    await expect(canvas.queryByRole("alert")).toBeNull();
   },
 };
