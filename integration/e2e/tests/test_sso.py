@@ -46,7 +46,7 @@ def _rand(prefix: str) -> str:
 
 
 @pytest.fixture(scope="module")
-def keycloak(stack) -> Keycloak:  # noqa: ANN001 - session fixture from conftest
+def keycloak(stack) -> Keycloak:
     kc = Keycloak()
     kc.wait_ready()
     kc.provision_realm(
@@ -77,7 +77,9 @@ def _finish_login(browser: BrowserSession, authorize_url: str) -> httpx.Response
     return browser.get(callback)
 
 
-def test_sso_login_grants_the_role_the_idp_group_maps_to(admin: ControlClient, keycloak: Keycloak) -> None:
+def test_sso_login_grants_the_role_the_idp_group_maps_to(
+    admin: ControlClient, keycloak: Keycloak
+) -> None:
     org = admin.create_org()
     team = admin.create_team(org["id"])
     slug = _rand("kc")
@@ -132,7 +134,9 @@ def test_sso_login_grants_the_role_the_idp_group_maps_to(admin: ControlClient, k
         session.close()
 
 
-def test_leaving_the_idp_group_revokes_the_role_it_granted(admin: ControlClient, keycloak: Keycloak) -> None:
+def test_leaving_the_idp_group_revokes_the_role_it_granted(
+    admin: ControlClient, keycloak: Keycloak
+) -> None:
     org = admin.create_org()
     team = admin.create_team(org["id"])
     slug = _rand("kc")

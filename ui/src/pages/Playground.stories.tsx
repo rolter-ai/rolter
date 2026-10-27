@@ -314,6 +314,19 @@ function shortKeyWait() {
 }
 
 /**
+ * The opposite of {@link shortKeyWait}: a window that is still open when the
+ * first message goes out, for a story that has to see the refusal retried.
+ * The mint-to-send path (the composer, `userEvent` typing) can outlast 300 ms
+ * on a loaded runner, and the retry it asserts only happens inside the window
+ * (#3227). The retry delay is `min(budget / 2, left)`, well inside the 5 s
+ * `asyncUtilTimeout`.
+ */
+function openKeyWindow() {
+  setKeyPropagationForTests({ budgetMs: 2000, firstDelayMs: 50, maxDelayMs: 100 });
+  return () => setKeyPropagationForTests(null);
+}
+
+/**
  * Clears the in-memory key, so one story's key is never another's start state.
  *
  * `role` mounts the screen under the capability gate as that role; left out,
@@ -1217,7 +1230,7 @@ const lateReplica = recording(
 );
 
 export const ARefusedFirstMessageOnAFreshKeyIsSentAgain: Story = {
-  beforeEach: shortKeyWait,
+  beforeEach: openKeyWindow,
   render: () => <Screen fetchStub={lateReplica.stub} />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);

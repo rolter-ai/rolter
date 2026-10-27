@@ -154,3 +154,27 @@ fn the_postgres_suites_install_one_shared_kek_and_no_other_process_wide_value() 
         offenders.join("\n")
     );
 }
+
+/// A path baked in with `env!` travels with the compiled artifact, and worktrees
+/// that share a `CARGO_TARGET_DIR` reuse each other's artifacts, so a test binary
+/// built in one worktree named the databases of another (#2770). The root has to
+/// come from the `CARGO_MANIFEST_DIR` cargo exports at run time; the compile-time
+/// value is only the fallback for a binary run by hand.
+#[test]
+fn the_per_worktree_database_is_named_from_the_run_time_manifest_dir() {
+    let path = workspace_root().join("crates/rolter-store/src/postgres/test_database.rs");
+    let text = std::fs::read_to_string(&path).expect("test_database.rs is readable");
+    assert!(
+        text.contains("std::env::var_os(\"CARGO_MANIFEST_DIR\")"),
+        "{} must read CARGO_MANIFEST_DIR at run time to find the worktree",
+        path.display()
+    );
+    let baked: Vec<_> = code_lines(&text)
+        .filter(|(_, line)| line.contains("env!(\"CARGO_MANIFEST_DIR\")"))
+        .collect();
+    assert_eq!(
+        baked.len(),
+        1,
+        "the compile-time manifest dir is allowed once, as the fallback: {baked:?}"
+    );
+}

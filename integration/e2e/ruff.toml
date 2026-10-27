@@ -1,0 +1,5 @@
+# the harness pins cpython 3.13 (pyproject.toml's requires-python), unlike the
+# scripts under scripts/ and the stdlib-only drivers beside this directory, which
+# keep the repository's py39 floor. everything else is the root ruff.toml (#2669)
+extend = "../../ruff.toml"
+target-version = "py313"

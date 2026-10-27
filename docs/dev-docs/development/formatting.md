@@ -69,7 +69,7 @@ Three things follow from that table.
   file it is quoting, and it turned documented JSX fragments such as
   `{keys.error && (<LoadError … />)}` into statements with a trailing semicolon.
   Turning it off also removed the only case where prettier rewrapped prose
-  against `proseWrap: preserve` — inside a Mintlify `<Note>` or `<Warning>`,
+  against `proseWrap: preserve` — inside an MDX `<Note>` or `<Warning>`,
   whose children it was printing as JSX.
 - **`printWidth` is a free choice, so it matches `ui/.prettierrc`.** With
   `proseWrap: preserve` and embedded formatting off, nothing in these files is
@@ -125,25 +125,33 @@ every one of those files before and after with `remark-parse` + `remark-gfm` +
 `remark-mdx` and comparing the resulting document trees: headings, link targets, code-block
 contents, list nesting and every MDX element name and attribute are identical.
 That is the check that matters for the two navs — `docs/dev-docs/SUMMARY.md` for
-mdBook and `docs/user-docs/docs.json` for Mintlify — since a reflow that moved a
+mdBook and `docs/user-docs/docs.json` for Docs7 — since a reflow that moved a
 link target would break the book build or the docs site silently. The
 `llms.txt tracks the docs nav` check was confirmed green on the reformatted tree
 for the same reason.
 
-## Python under `scripts/`
+## Python under `scripts/` and `integration/`
 
-The standalone scripts under `scripts/*.py` are formatted by `ruff format`, not
-prettier, and the check is a merge gate beside `ruff check`: the
-`ruff (scripts)` step of `quality.yml`'s `static checks` job and the `ruff`
-prek hook run both ([#2769]). The width is `line-length = 100` in `ruff.toml`,
-the same as prettier's `printWidth`, so a script wraps like the markdown and
-YAML beside it; everything else is ruff's default style. Format with:
+The standalone Python under `scripts/` and `integration/` (the e2e harness, the
+engine drivers and the ollama smoke) is linted by `ruff check` and formatted by
+`ruff format`, not prettier, and both are a merge gate: the `ruff (python)` step
+of `quality.yml`'s `static checks` job and the `ruff` prek hook run them
+([#2769], and [#2669] for `integration/`). Adopting `ruff format` for
+`integration/` was decided on that issue, and the tree was reformatted in the same
+change. The width is `line-length = 100` in `ruff.toml`, the same as prettier's
+`printWidth`, so a script wraps like the markdown and YAML beside it; everything
+else is ruff's default style.
+
+`integration/e2e/` has a `ruff.toml` of its own that extends the root one and
+changes only `target-version`: the harness pins cpython 3.13, while the scripts
+and the stdlib-only drivers keep the repository's py39 floor. Format with:
 
 ```bash
-uvx --from "$(bash scripts/tool-pin.sh ruff)" ruff format scripts
+uvx --from "$(bash scripts/tool-pin.sh ruff)" ruff format scripts integration
 ```
 
 [#1695]: https://github.com/rolter-ai/rolter/issues/1695
 [#1723]: https://github.com/rolter-ai/rolter/issues/1723
 [#1741]: https://github.com/rolter-ai/rolter/issues/1741
+[#2669]: https://github.com/rolter-ai/rolter/issues/2669
 [#2769]: https://github.com/rolter-ai/rolter/issues/2769

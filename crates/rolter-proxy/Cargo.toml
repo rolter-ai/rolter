@@ -39,6 +39,16 @@ tokio-rustls = { version = "0.26", default-features = false, features = [
   "aws-lc-rs",
   "tls12",
 ] }
+# the custom-CA tests mint their certificates when they run, valid from
+# yesterday to a month ahead, so none expires under the suite and none runs
+# past the validity limit a platform verifier enforces (#2968). aws-lc-rs to
+# match the provider above rather than pulling in a second one
+rcgen = { version = "0.14", default-features = false, features = [
+  "crypto",
+  "aws_lc_rs",
+  "pem",
+] }
+time = "0.3"
 
 # criterion benches use their own harness; `cargo bench -p rolter-proxy`
 # runs them, `cargo bench --no-run` just compiles them (CI guards this)
