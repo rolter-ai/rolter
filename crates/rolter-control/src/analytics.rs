@@ -498,6 +498,7 @@ pub fn router() -> Router<crate::ControlState> {
         .route("/api/v1/analytics/invocations", get(invocations))
         .route("/api/v1/analytics/guardrails", get(guardrails))
         .route("/api/v1/analytics/plugins", get(plugins))
+        .merge(crate::analytics_export::router())
 }
 
 /// Map a cost-attribution dimension name to its whitelisted column. Anything

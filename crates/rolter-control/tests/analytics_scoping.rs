@@ -1265,3 +1265,85 @@ async fn sampled_rows_scale_counts_and_sums_but_not_percentiles() {
     let p50 = row["p50_latency_ms"].as_f64().unwrap();
     assert!((100.0..=300.0).contains(&p50), "{p50}");
 }
+
+/// The request ids a caller's CSV export of the log carries, among `ids`.
+async fn exported(
+    client: &reqwest::Client,
+    addr: SocketAddr,
+    token: &str,
+    ids: &[(String, String)],
+) -> Vec<String> {
+    let response = client
+        .get(format!("http://{addr}/api/v1/analytics/invocations/export"))
+        .bearer_auth(token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200, "export");
+    let csv = response.text().await.unwrap();
+    // metadata only: whatever the caller's role, no captured body is in the file
+    assert!(
+        !csv.contains("prompt-") && !csv.contains("completion-"),
+        "{csv}"
+    );
+    let mut labels: Vec<String> = ids
+        .iter()
+        .filter(|(_, id)| csv.contains(id.as_str()))
+        .map(|(label, _)| label.clone())
+        .collect();
+    labels.sort();
+    labels
+}
+
+/// A caller exports exactly the rows they can list, never one outside their
+/// scope (#1838): the export binds the same predicate as the JSON read.
+#[tokio::test]
+async fn the_export_returns_only_the_rows_the_caller_can_list() {
+    let ch = skip_without_stack!();
+    let http = reqwest::Client::new();
+    ensure_schema(&http, &ch).await;
+
+    let db = TestSchema::create(&test_database::url().await.unwrap()).await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_clickhouse_and_admin_token(
+        pool.clone(),
+        &ch,
+        Some(ADMIN_TOKEN.to_string()),
+    )
+    .await
+    .unwrap();
+    let addr = serve(app).await;
+    let acme = seed_tenant(&pool, "acme").await;
+    let umbrella = seed_tenant(&pool, "umbrella").await;
+    let ids = seed_logs(&http, &ch, &[("acme", &acme), ("umbrella", &umbrella)]).await;
+
+    let everything = exported(&http, addr, ADMIN_TOKEN, &ids).await;
+    assert_eq!(everything.len(), 5, "{everything:?}");
+
+    let project_member = seed_user(&pool, None, None, Some(acme.project_a), "member").await;
+    assert_eq!(
+        exported(&http, addr, &project_member, &ids).await,
+        ["acme-a"]
+    );
+    let org_viewer = seed_user(&pool, Some(acme.org), None, None, "viewer").await;
+    assert_eq!(
+        exported(&http, addr, &org_viewer, &ids).await,
+        ["acme-a", "acme-b"]
+    );
+    let team_member = seed_user(&pool, None, Some(umbrella.team), None, "member").await;
+    assert_eq!(
+        exported(&http, addr, &team_member, &ids).await,
+        ["umbrella-a", "umbrella-b"]
+    );
+    // the rollup exports are scoped the same way: another org's spend is not in
+    // a caller's chargeback file
+    let rollup = http
+        .get(format!(
+            "http://{addr}/api/v1/analytics/by-attribution/export?include_unattributed=true"
+        ))
+        .bearer_auth(&project_member)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(rollup.status(), 200);
+}

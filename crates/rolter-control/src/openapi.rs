@@ -2122,6 +2122,27 @@ fn operations() -> Vec<Op> {
             .clickhouse_read()
             .query(INVOCATIONS_QUERY),
             Op::get(
+                "/api/v1/analytics/by-attribution/export",
+                "exportAnalyticsByAttribution",
+                "The attribution rollup as CSV for a window, flagging totals that hold unpriced requests; the file name carries the window and currency",
+            )
+            .clickhouse_read()
+            .query(ATTRIBUTION_QUERY),
+            Op::get(
+                "/api/v1/analytics/timeseries/export",
+                "exportAnalyticsTimeseries",
+                "Requests, tokens and cost per bucket as CSV, flagging buckets that hold unpriced requests",
+            )
+            .clickhouse_read()
+            .query(DASHBOARD_QUERY),
+            Op::get(
+                "/api/v1/analytics/invocations/export",
+                "exportInvocations",
+                "Stream the request log as CSV, metadata only (never bodies or error text), under the same row scoping as the JSON list; `limit` and `cursor` are ignored",
+            )
+            .clickhouse_read()
+            .query(INVOCATIONS_QUERY),
+            Op::get(
                 "/api/v1/analytics/guardrails",
                 "getAnalyticsGuardrails",
                 "What each guardrail did to requests in the window: one row per `action` and `rule` \

@@ -24,6 +24,7 @@ mod adaptive_telemetry;
 mod alerting;
 mod analytics;
 mod analytics_access;
+mod analytics_export;
 #[cfg(feature = "postgres")]
 mod auth;
 #[cfg(feature = "postgres")]

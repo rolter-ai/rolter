@@ -18,6 +18,7 @@ macro_rules! skip_without_db {
 }
 
 mod alert_scopes;
+mod analytics_export;
 mod audit;
 mod auth;
 mod budgets;

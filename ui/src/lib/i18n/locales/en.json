@@ -314,7 +314,9 @@
       "preferences": "your preferences",
       "yourProfile": "your profile",
       "auditLogExport": "the audit log export",
-      "unpricedModels": "unpriced models"
+      "unpricedModels": "unpriced models",
+      "attributionExport": "cost attribution export",
+      "requestLogExport": "request log export"
     },
     "requestFailed": "request failed: {{status}}",
     "gateway": {
@@ -5240,7 +5242,12 @@
     "openDetails": "Open request details for {{model}}",
     "ms": "{{value}} ms",
     "unpriced": "unpriced",
-    "unpricedHint": "No price is configured for this model, so this request was recorded as unpriced rather than as free."
+    "unpricedHint": "No price is configured for this model, so this request was recorded as unpriced rather than as free.",
+    "export": {
+      "csv": "Export CSV",
+      "pending": "Exporting…",
+      "downloaded": "Export downloaded. Its name gives the window and currency; a row marked partial holds unpriced requests."
+    }
   },
   "savedViews": {
     "open": "Saved views",

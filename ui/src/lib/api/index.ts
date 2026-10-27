@@ -66,6 +66,8 @@ export type {
   AlertNotificationRow,
   AlertEvaluation,
 } from "./alerts";
+export { exportAttributionCsv, exportInvocationsCsv } from "./analytics-export";
+export type { AnalyticsExportFile } from "./analytics-export";
 export {
   AnalyticsUnavailableError,
   fetchAnalyticsSummary,
