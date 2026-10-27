@@ -282,9 +282,17 @@ mod tests {
             {"id": "BAAI/bge-small-en-v1.5", "object": "model", "capabilities": ["embed"]},
             {"id": "mixedbread-ai/mxbai-rerank-xsmall-v1", "object": "model", "capabilities": ["rerank"]},
         ]});
-        // ids are compared by their last path segment, like every catalogue's
+        // the whole id is the address infinity accepts as `model` (#3245); only
+        // a name comparison cuts it to its last path segment
         assert_eq!(
             catalogue_ids(&listed),
+            Some(vec![
+                "BAAI/bge-small-en-v1.5".to_string(),
+                "mixedbread-ai/mxbai-rerank-xsmall-v1".to_string()
+            ])
+        );
+        assert_eq!(
+            catalogue_names(&listed),
             Some(vec![
                 "bge-small-en-v1.5".to_string(),
                 "mxbai-rerank-xsmall-v1".to_string()
