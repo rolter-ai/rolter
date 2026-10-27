@@ -52,6 +52,17 @@ import {
 export type ProviderSheetMode = "add" | "edit";
 
 /**
+ * The base-URL hint for a kind whose base follows neither `/v1` rule.
+ *
+ * Infinity serves its routes under `--url-prefix`, empty by default, so its base
+ * is the server address plus whatever prefix it was started with, and neither
+ * "include the version" nor "leave it off" says that.
+ */
+const BASE_HINTS: Readonly<Record<string, { hint: string; placeholder: string }>> = {
+  infinity: { hint: "providerSheet.apiBase.urlPrefix", placeholder: "http://infinity:7997" },
+};
+
+/**
  * The result of a connection probe.
  *
  * Always names the URL that was tried. "It failed" is not actionable when the
@@ -65,17 +76,6 @@ export type ProviderSheetMode = "add" | "edit";
  * check it before a route depends on it, and that check is a button in this
  * footer. It does not run by itself: the test is a call to the upstream.
  */
-/**
- * The base-URL hint for a kind whose base follows neither `/v1` rule.
- *
- * Infinity serves its routes under `--url-prefix`, empty by default, so its base
- * is the server address plus whatever prefix it was started with, and neither
- * "include the version" nor "leave it off" says that.
- */
-const BASE_HINTS: Readonly<Record<string, { hint: string; placeholder: string }>> = {
-  infinity: { hint: "providerSheet.apiBase.urlPrefix", placeholder: "http://infinity:7997" },
-};
-
 function CreatedNote({ name }: { name: string }) {
   const { t } = useTranslation();
   return (
