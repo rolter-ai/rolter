@@ -16,20 +16,21 @@ themselves are components.
 They live in `ui/src/components/ui/` beside the other primitives, and their
 stories are grouped under **Forms/** in Storybook.
 
-| Primitive       | File                 | What it is                                                                              |
-| --------------- | -------------------- | --------------------------------------------------------------------------------------- |
-| `FieldLabel`    | `field-label.tsx`    | the compact label a sheet row carries, with the optional required marker and (i) note   |
-| `FieldError`    | `field-error.tsx`    | the message under a control, carrying the id the control points at                      |
-| `describedBy`   | `field-error.tsx`    | joins the ids a control actually has into one `aria-describedby`                        |
-| `FormSection`   | `form-section.tsx`   | one collapsible group of fields, open state owned by the caller                         |
-| `Segmented`     | `segmented.tsx`      | a two-to-four way choice rendered inline as a `radiogroup`                              |
-| `LockButton`    | `lock-button.tsx`    | the padlock toggle beside a parameter or header                                         |
-| `ChipGroup`     | `chip-group.tsx`     | a multi-select over a short, fully visible list                                         |
-| `SwitchRow`     | `switch-row.tsx`     | a boolean as a full-width row: title, hint, switch                                      |
-| `SettingsPanel` | `settings-panel.tsx` | a titled group of settings controls that can be switched off as a block                 |
-| `CopyableValue` | `copyable-value.tsx` | a labelled value to copy again: mono, `select-all`, wrapping, with hint and note        |
-| `Checkbox`      | `checkbox.tsx`       | a native checkbox drawn by the tokens: neutral when ticked, with an indeterminate state |
-| `AuthCard`      | `auth-card.tsx`      | the signed-out card: `<main>`, wordmark, вышивка rule, `h1`, description, then the form |
+| Primitive       | File                 | What it is                                                                               |
+| --------------- | -------------------- | ---------------------------------------------------------------------------------------- |
+| `FieldLabel`    | `field-label.tsx`    | the compact label a sheet row carries, with the optional required marker and (i) note    |
+| `FieldError`    | `field-error.tsx`    | the message under a control, carrying the id the control points at                       |
+| `describedBy`   | `field-error.tsx`    | joins the ids a control actually has into one `aria-describedby`                         |
+| `FormSection`   | `form-section.tsx`   | one collapsible group of fields, open state owned by the caller                          |
+| `Segmented`     | `segmented.tsx`      | a two-to-four way choice rendered inline as a `radiogroup`                               |
+| `LockButton`    | `lock-button.tsx`    | the padlock toggle beside a parameter or header                                          |
+| `ChipGroup`     | `chip-group.tsx`     | a multi-select over a short, fully visible list                                          |
+| `SwitchRow`     | `switch-row.tsx`     | a boolean as a full-width row: title, hint, switch                                       |
+| `SettingsPanel` | `settings-panel.tsx` | a titled group of settings controls that can be switched off as a block                  |
+| `CopyableValue` | `copyable-value.tsx` | a labelled value to copy again: mono, `select-all`, wrapping, with hint and note         |
+| `Checkbox`      | `checkbox.tsx`       | a native checkbox drawn by the tokens: neutral when ticked, with an indeterminate state  |
+| `AuthCard`      | `auth-card.tsx`      | the signed-out card: `<main>`, wordmark, вышивка rule, `h1`, description, then the form  |
+| `SubmitForm`    | `submit-form.tsx`    | the `<form>` an editor sheet or dialog sits in: Enter submits, a refused submit says why |
 
 ## Which one to reach for
 
@@ -108,6 +109,19 @@ easy to lose when the shape is retyped in the next sheet:
 
 Every one of those is asserted in the primitive's own story, so a rewrite that
 drops one fails the story rather than shipping.
+
+## Editors are forms
+
+`EditorSheet` and a `Dialog` given an `onSubmit` render a real `<form>` (`SubmitForm`, `ui/src/components/ui/submit-form.tsx`, #1205). Enter in a field submits it, a footer button of `type="submit"` means it, and `Button` defaults to `type="button"` so a Cancel or a row's delete placed inside never does.
+
+- `EditorSheet` takes `onSubmit` (it was `onSave`) and `canSave`. A `Dialog` takes `onSubmit`, `canSubmit` and `busy`, and its footer's primary button is `type="submit"` by hand.
+- The primary button is never natively `disabled` for a validation error. While `canSave` is false it is `aria-disabled` and still pressable, because pressing it, or Enter in a field, is how the form is asked why. Only `saving` really disables it.
+- A required field is `<Field required>`: the control gets the native `required` and `aria-required`, the label a marker. After a refused submit a still-empty required control says "Required" under itself (`role="alert"`, wired through `aria-describedby`), focus moves to the first field at fault, and `SubmitFormStatus` in the footer counts them (`N fields need attention`, a polite `role="status"`). Typing into the field clears its message. A value of spaces counts as empty, since every save trims it.
+- Only `required` is read from the attributes. A range, a charset or a clash with another field stays with the screen's own check (`useFieldErrors`, `FieldError`), which says more than a browser message can, in the dashboard's language. The browser's own bubble is off (`noValidate`).
+- A refusal that comes from the caller's rule rather than a field (a pick that is not an input) passes `blockedMessage` to `EditorSheet`, which the status line shows when no field is at fault.
+- A native `<button>` written by hand inside an editor carries `type="button"`, or it submits the form. `filter-panel.tsx` was the one that did not.
+
+Stories submit with Enter and assert the refused submit: `EnterSubmits` and `BlockedSubmitNamesTheField` under **Overlays/EditorSheet**, `EditorSubmitsWithEnter` under **Overlays/Dialog**, `DoesNotSubmitAFormUnlessAskedTo` under **Primitives/Button**. A story asserting that a sheet's Save is held reads `aria-disabled="true"`, not `toBeDisabled()`.
 
 ## Footers and bodies on small screens
 

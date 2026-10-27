@@ -106,7 +106,7 @@ export function AssignProfileSheet({
       saveLabel={t("pages.accessProfiles.assign.save")}
       canSave={subject !== ""}
       saving={assign.isPending}
-      onSave={() => assign.mutate()}
+      onSubmit={() => assign.mutate()}
     >
       <div className="space-y-3.5">
         <Segmented<Kind>

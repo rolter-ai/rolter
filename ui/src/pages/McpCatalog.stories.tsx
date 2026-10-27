@@ -169,7 +169,10 @@ export const ValidatesEndpoint: Story = {
     const dialog = within(await within(document.body).findByRole("dialog"));
     await userEvent.type(dialog.getByLabelText("Name"), "Local tools");
     await userEvent.type(dialog.getByLabelText("Endpoint URL"), "ftp://invalid");
-    await expect(dialog.getByRole("button", { name: "Register server" })).toBeDisabled();
+    await expect(dialog.getByRole("button", { name: "Register server" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
   },
 };
 /**
@@ -367,7 +370,10 @@ export const RefusesAHalfClient: Story = {
     await expect(
       dialog.getAllByText("Must be an https URL (http is accepted only on loopback).").length,
     ).toBeGreaterThan(0);
-    await expect(dialog.getByRole("button", { name: "Save server" })).toBeDisabled();
+    await expect(dialog.getByRole("button", { name: "Save server" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
     await userEvent.clear(dialog.getByLabelText("Authorization URL"));
     await userEvent.type(
       dialog.getByLabelText("Authorization URL"),
@@ -376,7 +382,10 @@ export const RefusesAHalfClient: Story = {
     await expect(dialog.getByRole("alert")).toHaveTextContent(
       /Enter both the authorization URL and the token URL/,
     );
-    await expect(dialog.getByRole("button", { name: "Save server" })).toBeDisabled();
+    await expect(dialog.getByRole("button", { name: "Save server" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
   },
 };
 
@@ -827,7 +836,10 @@ export const AuthBearerNeedsACredential: Story = {
     await userEvent.click(dialog.getByRole("radio", { name: /^Bearer token/ }));
     await expect(dialog.getByText("No credential stored")).toBeVisible();
     // nothing stored and nothing typed is what the API refuses, so the form does first
-    await expect(dialog.getByRole("button", { name: "Save server" })).toBeDisabled();
+    await expect(dialog.getByRole("button", { name: "Save server" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
     await userEvent.type(dialog.getByLabelText("Bearer token"), "ctx7_live_abc");
     await userEvent.click(dialog.getByRole("button", { name: "Save server" }));
     await expect(await bearerArms.sent("PUT", "/mcp-servers/server-sentry/auth")).toEqual({
@@ -885,7 +897,10 @@ export const AuthHeaderRefusesReservedNames: Story = {
     await userEvent.clear(header);
     await userEvent.type(header, "Authorization");
     await expect(dialog.getByText(/rolter sets Authorization itself/)).toBeVisible();
-    await expect(dialog.getByRole("button", { name: "Save server" })).toBeDisabled();
+    await expect(dialog.getByRole("button", { name: "Save server" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
     await userEvent.clear(header);
     await userEvent.type(header, "X Api Key");
     await expect(dialog.getByText(/valid HTTP header name/)).toBeVisible();
@@ -1053,7 +1068,10 @@ export const OverridesKeepAbsentAndNullApart: Story = {
     const retries = dialog.getByLabelText("Maximum retries");
     await userEvent.clear(retries);
     await userEvent.type(retries, "9");
-    await expect(dialog.getByRole("button", { name: "Save server" })).toBeDisabled();
+    await expect(dialog.getByRole("button", { name: "Save server" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
     await userEvent.clear(retries);
     await userEvent.click(dialog.getByRole("button", { name: "Save server" }));
     const patch = (await overrides.sent("PATCH", "/mcp-servers/server-exa")) as Record<
@@ -1219,7 +1237,10 @@ export const OAuthManualRequiresEndpoints: Story = {
     await expect(dialog.getByRole("alert")).toHaveTextContent(
       /Manual discovery needs an authorization URL and a token URL/,
     );
-    await expect(dialog.getByRole("button", { name: "Save server" })).toBeDisabled();
+    await expect(dialog.getByRole("button", { name: "Save server" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
     await userEvent.type(dialog.getByLabelText("Authorization URL"), "https://www.figma.com/oauth");
     await expect(dialog.getByRole("alert")).toHaveTextContent(
       /Enter both the authorization URL and the token URL/,
@@ -1282,7 +1303,10 @@ export const OAuthIssuerChangeResetsDiscovery: Story = {
     await expect(
       dialog.getByText("Must be an https URL (http is accepted only on loopback)."),
     ).toBeVisible();
-    await expect(dialog.getByRole("button", { name: "Save server" })).toBeDisabled();
+    await expect(dialog.getByRole("button", { name: "Save server" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
     await userEvent.clear(dialog.getByLabelText("Issuer"));
     await userEvent.type(dialog.getByLabelText("Issuer"), "https://api.notion.com");
     await expect(dialog.getByText(/clears these results/)).toBeVisible();

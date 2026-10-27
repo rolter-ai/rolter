@@ -684,7 +684,13 @@ function CreateScopeDialog({
   const title = level ? t(CREATE_KEYS[level].title) : "";
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog
+      open={open}
+      onOpenChange={onOpenChange}
+      onSubmit={() => create.mutate()}
+      canSubmit={!!name.trim()}
+      busy={create.isPending}
+    >
       <DialogHeader>
         <DialogTitle>{title}</DialogTitle>
         <DialogDescription>{level ? t(CREATE_KEYS[level].hint) : ""}</DialogDescription>
@@ -693,7 +699,7 @@ function CreateScopeDialog({
         {/* no `autoFocus`: the dialog already puts focus on its first field,
             and focusing it during the commit made the field the "opener" the
             dialog hands focus back to on close, so focus fell to the page */}
-        <Field label={t("scope.name")}>
+        <Field label={t("scope.name")} required>
           <Input
             value={name}
             onChange={(e) => setName(e.target.value)}
@@ -716,7 +722,12 @@ function CreateScopeDialog({
         <Button variant="outline" onClick={() => onOpenChange(false)}>
           {t("common.cancel")}
         </Button>
-        <Button disabled={!name.trim() || create.isPending} onClick={() => create.mutate()}>
+        <Button
+          type="submit"
+          disabled={create.isPending}
+          aria-disabled={!name.trim() || undefined}
+          className="aria-disabled:opacity-50"
+        >
           {create.isPending && <Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" />}
           {t("common.create")}
         </Button>

@@ -137,3 +137,30 @@ export const FocusSurvivesForcedColors: Story = {
     await expect(forced?.getPropertyValue("outline-offset")).toBe("2px");
   },
 };
+
+// a native button inside a <form> submits it, so `Button` says "button" unless
+// the caller says otherwise (#1205): Cancel and a row's delete never submit
+export const DoesNotSubmitAFormUnlessAskedTo: Story = {
+  render: (args) => {
+    const onSubmit = fn((event: React.FormEvent) => event.preventDefault());
+    return (
+      <form onSubmit={onSubmit} aria-label="demo form">
+        <Button {...args}>Cancel</Button>
+        <Button {...args} type="submit">
+          Save
+        </Button>
+      </form>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const form = canvas.getByRole("form", { name: "demo form" });
+    const submits: Event[] = [];
+    form.addEventListener("submit", (event) => submits.push(event));
+    await expect(canvas.getByRole("button", { name: "Cancel" })).toHaveAttribute("type", "button");
+    await userEvent.click(canvas.getByRole("button", { name: "Cancel" }));
+    await expect(submits).toHaveLength(0);
+    await userEvent.click(canvas.getByRole("button", { name: "Save" }));
+    await expect(submits).toHaveLength(1);
+  },
+};

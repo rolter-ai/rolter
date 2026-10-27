@@ -635,7 +635,13 @@ function ProviderDialog({
         ? t("pages.guardrailProviders.activateHintNone")
         : t("pages.guardrailProviders.activateHintReplaces", { name: active.name });
   return (
-    <Dialog open={open} onOpenChange={(value) => !value && onClose()}>
+    <Dialog
+      open={open}
+      onOpenChange={(value) => !value && onClose()}
+      onSubmit={() => onSave(form)}
+      canSubmit={valid}
+      busy={pending}
+    >
       <DialogHeader>
         <DialogTitle>
           {initial
@@ -645,10 +651,9 @@ function ProviderDialog({
         <DialogDescription>{t("pages.guardrailProviders.dialogBody")}</DialogDescription>
       </DialogHeader>
       <DialogBody className="space-y-4">
-        <Field label={t("pages.guardrailProviders.fieldName")} htmlFor="provider-name">
+        <Field label={t("pages.guardrailProviders.fieldName")} htmlFor="provider-name" required>
           <Input
             id="provider-name"
-            required
             value={form.name}
             onChange={(event) => set({ name: event.target.value })}
           />
@@ -658,11 +663,11 @@ function ProviderDialog({
           htmlFor="provider-url"
           hint={t("pages.guardrailProviders.urlHint")}
           error={urlError}
+          required
         >
           <Input
             id="provider-url"
             type="url"
-            required
             className="font-mono"
             placeholder={URL_EXAMPLE}
             value={form.url}
@@ -818,7 +823,12 @@ function ProviderDialog({
         <Button variant="ghost" onClick={onClose}>
           {t("common.cancel")}
         </Button>
-        <Button disabled={!valid || pending} onClick={() => onSave(form)}>
+        <Button
+          type="submit"
+          disabled={pending}
+          aria-disabled={!valid || undefined}
+          className="aria-disabled:opacity-50"
+        >
           {pending && <Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" aria-hidden />}
           {pending ? t("pages.guardrailProviders.publishing") : t("pages.guardrailProviders.save")}
         </Button>

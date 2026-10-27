@@ -716,10 +716,10 @@ function ProfileSheet({
       saveLabel={draft.id ? t("pages.accessProfiles.save") : t("pages.accessProfiles.create")}
       canSave={!!draft.name.trim() && !policyInvalid}
       saving={saving}
-      onSave={onSave}
+      onSubmit={onSave}
     >
       <div className="space-y-3.5">
-        <Field label={t("pages.accessProfiles.fieldName")}>
+        <Field label={t("pages.accessProfiles.fieldName")} required>
           <Input
             value={draft.name}
             placeholder={t("pages.accessProfiles.namePlaceholder")}

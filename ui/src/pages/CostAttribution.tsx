@@ -164,7 +164,7 @@ function Editor({
   const { t } = useTranslation();
   return (
     <>
-      <Field label={t("pages.costAttribution.editor.name")}>
+      <Field label={t("pages.costAttribution.editor.name")} required>
         <Input
           aria-label={t("pages.costAttribution.editor.name")}
           value={form.name}
@@ -806,7 +806,7 @@ function AttributionScreen<T extends BusinessUnitRow | CustomerRow>({
         saveLabel={form.id ? t("common.save") : t("common.create")}
         canSave={!!form.name.trim() && !slugError}
         saving={saving}
-        onSave={() => {
+        onSubmit={() => {
           // closing here unconditionally threw the draft away whenever the
           // control plane refused the save — the name, the slug and the
           // slug-change acknowledgement the operator ticked on purpose (#1626)

@@ -287,7 +287,10 @@ export const SlugRenameNeedsConfirmation: Story = {
     await waitFor(() =>
       expect(sheet.getByText(/Renaming the slug breaks attribution/)).toBeVisible(),
     );
-    await expect(sheet.getByRole("button", { name: "Save" })).toBeDisabled();
+    await expect(sheet.getByRole("button", { name: "Save" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
     await userEvent.click(sheet.getByLabelText("Allow slug change"));
     await expect(sheet.getByRole("button", { name: "Save" })).toBeEnabled();
   },

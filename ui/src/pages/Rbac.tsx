@@ -862,10 +862,10 @@ function RoleSheet({
       saveLabel={draft.id ? t("pages.rbac.custom.save") : t("pages.rbac.custom.create")}
       canSave={!!draft.name.trim()}
       saving={saving}
-      onSave={onSave}
+      onSubmit={onSave}
     >
       <div className="space-y-3.5">
-        <Field label={t("pages.rbac.custom.fieldName")}>
+        <Field label={t("pages.rbac.custom.fieldName")} required>
           <Input
             value={draft.name}
             placeholder={t("pages.rbac.custom.namePlaceholder")}

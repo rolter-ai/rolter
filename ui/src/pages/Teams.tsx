@@ -407,9 +407,9 @@ export default function Teams() {
         saveLabel={t("common.create")}
         canSave={!!name.trim()}
         saving={create.isPending}
-        onSave={() => create.mutate()}
+        onSubmit={() => create.mutate()}
       >
-        <Field label={t("pages.teams.teamName")}>
+        <Field label={t("pages.teams.teamName")} required>
           <Input
             value={name}
             onChange={(e) => setName(e.target.value)}

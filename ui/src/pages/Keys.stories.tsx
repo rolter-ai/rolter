@@ -699,7 +699,10 @@ export const AdminCreateAlsoRequiresANameAndAnExpiry: Story = {
   play: async ({ canvasElement }) => {
     await clickWhenEnabled(canvasElement, /add virtual key/i);
     const form = sheet();
-    await expect(within(form).getByRole("button", { name: "Create" })).toBeDisabled();
+    await expect(within(form).getByRole("button", { name: "Create" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
     await userEvent.type(within(form).getByLabelText("Name"), "backend service");
     await expect(within(form).getByRole("button", { name: "Create" })).toBeEnabled();
     // the finite default is the same one the self-service sheet offers
@@ -807,7 +810,10 @@ export const EditingAKeySendsTheAttributionPut: Story = {
     const form = sheet();
     // save stays disabled until something actually moves — re-saving an
     // untouched sheet must not write or audit anything
-    await expect(within(form).getByRole("button", { name: "Save" })).toBeDisabled();
+    await expect(within(form).getByRole("button", { name: "Save" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
     await pickOption(within(form).getByLabelText("Business unit"), "Platform Engineering");
     await pickOption(within(form).getByLabelText("Customer"), "Acme Corp");
     await userEvent.click(within(form).getByRole("button", { name: "Save" }));

@@ -433,13 +433,13 @@ function ChannelSheet({
       saveLabel={existing ? t("common.save") : t("common.create")}
       canSave={Boolean(name.trim() && endpoint.trim())}
       saving={save.isPending}
-      onSave={() => save.mutate()}
+      onSubmit={() => save.mutate()}
     >
       <div className="space-y-3">
-        <Field label={t("pages.alerting.channels.fieldName")}>
+        <Field label={t("pages.alerting.channels.fieldName")} required>
           <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="ops-webhook" />
         </Field>
-        <Field label={t("pages.alerting.channels.fieldEndpoint")}>
+        <Field label={t("pages.alerting.channels.fieldEndpoint")} required>
           <Input
             className="font-mono"
             value={endpoint}
@@ -1010,10 +1010,10 @@ function RuleSheet({
       saveLabel={existing ? t("common.save") : t("common.create")}
       canSave={Boolean(name.trim() && thresholdOk && windowValid)}
       saving={save.isPending}
-      onSave={() => save.mutate()}
+      onSubmit={() => save.mutate()}
     >
       <div className="space-y-3">
-        <Field label={t("pages.alerting.rules.fieldName")}>
+        <Field label={t("pages.alerting.rules.fieldName")} required>
           <Input
             value={name}
             onChange={(e) => setName(e.target.value)}

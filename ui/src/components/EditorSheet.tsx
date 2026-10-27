@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { Loader2 } from "lucide-react";
 import { useDiscardGuard } from "@/components/DiscardGuard";
 import { Button } from "@/components/ui/button";
+import { SubmitForm, SubmitFormStatus } from "@/components/ui/submit-form";
 import {
   Sheet,
   SheetActions,
@@ -54,9 +55,20 @@ export interface EditorSheetProps {
   /** overrides the shared `common.cancel` label; already-translated when passed */
   cancelLabel?: string;
   saveLabel: string;
+  /**
+   * false while the form cannot be saved. The button stays pressable
+   * (`aria-disabled`): a press, or Enter in a field, then asks for the reasons
+   * instead of doing nothing (#1205)
+   */
   canSave: boolean;
+  /**
+   * what to say after a refused submit when no field is at fault, so the
+   * status line has something to name (a pick that is not an input)
+   */
+  blockedMessage?: string;
   saving: boolean;
-  onSave: () => void;
+  /** the form's submit: runs on the Save button and on Enter in a field, once nothing is at fault */
+  onSubmit: () => void;
   children: React.ReactNode;
 }
 
@@ -74,8 +86,9 @@ export function EditorSheet({
   cancelLabel,
   saveLabel,
   canSave,
+  blockedMessage,
   saving,
-  onSave,
+  onSubmit,
   children,
 }: EditorSheetProps) {
   const { t } = useTranslation();
@@ -107,25 +120,33 @@ export function EditorSheet({
 
   const save = () => {
     ux.submitted();
-    onSave();
+    onSubmit();
   };
 
   return (
     <Sheet open={open && !suspended} onOpenChange={onOpenChange} onDismiss={guard}>
       <SheetHeader title={title} subtitle={subtitle} onClose={close} closeDisabled={locked} />
-      <SheetBody>{children}</SheetBody>
-      <SheetFooter>
-        <SheetError message={errorMessage} hint={errorHint} detail={errorDetail} />
-        <SheetActions>
-          <Button variant="ghost" disabled={locked} onClick={close}>
-            {cancelLabel ?? t("common.cancel")}
-          </Button>
-          <Button disabled={!canSave || saving} onClick={save}>
-            {saving && <Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" aria-hidden />}
-            {saveLabel}
-          </Button>
-        </SheetActions>
-      </SheetFooter>
+      <SubmitForm onSubmit={save} canSubmit={canSave} busy={saving}>
+        <SheetBody>{children}</SheetBody>
+        <SheetFooter>
+          <SubmitFormStatus fallback={blockedMessage} />
+          <SheetError message={errorMessage} hint={errorHint} detail={errorDetail} />
+          <SheetActions>
+            <Button variant="ghost" disabled={locked} onClick={close}>
+              {cancelLabel ?? t("common.cancel")}
+            </Button>
+            <Button
+              type="submit"
+              disabled={saving}
+              aria-disabled={!canSave || undefined}
+              className="aria-disabled:opacity-50"
+            >
+              {saving && <Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" aria-hidden />}
+              {saveLabel}
+            </Button>
+          </SheetActions>
+        </SheetFooter>
+      </SubmitForm>
       {prompt}
     </Sheet>
   );

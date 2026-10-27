@@ -648,7 +648,13 @@ function RuleDialog({
   const [trialOpen, setTrialOpen] = React.useState(false);
   const streamingNote = form.stage === "post_call" ? streaming : undefined;
   return (
-    <Dialog open={open} onOpenChange={(value) => !value && onClose()}>
+    <Dialog
+      open={open}
+      onOpenChange={(value) => !value && onClose()}
+      onSubmit={() => onSave(ruleBody(form))}
+      canSubmit={valid}
+      busy={pending}
+    >
       <DialogHeader>
         <DialogTitle>
           {initial
@@ -661,6 +667,7 @@ function RuleDialog({
         <Field
           label={t("pages.guardrailRules.fieldName")}
           htmlFor="rule-name"
+          required
           hint={
             fileNames.includes(form.name.trim()) ? t("pages.guardrailRules.nameClash") : undefined
           }
@@ -827,7 +834,12 @@ function RuleDialog({
         <Button variant="ghost" onClick={onClose}>
           {t("common.cancel")}
         </Button>
-        <Button disabled={!valid || pending} onClick={() => onSave(ruleBody(form))}>
+        <Button
+          type="submit"
+          disabled={pending}
+          aria-disabled={!valid || undefined}
+          className="aria-disabled:opacity-50"
+        >
           {pending && <Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" aria-hidden />}
           {pending ? t("pages.guardrailRules.publishing") : t("pages.guardrailRules.publish")}
         </Button>

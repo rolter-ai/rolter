@@ -119,6 +119,9 @@
     "remove": "Remove",
     "save": "Save",
     "saveChanges": "Save changes",
+    "form": {
+      "required": "Required"
+    },
     "fieldsNeedAttention_one": "{{count}} field needs attention",
     "fieldsNeedAttention_other": "{{count}} fields need attention",
     "saving": "Saving…",

@@ -428,7 +428,7 @@ export const RefusesASlugOutsideTheCharset: Story = {
     await expect(panel.queryByText(/\/auth\/sso\//)).toBeNull();
 
     // and Save is blocked until it is fixed, so no request leaves
-    await expect(save).toBeDisabled();
+    await expect(save).toHaveAttribute("aria-disabled", "true");
     refusals.expectNotSent("POST", "/sso-providers");
   },
 };
@@ -507,7 +507,7 @@ export const SavesTheSlugOnceItIsCorrected: Story = {
 
     await userEvent.type(slug, "Okta");
     await expect(panel.getByText(`${SLUG_INVALID} Try okta.`)).toBeVisible();
-    await expect(save).toBeDisabled();
+    await expect(save).toHaveAttribute("aria-disabled", "true");
 
     await userEvent.clear(slug);
     await userEvent.type(slug, "acme-okta");

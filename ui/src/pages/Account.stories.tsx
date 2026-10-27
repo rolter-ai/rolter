@@ -1003,10 +1003,16 @@ export const MintRequiresANameAndDefaultsToAFiniteLife: Story = {
     await clickWhenEnabled(canvasElement, /generate virtual key/i);
     const form = sheet();
     // nothing typed: minting is refused before a round trip is spent
-    await expect(within(form).getByRole("button", { name: "Mint" })).toBeDisabled();
+    await expect(within(form).getByRole("button", { name: "Mint" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
     // whitespace is not a name either
     await userEvent.type(within(form).getByLabelText("Name"), "   ");
-    await expect(within(form).getByRole("button", { name: "Mint" })).toBeDisabled();
+    await expect(within(form).getByRole("button", { name: "Mint" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
     await userEvent.type(within(form).getByLabelText("Name"), "ci runner");
     await expect(within(form).getByRole("button", { name: "Mint" })).toBeEnabled();
 

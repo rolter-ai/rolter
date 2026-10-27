@@ -125,6 +125,9 @@
     "remove": "Удалить",
     "save": "Сохранить",
     "saveChanges": "Сохранить изменения",
+    "form": {
+      "required": "Обязательное поле"
+    },
     "fieldsNeedAttention_one": "{{count}} поле требует внимания",
     "fieldsNeedAttention_few": "{{count}} поля требуют внимания",
     "fieldsNeedAttention_many": "{{count}} полей требуют внимания",

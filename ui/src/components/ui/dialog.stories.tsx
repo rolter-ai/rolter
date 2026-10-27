@@ -264,3 +264,63 @@ export const FooterWrapsOnAPhone: Story = {
     );
   },
 };
+
+function NameEditor({ onSaved }: { onSaved: (name: string) => void }) {
+  const [open, setOpen] = React.useState(false);
+  const [name, setName] = React.useState("");
+  return (
+    <div>
+      <Button onClick={() => setOpen(true)}>Add project</Button>
+      <Dialog
+        open={open}
+        onOpenChange={setOpen}
+        onSubmit={() => {
+          onSaved(name);
+          setOpen(false);
+        }}
+        canSubmit={name.trim() !== ""}
+      >
+        <DialogHeader>
+          <DialogTitle>Add project</DialogTitle>
+        </DialogHeader>
+        <DialogBody>
+          <Field label="Project name" required>
+            <Input value={name} onChange={(e) => setName(e.target.value)} />
+          </Field>
+        </DialogBody>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setOpen(false)}>
+            Cancel
+          </Button>
+          <Button type="submit" aria-disabled={name.trim() === "" || undefined}>
+            Add
+          </Button>
+        </DialogFooter>
+      </Dialog>
+    </div>
+  );
+}
+
+// an editor dialog is a form (#1205): Enter in the field submits, and a blank
+// required field refuses the submit with its reason under it
+export const EditorSubmitsWithEnter: Story = {
+  render: () => <NameEditor onSaved={(name) => document.body.setAttribute("data-saved", name)} />,
+  play: async ({ canvasElement }) => {
+    document.body.removeAttribute("data-saved");
+    await userEvent.click(within(canvasElement).getByRole("button", { name: "Add project" }));
+    const dialog = within(
+      await within(document.body).findByRole("dialog", { name: "Add project" }),
+    );
+    const field = await dialog.findByLabelText("Project name");
+    await expect(field).toBeRequired();
+    await userEvent.type(field, "{Enter}");
+    await waitFor(async () =>
+      expect(await dialog.findByText(en.common.form.required)).toBeVisible(),
+    );
+    await expect(document.body).not.toHaveAttribute("data-saved");
+    await waitFor(() => expect(field).toHaveFocus());
+    await userEvent.type(field, "edge{Enter}");
+    await waitFor(() => expect(document.body).toHaveAttribute("data-saved", "edge"));
+    await waitFor(() => expect(within(document.body).queryByRole("dialog")).toBeNull());
+  },
+};

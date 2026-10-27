@@ -612,11 +612,11 @@ export const AnUnrecognisedPeriodIsFlaggedAndHasToBeReplaced: Story = {
     // nothing moved, and then only the cap moved: neither can be saved while
     // the period is still the one the gateway misreads
     const save = within(form).getByRole("button", { name: "Save" });
-    await expect(save).toBeDisabled();
+    await expect(save).toHaveAttribute("aria-disabled", "true");
     const limit = within(form).getByLabelText("Limit (USD)");
     await userEvent.clear(limit);
     await userEvent.type(limit, "80");
-    await expect(save).toBeDisabled();
+    await expect(save).toHaveAttribute("aria-disabled", "true");
 
     await pickOption(picker, /^Monthly/);
     await expect(picker).toHaveValue("Monthly");
@@ -702,7 +702,10 @@ export const EditsABudgetInPlace: Story = {
     // the workaround the sheet used to advertise is gone
     await expect(within(form).queryByText(/delete and recreate/i)).toBeNull();
     // nothing moved yet, so there is nothing to save
-    await expect(within(form).getByRole("button", { name: "Save" })).toBeDisabled();
+    await expect(within(form).getByRole("button", { name: "Save" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
 
     const limit = within(form).getByLabelText("Limit (USD)");
     await userEvent.clear(limit);

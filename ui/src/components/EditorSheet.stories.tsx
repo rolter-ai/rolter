@@ -33,11 +33,14 @@ function Editor({
   saving = false,
   errorMessage,
   canSave = true,
+  required = false,
 }: {
   seed?: string;
   saving?: boolean;
   errorMessage?: string;
   canSave?: boolean;
+  /** the Name field is required, and Save is held while it is blank */
+  required?: boolean;
 }) {
   const [open, setOpen] = React.useState(true);
   const [name, setName] = React.useState(seed);
@@ -57,11 +60,11 @@ function Editor({
         dirty={name !== seed}
         errorMessage={errorMessage}
         saveLabel="Save provider"
-        canSave={canSave}
+        canSave={canSave && (!required || name.trim() !== "")}
         saving={saving}
-        onSave={() => setSaved(name)}
+        onSubmit={() => setSaved(name)}
       >
-        <Field label="Name">
+        <Field label="Name" required={required}>
           <Input value={name} onChange={(e) => setName(e.target.value)} />
         </Field>
       </EditorSheet>
@@ -85,7 +88,7 @@ const meta = {
     saveLabel: "Save provider",
     canSave: true,
     saving: false,
-    onSave: () => {},
+    onSubmit: () => {},
     children: null,
   },
   // every story starts from an empty UX queue and leaves one behind (#1730)
@@ -116,12 +119,65 @@ export const Saving: Story = {
   },
 };
 
-/** Nothing valid to save yet — the button says so before the round trip does. */
+/**
+ * Nothing valid to save yet — the button says so before the round trip does.
+ * It reads as unavailable but stays pressable: a press is how the form is asked
+ * why (#1205).
+ */
 export const CannotSave: Story = {
   render: () => <Editor canSave={false} />,
   play: async () => {
     const dialog = within(sheet());
-    await expect(dialog.getByRole("button", { name: "Save provider" })).toBeDisabled();
+    await expect(dialog.getByRole("button", { name: "Save provider" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
+  },
+};
+
+/** Enter in a field submits the form, the way the Save button does (#1205). */
+export const EnterSubmits: Story = {
+  render: () => <Editor />,
+  play: async ({ canvasElement }) => {
+    const dialog = within(sheet());
+    const name = await dialog.findByLabelText("Name");
+    await userEvent.clear(name);
+    await userEvent.type(name, "openai-eu{Enter}");
+    await waitFor(() => expect(within(canvasElement).getByText("Saved openai-eu")).toBeVisible());
+  },
+};
+
+/**
+ * A required field left empty refuses the submit — Enter or the button — and
+ * says so under itself, in the footer, and by moving focus to it (#1205). The
+ * form's own submit handler is never called.
+ */
+export const BlockedSubmitNamesTheField: Story = {
+  render: () => <Editor seed="" required />,
+  play: async ({ canvasElement }) => {
+    const dialog = within(sheet());
+    const name = await dialog.findByLabelText("Name");
+    await expect(name).toBeRequired();
+    // nothing is said before anybody has tried to submit
+    await expect(dialog.queryByText("Required")).toBeNull();
+    await userEvent.click(name);
+    await userEvent.keyboard("{Enter}");
+    await waitFor(async () => expect(await dialog.findByText("Required")).toBeVisible());
+    await expect(name).toHaveAccessibleDescription("Required");
+    await waitFor(() => expect(name).toHaveFocus());
+    await expect(await dialog.findByRole("status")).toHaveTextContent("1 field needs attention");
+    await expect(within(canvasElement).queryByText(/^Saved/)).toBeNull();
+    // spaces are not a name: the browser accepts them, the dashboard does not
+    await userEvent.type(name, "   ");
+    await userEvent.click(dialog.getByRole("button", { name: "Save provider" }));
+    await waitFor(async () => expect(await dialog.findByText("Required")).toBeVisible());
+    await expect(within(canvasElement).queryByText(/^Saved/)).toBeNull();
+    // filling it in clears the message and the next Enter submits
+    await userEvent.clear(name);
+    await userEvent.type(name, "openai-eu");
+    await waitFor(() => expect(dialog.queryByText("Required")).toBeNull());
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() => expect(within(canvasElement).getByText("Saved openai-eu")).toBeVisible());
   },
 };
 
@@ -325,7 +381,7 @@ function SavesOnPress() {
         saveLabel="Save provider"
         canSave
         saving={saving}
-        onSave={() => setSaving(true)}
+        onSubmit={() => setSaving(true)}
       >
         <Field label="Name">
           <Input value={name} onChange={(e) => setName(e.target.value)} />
@@ -405,7 +461,7 @@ function Instrumented({ fails = false }: { fails?: boolean }) {
         saveLabel="Save provider"
         canSave
         saving={saving}
-        onSave={() => {
+        onSubmit={() => {
           setErrorMessage(undefined);
           setSaving(true);
         }}
@@ -498,7 +554,7 @@ function Unmountable() {
           saveLabel="Save provider"
           canSave
           saving={false}
-          onSave={() => setSubmitted(true)}
+          onSubmit={() => setSubmitted(true)}
         >
           <Field label="Name">
             <Input value={draft} onChange={(e) => setDraft(e.target.value)} />
@@ -613,7 +669,7 @@ function MountedClosed() {
           saveLabel="Save provider"
           canSave
           saving={false}
-          onSave={() => {}}
+          onSubmit={() => {}}
         >
           <Field label="Name">
             <Input value="openai-prod" onChange={() => {}} />
