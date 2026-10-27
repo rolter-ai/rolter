@@ -21,6 +21,7 @@ mod admin_proxy;
 // of the module's, so keep it a plain comment
 #[doc(hidden)]
 pub mod breaker;
+mod breaker_report;
 mod budgets;
 mod cache;
 #[cfg(test)]
@@ -308,6 +309,15 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         // plane can serve the routing dashboard without reaching into the data
         // plane itself (#751)
         adaptive_telemetry::spawn(
+            state.clone(),
+            &telemetry_snapshot_url,
+            args.internal_token
+                .clone()
+                .or_else(|| args.admin_token.clone()),
+        );
+        // and each target's circuit-breaker state, so the dashboard can show the
+        // fleet's breakers (#2254)
+        breaker_report::spawn(
             state.clone(),
             &telemetry_snapshot_url,
             args.internal_token
