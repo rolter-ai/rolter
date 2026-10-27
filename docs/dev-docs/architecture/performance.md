@@ -23,8 +23,9 @@ Goal: beat the reference Python proxy (LiteLLM cites ~8ms P95 added latency at 1
 Three layers. Only the third is on the per-PR gate:
 
 - **Micro-benches** (`just bench`) — criterion, covering balancer `pick` across
-  every strategy and the prefix trie. Compiled on every PR via clippy so they
-  cannot bit-rot, but not run (timings are noisy on shared runners).
+  every strategy and the prefix trie, the breaker and cooldown registries, and
+  the hot-path bench below. Compiled on every PR via clippy so they cannot
+  bit-rot, but not run (timings are noisy on shared runners).
 - **End-to-end load** (`just bench-sim` / `bench-vllm` / `bench-sglang`) —
   `integration/engines/bench.py` against a real engine, measuring rolter's added
   latency directly and its behaviour under sustained concurrency.
@@ -65,6 +66,38 @@ Two details worth knowing before extending it:
 To extend it to another hot-path component, add a test that warms any lazily
 built internals first — otherwise you measure first-call setup — then wraps the
 steady-state operation in `counting(...)` and asserts zero.
+
+### Hot-path bench (#1054)
+
+`crates/rolter-gateway/benches/hot_path.rs` (`just bench-hot-path`) measures the
+path a request takes to a target, and prints an **allocs/op table before the
+timings**. It installs the same per-thread counting allocator as
+`hot_path_allocations.rs`, but only for the bench binary, so it reports counts
+for paths too large to assert zero on (a pipeline pick allocates its candidate
+and score vectors) and a regression shows up as a number that moved. It covers:
+
+- `admission` — `Breaker::allows`, `Cooldowns::is_parked` and `Health::is_healthy`
+  for an 8-target route, all healthy.
+- `eligible_pick/<strategy>/<variant>/<targets>` — one `pick_eligible` the way
+  `pick_untried` makes it, over 4, 24, 64 and 128 targets, with one target
+  parked, one unhealthy, both at load 0 so a strategy that ignores eligibility
+  reads them as the emptiest.
+- `snapshot_read` — `AppState.snapshot.load()` plus the route lookup, over 10 and
+  1000 routes.
+
+The load harness is not duplicated: `just load-sim` (above) already drives
+`fake-llm`-style traffic through `/v1/*` for throughput and p50/p99, and is the
+place to look at end-to-end numbers. The bench here is for the pieces that run
+inside one request.
+
+**Regression signal.** Nothing gates on timings. To compare a branch with
+`master`, run the `bench-hot-path` workflow (Actions, _Run workflow_): it is
+`workflow_dispatch`-only and not part of `ci-ok`, it benches the base ref with
+`--save-baseline base` and then the dispatched ref with `--baseline base`, and
+prints criterion's change report and the allocs/op table in the job summary.
+Locally, the same two commands on two checkouts do it. Read the allocs/op column
+first: a count is exact where a shared-runner duration swings by tens of
+percent.
 
 ### Tool decision (#847, closing #455)
 
@@ -139,7 +172,27 @@ Two measurement rules worth knowing when reading the JSON:
 
 ### Baseline
 
-No baseline snapshot is recorded yet. It needs a run on fixed, documented
+**Hot-path bench, a development VM (not the fixed-hardware baseline).** Measured
+on a cloud VM: 4 vCPU Intel Xeon @ 2.8 GHz, 16 GB, shared host, `release`
+profile, `--warm-up-time 1 --measurement-time 2`, one run. Treat the timings as
+an order of magnitude; the allocation counts are exact. The numbers below are the
+state before the eligibility change of #1942.
+
+| path                                                   | time (median)           | allocs/op    |
+| ------------------------------------------------------ | ----------------------- | ------------ |
+| `admission`, 8 targets, three registries               | 0.99 µs                 | 0            |
+| `snapshot_read`, 1000 routes                           | 37 ns                   | 0            |
+| `eligible_pick/round_robin`, 4 to 128 targets          | 18 to 19 ns             | 0            |
+| `eligible_pick/power_of_two`, 4 to 128 targets         | 19 to 20 ns             | 0            |
+| `eligible_pick/cache_aware`, 4 targets / 24 / 64 / 128 | 7.7 / 82 / 288 / 578 µs | 0, 0, 0, 1   |
+| `eligible_pick/pipeline`, 4 targets / 24 / 64 / 128    | 15 / 95 / 292 / 572 µs  | 6, 9, 10, 11 |
+
+`cache_aware` and `pipeline` are dominated by their own work, not the
+eligibility closure: the bench has every target hold the same prompt, so the
+prefix trie match runs in full per target. Both scale linearly with the pool.
+
+The fixed-hardware baseline (#894) is still not recorded, and neither is an
+end-to-end one. A baseline needs a run on fixed, documented
 hardware, and a number taken on a laptop under thermal throttling would be worse
 than none — an unreproducible baseline invites false regressions. Record
 hardware, engine version and rolter version alongside the numbers when one is
