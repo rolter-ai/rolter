@@ -201,6 +201,21 @@ export type {
   GuardrailProviderTestErrorKind,
   GuardrailProviderTestResult,
 } from "./guardrails";
+export {
+  BREAKER_STATE_POLL_MS,
+  fetchBreakerState,
+  useBreakerState,
+  breakerFor,
+  isTripped,
+  worstBreaker,
+  breakerLabel,
+} from "./breakerState";
+export type {
+  BreakerStateName,
+  BreakerNodeDto,
+  BreakerTargetDto,
+  BreakerStateDto,
+} from "./breakerState";
 export { fetchUptime, fetchMttr, fetchHealthTimeline } from "./health";
 export type { HealthGrain, UptimeRow, MttrRow, TimelineRow } from "./health";
 export {

@@ -32,12 +32,12 @@ D2–D4 run, and SigNoz `rolter · overview` for anything that got slower.
 
 ## D2 — know it is healthy
 
-| #    | step                                                  | where                                                                  | expect                                                                            | status                                        |
-| ---- | ----------------------------------------------------- | ---------------------------------------------------------------------- | --------------------------------------------------------------------------------- | --------------------------------------------- |
-| D2.1 | liveness and readiness                                | `/healthz`, `/readyz` on both planes                                   | liveness never depends on the database; readiness does                            | verified                                      |
-| D2.2 | every node on the current config                      | **Cluster Config**                                                     | each gateway live and converged; a lagging one is distinguishable from a dead one | verified                                      |
-| D2.3 | the fleet's own picture                               | **Circuit Breaker**, **Adaptive Routing → Telemetry**, provider health | breaker states, per-target latency, adaptive engagement                           | works; dogfood adaptive never engages — #1817 |
-| D2.4 | metrics and traces in the tools the team already uses | `/metrics`; **Connectors** for OTLP export                             | request rate, latency, errors, queue depth; traces in the team's backend          | verified (#1855)                              |
+| #    | step                                                  | where                                                                                 | expect                                                                                                       | status                                        |
+| ---- | ----------------------------------------------------- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ | --------------------------------------------- |
+| D2.1 | liveness and readiness                                | `/healthz`, `/readyz` on both planes                                                  | liveness never depends on the database; readiness does                                                       | verified                                      |
+| D2.2 | every node on the current config                      | **Cluster Config**                                                                    | each gateway live and converged; a lagging one is distinguishable from a dead one                            | verified                                      |
+| D2.3 | the fleet's own picture                               | **Provider Health** (live breaker state per target), **Adaptive Routing → Telemetry** | breaker state per target and how many gateways hold it open (#2254), per-target latency, adaptive engagement | works; dogfood adaptive never engages — #1817 |
+| D2.4 | metrics and traces in the tools the team already uses | `/metrics`; **Connectors** for OTLP export                                            | request rate, latency, errors, queue depth; traces in the team's backend                                     | verified (#1855)                              |
 
 ## D3 — tune capacity
 

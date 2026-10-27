@@ -1125,7 +1125,11 @@ async fn rbac_matrix_and_effective_permissions_are_api_backed() {
             "stability:read",
             "public_url:read",
             "my_password:update",
-            "my_budget:read"
+            "my_budget:read",
+            // the fleet's breaker state and gateway counts (#2254, #2013): the
+            // handlers narrow or count, so they take authentication alone
+            "breaker_state:read",
+            "cluster_summary:read"
         ]
     );
 

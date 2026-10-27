@@ -166,6 +166,8 @@
               "api/mcp",
               "api/models",
               "api/health-and-metrics",
+              "api/breaker-state",
+              "api/cluster-summary",
               "api/stability",
               "api/config-problems",
               "api/ui-events",

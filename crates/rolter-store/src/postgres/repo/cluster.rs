@@ -4,7 +4,7 @@ use sqlx::PgPool;
 
 use rolter_core::Result;
 
-use super::super::models::{AdaptiveRoutingTelemetry, ClusterNode};
+use super::super::models::{AdaptiveRoutingTelemetry, BreakerState, ClusterNode};
 use super::support::{fetch_optional_or_not_found, require_affected, store_err};
 
 /// Cluster inventory: one row per gateway/control node, upserted from the
@@ -178,6 +178,90 @@ impl AdaptiveRoutingTelemetryRepo<'_> {
     pub async fn prune(&self, max_age_secs: i64) -> Result<u64> {
         let res = sqlx::query(
             "delete from adaptive_routing_telemetry \
+             where reported_at < now() - make_interval(secs => $1::double precision)",
+        )
+        .bind(max_age_secs as f64)
+        .execute(self.0)
+        .await
+        .map_err(store_err)?;
+        Ok(res.rows_affected())
+    }
+}
+
+/// Circuit-breaker state: what each gateway node has most recently reported
+/// for each `(model, target)` it holds a breaker entry for (#2254).
+pub struct BreakerStateRepo<'a>(pub &'a PgPool);
+
+/// One target's breaker as a node reports it.
+pub struct BreakerSample<'a> {
+    pub model: &'a str,
+    pub target_index: i32,
+    pub provider: &'a str,
+    pub upstream_model: &'a str,
+    pub state: &'a str,
+    pub consecutive_failures: i32,
+    pub retry_after_secs: Option<i32>,
+}
+
+impl BreakerStateRepo<'_> {
+    /// Replace everything `node_id` has reported with `samples`, atomically, so
+    /// a breaker that has closed (and left the node's registry) disappears in
+    /// the same transaction that records the rest.
+    pub async fn report(&self, node_id: &str, samples: &[BreakerSample<'_>]) -> Result<()> {
+        let mut tx = self.0.begin().await.map_err(store_err)?;
+        sqlx::query("delete from breaker_state where node_id = $1")
+            .bind(node_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(store_err)?;
+        for sample in samples {
+            sqlx::query(
+                "insert into breaker_state \
+                    (node_id, model, target_index, provider, upstream_model, state, \
+                     consecutive_failures, retry_after_secs, reported_at) \
+                 values ($1, $2, $3, $4, $5, $6, $7, $8, now()) \
+                 on conflict (node_id, model, target_index) do update set \
+                    provider = excluded.provider, upstream_model = excluded.upstream_model, \
+                    state = excluded.state, \
+                    consecutive_failures = excluded.consecutive_failures, \
+                    retry_after_secs = excluded.retry_after_secs, reported_at = now()",
+            )
+            .bind(node_id)
+            .bind(sample.model)
+            .bind(sample.target_index)
+            .bind(sample.provider)
+            .bind(sample.upstream_model)
+            .bind(sample.state)
+            .bind(sample.consecutive_failures)
+            .bind(sample.retry_after_secs)
+            .execute(&mut *tx)
+            .await
+            .map_err(store_err)?;
+        }
+        tx.commit().await.map_err(store_err)
+    }
+
+    /// Every row reported within `max_age_secs`. Older rows are never served as
+    /// if they were current.
+    pub async fn list_fresh(&self, max_age_secs: i64) -> Result<Vec<BreakerState>> {
+        sqlx::query_as(
+            "select node_id, model, target_index, provider, upstream_model, state, \
+                    consecutive_failures, retry_after_secs, reported_at \
+             from breaker_state \
+             where reported_at > now() - make_interval(secs => $1::double precision) \
+             order by model, target_index, node_id",
+        )
+        .bind(max_age_secs as f64)
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)
+    }
+
+    /// Drop rows older than `max_age_secs`, so a node that is scaled down
+    /// eventually leaves the view instead of lingering forever.
+    pub async fn prune(&self, max_age_secs: i64) -> Result<u64> {
+        let res = sqlx::query(
+            "delete from breaker_state \
              where reported_at < now() - make_interval(secs => $1::double precision)",
         )
         .bind(max_age_secs as f64)

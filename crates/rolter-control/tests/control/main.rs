@@ -20,7 +20,10 @@ macro_rules! skip_without_db {
 mod api_tokens;
 mod audit;
 mod auth;
+mod batch_reads;
+mod breaker_state;
 mod budgets;
+mod cluster_summary;
 mod crud;
 mod guardrails;
 mod log_erasure;
