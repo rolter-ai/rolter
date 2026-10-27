@@ -1459,6 +1459,11 @@ fn operations() -> Vec<Op> {
                 "Delete a saved filter preset",
             ),
             Op::get(
+                "/api/v1/orgs/{org_id}/mfa-status",
+                "getOrgMfaStatus",
+                "Which members of an organization have an armed second factor",
+            ),
+            Op::get(
                 "/api/v1/me/mfa",
                 "getMyMfa",
                 "Second-factor state and policy for the calling account",

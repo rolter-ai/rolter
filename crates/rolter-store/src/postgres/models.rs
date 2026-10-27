@@ -1056,6 +1056,23 @@ pub struct MfaPolicyBinding {
     pub enforce_after: Option<DateTime<Utc>>,
 }
 
+/// One org member's second-factor state, for an admin deciding what a
+/// `required_*` policy would lock out (#1590). No secret and no hash: only
+/// whether a factor is armed and how many recovery codes are left.
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct OrgMemberMfa {
+    pub user_id: Uuid,
+    pub email: String,
+    /// the account is a deployment superadmin, which is who `required_superadmin`
+    /// binds
+    pub is_superadmin: bool,
+    /// an armed (confirmed) factor, which is what a `required_*` policy asks
+    /// for; a half-finished enrolment is not one
+    pub enabled: bool,
+    /// unspent recovery codes; always `0` without an armed factor
+    pub recovery_codes_remaining: i64,
+}
+
 /// What the dashboard and the login exchange may know about a user's second
 /// factor. Deliberately not the row: the sealed secret has no representation
 /// here at all, so there is no serialisation path that could leak it (#1078).
