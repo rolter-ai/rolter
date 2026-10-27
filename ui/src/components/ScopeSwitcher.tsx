@@ -44,6 +44,7 @@ import { useCreateProjectOpener, useScope } from "@/lib/scope";
 import { slugify } from "@/lib/slug";
 import { useToast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
+import { SHELL_SCREEN, UxScreenProvider, useFormTelemetry } from "@/lib/ux-react";
 
 type Level = "org" | "team" | "project";
 
@@ -218,7 +219,9 @@ export function ScopeSwitcher({ folded = false }: { folded?: boolean }) {
   };
 
   return (
-    <>
+    // the dialogs below are raised from the rail, outside any screen, so they
+    // report under the shell's own key rather than going unseen (#1895)
+    <UxScreenProvider screen={SHELL_SCREEN}>
       <button
         ref={trigger}
         type="button"
@@ -321,7 +324,7 @@ export function ScopeSwitcher({ folded = false }: { folded?: boolean }) {
         target={settingsTarget}
         onOpenChange={(next) => !next && setSettingsTarget(null)}
       />
-    </>
+    </UxScreenProvider>
   );
 }
 
@@ -405,17 +408,19 @@ export function CreateProjectHost() {
   });
 
   return (
-    <CreateScopeDialog
-      level={open ? "project" : null}
-      orgId={scope.orgId}
-      teamId={scope.teamId}
-      onOpenChange={(next) => !next && setOpen(false)}
-      onCreated={(_, id) => {
-        queryClient.invalidateQueries({ queryKey: ["scope"] });
-        scope.setProjectId(id);
-        setOpen(false);
-      }}
-    />
+    <UxScreenProvider screen={SHELL_SCREEN}>
+      <CreateScopeDialog
+        level={open ? "project" : null}
+        orgId={scope.orgId}
+        teamId={scope.teamId}
+        onOpenChange={(next) => !next && setOpen(false)}
+        onCreated={(_, id) => {
+          queryClient.invalidateQueries({ queryKey: ["scope"] });
+          scope.setProjectId(id);
+          setOpen(false);
+        }}
+      />
+    </UxScreenProvider>
   );
 }
 
@@ -660,6 +665,13 @@ function CreateScopeDialog({
     if (open) setName("");
   }, [open, level]);
 
+  // the form's name follows the level it was opened at, and keeps it through
+  // the closing edge, when `level` is already null: an abandon filed then must
+  // still say which level was asked about (#1895)
+  const lastLevel = React.useRef<Level>("project");
+  if (level) lastLevel.current = level;
+  const ux = useFormTelemetry(`${lastLevel.current}-create`, open, { dirty: name.trim() !== "" });
+
   const create = useMutation({
     mutationFn: async () => {
       if (level === "org") return createOrg({ name, slug: slugify(name) });
@@ -667,12 +679,14 @@ function CreateScopeDialog({
       return createProject(teamId as string, { name });
     },
     onSuccess: (row) => {
+      ux.saved();
       // the dialog closes on success, so the outcome is announced somewhere
       // that outlives it (#1197)
       toast.push({ tone: "success", title: t("toast.created", { what: row.name }) });
       if (level) onCreated(level, row.id);
     },
     onError: (error) => {
+      ux.failed();
       toast.push({
         tone: "error",
         title: t("toast.saveFailed", { what: name }),
@@ -687,7 +701,10 @@ function CreateScopeDialog({
     <Dialog
       open={open}
       onOpenChange={onOpenChange}
-      onSubmit={() => create.mutate()}
+      onSubmit={() => {
+        ux.submitted();
+        create.mutate();
+      }}
       canSubmit={!!name.trim()}
       busy={create.isPending}
     >
