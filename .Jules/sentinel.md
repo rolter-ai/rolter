@@ -67,3 +67,8 @@
 
 **Learning:** `proxy_ws` in `crates/rolter-control/src/proxy.rs` previously logged raw `tungstenite` error messages with `tracing::warn!(%error, ...)` when WebSocket client requests failed URL parsing. Because `tungstenite` quotes the entire URL in its error message, any sensitive query parameters (like virtual keys or session tokens) were logged unredacted in server log streams.
 **Prevention:** Always run error strings generated from client or upstream URL parsing through `rolter_core::redact::redact_urls_in_text` before logging them with `tracing`.
+
+## 2026-10-25 - Redact Sensitive URL Credentials in SSO Internal Error Logs
+
+**Learning:** `api_error_message(err)` in `crates/rolter-control/src/sso.rs` previously logged raw internal errors using `tracing::error!(error = %e, "sso error occurred")`. When internal errors (e.g. database connection strings or HTTP error messages) contained URLs with query parameters or basic auth userinfo, credentials could be written unredacted to system logs.
+**Prevention:** Always run internal error display strings through `rolter_core::redact::redact_urls_in_text(&e.to_string())` before logging them with `tracing::error!` or `tracing::warn!`.
