@@ -324,7 +324,7 @@ async fn a_gated_control_plane_reports_a_plain_missing_session_on_me() {
 async fn self_service_key_lifecycle() {
     skip_without_db!();
     let password = random_password();
-    let (app, _db) = fresh_app().await;
+    let (app, db) = fresh_app().await;
     let addr = serve(app).await;
     let client = reqwest::Client::new();
     let base = format!("http://{addr}");
@@ -400,7 +400,12 @@ async fn self_service_key_lifecycle() {
             "{base}/api/v1/me/projects/{project_id}/virtual-keys"
         ))
         .bearer_auth(&token)
-        .json(&json!({"name": "laptop", "models": ["gpt-4o"]}))
+        .json(&json!({
+            "name": "laptop",
+            "models": ["gpt-4o"],
+            "budget": {"limit_usd": "25"},
+            "rate_limit": {"rpm": 10},
+        }))
         .send()
         .await
         .unwrap();
@@ -437,6 +442,22 @@ async fn self_service_key_lifecycle() {
     let rotated: Value = rotated.json().await.unwrap();
     let new_id = rotated["id"].as_str().unwrap().to_string();
     assert_ne!(new_id, key_id);
+    // rotating a bounded key must not hand back an unbounded one (#1171)
+    let caps = |id: String| {
+        let pool = db.pool().clone();
+        async move {
+            sqlx::query_as::<_, (i64, i64)>(
+                "select (select count(*) from budgets where scope_type = 'virtual_key' and scope_id = $1::uuid),
+                        (select count(*) from rate_limits where scope_type = 'virtual_key' and scope_id = $1::uuid)",
+            )
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        }
+    };
+    assert_eq!(caps(key_id.clone()).await, (1, 1));
+    assert_eq!(caps(new_id.clone()).await, (1, 1));
 
     let after: Value = client
         .get(format!("{base}/api/v1/me/virtual-keys"))

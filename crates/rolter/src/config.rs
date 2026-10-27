@@ -54,8 +54,13 @@ pub async fn run(args: ConfigArgs) -> anyhow::Result<()> {
             let pool = rolter_store::postgres::connect(&export.database_url).await?;
             let store = PostgresConfigStore::new(pool.clone());
             let config = store.load().await;
+            let document = match &config {
+                Ok(config) => rolter_control::config_export::export_document(&pool, config).await,
+                Err(_) => Ok(String::new()),
+            };
             pool.close().await;
-            let document = rolter_control::config_export::render(&config?);
+            config?;
+            let document = document?;
             match export.output {
                 // the document goes to the file and the confirmation to stderr,
                 // so `rolter config export > rolter.toml` and `--output` both

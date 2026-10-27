@@ -908,7 +908,7 @@ Spend caps block requests with HTTP `402` once a scope's cumulative cost reaches
 </Note>
 
 <ParamField path="scope" type="string" required>
-  The scope level this budget applies to. One of `org`, `team`, `project`, `key`, `business_unit` or `customer`.
+  The scope level this budget applies to. One of `org`, `team`, `project`, `key`, `business_unit`, `customer` or `user`. A `user` budget counts every key that person minted, whatever project it lives in.
 </ParamField>
 
 <ParamField path="id" type="string" required>
@@ -925,6 +925,10 @@ Spend caps block requests with HTTP `402` once a scope's cumulative cost reaches
 
 <ParamField path="unpriced_policy" type="string">
   This budget's own answer to traffic the gateway cannot price: `ignore`, `warn` or `block`. Omit it to inherit the deployment-wide `unpriced_policy`. The most restrictive answer across the scope chain and the deployment setting wins, so a budget can tighten what the deployment asked for but never loosen it. See [Per-budget override](/security/budgets-and-rate-limits#per-budget-override).
+</ParamField>
+
+<ParamField path="within" type="table">
+  Narrows a `user` budget to the keys the person minted in one org, `{ org = "org-uuid" }`, or one project, `{ project = "project-uuid" }`. Omit it to count all of their keys. Has no meaning on any other scope.
 </ParamField>
 
 ```toml
@@ -962,7 +966,7 @@ unpriced_policy = "block"
 Throughput caps reject excess requests with HTTP `429` and a `Retry-After` header. Limits use a Redis sliding-window counter; without Redis they fail open. At least one of `rpm` or `tpm` must be set — a limit with neither never blocks anything.
 
 <ParamField path="scope" type="string" required>
-  The scope level this limit applies to. One of `org`, `team`, `project`, `key`, `business_unit` or `customer`.
+  The scope level this limit applies to. One of `org`, `team`, `project`, `key`, `business_unit`, `customer` or `user`. A `user` limit counts every key that person minted.
 </ParamField>
 
 <ParamField path="id" type="string" required>
@@ -975,6 +979,10 @@ Throughput caps reject excess requests with HTTP `429` and a `Retry-After` heade
 
 <ParamField path="tpm" type="u32">
   Tokens per minute cap (prompt \+ completion combined). Omit to leave token rate uncapped.
+</ParamField>
+
+<ParamField path="within" type="table">
+  Narrows a `user` limit to the keys the person minted in one org, `{ org = "org-uuid" }`, or one project, `{ project = "project-uuid" }`. Omit it to count all of their keys. Has no meaning on any other scope.
 </ParamField>
 
 ```toml

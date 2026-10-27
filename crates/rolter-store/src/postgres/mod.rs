@@ -15,8 +15,8 @@ use rolter_core::{
     McpAuthKind, McpOAuthSessionConfig, McpServerConfig, ModelPolicy, ModelPriceConfig, ModelRoute,
     ParamPolicy, PluginInstanceConfig, PluginStage, PluginsConfig, PromptTemplate,
     PromptTemplateActivationScope, PromptTemplatesConfig, ProviderConfig, ProviderGroupConfig,
-    ProviderKind, RateLimitConfig, Result, Target, TemplateVariable, Tenancy, UnpricedPolicy,
-    VirtualKeyRecord, WebhookAuth, WebhookStage,
+    ProviderKind, RateLimitConfig, Result, ScopeWithin, Target, TemplateVariable, Tenancy,
+    UnpricedPolicy, VirtualKeyRecord, WebhookAuth, WebhookStage,
 };
 use rust_decimal::Decimal;
 use sqlx::postgres::PgPoolOptions;
@@ -1245,7 +1245,7 @@ impl PostgresConfigStore {
             // String) or sqlx errors and the whole snapshot 500s — freezing every
             // polling gateway on its last config the moment any budget exists
             "select id, scope_type, scope_id, limit_usd::text as limit_usd, period,
-                    unpriced_policy, created_at
+                    unpriced_policy, created_at, within_org_id, within_project_id
              from budgets order by created_at",
         )
         .fetch_all(&self.pool)
@@ -1261,6 +1261,7 @@ impl PostgresConfigStore {
                     "virtual_key" => BudgetScope::Key,
                     "business_unit" => BudgetScope::BusinessUnit,
                     "customer" => BudgetScope::Customer,
+                    "user" => BudgetScope::User,
                     // unknown scope: skip rather than mis-enforce
                     _ => return None,
                 };
@@ -1274,6 +1275,7 @@ impl PostgresConfigStore {
                     limit_usd: r.limit_usd.parse().unwrap_or(Decimal::MAX),
                     period: parse_period(&r.period),
                     unpriced_policy: r.unpriced_policy.as_deref().and_then(parse_unpriced_policy),
+                    within: scope_within(r.within_org_id, r.within_project_id),
                 })
             })
             .collect())
@@ -1281,7 +1283,7 @@ impl PostgresConfigStore {
 
     async fn load_rate_limits(&self) -> Result<Vec<RateLimitConfig>> {
         let rows: Vec<RateLimit> = sqlx::query_as(
-            "select id, scope_type, scope_id, rpm, tpm, created_at
+            "select id, scope_type, scope_id, rpm, tpm, created_at, within_org_id, within_project_id
              from rate_limits order by created_at",
         )
         .fetch_all(&self.pool)
@@ -1297,6 +1299,7 @@ impl PostgresConfigStore {
                     "virtual_key" => BudgetScope::Key,
                     "business_unit" => BudgetScope::BusinessUnit,
                     "customer" => BudgetScope::Customer,
+                    "user" => BudgetScope::User,
                     // unknown scope: skip rather than mis-enforce
                     _ => return None,
                 };
@@ -1306,6 +1309,7 @@ impl PostgresConfigStore {
                     // non-positive caps are meaningless; treat them as unset
                     rpm: r.rpm.filter(|v| *v > 0).map(|v| v as u32),
                     tpm: r.tpm.filter(|v| *v > 0).map(|v| v as u32),
+                    within: scope_within(r.within_org_id, r.within_project_id),
                 })
             })
             .collect())
@@ -1779,6 +1783,16 @@ fn price_from_row(row: &ModelPrice) -> std::result::Result<ModelPriceConfig, Str
 /// one row, and moving an existing budget onto another window is not a guess
 /// to make on the operator's behalf. [`unrecognised_budget_period`] is what
 /// says it happened.
+/// The place a `user` cap is narrowed to, as the gateway matches it (#1830).
+fn scope_within(org: Option<Uuid>, project: Option<Uuid>) -> Option<ScopeWithin> {
+    match (org, project) {
+        (Some(org), None) => Some(ScopeWithin::Org(org.to_string())),
+        (None, Some(project)) => Some(ScopeWithin::Project(project.to_string())),
+        // the table's check constraint refuses both, so this is "neither"
+        _ => None,
+    }
+}
+
 fn parse_period(period: &str) -> BudgetPeriod {
     BudgetPeriod::parse(period).unwrap_or(BudgetPeriod::Monthly)
 }
@@ -1972,7 +1986,7 @@ impl ConfigStore for PostgresConfigStore {
         use crate::{ConfigProblem, ProblemOwner};
         let budgets: Vec<Budget> = sqlx::query_as(
             "select id, scope_type, scope_id, limit_usd::text as limit_usd, period,
-                    unpriced_policy, created_at
+                    unpriced_policy, created_at, within_org_id, within_project_id
              from budgets order by created_at",
         )
         .fetch_all(&self.pool)

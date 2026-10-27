@@ -8,6 +8,9 @@
 //! and admin steps check for an existing row first, so re-running creates
 //! nothing twice.
 //!
+//! Budgets and rate limits import by the portable name of their scope, not by
+//! database id (#1312); see `import_caps`.
+//!
 //! What this consumes is what [`crate::config_export::render`] emits: the two
 //! are the read and write halves of one round trip, so a section added to one
 //! belongs in the other (#1082).
@@ -46,11 +49,13 @@ use std::path::{Path, PathBuf};
 
 use argon2::password_hash::PasswordHasher;
 use argon2::Argon2;
-use rolter_core::{BalancingStrategy, GatewayConfig, PromptTemplate, ProviderKind};
+use rolter_core::{
+    BalancingStrategy, BudgetPeriod, BudgetScope, GatewayConfig, PromptTemplate, ProviderKind,
+};
 use rolter_store::postgres::repo::{
-    LoggingSettingsRepo, LoggingSettingsUpdate, ModelPriceRepo, NewModelPrice, NewProvider,
-    OrgRepo, ProjectRepo, ProviderGroupRepo, ProviderRepo, ProviderUpdate, RouteRepo,
-    RouteTargetRepo, TeamRepo, UnitRates,
+    BudgetRepo, LoggingSettingsRepo, LoggingSettingsUpdate, ModelPriceRepo, NewModelPrice,
+    NewProvider, OrgRepo, ProjectRepo, ProviderGroupRepo, ProviderRepo, ProviderUpdate,
+    RateLimitRepo, RouteRepo, RouteTargetRepo, TeamRepo, UnitRates, Within,
 };
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -221,6 +226,8 @@ const IMPORTED_SECTIONS: &[&str] = &[
     "provider_groups",
     "routes",
     "model_prices",
+    "budgets",
+    "rate_limits",
     "prompt_templates",
 ];
 
@@ -247,11 +254,6 @@ const MANAGED_IN: &[ManagedIn] = &[
         sections: &["adaptive_routing"],
         screen: "dashboard Adaptive Routing",
         endpoint: Some(("PUT", "/api/v1/adaptive-routing-policy")),
-    },
-    ManagedIn {
-        sections: &["budgets", "rate_limits"],
-        screen: "dashboard Limits",
-        endpoint: None,
     },
     ManagedIn {
         sections: &["virtual_keys", "db_virtual_keys"],
@@ -884,6 +886,7 @@ async fn import_config(
     }
     import_provider_groups(pool, org_id, project_id, config, &provider_ids).await?;
     import_model_prices(pool, config).await?;
+    import_caps(pool, config).await?;
     import_prompt_templates(pool, org_id, project_id, config).await?;
 
     Ok(())
@@ -1000,6 +1003,200 @@ async fn import_provider_groups(
         if !unresolved {
             groups.set_members(row.id, &members).await?;
         }
+    }
+    Ok(())
+}
+
+/// The row a portable `[[budgets]]` / `[[rate_limits]]` reference names on this
+/// deployment, as `(scope_type, scope_id)`; `None` when it names nothing here
+/// (#1312).
+///
+/// The reference is the file's `id`, spelled the way the export writes it:
+/// `acme` for an org slug, `acme/platform` for a team (org slug, team name),
+/// `acme/platform/gateway` for a project, `acme/payments` for a business unit
+/// or customer (org slug, its own slug). A database id is refused rather than
+/// resolved, since it is the thing that does not survive a move; a virtual key
+/// or a person has no name that does, so those are never resolved.
+async fn resolve_cap_scope(
+    pool: &PgPool,
+    scope: BudgetScope,
+    reference: &str,
+) -> anyhow::Result<Option<(&'static str, Uuid)>> {
+    if Uuid::parse_str(reference).is_ok() {
+        return Ok(None);
+    }
+    let parts: Vec<&str> = reference.split('/').collect();
+    let (scope_type, found): (&'static str, Option<Uuid>) = match (scope, parts.as_slice()) {
+        (BudgetScope::Org, [org]) => (
+            "org",
+            sqlx::query_scalar("select id from orgs where slug = $1")
+                .bind(org)
+                .fetch_optional(pool)
+                .await?,
+        ),
+        (BudgetScope::Team, [org, team]) => (
+            "team",
+            sqlx::query_scalar(
+                "select t.id from teams t join orgs o on o.id = t.org_id
+                 where o.slug = $1 and t.name = $2",
+            )
+            .bind(org)
+            .bind(team)
+            .fetch_optional(pool)
+            .await?,
+        ),
+        (BudgetScope::Project, [org, team, project]) => (
+            "project",
+            sqlx::query_scalar(
+                "select p.id from projects p join teams t on t.id = p.team_id
+                 join orgs o on o.id = t.org_id
+                 where o.slug = $1 and t.name = $2 and p.name = $3",
+            )
+            .bind(org)
+            .bind(team)
+            .bind(project)
+            .fetch_optional(pool)
+            .await?,
+        ),
+        (BudgetScope::BusinessUnit, [org, slug]) => (
+            "business_unit",
+            sqlx::query_scalar(
+                "select x.id from business_units x join orgs o on o.id = x.org_id
+                 where o.slug = $1 and x.slug = $2",
+            )
+            .bind(org)
+            .bind(slug)
+            .fetch_optional(pool)
+            .await?,
+        ),
+        (BudgetScope::Customer, [org, slug]) => (
+            "customer",
+            sqlx::query_scalar(
+                "select x.id from customers x join orgs o on o.id = x.org_id
+                 where o.slug = $1 and x.slug = $2",
+            )
+            .bind(org)
+            .bind(slug)
+            .fetch_optional(pool)
+            .await?,
+        ),
+        _ => return Ok(None),
+    };
+    Ok(found.map(|id| (scope_type, id)))
+}
+
+/// Upsert `[[budgets]]` and `[[rate_limits]]` (#1312).
+///
+/// A cap's identity is its scope plus, for a budget, its window; two caps that
+/// share one are matched to the file's entries in order, oldest first, so the
+/// export of a deployment that has two re-imports as two. An entry whose scope
+/// does not resolve here is left alone and reported, never half applied: the
+/// same rule as a provider group with a member the file cannot name. Rows the
+/// file does not mention are not deleted. A value outside what the column or
+/// the gateway can hold fails the import before it writes anything, as a
+/// negative price does.
+async fn import_caps(pool: &PgPool, config: &GatewayConfig) -> anyhow::Result<()> {
+    use rust_decimal::Decimal;
+    let ceiling: Decimal = "99999999.9999".parse()?;
+    for b in &config.budgets {
+        if b.limit_usd.is_sign_negative() || b.limit_usd > ceiling {
+            anyhow::bail!(
+                "budget on {:?} '{}': limit_usd must be from 0 to 99999999.9999",
+                b.scope,
+                b.id
+            );
+        }
+    }
+    for l in &config.rate_limits {
+        if l.rpm == Some(0) || l.tpm == Some(0) || (l.rpm.is_none() && l.tpm.is_none()) {
+            anyhow::bail!(
+                "rate limit on {:?} '{}': needs an rpm cap, a tpm cap or both, each at least 1",
+                l.scope,
+                l.id
+            );
+        }
+    }
+
+    let budgets = BudgetRepo(pool);
+    let mut taken: HashMap<(&'static str, Uuid, BudgetPeriod), usize> = HashMap::new();
+    for b in &config.budgets {
+        let Some((scope_type, scope_id)) = resolve_cap_scope(pool, b.scope, &b.id).await? else {
+            tracing::warn!(scope = ?b.scope, id = %b.id, "budget scope does not resolve on this deployment; left alone");
+            continue;
+        };
+        let nth = taken.entry((scope_type, scope_id, b.period)).or_default();
+        let same_window: Vec<_> = budgets
+            .list_for_scope(scope_type, scope_id)
+            .await?
+            .into_iter()
+            .filter(|row| BudgetPeriod::parse(&row.period) == Some(b.period))
+            .collect();
+        let limit = b.limit_usd.to_string();
+        let policy = b.unpriced_policy.map(|p| match p {
+            rolter_core::UnpricedPolicy::Ignore => "ignore",
+            rolter_core::UnpricedPolicy::Warn => "warn",
+            rolter_core::UnpricedPolicy::Block => "block",
+        });
+        match same_window.get(*nth) {
+            Some(row) => {
+                // the period is left in whatever spelling the row has: `30d`
+                // and `monthly` are one window, and rewriting one into the
+                // other would bump the version for nothing
+                let edit = budgets
+                    .update(row.id, Some(&limit), None, Some(policy))
+                    .await?;
+                if edit.changed {
+                    tracing::info!(scope = ?b.scope, id = %b.id, "updated budget from file");
+                }
+            }
+            None => {
+                let period = match b.period {
+                    BudgetPeriod::Daily => "daily",
+                    BudgetPeriod::Monthly => "monthly",
+                    BudgetPeriod::Total => "total",
+                };
+                budgets
+                    .create(
+                        scope_type,
+                        scope_id,
+                        &limit,
+                        period,
+                        policy,
+                        Within::default(),
+                    )
+                    .await?;
+                tracing::info!(scope = ?b.scope, id = %b.id, "created budget");
+            }
+        }
+        *nth += 1;
+    }
+
+    let limits = RateLimitRepo(pool);
+    let mut taken: HashMap<(&'static str, Uuid), usize> = HashMap::new();
+    for l in &config.rate_limits {
+        let Some((scope_type, scope_id)) = resolve_cap_scope(pool, l.scope, &l.id).await? else {
+            tracing::warn!(scope = ?l.scope, id = %l.id, "rate limit scope does not resolve on this deployment; left alone");
+            continue;
+        };
+        let nth = taken.entry((scope_type, scope_id)).or_default();
+        let existing = limits.list_for_scope(scope_type, scope_id).await?;
+        let rpm = l.rpm.map(i32::try_from).transpose()?;
+        let tpm = l.tpm.map(i32::try_from).transpose()?;
+        match existing.get(*nth) {
+            Some(row) => {
+                let edit = limits.update(row.id, Some(rpm), Some(tpm)).await?;
+                if edit.changed {
+                    tracing::info!(scope = ?l.scope, id = %l.id, "updated rate limit from file");
+                }
+            }
+            None => {
+                limits
+                    .create(scope_type, scope_id, rpm, tpm, Within::default())
+                    .await?;
+                tracing::info!(scope = ?l.scope, id = %l.id, "created rate limit");
+            }
+        }
+        *nth += 1;
     }
     Ok(())
 }
