@@ -27,7 +27,13 @@ pub mod trie;
 use trie::Trie;
 
 /// Per-request context a balancer may use to make a decision.
+///
+/// `#[non_exhaustive]`, so a field added later is not a semver break (#1969).
+/// Outside this crate build one with [`RouteContext::new`] (or `default()`) and
+/// the `with_*` setters; a struct literal, with or without `..Default::default()`,
+/// does not compile there. Inside the crate a literal still works.
 #[derive(Debug, Default, Clone)]
+#[non_exhaustive]
 pub struct RouteContext<'a> {
     /// stable session/user identifier extracted from headers or body
     pub session_key: Option<&'a str>,
@@ -54,6 +60,49 @@ pub struct RouteContext<'a> {
     /// affinity; `None` on a route with no adapters, which leaves adapter
     /// scoring inert.
     pub adapter: Option<&'a str>,
+}
+
+impl<'a> RouteContext<'a> {
+    /// An empty context: no session, prompt, token ids or adapter.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set the session key.
+    #[must_use]
+    pub fn with_session_key(mut self, session_key: Option<&'a str>) -> Self {
+        self.session_key = session_key;
+        self
+    }
+
+    /// Set the prompt text.
+    #[must_use]
+    pub fn with_prompt(mut self, prompt: Option<&'a str>) -> Self {
+        self.prompt = prompt;
+        self
+    }
+
+    /// Set the length and digest of the whole prompt `prompt` was taken from.
+    #[must_use]
+    pub fn with_prompt_summary(mut self, len: Option<usize>, digest: Option<u64>) -> Self {
+        self.prompt_len = len;
+        self.prompt_digest = digest;
+        self
+    }
+
+    /// Set the token ids used for exact block-prefix matching.
+    #[must_use]
+    pub fn with_token_ids(mut self, token_ids: Option<&'a [u32]>) -> Self {
+        self.token_ids = token_ids;
+        self
+    }
+
+    /// Set the LoRA adapter the request needs.
+    #[must_use]
+    pub fn with_adapter(mut self, adapter: Option<&'a str>) -> Self {
+        self.adapter = adapter;
+        self
+    }
 }
 
 /// A strategy that selects one target index for a request.

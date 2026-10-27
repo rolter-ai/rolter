@@ -3329,16 +3329,12 @@ async fn proxy_multipart(
     let recorder = SpendRecorder::new(state.budgets.clone(), snap.budgets.clone(), scope);
 
     let token_ids = parse_vllm_token_ids(&headers);
-    let ctx = RouteContext {
-        session_key: headers.get("x-session-id").and_then(|v| v.to_str().ok()),
-        prompt: None,
-        prompt_len: None,
-        prompt_digest: None,
-        token_ids: token_ids.as_deref(),
+    let ctx = RouteContext::new()
+        .with_session_key(headers.get("x-session-id").and_then(|v| v.to_str().ok()))
+        .with_token_ids(token_ids.as_deref())
         // see the chat path: an adapter only exists when the request addresses
         // something other than the route's own model
-        adapter: (model != entry.route.model).then_some(model.as_str()),
-    };
+        .with_adapter((model != entry.route.model).then_some(model.as_str()));
     // trace context plus any client headers the operator allowlisted (#564)
     let trace_ctx =
         crate::trace::outbound_headers(&headers, &state.forwarder.forwarded_header_names());
@@ -6060,10 +6056,8 @@ mod tests {
             variants: vec![variant.clone()],
             tenancy: None,
         };
-        let ctx = RouteContext {
-            prompt: Some("system: you are a careful assistant\nuser: hi\n"),
-            ..Default::default()
-        };
+        let ctx = RouteContext::new()
+            .with_prompt(Some("system: you are a careful assistant\nuser: hi\n"));
         let cache_aware = rolter_balancer::CacheAware::new(3, 0.5);
         rolter_balancer::LoadBalancer::observe(&cache_aware, 1, &ctx);
         let entry = crate::state::RouteEntry {
@@ -6484,10 +6478,8 @@ mod tests {
             variant_balancers: Vec::new(),
             route,
         };
-        let ctx = RouteContext {
-            prompt: Some("system: you are a careful assistant\nuser: hi\n"),
-            ..Default::default()
-        };
+        let ctx = RouteContext::new()
+            .with_prompt(Some("system: you are a careful assistant\nuser: hi\n"));
         entry.balancer.observe(1, &ctx);
         let cd = crate::cooldowns::Cooldowns::default();
         let hh = crate::health::Health::new();

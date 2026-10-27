@@ -65,16 +65,16 @@ pub(crate) fn route_context<'a>(
     token_ids: Option<&'a [u32]>,
     adapter: Option<&'a str>,
 ) -> rolter_balancer::RouteContext<'a> {
-    rolter_balancer::RouteContext {
-        session_key,
-        prompt: affinity
-            .map(|a| a.text.as_str())
-            .or_else(|| std::str::from_utf8(raw_body).ok()),
-        prompt_len: affinity.map(|a| a.len),
-        prompt_digest: affinity.map(|a| a.digest),
-        token_ids,
-        adapter,
-    }
+    rolter_balancer::RouteContext::new()
+        .with_session_key(session_key)
+        .with_prompt(
+            affinity
+                .map(|a| a.text.as_str())
+                .or_else(|| std::str::from_utf8(raw_body).ok()),
+        )
+        .with_prompt_summary(affinity.map(|a| a.len), affinity.map(|a| a.digest))
+        .with_token_ids(token_ids)
+        .with_adapter(adapter)
 }
 
 /// The affinity of a JSON request to `path`, or `None` when the body has no
