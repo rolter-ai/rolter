@@ -61,7 +61,7 @@ jobs:
   # fails the job when one was skipped
   rust-lint:
     name: rust lint
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     # about 4 min warm and 8-10 cold after a Cargo.lock bump, which pull
     # requests no longer cache for each other. a hung step fails the gate in
     # half an hour instead of GitHub's 360-minute default
@@ -226,7 +226,7 @@ jobs:
   # failure into a warning, never an error (ADR-0032, ADR-0034)
   rust-build:
     name: rust build
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     # about 3.5 min warm before the image smoke, which adds a debug build of the
     # image binaries, a vite build and the smoke itself; the builds can take 20
     # cold, and the semver step carries a limit of its own
@@ -578,7 +578,7 @@ jobs:
   # explicit doc-test pass since nextest does not run doc tests.
   test:
     name: nextest / doctests
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     # warm runs take 6-10 min. the limit leaves room for a cold build after a
     # Cargo.lock bump, which pull requests no longer cache for each other, while
     # a hung test fails the gate in half an hour instead of GitHub's 360-minute
@@ -705,7 +705,7 @@ jobs:
   # report, or it runs without the report ever vouching for it
   static:
     name: static checks
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     # about 90 s of work. without a timeout a hung step would hold the runner,
     # and every sibling's verdict with it, for GitHub's 360-minute default
     timeout-minutes: 20
@@ -1287,7 +1287,7 @@ jobs:
   # `bun install` does not hide a docs failure
   ui:
     name: ui, storybook, docs
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     # about 4 min, three of them the play tests (2,146 stories on vitest, #2907);
     # the chromium download and the storybook build are under a minute together.
     # a hung play test fails the gate in 25 minutes instead of GitHub's
@@ -1582,7 +1582,7 @@ jobs:
   coverage:
     name: coverage (informational)
     if: github.event_name == 'pull_request'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     continue-on-error: true
     # same postgres service as the nextest job so the store + control-plane
     # integration tests actually run under coverage (they self-skip when

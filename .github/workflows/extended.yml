@@ -55,7 +55,7 @@ jobs:
   # ROLTER_DATABASE_URL). see ROL-245
   compose-smoke:
     name: compose smoke
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -75,7 +75,7 @@ jobs:
   # `str::floor_char_boundary` and the 1.89 that uuid declares (#2026)
   msrv:
     name: msrv build
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -117,7 +117,7 @@ jobs:
   # steps identical, or the keys drift and PR coverage builds cold
   coverage:
     name: coverage
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 60
     services:
       postgres:
@@ -189,7 +189,7 @@ jobs:
   # reads bun.lock
   bun-pin:
     name: bun pin
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -221,7 +221,7 @@ jobs:
   # issue. needs no install: bun audit reads package.json and bun.lock
   ui-audit:
     name: ui lockfile audit
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

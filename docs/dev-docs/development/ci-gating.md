@@ -836,15 +836,37 @@ will ever merge that sha.
 
 ## Runner image pin
 
-Every workflow runs on `ubuntu-24.04`, never `ubuntu-latest`. GitHub moves the
-`ubuntu-latest` label to Ubuntu 26 on 2026-10-19 (#2662), which changes the
-preinstalled tools, the default Docker and compose versions and the system
-libraries under the gate at once, so the compose smoke test, coverage, the
+Every workflow runs on `ubuntu-26.04`, never `ubuntu-latest`. GitHub moved the
+`ubuntu-latest` label to Ubuntu 26 on 2026-10-19 (#2662), and a floating label
+changes the preinstalled tools, the default Docker and compose versions and the
+system libraries under the gate at once, so the compose smoke test, coverage, the
 Playwright `--with-deps` install and the release image build could all start
-failing on an unrelated pull request. The pin is deliberate. Moving to
-`ubuntu-26.04` is a tracked follow-up (#2736), done on a branch where a
-dispatch run of `quality.yml` and `extended.yml` shows what breaks. New
-workflows and matrix entries use the explicit `ubuntu-24.04` label too.
+failing on an unrelated pull request. The pin is deliberate, and it names the
+release the gate has been verified on. #2662 first pinned `ubuntu-24.04` while
+the label was about to move; #2736 moved every pin to `ubuntu-26.04` on purpose,
+on a branch, instead of letting the label do it underneath the gate, because
+24.04 will eventually leave the hosted-runner support window. New workflows and
+matrix entries use the explicit `ubuntu-26.04` label too, and so do the
+`matrix.os == '…'` conditions in `release.yml` that pick the Linux steps. Two
+jobs still said `ubuntu-latest` when #2736 landed (`ui lockfile audit` in
+`extended.yml` and `sign images` in `release.yml`); they are pinned like the rest.
+
+Moving to the next release repeats the exercise: change every `runs-on` and the
+matrix strings together, dispatch `quality.yml` (open a pull request),
+`extended.yml` and the release workflows on the branch, and look at the four
+things the image change can break first: the compose smoke test, coverage
+(llvm-cov and the system libraries), Playwright's `install --with-deps chromium`
+(apt package names change between releases) and the release image and the maturin
+manylinux wheel builds.
+
+`macos-latest` and `windows-latest` are not pinned. They only run `cargo check`
+(`extended.yml`'s `macos check`) and build the macOS and Windows wheels, where the
+toolchain comes from an action and not from the image's packages, and a hosted
+macOS or Windows label moving on is a risk the wheel smoke test in `release.yml`
+already catches before anything publishes. Pin them the same way if one of those
+jobs starts to depend on something the image provides. The `"runs-on":
+"ubuntu-latest"` in `scripts/check-release-handoff.py` is a fixture for a job the
+checker must reject, not a workflow, and stays.
 
 ## `codeql (rust)` on a pull request with no Rust change
 
