@@ -17,6 +17,8 @@ import {
   useRouteModels,
   type CacheMode,
 } from "@/components/KeyMintFields";
+import { KeyCapFields } from "@/components/KeyCapFields";
+import { KeyCaps, capsOfKey } from "@/components/KeyCaps";
 import {
   AttributionBadges,
   KeyAttributionFields,
@@ -63,6 +65,9 @@ import {
   deleteVirtualKey,
   fetchBusinessUnits,
   fetchCustomers,
+  fetchOrgBudgetSpend,
+  fetchOrgBudgets,
+  fetchOrgRateLimits,
   fetchProviders,
   fetchVirtualKeys,
   setVirtualKeyAttribution,
@@ -76,6 +81,7 @@ import {
   type VirtualKeyRow,
 } from "@/lib/api";
 import { csvLine } from "@/lib/csv";
+import { EMPTY_CAPS, capsToInput, capsTouched, capsValid, type CapDraft } from "@/lib/key-caps";
 import { useFormat } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
 import { describeError, errorText } from "@/lib/error-copy";
@@ -123,8 +129,34 @@ export default function Keys() {
     retry: false,
   });
 
-  const invalidate = () =>
-    queryClient.invalidateQueries({ queryKey: [...KEYS_QUERY_KEY, scope.projectId] });
+  // each key's caps come from the two org-wide reads the Limits screen shares,
+  // filtered to the key, rather than one read per row, and one org-wide spend
+  // read answers what is left of every capped key (#3128). `retry: false` because a member without budget access gets a 403 that will
+  // not improve, and the row then simply carries no cap line
+  const budgets = useQuery({
+    queryKey: ["budgets", "in-org", scope.orgId],
+    queryFn: () => fetchOrgBudgets(scope.orgId as string),
+    enabled: !!scope.orgId,
+    retry: false,
+  });
+  const spend = useQuery({
+    queryKey: ["budgets", "in-org", scope.orgId, "spend"],
+    queryFn: () => fetchOrgBudgetSpend(scope.orgId as string),
+    enabled: !!scope.orgId && (budgets.data?.length ?? 0) > 0,
+    retry: false,
+  });
+  const rateLimits = useQuery({
+    queryKey: ["rate-limits", "in-org", scope.orgId],
+    queryFn: () => fetchOrgRateLimits(scope.orgId as string),
+    enabled: !!scope.orgId,
+    retry: false,
+  });
+
+  const invalidate = () => {
+    void queryClient.invalidateQueries({ queryKey: ["budgets"] });
+    void queryClient.invalidateQueries({ queryKey: ["rate-limits"] });
+    return queryClient.invalidateQueries({ queryKey: [...KEYS_QUERY_KEY, scope.projectId] });
+  };
 
   // the row toggles have no inline error line, so a refused change is the
   // toast's to report; a change that went through needs no announcement
@@ -303,6 +335,11 @@ export default function Keys() {
                   ? t("pages.virtualKeys.expiresOn", { date: fmt.date(key.expires_at) })
                   : t("pages.virtualKeys.noExpiry")}
               </div>
+              <KeyCaps
+                budgets={capsOfKey(budgets.data, key.id)}
+                rateLimits={capsOfKey(rateLimits.data, key.id)}
+                spend={spend.isPending ? "loading" : spend.isError ? null : spend.data}
+              />
             </ListCell>
             <ListCell className="flex min-w-0 items-center gap-0.5">
               <code className="min-w-0 flex-1 truncate font-mono text-xs text-[color:var(--text-secondary)]">
@@ -534,6 +571,7 @@ function AddKeyDialog({
   const [cache, setCache] = React.useState<CacheMode>("inherit");
   const [ttl, setTtl] = React.useState(String(DEFAULT_KEY_TTL_DAYS));
   const [providerSel, setProviderSel] = React.useState<string[]>([]);
+  const [caps, setCaps] = React.useState<CapDraft>(EMPTY_CAPS);
   const [unitId, setUnitId] = React.useState(UNATTRIBUTED);
   const [customerId, setCustomerId] = React.useState(UNATTRIBUTED);
   // the models this project routes, offered as ticks; only asked for while the
@@ -547,6 +585,7 @@ function AddKeyDialog({
       setCache("inherit");
       setTtl(String(DEFAULT_KEY_TTL_DAYS));
       setProviderSel([]);
+      setCaps(EMPTY_CAPS);
       setUnitId(UNATTRIBUTED);
       setCustomerId(UNATTRIBUTED);
     }
@@ -563,6 +602,7 @@ function AddKeyDialog({
         providers: providerSel,
         cache: parseCacheMode(cache),
         expires_in_days: ttlToDays(ttl),
+        ...capsToInput(caps),
       });
       if (unitId !== UNATTRIBUTED || customerId !== UNATTRIBUTED) {
         await setVirtualKeyAttribution(created.id, {
@@ -588,6 +628,7 @@ function AddKeyDialog({
       dirty={
         Boolean(name || models.length || providerSel.length) ||
         cache !== "inherit" ||
+        capsTouched(caps) ||
         unitId !== UNATTRIBUTED ||
         customerId !== UNATTRIBUTED
       }
@@ -596,7 +637,7 @@ function AddKeyDialog({
       // the sheet footer has no room for a spinner, so pending state reads
       // from the label instead
       saveLabel={create.isPending ? t("pages.virtualKeys.creating") : t("common.create")}
-      canSave={keyNameProblem(name) === null}
+      canSave={keyNameProblem(name) === null && capsValid(caps)}
       saving={create.isPending}
       onSubmit={() => create.mutate()}
     >
@@ -613,6 +654,7 @@ function AddKeyDialog({
           onRetry={routes.retry}
         />
         <KeyProvidersField providers={providers} selected={providerSel} onChange={setProviderSel} />
+        <KeyCapFields value={caps} onChange={setCaps} />
         <KeyAttributionFields
           units={units}
           customers={customers}
@@ -628,6 +670,7 @@ function AddKeyDialog({
           models={models}
           providers={providerSel}
           ttl={ttl}
+          caps={caps}
         />
       </div>
     </EditorSheet>

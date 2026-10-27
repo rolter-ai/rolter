@@ -33,6 +33,9 @@ pub struct ScopeIds {
     /// governance dimensions the key is attributed to; empty when unattributed
     pub business_unit: String,
     pub customer: String,
+    /// the person who minted the key; empty for a key nobody minted (a
+    /// config-file or admin-minted key), which no user cap matches (#1830)
+    pub user: String,
 }
 
 impl ScopeIds {
@@ -44,16 +47,30 @@ impl ScopeIds {
             BudgetScope::Key => &self.key,
             BudgetScope::BusinessUnit => &self.business_unit,
             BudgetScope::Customer => &self.customer,
+            BudgetScope::User => &self.user,
         }
+    }
+
+    /// Whether a cap on `scope` and `id`, narrowed to `within`, covers this
+    /// request. A narrowed user cap counts only the keys its person minted in
+    /// that org or project, so the same person's keys elsewhere are not
+    /// charged to it and not stopped by it.
+    pub(crate) fn matches(
+        &self,
+        scope: BudgetScope,
+        id: &str,
+        within: Option<&rolter_core::ScopeWithin>,
+    ) -> bool {
+        let mine = self.id_for(scope);
+        !mine.is_empty()
+            && mine == id
+            && within.is_none_or(|place| place.contains(&self.org, &self.project))
     }
 
     /// The budgets in `all` that apply to this request's scope chain.
     fn applicable<'a>(&self, all: &'a [BudgetConfig]) -> Vec<&'a BudgetConfig> {
         all.iter()
-            .filter(|b| {
-                let id = self.id_for(b.scope);
-                !id.is_empty() && id == b.id
-            })
+            .filter(|b| self.matches(b.scope, &b.id, b.within.as_ref()))
             .collect()
     }
 }
@@ -329,6 +346,7 @@ mod tests {
             limit_usd: d("10.0"),
             period: BudgetPeriod::Monthly,
             unpriced_policy: None,
+            within: None,
         }
     }
 
@@ -348,6 +366,7 @@ mod tests {
             key: "vk-1".to_string(),
             business_unit: "bu-1".to_string(),
             customer: String::new(),
+            user: String::new(),
         };
         let all = vec![
             budget(BudgetScope::Org, "org-1"),         // matches
@@ -360,6 +379,28 @@ mod tests {
         ];
         let got = scope.applicable(&all);
         assert_eq!(got.len(), 4);
+    }
+
+    #[test]
+    fn a_user_cap_matches_the_minter_and_only_inside_its_narrowing() {
+        use rolter_core::ScopeWithin;
+        let scope = ScopeIds {
+            org: "org-1".into(),
+            project: "proj-1".into(),
+            user: "u-1".into(),
+            ..Default::default()
+        };
+        let m = |id: &str, within: Option<ScopeWithin>| {
+            scope.matches(BudgetScope::User, id, within.as_ref())
+        };
+        assert!(m("u-1", None));
+        assert!(!m("u-2", None));
+        assert!(m("u-1", Some(ScopeWithin::Org("org-1".into()))));
+        assert!(!m("u-1", Some(ScopeWithin::Org("org-2".into()))));
+        assert!(m("u-1", Some(ScopeWithin::Project("proj-1".into()))));
+        assert!(!m("u-1", Some(ScopeWithin::Project("proj-2".into()))));
+        // a key nobody minted has no user, so no user cap reaches it
+        assert!(!ScopeIds::default().matches(BudgetScope::User, "", None));
     }
 
     #[tokio::test]

@@ -369,7 +369,8 @@ pub struct OwnedVirtualKey {
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct Budget {
     pub id: Uuid,
-    /// one of `org` | `team` | `project` | `virtual_key`
+    /// one of `org` | `team` | `project` | `virtual_key` | `business_unit` |
+    /// `customer` | `user`
     pub scope_type: String,
     pub scope_id: Uuid,
     /// decimal(12,4), returned as text to avoid a numeric-crate dependency
@@ -379,6 +380,11 @@ pub struct Budget {
     /// traffic; `None` inherits the deployment-wide setting (#996)
     pub unpriced_policy: Option<String>,
     pub created_at: DateTime<Utc>,
+    /// narrows a `user` budget to the keys the person minted in this org
+    /// (#1830); null on every other scope
+    pub within_org_id: Option<Uuid>,
+    /// narrows a `user` budget to the keys the person minted in this project
+    pub within_project_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
@@ -389,6 +395,10 @@ pub struct RateLimit {
     pub rpm: Option<i32>,
     pub tpm: Option<i32>,
     pub created_at: DateTime<Utc>,
+    /// see [`Budget::within_org_id`]
+    pub within_org_id: Option<Uuid>,
+    /// see [`Budget::within_project_id`]
+    pub within_project_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
@@ -855,6 +865,11 @@ pub struct LoggingSettings {
     pub payload_capture_enabled: bool,
     pub payload_capture_max_bytes: i32,
     pub payload_capture_redact_fields: Vec<String>,
+    /// built-in value detectors that scan captured text (#1835)
+    pub payload_capture_redact_detectors: Vec<String>,
+    /// operator-supplied value patterns, applied after the detectors
+    pub payload_capture_redact_patterns:
+        sqlx::types::Json<Vec<rolter_core::payload_redaction::RedactPattern>>,
     pub payload_capture_models: Vec<String>,
     pub payload_capture_virtual_key_ids: Vec<String>,
     /// how long request-log metadata is kept in clickhouse
@@ -876,6 +891,8 @@ impl LoggingSettings {
         logging.payload_capture.enabled = self.payload_capture_enabled;
         logging.payload_capture.max_bytes = self.payload_capture_max_bytes.max(0) as usize;
         logging.payload_capture.redact_fields = self.payload_capture_redact_fields.clone();
+        logging.payload_capture.redact_detectors = self.payload_capture_redact_detectors.clone();
+        logging.payload_capture.redact_patterns = self.payload_capture_redact_patterns.0.clone();
         logging.payload_capture.models = self.payload_capture_models.clone();
         logging.payload_capture.virtual_key_ids = self.payload_capture_virtual_key_ids.clone();
         logging.ui_events = self.ui_events;
@@ -1063,6 +1080,28 @@ pub struct MfaChallenge {
     /// whether the password step that minted it followed a lockout, so the
     /// session it is redeemed for can say so on its `auth.login` row
     pub after_lock: bool,
+}
+
+/// one subject-scoped erasure of request logs and captured payloads (#1085)
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct LogErasure {
+    pub id: Uuid,
+    /// `virtual_key`, `user`, `org` or `request`
+    pub scope_kind: String,
+    pub scope_id: String,
+    pub org_id: Option<Uuid>,
+    pub request_ts: Option<DateTime<Utc>>,
+    pub include_logs: bool,
+    pub reason: String,
+    pub requested_by: Option<Uuid>,
+    /// `pending` while clickhouse mutations run, then `completed`; `failed`
+    /// when a statement was refused, `unverified` when completion could not be
+    /// confirmed from `system.mutations`
+    pub status: String,
+    pub statements: i32,
+    pub error: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
 }
 
 /// a record of an admin/CRUD/auth action, for the audit-log API

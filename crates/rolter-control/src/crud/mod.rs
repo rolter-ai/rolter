@@ -40,6 +40,7 @@ mod users;
 mod virtual_keys;
 
 // items the rest of the control plane imports as `crate::crud::*`
+pub(crate) use budgets::{KeyBudgetBody, KeyCapsBody, KeyRateLimitBody};
 pub(crate) use users::{
     hash_password, password_length_problem, revoke_idp_grant, validate_email, validate_role,
 };

@@ -22,6 +22,7 @@ mod auth;
 mod budgets;
 mod crud;
 mod guardrails;
+mod log_erasure;
 mod mcp;
 mod mcp_discovery;
 mod mcp_enforcement;

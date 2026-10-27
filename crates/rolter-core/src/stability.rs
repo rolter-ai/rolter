@@ -110,14 +110,6 @@ pub const SUBSYSTEMS: &[SubsystemStability] = &[
         nav_keys: &[],
     },
     SubsystemStability {
-        id: "plugins",
-        stability: Stability::Experimental,
-        note: "the webhook payload a plugin receives carries no version of its \
-               own, so the dispatch contract cannot change without silently \
-               breaking every endpoint already written against it",
-        nav_keys: &["plugins"],
-    },
-    SubsystemStability {
         id: "realtime",
         stability: Stability::Experimental,
         note: "guardrails, the guardrail webhook and pre_upstream plugins run \
