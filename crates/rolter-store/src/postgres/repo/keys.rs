@@ -39,6 +39,35 @@ pub struct NewVirtualKey<'a> {
     pub purpose: Option<&'a str>,
 }
 
+/// A spend cap minted together with a key (#1171). It is an ordinary `budgets`
+/// row scoped to the key, so the gateway enforces it like any other and the
+/// budgets API edits it afterwards.
+#[derive(Debug, Clone, Copy)]
+pub struct NewKeyBudget<'a> {
+    pub limit_usd: &'a str,
+    pub period: &'a str,
+}
+
+/// A throughput cap minted together with a key (#1171); an ordinary
+/// `rate_limits` row scoped to the key. At least one of the two is positive.
+#[derive(Debug, Clone, Copy)]
+pub struct NewKeyRateLimit {
+    pub rpm: Option<i32>,
+    pub tpm: Option<i32>,
+}
+
+/// The caps a key is born with. Written in the same transaction as the key, so
+/// a key chosen to be bounded is never visible, or shown to its minter,
+/// without its bound.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct KeyCaps<'a> {
+    pub budget: Option<NewKeyBudget<'a>>,
+    pub rate_limit: Option<NewKeyRateLimit>,
+    /// a rotation replaces a secret, not a decision: every cap on this key is
+    /// copied onto the new one
+    pub inherit_from: Option<Uuid>,
+}
+
 impl VirtualKeyRepo<'_> {
     pub async fn list(&self, project_id: Uuid) -> Result<Vec<VirtualKey>> {
         sqlx::query_as(sqlx::AssertSqlSafe(format!(
@@ -76,6 +105,20 @@ impl VirtualKeyRepo<'_> {
     }
 
     pub async fn create(&self, project_id: Uuid, key: NewVirtualKey<'_>) -> Result<VirtualKey> {
+        self.create_with_caps(project_id, key, KeyCaps::default())
+            .await
+    }
+
+    /// [`create`](Self::create), plus the caps the key is minted with, in one
+    /// transaction. The statement triggers on `budgets` and `rate_limits` bump
+    /// `config_version`, so a polling gateway sees the key and its caps in the
+    /// same snapshot or not at all.
+    pub async fn create_with_caps(
+        &self,
+        project_id: Uuid,
+        key: NewVirtualKey<'_>,
+        caps: KeyCaps<'_>,
+    ) -> Result<VirtualKey> {
         let NewVirtualKey {
             key_hash,
             key_prefix,
@@ -87,7 +130,8 @@ impl VirtualKeyRepo<'_> {
             expires_at,
             purpose,
         } = key;
-        sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        let mut tx = self.0.begin().await.map_err(store_err)?;
+        let row: VirtualKey = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "insert into virtual_keys (project_id, key_hash, \
                 key_prefix, name, models, providers, cache_enabled, created_by, expires_at, \
                 purpose)
@@ -104,9 +148,73 @@ impl VirtualKeyRepo<'_> {
         .bind(created_by)
         .bind(expires_at)
         .bind(purpose)
-        .fetch_one(self.0)
+        .fetch_one(&mut *tx)
         .await
-        .map_err(store_err)
+        .map_err(store_err)?;
+        if let Some(budget) = caps.budget {
+            sqlx::query(
+                "insert into budgets (scope_type, scope_id, limit_usd, period)
+                 values ('virtual_key', $1, $2::numeric, $3)",
+            )
+            .bind(row.id)
+            .bind(budget.limit_usd)
+            .bind(budget.period)
+            .execute(&mut *tx)
+            .await
+            .map_err(store_err)?;
+        }
+        if let Some(limit) = caps.rate_limit {
+            sqlx::query(
+                "insert into rate_limits (scope_type, scope_id, rpm, tpm)
+                 values ('virtual_key', $1, $2, $3)",
+            )
+            .bind(row.id)
+            .bind(limit.rpm)
+            .bind(limit.tpm)
+            .execute(&mut *tx)
+            .await
+            .map_err(store_err)?;
+        }
+        if let Some(old) = caps.inherit_from {
+            sqlx::query(
+                "insert into budgets (scope_type, scope_id, limit_usd, period, unpriced_policy)
+                 select scope_type, $2, limit_usd, period, unpriced_policy
+                 from budgets where scope_type = 'virtual_key' and scope_id = $1",
+            )
+            .bind(old)
+            .bind(row.id)
+            .execute(&mut *tx)
+            .await
+            .map_err(store_err)?;
+            sqlx::query(
+                "insert into rate_limits (scope_type, scope_id, rpm, tpm)
+                 select scope_type, $2, rpm, tpm
+                 from rate_limits where scope_type = 'virtual_key' and scope_id = $1",
+            )
+            .bind(old)
+            .bind(row.id)
+            .execute(&mut *tx)
+            .await
+            .map_err(store_err)?;
+        }
+        tx.commit().await.map_err(store_err)?;
+        Ok(row)
+    }
+
+    /// What each of `ids` is called: its name, or its prefix when it has none.
+    /// A key that no longer exists is absent from the map (#3128).
+    pub async fn names(&self, ids: &[Uuid]) -> Result<std::collections::HashMap<Uuid, String>> {
+        if ids.is_empty() {
+            return Ok(Default::default());
+        }
+        let rows: Vec<(Uuid, String)> = sqlx::query_as(
+            "select id, coalesce(name, key_prefix) from virtual_keys where id = any($1)",
+        )
+        .bind(ids)
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)?;
+        Ok(rows.into_iter().collect())
     }
 
     /// every key minted by `user_id` via the self-service panel, newest first,
@@ -208,13 +316,28 @@ impl VirtualKeyRepo<'_> {
         .await
     }
 
+    /// Delete a key and the caps scoped to it. `budgets` and `rate_limits`
+    /// carry no foreign key to a scope, so without this a deleted key's caps
+    /// would stay behind, listed in the org-wide reads and shipped in every
+    /// snapshot for a key that no longer exists.
     pub async fn delete(&self, id: Uuid) -> Result<()> {
+        let mut tx = self.0.begin().await.map_err(store_err)?;
         require_affected(
             sqlx::query("delete from virtual_keys where id = $1").bind(id),
-            self.0,
+            &mut *tx,
             || format!("virtual key {id}"),
         )
         .await?;
+        for table in ["budgets", "rate_limits"] {
+            sqlx::query(sqlx::AssertSqlSafe(format!(
+                "delete from {table} where scope_type = 'virtual_key' and scope_id = $1"
+            )))
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(store_err)?;
+        }
+        tx.commit().await.map_err(store_err)?;
         Ok(())
     }
 }
