@@ -404,28 +404,35 @@ async fn check_kek_opens_the_store(env: &dyn Env, out: &mut Vec<Finding>) {
         return;
     };
     let timeout = std::time::Duration::from_secs(CONNECT_TIMEOUT_SECS);
-    let audit = match kek_audit::audit_kek_at(&database_url, &Kek::from_secret(&secret), timeout)
-        .await
-    {
-        Ok(audit) => audit,
-        // not fatal on its own: an unusable database is already an error from
-        // the reachability probe, and a schema this binary predates is a
-        // migration away rather than a KEK problem. Saying which check did not
-        // run beats reporting a KEK as verified when it was never tried
-        Err(error) => {
-            out.push(Finding::warn(
-                "could not verify the KEK against the store",
-                format!(
-                    "reading the sealed columns failed, so a KEK mismatch would not be caught                      here: {error}"
-                ),
-            ));
-            return;
-        }
-    };
+    let audit =
+        match kek_audit::audit_kek_at(&database_url, &Kek::from_secret(&secret), timeout).await {
+            Ok(audit) => audit,
+            // not fatal on its own: an unusable database is already an error from
+            // the reachability probe, and a schema this binary predates is a
+            // migration away rather than a KEK problem. Saying which check did not
+            // run beats reporting a KEK as verified when it was never tried
+            Err(error) => {
+                out.push(kek_unverified_finding(&error));
+                return;
+            }
+        };
 
     if let Some(finding) = kek_mismatch_finding(&audit) {
         out.push(finding);
     }
+}
+
+/// The warning for an audit that could not be read at all, so the KEK was never
+/// tried against the store.
+#[cfg(feature = "postgres")]
+fn kek_unverified_finding(error: &dyn std::fmt::Display) -> Finding {
+    Finding::warn(
+        "could not verify the KEK against the store",
+        format!(
+            "reading the sealed columns failed, so a KEK mismatch would not be caught \
+             here: {error}"
+        ),
+    )
 }
 
 /// Turn an audit into a finding, or `None` when the KEK opened everything.
@@ -439,7 +446,11 @@ fn kek_mismatch_finding(audit: &rolter_store::postgres::kek_audit::KekAudit) -> 
         return None;
     }
     let mut detail = format!(
-        "{KEK_ENV} does not open secrets already in this database. This is what a restore onto          the wrong KEK looks like: the dump carried the ciphertext, the KEK was not in the dump,          and nothing else fails until an upstream call does. Restore the KEK that sealed this          database — the ciphertext cannot be recovered without it. See          docs/dev-docs/deployment/backup-and-restore.md."
+        "{KEK_ENV} does not open secrets already in this database. This is what a restore onto \
+         the wrong KEK looks like: the dump carried the ciphertext, the KEK was not in the dump, \
+         and nothing else fails until an upstream call does. Restore the KEK that sealed this \
+         database — the ciphertext cannot be recovered without it. See \
+         docs/dev-docs/deployment/backup-and-restore.md."
     );
     for line in audit.damage_report() {
         detail.push_str("\n       - ");
@@ -1253,6 +1264,26 @@ mod tests {
                 "the detail must point at the runbook: {}",
                 finding.detail
             );
+        }
+
+        /// Both messages were once wrapped across source lines without a `\`
+        /// continuation, so the next line's indentation became a run of spaces
+        /// in the middle of the sentence (#1946). Only the first line of the
+        /// mismatch detail is prose; the damage lines below it are indented on
+        /// purpose.
+        #[test]
+        fn the_kek_messages_read_as_single_spaced_sentences() {
+            let mismatch = kek_mismatch_finding(&audit(10, 0)).expect("reported");
+            let prose = mismatch.detail.lines().next().expect("a first line");
+            assert!(!prose.contains("  "), "run of spaces in: {prose}");
+
+            let unverified = kek_unverified_finding(&"connection reset");
+            assert!(
+                !unverified.detail.contains("  "),
+                "run of spaces in: {}",
+                unverified.detail
+            );
+            assert!(unverified.detail.ends_with("here: connection reset"));
         }
 
         #[test]
