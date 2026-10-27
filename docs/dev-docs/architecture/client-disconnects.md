@@ -34,10 +34,22 @@ attribution, the slow target that made callers give up was exactly the one
 missing from the logs: a dogfood run logged 17 timed-out requests as
 `provider = ''`.
 
-A named row is charged to its target through `LogSink::log`, like any failure:
-`rolter_target_requests_total{outcome="error"}` and a passive health event.
-Whether a disconnect should be charged at all is open in #1933. What is settled
-is that one upstream failure is charged once. The forward loops funnel a failed
+**A disconnect is never charged to the target it names** (#1933, a maintainer
+decision). `LogSink::log` takes the per-request signals from every row, but
+skips the two per-target ones, `rolter_target_requests_total` (neither `error`
+nor `ok`) and the passive health event, for a row where
+`RequestLog::is_client_disconnect()` holds: the gateway's status is
+`CLIENT_DISCONNECT_STATUS` and the upstream's is not. The second half matters:
+an upstream that answers `499` itself is passed through with both statuses
+agreeing, and that is still the target's failure. The rule covers a caller who
+left while queued in rolter's own provider queue (before any upstream I/O, so a
+healthy target is not billed for rolter's queueing), while the upstream was
+working, and part-way through a stream. The disconnect stays countable in
+`rolter_client_disconnects_total`, and the row still names the target so an
+operator can see where callers give up. Because the health event is skipped, the
+uptime rollup and the `provider_health_flaps` alert never see it.
+
+What was already settled is that one upstream failure is charged once. The forward loops funnel a failed
 attempt that a retry will supersede through `CancelGuard::record_failed_attempt`
 (#1646), which also marks the guard, and then back off. A caller who leaves
 during that backoff still gets a row naming the target, but the guard's `Drop`
@@ -68,4 +80,8 @@ run.
 `crates/rolter-gateway/tests/client_disconnect.rs` pins all of it: a
 non-streaming caller that times out, a caller that leaves during a retry backoff
 (one `error` on the target and one health event, not two), a stream abandoned
-mid-body, and a normal request that must not be marked or counted.
+mid-body, and a normal request that must not be marked or counted. Three tests
+pin the #1933 rule for the queued, in-flight and mid-stream cases: no
+`rolter_target_requests_total` series moves and no passive health event
+arrives, while `rolter_client_disconnects_total` reads `1`. A fourth pins that
+an upstream's own `499` is still charged.

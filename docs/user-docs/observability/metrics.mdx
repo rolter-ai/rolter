@@ -49,6 +49,8 @@ metrics_path = "/internal/metrics"
 
     A rising rate almost always means client timeouts are tighter than your upstream latency rather than anything being broken in the gateway. Compare `rate(rolter_client_disconnects_total[5m])` against the p95 of `rolter_request_latency_ms`.
 
+    **A client disconnect is never charged to a target.** Whether the caller left while its request was queued in rolter, while the upstream was working, or part-way through a streamed answer, the request is not counted in `rolter_target_requests_total` (neither as `outcome="error"` nor as `ok`) and emits no passive health event, so it does not move the target's uptime or the `provider_health_flaps` alert. This counter is where disconnects show up. An upstream that itself answers with status `499` is not a disconnect and still counts as that target's error.
+
   </Accordion>
 
   <Accordion title="rolter_withheld_responses_total">
