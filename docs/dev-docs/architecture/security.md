@@ -403,7 +403,7 @@ sqlx text on, which can name relations, schemas, hosts and the credentials in a
 connection URL.
 
 A message that is safe and useful to show goes through `ApiError::Curated`
-instead (`crates/rolter-control/src/crud.rs`), and is rendered verbatim:
+instead (`crates/rolter-control/src/crud/`), and is rendered verbatim:
 
 | Message                                               | Where                                            |
 | ----------------------------------------------------- | ------------------------------------------------ |
@@ -411,7 +411,7 @@ instead (`crates/rolter-control/src/crud.rs`), and is rendered verbatim:
 | the reason an alert rule's signal read failed         | `alerting.rs`, worded by `read_signal`           |
 | failed to encrypt a connector or channel credential   | `connectors.rs`, `alerting.rs`                   |
 | failed to query observability connectors              | `collector_config.rs`                            |
-| unknown provider kind in a stored row                 | `crud.rs`                                        |
+| unknown provider kind in a stored row                 | `crud/`                                          |
 
 `4xx` answers are untouched: validation (`Error::Config`) and lookups
 (`Error::NotFound`) are written for the caller. A new message that has to reach
