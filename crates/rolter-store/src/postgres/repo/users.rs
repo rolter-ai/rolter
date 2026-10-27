@@ -346,6 +346,16 @@ impl UserRepo<'_> {
             || format!("user {id}"),
         )
         .await?;
+        // the caps on a person carry no foreign key to them (#1830)
+        for table in ["budgets", "rate_limits"] {
+            sqlx::query(sqlx::AssertSqlSafe(format!(
+                "delete from {table} where scope_type = 'user' and scope_id = $1"
+            )))
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(store_err)?;
+        }
         tx.commit().await.map_err(store_err)?;
         Ok(LockoutGuard::Done(()))
     }

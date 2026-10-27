@@ -935,6 +935,8 @@ export function withSampleRate(inner: FetchStub, rate: number): FetchStub {
         payload_capture_enabled: false,
         payload_capture_max_bytes: 65536,
         payload_capture_redact_fields: [],
+        payload_capture_redact_detectors: ["aws_key", "jwt"],
+        payload_capture_redact_patterns: [],
         payload_capture_models: [],
         payload_capture_virtual_key_ids: [],
         retention_days: 30,

@@ -48,10 +48,10 @@ trail or should leave a row in it.
 | ---- | ------------------------------------------------ | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------ | ---------------- |
 | S3.1 | payload capture is off unless someone chose it   | **Observability → Logs Settings**             | off by default; the dogfood profile turns it on deliberately                                                 | verified         |
 | S3.2 | known credential fields never reach storage      | `payload_capture_redact_fields`               | the value of a matching JSON key replaced before the write, recursively                                      | verified         |
-| S3.3 | a key pasted into a prompt never reaches storage | —                                             | a secret inside free text redacted by pattern                                                                | gap — #1835      |
-| S3.4 | see what the redaction does before trusting it   | —                                             | a dry run against a sample body                                                                              | gap — #1835      |
+| S3.3 | a key pasted into a prompt never reaches storage | `payload_capture_redact_detectors`            | a secret inside free text replaced by a typed marker such as `[redacted:aws_key]` before the write           | verified (#1835) |
+| S3.4 | see what the redaction does before trusting it   | **Logs Settings** → Preview redaction         | a dry run against a sample body, storing and logging nothing                                                 | verified (#1835) |
 | S3.5 | who reads the bodies that are stored             | sign in as each persona; **LLM Logs** → a row | members and admins of the project read them; viewers get "hidden for your role" unless the project allows it | verified (#1820) |
-| S3.6 | erase one subject's logs on request              | —                                             | a subject's rows and payloads deleted, audited                                                               | gap — #1085      |
+| S3.6 | erase one subject's logs on request              | `POST /api/v1/log-erasures`                   | a subject's rows and payloads deleted, completion reported from ClickHouse, audited                          | verified (#1085) |
 
 ## S4 — inspection in the request path
 

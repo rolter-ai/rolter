@@ -68,6 +68,7 @@ const GROUP_OF_FAMILY: Record<string, AuditGroup> = {
   security: "settings",
   client_settings: "settings",
   logging_settings: "settings",
+  log_erasure: "settings",
   compatibility_policy: "settings",
   feature_flags: "settings",
   runtime_policy: "settings",

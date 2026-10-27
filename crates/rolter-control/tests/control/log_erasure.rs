@@ -1,0 +1,257 @@
+//! Subject-scoped erasure of request logs and captured payloads (#1085), against
+//! a stand-in ClickHouse that records what it is asked and answers
+//! `system.mutations` as a test directs.
+
+use crate::support::*;
+use serde_json::{json, Value};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use tokio::sync::Mutex;
+
+#[derive(Clone, Default)]
+struct Stub {
+    seen: Arc<Mutex<Vec<String>>>,
+    /// whether `system.mutations` reports the erasure's mutations done
+    done: Arc<AtomicBool>,
+    /// whether a DDL statement is refused
+    refuse: Arc<AtomicBool>,
+}
+
+async fn clickhouse(stub: Stub) -> String {
+    let app = axum::Router::new().fallback(move |body: String| {
+        let stub = stub.clone();
+        async move {
+            stub.seen.lock().await.push(body.clone());
+            if body.contains("system.mutations") {
+                let done = u8::from(stub.done.load(Ordering::SeqCst));
+                let row = json!({"is_done": done, "latest_fail_reason": ""});
+                return (
+                    axum::http::StatusCode::OK,
+                    axum::Json(json!({"data": [row, row]})),
+                )
+                    .into_response_parts();
+            }
+            if body.contains("select distinct log_id") {
+                return (axum::http::StatusCode::OK, axum::Json(json!({"data": []})))
+                    .into_response_parts();
+            }
+            if stub.refuse.load(Ordering::SeqCst) {
+                return (
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    axum::Json(json!({"detail": "Code: 62. secret table layout"})),
+                )
+                    .into_response_parts();
+            }
+            (axum::http::StatusCode::OK, axum::Json(json!({}))).into_response_parts()
+        }
+    });
+    format!("http://{}", serve(app).await)
+}
+
+trait Parts {
+    fn into_response_parts(self) -> axum::response::Response;
+}
+impl Parts for (axum::http::StatusCode, axum::Json<Value>) {
+    fn into_response_parts(self) -> axum::response::Response {
+        axum::response::IntoResponse::into_response(self)
+    }
+}
+
+async fn audit_actions(pool: &sqlx::PgPool) -> Vec<(String, Value)> {
+    sqlx::query_as::<_, (String, Value)>(
+        "select action, coalesce(detail, '{}'::jsonb) from audit_log \
+         where action like 'log_erasure.%' order by at",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn an_erasure_is_pending_until_clickhouse_reports_every_mutation_done() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let stub = Stub::default();
+    let ch = clickhouse(stub.clone()).await;
+    let app = rolter_control::test_app_with_clickhouse_and_admin_token(
+        pool.clone(),
+        &ch,
+        Some(admin_token().to_string()),
+    )
+    .await
+    .unwrap();
+    let base = format!("http://{}", serve(app).await);
+    let client = reqwest::Client::new();
+    let key = uuid::Uuid::new_v4();
+
+    let created = client
+        .post(format!("{base}/api/v1/log-erasures"))
+        .bearer_auth(admin_token())
+        .json(&json!({
+            "scope": {"kind": "virtual_key", "id": key},
+            "reason": "erasure request DSR-1"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(created.status(), 202);
+    let created: Value = created.json().await.unwrap();
+    let id = created["id"].as_str().unwrap().to_string();
+    assert_eq!(created["status"], "pending");
+    assert_eq!(created["statements"], 2);
+
+    {
+        let seen = stub.seen.lock().await;
+        let ddl: Vec<_> = seen
+            .iter()
+            .filter(|s| s.starts_with("alter table"))
+            .collect();
+        assert_eq!(ddl.len(), 2, "{seen:?}");
+        // payloads first, so the rows that point at the logs go before them
+        assert!(ddl[0].starts_with("alter table request_payloads delete"));
+        assert!(ddl[1].starts_with("alter table request_logs delete"));
+        for statement in ddl {
+            assert!(statement.contains(&key.to_string()));
+            assert!(statement.contains(&format!("'{id}' != ''")));
+        }
+    }
+
+    // ClickHouse has queued the mutations but not run them
+    let pending: Value = client
+        .get(format!("{base}/api/v1/log-erasures/{id}"))
+        .bearer_auth(admin_token())
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(pending["status"], "pending");
+    assert_eq!(pending["mutations_done"], 0);
+
+    stub.done.store(true, Ordering::SeqCst);
+    let settled: Value = client
+        .get(format!("{base}/api/v1/log-erasures/{id}"))
+        .bearer_auth(admin_token())
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(settled["status"], "completed");
+    assert!(settled["completed_at"].is_string());
+
+    // the entries name the scope and the reason, and are in Postgres, which the
+    // erasure never touches
+    let audit = audit_actions(&pool).await;
+    assert_eq!(
+        audit.iter().map(|(a, _)| a.as_str()).collect::<Vec<_>>(),
+        ["log_erasure.request", "log_erasure.complete"]
+    );
+    assert_eq!(audit[0].1["scope"], "virtual_key");
+    assert_eq!(audit[0].1["reason"], "erasure request DSR-1");
+
+    let listed: Value = client
+        .get(format!("{base}/api/v1/log-erasures"))
+        .bearer_auth(admin_token())
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(listed["data"][0]["id"], id);
+}
+
+#[tokio::test]
+async fn a_refused_statement_is_a_failed_record_that_does_not_echo_clickhouse() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let stub = Stub::default();
+    stub.refuse.store(true, Ordering::SeqCst);
+    let ch = clickhouse(stub).await;
+    let app = rolter_control::test_app_with_clickhouse_and_admin_token(
+        db.pool().clone(),
+        &ch,
+        Some(admin_token().to_string()),
+    )
+    .await
+    .unwrap();
+    let base = format!("http://{}", serve(app).await);
+
+    let response = reqwest::Client::new()
+        .post(format!("{base}/api/v1/log-erasures"))
+        .bearer_auth(admin_token())
+        .json(&json!({
+            "scope": {"kind": "org", "id": uuid::Uuid::new_v4()},
+            "reason": "r"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 502);
+    let body: Value = response.json().await.unwrap();
+    assert_eq!(body["status"], "failed");
+    assert!(!body.to_string().contains("secret table layout"), "{body}");
+}
+
+#[tokio::test]
+async fn erasure_is_a_superadmins_and_validates_its_input() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let ch = clickhouse(Stub::default()).await;
+    let app = rolter_control::test_app_with_clickhouse_and_admin_token(
+        pool.clone(),
+        &ch,
+        Some(admin_token().to_string()),
+    )
+    .await
+    .unwrap();
+    let base = format!("http://{}", serve(app).await);
+    let client = reqwest::Client::new();
+    let url = format!("{base}/api/v1/log-erasures");
+    let scope = json!({"kind": "org", "id": uuid::Uuid::new_v4()});
+
+    assert_eq!(
+        client
+            .post(&url)
+            .json(&json!({"scope": scope, "reason": "r"}))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        401
+    );
+    let member = seed_user(&pool, "member@example.test", false).await;
+    let session = seed_session(&pool, member, "erasure-member").await;
+    assert_eq!(
+        client
+            .post(&url)
+            .bearer_auth(&session)
+            .json(&json!({"scope": scope, "reason": "r"}))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        403
+    );
+    for body in [
+        json!({"scope": scope, "reason": "  "}),
+        json!({"scope": {"kind": "request", "request_id": "", "org_id": uuid::Uuid::new_v4()}, "reason": "r"}),
+        // a user who created no key that still exists has no rows to find
+        json!({"scope": {"kind": "user", "id": member}, "reason": "r"}),
+    ] {
+        let response = client
+            .post(&url)
+            .bearer_auth(admin_token())
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 400, "{body}");
+    }
+    assert!(audit_actions(&pool).await.is_empty());
+}

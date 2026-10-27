@@ -314,7 +314,8 @@
       "preferences": "your preferences",
       "yourProfile": "your profile",
       "auditLogExport": "the audit log export",
-      "unpricedModels": "unpriced models"
+      "unpricedModels": "unpriced models",
+      "yourBudget": "your budget"
     },
     "requestFailed": "request failed: {{status}}",
     "gateway": {
@@ -3178,7 +3179,8 @@
         "project": "Project",
         "virtual_key": "Virtual key",
         "business_unit": "Business unit",
-        "customer": "Customer"
+        "customer": "Customer",
+        "user": "User"
       },
       "selectBusinessUnit": "Select a business unit",
       "selectCustomer": "Select a customer",
@@ -3260,7 +3262,12 @@
       "rateLimitSheetSubtitle": "Throughput caps for {{scope}} — blank leaves a field uncapped",
       "rpmLabel": "Requests per minute (optional)",
       "tpmLabel": "Tokens per minute (optional)",
-      "uncapped": "unlimited"
+      "uncapped": "unlimited",
+      "userScope": {
+        "all": "every key they minted",
+        "org": "keys they minted in one organization",
+        "project": "keys they minted in one project"
+      }
     },
     "logs": {
       "emptyTitle": "Nothing logged yet",
@@ -3842,6 +3849,24 @@
       "redacted": "Redacted fields",
       "redactedHint": "Comma-separated JSON keys stripped from captured payloads before they are stored. Redaction happens before the write, so a redacted value never reaches storage.",
       "redactedPlaceholder": "authorization, api_key, ssn",
+      "redaction": {
+        "detectors": "Redact credential shapes",
+        "detectorsHint": "Scans the text of every captured string and replaces a match with a marker such as [redacted:aws_key], before the write.",
+        "patterns": "Custom patterns",
+        "patternsHint": "One per line as name=regular expression. The name becomes the marker. Linear-time engine: no look-around or backreferences; at most 16 patterns of 256 bytes.",
+        "patternsPlaceholder": "employee_id=EMP-\\d{6}",
+        "patternLine": "Each line must be name=pattern, with a name of lowercase letters, digits or underscore.",
+        "previewTitle": "Preview redaction",
+        "previewHint": "Runs the policy as edited above against a sample body. Nothing is stored or logged; the sample goes to the server only for this check.",
+        "sample": "Sample body",
+        "samplePlaceholder": "{\"messages\":[{\"role\":\"user\",\"content\":\"my key is AKIAIOSFODNN7EXAMPLE\"}]}",
+        "run": "Run preview",
+        "output": "Stored as",
+        "found": "Found: {{kinds}}",
+        "foundNothing": "Nothing matched this sample.",
+        "fieldsFound": "{{count}} by field name",
+        "failed": "The preview failed."
+      },
       "onlyModels": "Capture only these models",
       "onlyModelsHint": "Pick from the models that carried traffic in the last 30 days, or type one that has not yet. Leave empty to capture payloads for every model.",
       "onlyModelsPlaceholder": "Add a model",
@@ -5116,6 +5141,22 @@
           "tooLong": "A bio is at most {{max}} characters."
         }
       }
+    },
+    "budget": {
+      "title": "Your budget",
+      "description": "Caps on the spend and traffic of the keys you minted. Once a cap is reached, requests on those keys are refused until it resets.",
+      "spendHeading": "Spend caps",
+      "rateHeading": "Rate limits",
+      "spent": "{{spent}} spent",
+      "left": "{{remaining}} left",
+      "exhausted": "Cap reached",
+      "resets": "Resets {{when}}",
+      "unknown": "Spend so far unknown",
+      "reach": {
+        "all": "Counts every key you minted",
+        "org": "Counts keys you minted in one organization",
+        "project": "Counts keys you minted in one project"
+      }
     }
   },
   "keyMint": {
@@ -5151,7 +5192,13 @@
       "thisProject": "this project",
       "allProviders": "Every provider on an allowed route",
       "someProviders_one": "One provider: {{providers}}",
-      "someProviders_other": "{{count}} providers: {{providers}}"
+      "someProviders_other": "{{count}} providers: {{providers}}",
+      "noSpendCap": "No spend cap of its own",
+      "spendCap": "Spend capped at {{amount}} ({{period}})",
+      "spendCapPending": "Spend cap: enter an amount",
+      "noRateCap": "No rate cap of its own",
+      "rateCap": "Rate capped at {{caps}}",
+      "rateCapPending": "Rate cap: enter a limit"
     },
     "cache": "Response cache",
     "cacheHint": "Inherit uses the route setting; the deployment-wide cache switch still applies.",
@@ -5166,7 +5213,30 @@
     "businessUnitHint": "Charge this key's spend to a business unit.",
     "customer": "Customer",
     "customerHint": "Charge this key's spend to one of your customers. Only customers that fit the chosen business unit are offered.",
-    "unattributed": "Unattributed"
+    "unattributed": "Unattributed",
+    "caps": {
+      "title": "Spend and rate caps",
+      "spend": "Spend cap",
+      "spendHint": "Stop this key once it has spent a set amount in a window. Off means no cap of its own; the project, team and org budgets still apply.",
+      "limit": "Cap ({{currency}})",
+      "limitPlaceholder": "25.00",
+      "limitProblem": {
+        "blank": "Enter the amount this key may spend",
+        "invalid": "Enter a plain number such as 25 or 12.50",
+        "range": "The cap must be below 100,000,000"
+      },
+      "window": "Window",
+      "rate": "Rate cap",
+      "rateHint": "Limit how fast this key may call the gateway. Off means no cap of its own; the project, team and org limits still apply.",
+      "rpm": "Requests per minute",
+      "tpm": "Tokens per minute",
+      "noCap": "No cap",
+      "rateProblem": {
+        "invalid": "Enter a whole number, or leave it empty for no cap",
+        "range": "Enter a whole number from 1 to 2,147,483,647"
+      },
+      "rateEmpty": "Fill in requests per minute, tokens per minute or both"
+    }
   },
   "analytics": {
     "noRowsYet": "No requests logged in this window. Either nothing was served, or the gateways are not writing to ClickHouse — an unconfigured destination looks exactly like a quiet deployment.",
@@ -5330,7 +5400,6 @@
       "labels": "Labels are display and filter only: no route can select its targets by label yet, and making them selectable turns them into configuration the data plane consumes",
       "mcp_settings": "Organization MCP defaults for transport, timeout intent, retries and undeclared tools are stored but not yet read by the proxy. A per-server override is read; a server without one falls back to the deployment-level transport timeouts rather than to these",
       "mcp_tool_groups": "Tool-group manifests are stored and published to MCP-aware clients, but the proxy does not enforce group membership as an access boundary",
-      "plugins": "The webhook payload a plugin receives carries no version of its own, so the dispatch contract cannot change without silently breaking every endpoint already written against it",
       "realtime": "Guardrails, the guardrail webhook and pre_upstream plugins run on /v1/realtime text events and function-call arguments, but the PII sanitizer and pre_route / post_response plugins do not; a fail_closed PII sanitizer refuses the session, a fail_open one admits it unsanitized",
       "skills_repository": "A skill resolves only through the control-plane API; the gateway serves no skill surface, so how a client addresses and fetches one is not settled"
     }
@@ -5453,5 +5522,13 @@
         "same": "unchanged"
       }
     }
+  },
+  "keyCaps": {
+    "spend": "Spend cap {{amount}} ({{period}})",
+    "left": "{{spent}} spent · {{remaining}} left",
+    "exhausted": "{{spent}} spent · cap reached",
+    "resets": "resets {{when}}",
+    "unknown": "spend so far unknown",
+    "rate": "Rate cap {{caps}}"
   }
 }

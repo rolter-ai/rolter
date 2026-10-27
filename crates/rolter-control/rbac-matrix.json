@@ -526,6 +526,18 @@
       ]
     },
     {
+      "resource": "my_budget",
+      "scope": "deployment",
+      "actions": [
+        {
+          "action": "read",
+          "minimum_role": null,
+          "superadmin_only": false,
+          "authenticated_only": true
+        }
+      ]
+    },
+    {
       "resource": "business_unit",
       "scope": "org",
       "actions": [
@@ -1249,6 +1261,24 @@
         },
         {
           "action": "update",
+          "minimum_role": null,
+          "superadmin_only": true,
+          "authenticated_only": false
+        }
+      ]
+    },
+    {
+      "resource": "log_erasure",
+      "scope": "deployment",
+      "actions": [
+        {
+          "action": "read",
+          "minimum_role": null,
+          "superadmin_only": true,
+          "authenticated_only": false
+        },
+        {
+          "action": "create",
           "minimum_role": null,
           "superadmin_only": true,
           "authenticated_only": false

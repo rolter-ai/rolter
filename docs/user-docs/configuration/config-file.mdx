@@ -89,11 +89,11 @@ Two tables work the other way round. `[currency]` and `[egress]` have no stored 
 A top-level key, written before the first table, that stamps which spelling of the config the file uses. You do not have to write it.
 
 <ParamField path="schema_version" type="integer">
-  The schema version the file was written for. The current version is `2`. A file without the key is read as the oldest version, which is right for every config written before the stamp existed. A file stamped with a version newer than the running build understands still loads unchanged, and the keys that build does not know are ignored. `rolter config export` writes the stamp, and `rolter check --migrations` reports a file that is behind. See [Upgrading](/deployment/upgrading#what-schema_version-is).
+  The schema version the file was written for. The current version is `3`. A file without the key is read as the oldest version, which is right for every config written before the stamp existed. A file stamped with a version newer than the running build understands still loads unchanged, and the keys that build does not know are ignored. `rolter config export` writes the stamp, and `rolter check --migrations` reports a file that is behind. See [Upgrading](/deployment/upgrading#what-schema_version-is).
 </ParamField>
 
 ```toml
-schema_version = 2
+schema_version = 3
 ```
 
 ---
@@ -179,15 +179,15 @@ A base that would double the prefix is rejected on write rather than stored. The
 </ParamField>
 
 <ParamField path="api_key_env" type="string">
-  The name of an environment variable to read the API key from. Preferred over `api_key` because it keeps secrets out of your config file. The gateway reads it from its own environment for every request, and the control plane reads it from its own for **Test connection**, so set it in both when they run as separate processes.
+  The name of an environment variable to read the API key from. Preferred over `api_key` because it keeps secrets out of your config file. The gateway reads it from its own environment for every request, and the control plane reads it from its own for **Test connection**, so set it in both when they run as separate processes. Written as the single `api_key_env` it is deprecated in favour of an `api_keys` entry with `env`; it keeps working in every file and Rolter logs a warning on load.
 </ParamField>
 
 <ParamField path="api_key" type="string">
-  An inline API key. Use `api_key_env` instead wherever possible.
+  An inline API key. Use `api_key_env` instead wherever possible. Deprecated in favour of an `api_keys` entry with `key`; it keeps working in every file and Rolter logs a warning on load.
 </ParamField>
 
 <ParamField path="egress_proxy" type="string">
-  An outbound proxy URL to route traffic through, e.g. `http://corp-proxy:3128`. Supports `http://`, `https://`, `socks5://`, and `socks5h://` schemes.
+  An outbound proxy URL to route traffic through, e.g. `http://corp-proxy:3128`. Supports `http://`, `https://`, `socks5://`, and `socks5h://` schemes. Deprecated in favour of a one-element `egress_proxies`; it keeps working in every file and Rolter logs a warning on load.
 </ParamField>
 
 <ParamField path="egress_proxies" type="list">
@@ -904,7 +904,7 @@ Spend caps block requests with HTTP `402` once a scope's cumulative cost reaches
 </Note>
 
 <ParamField path="scope" type="string" required>
-  The scope level this budget applies to. One of `org`, `team`, `project`, `key`, `business_unit` or `customer`.
+  The scope level this budget applies to. One of `org`, `team`, `project`, `key`, `business_unit`, `customer` or `user`. A `user` budget counts every key that person minted, whatever project it lives in.
 </ParamField>
 
 <ParamField path="id" type="string" required>
@@ -921,6 +921,10 @@ Spend caps block requests with HTTP `402` once a scope's cumulative cost reaches
 
 <ParamField path="unpriced_policy" type="string">
   This budget's own answer to traffic the gateway cannot price: `ignore`, `warn` or `block`. Omit it to inherit the deployment-wide `unpriced_policy`. The most restrictive answer across the scope chain and the deployment setting wins, so a budget can tighten what the deployment asked for but never loosen it. See [Per-budget override](/security/budgets-and-rate-limits#per-budget-override).
+</ParamField>
+
+<ParamField path="within" type="table">
+  Narrows a `user` budget to the keys the person minted in one org, `{ org = "org-uuid" }`, or one project, `{ project = "project-uuid" }`. Omit it to count all of their keys. Has no meaning on any other scope.
 </ParamField>
 
 ```toml
@@ -958,7 +962,7 @@ unpriced_policy = "block"
 Throughput caps reject excess requests with HTTP `429` and a `Retry-After` header. Limits use a Redis sliding-window counter; without Redis they fail open. At least one of `rpm` or `tpm` must be set — a limit with neither never blocks anything.
 
 <ParamField path="scope" type="string" required>
-  The scope level this limit applies to. One of `org`, `team`, `project`, `key`, `business_unit` or `customer`.
+  The scope level this limit applies to. One of `org`, `team`, `project`, `key`, `business_unit`, `customer` or `user`. A `user` limit counts every key that person minted.
 </ParamField>
 
 <ParamField path="id" type="string" required>
@@ -971,6 +975,10 @@ Throughput caps reject excess requests with HTTP `429` and a `Retry-After` heade
 
 <ParamField path="tpm" type="u32">
   Tokens per minute cap (prompt \+ completion combined). Omit to leave token rate uncapped.
+</ParamField>
+
+<ParamField path="within" type="table">
+  Narrows a `user` limit to the keys the person minted in one org, `{ org = "org-uuid" }`, or one project, `{ project = "project-uuid" }`. Omit it to count all of their keys. Has no meaning on any other scope.
 </ParamField>
 
 ```toml
@@ -1546,6 +1554,14 @@ Captured bodies go to ClickHouse's short-retention `request_payloads` table. Red
   JSON object keys whose values are replaced before storage. Matching ignores case and reaches nested objects, tool arguments included.
 </ParamField>
 
+<ParamField path="redact_detectors" default="all built-in detectors" type="list">
+  Built-in detectors that scan the text of every captured string and replace a match with a typed marker such as `[redacted:aws_key]`: `private_key`, `anthropic_key`, `openai_key`, `google_api_key`, `github_token`, `slack_token`, `stripe_key`, `aws_key`, `jwt`, `bearer_token` and `connection_string` (only the password of a `scheme://user:password@host` string goes). An empty list turns the built-ins off. An unknown name is rejected when saved through the dashboard.
+</ParamField>
+
+<ParamField path="redact_patterns" default="[]" type="list">
+  Your own value patterns, each a table with a `name` (lowercase letters, digits or `_`, up to 32 characters, which becomes the marker `[redacted:<name>]`) and a `pattern` (a regular expression of at most 256 bytes). Written as `[[logging.payload_capture.redact_patterns]]`. Matching uses a linear-time engine with no look-around or backreferences, at most 16 patterns are allowed, and a pattern that does not compile is rejected when saved.
+</ParamField>
+
 <ParamField path="models" default="[]" type="list">
   Public model names to capture. Empty captures every route; a non-empty list limits capture to the routes named.
 </ParamField>
@@ -1561,6 +1577,10 @@ max_bytes = 32768
 redact_fields = ["api_key", "authorization", "password", "secret", "token"]
 models = ["support-agent"]
 virtual_key_ids = []
+
+[[logging.payload_capture.redact_patterns]]
+name = "employee_id"
+pattern = 'EMP-\d{6}'
 ```
 
 <Note>
