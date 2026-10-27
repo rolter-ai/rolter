@@ -1,0 +1,565 @@
+//! Prompt templates, plugins and skills.
+
+use sqlx::PgPool;
+use uuid::Uuid;
+
+use rolter_core::{Error, Result};
+
+use super::super::models::{
+    PluginInstance, PromptTemplate, PromptTemplateScope, PromptTemplateVersion, Skill, SkillVersion,
+};
+use super::support::store_err;
+
+/// Prompt templates with immutable versions and explicit scope assignments.
+pub struct PromptTemplateRepo<'a>(pub &'a PgPool);
+
+impl PromptTemplateRepo<'_> {
+    pub async fn list_templates(&self, org_id: Uuid) -> Result<Vec<PromptTemplate>> {
+        sqlx::query_as(
+            "select id, org_id, name, slug, description, published_version, created_at
+             from prompt_templates where org_id = $1 order by name",
+        )
+        .bind(org_id)
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)
+    }
+
+    pub async fn get_template(&self, id: Uuid) -> Result<PromptTemplate> {
+        sqlx::query_as(
+            "select id, org_id, name, slug, description, published_version, created_at
+             from prompt_templates where id = $1",
+        )
+        .bind(id)
+        .fetch_optional(self.0)
+        .await
+        .map_err(store_err)?
+        .ok_or_else(|| Error::NotFound(format!("prompt template {id}")))
+    }
+
+    pub async fn create_template(
+        &self,
+        org_id: Uuid,
+        name: &str,
+        slug: &str,
+        description: Option<&str>,
+    ) -> Result<PromptTemplate> {
+        sqlx::query_as(
+            "insert into prompt_templates (org_id, name, slug, description)
+             values ($1, $2, $3, $4)
+             returning id, org_id, name, slug, description, published_version, created_at",
+        )
+        .bind(org_id)
+        .bind(name)
+        .bind(slug)
+        .bind(description.unwrap_or(""))
+        .fetch_one(self.0)
+        .await
+        .map_err(store_err)
+    }
+
+    pub async fn update_template(
+        &self,
+        id: Uuid,
+        name: Option<&str>,
+        description: Option<&str>,
+    ) -> Result<PromptTemplate> {
+        sqlx::query_as(
+            "update prompt_templates set
+                 name = coalesce($2, name),
+                 description = case when $3::bool then $4 else description end
+             where id = $1
+             returning id, org_id, name, slug, description, published_version, created_at",
+        )
+        .bind(id)
+        .bind(name)
+        .bind(description.is_some())
+        .bind(description.unwrap_or(""))
+        .fetch_optional(self.0)
+        .await
+        .map_err(store_err)?
+        .ok_or_else(|| Error::NotFound(format!("prompt template {id}")))
+    }
+
+    pub async fn create_version(
+        &self,
+        template_id: Uuid,
+        variables: &serde_json::Value,
+        decorators: &serde_json::Value,
+    ) -> Result<PromptTemplateVersion> {
+        let mut tx = self.0.begin().await.map_err(store_err)?;
+        sqlx::query("select pg_advisory_xact_lock(hashtextextended($1::text, 0))")
+            .bind(template_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(store_err)?;
+        let version = sqlx::query_as(
+            "insert into prompt_template_versions (template_id, version, variables, decorators)
+             values (
+                 $1,
+                 coalesce((select max(version) + 1 from prompt_template_versions where template_id = $1), 1),
+                 $2,
+                 $3
+             )
+             returning template_id, version, variables, decorators, created_at",
+        )
+        .bind(template_id)
+        .bind(variables)
+        .bind(decorators)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(store_err)?;
+        tx.commit().await.map_err(store_err)?;
+        Ok(version)
+    }
+
+    pub async fn list_versions(&self, template_id: Uuid) -> Result<Vec<PromptTemplateVersion>> {
+        sqlx::query_as(
+            "select template_id, version, variables, decorators, created_at
+             from prompt_template_versions where template_id = $1 order by version desc",
+        )
+        .bind(template_id)
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)
+    }
+
+    pub async fn publish_version(&self, template_id: Uuid, version: i32) -> Result<PromptTemplate> {
+        let exists: Option<i32> = sqlx::query_scalar(
+            "select 1 from prompt_template_versions where template_id = $1 and version = $2",
+        )
+        .bind(template_id)
+        .bind(version)
+        .fetch_optional(self.0)
+        .await
+        .map_err(store_err)?;
+        if exists.is_none() {
+            return Err(Error::NotFound(format!(
+                "prompt template version {template_id}:{version}"
+            )));
+        }
+        sqlx::query_as(
+            "update prompt_templates
+             set published_version = $2
+             where id = $1
+             returning id, org_id, name, slug, description, published_version, created_at",
+        )
+        .bind(template_id)
+        .bind(version)
+        .fetch_optional(self.0)
+        .await
+        .map_err(store_err)?
+        .ok_or_else(|| Error::NotFound(format!("prompt template {template_id}")))
+    }
+
+    /// Replace all scope bindings for a template version.
+    pub async fn set_scopes(
+        &self,
+        template_id: Uuid,
+        version: i32,
+        scopes: &[(String, Uuid)],
+    ) -> Result<()> {
+        let mut tx = self.0.begin().await.map_err(store_err)?;
+        sqlx::query("delete from prompt_template_scopes where template_id = $1 and version = $2")
+            .bind(template_id)
+            .bind(version)
+            .execute(&mut *tx)
+            .await
+            .map_err(store_err)?;
+        for (scope_type, scope_id) in scopes {
+            sqlx::query(
+                "insert into prompt_template_scopes (
+                     template_id, version, scope_type, scope_id,
+                     org_id, project_id, route_id, virtual_key_id
+                 )
+                 values (
+                     $1, $2, $3, $4,
+                     case when $3 = 'org' then $4 end,
+                     case when $3 = 'project' then $4 end,
+                     case when $3 = 'route' then $4 end,
+                     case when $3 = 'virtual_key' then $4 end
+                 )",
+            )
+            .bind(template_id)
+            .bind(version)
+            .bind(scope_type)
+            .bind(scope_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(store_err)?;
+        }
+        tx.commit().await.map_err(store_err)?;
+        Ok(())
+    }
+
+    pub async fn list_scopes(
+        &self,
+        template_id: Uuid,
+        version: i32,
+    ) -> Result<Vec<PromptTemplateScope>> {
+        sqlx::query_as(
+            "select template_id, version, scope_type, scope_id, created_at
+             from prompt_template_scopes
+             where template_id = $1 and version = $2
+             order by scope_type, scope_id",
+        )
+        .bind(template_id)
+        .bind(version)
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)
+    }
+
+    pub async fn delete_template(&self, id: Uuid) -> Result<()> {
+        let res = sqlx::query("delete from prompt_templates where id = $1")
+            .bind(id)
+            .execute(self.0)
+            .await
+            .map_err(store_err)?;
+        if res.rows_affected() == 0 {
+            return Err(Error::NotFound(format!("prompt template {id}")));
+        }
+        Ok(())
+    }
+}
+
+pub struct PluginRepo<'a>(pub &'a PgPool);
+
+const PLUGIN_COLUMNS: &str = "id, org_id, project_id, name, slug, description, kind, stage, \
+    enabled, position, failure_mode, endpoint, secret_env, config, created_at, updated_at";
+
+impl PluginRepo<'_> {
+    pub async fn list(&self, org_id: Uuid) -> Result<Vec<PluginInstance>> {
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "select {PLUGIN_COLUMNS} from plugin_instances where org_id=$1 order by position, name"
+        )))
+        .bind(org_id)
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)
+    }
+
+    /// Every enabled instance across every org, for the gateway snapshot
+    /// (#509). `kind = 'webhook'` is the only kind the registry accepts today,
+    /// but the filter is explicit so a future non-webhook kind does not
+    /// silently reach a dispatcher that only knows how to call a URL.
+    pub async fn list_all_enabled(&self) -> Result<Vec<PluginInstance>> {
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "select {PLUGIN_COLUMNS} from plugin_instances \
+             where enabled and kind = 'webhook' order by org_id, position, name"
+        )))
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)
+    }
+
+    pub async fn get(&self, id: Uuid) -> Result<PluginInstance> {
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "select {PLUGIN_COLUMNS} from plugin_instances where id=$1"
+        )))
+        .bind(id)
+        .fetch_optional(self.0)
+        .await
+        .map_err(store_err)?
+        .ok_or_else(|| Error::NotFound(format!("plugin {id}")))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create(
+        &self,
+        org_id: Uuid,
+        project_id: Option<Uuid>,
+        name: &str,
+        slug: &str,
+        description: &str,
+        kind: &str,
+        stage: &str,
+        enabled: bool,
+        position: i32,
+        failure_mode: &str,
+        endpoint: &str,
+        secret_env: Option<&str>,
+        config: &serde_json::Value,
+    ) -> Result<PluginInstance> {
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "insert into plugin_instances (org_id, project_id, name, slug, description, kind, \
+             stage, enabled, position, failure_mode, endpoint, secret_env, config) values \
+             ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) returning {PLUGIN_COLUMNS}"
+        )))
+        .bind(org_id)
+        .bind(project_id)
+        .bind(name)
+        .bind(slug)
+        .bind(description)
+        .bind(kind)
+        .bind(stage)
+        .bind(enabled)
+        .bind(position)
+        .bind(failure_mode)
+        .bind(endpoint)
+        .bind(secret_env)
+        .bind(config)
+        .fetch_one(self.0)
+        .await
+        .map_err(store_err)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn update(
+        &self,
+        id: Uuid,
+        project_id: Option<Uuid>,
+        name: &str,
+        description: &str,
+        stage: &str,
+        enabled: bool,
+        position: i32,
+        failure_mode: &str,
+        endpoint: &str,
+        secret_env: Option<&str>,
+        config: &serde_json::Value,
+    ) -> Result<PluginInstance> {
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "update plugin_instances set project_id=$2, name=$3, description=$4, stage=$5, \
+             enabled=$6, position=$7, failure_mode=$8, endpoint=$9, secret_env=$10, config=$11, \
+             updated_at=now() where id=$1 returning {PLUGIN_COLUMNS}"
+        )))
+        .bind(id)
+        .bind(project_id)
+        .bind(name)
+        .bind(description)
+        .bind(stage)
+        .bind(enabled)
+        .bind(position)
+        .bind(failure_mode)
+        .bind(endpoint)
+        .bind(secret_env)
+        .bind(config)
+        .fetch_optional(self.0)
+        .await
+        .map_err(store_err)?
+        .ok_or_else(|| Error::NotFound(format!("plugin {id}")))
+    }
+
+    pub async fn delete(&self, id: Uuid) -> Result<()> {
+        let result = sqlx::query("delete from plugin_instances where id=$1")
+            .bind(id)
+            .execute(self.0)
+            .await
+            .map_err(store_err)?;
+        if result.rows_affected() == 0 {
+            return Err(Error::NotFound(format!("plugin {id}")));
+        }
+        Ok(())
+    }
+}
+
+pub struct SkillRepo<'a>(pub &'a PgPool);
+
+impl SkillRepo<'_> {
+    pub async fn list_skills(&self, org_id: Uuid) -> Result<Vec<Skill>> {
+        sqlx::query_as(
+            "select id, org_id, name, slug, description, retired_at, published_version,
+                    allowed_team_ids, minimum_role, created_at
+             from skills where org_id = $1 order by name",
+        )
+        .bind(org_id)
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)
+    }
+
+    pub async fn get_skill(&self, id: Uuid) -> Result<Skill> {
+        sqlx::query_as(
+            "select id, org_id, name, slug, description, retired_at, published_version,
+                    allowed_team_ids, minimum_role, created_at
+             from skills where id = $1",
+        )
+        .bind(id)
+        .fetch_optional(self.0)
+        .await
+        .map_err(store_err)?
+        .ok_or_else(|| Error::NotFound(format!("skill {id}")))
+    }
+
+    pub async fn get_by_slug(&self, org_id: Uuid, slug: &str) -> Result<Skill> {
+        sqlx::query_as(
+            "select id, org_id, name, slug, description, retired_at, published_version,
+                    allowed_team_ids, minimum_role, created_at
+             from skills where org_id = $1 and slug = $2",
+        )
+        .bind(org_id)
+        .bind(slug)
+        .fetch_optional(self.0)
+        .await
+        .map_err(store_err)?
+        .ok_or_else(|| Error::NotFound(format!("skill {org_id}:{slug}")))
+    }
+
+    pub async fn create_skill(
+        &self,
+        org_id: Uuid,
+        name: &str,
+        slug: &str,
+        description: Option<&str>,
+        allowed_team_ids: &[Uuid],
+        minimum_role: &str,
+    ) -> Result<Skill> {
+        sqlx::query_as(
+            "insert into skills (
+                 org_id, name, slug, description, allowed_team_ids, minimum_role
+             )
+             values ($1, $2, $3, $4, $5, $6)
+             returning id, org_id, name, slug, description, retired_at, published_version,
+                       allowed_team_ids, minimum_role, created_at",
+        )
+        .bind(org_id)
+        .bind(name)
+        .bind(slug)
+        .bind(description.unwrap_or(""))
+        .bind(allowed_team_ids)
+        .bind(minimum_role)
+        .fetch_one(self.0)
+        .await
+        .map_err(store_err)
+    }
+
+    pub async fn update_skill(
+        &self,
+        id: Uuid,
+        name: Option<&str>,
+        description: Option<&str>,
+        retired: Option<bool>,
+        allowed_team_ids: Option<&[Uuid]>,
+        minimum_role: Option<&str>,
+    ) -> Result<Skill> {
+        sqlx::query_as(
+            "update skills set
+                 name = coalesce($2, name),
+                 description = case when $3::bool then $4 else description end,
+                 retired_at = case
+                    when $5::bool is null then retired_at
+                    when $5 then coalesce(retired_at, now())
+                    else null
+                 end,
+                 allowed_team_ids = coalesce($6, allowed_team_ids),
+                 minimum_role = coalesce($7, minimum_role)
+             where id = $1
+             returning id, org_id, name, slug, description, retired_at, published_version,
+                       allowed_team_ids, minimum_role, created_at",
+        )
+        .bind(id)
+        .bind(name)
+        .bind(description.is_some())
+        .bind(description.unwrap_or(""))
+        .bind(retired)
+        .bind(allowed_team_ids)
+        .bind(minimum_role)
+        .fetch_optional(self.0)
+        .await
+        .map_err(store_err)?
+        .ok_or_else(|| Error::NotFound(format!("skill {id}")))
+    }
+
+    pub async fn create_version(
+        &self,
+        skill_id: Uuid,
+        content: Option<&str>,
+        content_ref: Option<&str>,
+        metadata: &serde_json::Value,
+    ) -> Result<SkillVersion> {
+        let mut tx = self.0.begin().await.map_err(store_err)?;
+        sqlx::query("select pg_advisory_xact_lock(hashtextextended($1::text, 0))")
+            .bind(skill_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(store_err)?;
+        let version = sqlx::query_as(
+            "insert into skill_versions (skill_id, version, content, content_ref, metadata)
+             values (
+                 $1,
+                 coalesce((select max(version) + 1 from skill_versions where skill_id = $1), 1),
+                 $2,
+                 $3,
+                 $4
+             )
+             returning skill_id, version, content, content_ref, metadata, created_at",
+        )
+        .bind(skill_id)
+        .bind(content)
+        .bind(content_ref)
+        .bind(metadata)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(store_err)?;
+        tx.commit().await.map_err(store_err)?;
+        Ok(version)
+    }
+
+    pub async fn list_versions(&self, skill_id: Uuid) -> Result<Vec<SkillVersion>> {
+        sqlx::query_as(
+            "select skill_id, version, content, content_ref, metadata, created_at
+             from skill_versions where skill_id = $1 order by version desc",
+        )
+        .bind(skill_id)
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)
+    }
+
+    pub async fn resolve_published(&self, skill_id: Uuid) -> Result<SkillVersion> {
+        sqlx::query_as(
+            "select v.skill_id, v.version, v.content, v.content_ref, v.metadata, v.created_at
+             from skill_versions v
+             join skills s
+               on s.id = v.skill_id
+              and s.published_version = v.version
+             where s.id = $1 and s.retired_at is null",
+        )
+        .bind(skill_id)
+        .fetch_optional(self.0)
+        .await
+        .map_err(store_err)?
+        .ok_or_else(|| Error::NotFound(format!("published skill {skill_id}")))
+    }
+
+    pub async fn publish_version(&self, skill_id: Uuid, version: i32) -> Result<Skill> {
+        let exists: Option<i32> =
+            sqlx::query_scalar("select 1 from skill_versions where skill_id = $1 and version = $2")
+                .bind(skill_id)
+                .bind(version)
+                .fetch_optional(self.0)
+                .await
+                .map_err(store_err)?;
+        if exists.is_none() {
+            return Err(Error::NotFound(format!(
+                "skill version {skill_id}:{version}"
+            )));
+        }
+        sqlx::query_as(
+            "update skills
+             set published_version = $2
+             where id = $1
+             returning id, org_id, name, slug, description, retired_at, published_version,
+                       allowed_team_ids, minimum_role, created_at",
+        )
+        .bind(skill_id)
+        .bind(version)
+        .fetch_optional(self.0)
+        .await
+        .map_err(store_err)?
+        .ok_or_else(|| Error::NotFound(format!("skill {skill_id}")))
+    }
+
+    pub async fn delete_skill(&self, id: Uuid) -> Result<()> {
+        let res = sqlx::query("delete from skills where id = $1")
+            .bind(id)
+            .execute(self.0)
+            .await
+            .map_err(store_err)?;
+        if res.rows_affected() == 0 {
+            return Err(Error::NotFound(format!("skill {id}")));
+        }
+        Ok(())
+    }
+}
