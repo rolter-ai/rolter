@@ -37,6 +37,10 @@
 //!   is inside the directory's own org. Otherwise an org admin could give an
 //!   entry another org's user's address and sign in with that user's grants.
 //! * **A deactivated account stays out**, whatever the directory says.
+//! * **Not while the org has password login turned off.** A directory sign-in
+//!   is a password typed into rolter's own form, so an org that sets
+//!   `allow_password_login = false` to send its members through its identity
+//!   provider is not reachable through its directory either.
 //! * **No mail, no account.** Accounts are keyed on email across providers, so
 //!   an entry that yields no usable address is refused rather than given a
 //!   made-up one.
@@ -60,7 +64,8 @@ use uuid::Uuid;
 use rolter_store::postgres::crypto::Kek;
 use rolter_store::postgres::models::{LdapDirectory, LdapGroupMapping};
 use rolter_store::postgres::repo::{
-    AuditLogRepo, LdapDirectoryValues, LdapRepo, MembershipRepo, SecretUpdate, UserRepo,
+    AuditLogRepo, LdapDirectoryValues, LdapRepo, MembershipRepo, OrgAuthPolicyRepo, SecretUpdate,
+    UserRepo,
 };
 
 use crate::crud::{
@@ -108,6 +113,23 @@ pub(crate) async fn any_enabled(state: &ControlState) -> bool {
                 tracing::warn!(error = %err, "could not read the ldap directories");
                 false
             })
+}
+
+/// Whether the directory's org lets its members sign in with a password typed
+/// into rolter's form, which a directory sign-in is. A policy that cannot be
+/// read counts as not allowed.
+async fn password_login_allowed(state: &ControlState, directory: &LdapDirectory) -> bool {
+    match OrgAuthPolicyRepo(pool(state)).get(directory.org_id).await {
+        Ok(policy) => policy.allow_password_login,
+        Err(err) => {
+            tracing::warn!(
+                directory_id = %directory.id,
+                error = %err,
+                "ldap directory skipped: its org's login policy could not be read"
+            );
+            false
+        }
+    }
 }
 
 /// The directory settings as the provider takes them. `None` when the stored
@@ -166,6 +188,9 @@ pub(crate) async fn sign_in(
         IdentityError::NotVerified
     })?;
     for directory in directories {
+        if !password_login_allowed(state, &directory).await {
+            continue;
+        }
         let Some(config) = config_for(state, &directory).await else {
             continue;
         };

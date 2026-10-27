@@ -119,6 +119,13 @@ copies a group from their directory's UI should not silently get no access.
   account does not sign in as it: the break-glass account has to stay reachable
   when the directory is down, and must not be reachable by whoever can edit a
   directory attribute. Superadmins sign in locally.
+- **An account with a role in another org is never adopted.** The directory is
+  run by an org's admins, who choose every entry's mail and password, so it may
+  sign in as an existing account only when every role that account holds is
+  inside the directory's own org.
+- **Not while the org has password login off.** A directory sign-in is a
+  password typed into rolter's form, so a directory whose org sets
+  `allow_password_login = false` is skipped.
 - **A deactivated account stays out**, whatever the directory says.
 - **No mail, no account.** Accounts are keyed on email across providers, so an
   entry that yields no usable address (and a login that is not one) is refused

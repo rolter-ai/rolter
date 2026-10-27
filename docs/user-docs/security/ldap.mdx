@@ -21,6 +21,8 @@ From there everything is the same as for a local account: an org's [second-facto
 - A wrong password, an unknown login and a login outside the search base all get the same `invalid email or password` answer, so the form cannot be used to find out who is in your directory.
 - If the directory is unreachable, the sign-in is answered the same way and the reason goes to the control plane's log. Local accounts keep working.
 - A directory entry whose mail matches a **superadmin** never signs in as that account. Superadmins sign in locally, so the break-glass account stays reachable when the directory is down.
+- A directory entry whose mail matches an existing account that holds a role in **another organization** never signs in as that account. Your directory's entries are chosen by your organization's admins, so it may only sign in as accounts whose roles are all inside your organization.
+- While your organization has **password login turned off** (to send members through its identity provider), the directory does not sign anyone in either: a directory sign-in is a password typed into Rolter's form. Turning password login back on restores it.
 - A deactivated account stays out.
 - The account is keyed on the entry's email attribute. If the directory supplies none and the login typed is not an email address, the sign-in is refused.
 

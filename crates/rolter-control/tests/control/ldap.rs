@@ -436,6 +436,36 @@ async fn an_account_with_a_role_in_another_org_is_never_adopted() {
     assert_eq!(f.login("grace", "grace-password").await.status(), 200);
 }
 
+/// A directory sign-in is a password typed into rolter's form, so an org that
+/// turns password login off to send its members through its identity provider
+/// is not reachable through its directory either, and turning it back on
+/// restores the directory.
+#[tokio::test]
+async fn a_directory_does_not_sign_in_while_its_org_has_passwords_off() {
+    skip_without_db!();
+    let f = fixture().await;
+    f.map(USERS, "member").await;
+    assert_eq!(f.login("ada", "ada-password").await.status(), 200);
+
+    // written straight to the table: the policy endpoint refuses passwords off
+    // until the org has an identity provider, which this fixture does not set up
+    let set = |allow: bool| {
+        sqlx::query(
+            "insert into org_auth_policies (org_id, allow_password_login, allow_sso)
+             values ($1, $2, true)
+             on conflict (org_id) do update set allow_password_login = excluded.allow_password_login",
+        )
+        .bind(f.org)
+        .bind(allow)
+        .execute(&f.pool)
+    };
+    set(false).await.unwrap();
+    assert_eq!(f.login("ada", "ada-password").await.status(), 401);
+
+    set(true).await.unwrap();
+    assert_eq!(f.login("ada", "ada-password").await.status(), 200);
+}
+
 #[tokio::test]
 async fn a_deactivated_account_stays_out() {
     skip_without_db!();
