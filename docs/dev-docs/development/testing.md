@@ -140,13 +140,26 @@ run, they just share the database the url names.
 
 `ROLTER_TEST_DATABASE_URL` names the **server**, not the database the tests end
 up writing to. The database is derived from the workspace the test binary was
-compiled in — `rolter_test_wt_<worktree>_<digest>` — and created on first use by
+running in — `rolter_test_wt_<worktree>_<digest>` — and created on first use by
 [`rolter_store::postgres::test_database`](../../../crates/rolter-store/src/postgres/test_database.rs).
 A new worktree is therefore isolated without exporting anything, which is the
 point: this repository expects several agents working several worktrees at once
 (see [worktrees.md](worktrees.md)), so concurrent suites against one database is
 the normal case rather than an edge case, and an isolation scheme that has to be
 opted into is forgotten exactly when it is needed (#1430).
+
+The worktree is found at run time, by walking up from the `CARGO_MANIFEST_DIR`
+that cargo and nextest export to the test process, not from a path compiled into
+the binary, so every test binary in a worktree agrees on it even when the
+`rolter-store` artifact was built elsewhere (#2770). A binary run by hand, with no
+such variable, falls back to the path it was compiled in.
+
+**Give every worktree its own `CARGO_TARGET_DIR`.** Sharing one across worktrees
+saves disk but makes cargo reuse a build from another worktree: a worktree whose
+sources differ can link the other's library and run its tests against the wrong
+code, which gives false greens as well as false reds. The database name above
+no longer depends on it, but nothing else compensates, so the default
+`target/` inside each worktree is the safe choice.
 
 Two things that used to be true stop being true:
 
