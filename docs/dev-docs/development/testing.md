@@ -1866,24 +1866,18 @@ bash docker/smoke/image-smoke.sh rolter:dev
 cargo build --workspace --features postgres
 (cd ui && bun install --frozen-lockfile && bun run build)
 docker build -f docker/Dockerfile --target runtime-prebuilt \
-  --build-arg RUNTIME_DISTRO=debian13 \
   --build-context rolter-bin=target/debug \
   --build-context rolter-ui=ui/dist -t rolter:dev .
 bash docker/smoke/image-smoke.sh rolter:dev
 ```
 
-The one other difference is the base. The prebuilt binaries have to run on the
-image's glibc, and a Rust build on Ubuntu 24.04, the CI runner, compiles aws-lc
-against glibc 2.39 headers that redirect `strtol` and `sscanf` to
-`__isoc23_*` symbols from glibc 2.38. Debian 12's glibc is 2.36, so those
-binaries do not start on the published base. The Dockerfile therefore names
-both distroless releases as stages, `distroless-debian12` and
-`distroless-debian13`, and `runtime-base` builds on
-`distroless-${RUNTIME_DISTRO}`, which defaults to `debian12`. CI and the local
-command above pass `RUNTIME_DISTRO=debian13` (glibc 2.41). Both are the same
-distroless `nonroot` image, uid 65532, so the user the smoke runs as does not
-change; the debian12 base itself is smoked by `release.yml`. Bump the two
-digests together.
+The one other difference is that the binaries come from the host, so they must
+run on the base's glibc. A Rust build on Ubuntu 24.04, the CI runner, compiles
+aws-lc against glibc 2.39 headers that redirect `strtol` and `sscanf` to
+`__isoc23_*` symbols from glibc 2.38, which Debian 12 (glibc 2.36) lacks. The
+published base is distroless debian13 (glibc 2.41) for that reason, so the
+prebuilt image and the released one share a base and there is no distro switch
+([docker](../deployment/docker.md#runtime-base)).
 
 It needs no secrets and no compose stack, so unlike the compose smoke it runs
 on every push and is blocking.

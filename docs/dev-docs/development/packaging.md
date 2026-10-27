@@ -431,10 +431,18 @@ leaving a channel behind.
   attestation API.
 - **A CycloneDX SBOM per platform image**, attested with
   `cosign attest --type cyclonedx`. `scripts/image-sbom.sh` builds it: syft
-  over the image layers, merged with syft over the tagged `Cargo.lock` and
-  `ui/bun.lock`. The image scan alone finds only the distroless Debian
-  packages, since the binaries are not built with `cargo auditable` and the
-  dashboard is a bundle. The SBOMs are also uploaded as the run's `sbom`
+  over the image layers, merged with syft over the tagged `ui/bun.lock`. The
+  Dockerfile builds the binaries with `cargo auditable` (#2747), so the image
+  scan reads the exact linked crate graph out of them and `Cargo.lock` is not
+  scanned (any cargo package the directory scan reports is dropped); the
+  script fails if the image scan finds no cargo package, so a binary built
+  without it cannot be attested. The dashboard is a bundle with no
+  `node_modules`, so its packages still come from `bun.lock`. That scan keeps
+  dev dependencies (`SYFT_JAVASCRIPT_INCLUDE_DEV_DEPENDENCIES=true`) because
+  syft 1.54's production/dev split for bun is nondeterministic; the switch
+  stays until anchore/syft fixes it, and then this note and the user docs'
+  over-reporting paragraph are updated. The `release.yml` job still checks out
+  `Cargo.lock`; the script ignores it. The SBOMs are also uploaded as the run's `sbom`
   artifact.
 
 It then runs `scripts/verify-image.sh` on the tag it just signed. That script
