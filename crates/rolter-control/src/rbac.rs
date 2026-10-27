@@ -244,9 +244,11 @@ pub(crate) async fn authorize_cap(
     requirement: Requirement,
 ) -> ApiResult<()> {
     if chain.org.is_none() && chain.team.is_none() && chain.project.is_none() {
+        // an api token never holds a deployment authority, so it is refused
+        // here as a member is
         return match principal {
             Principal::Superadmin { .. } => Ok(()),
-            Principal::User(_) => Err(ApiError::Forbidden),
+            Principal::User(_) | Principal::Token(_) => Err(ApiError::Forbidden),
         };
     }
     authorize(state, principal, chain, requirement).await

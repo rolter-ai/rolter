@@ -460,3 +460,45 @@ async fn the_audit_log_names_the_token_that_acted() {
     // the secret is nowhere in the log
     assert!(!log.to_string().contains("rolter_api_"), "{log}");
 }
+
+/// A per-person cap that is not narrowed to an org or a project counts the
+/// person everywhere and is the deployment's to manage (#1830), so even an org
+/// admin's token is refused it, while the same cap narrowed to the token's own
+/// org is the org's to set.
+#[tokio::test]
+async fn a_token_cannot_manage_a_cap_that_counts_a_person_everywhere() {
+    skip_without_db!();
+    let w = world().await;
+    let (status, minted) = w
+        .mint(admin_token(), json!({"name": "ops", "role": "admin"}))
+        .await;
+    assert_eq!(status, 200, "{minted}");
+    let token = secret(&minted);
+    let person = seed_user(&w.pool, "grace@acme.test", false).await;
+    seed_membership(
+        &w.pool,
+        person,
+        Some(w.org.parse().unwrap()),
+        None,
+        None,
+        "member",
+    )
+    .await;
+
+    for path in ["/api/v1/budgets", "/api/v1/rate-limits"] {
+        let cap = if path.ends_with("budgets") {
+            json!({"scope_type": "user", "scope_id": person, "limit_usd": "50", "period": "monthly"})
+        } else {
+            json!({"scope_type": "user", "scope_id": person, "rpm": 20})
+        };
+        let (status, body) = w
+            .send(reqwest::Method::POST, path, &token, cap.clone())
+            .await;
+        assert_eq!(status, 403, "{path} everywhere: {body}");
+
+        let mut narrowed = cap;
+        narrowed["within_org_id"] = json!(w.org);
+        let (status, body) = w.send(reqwest::Method::POST, path, &token, narrowed).await;
+        assert_eq!(status, 200, "{path} within the org: {body}");
+    }
+}
