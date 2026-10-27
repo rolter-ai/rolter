@@ -321,22 +321,29 @@ async fn failed_logins_are_throttled_per_account_and_audited() {
     // the attempts are on the record. the write is spawned off the response
     // path — resolving the org an entry belongs to only costs a query when the
     // account exists, and awaiting that would make a registered address
-    // measurably slower to reject than an unregistered one — so poll for it
-    let mut actions: Vec<String> = Vec::new();
-    for _ in 0..40 {
-        actions = sqlx::query_scalar(
-            "select action from audit_log where action like 'auth.login%' order by at",
-        )
-        .fetch_all(&pool)
-        .await
-        .unwrap();
-        if actions.iter().any(|a| a == "auth.login_locked")
-            && actions.iter().any(|a| a == "auth.login_throttled")
-        {
-            break;
+    // measurably slower to reject than an unregistered one — so wait for the
+    // rows themselves. the wait ends on the condition, not on a count of
+    // sleeps: a fixed number of polls was a wall-clock bet that lost when a
+    // loaded full-suite run delayed the spawned writes (#2768). the timeout is
+    // only the backstop that turns a write that never lands into a failure
+    let actions: Vec<String> = tokio::time::timeout(std::time::Duration::from_secs(60), async {
+        loop {
+            let actions: Vec<String> = sqlx::query_scalar(
+                "select action from audit_log where action like 'auth.login%' order by at",
+            )
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+            if actions.iter().any(|a| a == "auth.login_locked")
+                && actions.iter().any(|a| a == "auth.login_throttled")
+            {
+                break actions;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
+    })
+    .await
+    .expect("the lock and the throttled attempt are both audited");
     assert!(
         actions.iter().any(|a| a == "auth.login_failed"),
         "every rejected guess is recorded: {actions:?}"
