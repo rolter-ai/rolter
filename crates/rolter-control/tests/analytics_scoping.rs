@@ -1347,3 +1347,76 @@ async fn the_export_returns_only_the_rows_the_caller_can_list() {
         .unwrap();
     assert_eq!(rollup.status(), 200);
 }
+
+/// Requests that began inside one millisecond are listed in the order they
+/// began, and paging through them neither repeats nor skips one (#1392). The
+/// `ts` of all three is identical, their request ids sort the opposite way to
+/// their start sequence, and a page holds one row, so every step of the walk
+/// is decided by `seq` alone.
+#[tokio::test]
+async fn requests_in_one_millisecond_list_by_their_start_sequence() {
+    let ch = skip_without_stack!();
+    let http = reqwest::Client::new();
+    ensure_schema(&http, &ch).await;
+
+    let db = TestSchema::create(&test_database::url().await.unwrap()).await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_clickhouse_and_admin_token(
+        pool.clone(),
+        &ch,
+        Some(ADMIN_TOKEN.to_string()),
+    )
+    .await
+    .unwrap();
+    let addr = serve(app).await;
+    let tenant = seed_tenant(&pool, "seq").await;
+    let ts = chrono::Utc::now()
+        .format("%Y-%m-%d %H:%M:%S%.3f")
+        .to_string();
+    let tag = Uuid::new_v4().simple().to_string();
+    // started first to last: first (seq 10), second (seq 20), third (seq 30)
+    let started = [("zzz-first", 10u64), ("mmm-second", 20), ("aaa-third", 30)];
+    let rows: Vec<Value> = started
+        .iter()
+        .map(|(name, seq)| {
+            json!({
+                "ts": ts, "seq": seq, "request_id": format!("{name}-{tag}"),
+                "org_id": tenant.org.to_string(), "team_id": tenant.team.to_string(),
+                "project_id": tenant.project_a.to_string(),
+                "model": "fake-llm", "status": 200,
+            })
+        })
+        .collect();
+    insert_rows(&http, &ch, "request_logs", &rows).await;
+
+    let mut seen = Vec::new();
+    let mut cursor = String::new();
+    for _ in 0..5 {
+        let response = http
+            .get(format!("http://{addr}/api/v1/analytics/invocations"))
+            .query(&[
+                ("limit", "1"),
+                ("model", "fake-llm"),
+                ("cursor", cursor.as_str()),
+            ])
+            .bearer_auth(ADMIN_TOKEN)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let body: Value = response.json().await.unwrap();
+        let page = body["data"].as_array().unwrap();
+        let Some(row) = page.first() else { break };
+        if row["request_id"].as_str().unwrap().ends_with(&tag) {
+            seen.push(
+                row["request_id"]
+                    .as_str()
+                    .unwrap()
+                    .replace(&format!("-{tag}"), ""),
+            );
+        }
+        cursor = body["next_cursor"].as_str().unwrap().to_string();
+    }
+    // newest start first, each exactly once
+    assert_eq!(seen, ["aaa-third", "mmm-second", "zzz-first"]);
+}

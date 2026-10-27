@@ -582,6 +582,7 @@ pub(crate) fn parse_keyset_cursor(
 /// of the bound constant even though the `= ''` disjunct already short-circuits
 /// the predicate, so a strict parse failed every first page with "Cannot read
 /// DateTime" (#1177).
+#[cfg(feature = "postgres")]
 pub(crate) fn keyset_predicate(id_column: &str) -> String {
     format!(
         "({{cursor_ts:String}} = '' or ts < parseDateTime64BestEffortOrZero({{cursor_ts:String}}) \
@@ -592,12 +593,68 @@ pub(crate) fn keyset_predicate(id_column: &str) -> String {
 
 /// The cursor that resumes paging after the last row of `rows`, or `None` when
 /// the page came back empty and there is nothing left to resume from.
+#[cfg(any(test, feature = "postgres"))]
 pub(crate) fn next_keyset_cursor(rows: &[Value], id_column: &str) -> Option<String> {
     let row = rows.last()?;
     Some(format!(
         "{}|{}",
         row.get("ts")?.as_str()?,
         row.get(id_column)?.as_str()?
+    ))
+}
+
+/// The `where` fragment that resumes the invocation list after the row its
+/// cursor names. The list orders by `(ts desc, seq desc, request_id desc)`:
+/// `seq` is the gateway's start sequence (#1392), which orders requests that
+/// began inside one millisecond by when they began, and `request_id` still
+/// makes the key total for rows with the same `seq` (every row written before
+/// the column, and those of two gateways that happened to agree). Binds
+/// `{cursor_ts}`, `{cursor_seq}` and `{cursor_id}`; `seq` is the column, or its
+/// default on a table that lacks it.
+pub(crate) fn invocations_keyset_predicate(seq: &str) -> String {
+    format!(
+        "({{cursor_ts:String}} = '' or ts < parseDateTime64BestEffortOrZero({{cursor_ts:String}}) \
+              or (ts = parseDateTime64BestEffortOrZero({{cursor_ts:String}}) \
+                  and ({seq} < {{cursor_seq:UInt64}} \
+                       or ({seq} = {{cursor_seq:UInt64}} and request_id < {{cursor_id:String}}))))"
+    )
+}
+
+/// The `seq` a cursor from before the sequence existed resumes from: past every
+/// row of its millisecond, so such a cursor can repeat rows of that one
+/// millisecond but never skip one.
+const LEGACY_CURSOR_SEQ: &str = "18446744073709551615";
+
+/// A cursor's id half is `<seq>|<request_id>`. One without the number is a
+/// `timestamp|request_id` cursor handed out before the sequence, still valid.
+pub(crate) fn split_invocations_cursor(id: &str) -> (String, String) {
+    match id.split_once('|') {
+        Some((seq, request_id))
+            if !seq.is_empty()
+                && seq.len() <= 20
+                && seq.bytes().all(|b| b.is_ascii_digit())
+                && seq.parse::<u64>().is_ok() =>
+        {
+            (seq.to_string(), request_id.to_string())
+        }
+        _ => (LEGACY_CURSOR_SEQ.to_string(), id.to_string()),
+    }
+}
+
+/// The cursor that resumes the invocation list after the last of `rows`:
+/// `<ts>|<seq>|<request_id>`.
+pub(crate) fn next_invocations_cursor(rows: &[Value]) -> Option<String> {
+    let row = rows.last()?;
+    // ClickHouse quotes a 64-bit integer in JSON output
+    let seq = match row.get("seq")? {
+        Value::String(text) => text.clone(),
+        other => other.to_string(),
+    };
+    Some(format!(
+        "{}|{}|{}",
+        row.get("ts")?.as_str()?,
+        seq,
+        row.get("request_id")?.as_str()?
     ))
 }
 
@@ -1079,7 +1136,7 @@ impl TimeBounds for InvocationsQuery {
 /// lacks is read as the default ClickHouse would have filled in for an older
 /// row, under its own name, so the row has the same shape either way (#2903).
 ///
-/// Paging is a keyset over `(ts, request_id)`, never an offset. `request_logs`
+/// Paging is a keyset over `(ts, seq, request_id)`, never an offset. `request_logs`
 /// is written continuously by the gateway, so rows land above the window
 /// between one page and the next; counting from the top then shows a row twice
 /// or skips it entirely, which for this screen is the normal case rather than
@@ -1092,7 +1149,9 @@ impl TimeBounds for InvocationsQuery {
 /// likes (#1344). With `request_id` in both the sort and the cursor, tied
 /// timestamps have one order and the cursor names exactly one row.
 fn invocations_sql(status_expr: &str, columns: &Columns) -> String {
-    let cursor = keyset_predicate("request_id");
+    let cursor = invocations_keyset_predicate(&columns.expr("seq"));
+    let seq = columns.select("seq");
+    let seq_order = columns.expr("seq");
     let cache_write_1h_tokens = columns.select("cache_write_1h_tokens");
     let upstream_status = columns.select("upstream_status");
     let attempts = columns.select("attempts");
@@ -1109,7 +1168,7 @@ fn invocations_sql(status_expr: &str, columns: &Columns) -> String {
                 model, provider, target, variant, status, stream, cache_hit, cache_read_tokens, cache_write_tokens, \
                 {cache_write_1h_tokens}, \
                 prompt_tokens, completion_tokens, total_tokens, cost_usd, unpriced, latency_ms, ttft_ms, error, \
-                {upstream_status}, {attempts}, {lifecycle_operation}, {guardrail_events}, {plugin_events}, \
+                {upstream_status}, {attempts}, {lifecycle_operation}, {guardrail_events}, {plugin_events}, {seq}, \
                 if({PAYLOAD_VISIBLE}, payload.request_payload, '') as request_payload, \
                 if({PAYLOAD_VISIBLE}, payload.response_payload, '') as response_payload, \
                 toUInt8(not {PAYLOAD_VISIBLE} \
@@ -1131,7 +1190,7 @@ fn invocations_sql(status_expr: &str, columns: &Columns) -> String {
            and ({{plugin:String}} = '' or has({plugin_filter}, {{plugin:String}})) \
            and {status_expr} \
            and {cursor} \
-         order by ts desc, request_id desc \
+         order by ts desc, {seq_order} desc, request_id desc \
          limit {{limit:UInt32}} format JSON"
     )
 }
@@ -1160,9 +1219,14 @@ async fn invocations(
         )
             .into_response();
     };
-    let (cursor_ts, cursor_id) = match parse_keyset_cursor(q.cursor.as_deref(), "request_id") {
+    let (cursor_ts, cursor_tail) = match parse_keyset_cursor(q.cursor.as_deref(), "request_id") {
         Ok(cursor) => cursor,
         Err(message) => return InvalidParam::cursor(message).into_response(),
+    };
+    let (cursor_seq, cursor_id) = if cursor_tail.is_empty() {
+        ("0".to_string(), String::new())
+    } else {
+        split_invocations_cursor(&cursor_tail)
     };
     let limit = clamp_limit(q.limit);
     // after the request is known to be well formed, so a refused one costs
@@ -1210,11 +1274,12 @@ async fn invocations(
         q.project.as_deref(),
     ));
     params.push(("param_cursor_ts".to_string(), cursor_ts));
+    params.push(("param_cursor_seq".to_string(), cursor_seq));
     params.push(("param_cursor_id".to_string(), cursor_id));
     params.push(("param_limit".to_string(), limit.to_string()));
     match ch.query(&sql, &with_access(params, &access)).await {
         Ok(data) => {
-            let next_cursor = next_keyset_cursor(&data, "request_id");
+            let next_cursor = next_invocations_cursor(&data);
             Json(json!({"data": data, "next_cursor": next_cursor})).into_response()
         }
         Err(error) => {
@@ -1861,7 +1926,7 @@ mod tests {
             // so ordering on ts alone leaves tied rows in an arbitrary order
             // that limit/offset paging can repeat or skip (#1344)
             assert!(
-                sql.contains("order by ts desc, request_id desc"),
+                sql.contains("order by ts desc, seq desc, request_id desc"),
                 "invocations must order on a total key, got: {sql}"
             );
         }
@@ -1878,9 +1943,60 @@ mod tests {
         assert!(sql.contains("{key:String}"));
         assert!(sql.contains("{limit:UInt32}"));
         assert!(sql.contains("{cursor_ts:String}"));
+        assert!(sql.contains("{cursor_seq:UInt64}"));
         assert!(sql.contains("{cursor_id:String}"));
         // the shared window clause is inlined, so it must be empty-safe here too
         assert!(!sql.contains("parseDateTime64BestEffort("));
+    }
+
+    #[test]
+    fn the_start_sequence_orders_requests_inside_one_millisecond() {
+        // a table with the column sorts and resumes on it
+        let sql = invocations_sql("1", &Columns::default());
+        assert!(sql.contains("seq,"), "{sql}");
+        assert!(sql.contains("order by ts desc, seq desc, request_id desc"));
+        assert!(sql.contains("(seq < {cursor_seq:UInt64} or (seq = {cursor_seq:UInt64}"));
+        // one without it reads every row as sequence 0, under its own name, so
+        // the list still works before an operator applies 021
+        let lacking = invocations_sql("1", &Columns::lacking(&["seq"]));
+        assert!(lacking.contains("toUInt64(0) as seq"), "{lacking}");
+        assert!(lacking.contains("order by ts desc, toUInt64(0) desc, request_id desc"));
+    }
+
+    #[test]
+    fn a_cursor_carries_the_sequence_and_an_older_one_still_resumes() {
+        let rows =
+            vec![json!({"ts": "2026-10-01T10:00:00.123Z", "seq": "42", "request_id": "req-a"})];
+        assert_eq!(
+            next_invocations_cursor(&rows).as_deref(),
+            Some("2026-10-01T10:00:00.123Z|42|req-a")
+        );
+        let numeric = vec![json!({"ts": "2026-10-01T10:00:00.123Z", "seq": 7, "request_id": "r"})];
+        assert_eq!(
+            next_invocations_cursor(&numeric).as_deref(),
+            Some("2026-10-01T10:00:00.123Z|7|r")
+        );
+        assert_eq!(
+            split_invocations_cursor("42|req-a"),
+            ("42".to_string(), "req-a".to_string())
+        );
+        // a request id with a bar in it survives the round trip
+        assert_eq!(
+            split_invocations_cursor("9|a|b"),
+            ("9".to_string(), "a|b".to_string())
+        );
+        // a cursor from before the sequence resumes past its whole millisecond
+        // (repeating rows there at worst), and a request id that merely starts
+        // with digits and a bar is not mistaken for a sequence too large to fit
+        assert_eq!(
+            split_invocations_cursor("req-a"),
+            (LEGACY_CURSOR_SEQ.to_string(), "req-a".to_string())
+        );
+        assert_eq!(
+            split_invocations_cursor("99999999999999999999|x").0,
+            LEGACY_CURSOR_SEQ
+        );
+        assert_eq!(next_invocations_cursor(&[]), None);
     }
 
     #[test]
@@ -1893,10 +2009,10 @@ mod tests {
         // writing to, so a row ingested between two pages repeats or hides one
         // (#1394)
         assert!(!sql.contains("offset"));
-        assert!(sql.contains(&keyset_predicate("request_id")));
+        assert!(sql.contains(&invocations_keyset_predicate("seq")));
         // request_id is what makes the sort key total: without it tied
         // timestamps have no defined order and the cursor names no single row
-        assert!(sql.contains("order by ts desc, request_id desc"));
+        assert!(sql.contains("order by ts desc, seq desc, request_id desc"));
     }
 
     #[test]

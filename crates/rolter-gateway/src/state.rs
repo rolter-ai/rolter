@@ -1064,6 +1064,8 @@ impl AppState {
         rate_limiter: RateLimiter,
         response_cache: ResponseCache,
     ) -> Self {
+        // before any request can start, so no start sequence precedes its epoch
+        crate::logging::init_start_sequence();
         // created before the snapshot so the fastest strategy's latency
         // sources can hold a handle to the same tracker the guards record into
         let loads = crate::load::LoadTracker::new();

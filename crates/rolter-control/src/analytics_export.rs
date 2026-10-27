@@ -40,13 +40,14 @@ use futures_util::stream::{self, StreamExt};
 use serde_json::Value;
 
 use crate::analytics::{
-    attribution_column, bucket_expr, client_or_503, keyset_predicate, next_keyset_cursor,
-    parse_keyset_cursor, query_failed, row_filter_params, status_predicate, window_params,
-    with_access, AttributionQuery, ClickHouseClient, DashboardQuery, InvocationsQuery, WindowQuery,
-    COMPLETION_TOKENS, COST, ERRORS, PROMPT_TOKENS, REQUESTS, ROW_FILTERS, TOKENS, UNPRICED,
-    WHERE_WINDOW,
+    attribution_column, bucket_expr, client_or_503, invocations_keyset_predicate,
+    next_invocations_cursor, query_failed, row_filter_params, split_invocations_cursor,
+    status_predicate, window_params, with_access, AttributionQuery, ClickHouseClient,
+    DashboardQuery, InvocationsQuery, WindowQuery, COMPLETION_TOKENS, COST, ERRORS, PROMPT_TOKENS,
+    REQUESTS, ROW_FILTERS, TOKENS, UNPRICED, WHERE_WINDOW,
 };
 use crate::analytics_access::{AnalyticsAccess, ROW_VISIBLE};
+use crate::request_log_columns::Columns;
 use crate::time_bounds::Query;
 use crate::ControlState;
 
@@ -84,6 +85,7 @@ const LOG_COLUMNS: &[&str] = &[
     "unpriced",
     "latency_ms",
     "ttft_ms",
+    "seq",
     "sample_weight",
 ];
 
@@ -102,6 +104,7 @@ const LOG_NUMERIC: &[&str] = &[
     "unpriced",
     "latency_ms",
     "ttft_ms",
+    "seq",
     "sample_weight",
 ];
 
@@ -435,14 +438,16 @@ async fn export_timeseries(
 /// The request-log query: [`LOG_COLUMNS`] only, under the visibility predicate
 /// and the row filters of the JSON list, resumed after a keyset cursor. No join
 /// to the payload table, so a body cannot reach the file through a column.
-fn log_sql(status_expr: &str) -> String {
-    let cursor = keyset_predicate("request_id");
+fn log_sql(status_expr: &str, columns: &Columns) -> String {
+    let cursor = invocations_keyset_predicate(&columns.expr("seq"));
+    let seq = columns.select("seq");
+    let seq_order = columns.expr("seq");
     format!(
         "select ts, request_id, trace_id, org_id, team_id, project_id, virtual_key_id, \
                 business_unit_id, customer_id, model, provider, target, variant, status, \
                 stream, cache_hit, cache_read_tokens, cache_write_tokens, prompt_tokens, \
                 completion_tokens, total_tokens, cost_usd, unpriced, latency_ms, ttft_ms, \
-                sample_weight \
+                {seq}, sample_weight \
          from request_logs \
          where {WHERE_WINDOW} \
            and {ROW_VISIBLE} \
@@ -450,7 +455,7 @@ fn log_sql(status_expr: &str) -> String {
            and ({{unpriced:UInt8}} = 0 or unpriced = 1) \
            and {status_expr} \
            and {cursor} \
-         order by ts desc, request_id desc \
+         order by ts desc, {seq_order} desc, request_id desc \
          limit {{limit:UInt32}} format JSON"
     )
 }
@@ -482,7 +487,8 @@ struct LogWalk {
     params: Vec<(String, String)>,
     currency: String,
     header_sent: bool,
-    cursor: (String, String),
+    /// the keyset position: timestamp, start sequence and request id
+    cursor: (String, String, String),
     done: bool,
 }
 
@@ -494,7 +500,8 @@ impl LogWalk {
         }
         let mut params = self.params.clone();
         params.push(("param_cursor_ts".to_string(), self.cursor.0.clone()));
-        params.push(("param_cursor_id".to_string(), self.cursor.1.clone()));
+        params.push(("param_cursor_seq".to_string(), self.cursor.1.clone()));
+        params.push(("param_cursor_id".to_string(), self.cursor.2.clone()));
         params.push(("param_limit".to_string(), PAGE_SIZE.to_string()));
         let rows = self.ch.query(&self.sql, &params).await?;
         let mut out = String::new();
@@ -510,14 +517,17 @@ impl LogWalk {
         for row in &rows {
             out.push_str(&log_line(row, &self.currency));
         }
-        match next_keyset_cursor(&rows, "request_id") {
+        match next_invocations_cursor(&rows) {
             // a full page may be followed by older rows; a short one is the end.
             // the cursor is a position in the sort key, so rows the gateway
             // writes while the file is built can neither repeat nor skip one
             Some(next) if rows.len() == PAGE_SIZE as usize => {
                 self.cursor = next
                     .split_once('|')
-                    .map(|(ts, id)| (ts.to_string(), id.to_string()))
+                    .map(|(ts, tail)| {
+                        let (seq, id) = split_invocations_cursor(tail);
+                        (ts.to_string(), seq, id)
+                    })
                     .unwrap_or_default();
             }
             _ => self.done = true,
@@ -565,13 +575,19 @@ async fn export_invocations(
         q.until.as_deref(),
         &currency,
     );
+    // which optional columns the table has, so the file still builds before an
+    // operator applies the sequence column (see `request_log_columns`)
+    let columns = match ch.request_log_columns().await {
+        Ok(columns) => columns,
+        Err(error) => return query_failed("analytics query failed", &error),
+    };
     let mut walk = LogWalk {
         ch: ch.clone(),
-        sql: log_sql(status_expr),
+        sql: log_sql(status_expr, &columns),
         params: with_access(params, &access),
         currency,
         header_sent: false,
-        cursor: parse_keyset_cursor(None, "request_id").unwrap_or_default(),
+        cursor: (String::new(), "0".to_string(), String::new()),
         done: false,
     };
     // the first page is read before the response starts, so a ClickHouse
@@ -676,7 +692,7 @@ mod tests {
         ] {
             assert!(!LOG_COLUMNS.contains(&forbidden), "{forbidden}");
         }
-        let sql = log_sql("1");
+        let sql = log_sql("1", &Columns::default());
         // the export never joins the payload table or selects a body column
         assert!(
             !sql.contains("request_payloads") && !sql.contains("payload"),
@@ -684,6 +700,6 @@ mod tests {
         );
         // and it binds the same visibility predicate as the JSON list
         assert!(sql.contains(ROW_VISIBLE));
-        assert!(sql.contains("order by ts desc, request_id desc"));
+        assert!(sql.contains("order by ts desc, seq desc, request_id desc"));
     }
 }

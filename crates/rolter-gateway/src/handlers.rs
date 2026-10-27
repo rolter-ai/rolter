@@ -2496,6 +2496,7 @@ async fn proxy(
         started,
         RequestLog {
             ts: crate::logging::started_at(started),
+            seq: crate::logging::start_seq(started),
             request_id: request_id.clone(),
             trace_id: trace_id.clone(),
             virtual_key_id: vk_id.clone(),
@@ -2943,6 +2944,7 @@ async fn proxy(
                 };
             let mut log = RequestLog {
                 ts: crate::logging::started_at(started),
+                seq: crate::logging::start_seq(started),
                 request_id,
                 trace_id,
                 virtual_key_id: vk_id,
@@ -3153,6 +3155,7 @@ async fn proxy(
             };
             let row = RequestLog {
                 ts: crate::logging::started_at(started),
+                seq: crate::logging::start_seq(started),
                 request_id,
                 trace_id,
                 virtual_key_id: vk_id,
@@ -3381,6 +3384,7 @@ async fn proxy_multipart(
         started,
         RequestLog {
             ts: crate::logging::started_at(started),
+            seq: crate::logging::start_seq(started),
             request_id: request_id.clone(),
             trace_id: trace_id.clone(),
             virtual_key_id: vk_id.clone(),
@@ -3619,6 +3623,7 @@ async fn proxy_multipart(
         Some((response, status, is_sse)) => {
             let log = RequestLog {
                 ts: crate::logging::started_at(started),
+                seq: crate::logging::start_seq(started),
                 request_id,
                 trace_id,
                 virtual_key_id: vk_id,
@@ -3704,6 +3709,7 @@ async fn proxy_multipart(
             };
             let row = RequestLog {
                 ts: crate::logging::started_at(started),
+                seq: crate::logging::start_seq(started),
                 request_id,
                 trace_id,
                 virtual_key_id: vk_id,
@@ -4784,6 +4790,7 @@ impl RequestLogCtx {
         let latency_ms = self.started.elapsed().as_millis() as u32;
         RequestLog {
             ts: crate::logging::started_at(self.started),
+            seq: crate::logging::start_seq(self.started),
             request_id: self.request_id,
             trace_id: self.trace_id,
             virtual_key_id: self.vk_id,

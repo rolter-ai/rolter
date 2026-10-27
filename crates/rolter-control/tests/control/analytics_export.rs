@@ -75,6 +75,21 @@ async fn handle(
             .map(|(k, v)| (k.into_owned(), v.into_owned()))
             .collect();
     let seen = Seen { params, sql: body };
+    // the column probe the log reads make is not a page of data
+    if seen.sql.contains("system.columns") {
+        let names = [
+            "ts",
+            "upstream_status",
+            "attempts",
+            "lifecycle_operation",
+            "cache_write_1h_tokens",
+            "guardrail_events",
+            "plugin_events",
+            "seq",
+        ];
+        let rows: Vec<Value> = names.iter().map(|n| json!({"name": n})).collect();
+        return (StatusCode::OK, axum::Json(json!({"data": rows}))).into_response();
+    }
     let index = {
         let mut all = fake.seen.lock();
         all.push(seen.clone());
@@ -157,6 +172,7 @@ fn log_row(i: usize, model: &str) -> Value {
         "stream": 0, "cache_hit": 0, "cache_read_tokens": 0, "cache_write_tokens": 0,
         "prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15, "cost_usd": 0.5,
         "unpriced": 0, "latency_ms": 120, "ttft_ms": 30, "sample_weight": 1,
+        "seq": format!("{}", 5000 - i),
     })
 }
 
@@ -239,6 +255,8 @@ async fn the_log_export_streams_every_page_under_the_scope_the_json_read_binds()
     // written meanwhile can neither repeat nor be skipped
     assert_eq!(seen[0].param("param_cursor_id"), Some(""));
     assert_eq!(seen[1].param("param_cursor_id"), Some("req-00999"));
+    // and on the start sequence too, so a tie inside a millisecond cannot repeat
+    assert_eq!(seen[1].param("param_cursor_seq"), Some("4001"));
     assert_eq!(
         seen[1].param("param_cursor_ts"),
         Some("2026-10-01T10:00:00.000Z")
