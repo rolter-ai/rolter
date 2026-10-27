@@ -447,6 +447,7 @@ export type {
 export {
   ApiError,
   isOpenModeNoSession,
+  isAdminTokenRequired,
   setSessionExpiredHandler,
   isEndpointNotMounted,
   clientRequestBoundMs,

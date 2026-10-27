@@ -2152,3 +2152,122 @@ async fn a_password_reset_respects_who_may_reach_which_account() {
         .unwrap();
     assert_eq!(unknown.status(), 404);
 }
+
+/// The roster an admin reads before raising `mfa_policy` (#1590): one row per
+/// active member, an armed factor told apart from a pending enrolment, recovery
+/// codes counted but never shown, and nothing for a stranger to the org.
+#[tokio::test]
+async fn the_org_roster_says_who_has_an_armed_second_factor() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app =
+        rolter_control::test_app_with_admin_token(pool.clone(), Some(admin_token().to_string()))
+            .await
+            .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let org: uuid::Uuid =
+        sqlx::query_scalar("insert into orgs (name, slug) values ('acme', 'acme') returning id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let team: uuid::Uuid =
+        sqlx::query_scalar("insert into teams (org_id, name) values ($1, 'core') returning id")
+            .bind(org)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let admin = seed_user(&pool, "admin@acme.test", false).await;
+    seed_membership(&pool, admin, Some(org), None, None, "admin").await;
+    // a member who only holds a team grant is still a member of the org
+    let armed = seed_user(&pool, "armed@acme.test", false).await;
+    seed_membership(&pool, armed, None, Some(team), None, "member").await;
+    seed_membership(&pool, armed, Some(org), None, None, "viewer").await;
+    let pending = seed_user(&pool, "pending@acme.test", false).await;
+    seed_membership(&pool, pending, Some(org), None, None, "viewer").await;
+    let bare = seed_user(&pool, "bare@acme.test", false).await;
+    seed_membership(&pool, bare, Some(org), None, None, "viewer").await;
+    let gone = seed_user(&pool, "gone@acme.test", false).await;
+    seed_membership(&pool, gone, Some(org), None, None, "viewer").await;
+    sqlx::query("update users set deactivated_at = now() where id = $1")
+        .bind(gone)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let stranger = seed_user(&pool, "stranger@elsewhere.test", false).await;
+
+    for (user, confirmed) in [(armed, true), (pending, false)] {
+        sqlx::query(
+            "insert into user_totp_factors (user_id, secret_ciphertext, secret_nonce, confirmed_at)
+             values ($1, '\\x00', '\\x00', case when $2 then now() end)",
+        )
+        .bind(user)
+        .bind(confirmed)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    for n in 0..3 {
+        sqlx::query("insert into user_recovery_codes (user_id, code_hash, used_at) values ($1, $2, case when $3 then now() end)")
+            .bind(armed)
+            .bind(format!("hash-{n}"))
+            .bind(n == 0)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    let token = seed_session(&pool, admin, "roster").await;
+    let response = client
+        .get(format!("{base}/api/v1/orgs/{org}/mfa-status"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let rows: Vec<Value> = response.json().await.unwrap();
+    let emails: Vec<&str> = rows.iter().map(|r| r["email"].as_str().unwrap()).collect();
+    assert_eq!(
+        emails,
+        [
+            "admin@acme.test",
+            "armed@acme.test",
+            "bare@acme.test",
+            "pending@acme.test"
+        ],
+        "one row per active member, each once, no stranger and no deactivated account"
+    );
+    let row = |email: &str| rows.iter().find(|r| r["email"] == email).unwrap();
+    assert_eq!(row("armed@acme.test")["enabled"], true);
+    assert_eq!(row("armed@acme.test")["recovery_codes_remaining"], 2);
+    assert_eq!(
+        row("pending@acme.test")["enabled"],
+        false,
+        "a half-finished enrolment is not an armed factor"
+    );
+    assert_eq!(row("bare@acme.test")["enabled"], false);
+    assert_eq!(row("bare@acme.test")["recovery_codes_remaining"], 0);
+    let rendered = serde_json::to_string(&rows).unwrap();
+    assert!(!rendered.contains("hash-") && !rendered.contains("secret"));
+
+    // below admin there is no roster
+    let viewer_token = seed_session(&pool, pending, "roster-viewer").await;
+    let refused = client
+        .get(format!("{base}/api/v1/orgs/{org}/mfa-status"))
+        .bearer_auth(&viewer_token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), 403);
+    let outsider = seed_session(&pool, stranger, "roster-outsider").await;
+    let refused = client
+        .get(format!("{base}/api/v1/orgs/{org}/mfa-status"))
+        .bearer_auth(&outsider)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), 403);
+}

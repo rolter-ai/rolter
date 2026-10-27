@@ -374,7 +374,8 @@ impl PasswordResetRepo<'_> {
 pub struct InvitationRepo<'a>(pub &'a PgPool);
 
 const INVITATION_COLUMNS: &str = "id, org_id, email, role, team_id, project_id, token_hash, \
-     invited_by, expires_at, accepted_at, revoked_at, created_at";
+     invited_by, expires_at, accepted_at, revoked_at, created_at, mail_status, \
+     mail_attempted_at, mail_error";
 
 /// The address, grant and token of an invitation being created.
 #[derive(Debug, Clone, Copy)]
@@ -461,7 +462,8 @@ impl InvitationRepo<'_> {
         sqlx::query_as(
             "select i.id, i.org_id, i.email, i.role, i.team_id, i.project_id, i.token_hash, \
                     i.invited_by, u.email as invited_by_email, i.expires_at, i.accepted_at, \
-                    i.revoked_at, i.created_at \
+                    i.revoked_at, i.created_at, i.mail_status, i.mail_attempted_at, \
+                    i.mail_error \
              from invitations i left join users u on u.id = i.invited_by \
              where i.org_id = $1 order by i.created_at desc",
         )
@@ -469,6 +471,23 @@ impl InvitationRepo<'_> {
         .fetch_all(self.0)
         .await
         .map_err(store_err)
+    }
+
+    /// Record how emailing an invitation's link went (#1828): `sent`, or
+    /// `failed` with a reason that is safe to show. A no-op for an invitation
+    /// that no longer exists.
+    pub async fn record_mail(&self, id: Uuid, status: &str, error: Option<&str>) -> Result<()> {
+        sqlx::query(
+            "update invitations set mail_status = $2, mail_attempted_at = now(), mail_error = $3 \
+             where id = $1",
+        )
+        .bind(id)
+        .bind(status)
+        .bind(error)
+        .execute(self.0)
+        .await
+        .map_err(store_err)?;
+        Ok(())
     }
 
     /// Look an invitation up by token digest, but only while it is live:

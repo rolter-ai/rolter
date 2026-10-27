@@ -735,6 +735,28 @@ const CAPABILITIES: &[Capability] = &[
         delete: ADMIN,
         action_scopes: NONE,
     },
+    // LDAP sign-in: a directory and its group mappings decide who gets which
+    // role at sign-in, so they need the same admin bar as single sign-on
+    Capability {
+        resource: "ldap_directory",
+        scope: "org",
+        read: ADMIN,
+        create: ADMIN,
+        // editing a directory can rotate its bind password and take it in and
+        // out of service, which is the same grant as registering one
+        update: ADMIN,
+        delete: ADMIN,
+        action_scopes: NONE,
+    },
+    Capability {
+        resource: "ldap_group_mapping",
+        scope: "org",
+        read: ADMIN,
+        create: ADMIN,
+        update: NA,
+        delete: ADMIN,
+        action_scopes: NONE,
+    },
     Capability {
         resource: "org_auth_policy",
         scope: "org",
@@ -2267,10 +2289,12 @@ mod tests {
         ("ingest_failure.rs", include_str!("ingest_failure.rs")),
         ("invitations.rs", include_str!("invitations.rs")),
         ("ldap.rs", include_str!("ldap.rs")),
+        ("ldap_signin.rs", include_str!("ldap_signin.rs")),
         ("lib.rs", include_str!("lib.rs")),
         ("log_erasure.rs", include_str!("log_erasure.rs")),
         ("logging_settings.rs", include_str!("logging_settings.rs")),
         ("login_throttle.rs", include_str!("login_throttle.rs")),
+        ("mail.rs", include_str!("mail.rs")),
         ("main.rs", include_str!("main.rs")),
         ("mcp_logs.rs", include_str!("mcp_logs.rs")),
         ("model_defaults.rs", include_str!("model_defaults.rs")),

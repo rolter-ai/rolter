@@ -122,6 +122,7 @@ in the URL.
 | `unknown_provider`        | `/start` named a slug no enabled provider answers to                 |
 | `no_mapped_group`         | in no mapped group and the provider has no `default_role`            |
 | `account_deactivated`     | the account is deactivated                                           |
+| `account_outside_org`     | the account is a superadmin, or holds a role in another org          |
 | `idp_verification_failed` | the provider was unreachable, or the token or id token did not check |
 | `not_configured`          | the deployment cannot finish a sign-in, e.g. no `ROLTER_KEK`         |
 | `internal_error`          | anything else                                                        |
@@ -169,6 +170,15 @@ An account is adopted **by verified email**: someone invited last month who now
 arrives through the IdP keeps the same user row, the same virtual keys and the
 same manual roles. SSO-created accounts get no password — an SSO identity must
 not silently gain a second, weaker credential.
+
+A provider adopts an existing account **only when every role it holds is
+inside the provider's org**, and never a superadmin; anything else is refused
+with `account_outside_org` and its roles are left alone. A provider is
+registered by an org's admins, who decide every email it asserts, so without
+this an admin of one org could point a provider they control at another org's
+member, or at the break-glass account, and be handed a session carrying grants
+their own org never gave. The cost is that a person with roles in two orgs
+cannot use either org's provider and signs in with their password instead.
 
 ## Org login policy
 

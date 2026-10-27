@@ -26,6 +26,8 @@ mod budgets;
 mod cluster_summary;
 mod crud;
 mod guardrails;
+mod invitation_mail;
+mod ldap;
 mod log_erasure;
 mod mcp;
 mod profile;

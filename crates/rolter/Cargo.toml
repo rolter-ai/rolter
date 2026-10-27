@@ -42,6 +42,8 @@ uuid.workspace = true
 
 [features]
 default = []
+# LDAP sign-in (#1826); the published image does not enable it yet (#3262)
+ldap = ["rolter-control/ldap"]
 # enable the control plane's postgres-backed store, CRUD API and migrations,
 # and the database path of `easy-up` (migrations + idempotent seed)
 postgres = [
