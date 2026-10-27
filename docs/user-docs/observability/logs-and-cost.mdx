@@ -331,6 +331,13 @@ by your deployment.
   500 ids; superadmin, like any price write) creates the prices. Each result is
   `created`, `updated`, `kept_override` or `not_in_catalogue`.
 
+In the dashboard, **Pricing → Import from catalogue** (superadmin) opens a
+searchable list of the snapshot's models with their rates, the snapshot date and
+the source and licence. Pick the models and import them: the result states, per
+model, whether it was created, refreshed from the catalogue, kept as your own
+price or missing from the catalogue. The Source column of the Pricing screen
+marks each price as a catalogue value or as your override.
+
 Three rules hold for every import:
 
 - **Your price wins.** A price you set by hand (the Pricing screen, the API,

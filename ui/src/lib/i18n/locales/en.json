@@ -314,7 +314,8 @@
       "preferences": "your preferences",
       "yourProfile": "your profile",
       "auditLogExport": "the audit log export",
-      "unpricedModels": "unpriced models"
+      "unpricedModels": "unpriced models",
+      "priceCatalogue": "price catalogue"
     },
     "requestFailed": "request failed: {{status}}",
     "gateway": {
@@ -1064,7 +1065,8 @@
         "audioIn": "Audio input",
         "audioOut": "Audio output",
         "cachedAudio": "Cached audio input",
-        "currency": "Currency"
+        "currency": "Currency",
+        "source": "Source"
       },
       "searchPlaceholder": "Search models",
       "noMatchTitle": "No prices match",
@@ -1080,6 +1082,30 @@
       "noAnalytics": {
         "title": "Unpriced traffic needs ClickHouse",
         "body": "This control plane runs without <0>CLICKHOUSE_URL</0>, or is older than the endpoint this list reads, so it cannot say which models carry traffic with no price. Models can still be priced below."
+      },
+      "import": {
+        "action": "Import from catalogue",
+        "title": "Import prices from the catalogue",
+        "body": "Copy list prices for the models you pick from the price catalogue shipped with this control plane. Nothing is fetched from the internet.",
+        "noticeLead": "Catalogue values are third-party list prices, subject to change.",
+        "notice": "The source is provisional. An imported price is marked as a catalogue value with its snapshot date, and a price you set yourself is never replaced.",
+        "sourceLine": "Source: {{source}} ({{licence}}) · snapshot {{date}} · {{total}} models",
+        "searchPlaceholder": "Search the catalogue by model name",
+        "listLabel": "Catalogue models",
+        "rates": "input {{input}} · output {{output}} · cached input {{cached}} {{currency}}/Mtok",
+        "overrideKept": "You already set a price for this model; an import keeps it.",
+        "noMatchTitle": "No catalogue model matches",
+        "noMatchBody": "Nothing in the catalogue matches \"{{query}}\".",
+        "emptyBody": "The catalogue snapshot holds no models.",
+        "truncated": "Showing the first {{shown}} matches. Narrow the search to see others.",
+        "run": "Import selected ({{n}})",
+        "resultTitle": "Imported from {{source}}, snapshot {{date}}. These remain catalogue values, subject to change.",
+        "outcome": {
+          "created": "Created:",
+          "updated": "Refreshed from the catalogue:",
+          "kept_override": "Kept your own price:",
+          "not_in_catalogue": "Not in the catalogue:"
+        }
       }
     },
     "playground": {
@@ -5504,5 +5530,16 @@
     "spelling": "Field: {{spelling}}",
     "coverage": "{{count}} of {{total}} providers",
     "coverageProbed": "{{count}} of {{total}} providers probed"
+  },
+  "priceProvenance": {
+    "catalogue": "Catalogue",
+    "override": "Override",
+    "catalogueSource": "Source: {{source}}",
+    "catalogueSnapshot": "Snapshot: {{date}}",
+    "catalogueHint": "A third-party list price, subject to change.",
+    "overrideHint": "A price set by an operator. It wins over the catalogue and is never replaced by an import.",
+    "lineCatalogue": "Catalogue price from {{source}}, snapshot {{date}} — subject to change.",
+    "lineCatalogueUndated": "Catalogue price from {{source}} — subject to change.",
+    "lineOverride": "Your price (override)."
   }
 }
