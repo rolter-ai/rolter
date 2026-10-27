@@ -38,32 +38,40 @@
        no rule keyed off any more (#1199) */
     color-scheme: dark;
 
-    /* shadcn contract (space-separated HSL) — graphite/zinc, dark by default */
-    --background: 240 5% 7%; /* #111113 surface-base */
-    --foreground: 0 0% 98%; /* #fafafa */
-    --card: 240 5% 7%;
-    --card-foreground: 0 0% 98%;
-    --popover: 240 6% 13%; /* #1f1f23 elevated */
-    --popover-foreground: 0 0% 98%;
-    --primary: 0 0% 98%; /* near-white primary button (dark text) */
-    --primary-foreground: 240 5% 7%;
-    --secondary: 240 4% 16%; /* #27272a */
-    --secondary-foreground: 0 0% 98%;
-    --muted: 240 4% 16%;
-    --muted-foreground: 240 5% 65%; /* #a1a1aa */
-    --accent: 240 4% 16%; /* subtle zinc hover — NOT the brand red */
-    --accent-foreground: 0 0% 98%;
-    /* --red-folk (#b41d21) in the shadcn HSL contract, not the #e53935 status
+    /* shadcn contract: graphite/zinc, dark by default. every entry is an alias
+       of the design token that carries the same value (#1993), so a value has
+       one source: retuning --zinc-800 moves bg-muted, bg-secondary, bg-accent and
+       --surface-subtle together. tailwind.config.js reads them as plain colours,
+       `var(--muted)`, no longer as the HSL channels they used to be */
+    --background: var(--surface-base);
+    --foreground: var(--text-primary);
+    --card: var(--surface-card);
+    --card-foreground: var(--text-primary);
+    --popover: var(--surface-elevated);
+    --popover-foreground: var(--text-primary);
+    --primary: var(--text-primary); /* near-white primary button (dark text) */
+    --primary-foreground: var(--surface-base);
+    --secondary: var(--surface-subtle);
+    --secondary-foreground: var(--text-primary);
+    --muted: var(--surface-subtle);
+    --muted-foreground: var(--text-muted);
+    --accent: var(--surface-hover); /* subtle zinc hover — NOT the brand red */
+    --accent-foreground: var(--text-primary);
+    /* --red-folk (#b41d21) in the shadcn contract, not the #e53935 status
        fill (#1181): the destructive button paints --destructive-foreground on
        this, and #fafafa on #e53935 is 4.05:1 while on the folkloric red it is
        6.41:1. --destructive survives here only as a *surface* —
        `bg-destructive`, `border-destructive/30`, `bg-destructive/5`;
        destructive *text* reads --status-danger-text */
-    --destructive: 358 72% 41%;
-    --destructive-foreground: 0 0% 98%;
-    --border: 240 4% 16%;
-    --input: 240 4% 16%;
-    --ring: 0 0% 55%;
+    --destructive: var(--red-folk);
+    --destructive-foreground: var(--text-primary);
+    /* the default border is the opaque zinc-800 step, the same pixels as before
+       the alias. the translucent hairlines are --border-subtle, --border-default
+       and --border-strong below, and a bare `border` still reads the opaque one */
+    --border: var(--zinc-800);
+    --input: var(--zinc-800);
+    /* #8c8c8c, DESIGN.md's focus-ring: 55% grey, no ramp step carries it */
+    --ring: #8c8c8c;
     --radius: 0.625rem; /* 10px cards; controls derive to 8px */
 
     /* ---- raw design ramp (reference in DS components / ornament) --------- */
@@ -194,7 +202,6 @@
     --surface-base: var(--zinc-925);
     --surface-elevated: var(--zinc-850);
     --surface-subtle: var(--zinc-800);
-    --surface-active: var(--zinc-700);
     --surface-card: var(--zinc-925);
     --surface-hover: var(--zinc-800);
     --border-default: rgba(255, 255, 255, 0.15);
@@ -208,8 +215,6 @@
     /* an alias of the *text* half, not the fill: every call site colours a
        message with it (#1181, #1219) */
     --danger-text: var(--status-danger-text);
-    --danger-border: rgba(229, 57, 53, 0.4);
-    --danger-surface: rgba(229, 57, 53, 0.1);
     --green-tint: rgba(22, 163, 74, 0.12);
     /* text selection (#2419). opaque, so the pair reads the same on every
        surface instead of taking the colour of whatever it is laid over:
@@ -240,7 +245,6 @@
 
     /* layout */
     --sidebar-width: 232px;
-    --header-height: 52px;
 
     /* ---- syntax highlighting (#949) -------------------------------------
        the highlighter is themed from this palette, not from a stock Prism

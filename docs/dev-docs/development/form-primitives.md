@@ -334,7 +334,7 @@ knobs keep it from flagging ordinary Tailwind:
   five screens is the primitive doing its job, and flagging it would punish the
   composition this page is asking for.
 - **at least four classes, at least two of them arbitrary values.**
-  `rounded-[10px]`, `text-[color:var(--text-subtle)]`, `max-w-[840px]` are the
+  `p-[22px]`, `text-[color:var(--text-subtle)]`, `max-w-[840px]` are the
   design system spelled out by hand; `flex items-center gap-2` is a sentence in
   Tailwind and repeats in eighteen files for good reasons. Both numbers were
   tuned against the tree: at four and two, the #1658 footer line is caught and

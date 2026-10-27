@@ -300,6 +300,16 @@ half by what it paints: a dot, bar or border takes the fill; a letter takes the 
 **The Token-Only Rule.** No hex, no raw Tailwind palette colour (`text-emerald-600`), no `dark:`
 variant. Reference a token: `text-[color:var(--status-danger-text)]`.
 
+**The One-Source Rule.** A value has one token that carries it. The shadcn names Tailwind reads
+(`bg-background`, `bg-card`, `bg-popover`, `bg-secondary`, `bg-muted`, `bg-accent`,
+`text-muted-foreground`, `border-input`, `ring-ring`) are aliases of the design tokens in
+`ui/src/index.css` (`--surface-base`, `--surface-card`, `--surface-elevated`, `--surface-subtle`,
+`--surface-hover`, `--text-muted`, `--zinc-800`), not second copies of their colours, so retuning
+`--zinc-800` moves `bg-muted` with `--surface-subtle` (#1993). Either spelling is fine at a call
+site; a new value goes in the design tokens first. The default `border` colour stays the opaque
+`--zinc-800`, which is what a bare `border` has always painted; the translucent hairlines are the
+three `--border-*` tokens.
+
 ## Typography
 
 **Display Font:** none; the dashboard has no display tier.
@@ -400,7 +410,9 @@ A shadow means "this is floating over the page".
 
 Corners are gently rounded and consistent: 6px for badges and small chips, 8px for buttons,
 inputs and nav items, 10px for cards, 14px for large containers, full rounding for status dots,
-pills and switch tracks. The only non-rectangular motif is the cross-stitch: the mark's 29 rounded
+pills and switch tracks. They are the Tailwind scale (`rounded-sm`, `rounded-md`, `rounded-lg`,
+`rounded-xl`, `rounded-full`), which derives from `--radius`; `rounded-[10px]` and `rounded-[6px]`
+restate it and are not written. The only non-rectangular motif is the cross-stitch: the mark's 29 rounded
 squares and the ornament's 45° checkerboard.
 
 ## Components
@@ -416,7 +428,8 @@ is state to show.
 - **Primary:** Near White fill with Graphite text. The default action button is neutral, not red.
 - **Brand:** Folk Red fill with white text, hovering to `red-accent-press`. Reserved for the one
   action a screen exists for, such as signing in, accepting an invite or turning on two-factor.
-  It is hand-written at each call site today rather than a `Button` variant (#1993).
+  It is `variant="brand"` on `Button` (#1993). The sign-in, invitation, reset-password and
+  two-factor screens still spell the same classes out and move over when those screens next change.
 - **Outline / Ghost:** Graphite or transparent with Near White text, hovering to the Zinc Band.
 - **Destructive:** a Folk Red surface; its confirm lives in `ConfirmDialog`.
 - **Focus:** a 1px `focus-ring` ring on `:focus-visible`; disabled drops to 50% opacity. Under

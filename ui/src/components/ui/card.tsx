@@ -55,7 +55,7 @@ export function CardStack({ className, ...props }: React.HTMLAttributes<HTMLDivE
   return (
     <div
       className={cn(
-        "flex flex-col gap-3 rounded-[10px] border border-[color:var(--border-default)] bg-card p-4",
+        "flex flex-col gap-3 rounded-lg border border-[color:var(--border-default)] bg-card p-4",
         className,
       )}
       {...props}
