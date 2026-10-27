@@ -831,6 +831,11 @@ pub struct LoggingSettings {
     pub payload_capture_enabled: bool,
     pub payload_capture_max_bytes: i32,
     pub payload_capture_redact_fields: Vec<String>,
+    /// built-in value detectors that scan captured text (#1835)
+    pub payload_capture_redact_detectors: Vec<String>,
+    /// operator-supplied value patterns, applied after the detectors
+    pub payload_capture_redact_patterns:
+        sqlx::types::Json<Vec<rolter_core::payload_redaction::RedactPattern>>,
     pub payload_capture_models: Vec<String>,
     pub payload_capture_virtual_key_ids: Vec<String>,
     /// how long request-log metadata is kept in clickhouse
@@ -852,6 +857,8 @@ impl LoggingSettings {
         logging.payload_capture.enabled = self.payload_capture_enabled;
         logging.payload_capture.max_bytes = self.payload_capture_max_bytes.max(0) as usize;
         logging.payload_capture.redact_fields = self.payload_capture_redact_fields.clone();
+        logging.payload_capture.redact_detectors = self.payload_capture_redact_detectors.clone();
+        logging.payload_capture.redact_patterns = self.payload_capture_redact_patterns.0.clone();
         logging.payload_capture.models = self.payload_capture_models.clone();
         logging.payload_capture.virtual_key_ids = self.payload_capture_virtual_key_ids.clone();
         logging.ui_events = self.ui_events;
