@@ -101,10 +101,10 @@ class MaxSustainableRpsTests(unittest.TestCase):
 
     def test_picks_the_best_throughput_below_the_knee(self):
         levels = [
-            self.level(1, 10.0, 100.0),   # baseline p99, ceiling = 200
+            self.level(1, 10.0, 100.0),  # baseline p99, ceiling = 200
             self.level(2, 18.0, 120.0),
-            self.level(4, 30.0, 190.0),   # still healthy
-            self.level(8, 40.0, 400.0),   # past the knee: more RPS, unusable p99
+            self.level(4, 30.0, 190.0),  # still healthy
+            self.level(8, 40.0, 400.0),  # past the knee: more RPS, unusable p99
         ]
         summary = max_sustainable_rps(levels, knee_factor=2.0)
         self.assertEqual(summary["max_sustainable_rps"], 30.0)
@@ -163,7 +163,7 @@ class _StreamingHandler(BaseHTTPRequestHandler):
 
     gap_seconds = 0.02
 
-    def do_POST(self):  # noqa: N802 - BaseHTTPRequestHandler's interface
+    def do_POST(self):
         length = int(self.headers.get("content-length", 0))
         body = json.loads(self.rfile.read(length) or b"{}")
         self.send_response(200)
@@ -181,7 +181,9 @@ class _StreamingHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
         def frame(delta):
-            self.wfile.write(b"data: " + json.dumps({"choices": [{"delta": delta}]}).encode() + b"\n\n")
+            self.wfile.write(
+                b"data: " + json.dumps({"choices": [{"delta": delta}]}).encode() + b"\n\n"
+            )
             self.wfile.flush()
 
         # a role-only frame carries no text; it must not count as a token

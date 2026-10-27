@@ -202,10 +202,10 @@ pass_filenames = false
 # pinned like the ci step; see #2187 / #2185
 [[repos.hooks]]
 id = "ruff"
-name = "ruff (scripts)"
-entry = "bash -c 'r=$(bash scripts/tool-pin.sh ruff) && uvx --from \"$r\" ruff check scripts && uvx --from \"$r\" ruff format --check scripts'"
+name = "ruff (python)"
+entry = "bash -c 'r=$(bash scripts/tool-pin.sh ruff) && uvx --from \"$r\" ruff check scripts integration && uvx --from \"$r\" ruff format --check scripts integration'"
 language = "system"
-files = "^(scripts/.*\\.py|ruff\\.toml)$"
+files = "^((scripts|integration)/.*\\.py|(integration/e2e/)?ruff\\.toml)$"
 pass_filenames = false
 
 # the checker reads the workflows as parsed yaml, so it needs pyyaml; prek

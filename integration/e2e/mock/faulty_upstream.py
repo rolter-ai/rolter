@@ -63,7 +63,7 @@ class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
     # silence the default noisy per-request stderr line; we log our own
-    def log_message(self, *_args) -> None:  # noqa: D401
+    def log_message(self, *_args) -> None:
         pass
 
     def _emit(self, status: int, body: bytes, extra_headers: dict[str, str] | None = None) -> None:

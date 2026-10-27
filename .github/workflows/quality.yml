@@ -1015,18 +1015,19 @@ jobs:
         if: ${{ !cancelled() }}
         run: bash scripts/test-release-gate.sh
 
-      # ── python: the gate scripts under scripts/ ───────────────────────────
+      # ── python: the gate scripts under scripts/ and the harnesses under integration/
       # the release handoff and rendered-manifest checkers are part of the merge
-      # gate, so drift in them is drift in the gate. rules live in ruff.toml;
-      # the pin is bumped by hand like the zizmor one (#2185). formatting is
-      # gated too, like prettier is for the docs (#2769)
-      - name: ruff (scripts)
+      # gate, so drift in them is drift in the gate. rules live in ruff.toml
+      # (integration/e2e/ruff.toml overrides only its python floor); the pin is
+      # bumped by hand like the zizmor one (#2185). formatting is gated too, like
+      # prettier is for the docs (#2769), and covers integration/ since #2669
+      - name: ruff (python)
         id: ruff
         if: ${{ !cancelled() && steps.uv.outcome == 'success' }}
         run: |
           ruff=$(bash scripts/tool-pin.sh ruff)
-          uvx --from "$ruff" ruff check scripts
-          uvx --from "$ruff" ruff format --check scripts
+          uvx --from "$ruff" ruff check scripts integration
+          uvx --from "$ruff" ruff format --check scripts integration
 
       # ── board automation: the add-to-board retry policy ───────────────────
       # project-automation.yml decides which GitHub API failures to wait out and
@@ -1243,7 +1244,7 @@ jobs:
             "prek run release-handoff-self-test --all-files"
           row "release handoff wired" "release gate scripts against a fake gh" "${OUTCOME_RELEASE_GATE}" yes \
             "prek run release-gate --all-files"
-          row "ruff" "ruff (scripts)" "${OUTCOME_RUFF}" yes "prek run ruff --all-files"
+          row "ruff" "ruff (python)" "${OUTCOME_RUFF}" yes "prek run ruff --all-files"
           row "board automation retry policy" "board automation retry policy" "${OUTCOME_PROJECT_AUTOMATION}" yes \
             "prek run project-automation --all-files"
           row "dogfood scripts" "dogfood scripts against a stub server" "${OUTCOME_DOGFOOD_SCRIPTS}" yes \
