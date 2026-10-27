@@ -81,7 +81,7 @@ struct ProviderTestQuery {
 }
 
 /// Whether a catalogue lists `model`, compared the way
-/// [`rolter_core::probe::catalogue_ids`] reduces an id (last path segment), so
+/// [`rolter_core::probe::catalogue_names`] reduces an id (last path segment), so
 /// `publishers/google/models/gemini-2.5-pro` and `gemini-2.5-pro` agree.
 ///
 /// `None` when there is nothing to check against: no model asked about, a
@@ -100,7 +100,7 @@ fn model_listed(
     if wanted.is_empty() || !verdict.reachable || !catalogue {
         return None;
     }
-    let ids = rolter_core::probe::catalogue_ids(body?)?;
+    let ids = rolter_core::probe::catalogue_names(body?)?;
     Some(ids.iter().any(|id| id == wanted))
 }
 
@@ -1185,7 +1185,7 @@ mod probe_verdict_tests {
         );
     }
 
-    /// A resource path and a bare name agree, as in `catalogue_ids`.
+    /// A resource path and a bare name agree, as in `catalogue_names`.
     #[test]
     fn a_resource_path_and_a_bare_name_agree() {
         let body =

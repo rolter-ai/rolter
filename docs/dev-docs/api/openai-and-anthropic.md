@@ -309,6 +309,14 @@ An `openai` or `anthropic` provider answers a keyless model list with `401`,
 which still counts as healthy but has no catalogue to read, so these two kinds
 listed no extra models until the sweep sent their key (#2806).
 
+An id is listed **whole**. Infinity and vLLM report Hugging Face ids such as
+`BAAI/bge-small-en-v1.5` and refuse the bare `bge-small-en-v1.5`, so the listing
+is `provider-slug/BAAI/bge-small-en-v1.5` and `resolve_pinned` (which splits at
+the first slash) sends `model = "BAAI/bge-small-en-v1.5"` upstream (#3245). Only a
+google resource name loses its `models/` prefix. `rolter_core::probe::catalogue_names`
+still cuts to the last segment; the control plane's model check uses it to match
+names, never to build an address.
+
 Two consequences follow:
 
 - **The wider listing does not depend on `[health]`.** The refresher runs every
