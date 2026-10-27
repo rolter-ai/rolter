@@ -178,9 +178,12 @@ trigger); an organization with no row is absent and gets the defaults.
   own column, then the organization's row, then the deployment-level default the
   forwarder uses for `None` (`transport_overrides` in `mcp_proxy.rs`).
 - **Declared manifest.** `McpServerConfig::tools` carries the manifest. A server
-  with a non-empty one serves only those tools unless the organization sets
-  `allow_unlisted_tools`; an empty manifest checks nothing. This sits beside the
-  tool-group rule and both must pass.
+  with a non-empty one serves only those tools when the organization's saved
+  settings have `allow_unlisted_tools` off; an empty manifest checks nothing.
+  An organization with no settings row allows unlisted tools, and migration
+  `0137` set every row saved before enforcement to allow them: the column was
+  stored but never read until #1404, so an upgrade must not start refusing
+  calls. This sits beside the tool-group rule and both must pass.
 - **Failure policy.** `fail_open` / `fail_closed` governs a body the policy
   cannot parse (the only failure of the policy check itself). It never lets a
   call to a refused tool through, and it has no say over an upstream that fails.

@@ -725,7 +725,9 @@ impl McpGatewaySettingsRepo<'_> {
                 request_timeout_ms: 30_000,
                 max_retries: 1,
                 default_failure_mode: "fail_closed".to_string(),
-                allow_unlisted_tools: false,
+                // what the proxy does for an org with no row (`mcp_policy`):
+                // unlisted tools pass until the org saves settings refusing them
+                allow_unlisted_tools: true,
                 updated_at: Utc::now(),
             })
         })

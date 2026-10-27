@@ -166,11 +166,13 @@ request once they are saved:
   `[timeouts]` default. An organization that never saved settings keeps the
   deployment default. A retry only ever repeats a connection that was never
   made; a call that reached the server is not repeated.
-- **Undeclared tools.** A server that declares tools (discovered or typed)
-  serves only those, unless `allow_unlisted_tools` is on. The default is off, so
-  a call naming a tool outside the manifest is refused with `403`
-  `mcp_tool_denied`. A server that declares no tools has nothing to check
-  against.
+- **Undeclared tools.** Once an organization saves its MCP settings with
+  `allow_unlisted_tools` off, a server that declares tools (discovered or
+  typed) serves only those, and a call naming a tool outside the manifest is
+  refused with `403` `mcp_tool_denied`. An organization that never saved its
+  settings allows unlisted tools, as every organization did before manifests
+  were enforced, so an upgrade does not start refusing calls. A server that
+  declares no tools has nothing to check against.
 - **Failure policy.** `default_failure_mode` decides what happens to a request
   the proxy cannot read as JSON-RPC, and so cannot check against the rules
   above: `fail_closed` (the default) refuses it with `400`, `fail_open` forwards

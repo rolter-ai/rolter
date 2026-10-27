@@ -92,7 +92,10 @@ struct Rules<'a> {
     /// the tools the enabled tool groups allow, when any names the server
     governed: Option<&'a HashSet<String>>,
     /// the server's declared manifest, when calls must stay inside it: it
-    /// declares one and the organization does not allow unlisted tools
+    /// declares one and the organization saved settings that do not allow
+    /// unlisted tools. An organization that never saved its MCP settings keeps
+    /// the behaviour from before manifests were enforced, so an upgrade does not
+    /// start refusing tools a server's manifest happens to leave out
     declared: Option<&'a [String]>,
 }
 
@@ -101,7 +104,7 @@ impl<'a> Rules<'a> {
         let allow_unlisted = snapshot
             .mcp_org_settings
             .get(&server.org_id)
-            .is_some_and(|settings| settings.allow_unlisted_tools);
+            .is_none_or(|settings| settings.allow_unlisted_tools);
         Self {
             governed: snapshot.mcp_governed_tools.get(&server.id),
             declared: (!allow_unlisted && !server.tools.is_empty())
@@ -395,8 +398,8 @@ mod tests {
     }
 
     #[test]
-    fn a_declared_manifest_refuses_an_undeclared_tool_by_default() {
-        let (snapshot, server) = with_manifest(&["get_issue"], None);
+    fn saved_settings_that_refuse_unlisted_tools_enforce_the_manifest() {
+        let (snapshot, server) = with_manifest(&["get_issue"], Some(settings(false, false)));
         assert!(matches!(
             enforce(&snapshot, &server, call("get_issue").as_bytes()),
             Verdict::Allow
@@ -408,11 +411,16 @@ mod tests {
             }
             other => panic!("expected a denial, got {other:?}"),
         }
-        // the same with an explicit settings row that keeps the default
-        let (snapshot, server) = with_manifest(&["get_issue"], Some(settings(false, false)));
+    }
+
+    #[test]
+    fn an_org_that_never_saved_its_settings_keeps_unlisted_tools() {
+        // the behaviour before manifests were enforced, kept so an upgrade does
+        // not start refusing a tool the manifest leaves out
+        let (snapshot, server) = with_manifest(&["get_issue"], None);
         assert!(matches!(
             enforce(&snapshot, &server, call("delete_repo").as_bytes()),
-            Verdict::Denied(_)
+            Verdict::Allow
         ));
     }
 
