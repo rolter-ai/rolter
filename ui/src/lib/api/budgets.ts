@@ -14,6 +14,20 @@ export const SCOPE_TYPES = [
   "customer",
 ] as const;
 
+/**
+ * A budget or rate limit that counts every key one person minted (#1830). It is
+ * not in `SCOPE_TYPES`: the Limits screen offers no user picker, so creating one
+ * stays on the API, but a row of this kind still comes back from the reads and
+ * has to be drawn.
+ */
+export const USER_SCOPE = "user";
+
+/** the narrowing a user-scope row carries; both null counts every key the person minted */
+export interface UserScopeNarrowing {
+  within_org_id?: string | null;
+  within_project_id?: string | null;
+}
+
 export type ScopeType = (typeof SCOPE_TYPES)[number];
 
 /**
@@ -26,7 +40,7 @@ export const UNPRICED_POLICIES = ["ignore", "warn", "block"] as const;
 
 export type UnpricedPolicy = (typeof UNPRICED_POLICIES)[number];
 
-export interface BudgetRow {
+export interface BudgetRow extends UserScopeNarrowing {
   id: string;
   scope_type: string;
   scope_id: string;
@@ -37,7 +51,7 @@ export interface BudgetRow {
   created_at: string;
 }
 
-export interface CreateBudgetInput {
+export interface CreateBudgetInput extends UserScopeNarrowing {
   scope_type: string;
   scope_id: string;
   limit_usd: string;
@@ -117,7 +131,7 @@ export function deleteBudget(id: string): Promise<void> {
   return sendJson<void>("DELETE", `/api/v1/budgets/${id}`);
 }
 
-export interface RateLimitRow {
+export interface RateLimitRow extends UserScopeNarrowing {
   id: string;
   scope_type: string;
   scope_id: string;
@@ -126,7 +140,7 @@ export interface RateLimitRow {
   created_at: string;
 }
 
-export interface CreateRateLimitInput {
+export interface CreateRateLimitInput extends UserScopeNarrowing {
   scope_type: string;
   scope_id: string;
   rpm?: number;

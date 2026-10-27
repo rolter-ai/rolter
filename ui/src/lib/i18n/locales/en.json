@@ -314,7 +314,8 @@
       "preferences": "your preferences",
       "yourProfile": "your profile",
       "auditLogExport": "the audit log export",
-      "unpricedModels": "unpriced models"
+      "unpricedModels": "unpriced models",
+      "yourBudget": "your budget"
     },
     "requestFailed": "request failed: {{status}}",
     "gateway": {
@@ -3169,7 +3170,8 @@
         "project": "Project",
         "virtual_key": "Virtual key",
         "business_unit": "Business unit",
-        "customer": "Customer"
+        "customer": "Customer",
+        "user": "User"
       },
       "selectBusinessUnit": "Select a business unit",
       "selectCustomer": "Select a customer",
@@ -3251,7 +3253,12 @@
       "rateLimitSheetSubtitle": "Throughput caps for {{scope}} — blank leaves a field uncapped",
       "rpmLabel": "Requests per minute (optional)",
       "tpmLabel": "Tokens per minute (optional)",
-      "uncapped": "unlimited"
+      "uncapped": "unlimited",
+      "userScope": {
+        "all": "every key they minted",
+        "org": "keys they minted in one organization",
+        "project": "keys they minted in one project"
+      }
     },
     "logs": {
       "emptyTitle": "Nothing logged yet",
@@ -5098,6 +5105,22 @@
           "blank": "The bio cannot be only spaces. Empty it to clear it.",
           "tooLong": "A bio is at most {{max}} characters."
         }
+      }
+    },
+    "budget": {
+      "title": "Your budget",
+      "description": "Caps on the spend and traffic of the keys you minted. Once a cap is reached, requests on those keys are refused until it resets.",
+      "spendHeading": "Spend caps",
+      "rateHeading": "Rate limits",
+      "spent": "{{spent}} spent",
+      "left": "{{remaining}} left",
+      "exhausted": "Cap reached",
+      "resets": "Resets {{when}}",
+      "unknown": "Spend so far unknown",
+      "reach": {
+        "all": "Counts every key you minted",
+        "org": "Counts keys you minted in one organization",
+        "project": "Counts keys you minted in one project"
       }
     }
   },

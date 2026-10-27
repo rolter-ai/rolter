@@ -44,6 +44,8 @@ import type {
   MeResponse,
   MfaStatus,
   MintedKey,
+  MyBudgetReport,
+  MyBudgetRow,
   MyUsageRow,
   OwnedKeyRow,
   ProviderRow,
@@ -183,6 +185,23 @@ const NO_CAPS: KeyCapReads = {
   spend: () => json({ status: "ok", budgets: [] }),
 };
 
+/** a member with no user-scope cap: the "Your budget" panel is not drawn */
+const NO_MY_CAPS: MyBudgetReport = { status: "ok", budgets: [], rate_limits: [] };
+
+/** a monthly cap on every key the member minted, with some spend left */
+const MY_BUDGET: MyBudgetRow = {
+  id: "ub-1",
+  limit_usd: "50.0000",
+  period: "monthly",
+  within_org_id: null,
+  within_project_id: null,
+  spent_usd: "12.5000",
+  resets_at: "2026-12-01T00:00:00Z",
+};
+
+const mineWith = (report: Partial<MyBudgetReport>) => () =>
+  json({ ...NO_MY_CAPS, ...report } satisfies MyBudgetReport);
+
 /**
  * The screen runs two independent queries — keys and usage — and the usage one
  * is allowed to fail on its own, so every stub has to answer both.
@@ -192,6 +211,7 @@ const account = (
   usage: () => Response = () => json({ data: USAGE }),
   me: (init?: RequestInit) => Response = () => json(ME),
   caps: KeyCapReads = NO_CAPS,
+  mine: () => Response = () => json(NO_MY_CAPS),
 ): FetchStub =>
   scoped(async (input, init) => {
     const url = String(input);
@@ -207,6 +227,8 @@ const account = (
     if (url.includes("/routes")) return json(ROUTES);
     // each card reads its own key's caps (#1171); a key has none unless the
     // story says so
+    // the member's own budget (#1830), asked before the per-key `/budgets`
+    if (url.includes("/me/budgets")) return mine();
     if (url.includes("/budgets/spend")) return caps.spend();
     if (url.includes("/budgets")) return json(caps.budgets);
     if (url.includes("/rate-limits")) return json(caps.rateLimits);
@@ -1629,5 +1651,159 @@ export const CardSaysSpendIsUnknownWhenUnreadable: Story = {
     const canvas = within(canvasElement);
     await expect(await canvas.findByText("spend so far unknown")).toBeVisible();
     await expect(canvas.queryByText(/\$0\.00 spent/)).toBeNull();
+  },
+};
+
+const ownBudget = (canvasElement: HTMLElement) => within(canvasElement).findByTestId("own-budget");
+
+const withMine = (report: Partial<MyBudgetReport>) => (
+  <Harness
+    fetchStub={account(
+      () => json(KEYS),
+      () => json({ data: USAGE }),
+      () => json(ME),
+      NO_CAPS,
+      mineWith(report),
+    )}
+  >
+    <Account />
+  </Harness>
+);
+
+/** The member sees the cap, what they have spent, what is left and when it resets (#1830). */
+export const YourBudgetWithSpendLeft: Story = {
+  render: () =>
+    withMine({
+      budgets: [MY_BUDGET],
+      rate_limits: [
+        {
+          id: "ur-1",
+          rpm: 600,
+          tpm: 150000,
+          within_org_id: null,
+          within_project_id: null,
+        },
+      ],
+    }),
+  play: async ({ canvasElement }) => {
+    const panel = within(await ownBudget(canvasElement));
+    await expect(panel.getByRole("heading", { name: "Your budget" })).toBeVisible();
+    await expect(panel.getByText("$50.00")).toBeVisible();
+    await expect(panel.getByText("monthly")).toBeVisible();
+    await expect(panel.getByText(/\$12\.50 spent · \$37\.50 left · Resets /)).toBeVisible();
+    await expect(panel.getAllByText("Counts every key you minted")).toHaveLength(2);
+    await expect(panel.getByText("600 rpm · 150,000 tpm")).toBeVisible();
+    await expect(panel.queryByText("Cap reached")).toBeNull();
+  },
+};
+
+/** Spend at the limit: nothing is left and the cap says it is reached. */
+export const YourBudgetExhausted: Story = {
+  render: () => withMine({ budgets: [{ ...MY_BUDGET, spent_usd: "61.0000" }] }),
+  play: async ({ canvasElement }) => {
+    const panel = within(await ownBudget(canvasElement));
+    await expect(panel.getByText("Cap reached")).toBeVisible();
+    // floored at zero, never "-$11.00"
+    await expect(panel.getByText(/\$61\.00 spent · \$0\.00 left/)).toBeVisible();
+  },
+};
+
+/** A counter the gateway could not read is unknown, never a spend of zero. */
+export const YourBudgetSpendUnknown: Story = {
+  render: () => withMine({ budgets: [{ ...MY_BUDGET, spent_usd: null, resets_at: null }] }),
+  play: async ({ canvasElement }) => {
+    const panel = within(await ownBudget(canvasElement));
+    await expect(panel.getByText("Spend so far unknown")).toBeVisible();
+    await expect(panel.queryByText(/spent/)).toBeNull();
+    await expect(panel.queryByText(/\$0\.00/)).toBeNull();
+  },
+};
+
+/** A report whose status is not ok leaves every figure unknown, even a spend that was sent. */
+export const YourBudgetStatusUnavailable: Story = {
+  render: () => withMine({ status: "unavailable", budgets: [MY_BUDGET] }),
+  play: async ({ canvasElement }) => {
+    const panel = within(await ownBudget(canvasElement));
+    await expect(panel.getByText("Spend so far unknown")).toBeVisible();
+    await expect(panel.queryByText(/left/)).toBeNull();
+  },
+};
+
+/** A cap narrowed to one org or one project says so, without a uuid. */
+export const YourBudgetNarrowed: Story = {
+  render: () =>
+    withMine({
+      budgets: [
+        { ...MY_BUDGET, id: "ub-2", within_org_id: "org-1" },
+        { ...MY_BUDGET, id: "ub-3", period: "total", within_project_id: "project-1" },
+      ],
+    }),
+  play: async ({ canvasElement }) => {
+    const panel = within(await ownBudget(canvasElement));
+    await expect(panel.getByText("Counts keys you minted in one organization")).toBeVisible();
+    await expect(panel.getByText("Counts keys you minted in one project")).toBeVisible();
+    await expect(panel.queryByText(/org-1|project-1/)).toBeNull();
+  },
+};
+
+/** A member with no user-scope cap sees no panel at all, not an empty one. */
+export const YourBudgetHiddenWithoutCaps: Story = {
+  render: () => withMine({}),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("my laptop")).toBeInTheDocument();
+    await expect(canvas.queryByTestId("own-budget")).toBeNull();
+    await expect(canvas.queryByText("Your budget")).toBeNull();
+  },
+};
+
+export const YourBudgetLoading: Story = {
+  render: () => (
+    <Harness
+      fetchStub={scoped((input, init) =>
+        String(input).includes("/me/budgets")
+          ? new Promise<Response>(() => {})
+          : loaded(input, init),
+      )}
+    >
+      <Account />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectSkeleton(canvasElement);
+    await expect(within(canvasElement).queryByTestId("own-budget")).toBeNull();
+  },
+};
+
+export const YourBudgetFailed: Story = {
+  render: () => (
+    <Harness
+      fetchStub={account(
+        () => json(KEYS),
+        () => json({ data: USAGE }),
+        () => json(ME),
+        NO_CAPS,
+        () => json({ error: { message: "budget read failed" } }, 500),
+      )}
+    >
+      <Account />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("my laptop")).toBeInTheDocument();
+    await expectLoadError(canvasElement, /your budget/);
+    await expect(canvas.getByRole("button", { name: /try again/i })).toBeVisible();
+    await expect(canvas.queryByTestId("own-budget")).toBeNull();
+  },
+};
+
+export const YourBudgetInRussian: Story = {
+  globals: { locale: "ru" },
+  render: () => withMine({ budgets: [{ ...MY_BUDGET, within_org_id: "org-1" }] }),
+  play: async ({ canvasElement }) => {
+    const panel = within(await ownBudget(canvasElement));
+    await expect(panel.getByRole("heading", { name: ru.account.budget.title })).toBeVisible();
+    await expect(panel.getByText(ru.account.budget.reach.org)).toBeVisible();
   },
 };

@@ -1540,3 +1540,210 @@ async fn a_key_is_minted_with_its_cap_and_keeps_it_through_rotation() {
     .unwrap();
     assert_eq!(orphans, 0, "a deleted key's caps must go with it");
 }
+
+/// #1830: a budget and a rate limit scope to a person, counted across every key
+/// they minted. A person belongs to no org, so the cap is authorized through
+/// the place it is narrowed to: an org admin manages caps narrowed to their
+/// org, and only a superadmin may set one that counts the person everywhere.
+/// The cap reaches the snapshot with its narrowing, and the person reads their
+/// own caps, and nobody else's, from `/me/budgets`.
+#[tokio::test]
+async fn a_budget_scopes_to_a_person_and_is_managed_through_its_org() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some(admin_token().into()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let acme: uuid::Uuid =
+        sqlx::query_scalar("insert into orgs (name, slug) values ('Acme', 'acme') returning id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let other: uuid::Uuid =
+        sqlx::query_scalar("insert into orgs (name, slug) values ('Other', 'other') returning id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let actors = seed_actors(&pool, acme).await;
+    let engineer = seed_user(&pool, "engineer@example.com", false).await;
+    let engineer_bearer = seed_session(&pool, engineer, "eng_budget").await;
+    let colleague = seed_user(&pool, "colleague@example.com", false).await;
+    let colleague_bearer = seed_session(&pool, colleague, "col_budget").await;
+
+    let post = |bearer: String, path: &'static str, body: Value| {
+        let client = client.clone();
+        let url = format!("{base}{path}");
+        async move {
+            client
+                .post(url)
+                .bearer_auth(bearer)
+                .json(&body)
+                .send()
+                .await
+                .unwrap()
+        }
+    };
+
+    // the org's admin narrows a cap on the engineer to the org
+    let created = post(
+        actors.manager_bearer.clone(),
+        "/api/v1/budgets",
+        json!({"scope_type": "user", "scope_id": engineer, "within_org_id": acme,
+               "limit_usd": "50", "period": "monthly"}),
+    )
+    .await;
+    assert_eq!(created.status(), 200, "{}", created.text().await.unwrap());
+    let limit = post(
+        actors.manager_bearer.clone(),
+        "/api/v1/rate-limits",
+        json!({"scope_type": "user", "scope_id": engineer, "within_org_id": acme, "rpm": 20}),
+    )
+    .await;
+    assert_eq!(limit.status(), 200);
+
+    // ... but not to another org, and not to everywhere
+    for (within, label) in [
+        (json!({"within_org_id": other}), "another org"),
+        (json!({}), "everywhere"),
+    ] {
+        let mut body = json!({"scope_type": "user", "scope_id": engineer,
+                              "limit_usd": "50", "period": "monthly"});
+        body.as_object_mut()
+            .unwrap()
+            .extend(within.as_object().unwrap().clone());
+        let refused = post(actors.manager_bearer.clone(), "/api/v1/budgets", body).await;
+        assert_eq!(refused.status(), 403, "{label}");
+    }
+    // a superadmin may set the one that counts the person everywhere
+    let everywhere = post(
+        actors.operator_bearer.clone(),
+        "/api/v1/budgets",
+        json!({"scope_type": "user", "scope_id": colleague,
+               "limit_usd": "10", "period": "daily"}),
+    )
+    .await;
+    assert_eq!(everywhere.status(), 200);
+
+    // a narrowing means something only on a user, and names one place
+    let team: uuid::Uuid =
+        sqlx::query_scalar("insert into teams (org_id, name) values ($1, 'core') returning id")
+            .bind(acme)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    for body in [
+        json!({"scope_type": "team", "scope_id": team, "within_org_id": acme,
+               "limit_usd": "5"}),
+        json!({"scope_type": "user", "scope_id": engineer, "within_org_id": acme,
+               "within_project_id": uuid::Uuid::new_v4(), "limit_usd": "5"}),
+    ] {
+        let bad = post(actors.operator_bearer.clone(), "/api/v1/budgets", body).await;
+        assert_eq!(bad.status(), 400);
+    }
+    // an unknown person is a 404, not a cap on nobody
+    let ghost = post(
+        actors.operator_bearer.clone(),
+        "/api/v1/budgets",
+        json!({"scope_type": "user", "scope_id": uuid::Uuid::new_v4(), "limit_usd": "5"}),
+    )
+    .await;
+    assert_eq!(ghost.status(), 404);
+
+    // the org-wide list carries the narrowed row for the org's admin
+    let listed: Value = client
+        .get(format!("{base}/api/v1/orgs/{acme}/budgets"))
+        .bearer_auth(&actors.manager_bearer)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|b| b["scope_type"] == "user" && b["within_org_id"] == acme.to_string()));
+    // and not the one that counts the colleague everywhere
+    assert!(!listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|b| b["scope_id"] == colleague.to_string()));
+
+    // the snapshot carries both, with their narrowing
+    let snap: Value = client
+        .get(format!("{base}/internal/snapshot"))
+        .bearer_auth(admin_token())
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let engineer_id = engineer.to_string();
+    let budget = snap["config"]["budgets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|b| b["scope"] == "user" && b["id"] == engineer_id.as_str())
+        .unwrap_or_else(|| panic!("the user budget is missing from the snapshot: {snap}"));
+    assert_eq!(budget["within"], json!({"org": acme.to_string()}));
+    let rate = snap["config"]["rate_limits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|l| l["scope"] == "user" && l["id"] == engineer_id.as_str())
+        .unwrap_or_else(|| panic!("the user rate limit is missing from the snapshot: {snap}"));
+    assert_eq!(
+        (rate["rpm"].clone(), rate["within"].clone()),
+        (json!(20), json!({"org": acme.to_string()}))
+    );
+
+    // a person reads their own caps from /me/budgets, and only their own
+    let mine = |bearer: &str| {
+        let client = client.clone();
+        let url = format!("{base}/api/v1/me/budgets");
+        let bearer = bearer.to_string();
+        async move {
+            let resp = client.get(url).bearer_auth(bearer).send().await.unwrap();
+            assert_eq!(resp.status(), 200);
+            resp.json::<Value>().await.unwrap()
+        }
+    };
+    let own = mine(&engineer_bearer).await;
+    assert_eq!(own["budgets"].as_array().unwrap().len(), 1, "{own}");
+    assert_eq!(own["budgets"][0]["limit_usd"], "50.0000");
+    assert_eq!(own["budgets"][0]["within_org_id"], acme.to_string());
+    // no Redis behind the control plane in this test: unknown, never zero
+    assert_eq!(own["status"], "not_configured");
+    assert!(own["budgets"][0]["spent_usd"].is_null());
+    assert_eq!(own["rate_limits"][0]["rpm"], 20);
+    let theirs = mine(&colleague_bearer).await;
+    assert_eq!(theirs["budgets"].as_array().unwrap().len(), 1);
+    assert_eq!(theirs["budgets"][0]["limit_usd"], "10.0000");
+    assert_eq!(theirs["rate_limits"].as_array().unwrap().len(), 0);
+
+    // deleting the person takes their caps with them
+    let deleted = client
+        .delete(format!("{base}/api/v1/users/{engineer}"))
+        .bearer_auth(&actors.operator_bearer)
+        .send()
+        .await
+        .unwrap();
+    assert!(deleted.status().is_success(), "{}", deleted.status());
+    let left: i64 = sqlx::query_scalar(
+        "select (select count(*) from budgets where scope_id = $1)
+              + (select count(*) from rate_limits where scope_id = $1)",
+    )
+    .bind(engineer)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(left, 0);
+}

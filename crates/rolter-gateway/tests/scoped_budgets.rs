@@ -159,3 +159,75 @@ async fn a_key_over_its_cap_is_refused_and_its_sibling_is_not() {
     assert!(message.contains(&capped), "{message}");
     assert_eq!(chat(gw, "sk-free").await.status(), 200);
 }
+
+/// #1830: a cap on a person counts every key they minted. Both of their keys
+/// are refused, the 402 names the user budget as the one that tripped, and
+/// another person's key in the same project is untouched.
+#[tokio::test]
+async fn a_user_cap_stops_every_key_the_person_minted() {
+    let Some(redis) = redis_url() else {
+        eprintln!("ROLTER_TEST_REDIS_URL unset; skipping");
+        return;
+    };
+    let mut config = base_config(upstream().await);
+    let user = unique("user-a");
+    for (plain, id, owner) in [
+        ("sk-a1", unique("vk-a1"), user.clone()),
+        ("sk-a2", unique("vk-a2"), user.clone()),
+        ("sk-b1", unique("vk-b1"), unique("user-b")),
+    ] {
+        config
+            .db_virtual_keys
+            .push(key_record(&config, plain, &id, &owner));
+    }
+    config.budgets.push(budget("user", &user, 0));
+    let gw = gateway(&config, &redis).await;
+
+    for key in ["sk-a1", "sk-a2"] {
+        let refused = chat(gw, key).await;
+        assert_eq!(refused.status(), 402, "{key}");
+        let body: Value = refused.json().await.unwrap();
+        let message = body["error"]["message"].as_str().unwrap_or_default();
+        assert!(
+            message.contains("User") && message.contains(&user),
+            "{message}"
+        );
+    }
+    assert_eq!(chat(gw, "sk-b1").await.status(), 200);
+}
+
+/// A user cap narrowed to an org or a project counts only the keys the person
+/// minted there: one narrowed to another org never stops them here, and one
+/// narrowed to this project does.
+#[tokio::test]
+async fn a_narrowed_user_cap_counts_only_its_own_org_or_project() {
+    let Some(redis) = redis_url() else {
+        eprintln!("ROLTER_TEST_REDIS_URL unset; skipping");
+        return;
+    };
+    let user = unique("user-n");
+    let narrowed = |within: Value| -> BudgetConfig {
+        serde_json::from_value(json!({
+            "scope": "user", "id": user, "limit_usd": 0, "period": "monthly",
+            "within": within,
+        }))
+        .unwrap()
+    };
+    // (the narrowing, whether the person's key in org-1/project-1 is stopped)
+    for (within, stopped) in [
+        (json!({"org": "org-2"}), false),
+        (json!({"project": "project-2"}), false),
+        (json!({"org": "org-1"}), true),
+        (json!({"project": "project-1"}), true),
+    ] {
+        let mut config = base_config(upstream().await);
+        let id = unique("vk-n");
+        config
+            .db_virtual_keys
+            .push(key_record(&config, "sk-n", &id, &user));
+        config.budgets.push(narrowed(within.clone()));
+        let gw = gateway(&config, &redis).await;
+        let expected = if stopped { 402 } else { 200 };
+        assert_eq!(chat(gw, "sk-n").await.status(), expected, "{within}");
+    }
+}

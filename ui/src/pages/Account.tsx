@@ -28,6 +28,7 @@ import { CardGridSkeleton } from "@/components/LoadingState";
 import { EmptyState } from "@/components/ui/empty-state";
 import { EditorSheet } from "@/components/EditorSheet";
 import { GatedButton } from "@/components/GatedButton";
+import { MyBudgets } from "@/components/MyBudgets";
 import { ListSummary, PageBody, Toolbar } from "@/components/screen";
 import { SelfServiceUnavailable } from "@/components/SelfServiceUnavailable";
 import { PasswordPanel } from "@/components/PasswordPanel";
@@ -136,6 +137,8 @@ export default function Account() {
       {/* the second factor comes first: it protects the session that reaches
           every key below it, and an org policy can make it mandatory (#1078) */}
       <TwoFactorPanel />
+      {/* what the keys below may spend, before the keys themselves (#1830) */}
+      <MyBudgets />
       {/* the screen sits under "Account" in a product that also has provider
           keys and an admin token; say which credential this one is (#943) */}
       <p className="text-sm text-muted-foreground">

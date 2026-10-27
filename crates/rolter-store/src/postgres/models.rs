@@ -369,7 +369,8 @@ pub struct OwnedVirtualKey {
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct Budget {
     pub id: Uuid,
-    /// one of `org` | `team` | `project` | `virtual_key`
+    /// one of `org` | `team` | `project` | `virtual_key` | `business_unit` |
+    /// `customer` | `user`
     pub scope_type: String,
     pub scope_id: Uuid,
     /// decimal(12,4), returned as text to avoid a numeric-crate dependency
@@ -379,6 +380,11 @@ pub struct Budget {
     /// traffic; `None` inherits the deployment-wide setting (#996)
     pub unpriced_policy: Option<String>,
     pub created_at: DateTime<Utc>,
+    /// narrows a `user` budget to the keys the person minted in this org
+    /// (#1830); null on every other scope
+    pub within_org_id: Option<Uuid>,
+    /// narrows a `user` budget to the keys the person minted in this project
+    pub within_project_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
@@ -389,6 +395,10 @@ pub struct RateLimit {
     pub rpm: Option<i32>,
     pub tpm: Option<i32>,
     pub created_at: DateTime<Utc>,
+    /// see [`Budget::within_org_id`]
+    pub within_org_id: Option<Uuid>,
+    /// see [`Budget::within_project_id`]
+    pub within_project_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]

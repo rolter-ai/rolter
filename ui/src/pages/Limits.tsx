@@ -40,6 +40,7 @@ import {
   fetchVirtualKeys,
   SCOPE_TYPES,
   UNPRICED_POLICIES,
+  USER_SCOPE,
   updateBudget,
   updateRateLimit,
   type BudgetRow,
@@ -48,6 +49,7 @@ import {
   type RateLimitRow,
   type UpdateBudgetInput,
   type UpdateRateLimitInput,
+  type UserScopeNarrowing,
 } from "@/lib/api";
 import { errorText } from "@/lib/error-copy";
 import { PERIOD_KINDS, periodKind } from "@/lib/budget-period";
@@ -57,6 +59,7 @@ import { useFormat } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
 import { RowCapabilityScope, type RowScope } from "@/lib/can";
 import { capGateScope } from "@/lib/limit-scope";
+import { capReach } from "@/lib/my-budget";
 import { useOrgScope } from "@/components/OrgScopePicker";
 import { useToast } from "@/lib/toast";
 import { useScreenReady } from "@/lib/ux-react";
@@ -296,10 +299,17 @@ export default function Limits() {
   const scopeName = scopeId ? nameOf(scopeType, scopeId) : "";
   // a name is only unique within its type, so an org-wide row says which kind
   // it belongs to; the per-scope view already said it in the picker
-  const scopeLabelOf = (row: { scope_type: string; scope_id: string }) =>
+  const scopeLabelOf = (row: { scope_type: string; scope_id: string } & UserScopeNarrowing) =>
     t("pages.limits.scopeNamed", {
       type: t(`pages.limits.scopeTypes.${orgWide ? row.scope_type : scopeType}`),
-      name: orgWide ? nameOf(row.scope_type, row.scope_id) : scopeName,
+      // a user has no picker here (their caps are written through the API), so
+      // the row says what it counts instead of showing a uuid
+      name:
+        (orgWide ? row.scope_type : scopeType) === USER_SCOPE
+          ? t(`pages.limits.userScope.${capReach(row)}`)
+          : orgWide
+            ? nameOf(row.scope_type, row.scope_id)
+            : scopeName,
     });
   // the delete confirmations open on it, so the type comes with the name
   const budgetNames = useBudgetNames(scopeName);
@@ -676,7 +686,9 @@ export default function Limits() {
  * them and scopes by name, so "which caps exist here" reads scope by scope
  * (#2093).
  */
-function ScopeGroups<T extends { id: string; scope_type: string; scope_id: string }>({
+function ScopeGroups<
+  T extends { id: string; scope_type: string; scope_id: string } & UserScopeNarrowing,
+>({
   rows,
   grouped,
   labelOf,
@@ -692,10 +704,15 @@ function ScopeGroups<T extends { id: string; scope_type: string; scope_id: strin
   if (!grouped) return <div className={grid}>{rows.map(renderCard)}</div>;
   const groups = new Map<string, T[]>();
   for (const row of rows) {
-    const key = `${row.scope_type}:${row.scope_id}`;
+    // one person's caps narrowed differently are different groups
+    const key = `${row.scope_type}:${row.scope_id}:${row.within_org_id ?? ""}:${row.within_project_id ?? ""}`;
     groups.set(key, [...(groups.get(key) ?? []), row]);
   }
-  const typeOrder = (row: T) => SCOPE_TYPES.indexOf(row.scope_type as (typeof SCOPE_TYPES)[number]);
+  // a type the picker does not list (a user) sorts after the ones it does
+  const typeOrder = (row: T) => {
+    const at = SCOPE_TYPES.indexOf(row.scope_type as (typeof SCOPE_TYPES)[number]);
+    return at < 0 ? SCOPE_TYPES.length : at;
+  };
   const ordered = [...groups.entries()]
     .map(([key, members]) => ({ key, members, label: labelOf(members[0]) }))
     .sort(

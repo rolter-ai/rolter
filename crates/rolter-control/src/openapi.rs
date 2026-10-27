@@ -1417,6 +1417,11 @@ fn operations() -> Vec<Op> {
             )
             .clickhouse_read()
             .query(WINDOW_QUERY),
+            Op::get(
+                "/api/v1/me/budgets",
+                "getMyBudgets",
+                "The per-user budgets and rate limits that count the calling account's keys, with the spend so far",
+            ),
             Op::patch(
                 "/api/v1/me/profile",
                 "updateMyProfile",

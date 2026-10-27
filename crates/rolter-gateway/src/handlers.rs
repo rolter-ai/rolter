@@ -1438,6 +1438,7 @@ pub(crate) fn request_scope(vk: Option<&KeyMeta>) -> ScopeIds {
         key: v.id.clone(),
         business_unit: v.business_unit_id.clone(),
         customer: v.customer_id.clone(),
+        user: v.user_id.clone(),
     })
     .unwrap_or_default()
 }
