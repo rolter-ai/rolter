@@ -217,6 +217,104 @@ fn lint_import_file(path: &Path) -> usize {
     }
 }
 
+/// Top-level sections the importer writes to the store: one entry per field of
+/// the parsed config that `import_config` / `import_bootstrap_toml` reads. The
+/// skipped-section lint treats these as imported, and a source-scanning test
+/// fails when the importer starts reading a field that is not listed here.
+const IMPORTED_SECTIONS: &[&str] = &[
+    "providers",
+    "provider_groups",
+    "routes",
+    "model_prices",
+    "budgets",
+    "rate_limits",
+    "prompt_templates",
+];
+
+/// Sections that configure the gateway process itself, or stamp the file, so
+/// the bootstrap import has nothing to write and says nothing about them.
+const GATEWAY_LOCAL_SECTIONS: &[&str] = &["schema_version", "server", "tls"];
+
+/// The only `[logging]` keys the importer writes; the rest of the table is
+/// reported as skipped.
+const IMPORTED_LOGGING_KEYS: &[&str] = &["ui_events", "payload_capture"];
+
+/// Where an operator manages a section the importer skips: a dashboard screen,
+/// and where one exists the control-plane endpoint that does the same. The
+/// endpoint is checked against the served OpenAPI document by a test, so a
+/// renamed route fails the build instead of leaving the hint pointing nowhere.
+struct ManagedIn {
+    sections: &'static [&'static str],
+    screen: &'static str,
+    endpoint: Option<(&'static str, &'static str)>,
+}
+
+const MANAGED_IN: &[ManagedIn] = &[
+    ManagedIn {
+        sections: &["adaptive_routing"],
+        screen: "dashboard Adaptive Routing",
+        endpoint: Some(("PUT", "/api/v1/adaptive-routing-policy")),
+    },
+    ManagedIn {
+        sections: &["virtual_keys", "db_virtual_keys"],
+        screen: "dashboard Virtual Keys",
+        endpoint: None,
+    },
+    ManagedIn {
+        sections: &["mcp_servers", "mcp_oauth_sessions"],
+        screen: "dashboard MCP Servers and MCP OAuth",
+        endpoint: None,
+    },
+    ManagedIn {
+        sections: &["logging"],
+        screen: "dashboard Logs Settings; only ui_events and payload_capture are imported",
+        endpoint: None,
+    },
+    ManagedIn {
+        sections: &["plugins"],
+        screen: "dashboard Plugins",
+        endpoint: None,
+    },
+    ManagedIn {
+        sections: &["models"],
+        screen: "dashboard Models",
+        endpoint: None,
+    },
+    ManagedIn {
+        sections: &["guardrails", "guardrail_webhook", "pii_sanitizer"],
+        screen: "dashboard Guardrails",
+        endpoint: None,
+    },
+    ManagedIn {
+        sections: &["feature_flags"],
+        screen: "dashboard Feature Flags",
+        endpoint: None,
+    },
+    ManagedIn {
+        sections: &["security", "egress"],
+        screen: "dashboard Security",
+        endpoint: None,
+    },
+];
+
+const MANAGED_IN_FALLBACK: &str =
+    "the matching dashboard settings screen, or the gateway configuration for a file-backed deployment";
+
+fn managed_in(section: &str) -> String {
+    match MANAGED_IN
+        .iter()
+        .find(|entry| entry.sections.contains(&section))
+    {
+        Some(ManagedIn {
+            screen,
+            endpoint: Some((method, path)),
+            ..
+        }) => format!("{screen} or {method} {path}"),
+        Some(ManagedIn { screen, .. }) => (*screen).to_string(),
+        None => MANAGED_IN_FALLBACK.to_string(),
+    }
+}
+
 /// Warn once per declared section that the bootstrap importer does not write.
 /// Gateway-local settings and the schema stamp are intentionally quiet.
 fn warn_skipped_sections(path: &Path, raw: &str) -> usize {
@@ -230,25 +328,15 @@ fn warn_skipped_sections(path: &Path, raw: &str) -> usize {
     let logging_fields = known.get("logging").and_then(serde_json::Value::as_object);
     let mut count = 0;
     for (section, value) in declared {
-        if matches!(
-            section.as_str(),
-            "schema_version"
-                | "server"
-                | "tls"
-                | "providers"
-                | "provider_groups"
-                | "routes"
-                | "model_prices"
-                | "budgets"
-                | "rate_limits"
-                | "prompt_templates"
-        ) {
+        if GATEWAY_LOCAL_SECTIONS.contains(&section.as_str())
+            || IMPORTED_SECTIONS.contains(&section.as_str())
+        {
             continue;
         }
         if section == "logging" {
             if value.as_table().is_some_and(|fields| {
                 fields.keys().all(|key| {
-                    matches!(key.as_str(), "ui_events" | "payload_capture")
+                    IMPORTED_LOGGING_KEYS.contains(&key.as_str())
                         || logging_fields.is_none_or(|known| !known.contains_key(key))
                 })
             }) {
@@ -258,19 +346,8 @@ fn warn_skipped_sections(path: &Path, raw: &str) -> usize {
             // unknown keys belong to config_lint, not the skipped-section warning
             continue;
         }
-        let managed_in = match section.as_str() {
-            "adaptive_routing" => "dashboard Adaptive Routing or PUT /api/v1/adaptive-routing-policy",
-            "virtual_keys" | "db_virtual_keys" => "dashboard Virtual Keys",
-            "mcp_servers" | "mcp_oauth_sessions" => "dashboard MCP Servers and MCP OAuth",
-            "logging" => "dashboard Logs Settings; only ui_events and payload_capture are imported",
-            "plugins" => "dashboard Plugins",
-            "models" => "dashboard Models",
-            "guardrails" | "guardrail_webhook" | "pii_sanitizer" => "dashboard Guardrails",
-            "feature_flags" => "dashboard Feature Flags",
-            "security" | "egress" => "dashboard Security",
-            _ => "the matching dashboard settings screen, or the gateway configuration for a file-backed deployment",
-        };
-        tracing::warn!(file = %path.display(), section = %section, managed_in, "bootstrap import does not apply this section");
+        let managed_in = managed_in(&section);
+        tracing::warn!(file = %path.display(), section = %section, managed_in = %managed_in, "bootstrap import does not apply this section");
         count += 1;
     }
     count
@@ -1447,6 +1524,76 @@ api_key_evn = "LOCAL_API_KEY"
             0
         );
         assert_eq!(super::warn_skipped_sections(path, "not valid toml"), 0);
+    }
+
+    /// The lint's list of imported sections is the importer's own: every
+    /// `config.<field>` the non-test code reads is one the lint stays quiet
+    /// about, and a field the importer stopped reading is no longer claimed.
+    /// Scans the source, so teaching the importer a section without listing it
+    /// in `IMPORTED_SECTIONS` fails here instead of leaving a stale warning.
+    #[test]
+    fn the_imported_sections_are_the_config_fields_the_importer_reads() {
+        let source = include_str!("seed.rs");
+        let production = &source[..source.find("mod tests {").expect("tests module")];
+        let mut read = std::collections::BTreeSet::new();
+        for (at, _) in production.match_indices("config.") {
+            let before = production[..at].chars().next_back();
+            if before.is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '.') {
+                continue;
+            }
+            let field: String = production[at + "config.".len()..]
+                .chars()
+                .take_while(|c| c.is_ascii_lowercase() || *c == '_')
+                .collect();
+            if !field.is_empty() {
+                read.insert(field);
+            }
+        }
+        // `logging` is imported key by key, which IMPORTED_LOGGING_KEYS names
+        read.remove("logging");
+        let listed: std::collections::BTreeSet<String> = super::IMPORTED_SECTIONS
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            read, listed,
+            "IMPORTED_SECTIONS must name exactly the config fields the importer reads"
+        );
+        for key in super::IMPORTED_LOGGING_KEYS {
+            assert!(
+                production.contains(&format!("config.logging.{key}")),
+                "the importer no longer reads logging.{key}"
+            );
+        }
+    }
+
+    /// Every endpoint a skipped-section hint points an operator at is one the
+    /// served OpenAPI document describes, so renaming a route fails here.
+    #[test]
+    fn every_managed_in_endpoint_is_a_documented_control_plane_operation() {
+        for entry in super::MANAGED_IN {
+            if let Some((method, path)) = entry.endpoint {
+                assert!(
+                    crate::openapi::documents_operation(method, path),
+                    "{method} {path} is not in the served OpenAPI document"
+                );
+            }
+        }
+    }
+
+    /// A section named in the hint table is one the lint would report, never
+    /// one it treats as imported or gateway-local.
+    #[test]
+    fn no_hint_is_written_for_a_section_the_lint_never_reports() {
+        for entry in super::MANAGED_IN {
+            for section in entry.sections {
+                assert!(!super::IMPORTED_SECTIONS.contains(section), "{section}");
+                assert!(
+                    !super::GATEWAY_LOCAL_SECTIONS.contains(section),
+                    "{section}"
+                );
+            }
+        }
     }
 
     #[test]
