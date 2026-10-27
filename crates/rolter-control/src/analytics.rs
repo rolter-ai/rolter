@@ -707,6 +707,9 @@ async fn summary(
                 {COST} as cost_usd, \
                 {UNPRICED} as unpriced_requests, \
                 uniqIf(model, unpriced = 1) as unpriced_models, \
+                {WITHHELD} as withheld_requests, \
+                {WITHHELD_COST} as withheld_cost, \
+                {USAGE_UNKNOWN} as usage_unknown_requests, \
                 {ERRORS} as errors, \
                 round(avg(latency_ms), 1) as avg_latency_ms \
          from request_logs where {WHERE_WINDOW} and {ROW_VISIBLE} and {ROW_FILTERS} \
@@ -727,6 +730,19 @@ pub(crate) const PROMPT_TOKENS: &str = "round(sum(prompt_tokens * sample_weight)
 pub(crate) const COMPLETION_TOKENS: &str = "round(sum(completion_tokens * sample_weight))";
 pub(crate) const COST: &str = "round(sum(cost_usd * sample_weight), 6)";
 pub(crate) const UNPRICED: &str = "round(sumIf(sample_weight, unpriced = 1))";
+/// Requests whose provider answered, and billed, but whose response a post-call
+/// policy refused to deliver (#1478). Their cost is already inside `cost_usd`;
+/// the figures below say how much of it bought an answer nobody saw (#1774).
+pub(crate) const WITHHELD: &str = "round(sumIf(sample_weight, withheld = 1))";
+/// `cost_usd` is qualified because the reads that use this also select `{COST}
+/// as cost_usd`, and ClickHouse resolves a bare name to a select alias before a
+/// column: unqualified, it would nest that sum inside this one and the query
+/// would fail.
+pub(crate) const WITHHELD_COST: &str =
+    "round(sumIf(request_logs.cost_usd * sample_weight, withheld = 1), 6)";
+/// Requests the upstream answered successfully but reported no usage for, so
+/// their zero tokens and cost are unknown rather than free (#1478).
+pub(crate) const USAGE_UNKNOWN: &str = "round(sumIf(sample_weight, usage_unknown = 1))";
 pub(crate) const ERRORS: &str = "round(sumIf(sample_weight, status >= 400))";
 
 /// Per-bucket time series of requests, tokens and cost.
@@ -774,6 +790,9 @@ async fn by_model(
                 {TOKENS} as tokens, \
                 {COST} as cost_usd, \
                 {UNPRICED} as unpriced_requests, \
+                {WITHHELD} as withheld_requests, \
+                {WITHHELD_COST} as withheld_cost, \
+                {USAGE_UNKNOWN} as usage_unknown_requests, \
                 {ERRORS} as errors, \
                 round(quantile(0.5)(latency_ms), 1) as p50_latency_ms, \
                 round(quantile(0.95)(latency_ms), 1) as p95_latency_ms \
@@ -1061,6 +1080,10 @@ impl TimeBounds for InvocationsQuery {
 /// window as the rows, since a body outside it has no row to join to, and
 /// grouped on the key so a row never repeats.
 ///
+/// `withheld` and `usage_unknown` ride along for the same reason (#1774): a
+/// withheld row's 403 carries the cost the provider billed, and a zero token
+/// count with `usage_unknown` set means "not reported", not "none".
+///
 /// `unpriced` rides along with `cost_usd` because the two are only meaningful
 /// together: a zero cost means "free" when the flag is clear and "unknown" when
 /// it is set. The gateway decides that per request, against the catalogue that
@@ -1107,7 +1130,7 @@ fn invocations_sql(status_expr: &str, columns: &Columns) -> String {
                 business_unit_id, customer_id, \
                 model, provider, target, variant, status, stream, cache_hit, cache_read_tokens, cache_write_tokens, \
                 {cache_write_1h_tokens}, \
-                prompt_tokens, completion_tokens, total_tokens, cost_usd, unpriced, latency_ms, ttft_ms, error, \
+                prompt_tokens, completion_tokens, total_tokens, cost_usd, unpriced, withheld, usage_unknown, latency_ms, ttft_ms, error, \
                 {upstream_status}, {attempts}, {lifecycle_operation}, {guardrail_events}, {plugin_events}, \
                 if({PAYLOAD_VISIBLE}, payload.request_payload, '') as request_payload, \
                 if({PAYLOAD_VISIBLE}, payload.response_payload, '') as response_payload, \
@@ -1785,6 +1808,21 @@ mod tests {
     }
 
     #[test]
+    fn withheld_and_unknown_usage_are_weighted_sums_of_the_recorded_flags() {
+        // sampled logs stand each row in for `sample_weight` requests (#2239),
+        // and the flags are the ones the gateway recorded (#1774)
+        assert_eq!(WITHHELD, "round(sumIf(sample_weight, withheld = 1))");
+        assert_eq!(
+            WITHHELD_COST,
+            "round(sumIf(request_logs.cost_usd * sample_weight, withheld = 1), 6)"
+        );
+        assert_eq!(
+            USAGE_UNKNOWN,
+            "round(sumIf(sample_weight, usage_unknown = 1))"
+        );
+    }
+
+    #[test]
     fn invocations_sql_selects_the_unpriced_flag_next_to_cost() {
         let sql = invocations_sql(
             status_predicate("all").expect("all is whitelisted"),
@@ -1793,7 +1831,7 @@ mod tests {
         // a zero cost_usd is ambiguous on its own: free, or no price row at all.
         // the flag the gateway recorded per request has to travel with it, or
         // the dashboard re-derives it from the live catalogue and drifts (#1226)
-        assert!(sql.contains("cost_usd, unpriced"));
+        assert!(sql.contains("cost_usd, unpriced, withheld, usage_unknown"));
     }
 
     #[test]

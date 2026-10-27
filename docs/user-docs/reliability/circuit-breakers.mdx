@@ -64,6 +64,15 @@ open_secs = 60
   A low `failure_threshold` (e.g. `1` or `2`) combined with a high `open_secs` can trip a breaker on transient noise and keep a healthy target out of rotation for a long time. Start with conservative values (`failure_threshold = 3–5`, `open_secs = 30–60`) and adjust based on observed behaviour.
 </Warning>
 
+## Watching breakers across the fleet
+
+Every gateway replica keeps its own breakers, so one replica can have a target open while another still
+sends it traffic. When the gateways run against a control plane, each one reports its breaker state
+every 10 seconds, and the dashboard shows the fleet's picture on **Provider Health** and on the target
+rows of **Models** and **Routing Rules**: a target is marked when it is open or probing on at least one
+gateway, with how many. The same data is served by [`GET /api/v1/breaker-state`](/api/breaker-state).
+A target the view does not list is closed everywhere.
+
 ## Choosing between cooldowns and circuit breakers
 
 Both mechanisms protect your pool from a degraded target, but they operate on different time scales and failure patterns:

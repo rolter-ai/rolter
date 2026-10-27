@@ -1706,6 +1706,7 @@ const ORG_BUDGETS: BudgetRow[] = [
     id: "budget-key",
     scope_type: "virtual_key",
     scope_id: "abcdef0123456789",
+    scope_name: "ci runner",
     limit_usd: "20.00",
   },
 ];
@@ -1715,10 +1716,16 @@ const ORG_RATE_LIMITS: RateLimitRow[] = [
   { ...RATE_LIMITS[0], id: "rl-org", scope_type: "org", scope_id: "org-1", rpm: 800, tpm: null },
 ];
 
-const orgWide = (budgets: BudgetRow[], rateLimits: RateLimitRow[]) =>
+const orgWide = (
+  budgets: BudgetRow[],
+  rateLimits: RateLimitRow[],
+  spend: BudgetSpendReport = spendFor(budgets),
+) =>
   routes([
     ["/virtual-keys", () => KEYS],
     ["/business-units", () => [{ id: "unit-1", name: "Support", slug: "support" }]],
+    // the batch counters (#3128); ahead of the list it shares a prefix with
+    ["/orgs/org-1/budgets/spend", () => spend],
     ["/orgs/org-1/budgets", () => budgets],
     ["/orgs/org-1/rate-limits", () => rateLimits],
     ["/budgets/spend", () => spendFor(BUDGETS)],
@@ -1747,7 +1754,7 @@ export const EveryCapAcrossTheOrgIsListedByScope: Story = {
       "Organization Rolter",
       "Team Platform",
       "Project Gateway",
-      "Virtual key abcdef01",
+      "Virtual key ci runner",
       "Business unit Support",
       "Organization Rolter",
       "Team Platform",
@@ -1755,9 +1762,10 @@ export const EveryCapAcrossTheOrgIsListedByScope: Story = {
     ]);
     await expect(canvas.queryByText("org-1")).toBeNull();
     await expect(canvas.queryByText("team-1")).toBeNull();
-    // the counters are read per scope, so none is claimed here
+    await expect(canvas.queryByText("abcdef01")).toBeNull();
+    // every card carries the counter the one org-wide read answered (#3128)
     await expect(canvas.queryByText(/spend so far is unavailable/i)).toBeNull();
-    await expect(canvas.queryByRole("progressbar")).toBeNull();
+    await expect(canvas.getAllByRole("progressbar")).toHaveLength(ORG_BUDGETS.length);
     // creating a cap still needs a scope to hang it off
     await expect(canvas.getByRole("button", { name: /add budget/i })).toBeDisabled();
     // each card names its own scope for a screen reader
@@ -1766,6 +1774,34 @@ export const EveryCapAcrossTheOrgIsListedByScope: Story = {
         name: "Delete the monthly budget of $900.00 for Team Platform",
       }),
     ).toBeInTheDocument();
+  },
+};
+
+/** An org-wide counter that cannot be read is unknown on every card, never zero (#3128). */
+export const OrgWideSpendUnavailableIsUnknown: Story = {
+  render: () => (
+    <Harness
+      fetchStub={orgWide(ORG_BUDGETS, ORG_RATE_LIMITS, {
+        status: "unavailable",
+        budgets: ORG_BUDGETS.map((budget) => ({
+          id: budget.id,
+          spent_usd: null,
+          resets_at: null,
+        })),
+      })}
+    >
+      <Limits />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("$500.00")).toBeVisible();
+    await pickOption(await canvas.findByLabelText("Scope type"), "All scopes");
+    await expect(await canvas.findByText("$2,000.00")).toBeVisible();
+    await expect(await canvas.findAllByText(/spend so far is unavailable/i)).toHaveLength(
+      ORG_BUDGETS.length,
+    );
+    await expect(canvas.queryByRole("progressbar")).toBeNull();
   },
 };
 

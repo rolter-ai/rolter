@@ -6,11 +6,11 @@ description: "Read the spend, usage and per-model figures the Dashboard shows, o
 
 The **Dashboard**'s cards and charts are three control-plane reads over the request log in ClickHouse. They need the control plane's `CLICKHOUSE_URL`; without it they answer `503`.
 
-| Method | Path                           | What it returns                                                                         |
-| ------ | ------------------------------ | --------------------------------------------------------------------------------------- |
-| `GET`  | `/api/v1/analytics/summary`    | one row of totals: requests, tokens, cost, unpriced traffic, errors and average latency |
-| `GET`  | `/api/v1/analytics/timeseries` | requests, tokens and cost per time bucket                                               |
-| `GET`  | `/api/v1/analytics/by-model`   | requests, tokens, cost, errors and p50/p95 latency per model, costliest first           |
+| Method | Path                           | What it returns                                                                                                             |
+| ------ | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
+| `GET`  | `/api/v1/analytics/summary`    | one row of totals: requests, tokens, cost, unpriced, withheld and unknown-usage traffic, errors and average latency         |
+| `GET`  | `/api/v1/analytics/timeseries` | requests, tokens and cost per time bucket                                                                                   |
+| `GET`  | `/api/v1/analytics/by-model`   | requests, tokens, cost, unpriced, withheld and unknown-usage traffic, errors and p50/p95 latency per model, costliest first |
 
 Each answers `{"data": [...]}`, the rows straight from ClickHouse.
 

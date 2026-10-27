@@ -369,7 +369,8 @@ pub struct OwnedVirtualKey {
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct Budget {
     pub id: Uuid,
-    /// one of `org` | `team` | `project` | `virtual_key`
+    /// one of `org` | `team` | `project` | `virtual_key` | `business_unit` |
+    /// `customer` | `user`
     pub scope_type: String,
     pub scope_id: Uuid,
     /// decimal(12,4), returned as text to avoid a numeric-crate dependency
@@ -379,6 +380,11 @@ pub struct Budget {
     /// traffic; `None` inherits the deployment-wide setting (#996)
     pub unpriced_policy: Option<String>,
     pub created_at: DateTime<Utc>,
+    /// narrows a `user` budget to the keys the person minted in this org
+    /// (#1830); null on every other scope
+    pub within_org_id: Option<Uuid>,
+    /// narrows a `user` budget to the keys the person minted in this project
+    pub within_project_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
@@ -389,6 +395,10 @@ pub struct RateLimit {
     pub rpm: Option<i32>,
     pub tpm: Option<i32>,
     pub created_at: DateTime<Utc>,
+    /// see [`Budget::within_org_id`]
+    pub within_org_id: Option<Uuid>,
+    /// see [`Budget::within_project_id`]
+    pub within_project_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
@@ -1283,4 +1293,23 @@ pub struct SavedView {
     pub filters: serde_json::Value,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+/// the breaker state one node reported for one `(model, target)` (#2254). A
+/// scoreboard row, replaced by every report from that node rather than appended.
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct BreakerState {
+    pub node_id: String,
+    /// public model name of the route
+    pub model: String,
+    /// position in the route's target list on that node
+    pub target_index: i32,
+    pub provider: String,
+    pub upstream_model: String,
+    /// `closed`, `open` or `half_open`
+    pub state: String,
+    pub consecutive_failures: i32,
+    /// seconds until an open breaker admits its probe
+    pub retry_after_secs: Option<i32>,
+    pub reported_at: DateTime<Utc>,
 }

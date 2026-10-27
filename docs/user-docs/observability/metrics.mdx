@@ -83,6 +83,13 @@ metrics_path = "/internal/metrics"
 
   </Accordion>
 
+  <Accordion title="rolter_rejected_requests_total">
+    **Type:** Counter, labelled `reason`
+
+    Requests refused before the gateway knew who was asking, split by why: `missing_key` (no key presented, on a deployment that requires one), `invalid_key` (a key nobody issued, or one that is disabled or expired) and `required_header_missing`. These requests leave no row in the request log, so this counter is the only place to see how many there were and why. `rolter_auth_failures_total` is the sum of the series.
+
+  </Accordion>
+
   <Accordion title="rolter_auth_failures_total">
     **Type:** Counter
 
