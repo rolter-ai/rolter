@@ -19,11 +19,10 @@ import { useFormat } from "@/lib/i18n/format";
 // the figures come from the budgets API the Limits screen reads
 
 /**
- * "loading" while the spend read is in flight, "off" where the screen does not
- * read a counter (the key list, which would otherwise cost one read per row),
- * null when it failed outright
+ * "loading" while the spend read is in flight, null when it failed outright.
+ * The key list reads one org-wide report for every row (#3128)
  */
-export type KeySpend = BudgetSpendReport | "loading" | "off" | null;
+export type KeySpend = BudgetSpendReport | "loading" | null;
 
 /** the rows of an org-wide read that belong to one key */
 export function capsOfKey<T extends { scope_type: string; scope_id: string }>(
@@ -38,11 +37,11 @@ export function capsOfKey<T extends { scope_type: string; scope_id: string }>(
 export function KeyCaps({
   budgets,
   rateLimits,
-  spend = "off",
+  spend,
 }: {
   budgets: BudgetRow[];
   rateLimits: RateLimitRow[];
-  spend?: KeySpend;
+  spend: KeySpend;
 }) {
   const { t } = useTranslation();
   const fmt = useFormat();
@@ -62,7 +61,7 @@ export function KeyCaps({
             <span className="text-foreground">
               {t("keyCaps.spend", { amount: money(Number(budget.limit_usd)), period })}
             </span>
-            {spend !== "off" && spend !== "loading" && (
+            {spend !== "loading" && (
               <>
                 {" · "}
                 {figures ? (

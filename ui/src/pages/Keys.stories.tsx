@@ -1129,15 +1129,24 @@ const KEY_RATE: RateLimitRow = {
 };
 
 /**
- * A row states its key's cap and window from the two org-wide reads, one request
- * each however many keys there are. A budget on another scope is not this
- * key's, and no row claims a remainder: neither read carries the counter.
+ * A row states its key's cap and window from the org-wide reads, one request
+ * each however many keys there are, and what is left of the cap from the one
+ * org-wide spend read (#3128). A budget on another scope is not this key's.
  */
 export const RowStatesItsCap: Story = {
   render: () => (
     <Harness
       fetchStub={scoped(async (input) => {
         const url = String(input);
+        if (url.includes("/budgets/spend")) {
+          return json({
+            status: "ok",
+            budgets: [
+              { id: "budget-1", spent_usd: "12.5000", resets_at: "2026-08-01T00:00:00Z" },
+              { id: "budget-2", spent_usd: "1.0000", resets_at: null },
+            ],
+          });
+        }
         if (url.includes("/budgets")) {
           return json([
             KEY_BUDGET,
@@ -1154,8 +1163,36 @@ export const RowStatesItsCap: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(await canvas.findByText(/Spend cap \$50\.00 \(monthly\)/)).toBeVisible();
+    await expect(await canvas.findByText(/\$12\.50 spent · \$37\.50 left/)).toBeVisible();
     await expect(canvas.getByText("Rate cap 60 rpm · 40,000 tpm")).toBeVisible();
     await expect(canvas.getAllByText(/Spend cap/)).toHaveLength(1);
+    await expect(canvas.getAllByText(/left/)).toHaveLength(1);
+  },
+};
+
+/** An unreadable counter is unknown, never a full cap. */
+export const RowSaysSpendIsUnknown: Story = {
+  render: () => (
+    <Harness
+      fetchStub={scoped(async (input) => {
+        const url = String(input);
+        if (url.includes("/budgets/spend")) {
+          return json({
+            status: "unavailable",
+            budgets: [{ id: "budget-1", spent_usd: null, resets_at: null }],
+          });
+        }
+        if (url.includes("/budgets")) return json([KEY_BUDGET]);
+        if (url.includes("/rate-limits")) return json([]);
+        return lookups(url) ?? json(KEYS);
+      })}
+    >
+      <Keys />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("spend so far unknown")).toBeVisible();
     await expect(canvas.queryByText(/left/)).toBeNull();
   },
 };

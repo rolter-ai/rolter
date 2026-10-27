@@ -117,6 +117,7 @@ export {
   fetchBudgets,
   fetchOrgBudgets,
   fetchBudgetSpend,
+  fetchOrgBudgetSpend,
   createBudget,
   updateBudget,
   deleteBudget,

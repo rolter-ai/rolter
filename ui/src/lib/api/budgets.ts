@@ -49,6 +49,9 @@ export interface BudgetRow extends UserScopeNarrowing {
   period: string;
   unpriced_policy: UnpricedPolicy | null;
   created_at: string;
+  /// the virtual key's name (its prefix when unnamed) on an org-wide read; null
+  /// on other scopes, and absent on a per-scope read (#3128)
+  scope_name?: string | null;
 }
 
 export interface CreateBudgetInput extends UserScopeNarrowing {
@@ -108,6 +111,18 @@ export async function fetchBudgetSpend(
   return { status: body.status ?? "unavailable", budgets: body.budgets };
 }
 
+/**
+ * The spend so far against every budget in the org the caller may read (#3128),
+ * the batch form of `fetchBudgetSpend`; same body, same malformed-is-unavailable rule.
+ */
+export async function fetchOrgBudgetSpend(orgId: string): Promise<BudgetSpendReport> {
+  const body = await getJson<Partial<BudgetSpendReport> | null>(
+    `/api/v1/orgs/${encodeURIComponent(orgId)}/budgets/spend`,
+  );
+  if (!body || !Array.isArray(body.budgets)) return { status: "unavailable", budgets: [] };
+  return { status: body.status ?? "unavailable", budgets: body.budgets };
+}
+
 export function createBudget(input: CreateBudgetInput): Promise<BudgetRow> {
   return sendJson<BudgetRow>("POST", "/api/v1/budgets", input);
 }
@@ -138,6 +153,8 @@ export interface RateLimitRow extends UserScopeNarrowing {
   rpm?: number | null;
   tpm?: number | null;
   created_at: string;
+  /// see `BudgetRow.scope_name`
+  scope_name?: string | null;
 }
 
 export interface CreateRateLimitInput extends UserScopeNarrowing {

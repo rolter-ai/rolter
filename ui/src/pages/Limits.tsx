@@ -31,6 +31,7 @@ import {
   deleteBudget,
   deleteRateLimit,
   fetchBudgetSpend,
+  fetchOrgBudgetSpend,
   fetchBudgets,
   fetchBusinessUnits,
   fetchCustomers,
@@ -155,9 +156,12 @@ export default function Limits() {
   // the gateway's own counters, read through the control plane. a separate
   // query so a slow or failed read never holds the budgets themselves back
   const spend = useQuery({
-    queryKey: ["budgets", scopeType, scopeId, "spend"],
-    queryFn: () => fetchBudgetSpend(scopeType, scopeId),
-    enabled: !!scopeId,
+    queryKey: orgWide
+      ? ["budgets", "in-org", scope.orgId, "spend"]
+      : ["budgets", scopeType, scopeId, "spend"],
+    queryFn: () =>
+      orgWide ? fetchOrgBudgetSpend(scope.orgId as string) : fetchBudgetSpend(scopeType, scopeId),
+    enabled: orgWide ? !!scope.orgId : !!scopeId,
     refetchInterval: 30_000,
   });
 
@@ -273,9 +277,10 @@ export default function Limits() {
           : null;
   const pickerPending = !!pickerRead?.query.isLoading;
   // a scope typed in as a uuid has no name to show, and is shown as that uuid
-  // a cap's scope by name. a key outside the picked project has no name the
-  // dashboard can read org-wide, and is shown by the start of its id
-  const nameOf = (type: string, id: string): string => {
+  // a cap's scope by name. a key's name comes with the org-wide row itself
+  // (`scope_name`, #3128); the start of its id is the fallback for a row with none
+  const nameOf = (type: string, id: string, rowName?: string | null): string => {
+    if (type === "virtual_key" && rowName) return rowName;
     if (type === scopeType) {
       const picked = scopeOptions.find((option) => option.value === id)?.label;
       if (picked) return picked;
@@ -299,7 +304,9 @@ export default function Limits() {
   const scopeName = scopeId ? nameOf(scopeType, scopeId) : "";
   // a name is only unique within its type, so an org-wide row says which kind
   // it belongs to; the per-scope view already said it in the picker
-  const scopeLabelOf = (row: { scope_type: string; scope_id: string } & UserScopeNarrowing) =>
+  const scopeLabelOf = (
+    row: { scope_type: string; scope_id: string; scope_name?: string | null } & UserScopeNarrowing,
+  ) =>
     t("pages.limits.scopeNamed", {
       type: t(`pages.limits.scopeTypes.${orgWide ? row.scope_type : scopeType}`),
       // a user has no picker here (their caps are written through the API), so
@@ -308,7 +315,7 @@ export default function Limits() {
         (orgWide ? row.scope_type : scopeType) === USER_SCOPE
           ? t(`pages.limits.userScope.${capReach(row)}`)
           : orgWide
-            ? nameOf(row.scope_type, row.scope_id)
+            ? nameOf(row.scope_type, row.scope_id, row.scope_name)
             : scopeName,
     });
   // the delete confirmations open on it, so the type comes with the name
@@ -471,16 +478,7 @@ export default function Limits() {
               key={budget.id}
               budget={budget}
               scope={orgWide ? scopeLabelOf(budget) : scopeName}
-              // the counters are read per scope, so the org-wide list has none
-              spend={
-                orgWide
-                  ? "off"
-                  : spend.isLoading
-                    ? "loading"
-                    : spend.isError
-                      ? null
-                      : (spend.data ?? null)
-              }
+              spend={spend.isLoading ? "loading" : spend.isError ? null : (spend.data ?? null)}
               gateAt={capGateScope(budget, {
                 byTeam: orgScope.byTeam,
                 keyProjectId: orgWide ? undefined : scope.projectId,
@@ -598,7 +596,11 @@ export default function Limits() {
           onOpenChange={setEditBudgetOpen}
           scopeType={editingBudget.scope_type}
           scopeId={editingBudget.scope_id}
-          scopeName={nameOf(editingBudget.scope_type, editingBudget.scope_id)}
+          scopeName={nameOf(
+            editingBudget.scope_type,
+            editingBudget.scope_id,
+            editingBudget.scope_name,
+          )}
           budget={editingBudget}
           onDone={invalidateBudgets}
         />
@@ -617,7 +619,11 @@ export default function Limits() {
           onOpenChange={setEditRateLimitOpen}
           scopeType={editingRateLimit.scope_type}
           scopeId={editingRateLimit.scope_id}
-          scopeName={nameOf(editingRateLimit.scope_type, editingRateLimit.scope_id)}
+          scopeName={nameOf(
+            editingRateLimit.scope_type,
+            editingRateLimit.scope_id,
+            editingRateLimit.scope_name,
+          )}
           limit={editingRateLimit}
           onDone={invalidateRateLimits}
         />
@@ -836,12 +842,12 @@ function BudgetSpend({
   spend,
 }: {
   budget: BudgetRow;
-  spend: BudgetSpendReport | "loading" | "off" | null;
+  spend: BudgetSpendReport | "loading" | null;
 }) {
   const { t } = useTranslation();
   const fmt = useFormat();
   const currency = useCurrencyCode();
-  if (spend === "loading" || spend === "off") return null;
+  if (spend === "loading") return null;
   const row = spend?.budgets.find((entry) => entry.id === budget.id);
   const figures = spendFigures(row, budget.limit_usd);
   if (!figures) {
@@ -901,10 +907,9 @@ function BudgetCard({
   budget: BudgetRow;
   scope: string;
   /**
-   * "loading" while the read is in flight, "off" where no counter is read (the
-   * org-wide list), null when it failed outright
+   * "loading" while the read is in flight, null when it failed outright
    */
-  spend: BudgetSpendReport | "loading" | "off" | null;
+  spend: BudgetSpendReport | "loading" | null;
   gateAt: RowScope | undefined;
   onEdit: () => void;
   onDelete: () => void;

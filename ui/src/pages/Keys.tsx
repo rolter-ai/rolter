@@ -65,6 +65,7 @@ import {
   deleteVirtualKey,
   fetchBusinessUnits,
   fetchCustomers,
+  fetchOrgBudgetSpend,
   fetchOrgBudgets,
   fetchOrgRateLimits,
   fetchProviders,
@@ -129,14 +130,19 @@ export default function Keys() {
   });
 
   // each key's caps come from the two org-wide reads the Limits screen shares,
-  // filtered to the key, rather than one read per row. neither carries the
-  // counter, so a row states the cap and its window and not what is left of it;
-  // `retry: false` because a member without budget access gets a 403 that will
+  // filtered to the key, rather than one read per row, and one org-wide spend
+  // read answers what is left of every capped key (#3128). `retry: false` because a member without budget access gets a 403 that will
   // not improve, and the row then simply carries no cap line
   const budgets = useQuery({
     queryKey: ["budgets", "in-org", scope.orgId],
     queryFn: () => fetchOrgBudgets(scope.orgId as string),
     enabled: !!scope.orgId,
+    retry: false,
+  });
+  const spend = useQuery({
+    queryKey: ["budgets", "in-org", scope.orgId, "spend"],
+    queryFn: () => fetchOrgBudgetSpend(scope.orgId as string),
+    enabled: !!scope.orgId && (budgets.data?.length ?? 0) > 0,
     retry: false,
   });
   const rateLimits = useQuery({
@@ -332,6 +338,7 @@ export default function Keys() {
               <KeyCaps
                 budgets={capsOfKey(budgets.data, key.id)}
                 rateLimits={capsOfKey(rateLimits.data, key.id)}
+                spend={spend.isPending ? "loading" : spend.isError ? null : spend.data}
               />
             </ListCell>
             <ListCell className="flex min-w-0 items-center gap-0.5">
