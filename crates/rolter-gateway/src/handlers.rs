@@ -229,8 +229,8 @@ pub async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> R
         }
     }
     // widen with each provider's probed catalogue. the cache is empty until the
-    // first health sweep lands (and stays empty while probing is off), in which
-    // case this is exactly the route-derived listing it always was
+    // first refresh lands (and stays empty if it is turned off), in which case
+    // this is exactly the route-derived listing it always was
     for name in snap.providers.keys() {
         let Some(models) = state.model_catalog.models(name) else {
             continue;

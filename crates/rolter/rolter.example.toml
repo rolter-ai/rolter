@@ -614,6 +614,8 @@ disabled = false # revoke without deleting
 # recovery_success_threshold = 2      # probe successes before it recovers
 # status_page_interval_secs = 60      # status-page polls; only providers with a
 #                                     # status_page_url, even with enabled = false
+# catalogue_interval_secs = 900       # model-catalogue refresh behind /v1/models,
+#                                     # even with enabled = false; 0 turns it off
 
 # --- per-target circuit breaker ---
 # complements the short per-failure cooldown with a longer-lived state machine.

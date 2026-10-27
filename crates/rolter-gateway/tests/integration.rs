@@ -1334,6 +1334,62 @@ async fn models_endpoint_lists_the_whole_probed_provider_catalogue() {
     assert_eq!(resp.status(), 200);
 }
 
+/// The catalogue no longer rides the health sweep: a deployment that never
+/// turned `[health]` on lists the provider's whole catalogue too (#1729).
+#[tokio::test]
+async fn models_endpoint_lists_the_catalogue_with_health_checks_off() {
+    async fn upstream_catalogue() -> Json<Value> {
+        Json(json!({"object": "list", "data": [{"id": "gpt-4o"}, {"id": "o3-mini"}]}))
+    }
+
+    let upstream = serve(Router::new().route("/v1/models", get(upstream_catalogue))).await;
+    let mut config = GatewayConfig::default();
+    config.providers.push(ProviderConfig {
+        name: "openai-edge".to_string(),
+        slug: Some("openai-edge".to_string()),
+        kind: ProviderKind::OpenaiCompatible,
+        api_base: format!("http://{upstream}"),
+        ..Default::default()
+    });
+    assert!(!config.health.enabled, "the point is that health is off");
+    config.health.catalogue_interval_secs = 1;
+
+    let state = rolter_gateway::AppState::with_logging(&config, None);
+    rolter_gateway::model_catalog::spawn_refresher(state.clone());
+    let app = rolter_gateway::build_router(
+        state,
+        &config.server.metrics_path,
+        config.server.max_body_bytes,
+    );
+    let gw = serve(app).await;
+
+    let client = reqwest::Client::new();
+    let mut ids: Vec<String> = Vec::new();
+    for _ in 0..100 {
+        let models: Value = client
+            .get(format!("http://{gw}/v1/models"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        ids = models["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["id"].as_str().unwrap().to_string())
+            .collect();
+        if ids.iter().any(|id| id == "openai-edge/o3-mini") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    for id in ["openai-edge/gpt-4o", "openai-edge/o3-mini"] {
+        assert!(ids.contains(&id.to_string()), "{id} missing from {ids:?}");
+    }
+}
+
 #[tokio::test]
 async fn provider_slug_model_pins_provider_and_rewrites_upstream_model() {
     // a mock that echoes back the `model` field it received, so the test can

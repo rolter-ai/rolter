@@ -3365,6 +3365,11 @@ pub struct HealthConfig {
     /// only providers with a `status_page_url` are polled
     #[serde(default = "default_status_page_interval_secs")]
     pub status_page_interval_secs: u64,
+    /// seconds between refreshes of each provider's model catalogue, which
+    /// `GET /v1/models` lists as `provider-slug/model`; independent of
+    /// `enabled`, `0` turns the refresh off
+    #[serde(default = "default_catalogue_interval_secs")]
+    pub catalogue_interval_secs: u64,
 }
 
 impl Default for HealthConfig {
@@ -3378,12 +3383,17 @@ impl Default for HealthConfig {
             consecutive_failure_threshold: default_health_failure_threshold(),
             recovery_success_threshold: default_health_recovery_threshold(),
             status_page_interval_secs: default_status_page_interval_secs(),
+            catalogue_interval_secs: default_catalogue_interval_secs(),
         }
     }
 }
 
 fn default_status_page_interval_secs() -> u64 {
     60
+}
+
+fn default_catalogue_interval_secs() -> u64 {
+    900
 }
 
 fn default_health_interval_secs() -> u64 {

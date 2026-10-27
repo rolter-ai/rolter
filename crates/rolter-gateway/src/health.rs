@@ -28,7 +28,7 @@ use rolter_proxy::TranslationPlan;
 /// A fully-resolved probe request for one provider: either a free liveness GET
 /// or an opt-in minimal completion POST (`also_track_via_llm_call`, ROL-199).
 /// Owns every value so the spawned sweep task needs no borrow of the config.
-enum ProbePlan {
+pub(crate) enum ProbePlan {
     /// free, non-inference liveness GET
     Free {
         url: String,
@@ -43,7 +43,7 @@ enum ProbePlan {
 }
 
 impl ProbePlan {
-    fn build(self, client: &reqwest::Client) -> reqwest::RequestBuilder {
+    pub(crate) fn build(self, client: &reqwest::Client) -> reqwest::RequestBuilder {
         match self {
             ProbePlan::Free { url, headers } => {
                 let mut req = client.get(&url);
@@ -116,7 +116,7 @@ fn build_probe_plan(
 }
 
 /// The free liveness probe for `provider`, authenticated when it has a key.
-fn free_probe_plan(
+pub(crate) fn free_probe_plan(
     provider: &rolter_core::ProviderConfig,
     configured_path: &str,
 ) -> (ProbePlan, HealthSource) {
@@ -604,7 +604,7 @@ const MAX_CATALOGUE_BYTES: usize = 1 << 20;
 /// Reads chunk by chunk against [`MAX_CATALOGUE_BYTES`] instead of buffering
 /// the whole body, so an upstream that answers a probe with something enormous
 /// costs the gateway a bounded amount of memory.
-async fn read_catalogue(mut resp: reqwest::Response) -> Option<Vec<String>> {
+pub(crate) async fn read_catalogue(mut resp: reqwest::Response) -> Option<Vec<String>> {
     let mut body: Vec<u8> = Vec::new();
     while let Ok(Some(chunk)) = resp.chunk().await {
         if body.len() + chunk.len() > MAX_CATALOGUE_BYTES {

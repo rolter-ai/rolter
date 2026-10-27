@@ -1324,6 +1324,10 @@ When enabled, a background task periodically probes each provider with a lightwe
   Consecutive probe successes before an unhealthy provider returns to rotation, so a flapping upstream does not bounce in and out. A value of `0` is treated as `1`.
 </ParamField>
 
+<ParamField path="catalogue_interval_secs" default="900" type="u64">
+  Seconds between refreshes of each provider's model catalogue, which `GET /v1/models` lists as `provider-slug/model`. The refresh is one free model-list request per provider and runs even with `enabled = false`. `0` turns it off. See [Models](/api/models).
+</ParamField>
+
 <ParamField path="status_page_interval_secs" default="60" type="u64">
   Seconds between polls of provider status pages. Only providers with a `status_page_url` are polled, and the poller runs even with `enabled = false`. A status page is a secondary signal: it records a `status_page` event and never changes routing on its own. See [Health checks](/reliability/health-checks).
 </ParamField>
@@ -1337,6 +1341,7 @@ path = "/"
 probe_concurrency = 2
 consecutive_failure_threshold = 3
 recovery_success_threshold = 2
+catalogue_interval_secs = 900
 status_page_interval_secs = 60
 ```
 

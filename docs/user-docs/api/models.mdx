@@ -20,10 +20,10 @@ When virtual keys are configured, the list is filtered to the models that the au
 
 ### How the provider-pinned list is built
 
-A provider-pinned address works for any model the provider actually serves, not only the ones your routes mention. To list them, Rolter reads the model catalogue each provider returns to its **health probe** and caches it.
+A provider-pinned address works for any model the provider actually serves, not only the ones your routes mention. To list them, Rolter periodically reads the model catalogue each provider returns to its free model-list request and caches it.
 
 <Note>
-  The wider list requires active health checks (`[health] enabled = true`). With probing off, the provider-pinned entries are derived from your route targets alone, so a provider that serves more models than your routes name will under-report them. This changes only what is *listed*: `provider-slug/model` routes either way, so an address you know works even when it is not in the list.
+  The refresh runs by default, every 15 minutes, and does not need active health checks. Set `[health] catalogue_interval_secs = 0` to turn it off; the provider-pinned entries are then derived from your route targets alone, so a provider that serves more models than your routes name will under-report them. A newly added provider is listed within about half a minute. This changes only what is *listed*: `provider-slug/model` routes either way, so an address you know works even when it is not in the list.
 </Note>
 
 At most 200 catalogued models are listed per provider, so one aggregator with a
