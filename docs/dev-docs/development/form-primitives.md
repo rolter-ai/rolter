@@ -399,8 +399,49 @@ const { draft, saved, changed, dirty, set, reset, commit } = useDraft(source, EQ
   Discard.
 
 The reducer and `changedKeys` are plain functions with unit tests beside them, since the tree has no
-React test renderer. The Security screen is the first consumer. The shared field errors are `useFieldErrors` above. The saved-at line that #2214 asks every settings
-screen to carry is not here yet; it belongs beside this hook rather than in each screen.
+React test renderer. The Security screen was the first consumer. The shared field errors are `useFieldErrors` above.
+
+### One form state for the settings screens
+
+`useSettingsForm` (`ui/src/lib/use-settings-form.ts`, #2214) is `useDraft`, `useFieldErrors` and the
+leave guard (`useLeaveGuard`) as one hook, and `SettingsSaveBar` (`ui/src/components/SettingsSaveBar.tsx`)
+is the footer that reads it. Adaptive Routing, Model Settings, Performance, Client Settings, Logs
+Settings, Compatibility and Feature Flags use them; a new deployment-settings screen does too.
+
+```tsx
+const source = React.useMemo(() => (query.data ? fromDto(query.data) : undefined), [query.data]);
+const sf = useSettingsForm<FormState, FieldKey>({
+  source,
+  equals: EQUALS, // optional, as for useDraft
+  fieldErrors: (draft) => ({ order, wire, idOf, local: draft ? translateErrors(validate(draft), t) : {} }),
+});
+const { draft: form, fields, changed, set } = sf;
+// a field:   value={form.x}  onChange={(e) => set({ x: e.target.value })}
+// a save:    onSuccess: (dto) => sf.commit(fromDto(dto))
+// the page:  <SettingsBody onSubmit={() => fields.submit(() => save.mutate(form))}> … </SettingsBody>
+// the foot:  <SettingsSaveBar form={sf} pending={save.isPending} updatedAt={query.data?.updated_at} />
+```
+
+- `set(patch)` also answers the control plane's complaint about the fields it touches. `commit` adopts
+  the answer as both the form and the baseline, clears the complaints and stamps `savedAt`; `discard`
+  restores the baseline.
+- **Dirty, reset, leave.** Save is disabled until a field differs from what the server holds (a value
+  typed back to the stored one is no edit), Discard is the way back, and leaving with an edit asks first
+  (`form.leavePrompt`, rendered by the footer).
+- **Errors.** A wrong field is a `FieldError` with `aria-invalid` and `aria-describedby` through
+  `fields.inputProps`, as above; the footer counts them, and Save stays pressable and moves focus to the first.
+- **The line beside Save** says which state the screen is in: `N changes not saved yet`, or `Saved at
+14:03.` followed by `Applied to 1 of 2 live gateways`, or `Last saved <date>` from the DTO's `updated_at`
+  on a fresh load. The applied line reads the config versions the Cluster screen reads
+  (`useSettingsPickup`, `gatewayPickup`), polls while a gateway is behind, and is left out with
+  `gateways={false}` for a setting no running gateway reads (Compatibility, while a field there needs a restart).
+- **Enter saves.** `SettingsBody` given `onSubmit` is one `<form>` (#1205); the footer's Save is its submit
+  button. Feature Flags opens its confirmation from the same handler.
+- **A switch is not immediate.** The panel's or row's switch moves at once and the gateways still run
+  the old value until Save, so `SettingsPanel unsaved` and `SwitchRow unsaved` draw a `Not saved` chip
+  (`UnsavedBadge`) beside the title while the field differs from the baseline: `unsaved={changed.includes("enabled")}`.
+
+The Security screen predates this and keeps its own footer; it can move onto the same pieces.
 
 ## The versioned-repository kit
 

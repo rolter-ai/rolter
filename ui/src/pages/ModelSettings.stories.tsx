@@ -290,7 +290,8 @@ export const ServerRejectionLandsOnTheField: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const model = await canvas.findByLabelText("Default model");
-    await userEvent.type(model, "x");
+    // a typed model is taken on Enter, and that edit is what enables Save
+    await userEvent.type(model, "x{Enter}");
     await userEvent.click(canvas.getByRole("button", { name: "Save changes" }));
     await waitFor(() => expect(model).toHaveAttribute("aria-invalid", "true"));
     await expect(model).toHaveAccessibleDescription("default_model must be at most 256 characters");
@@ -443,5 +444,21 @@ export const LoadFailsAndRetries: Story = {
       async () =>
         await expect(await canvas.findByLabelText("Default model")).toHaveValue("gpt-4o-mini"),
     );
+  },
+};
+
+// the switch looks like it applies at once; it waits for Save, and the panel says so (#2214)
+export const SwitchWaitsForSave: Story = {
+  render: () => <Harness fetchStub={answering(BASE)} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const apply = await canvas.findByRole("switch", { name: "Apply defaults" });
+    await expect(canvas.getByRole("button", { name: "Save changes" })).toBeDisabled();
+    await userEvent.click(apply);
+    await expect(canvas.getByText("Not saved")).toBeVisible();
+    await expect(canvas.getByRole("button", { name: "Save changes" })).toBeEnabled();
+    await userEvent.click(canvas.getByRole("button", { name: "Discard changes" }));
+    await expect(apply).toHaveAttribute("aria-checked", "false");
+    await expect(canvas.queryByText("Not saved")).toBeNull();
   },
 };

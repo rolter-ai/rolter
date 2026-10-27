@@ -122,6 +122,23 @@
     "form": {
       "required": "Required"
     },
+    "settings": {
+      "notSaved": "Not saved",
+      "unsaved_one": "{{count}} change not saved yet. Gateways keep the saved settings until you save.",
+      "unsaved_other": "{{count}} changes not saved yet. Gateways keep the saved settings until you save.",
+      "discard": "Discard changes",
+      "savedAt": "Saved at {{time}}.",
+      "lastSaved": "Last saved {{when}}.",
+      "pickup": {
+        "checking": "Checking which gateways run it…",
+        "converged_one": "Applied to {{count}} of {{count}} live gateway.",
+        "converged_other": "Applied to all {{count}} live gateways.",
+        "lagging_one": "Applied to {{converged}} of {{count}} live gateway; the rest pick it up on their next config poll.",
+        "lagging_other": "Applied to {{converged}} of {{count}} live gateways; the rest pick it up on their next config poll.",
+        "none": "No live gateway has reported to this control plane, so pickup cannot be confirmed. A gateway applies it on its next config poll, 5 s by default.",
+        "unavailable": "The live gateways could not be read, so pickup cannot be confirmed. A gateway applies it on its next config poll, 5 s by default."
+      }
+    },
     "fieldsNeedAttention_one": "{{count}} field needs attention",
     "fieldsNeedAttention_other": "{{count}} fields need attention",
     "saving": "Saving…",
@@ -3847,8 +3864,7 @@
       "noAnalytics": {
         "title": "No ClickHouse receives the log",
         "body": "This control plane has no ClickHouse, so no request is written to the log. Sample rate, payload capture and retention are still saved and apply once ClickHouse is added: set <0>CLICKHOUSE_URL</0> (the clickhouse_url key in the config file) and restart the control plane."
-      },
-      "updatedAt": "Last changed {{when}}"
+      }
     },
     "clientSettings": {
       "exampleRequest": "Example request",
@@ -3882,7 +3898,6 @@
         "badRequestIdHeader": "Request ID header is not a valid header name."
       },
       "injectedValuePlaceholder": "value",
-      "unsaved": "Unsaved changes. Gateways keep the saved settings until you save.",
       "savedDetail": "Client settings updated. Gateways apply them on their next config poll, without a restart."
     },
     "security": {
@@ -3992,11 +4007,6 @@
         "error": "Error"
       },
       "edited": "Edited",
-      "discard": "Discard changes",
-      "status": {
-        "changed_one": "{{count}} setting changed, not saved yet.",
-        "changed_other": "{{count}} settings changed, not saved yet."
-      },
       "backpressure": {
         "drop": "Drop — shed the request immediately with an overload response.",
         "block": "Block — wait for capacity until the block timeout expires.",
@@ -4102,9 +4112,6 @@
       "restart": "Restart"
     },
     "featureFlags": {
-      "lastSaved": "Last saved {{when}}",
-      "neverSaved": "Not saved yet",
-      "changed": "Changed",
       "confirm": {
         "title": "Apply these flag changes?",
         "body_one": "{{count}} switch changes for the whole deployment, every org. The gateway picks it up on its next config poll, with no restart.",

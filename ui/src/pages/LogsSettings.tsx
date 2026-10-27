@@ -13,7 +13,7 @@ import { Combobox, type ComboboxOption } from "@/components/ui/combobox";
 import { Field } from "@/components/ui/field";
 import { FieldError } from "@/components/ui/field-error";
 import { Input } from "@/components/ui/input";
-import { SaveBar } from "@/components/ui/save-bar";
+import { SettingsSaveBar } from "@/components/SettingsSaveBar";
 import { SettingsPanel } from "@/components/ui/settings-panel";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
@@ -31,7 +31,9 @@ import { errorText } from "@/lib/error-copy";
 import { useScope } from "@/lib/scope";
 import { parseSamplingPercent, sampleShare, samplingPercentText } from "@/lib/sampling";
 import { useToast } from "@/lib/toast";
-import { translateErrors, useFieldErrors } from "@/lib/use-field-errors";
+import type { FieldEquality } from "@/lib/use-draft";
+import { translateErrors } from "@/lib/use-field-errors";
+import { useSettingsForm } from "@/lib/use-settings-form";
 import { useScreenReady } from "@/lib/ux-react";
 
 interface FormState {
@@ -54,6 +56,11 @@ const splitList = (value: string) =>
 
 // the API takes a 0..1 fraction; operators think in percent, so the field is
 // percent and the conversion happens at the edge
+// the two lists are edited as chips, so a rebuilt array with the same entries
+// is no edit
+const sameList = (a: string[], b: string[]) => JSON.stringify(a) === JSON.stringify(b);
+const EQUALS: FieldEquality<FormState> = { models: sameList, virtualKeyIds: sameList };
+
 const fromDto = (dto: LoggingSettingsDto): FormState => ({
   samplePercent: samplingPercentText(dto.sample_rate),
   captureEnabled: dto.payload_capture_enabled,
@@ -134,7 +141,6 @@ function LogsSettingsScreen() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const toast = useToast();
-  const format = useFormat();
   const settings = useQuery({
     queryKey: ["logging-settings"],
     queryFn: fetchLoggingSettings,
@@ -175,7 +181,6 @@ function LogsSettingsScreen() {
   // `settings` is the query the user is actually waiting on for this screen
   useScreenReady(!settings.isLoading);
 
-  const [form, setForm] = React.useState<FormState | null>(null);
   const sampleHintId = React.useId();
   const sampleWarningId = React.useId();
   const base = React.useId();
@@ -185,18 +190,21 @@ function LogsSettingsScreen() {
     retentionDays: "logs-retention-days",
     payloadRetentionHours: "logs-payload-retention-hours",
   };
-  React.useEffect(() => {
-    if (settings.data && form === null) {
-      setForm(fromDto(settings.data));
-    }
-  }, [settings.data, form]);
-
-  const fields = useFieldErrors<FieldKey>({
-    order: FIELD_ORDER,
-    wire: WIRE_FIELDS,
-    idOf: (key) => ids[key],
-    local: form ? translateErrors(validate(form), t) : {},
+  const source = React.useMemo(
+    () => (settings.data ? fromDto(settings.data) : undefined),
+    [settings.data],
+  );
+  const sf = useSettingsForm<FormState, FieldKey>({
+    source,
+    equals: EQUALS,
+    fieldErrors: (draft) => ({
+      order: FIELD_ORDER,
+      wire: WIRE_FIELDS,
+      idOf: (key) => ids[key],
+      local: draft ? translateErrors(validate(draft), t) : {},
+    }),
   });
+  const { draft: form, fields, changed } = sf;
 
   const save = useMutation({
     mutationFn: (f: FormState) =>
@@ -220,8 +228,7 @@ function LogsSettingsScreen() {
       // the cached write alone left every other reader of this key on the
       // value it already had; the refetch is what makes the save stick (#1197)
       void queryClient.invalidateQueries({ queryKey: ["logging-settings"] });
-      setForm(fromDto(dto));
-      fields.clear();
+      sf.commit(fromDto(dto));
       toast.push({
         tone: "success",
         title: t("toast.saved"),
@@ -259,21 +266,13 @@ function LogsSettingsScreen() {
   }
   if (!form) return null;
 
-  const set = (patch: Partial<FormState>) => {
-    setForm((f) => (f ? { ...f, ...patch } : f));
-  };
   // an edit answers the server's complaint about that field
-  const edit = (key: FieldKey, value: string) => {
-    set({ [key]: value });
-    fields.edit(key);
-  };
+  const { set } = sf;
+  const edit = (key: FieldKey, value: string) => set({ [key]: value });
   const capture = form.captureEnabled;
-  const dirty =
-    JSON.stringify(form) !== JSON.stringify(fromDto(settings.data as LoggingSettingsDto));
-  const changedAt = settings.data ? new Date(settings.data.updated_at) : null;
 
   return (
-    <SettingsBody>
+    <SettingsBody onSubmit={() => fields.submit(() => save.mutate(form))}>
       {analytics.error instanceof AnalyticsUnavailableError && (
         <div className="flex flex-col gap-2">
           <AnalyticsUnavailable error={analytics.error} i18nKey="pages.logsSettings.noAnalytics" />
@@ -304,6 +303,7 @@ function LogsSettingsScreen() {
       <SettingsPanel
         title={t("pages.logsSettings.capture")}
         description={t("pages.logsSettings.captureHint")}
+        unsaved={changed.includes("captureEnabled")}
         dimmed={!capture}
         action={
           <Switch
@@ -455,6 +455,7 @@ function LogsSettingsScreen() {
       <SettingsPanel
         title={t("pages.logsSettings.uiEvents")}
         description={t("pages.logsSettings.uiEventsHint")}
+        unsaved={changed.includes("uiEvents")}
         action={
           <Switch
             checked={form.uiEvents}
@@ -464,17 +465,7 @@ function LogsSettingsScreen() {
         }
       />
 
-      <SaveBar
-        invalid={fields.invalid.length}
-        pending={save.isPending}
-        disabled={!dirty}
-        status={
-          changedAt && !Number.isNaN(changedAt.getTime())
-            ? t("pages.logsSettings.updatedAt", { when: format.dateTime(changedAt) })
-            : undefined
-        }
-        onSave={() => fields.submit(() => save.mutate(form))}
-      />
+      <SettingsSaveBar form={sf} pending={save.isPending} updatedAt={settings.data?.updated_at} />
     </SettingsBody>
   );
 }

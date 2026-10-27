@@ -17,7 +17,12 @@ export interface SaveBarProps {
   leading?: React.ReactNode;
   /** secondary buttons beside Save, such as Discard */
   children?: React.ReactNode;
-  onSave: () => void;
+  /**
+   * Save's press. Left out, the button is the form's `type="submit"` and the
+   * enclosing `SettingsBody onSubmit` runs the save, so Enter in a field saves
+   * too (#1205)
+   */
+  onSave?: () => void;
 }
 
 /**
@@ -63,6 +68,7 @@ export function SaveBar({
         aria-disabled={invalid > 0 || undefined}
         aria-describedby={message ? statusId : undefined}
         className={invalid > 0 ? "opacity-50" : undefined}
+        type={onSave ? "button" : "submit"}
         onClick={onSave}
       >
         {pending ? t("common.saving") : t("common.saveChanges")}
