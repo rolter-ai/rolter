@@ -444,7 +444,8 @@ mod tests {
 
     #[test]
     fn groups_and_the_manifest_both_have_to_agree() {
-        // `stale` is in the group but no longer in the manifest
+        // `stale` is in the group but no longer in the manifest, which the
+        // org's saved settings enforce
         let server = McpServerConfig {
             id: "srv".into(),
             org_id: "org".into(),
@@ -454,6 +455,7 @@ mod tests {
         };
         let mut config = GatewayConfig::default();
         config.mcp_servers.push(server.clone());
+        config.mcp_settings.push(settings(false, false));
         config.mcp_tool_groups = vec![group("org", "srv", &["a", "stale"])];
         let snapshot = Snapshot::build(&config, &crate::load::LoadTracker::default());
         assert!(matches!(

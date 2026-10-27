@@ -968,9 +968,18 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let strict = |fail_open| McpOrgSettingsConfig {
+            org_id: "org-1".into(),
+            connect_timeout_ms: 5000,
+            request_timeout_ms: 30000,
+            max_retries: 0,
+            fail_open,
+            allow_unlisted_tools: false,
+        };
         let mut config = config("user-1", &["tools:execute"]);
         config.mcp_servers[0].url = format!("http://{addr}/rpc");
         config.mcp_servers[0].tools = vec!["get_issue".into()];
+        config.mcp_settings = vec![strict(false)];
 
         let (status, code) = code_of(post(AppState::new(&config), call_body("drop")).await).await;
         assert_eq!(
@@ -987,14 +996,7 @@ mod tests {
             (status, code.as_str()),
             (StatusCode::BAD_REQUEST, "mcp_request_unreadable")
         );
-        config.mcp_settings.push(McpOrgSettingsConfig {
-            org_id: "org-1".into(),
-            connect_timeout_ms: 5000,
-            request_timeout_ms: 30000,
-            max_retries: 0,
-            fail_open: true,
-            allow_unlisted_tools: false,
-        });
+        config.mcp_settings = vec![strict(true)];
         let forwarded = post(AppState::new(&config), Bytes::from_static(b"{ nope")).await;
         assert_eq!(forwarded.status(), StatusCode::OK);
     }
