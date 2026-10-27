@@ -104,6 +104,16 @@ row in the reference. #2743 added a developer switch named
 `ROLTER_UPDATE_RBAC_MATRIX`, and CI reported nothing but "exit code 100" until it
 was renamed.
 
+## The control-plane integration tests
+
+`crates/rolter-control/tests/control/` is one test binary (`control`) whose
+`main.rs` declares a module per surface: `crud`, `rbac`, `auth`, `sso`, `scim`,
+`mcp`, `audit`, `snapshot`, `settings`, `budgets`, `users`, `profile` and
+`guardrails`. A failing test names its area in its path. Fixtures used by more
+than one area (the schema and app builders, seeding, the stub servers) live in
+`support.rs`; a helper only one area uses stays in that area's file. Keep it one
+binary: a second `tests/*.rs` target links the whole crate again.
+
 ## The Postgres test database
 
 The Postgres-backed tests self-skip unless `ROLTER_TEST_DATABASE_URL` points at
@@ -322,7 +332,7 @@ drift guard as the gateway's `lock_discipline.rs`:
 - the schema comes from `TestSchema`, never from a hand-rolled `create schema`
 - no test in these suites installs a process-wide environment value only it
   wants — the one exception is the shared `TEST_KEK` every call site in
-  `control_integration.rs` installs, which exists precisely so the race has
+  `tests/control/support.rs` installs, which exists precisely so the race has
   nothing to observe (#1351)
 
 That last rule is what `cargo test -p rolter-control -p rolter-store --features
@@ -478,7 +488,7 @@ rather than the raw job log, which not every triage path can download.
   its own `ROLTER_KEK` is read by another test's in-flight request, and a value
   sealed under one key then fails to open under the next. The symptom lands on
   whichever unrelated seal-then-open test was mid-flight, never on the test that
-  caused it. `control_integration.rs` installs one shared `TEST_KEK` for exactly
+  caused it. `tests/control/support.rs` installs one shared `TEST_KEK` for exactly
   this reason (#1351); a test needing a non-matching key builds it with
   `Kek::from_secret` rather than through the environment.
 - **Postgres tests must use a per-test schema** (`search_path`), since this job

@@ -622,11 +622,11 @@ SCIM bearer) are not on the list: anonymously they answer `401`, and the guard r
   empty-looking reason.
 
 That is the one anonymous-route guard. It replaced a GET-only sweep in
-`tests/control_integration.rs` (#1820) that read `.public()` from the document
+`tests/control/` (#1820) that read `.public()` from the document
 and exempted `/gw`; the allowlist guard covers every method, needs no
 database, and `/gw` takes a session since #2463 (#2464).
 
-What stays in `tests/control_integration.rs` is the one case the guard cannot
+What stays in `tests/control/` is the one case the guard cannot
 reach: `every_route_the_spec_does_not_mark_public_refuses_a_forged_bearer`. A
 bearer that is present but is not the admin token is looked up as a session
 token, and that lookup needs a real database, so against the guard's
@@ -753,7 +753,7 @@ Two limits are known and tracked:
 
 What keeps this from regressing is
 `every_route_the_spec_does_not_mark_public_refuses_an_anonymous_caller` in
-`crates/rolter-control/tests/control_integration.rs`: it walks the served
+`crates/rolter-control/tests/control/`: it walks the served
 `/openapi.json` with no credentials and a forged bearer and requires a `401`
 from every GET the document does not mark public. The routes that are open by
 design are listed in `PUBLIC_ROUTES` (see above) and marked `.public()` in
