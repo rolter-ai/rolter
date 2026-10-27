@@ -112,10 +112,12 @@ export type {
 } from "./auth";
 export {
   SCOPE_TYPES,
+  USER_SCOPE,
   UNPRICED_POLICIES,
   fetchBudgets,
   fetchOrgBudgets,
   fetchBudgetSpend,
+  fetchOrgBudgetSpend,
   createBudget,
   updateBudget,
   deleteBudget,
@@ -137,6 +139,7 @@ export type {
   RateLimitRow,
   CreateRateLimitInput,
   UpdateRateLimitInput,
+  UserScopeNarrowing,
 } from "./budgets";
 export { fetchClusterNodes, setClusterNodeDrain, forgetClusterNode } from "./cluster";
 export type { ClusterNodeRow } from "./cluster";
@@ -299,6 +302,7 @@ export {
   rotateMyKey,
   deleteMyKey,
   fetchMyUsage,
+  fetchMyBudgets,
 } from "./me";
 export type {
   MeMembership,
@@ -310,6 +314,9 @@ export type {
   MintedKey,
   MintKeyInput,
   MyUsageRow,
+  MyBudgetRow,
+  MyRateLimitRow,
+  MyBudgetReport,
   SavedViewSurface,
   SavedViewFilters,
   SavedViewUnavailable,

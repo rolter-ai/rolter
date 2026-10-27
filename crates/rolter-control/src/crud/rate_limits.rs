@@ -8,13 +8,13 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use rolter_store::postgres::models::RateLimit;
-use rolter_store::postgres::repo::RateLimitRepo;
+use rolter_store::postgres::repo::{RateLimitRepo, Within};
 
 use super::{
     explicit_null, invalid_field, log_audit, pool, publish_config_change, ApiResult, Query,
     SafeJson,
 };
-use crate::rbac::{authorize, Principal, ScopeChain};
+use crate::rbac::{authorize_cap, Principal, ScopeChain};
 use crate::rbac_matrix::cap;
 use crate::ControlState;
 
@@ -50,13 +50,21 @@ async fn list_rate_limits(
     Query(scope): Query<ScopeQuery>,
 ) -> ApiResult<Json<Vec<RateLimit>>> {
     validate_scope(&scope.scope_type)?;
-    let chain = ScopeChain::from_scope(pool(&state), &scope.scope_type, scope.scope_id).await?;
+    let chain = ScopeChain::from_cap(
+        pool(&state),
+        &scope.scope_type,
+        scope.scope_id,
+        scope.within(),
+    )
+    .await?;
     authorize_scope_read(&state, &principal, &scope, chain, cap!("rate_limit", Read)).await?;
-    Ok(Json(
-        RateLimitRepo(pool(&state))
-            .list_for_scope(&scope.scope_type, scope.scope_id)
-            .await?,
-    ))
+    let repo = RateLimitRepo(pool(&state));
+    Ok(Json(if scope.scope_type == "user" {
+        repo.list_for_user(scope.scope_id, scope.within()).await?
+    } else {
+        repo.list_for_scope(&scope.scope_type, scope.scope_id)
+            .await?
+    }))
 }
 
 /// Every rate limit the caller may read across one org; see
@@ -65,7 +73,7 @@ async fn list_org_rate_limits(
     principal: Principal,
     State(state): State<ControlState>,
     Path(org_id): Path<Uuid>,
-) -> ApiResult<Json<Vec<RateLimit>>> {
+) -> ApiResult<Json<Vec<OrgRateLimit>>> {
     let rows = RateLimitRepo(pool(&state)).list_in_org(org_id).await?;
     let rows = readable_caps(
         &state,
@@ -73,10 +81,42 @@ async fn list_org_rate_limits(
         cap!("rate_limit", Read),
         org_id,
         rows,
-        |r| (r.scope_type.as_str(), r.scope_id),
+        |r| {
+            (
+                r.scope_type.as_str(),
+                r.scope_id,
+                Within {
+                    org: r.within_org_id,
+                    project: r.within_project_id,
+                },
+            )
+        },
     )
     .await?;
-    Ok(Json(rows))
+    let names = super::budgets::key_names(
+        &state,
+        rows.iter().map(|r| (r.scope_type.as_str(), r.scope_id)),
+    )
+    .await?;
+    Ok(Json(
+        rows.into_iter()
+            .map(|row| OrgRateLimit {
+                scope_name: (row.scope_type == "virtual_key")
+                    .then(|| names.get(&row.scope_id).cloned())
+                    .flatten(),
+                row,
+            })
+            .collect(),
+    ))
+}
+
+/// A rate limit of an org-wide list, with the name of the key it caps (#3128);
+/// see `OrgBudget`.
+#[derive(serde::Serialize)]
+struct OrgRateLimit {
+    #[serde(flatten)]
+    row: RateLimit,
+    scope_name: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -84,6 +124,14 @@ async fn list_org_rate_limits(
 pub(super) struct CreateRateLimit {
     scope_type: String,
     scope_id: Uuid,
+    /// a `user` limit only: count only the keys the person minted in this
+    /// org (#1830); see [`CreateBudget`](super::budgets)
+    #[serde(default)]
+    within_org_id: Option<Uuid>,
+    /// a `user` limit only: count only the keys the person minted in this
+    /// project
+    #[serde(default)]
+    within_project_id: Option<Uuid>,
     pub(super) rpm: Option<i32>,
     pub(super) tpm: Option<i32>,
 }
@@ -94,14 +142,19 @@ async fn create_rate_limit(
     SafeJson(body): SafeJson<CreateRateLimit>,
 ) -> ApiResult<Json<RateLimit>> {
     validate_scope(&body.scope_type)?;
-    let chain = ScopeChain::from_scope(pool(&state), &body.scope_type, body.scope_id).await?;
+    let within = Within {
+        org: body.within_org_id,
+        project: body.within_project_id,
+    };
+    super::budgets::validate_within(&body.scope_type, within)?;
+    let chain = ScopeChain::from_cap(pool(&state), &body.scope_type, body.scope_id, within).await?;
     let org_id = chain.org;
-    authorize(&state, &principal, chain, cap!("rate_limit", Create)).await?;
+    authorize_cap(&state, &principal, chain, cap!("rate_limit", Create)).await?;
     // each cap sent has to limit something, and the store refuses a limit
     // left with none, as it does for an edit (#1903)
     validate_rate_limit_caps(body.rpm, body.tpm)?;
     let row = RateLimitRepo(pool(&state))
-        .create(&body.scope_type, body.scope_id, body.rpm, body.tpm)
+        .create(&body.scope_type, body.scope_id, body.rpm, body.tpm, within)
         .await?;
     publish_config_change(&state).await?;
     log_audit(
@@ -111,7 +164,7 @@ async fn create_rate_limit(
         "rate_limit.create",
         "rate_limit",
         row.id,
-        serde_json::json!({"scope_type": body.scope_type, "scope_id": body.scope_id, "rpm": body.rpm, "tpm": body.tpm}),
+        serde_json::json!({"scope_type": body.scope_type, "scope_id": body.scope_id, "within_org_id": body.within_org_id, "within_project_id": body.within_project_id, "rpm": body.rpm, "tpm": body.tpm}),
     )
     .await;
     Ok(Json(row))
@@ -159,10 +212,18 @@ async fn update_rate_limit(
     SafeJson(body): SafeJson<UpdateRateLimit>,
 ) -> ApiResult<Json<RateLimit>> {
     let existing = RateLimitRepo(pool(&state)).get(id).await?;
-    let chain =
-        ScopeChain::from_scope(pool(&state), &existing.scope_type, existing.scope_id).await?;
+    let chain = ScopeChain::from_cap(
+        pool(&state),
+        &existing.scope_type,
+        existing.scope_id,
+        Within {
+            org: existing.within_org_id,
+            project: existing.within_project_id,
+        },
+    )
+    .await?;
     let org_id = chain.org;
-    authorize(&state, &principal, chain, cap!("rate_limit", Update)).await?;
+    authorize_cap(&state, &principal, chain, cap!("rate_limit", Update)).await?;
     if body.rpm.is_none() && body.tpm.is_none() {
         // nothing asked for, so nothing written, bumped or audited
         return Ok(Json(existing));
@@ -213,9 +274,18 @@ async fn delete_rate_limit(
     Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
     let limit = RateLimitRepo(pool(&state)).get(id).await?;
-    let chain = ScopeChain::from_scope(pool(&state), &limit.scope_type, limit.scope_id).await?;
+    let chain = ScopeChain::from_cap(
+        pool(&state),
+        &limit.scope_type,
+        limit.scope_id,
+        Within {
+            org: limit.within_org_id,
+            project: limit.within_project_id,
+        },
+    )
+    .await?;
     let org_id = chain.org;
-    authorize(&state, &principal, chain, cap!("rate_limit", Delete)).await?;
+    authorize_cap(&state, &principal, chain, cap!("rate_limit", Delete)).await?;
     RateLimitRepo(pool(&state)).delete(id).await?;
     publish_config_change(&state).await?;
     log_audit(

@@ -379,6 +379,59 @@ equally to the admin (`/api/v1/projects/{id}/virtual-keys`) and self-service
 Rotation replaces a secret without renewing the decision: the fresh key inherits
 the old one's `expires_at`, and its `purpose`.
 
+### Caps chosen at mint time (#1171)
+
+A key's spend or rate cap is not a column on `virtual_keys`: budgets and rate
+limits already scope to `virtual_key` (`BudgetScope::Key`), the gateway already
+matches them against `KeyMeta::id`, and `config_version` is already bumped by
+their statement triggers, so a second place to store the same number would only
+have been a second place to disagree. What was missing was a way to decide it
+where the key is decided. Both mint bodies (`CreateVirtualKey`, `MintKey`) now
+take optional `budget` (`limit_usd`, `period`) and `rate_limit` (`rpm`, `tpm`),
+validated by the same functions the budgets and rate-limits endpoints use
+(`KeyCapsBody`), **before** a key exists, and written by
+`VirtualKeyRepo::create_with_caps` in the key's own transaction. A refused cap
+therefore leaves no key behind (the plaintext is shown once, so a half-made key
+could not be repaired), and a polling gateway sees the key and its cap in the
+same snapshot or not at all.
+
+Two lifecycle edges would otherwise leak the bound. **Rotation** copies the old
+key's caps onto the new one (`KeyCaps::inherit_from`), as it copies the expiry;
+a rotation that dropped them would turn "rotate the leaked key" into "hand back
+an unbounded one". **Deleting** a key deletes the rows scoped to it, since
+`budgets` and `rate_limits` carry no foreign key to a scope and would otherwise
+list, and ship in every snapshot, caps for a key that no longer exists.
+Editing a cap afterwards is the ordinary `PATCH /api/v1/budgets/{id}`.
+
+### Caps on a person (#1830)
+
+`BudgetScope::User` (`budgets.scope_type = 'user'`, migration `0096`) counts
+every key a person minted. The gateway needs no new lookup: `KeyMeta::user_id`
+is `virtual_keys.created_by`, `ScopeIds::user` carries it, and `applicable()`
+matches it like any other scope id. A key nobody minted has an empty user, and
+an empty id never matches, so config-file and admin-minted keys are outside
+every user cap.
+
+A person belongs to no org, which is the one real design problem: RBAC
+resolves a capability in an org/team/project chain. The cap is therefore
+narrowed with `within_org_id` / `within_project_id` (nullable, mutually
+exclusive, `user` only, both enforced by check constraints and
+`ScopeWithin` in the snapshot) and authorized by that place, in
+`ScopeChain::from_cap`. A cap with neither counts the person everywhere, has
+no chain, and `authorize_cap` passes only a superadmin. The narrowing is also
+part of the counter: `rolter:budget:user:<id>:org:<org>:<bucket>`
+(`BudgetConfig::spend_key`, and the rate limiter's `limit_prefix`), because two
+caps on one person must not share a counter. The org-wide lists (`in_org!`)
+pick up a user row through its narrowing, so an un-narrowed one appears in no
+org's list. The FKs on `within_*` cascade, and `UserRepo::delete` removes the
+caps on the person, since `scope_id` has none.
+
+`GET /api/v1/me/budgets` (`my_budget:read`, any signed-in role) reads the
+caller's rows by the session's user id and reads the counters the way
+`/budgets/spend` does, so an unreadable counter is `null`, not zero. Tested by
+`tests/control/budgets.rs` (authorization, snapshot, self-read) and the
+gateway's `tests/scoped_budgets.rs` (two keys, one cap; narrowing).
+
 ### Personal keys follow their creator (#1841)
 
 A key minted through the self-service routes (`/api/v1/me/...`) records its
