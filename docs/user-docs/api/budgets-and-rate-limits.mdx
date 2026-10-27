@@ -121,6 +121,10 @@ The row keeps its `id` and `created_at`. Spend counters in Redis are keyed by sc
 
 `status` says whether the figures can be trusted. `ok` means the counters were read. `not_configured` means the control plane has no `ROLTER_REDIS_URL`, and `unavailable` means Redis did not answer within two seconds. In both of those `spent_usd` is `null` for every budget, never zero: a budget that cannot be read is unknown, not untouched. The control plane must point at the same Redis as the gateways, or it reads counters nobody writes.
 
+### Minting a key with a cap
+
+A key's cap is an ordinary budget or rate limit whose scope is the key. You do not have to create the key and then make a second call: `POST /api/v1/projects/{project_id}/virtual-keys` and `POST /api/v1/me/projects/{project_id}/virtual-keys` accept a `budget` (`{"limit_usd": "50", "period": "monthly"}`) and a `rate_limit` (`{"rpm": 30, "tpm": 20000}`) alongside the name and expiry. They are validated by the rules on this page before the key exists and written in the same transaction as the key, so a refused cap leaves no key behind. Rotating the key copies them onto the new key, and deleting the key deletes them.
+
 ## Rate limits
 
 ```json

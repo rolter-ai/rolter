@@ -112,9 +112,35 @@ the config file leaves optional:
 
   </Accordion>
 
-  <Accordion title="Rotation keeps the original deadline">
+  <Accordion title="A spend or rate cap can be chosen at mint time">
+    The same sheet can bound the key as it is made: a **spend cap** (an amount
+    over a daily, monthly or total window) and/or a **rate cap** (requests and
+    tokens per minute). Both are optional. "Give this contractor a key that can
+    spend $50" is one decision in one place, instead of an unbounded key and a
+    second screen you may not get to.
+
+    The API takes them as `budget` (`{"limit_usd": "50", "period": "monthly"}`)
+    and `rate_limit` (`{"rpm": 30, "tpm": 20000}`) on `POST
+    /api/v1/projects/{project_id}/virtual-keys` and on `POST
+    /api/v1/me/projects/{project_id}/virtual-keys`. A cap is an ordinary
+    [budget or rate limit](/security/budgets-and-rate-limits) scoped to the key,
+    written in the same transaction as the key, so a key chosen to be bounded
+    never exists without its bound, and a cap the gateway would misread (a
+    negative amount, a `7d` window, a rate limit with neither number) is refused
+    with a 400 before any key is made. Edit or remove it afterwards under
+    **Budgets & Limits**, or through the
+    [budgets and rate limits API](/api/budgets-and-rate-limits).
+
+    The gateway enforces it, not merely records it: a request that arrives once
+    the key's spend has reached its cap is refused with a 402 naming the key, and
+    a request over its rate cap with a 429. Deleting the key deletes its caps.
+  </Accordion>
+
+  <Accordion title="Rotation keeps the original deadline and the caps">
     Rotating a key replaces its secret; it does not renew the decision. The
-    fresh key expires exactly when the one it replaces would have.
+    fresh key expires exactly when the one it replaces would have, and it
+    carries the same spend and rate caps, so rotating a leaked key never hands
+    back an unbounded one.
   </Accordion>
 </AccordionGroup>
 

@@ -1381,3 +1381,162 @@ async fn budget_spend_reads_the_gateway_counter_and_never_invents_zero() {
         .expect("clean up");
     assert_eq!(report["budgets"][0]["spent_usd"], "12.5000");
 }
+
+/// #1171: a key is minted with its cap. The cap is a budget and a rate limit
+/// scoped to the key, written in the mint's own transaction, so it reaches the
+/// snapshot with the key; a cap the gateway would misread is refused before a
+/// key exists; rotation carries the caps over; and deleting the key takes them
+/// with it rather than leaving rows for a key that is gone.
+#[tokio::test]
+async fn a_key_is_minted_with_its_cap_and_keeps_it_through_rotation() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("mint".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    async fn post(client: &reqwest::Client, url: String, body: Value) -> Value {
+        let resp = client
+            .post(&url)
+            .bearer_auth("mint")
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        let status = resp.status();
+        let json: Value = resp.json().await.unwrap();
+        assert!(status.is_success(), "POST {url} failed ({status}): {json}");
+        json
+    }
+    let org = post(
+        &client,
+        format!("{base}/api/v1/orgs"),
+        json!({"name": "Acme", "slug": "acme"}),
+    )
+    .await;
+    let org_id = org["id"].as_str().expect("org id").to_string();
+    let team = post(
+        &client,
+        format!("{base}/api/v1/orgs/{org_id}/teams"),
+        json!({"name": "Platform"}),
+    )
+    .await;
+    let team_id = team["id"].as_str().expect("team id");
+    let project = post(
+        &client,
+        format!("{base}/api/v1/teams/{team_id}/projects"),
+        json!({"name": "Gateway"}),
+    )
+    .await;
+    let project_id = project["id"].as_str().expect("project id").to_string();
+    let mint_url = format!("{base}/api/v1/projects/{project_id}/virtual-keys");
+
+    // a cap the gateway would misread is refused, and no key is left behind
+    for bad in [
+        json!({"name": "k", "budget": {"limit_usd": "-5"}}),
+        json!({"name": "k", "budget": {"limit_usd": "50", "period": "7d"}}),
+        json!({"name": "k", "rate_limit": {}}),
+        json!({"name": "k", "rate_limit": {"rpm": 0}}),
+    ] {
+        let resp = client
+            .post(&mint_url)
+            .bearer_auth("mint")
+            .json(&bad)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 400, "{bad}");
+    }
+    let none: i64 = sqlx::query_scalar("select count(*) from virtual_keys")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(none, 0, "a refused mint must not leave a key");
+
+    let minted = post(
+        &client,
+        mint_url.clone(),
+        json!({
+            "name": "contractor",
+            "budget": {"limit_usd": "50", "period": "monthly"},
+            "rate_limit": {"rpm": 30, "tpm": 20000},
+        }),
+    )
+    .await;
+    let key_id = minted["id"].as_str().expect("key id").to_string();
+
+    let snap: Value = client
+        .get(format!("{base}/internal/snapshot"))
+        .bearer_auth("mint")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let budget = snap["config"]["budgets"]
+        .as_array()
+        .expect("budgets")
+        .iter()
+        .find(|b| b["scope"] == "key" && b["id"] == key_id.as_str())
+        .unwrap_or_else(|| panic!("the key's budget is missing from the snapshot: {snap}"));
+    assert_eq!(budget["limit_usd"], 50.0);
+    assert_eq!(budget["period"], "monthly");
+    let limit = snap["config"]["rate_limits"]
+        .as_array()
+        .expect("limits")
+        .iter()
+        .find(|l| l["scope"] == "key" && l["id"] == key_id.as_str())
+        .unwrap_or_else(|| panic!("the key's rate limit is missing from the snapshot: {snap}"));
+    assert_eq!(
+        (limit["rpm"].clone(), limit["tpm"].clone()),
+        (json!(30), json!(20000))
+    );
+
+    // editable afterwards through the budgets API, in place
+    let listed: Value = client
+        .get(format!(
+            "{base}/api/v1/budgets?scope_type=virtual_key&scope_id={key_id}"
+        ))
+        .bearer_auth("mint")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(listed.as_array().unwrap().len(), 1);
+
+    // an uncapped mint stays uncapped
+    let plain = post(&client, mint_url, json!({"name": "plain"})).await;
+    let plain_id = plain["id"].as_str().expect("key id");
+    let capped_rows: i64 =
+        sqlx::query_scalar("select count(*) from budgets where scope_id = $1::uuid")
+            .bind(plain_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(capped_rows, 0);
+
+    // deleting the key takes its caps along
+    let deleted = client
+        .delete(format!("{base}/api/v1/virtual-keys/{key_id}"))
+        .bearer_auth("mint")
+        .send()
+        .await
+        .unwrap();
+    assert!(deleted.status().is_success(), "{}", deleted.status());
+    let orphans: i64 = sqlx::query_scalar(
+        "select (select count(*) from budgets where scope_id = $1::uuid)
+              + (select count(*) from rate_limits where scope_id = $1::uuid)",
+    )
+    .bind(&key_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(orphans, 0, "a deleted key's caps must go with it");
+}

@@ -20,8 +20,8 @@ use uuid::Uuid;
 use rolter_store::postgres::models::User;
 use rolter_store::postgres::models::{OwnedVirtualKey, VirtualKey};
 use rolter_store::postgres::repo::{
-    AuditLogRepo, NewVirtualKey, OrgRepo, RouteRepo, ScimIdentityRepo, UserPreferencesRepo,
-    UserRepo, VirtualKeyRepo,
+    AuditLogRepo, KeyCaps, NewVirtualKey, OrgRepo, RouteRepo, ScimIdentityRepo,
+    UserPreferencesRepo, UserRepo, VirtualKeyRepo,
 };
 
 use crate::analytics::{
@@ -29,7 +29,8 @@ use crate::analytics::{
 };
 use crate::auth::CurrentUser;
 use crate::crud::{
-    generate_virtual_key, key_pepper, pool, publish_config_change, ApiError, ApiResult, SafeJson,
+    generate_virtual_key, key_pepper, pool, publish_config_change, ApiError, ApiResult,
+    KeyBudgetBody, KeyCapsBody, KeyRateLimitBody, SafeJson,
 };
 use crate::rbac::{authorize, Principal, ScopeChain, ScopeFilter};
 use crate::rbac_matrix::cap;
@@ -530,6 +531,11 @@ struct MintKey {
     /// not what omitting the field in a form produces
     #[serde(default)]
     expires_in_days: Option<u32>,
+    /// a spend and/or rate cap the key is born with (#1171)
+    #[serde(default)]
+    budget: Option<KeyBudgetBody>,
+    #[serde(default)]
+    rate_limit: Option<KeyRateLimitBody>,
 }
 
 /// longest a virtual key name may be; long enough for "prod checkout service
@@ -591,10 +597,15 @@ async fn mint_my_key(
     authorize(&state, &principal, chain, cap!("my_virtual_key", Create)).await?;
 
     let (name, expires_at) = validated_name_and_expiry(&body.name, body.expires_in_days)?;
+    let caps = KeyCapsBody {
+        budget: body.budget,
+        rate_limit: body.rate_limit,
+    };
+    caps.validate()?;
 
     let (key, key_hash, key_prefix) = generate_virtual_key(&key_pepper());
     let row = VirtualKeyRepo(pool(&state))
-        .create(
+        .create_with_caps(
             project_id,
             NewVirtualKey {
                 key_hash: &key_hash,
@@ -608,6 +619,7 @@ async fn mint_my_key(
                 // minted by hand from the self-service panel
                 purpose: None,
             },
+            caps.as_new(),
         )
         .await?;
     publish_config_change(&state).await?;
@@ -716,7 +728,7 @@ async fn rotate_my_key(
 
     let (key, key_hash, key_prefix) = generate_virtual_key(&key_pepper());
     let row = VirtualKeyRepo(pool(&state))
-        .create(
+        .create_with_caps(
             old.project_id,
             NewVirtualKey {
                 key_hash: &key_hash,
@@ -731,6 +743,12 @@ async fn rotate_my_key(
                 expires_at: old.expires_at,
                 // and it stays the same kind of key it was
                 purpose: old.purpose.as_deref(),
+            },
+            // and it keeps the caps the old one carried (#1171): rotating a
+            // leaked key must not hand back an unbounded one
+            KeyCaps {
+                inherit_from: Some(old.id),
+                ..Default::default()
             },
         )
         .await?;

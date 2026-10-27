@@ -381,6 +381,87 @@ async fn create_budget(
     Ok(Json(row))
 }
 
+/// The caps a key is minted with (#1171), shared by the operator mint
+/// (`CreateVirtualKey`) and the self-service one (`MintKey`) so the two cannot
+/// disagree about what a cap is. Each is the body of the budget or rate limit
+/// the key would otherwise need a second screen for; both are optional and a
+/// key may carry either, both or neither.
+///
+/// The two bodies carry `budget` and `rate_limit` as plain fields, not through
+/// `#[serde(flatten)]`, which cannot be combined with `deny_unknown_fields`.
+#[derive(Default)]
+pub(crate) struct KeyCapsBody {
+    /// a spend cap over a window
+    pub(crate) budget: Option<KeyBudgetBody>,
+    /// a request and/or token cap per minute
+    pub(crate) rate_limit: Option<KeyRateLimitBody>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct KeyBudgetBody {
+    limit_usd: String,
+    #[serde(default = "default_period")]
+    period: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct KeyRateLimitBody {
+    #[serde(default)]
+    rpm: Option<i32>,
+    #[serde(default)]
+    tpm: Option<i32>,
+}
+
+impl KeyCapsBody {
+    /// Refuse a cap the gateway would misread, before a key exists: the key's
+    /// plaintext is shown once, so a mint that fails halfway cannot be retried
+    /// by looking at what was made.
+    pub(crate) fn validate(&self) -> ApiResult<()> {
+        if let Some(budget) = &self.budget {
+            validate_limit_usd(&budget.limit_usd)?;
+            validate_period(&budget.period)?;
+        }
+        if let Some(limit) = &self.rate_limit {
+            super::rate_limits::validate_rate_limit_caps(limit.rpm, limit.tpm)?;
+            if limit.rpm.is_none() && limit.tpm.is_none() {
+                return Err(invalid_field(
+                    "rate_limit",
+                    "a rate limit needs an rpm cap, a tpm cap or both",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// The store's view of the caps, borrowing from `self`.
+    pub(crate) fn as_new(&self) -> rolter_store::postgres::repo::KeyCaps<'_> {
+        use rolter_store::postgres::repo::{KeyCaps, NewKeyBudget, NewKeyRateLimit};
+        KeyCaps {
+            budget: self.budget.as_ref().map(|b| NewKeyBudget {
+                limit_usd: b.limit_usd.trim(),
+                period: b.period.trim(),
+            }),
+            rate_limit: self.rate_limit.as_ref().map(|l| NewKeyRateLimit {
+                rpm: l.rpm,
+                tpm: l.tpm,
+            }),
+            inherit_from: None,
+        }
+    }
+
+    /// What the audit row says about the caps.
+    pub(crate) fn audit(&self) -> serde_json::Value {
+        serde_json::json!({
+            "limit_usd": self.budget.as_ref().map(|b| b.limit_usd.trim()),
+            "period": self.budget.as_ref().map(|b| b.period.trim()),
+            "rpm": self.rate_limit.as_ref().and_then(|l| l.rpm),
+            "tpm": self.rate_limit.as_ref().and_then(|l| l.tpm),
+        })
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct UpdateBudget {

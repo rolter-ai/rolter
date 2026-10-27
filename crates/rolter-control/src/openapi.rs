@@ -3423,7 +3423,26 @@ fn virtual_key_schemas(p: &Prim) -> Value {
                 "models": string_list,
                 "providers": string_list,
                 "cache": {"type": ["boolean", "null"]},
-                "expires_in_days": {"type": ["integer", "null"], "minimum": 1}
+                "expires_in_days": {"type": ["integer", "null"], "minimum": 1},
+                "budget": {
+                    "type": ["object", "null"],
+                    "description": "a spend cap minted with the key: a budget scoped to the key, written in the same transaction (#1171)",
+                    "required": ["limit_usd"],
+                    "properties": {
+                        "limit_usd": {"type": "string", "description": "decimal, 0 to 99999999.9999"},
+                        "period": {"type": "string", "description": "daily, monthly or total (default monthly)"}
+                    },
+                    "additionalProperties": false
+                },
+                "rate_limit": {
+                    "type": ["object", "null"],
+                    "description": "a throughput cap minted with the key: a rate limit scoped to the key (#1171). At least one of rpm and tpm, each at least 1",
+                    "properties": {
+                        "rpm": {"type": ["integer", "null"], "minimum": 1},
+                        "tpm": {"type": ["integer", "null"], "minimum": 1}
+                    },
+                    "additionalProperties": false
+                }
             },
             "additionalProperties": false
         },
