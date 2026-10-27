@@ -608,9 +608,14 @@ http interface at once and a fake `docker` on `PATH` plays
 signs in (the environment's over `creds.env`'s, one variable at a time), the
 second-factor step, what each broken hop tells the operator, credentials in
 `CLICKHOUSE_URL` reaching ClickHouse as a `Basic` header and never the output,
-and `--team` reaching ClickHouse through compose and not http. A new
+and `--team` reaching ClickHouse through compose and not http. For
+`payload-capture.sh` it covers both modes, that only `payload_capture_enabled`
+changes on the way back, and a refused read and write. A new
 script gets a `cases_<name>` function and one `run_cases <name>` line at the
-bottom. The job also runs `shellcheck` over every
+bottom. The test fails for an `integration/dogfood/*.sh` that has neither (#2693),
+unless it is on the explicit `not_covered_reason` list in the script with its
+reason: today `sheet.sh`, `personas.sh` and `watch.sh`, which need the live stack.
+An entry for a script that no longer exists fails too. The job also runs `shellcheck` over every
 `integration/**/*.sh`; the test alone is the prek hook `dogfood-scripts`.
 
 #### Git fixture scripts clear the hook environment (#3196)
