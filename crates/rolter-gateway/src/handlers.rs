@@ -2674,6 +2674,7 @@ async fn proxy(
                 .provider_queues
                 .forward_json(
                     &snap.queue,
+                    snap.generation,
                     provider,
                     path,
                     forward_body.clone(),
@@ -3442,6 +3443,7 @@ async fn proxy_multipart(
             .provider_queues
             .forward_raw(
                 &snap.queue,
+                snap.generation,
                 provider,
                 path,
                 body.clone(),
@@ -3992,6 +3994,7 @@ async fn forward_variants(
             .provider_queues
             .forward_json(
                 &snap.queue,
+                snap.generation,
                 provider,
                 path,
                 forward_body,

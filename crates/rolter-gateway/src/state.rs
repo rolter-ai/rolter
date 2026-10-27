@@ -246,6 +246,12 @@ pub struct Snapshot {
     pub retry: RetryConfig,
     /// bounded per-provider queue configuration, swapped atomically with routes
     pub queue: rolter_core::QueueConfig,
+    /// which build of the snapshot this is: larger for a snapshot built later,
+    /// so a caller still holding an older one can be told apart from the
+    /// current config (the provider queues replace a queue only for a newer
+    /// generation, #1932). Process-local, unrelated to the control plane's
+    /// config version
+    pub generation: u64,
     /// per-target cooldown policy applied on transient failures
     pub cooldown: CooldownConfig,
     /// active health-probing tuning, read live by the background prober so a
@@ -292,6 +298,9 @@ impl rolter_balancer::scorer::LatencySource for RouteLatency {
         self.loads.latency_snapshot(&self.namespace, n)
     }
 }
+
+/// The generation of the next snapshot built ([`Snapshot::generation`]).
+static NEXT_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 impl Snapshot {
     /// Build a snapshot from a configuration. `loads` is the shared in-flight/
@@ -611,6 +620,7 @@ impl Snapshot {
             rate_limits: Arc::new(config.rate_limits.clone()),
             retry: config.retry.clone(),
             queue: config.queue.clone(),
+            generation: NEXT_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             cooldown: config.cooldown.clone(),
             health: config.health.clone(),
             cache: config.cache.clone(),
