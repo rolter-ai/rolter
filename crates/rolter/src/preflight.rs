@@ -842,12 +842,16 @@ mod tests {
         let findings = migration_findings(LEGACY_CONFIG, &mut out);
 
         assert!(
-            out.contains("version 1 -> 2"),
+            out.contains("version 1 -> 3"),
             "the preview must name both versions: {out}"
         );
         assert!(
             out.contains("readonly"),
             "the preview must say what the step does: {out}"
+        );
+        assert!(
+            out.contains("api_keys"),
+            "the preview must name the credential step too: {out}"
         );
         assert_eq!(
             titles(&findings),
@@ -861,9 +865,9 @@ mod tests {
 
     #[test]
     fn an_up_to_date_config_reports_nothing_pending() {
-        let raw = "schema_version = 2\n";
+        let raw = format!("schema_version = {}\n", rolter_core::CURRENT_SCHEMA_VERSION);
         let mut out = String::new();
-        let findings = migration_findings(raw, &mut out);
+        let findings = migration_findings(&raw, &mut out);
 
         assert!(out.contains("up to date"), "{out}");
         assert!(findings.is_empty(), "{:?}", titles(&findings));
