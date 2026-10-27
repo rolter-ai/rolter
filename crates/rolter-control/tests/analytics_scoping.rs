@@ -761,8 +761,27 @@ async fn provider_health_answers_only_the_providers_of_orgs_the_caller_reads() {
 
     let acme_viewer = seed_user(&pool, Some(acme.org), None, None, "viewer").await;
     let umbrella_viewer = seed_user(&pool, Some(umbrella.org), None, None, "viewer").await;
-    // provider health is org-level: a project role does not reach it
+    // a project role has no org-level read, but reaches the providers its
+    // project's routes target (#1833)
     let acme_project_admin = seed_user(&pool, None, None, Some(acme.project_a), "admin").await;
+    let acme_other_project = seed_user(&pool, None, None, Some(acme.project_b), "viewer").await;
+    let route_id: Uuid =
+        sqlx::query_scalar("insert into routes (project_id, model) values ($1, $2) returning id")
+            .bind(acme.project_a)
+            .bind(format!("hp-model-{suffix}"))
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    sqlx::query(
+        "insert into route_targets (route_id, provider_id) \
+         select $1, id from providers where org_id = $2 and name = $3",
+    )
+    .bind(route_id)
+    .bind(acme.org)
+    .bind(&acme_provider)
+    .execute(&pool)
+    .await
+    .unwrap();
 
     for route in ["uptime", "mttr", "timeline"] {
         assert_eq!(
@@ -782,8 +801,15 @@ async fn provider_health_answers_only_the_providers_of_orgs_the_caller_reads() {
         );
         assert_eq!(
             health_providers(&http, addr, route, &acme_project_admin, &names).await,
+            vec![acme_provider.clone()],
+            "{route} as a member of the project whose route targets the provider"
+        );
+        // a project that does not route to it, and another org's provider,
+        // stay closed
+        assert_eq!(
+            health_providers(&http, addr, route, &acme_other_project, &names).await,
             Vec::<String>::new(),
-            "{route} as an acme project admin"
+            "{route} as a member of a project with no route to the provider"
         );
     }
 }

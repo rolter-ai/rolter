@@ -9,10 +9,10 @@
 # mcp_oauth_sessions, plugins and feature_flags. see the config reference at
 # docs/user-docs/configuration/config-file.mdx
 
-# the schema version this file was written for (current: 2). optional: a file
+# the schema version this file was written for (current: 3). optional: a file
 # without the key is read as the oldest version. `rolter check --migrations`
 # reports a file that is behind, and `rolter config export` writes the stamp.
-# schema_version = 2
+# schema_version = 3
 
 [server]
 host = "0.0.0.0"
@@ -492,6 +492,9 @@ disabled = false # revoke without deleting
 # across the scope chain and against the deployment setting, so a budget can
 # tighten what the deployment asked for but never loosen it:
 # unpriced_policy = "block"   # ignore | warn | block
+# a `user` budget counts every key that person minted (id is the user's uuid);
+# narrow it to one org or project with `within`:
+# within = { org = "org-uuid" }   # or { project = "project-uuid" }
 
 # what to do about traffic the gateway cannot price. a model with no
 # [[model_prices]] row accrues zero spend, so it can never exceed a budget no
@@ -516,6 +519,8 @@ disabled = false # revoke without deleting
 # id = "vk-uuid"
 # rpm = 600            # requests per minute; omit to leave requests uncapped
 # tpm = 150000         # tokens per minute; omit to leave tokens uncapped
+# a `user` limit counts every key that person minted; narrow it with `within`:
+# within = { org = "org-uuid" }   # or { project = "project-uuid" }
 
 # --- upstream retry policy ---
 # on a transient upstream failure (http 408/429/5xx or a connection error) the
@@ -763,6 +768,10 @@ disabled = false # revoke without deleting
 # redact_fields = ["api_key", "authorization", "password", "secret", "token"]
 # models = ["support-agent"]                 # empty means every route
 # virtual_key_ids = ["key-uuid"]             # empty means every virtual key
+# redact_detectors = ["aws_key", "jwt", "openai_key"]   # default: every built-in value detector
+# [[logging.payload_capture.redact_patterns]]           # your own value patterns
+# name = "employee_id"                                  # marker: [redacted:employee_id]
+# pattern = 'EMP-\d{6}'
 
 # Model presets can be declared in two tiers when the control plane uses Postgres.
 # [[models.readonly]] stays config-owned and cannot be edited in the dashboard.

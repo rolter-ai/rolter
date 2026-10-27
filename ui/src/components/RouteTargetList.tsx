@@ -1,5 +1,6 @@
 import { Trans, useTranslation } from "react-i18next";
 
+import { BreakerBadge } from "@/components/BreakerBadge";
 import { StatusDot } from "@/components/screen";
 import { healthPresentation } from "@/components/target-health";
 import { useFormat } from "@/lib/i18n/format";
@@ -37,6 +38,7 @@ export function RouteTargetList({
   const total = targets.reduce((sum, tg) => sum + Math.max(tg.weight, 0), 0) || 1;
   // one template for every line, and fixed widths for the figures, so the
   // columns line up down the list whatever each line holds
+  const breakers = targets.some((tg) => tg.breaker);
   const columns = [
     health && "7px",
     "minmax(0,1fr)",
@@ -44,6 +46,7 @@ export function RouteTargetList({
     "5.5rem",
     weighted && "7.5rem",
     health && "12.5rem",
+    breakers && "max-content",
   ]
     .filter(Boolean)
     .join(" ");
@@ -89,6 +92,11 @@ export function RouteTargetList({
                 {t(healthPresentation(tg.health).labelKey, {
                   uptime: tg.health ? fmt.percent(tg.health.uptime, 2) : "",
                 })}
+              </span>
+            )}
+            {breakers && (
+              <span className="justify-self-end">
+                <BreakerBadge breaker={tg.breaker} />
               </span>
             )}
           </li>

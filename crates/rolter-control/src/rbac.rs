@@ -45,8 +45,8 @@ use subtle::ConstantTimeEq;
 use rolter_auth::Role;
 use rolter_store::postgres::models::{EffectiveGrant, Membership, User};
 use rolter_store::postgres::repo::{
-    AccessProfileRepo, BusinessUnitRepo, CustomerRepo, MembershipRepo, ProjectRepo, SessionRepo,
-    TeamRepo, UserRepo, VirtualKeyRepo,
+    AccessProfileRepo, BusinessUnitRepo, CustomerRepo, MembershipRepo, OrgRepo, ProjectRepo,
+    SessionRepo, TeamRepo, UserRepo, VirtualKeyRepo,
 };
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -152,6 +152,32 @@ impl ScopeChain {
         })
     }
 
+    /// The chain a budget or rate limit is authorized against, which for a
+    /// `user` cap is decided by where it is narrowed to (#1830): a person
+    /// belongs to no org, so the cap is the org's (or project's) to manage only
+    /// through its `within`. A user cap with no `within` counts the person's keys
+    /// everywhere, so it reaches no org and only a superadmin passes.
+    pub(crate) async fn from_cap(
+        pool: &PgPool,
+        scope_type: &str,
+        scope_id: Uuid,
+        within: rolter_store::postgres::repo::Within,
+    ) -> ApiResult<Self> {
+        if scope_type != "user" {
+            return Self::from_scope(pool, scope_type, scope_id).await;
+        }
+        // the person has to exist: the cap's id names nothing else
+        UserRepo(pool).get(scope_id).await?;
+        match (within.project, within.org) {
+            (Some(project), _) => Self::from_project(pool, project).await,
+            (None, Some(org)) => {
+                OrgRepo(pool).get(org).await?;
+                Ok(Self::org(org))
+            }
+            (None, None) => Ok(Self::default()),
+        }
+    }
+
     /// resolve the chain for a budget/rate-limit `{scope_type, scope_id}` body
     pub(crate) async fn from_scope(
         pool: &PgPool,
@@ -179,6 +205,27 @@ impl ScopeChain {
             )))),
         }
     }
+}
+
+/// [`authorize`] for a budget or rate limit, whose chain may be empty (#1830).
+///
+/// A `user` cap that is not narrowed to an org or a project counts the person's
+/// keys everywhere, so no membership reaches it and the matrix has no scope to
+/// resolve a role in. It is the deployment's to manage: only a superadmin
+/// passes.
+pub(crate) async fn authorize_cap(
+    state: &ControlState,
+    principal: &Principal,
+    chain: ScopeChain,
+    requirement: Requirement,
+) -> ApiResult<()> {
+    if chain.org.is_none() && chain.team.is_none() && chain.project.is_none() {
+        return match principal {
+            Principal::Superadmin { .. } => Ok(()),
+            Principal::User(_) => Err(ApiError::Forbidden),
+        };
+    }
+    authorize(state, principal, chain, requirement).await
 }
 
 /// every built-in role, weakest first. The one place the set is enumerated, so

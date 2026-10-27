@@ -44,13 +44,30 @@ The migration chain selects steps with `MIGRATIONS.iter().filter(|m| m.from >= f
 
 Emitting both tiers is also what keeps the export lossless. The flat array _is_ the readonly tier — it cannot express `providers.default` at all — so exporting a deployment with seeded defaults used to drop them silently. `the_default_tier_round_trips` covers that direction.
 
+## Budgets and rate limits (#1312)
+
+`BudgetConfig::id` is a database id, which the one identity rule of the format
+forbids, so the export rewrites it: `config_export::load_scope_refs` reads the
+names (`ScopeRefs`) and `render_caps` writes `id = "acme/platform"`-style
+references, with `export_document` as the single entry both the endpoint and the
+CLI call. `seed::resolve_cap_scope` is the reverse lookup. The file reuses the
+existing `scope` / `id` keys, so it is still a valid `GatewayConfig`.
+
+The importer matches a file entry to a row by scope (plus window for a budget)
+and, when several rows share it, by position oldest-first, so two caps on one
+scope re-import as two. Period spelling is left as the row has it (`30d` and
+`monthly` are one window), which is also why an unchanged import bumps nothing.
+A reference that does not resolve, or is a UUID, is skipped with a warning; a
+value no column or gateway could hold fails the whole import before any write.
+`ScopeRefs::insert` drops a name containing `/` rather than export an ambiguous
+path.
+
 ## Why some tables are out
 
-- **Budgets and rate limits** are keyed by the database id of the org, team,
-  project or virtual key they cap (`BudgetConfig::id`). A file carrying those
-  ids is not portable, which contradicts the one identity rule the format has:
-  slug or public model name, never a database id. Exporting them needs a
-  scope-slug resolution layer on both sides first.
+- **Caps on a virtual key or a person** (`BudgetScope::Key`, `User`) have no
+  identity that survives a move: a key is a digest and its name is not unique, a
+  person's email would put accounts in a committed file. They are counted in a
+  trailing comment rather than written (#1312).
 - **Virtual keys** exist in the store only as a one-way digest.
 - **Prompt-template activation scopes** are database ids too. Only the
   route-model bindings survive; an org-wide template exports with no `routes`
@@ -60,8 +77,8 @@ Emitting both tiers is also what keeps the export lossless. The flat array _is_ 
 
 `ConfigStore::load` returns providers with `api_key` **decrypted** — the gateway
 needs the plaintext, so the snapshot path has to carry it. The exporter
-therefore renders provider credentials from `api_key_env` only and never reads
-`api_key` at all. `config_export::tests::a_decrypted_provider_key_never_reaches_the_document`
+therefore renders provider credentials from `api_key_env_name()` only, as an
+`api_keys = [{ env = "..." }]` entry (#1720), and never reads `api_key` at all. `config_export::tests::a_decrypted_provider_key_never_reaches_the_document`
 pins that against the emitted bytes rather than by review.
 
 A provider with no `api_key_env` gets a comment where the credential would be,
@@ -86,5 +103,11 @@ into `provider_keys`.
 `providers.api_key_env` is a single column and `provider_keys` holds one sealed
 row per provider, so a multi-key provider is not representable in the store. The
 importer keeps the first entry naming an `env` and warns with the count it
-dropped rather than failing the import; #1720 covers normalising the spellings
-and must not imply that the array itself round-trips.
+dropped rather than failing the import. Normalising the spellings (#1720) does not
+change that: the export writes the plural form, but the array itself does not
+round-trip.
+
+The export also writes the proxy pool as `egress_proxies` (`egress_proxy_pool()`),
+so a provider stored with the legacy single `egress_proxy` is rewritten into the
+plural column the first time its export is re-imported; both resolve to the same
+pool.

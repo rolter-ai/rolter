@@ -14,8 +14,8 @@ use rolter_core::{
     McpAuthKind, McpOAuthSessionConfig, McpServerConfig, ModelPolicy, ModelPriceConfig, ModelRoute,
     ParamPolicy, PluginInstanceConfig, PluginStage, PluginsConfig, PromptTemplate,
     PromptTemplateActivationScope, PromptTemplatesConfig, ProviderConfig, ProviderGroupConfig,
-    ProviderKind, RateLimitConfig, Result, Target, TemplateVariable, Tenancy, UnpricedPolicy,
-    VirtualKeyRecord, WebhookAuth, WebhookStage,
+    ProviderKind, RateLimitConfig, Result, ScopeWithin, Target, TemplateVariable, Tenancy,
+    UnpricedPolicy, VirtualKeyRecord, WebhookAuth, WebhookStage,
 };
 use rust_decimal::Decimal;
 use sqlx::postgres::PgPoolOptions;
@@ -762,7 +762,8 @@ impl PostgresConfigStore {
     async fn load_logging_settings(&self) -> Result<LoggingSettings> {
         sqlx::query_as(
             "select sample_rate, payload_capture_enabled, payload_capture_max_bytes, \
-                    payload_capture_redact_fields, payload_capture_models, payload_capture_virtual_key_ids, \
+                    payload_capture_redact_fields, payload_capture_redact_detectors, \
+                    payload_capture_redact_patterns, payload_capture_models, payload_capture_virtual_key_ids, \
                     retention_days, payload_retention_hours, ui_events, updated_at \
              from logging_settings where id = true",
         )
@@ -1212,7 +1213,7 @@ impl PostgresConfigStore {
             // String) or sqlx errors and the whole snapshot 500s — freezing every
             // polling gateway on its last config the moment any budget exists
             "select id, scope_type, scope_id, limit_usd::text as limit_usd, period,
-                    unpriced_policy, created_at
+                    unpriced_policy, created_at, within_org_id, within_project_id
              from budgets order by created_at",
         )
         .fetch_all(&self.pool)
@@ -1228,6 +1229,7 @@ impl PostgresConfigStore {
                     "virtual_key" => BudgetScope::Key,
                     "business_unit" => BudgetScope::BusinessUnit,
                     "customer" => BudgetScope::Customer,
+                    "user" => BudgetScope::User,
                     // unknown scope: skip rather than mis-enforce
                     _ => return None,
                 };
@@ -1241,6 +1243,7 @@ impl PostgresConfigStore {
                     limit_usd: r.limit_usd.parse().unwrap_or(Decimal::MAX),
                     period: parse_period(&r.period),
                     unpriced_policy: r.unpriced_policy.as_deref().and_then(parse_unpriced_policy),
+                    within: scope_within(r.within_org_id, r.within_project_id),
                 })
             })
             .collect())
@@ -1248,7 +1251,7 @@ impl PostgresConfigStore {
 
     async fn load_rate_limits(&self) -> Result<Vec<RateLimitConfig>> {
         let rows: Vec<RateLimit> = sqlx::query_as(
-            "select id, scope_type, scope_id, rpm, tpm, created_at
+            "select id, scope_type, scope_id, rpm, tpm, created_at, within_org_id, within_project_id
              from rate_limits order by created_at",
         )
         .fetch_all(&self.pool)
@@ -1264,6 +1267,7 @@ impl PostgresConfigStore {
                     "virtual_key" => BudgetScope::Key,
                     "business_unit" => BudgetScope::BusinessUnit,
                     "customer" => BudgetScope::Customer,
+                    "user" => BudgetScope::User,
                     // unknown scope: skip rather than mis-enforce
                     _ => return None,
                 };
@@ -1273,6 +1277,7 @@ impl PostgresConfigStore {
                     // non-positive caps are meaningless; treat them as unset
                     rpm: r.rpm.filter(|v| *v > 0).map(|v| v as u32),
                     tpm: r.tpm.filter(|v| *v > 0).map(|v| v as u32),
+                    within: scope_within(r.within_org_id, r.within_project_id),
                 })
             })
             .collect())
@@ -1746,6 +1751,16 @@ fn price_from_row(row: &ModelPrice) -> std::result::Result<ModelPriceConfig, Str
 /// one row, and moving an existing budget onto another window is not a guess
 /// to make on the operator's behalf. [`unrecognised_budget_period`] is what
 /// says it happened.
+/// The place a `user` cap is narrowed to, as the gateway matches it (#1830).
+fn scope_within(org: Option<Uuid>, project: Option<Uuid>) -> Option<ScopeWithin> {
+    match (org, project) {
+        (Some(org), None) => Some(ScopeWithin::Org(org.to_string())),
+        (None, Some(project)) => Some(ScopeWithin::Project(project.to_string())),
+        // the table's check constraint refuses both, so this is "neither"
+        _ => None,
+    }
+}
+
 fn parse_period(period: &str) -> BudgetPeriod {
     BudgetPeriod::parse(period).unwrap_or(BudgetPeriod::Monthly)
 }
@@ -1939,7 +1954,7 @@ impl ConfigStore for PostgresConfigStore {
         use crate::{ConfigProblem, ProblemOwner};
         let budgets: Vec<Budget> = sqlx::query_as(
             "select id, scope_type, scope_id, limit_usd::text as limit_usd, period,
-                    unpriced_policy, created_at
+                    unpriced_policy, created_at, within_org_id, within_project_id
              from budgets order by created_at",
         )
         .fetch_all(&self.pool)
@@ -3459,6 +3474,8 @@ mod tests {
                 payload_capture_enabled: false,
                 payload_capture_max_bytes: 32768,
                 payload_capture_redact_fields: &[],
+                payload_capture_redact_detectors: None,
+                payload_capture_redact_patterns: None,
                 payload_capture_models: &[],
                 payload_capture_virtual_key_ids: &[],
                 retention_days: 90,
@@ -3474,6 +3491,8 @@ mod tests {
                 payload_capture_enabled: false,
                 payload_capture_max_bytes: 32768,
                 payload_capture_redact_fields: &[],
+                payload_capture_redact_detectors: None,
+                payload_capture_redact_patterns: None,
                 payload_capture_models: &[],
                 payload_capture_virtual_key_ids: &[],
                 retention_days: 90,
@@ -3483,6 +3502,43 @@ mod tests {
             .await
             .unwrap();
         assert!(row.ui_events);
+
+        // the value-redaction policy (#1835) defaults to every built-in
+        // detector, is replaced when given, kept when not, and reaches the
+        // snapshot through the same trigger as the other columns
+        assert_eq!(
+            row.payload_capture_redact_detectors,
+            rolter_core::payload_redaction::detector_names()
+        );
+        let patterns = [rolter_core::payload_redaction::RedactPattern {
+            name: "employee_id".to_string(),
+            pattern: r"EMP-\d{6}".to_string(),
+        }];
+        let detectors = ["aws_key".to_string()];
+        let before = current_version(&pool).await.unwrap();
+        let update = |detectors, patterns| repo::LoggingSettingsUpdate {
+            sample_rate: 1.0,
+            payload_capture_enabled: true,
+            payload_capture_max_bytes: 32768,
+            payload_capture_redact_fields: &[],
+            payload_capture_redact_detectors: detectors,
+            payload_capture_redact_patterns: patterns,
+            payload_capture_models: &[],
+            payload_capture_virtual_key_ids: &[],
+            retention_days: 90,
+            payload_retention_hours: 168,
+            ui_events: None,
+        };
+        repo.update(update(Some(&detectors[..]), Some(&patterns[..])))
+            .await
+            .unwrap();
+        assert!(current_version(&pool).await.unwrap() > before);
+        let row = repo.update(update(None, None)).await.unwrap();
+        assert_eq!(row.payload_capture_redact_detectors, detectors);
+        assert_eq!(row.payload_capture_redact_patterns.0, patterns);
+        let capture = store.load().await.unwrap().logging.payload_capture;
+        assert_eq!(capture.redact_detectors, detectors);
+        assert_eq!(capture.redact_patterns, patterns);
     }
 
     #[tokio::test]

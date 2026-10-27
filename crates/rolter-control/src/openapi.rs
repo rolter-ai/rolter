@@ -163,6 +163,9 @@ struct Op {
     conflict: Option<&'static str>,
     /// a ClickHouse-backed read, which can answer `502` or `504`
     clickhouse: bool,
+    /// seals a credential with `ROLTER_KEK`, so it can answer `503`
+    /// `kek_unavailable` on a control plane that has none
+    needs_kek: bool,
 }
 
 impl Op {
@@ -185,6 +188,7 @@ impl Op {
             see_other: None,
             conflict: None,
             clickhouse: false,
+            needs_kek: false,
         }
     }
 
@@ -236,6 +240,14 @@ impl Op {
 
     fn conflict(mut self, description: &'static str) -> Self {
         self.conflict = Some(description);
+        self
+    }
+
+    /// Mark an operation that seals a credential with `ROLTER_KEK`: without the
+    /// key it answers `503` `kek_unavailable` rather than a field-validation
+    /// `400` (#3218).
+    fn needs_kek(mut self) -> Self {
+        self.needs_kek = true;
         self
     }
 
@@ -296,6 +308,15 @@ impl Op {
             responses.insert(
                 "409".into(),
                 json!({"$ref": "#/components/responses/Error", "description": description}),
+            );
+        }
+        if self.needs_kek {
+            responses.insert(
+                "503".into(),
+                json!({
+                    "$ref": "#/components/responses/Error",
+                    "description": "`ROLTER_KEK` is not configured on the control plane, so the credential cannot be sealed (`kek_unavailable`)"
+                }),
             );
         }
         if self.clickhouse {
@@ -366,6 +387,15 @@ const ROUTE_INCLUDE_QUERY: &[QueryParam] = &[QueryParam::new(
     "string",
     "comma-separated extras to embed in each route: `targets` and `complexity`; omitted, the \
      list carries neither, and a value outside those two is a 400",
+)];
+
+/// The access-profile list's query string: what to embed beside each profile.
+const PROFILE_INCLUDE_QUERY: &[QueryParam] = &[QueryParam::new(
+    "include",
+    "string",
+    "comma-separated extras to embed in each profile, as the detail returns them: `roles`, \
+     `assignments` and `policy`; omitted, the list carries none, and a value outside those \
+     three is a 400",
 )];
 
 /// The provider test's query string: the model to look up.
@@ -721,8 +751,9 @@ fn tagged(tag: &'static str, ops: Vec<Op>) -> Vec<Op> {
     ops.into_iter().map(|op| Op { tag, ..op }).collect()
 }
 
-/// Whether the document publishes `method path`; the deprecation registry is
-/// held to this so it cannot name an operation that does not exist.
+/// Whether the document publishes `method path` (the OpenAPI path template).
+/// The deprecation registry is held to this so it cannot name an operation that
+/// does not exist, and the seed lint so a renamed route it names fails a test.
 #[cfg(test)]
 pub(crate) fn documents_operation(method: &str, path: &str) -> bool {
     operations()
@@ -829,6 +860,11 @@ fn operations() -> Vec<Op> {
                 "ingestAdaptiveTelemetry",
                 "Accept adaptive-routing samples pushed by a gateway",
             ),
+            Op::post(
+                "/internal/breaker-state",
+                "ingestBreakerState",
+                "Accept circuit-breaker state pushed by a gateway",
+            ),
         ],
     ));
 
@@ -854,6 +890,7 @@ fn operations() -> Vec<Op> {
                 "beginSignInMfaEnrolment",
                 "Issue a TOTP secret against an enrolment challenge (shown once)",
             )
+            .needs_kek()
             .public(),
             Op::post(
                 "/api/v1/auth/mfa/confirm",
@@ -1148,8 +1185,9 @@ fn operations() -> Vec<Op> {
             Op::get(
                 "/api/v1/orgs/{org_id}/access-profiles",
                 "listAccessProfiles",
-                "List access profiles",
-            ),
+                "List access profiles; `include` embeds each profile's roles, assignments and policy so a screen needs one request, not one per profile",
+            )
+            .query(PROFILE_INCLUDE_QUERY),
             Op::post(
                 "/api/v1/orgs/{org_id}/access-profiles",
                 "createAccessProfile",
@@ -1213,6 +1251,7 @@ fn operations() -> Vec<Op> {
                 "createProvider",
                 "Register an upstream provider",
             )
+            .needs_kek()
             .body(Payload::Ref("CreateProvider"))
             .ok(Payload::Ref("Provider")),
             Op::put(
@@ -1220,6 +1259,7 @@ fn operations() -> Vec<Op> {
                 "updateProvider",
                 "Update an upstream provider",
             )
+            .needs_kek()
             .body(Payload::Ref("UpdateProvider"))
             .ok(Payload::Ref("Provider")),
             Op::delete(
@@ -1440,6 +1480,11 @@ fn operations() -> Vec<Op> {
             )
             .clickhouse_read()
             .query(WINDOW_QUERY),
+            Op::get(
+                "/api/v1/me/budgets",
+                "getMyBudgets",
+                "The per-user budgets and rate limits that count the calling account's keys, with the spend so far",
+            ),
             Op::patch(
                 "/api/v1/me/profile",
                 "updateMyProfile",
@@ -1490,7 +1535,8 @@ fn operations() -> Vec<Op> {
                 "/api/v1/me/mfa/enroll",
                 "beginMyMfaEnrolment",
                 "Issue a TOTP secret for the calling account (shown once)",
-            ),
+            )
+            .needs_kek(),
             Op::post(
                 "/api/v1/me/mfa/confirm",
                 "confirmMyMfaEnrolment",
@@ -1525,9 +1571,15 @@ fn operations() -> Vec<Op> {
             Op::get(
                 "/api/v1/orgs/{org_id}/budgets",
                 "listOrgBudgets",
-                "List every spend budget in this organization the caller may read, at any scope",
+                "List every spend budget in this organization the caller may read, at any scope; a key's budget carries `scope_name`",
             )
             .ok(Payload::List("Budget")),
+            Op::get(
+                "/api/v1/orgs/{org_id}/budgets/spend",
+                "getOrgBudgetSpend",
+                "Spend so far against every budget in this organization the caller may read, from the gateway's Redis counters",
+            )
+            .ok(Payload::Ref("BudgetSpendReport")),
             Op::post("/api/v1/budgets", "createBudget", "Create a spend budget")
                 .body(Payload::Ref("CreateBudget"))
                 .ok(Payload::Ref("Budget")),
@@ -1831,12 +1883,14 @@ fn operations() -> Vec<Op> {
                 "/api/v1/orgs/{org_id}/mcp-servers",
                 "createMcpServer",
                 "Register an MCP server",
-            ),
+            )
+            .needs_kek(),
             Op::patch(
                 "/api/v1/mcp-servers/{id}",
                 "updateMcpServer",
                 "Update a registered MCP server",
-            ),
+            )
+            .needs_kek(),
             Op::delete(
                 "/api/v1/mcp-servers/{id}",
                 "deleteMcpServer",
@@ -1846,7 +1900,8 @@ fn operations() -> Vec<Op> {
                 "/api/v1/mcp-servers/{id}/auth",
                 "setMcpServerAuth",
                 "Set how rolter authenticates to an MCP server",
-            ),
+            )
+            .needs_kek(),
             Op::get(
                 "/api/v1/mcp-servers/{id}/oauth-client",
                 "getMcpOauthClient",
@@ -1856,7 +1911,8 @@ fn operations() -> Vec<Op> {
                 "/api/v1/mcp-servers/{id}/oauth-client",
                 "setMcpOauthClient",
                 "Replace an MCP server's OAuth client",
-            ),
+            )
+            .needs_kek(),
             Op::post(
                 "/api/v1/mcp-servers/{id}/oauth/authorize",
                 "startMcpAuthorize",
@@ -1981,12 +2037,14 @@ fn operations() -> Vec<Op> {
                 "/api/v1/alert-channels",
                 "createAlertChannel",
                 "Create an alert channel",
-            ),
+            )
+            .needs_kek(),
             Op::put(
                 "/api/v1/alert-channels/{id}",
                 "updateAlertChannel",
                 "Update an alert channel",
-            ),
+            )
+            .needs_kek(),
             Op::delete(
                 "/api/v1/alert-channels/{id}",
                 "deleteAlertChannel",
@@ -2158,6 +2216,11 @@ fn operations() -> Vec<Op> {
                 "getAdaptiveTelemetry",
                 "Samples the gateways have pushed back",
             ),
+            Op::get(
+                "/api/v1/breaker-state",
+                "getBreakerState",
+                "Circuit-breaker state of every target, across the gateway fleet",
+            ),
         ],
     ));
 
@@ -2168,6 +2231,11 @@ fn operations() -> Vec<Op> {
                 "/api/v1/cluster/nodes",
                 "listClusterNodes",
                 "List gateway nodes that have registered",
+            ),
+            Op::get(
+                "/api/v1/cluster/summary",
+                "getClusterSummary",
+                "Counts of live, stale and lagging gateways, with no node identities",
             ),
             Op::put(
                 "/api/v1/cluster/nodes/{id}/drain",
@@ -2194,12 +2262,14 @@ fn operations() -> Vec<Op> {
                 "/api/v1/connectors",
                 "createConnector",
                 "Create an observability connector",
-            ),
+            )
+            .needs_kek(),
             Op::put(
                 "/api/v1/connectors/{id}",
                 "updateConnector",
                 "Update an observability connector (managed_auth_secret: omit to keep, null or blank to remove)",
-            ),
+            )
+            .needs_kek(),
             Op::delete(
                 "/api/v1/connectors/{id}",
                 "deleteConnector",
@@ -2261,6 +2331,26 @@ fn operations() -> Vec<Op> {
                 "/api/v1/logging-settings",
                 "updateLoggingSettings",
                 "Replace the request-logging, retention and UX-event settings",
+            ),
+            Op::get(
+                "/api/v1/log-erasures",
+                "listLogErasures",
+                "List recent subject-scoped log erasures",
+            ),
+            Op::post(
+                "/api/v1/log-erasures",
+                "createLogErasure",
+                "Erase one virtual key's, user's, organization's or single request's logs and captured payloads",
+            ),
+            Op::get(
+                "/api/v1/log-erasures/{id}",
+                "getLogErasure",
+                "Read an erasure, settling it once ClickHouse reports its mutations done",
+            ),
+            Op::post(
+                "/api/v1/logging-settings/redaction-preview",
+                "previewPayloadRedaction",
+                "Dry-run the payload redaction policy against a pasted sample; stores and logs nothing",
             ),
             Op::get(
                 "/api/v1/client-settings",
@@ -2355,12 +2445,14 @@ fn operations() -> Vec<Op> {
                 "/api/v1/orgs/{org_id}/sso-providers",
                 "createSsoProvider",
                 "Register an SSO provider",
-            ),
+            )
+            .needs_kek(),
             Op::put(
                 "/api/v1/sso-providers/{id}",
                 "updateSsoProvider",
                 "Update an SSO provider in place",
-            ),
+            )
+            .needs_kek(),
             Op::delete(
                 "/api/v1/sso-providers/{id}",
                 "deleteSsoProvider",
@@ -3448,7 +3540,26 @@ fn virtual_key_schemas(p: &Prim) -> Value {
                 "models": string_list,
                 "providers": string_list,
                 "cache": {"type": ["boolean", "null"]},
-                "expires_in_days": {"type": ["integer", "null"], "minimum": 1}
+                "expires_in_days": {"type": ["integer", "null"], "minimum": 1},
+                "budget": {
+                    "type": ["object", "null"],
+                    "description": "a spend cap minted with the key: a budget scoped to the key, written in the same transaction (#1171)",
+                    "required": ["limit_usd"],
+                    "properties": {
+                        "limit_usd": {"type": "string", "description": "decimal, 0 to 99999999.9999"},
+                        "period": {"type": "string", "description": "daily, monthly or total (default monthly)"}
+                    },
+                    "additionalProperties": false
+                },
+                "rate_limit": {
+                    "type": ["object", "null"],
+                    "description": "a throughput cap minted with the key: a rate limit scoped to the key (#1171). At least one of rpm and tpm, each at least 1",
+                    "properties": {
+                        "rpm": {"type": ["integer", "null"], "minimum": 1},
+                        "tpm": {"type": ["integer", "null"], "minimum": 1}
+                    },
+                    "additionalProperties": false
+                }
             },
             "additionalProperties": false
         },
@@ -3488,7 +3599,7 @@ fn governance_schemas(p: &Prim) -> Value {
     // the governance dimensions a key's spend rolls up to (#539)
     let scope_type = json!({
         "type": "string",
-        "enum": ["org", "team", "project", "virtual_key", "business_unit", "customer"]
+        "enum": ["org", "team", "project", "virtual_key", "business_unit", "customer", "user"]
     });
     // what `validate_period` in `crud/` accepts, read off the same table the
     // snapshot loader uses, so the documented set cannot drift from it (#1902)
@@ -3515,7 +3626,10 @@ fn governance_schemas(p: &Prim) -> Value {
                     "description": "as stored. A budget written before the period was checked may hold a value the gateway does not recognise; it is enforced as monthly and listed by GET /api/v1/config/problems"
                 },
                 "unpriced_policy": {"type": ["string", "null"], "enum": ["ignore", "warn", "block", null]},
-                "created_at": timestamp
+                "created_at": timestamp,
+                "within_org_id": {"type": ["string", "null"], "format": "uuid", "description": "a user cap only: counts the keys the person minted in this org"},
+                "within_project_id": {"type": ["string", "null"], "format": "uuid", "description": "a user cap only: counts the keys the person minted in this project"},
+                "scope_name": {"type": ["string", "null"], "description": "the org-wide list only: the name (else the prefix) of the key a virtual_key budget caps"}
             }
         },
         "BudgetSpendReport": {
@@ -3554,7 +3668,9 @@ fn governance_schemas(p: &Prim) -> Value {
                     "description": period["description"],
                     "default": "30d"
                 },
-                "unpriced_policy": {"type": ["string", "null"], "enum": ["ignore", "warn", "block", null]}
+                "unpriced_policy": {"type": ["string", "null"], "enum": ["ignore", "warn", "block", null]},
+                "within_org_id": {"type": ["string", "null"], "format": "uuid", "description": "a user cap only: counts the keys the person minted in this org"},
+                "within_project_id": {"type": ["string", "null"], "format": "uuid", "description": "a user cap only: counts the keys the person minted in this project"}
             },
             "additionalProperties": false
         },
@@ -3582,7 +3698,10 @@ fn governance_schemas(p: &Prim) -> Value {
                 "scope_id": uuid,
                 "rpm": {"type": ["integer", "null"]},
                 "tpm": {"type": ["integer", "null"]},
-                "created_at": timestamp
+                "created_at": timestamp,
+                "within_org_id": {"type": ["string", "null"], "format": "uuid", "description": "a user cap only: counts the keys the person minted in this org"},
+                "within_project_id": {"type": ["string", "null"], "format": "uuid", "description": "a user cap only: counts the keys the person minted in this project"},
+                "scope_name": {"type": ["string", "null"], "description": "the org-wide list only: the name (else the prefix) of the key a virtual_key limit caps"}
             }
         },
         "CreateRateLimit": {
@@ -3593,7 +3712,9 @@ fn governance_schemas(p: &Prim) -> Value {
                 "scope_type": scope_type,
                 "scope_id": uuid,
                 "rpm": {"type": ["integer", "null"], "minimum": 1},
-                "tpm": {"type": ["integer", "null"], "minimum": 1}
+                "tpm": {"type": ["integer", "null"], "minimum": 1},
+                "within_org_id": {"type": ["string", "null"], "format": "uuid", "description": "a user cap only: counts the keys the person minted in this org"},
+                "within_project_id": {"type": ["string", "null"], "format": "uuid", "description": "a user cap only: counts the keys the person minted in this project"}
             },
             "additionalProperties": false
         },
@@ -4433,6 +4554,48 @@ mod tests {
             assert!(names.contains("cursor"), "{path}: {names:?}");
             assert!(names.contains("limit"), "{path}: {names:?}");
         }
+    }
+
+    /// The operations that seal a credential with `ROLTER_KEK` document the
+    /// `503` `kek_unavailable` refusal, and no other operation claims it (#3218).
+    #[test]
+    fn the_credential_sealing_operations_document_the_kek_refusal() {
+        let doc = document();
+        let sealing = [
+            ("post", "/api/v1/orgs/{org_id}/providers"),
+            ("put", "/api/v1/providers/{id}"),
+            ("post", "/api/v1/orgs/{org_id}/mcp-servers"),
+            ("patch", "/api/v1/mcp-servers/{id}"),
+            ("put", "/api/v1/mcp-servers/{id}/auth"),
+            ("put", "/api/v1/mcp-servers/{id}/oauth-client"),
+            ("post", "/api/v1/alert-channels"),
+            ("put", "/api/v1/alert-channels/{id}"),
+            ("post", "/api/v1/connectors"),
+            ("put", "/api/v1/connectors/{id}"),
+            ("post", "/api/v1/orgs/{org_id}/sso-providers"),
+            ("put", "/api/v1/sso-providers/{id}"),
+            ("post", "/api/v1/me/mfa/enroll"),
+            ("post", "/api/v1/auth/mfa/enroll"),
+        ];
+        for (method, path) in sealing {
+            assert!(
+                doc["paths"][path][method]["responses"]["503"].is_object(),
+                "{method} {path} seals a credential, so it must document the 503"
+            );
+        }
+        let mut documented = 0;
+        for (path, item) in doc["paths"].as_object().expect("paths") {
+            for (method, op) in item.as_object().into_iter().flatten() {
+                if op["responses"]["503"].is_object() {
+                    documented += 1;
+                    assert!(
+                        sealing.contains(&(method.as_str(), path.as_str())),
+                        "{method} {path} documents a 503 but is not a sealing operation"
+                    );
+                }
+            }
+        }
+        assert_eq!(documented, sealing.len());
     }
 
     #[test]

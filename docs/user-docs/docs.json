@@ -127,6 +127,7 @@
               "observability/tracing",
               "observability/what-to-look-at",
               "observability/log-settings",
+              "observability/log-erasure",
               "observability/connectors",
               "observability/alerting"
             ]
@@ -165,6 +166,8 @@
               "api/mcp",
               "api/models",
               "api/health-and-metrics",
+              "api/breaker-state",
+              "api/cluster-summary",
               "api/stability",
               "api/config-problems",
               "api/ui-events",

@@ -279,7 +279,7 @@ pub struct RequestLog {
     #[serde(skip)]
     pub payload_max_bytes: usize,
     #[serde(skip)]
-    pub payload_redact_fields: Vec<String>,
+    pub payload_redactor: Arc<rolter_core::payload_redaction::PayloadRedactor>,
     #[serde(skip)]
     pub sample_rate: f64,
     /// how many real requests this stored row stands for: `1 / sample_rate`
@@ -339,56 +339,27 @@ impl Default for RequestLog {
             response_payload: String::new(),
             capture_payloads: false,
             payload_max_bytes: 0,
-            payload_redact_fields: Vec::new(),
+            payload_redactor: Arc::default(),
             sample_rate: 1.0,
             sample_weight: 1.0,
         }
     }
 }
 
-/// Serialize a payload safely for the short-retention capture store. JSON is
-/// redacted before truncation so a large secret can never escape at the edge of
-/// the retained prefix; non-JSON bodies are retained as lossy UTF-8 text.
-pub fn capture_payload(body: &[u8], max_bytes: usize, redact_fields: &[String]) -> String {
-    if max_bytes == 0 || body.is_empty() {
-        return String::new();
-    }
-    let mut rendered = match serde_json::from_slice::<Value>(body) {
-        Ok(mut json) => {
-            redact_json(&mut json, redact_fields);
-            serde_json::to_string(&json).unwrap_or_else(|_| String::new())
-        }
-        Err(_) => String::from_utf8_lossy(body).into_owned(),
-    };
-    if rendered.len() > max_bytes {
-        let end = rendered.floor_char_boundary(max_bytes);
-        rendered.truncate(end);
-        rendered.push_str("…[truncated]");
-    }
-    rendered
-}
-
-fn redact_json(value: &mut Value, redact_fields: &[String]) {
-    match value {
-        Value::Object(object) => {
-            for (key, value) in object.iter_mut() {
-                if redact_fields
-                    .iter()
-                    .any(|field| field.eq_ignore_ascii_case(key))
-                {
-                    *value = Value::String("[REDACTED]".to_string());
-                } else {
-                    redact_json(value, redact_fields);
-                }
-            }
-        }
-        Value::Array(values) => {
-            for value in values {
-                redact_json(value, redact_fields);
-            }
-        }
-        _ => {}
-    }
+/// Serialize a payload safely for the short-retention capture store. Both the
+/// key rule and the value detectors run before truncation, so a large secret can
+/// never escape at the edge of the retained prefix; non-JSON bodies are scanned
+/// as lossy UTF-8 text (#1835).
+pub fn capture_payload(
+    body: &[u8],
+    max_bytes: usize,
+    redactor: &rolter_core::payload_redaction::PayloadRedactor,
+) -> String {
+    redactor.capture(
+        body,
+        max_bytes,
+        &mut rolter_core::payload_redaction::RedactionReport::default(),
+    )
 }
 
 /// The `model` the upstream reported on its response, for
@@ -1110,7 +1081,7 @@ impl UsageLoggingStream {
         }
         if log.capture_payloads {
             log.response_payload =
-                capture_payload(&self.buf, log.payload_max_bytes, &log.payload_redact_fields);
+                capture_payload(&self.buf, log.payload_max_bytes, &log.payload_redactor);
         }
         self.buffer_pool.recycle(std::mem::take(&mut self.buf));
         log.prompt_tokens = usage.prompt;
@@ -1705,6 +1676,9 @@ struct PayloadLog<'a> {
     /// the tenancy of the row, so the join can require it on both sides
     org_id: &'a str,
     project_id: &'a str,
+    /// the key that sent the request, so one subject's bodies can be erased by
+    /// their own column (#1085)
+    virtual_key_id: &'a str,
     request_payload: &'a str,
     response_payload: &'a str,
 }
@@ -1717,6 +1691,7 @@ impl<'a> From<&'a RequestLog> for PayloadLog<'a> {
             log_id: log.log_id,
             org_id: &log.org_id,
             project_id: &log.project_id,
+            virtual_key_id: &log.virtual_key_id,
             request_payload: &log.request_payload,
             response_payload: &log.response_payload,
         }
@@ -1840,10 +1815,11 @@ mod tests {
     #[test]
     fn payload_capture_redacts_before_truncation() {
         let fields = vec!["token".to_string(), "password".to_string()];
+        let redactor = rolter_core::payload_redaction::PayloadRedactor::fields_only(&fields);
         let captured = capture_payload(
             br#"{"token":"secret-value","nested":{"password":"also-secret"},"text":"hello"}"#,
             64,
-            &fields,
+            &redactor,
         );
         assert!(!captured.contains("secret-value"));
         assert!(!captured.contains("also-secret"));
@@ -1904,11 +1880,13 @@ mod tests {
             request_id: "shared-id".to_string(),
             org_id: "org-1".to_string(),
             project_id: "project-1".to_string(),
+            virtual_key_id: "key-1".to_string(),
             request_payload: "{}".to_string(),
             ..Default::default()
         };
         let log: serde_json::Value = serde_json::to_value(&rec).unwrap();
         let payload: serde_json::Value = serde_json::to_value(PayloadLog::from(&rec)).unwrap();
+        assert_eq!(payload["virtual_key_id"], log["virtual_key_id"]);
         assert_eq!(log["log_id"], rec.log_id.to_string());
         assert_eq!(payload["log_id"], log["log_id"]);
         assert_eq!(payload["org_id"], "org-1");

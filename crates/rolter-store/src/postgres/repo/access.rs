@@ -258,6 +258,34 @@ impl AccessProfileRepo<'_> {
         .map_err(store_err)
     }
 
+    /// The composition of every profile in `org_id`, in one read, ordered by
+    /// profile and then as [`AccessProfileRepo::list_roles`] orders one profile.
+    /// The profiles list embeds it (`?include=roles`) so a screen of N profiles
+    /// costs one query rather than N.
+    pub async fn list_org_roles(&self, org_id: Uuid) -> Result<Vec<AccessProfileRole>> {
+        sqlx::query_as(
+            "select r.id, r.profile_id, r.role_id, r.org_id, r.team_id, r.project_id, r.created_at \
+             from access_profile_roles r join access_profiles p on p.id = r.profile_id \
+             where p.org_id = $1 order by r.profile_id, r.created_at",
+        )
+        .bind(org_id)
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)
+    }
+
+    /// The policy of every profile in `org_id` that has one, in one read.
+    pub async fn list_org_policies(&self, org_id: Uuid) -> Result<Vec<AccessProfilePolicy>> {
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "select {ACCESS_PROFILE_POLICY_COLUMNS} from access_profile_policies \
+             where profile_id in (select id from access_profiles where org_id = $1)"
+        )))
+        .bind(org_id)
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)
+    }
+
     /// Replace a profile's composition in one transaction, for the same reason
     /// [`CustomRoleRepo::set_grants`] does.
     pub async fn set_roles(&self, profile_id: Uuid, roles: &[ProfileRoleAssignment]) -> Result<()> {

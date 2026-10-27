@@ -417,6 +417,19 @@ const CAPABILITIES: &[Capability] = &[
         delete: NA,
         action_scopes: NONE,
     },
+    // an account reading the caps that count its own keys and what is left of
+    // them (#1830). Every signed-in account's to read, a viewer included: the
+    // route returns only rows whose scope is the caller, so it widens no
+    // `budget:read`, which reads the caps of a place
+    Capability {
+        resource: "my_budget",
+        scope: "deployment",
+        read: ANYONE,
+        create: NA,
+        update: NA,
+        delete: NA,
+        action_scopes: NONE,
+    },
     Capability {
         resource: "business_unit",
         scope: "org",
@@ -712,6 +725,18 @@ const CAPABILITIES: &[Capability] = &[
         delete: NA,
         action_scopes: NONE,
     },
+    // erasing one subject's request logs and captured payloads (#1085):
+    // irreversible, and the one place the control plane deletes log data on
+    // demand, so a superadmin's alone
+    Capability {
+        resource: "log_erasure",
+        scope: "deployment",
+        read: SUPER,
+        create: SUPER,
+        update: NA,
+        delete: NA,
+        action_scopes: NONE,
+    },
     Capability {
         resource: "compatibility_policy",
         scope: "deployment",
@@ -778,12 +803,37 @@ const CAPABILITIES: &[Capability] = &[
         action_scopes: NONE,
     },
     Capability {
+        // read-only: the data plane writes it over the internal channel. Any
+        // signed-in caller may read it, narrowed in the handler to the models
+        // they see in the catalog (the row has no org to name), and node ids
+        // are shown only to a caller who sees everything (#2254)
+        resource: "breaker_state",
+        scope: "deployment",
+        read: ANYONE,
+        create: NA,
+        update: NA,
+        delete: NA,
+        action_scopes: NONE,
+    },
+    Capability {
         resource: "cluster_node",
         scope: "deployment",
         read: SUPER,
         create: NA,
         update: SUPER,
         delete: SUPER,
+        action_scopes: NONE,
+    },
+    Capability {
+        // counts of the gateway fleet and nothing that names a node (#2013),
+        // so the header's gateway pill and the dashboard home can show it to a
+        // viewer. The identities stay behind `cluster_node`
+        resource: "cluster_summary",
+        scope: "deployment",
+        read: ANYONE,
+        create: NA,
+        update: NA,
+        delete: NA,
         action_scopes: NONE,
     },
     Capability {
@@ -1843,7 +1893,16 @@ mod tests {
                 "public_url:read",
                 // changing one's own password (#2804): the route writes only
                 // the caller's own row, so there is no membership to hold
-                "my_password:update"
+                "my_password:update",
+                // reading the caps that count one's own keys (#1830): the route
+                // returns only rows whose scope is the caller
+                "my_budget:read",
+                // the fleet's breaker state (#2254): the handler narrows it to
+                // the models the caller sees, so with no membership that is
+                // the deployment's own, as for `model:read`
+                "breaker_state:read",
+                // the fleet's gateway counts (#2013): no node is named
+                "cluster_summary:read"
             ]
         );
     }
@@ -1904,6 +1963,7 @@ mod tests {
         ("audit_export.rs", include_str!("audit_export.rs")),
         ("auth.rs", include_str!("auth.rs")),
         ("auth_policy.rs", include_str!("auth_policy.rs")),
+        ("breaker_state.rs", include_str!("breaker_state.rs")),
         ("cluster.rs", include_str!("cluster.rs")),
         ("client_settings.rs", include_str!("client_settings.rs")),
         ("collector_config.rs", include_str!("collector_config.rs")),
@@ -1949,6 +2009,7 @@ mod tests {
         ("invitations.rs", include_str!("invitations.rs")),
         ("ldap.rs", include_str!("ldap.rs")),
         ("lib.rs", include_str!("lib.rs")),
+        ("log_erasure.rs", include_str!("log_erasure.rs")),
         ("logging_settings.rs", include_str!("logging_settings.rs")),
         ("login_throttle.rs", include_str!("login_throttle.rs")),
         ("main.rs", include_str!("main.rs")),
