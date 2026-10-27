@@ -388,6 +388,55 @@ async fn a_superadmins_address_is_never_adopted_by_a_directory_entry() {
 }
 
 #[tokio::test]
+async fn an_account_with_a_role_in_another_org_is_never_adopted() {
+    skip_without_db!();
+    let f = fixture().await;
+    f.map(USERS, "member").await;
+    // ada already belongs to another org; acme's directory runs its own entry
+    // for her address, with a password acme's admins chose
+    let user = seed_user(&f.pool, "ada@example.com", false).await;
+    let other: Uuid = sqlx::query_scalar(
+        "insert into orgs (name, slug) values ('globex', 'globex') returning id",
+    )
+    .fetch_one(&f.pool)
+    .await
+    .unwrap();
+    sqlx::query("insert into memberships (user_id, org_id, role) values ($1, $2, 'admin')")
+        .bind(user)
+        .bind(other)
+        .execute(&f.pool)
+        .await
+        .unwrap();
+
+    assert_eq!(f.login("ada", "ada-password").await.status(), 401);
+    assert_eq!(
+        f.roles("ada@example.com").await,
+        vec![("admin".to_string(), "manual".to_string())],
+        "the refused sign-in granted nothing in acme"
+    );
+
+    // an account whose roles are all inside acme is still the directory's
+    let local = seed_user(&f.pool, "grace@example.com", false).await;
+    sqlx::query("insert into memberships (user_id, org_id, role) values ($1, $2, 'viewer')")
+        .bind(local)
+        .bind(f.org)
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    f.stub.add(
+        "grace",
+        "grace-password",
+        entry(
+            "uid=grace,ou=people,dc=example,dc=com",
+            "grace@example.com",
+            None,
+            &[USERS],
+        ),
+    );
+    assert_eq!(f.login("grace", "grace-password").await.status(), 200);
+}
+
+#[tokio::test]
 async fn a_deactivated_account_stays_out() {
     skip_without_db!();
     let f = fixture().await;

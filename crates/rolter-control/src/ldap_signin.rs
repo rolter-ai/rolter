@@ -31,6 +31,11 @@
 //!   superadmin account does not sign in as it. The break-glass account has to
 //!   stay reachable when the directory is down and must not be reachable by
 //!   whoever can edit a directory attribute.
+//! * **An account with a role in another org is never adopted.** The directory
+//!   is run by an org's admins, who choose every entry's mail and password, so a
+//!   directory may sign in as an existing account only when every role it holds
+//!   is inside the directory's own org. Otherwise an org admin could give an
+//!   entry another org's user's address and sign in with that user's grants.
 //! * **A deactivated account stays out**, whatever the directory says.
 //! * **No mail, no account.** Accounts are keyed on email across providers, so
 //!   an entry that yields no usable address is refused rather than given a
@@ -55,7 +60,7 @@ use uuid::Uuid;
 use rolter_store::postgres::crypto::Kek;
 use rolter_store::postgres::models::{LdapDirectory, LdapGroupMapping};
 use rolter_store::postgres::repo::{
-    AuditLogRepo, LdapDirectoryValues, LdapRepo, SecretUpdate, UserRepo,
+    AuditLogRepo, LdapDirectoryValues, LdapRepo, MembershipRepo, SecretUpdate, UserRepo,
 };
 
 use crate::crud::{
@@ -240,6 +245,24 @@ async fn grant_for(
             return Ok(None);
         }
         if user.deactivated_at.is_some() {
+            return Ok(None);
+        }
+        // an account that holds a role in another org is not this directory's
+        // to sign in as. whoever runs the directory chooses every entry's mail
+        // and password, so adopting such an account would hand an org admin a
+        // session carrying another org's grants
+        let outside = MembershipRepo(pool)
+            .ancestors_for_user(user.id)
+            .await?
+            .into_iter()
+            .any(|(_, org, _)| org != Some(directory.org_id));
+        if outside {
+            tracing::warn!(
+                directory_id = %directory.id,
+                user_id = %user.id,
+                "ldap sign-in refused: the address belongs to an account with roles outside \
+                 this directory's org"
+            );
             return Ok(None);
         }
     }
