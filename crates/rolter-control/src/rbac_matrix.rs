@@ -1914,6 +1914,7 @@ mod tests {
         ("config_export.rs", include_str!("config_export.rs")),
         ("connectors.rs", include_str!("connectors.rs")),
         ("cors.rs", include_str!("cors.rs")),
+        ("deprecation.rs", include_str!("deprecation.rs")),
         ("crud/mod.rs", include_str!("crud/mod.rs")),
         ("crud/audit_log.rs", include_str!("crud/audit_log.rs")),
         ("crud/budgets.rs", include_str!("crud/budgets.rs")),

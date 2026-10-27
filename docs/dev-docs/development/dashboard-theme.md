@@ -3,8 +3,11 @@
 ## The dashboard is dark-only
 
 There is one palette and no theme toggle. `ui/src/index.css` is that palette:
-`:root` holds the shadcn HSL contract, the zinc ramp, the folkloric red accent,
-the status hues, the surfaces and the type scale, and `:root` also declares
+`:root` holds the shadcn contract (`--background`, `--muted`, `--accent` and the
+rest, each an alias of the design token that carries the same value, so
+retuning `--zinc-800` moves `bg-muted` with `--surface-subtle`), the zinc ramp,
+the folkloric red accent, the status hues, the surfaces and the type scale, and
+`:root` also declares
 `color-scheme: dark` so the browser paints scrollbars and form controls to
 match. There is no light theme to fall back to and no plan for one.
 

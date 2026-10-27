@@ -214,7 +214,7 @@ export default function Teams() {
               key={team.id}
               role="group"
               aria-label={team.name}
-              className="flex flex-col gap-3.5 rounded-[10px] border border-[color:var(--border-default)] bg-card p-4"
+              className="flex flex-col gap-3.5 rounded-lg border border-[color:var(--border-default)] bg-card p-4"
             >
               <div className="flex items-center gap-2.5">
                 <IconFrame>

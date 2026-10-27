@@ -20,10 +20,10 @@ When virtual keys are configured, the list is filtered to the models that the au
 
 ### How the provider-pinned list is built
 
-A provider-pinned address works for any model the provider actually serves, not only the ones your routes mention. To list them, Rolter reads the model catalogue each provider returns to its **health probe** and caches it.
+A provider-pinned address works for any model the provider actually serves, not only the ones your routes mention. To list them, Rolter periodically reads the model catalogue each provider returns to its free model-list request and caches it.
 
 <Note>
-  The wider list requires active health checks (`[health] enabled = true`). With probing off, the provider-pinned entries are derived from your route targets alone, so a provider that serves more models than your routes name will under-report them. This changes only what is *listed*: `provider-slug/model` routes either way, so an address you know works even when it is not in the list.
+  The refresh runs by default, every 15 minutes, and does not need active health checks. Set `[health] catalogue_interval_secs = 0` to turn it off; the provider-pinned entries are then derived from your route targets alone, so a provider that serves more models than your routes name will under-report them. A newly added provider is listed within about half a minute. This changes only what is *listed*: `provider-slug/model` routes either way, so an address you know works even when it is not in the list.
 </Note>
 
 At most 200 catalogued models are listed per provider, so one aggregator with a
@@ -123,8 +123,22 @@ for model in models:
       `"rolter"` for a route name, otherwise the name of the provider or provider group the address pins — so a client can group the list by where each model comes from.
     </ResponseField>
 
+    <ResponseField name="capabilities" type="string[]">
+      What the model supports, such as `["vision", "tools"]`. Present on a route name when the route sets `capabilities` in its [advanced settings](/concepts/providers-and-routes#per-model-advanced-settings); omitted otherwise. A label, not a gate: Rolter forwards a request whether or not a capability is listed.
+    </ResponseField>
+
+    <ResponseField name="model_type" type="string">
+      The model family, such as `"chat"` or `"embedding"`. Present on a route name when the route sets `model_type`.
+    </ResponseField>
+
+    <ResponseField name="context_length" type="integer">
+      The model's context window in tokens. Present on a route name when the route sets `context_length`. Advertised, not enforced.
+    </ResponseField>
+
   </Expandable>
 </ResponseField>
+
+A route's `description` is never listed: it is a free-text note for your team and may hold internal routing notes. Provider-pinned and group addresses carry no metadata, because the gateway does not know their upstream model's properties.
 
 ## Virtual key filtering
 

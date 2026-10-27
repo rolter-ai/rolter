@@ -44,6 +44,25 @@ describe("placePanel", () => {
     });
   });
 
+  test("under the anchor, centred on it", () => {
+    const anchor = { left: 100, top: 80, right: 124, bottom: 104 };
+    expect(placePanel({ ...base, anchor, side: "below", align: "center" })).toEqual({
+      left: 12,
+      top: 110,
+    });
+  });
+
+  test("centred on an anchor at the viewport's edge, it is clamped to both margins", () => {
+    const left = { left: 0, top: 80, right: 24, bottom: 104 };
+    expect(placePanel({ ...base, anchor: left, side: "below", align: "center" }).left).toBe(8);
+    const right = { left: 1256, top: 80, right: 1280, bottom: 104 };
+    expect(placePanel({ ...base, anchor: right, side: "below", align: "center" }).left).toBe(1072);
+  });
+
+  test("beside the rail, level with the middle of the anchor", () => {
+    expect(placePanel({ ...base, align: "center" })).toEqual({ left: 58, top: 256 });
+  });
+
   test("over the anchor, with the gap between", () => {
     const anchor = { left: 8, top: 700, right: 224, bottom: 732 };
     expect(placePanel({ ...base, anchor, side: "above" })).toEqual({ left: 8, top: 574 });

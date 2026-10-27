@@ -164,7 +164,7 @@ Each `[[providers]]` block registers an upstream provider the gateway can forwar
 </ParamField>
 
 <ParamField path="kind" type="string" required>
-  The wire protocol this provider speaks. One of `openai`, `anthropic`, `openai_compatible`, `ollama`, `ollama_cloud`, `llama_cpp`, `openrouter`, `tei`, `azure_openai`, `bedrock`, `vertex`, `gemini`, `gemini_native`, `gemini_interactions`, `mistral`, `groq`, `xai`, `meta_llama_api`, `cohere`, `perplexity`, `together`, `fireworks`, `databricks`, `aleph_alpha`, `nebius`, `ovhcloud`, `scaleway`, `deepseek`, `qwen`, `zhipu`, `kimi`, `ernie`, `doubao`, `hunyuan`, `yi`, `minimax`, `baichuan`, `gigachat`, `yandex_gpt`, `cloud_ru`, `mts_ai`, `naver`, `upstage`, `rinna`, `rakuten`, `sarvam`, `krutrim`, or `falcon`. Use `openai_compatible` for vLLM, TGI, Ollama, or any other OpenAI-schema endpoint.
+  The wire protocol this provider speaks. One of `openai`, `anthropic`, `openai_compatible`, `ollama`, `ollama_cloud`, `llama_cpp`, `openrouter`, `tei`, `azure_openai`, `bedrock`, `vertex`, `gemini`, `gemini_native`, `gemini_interactions`, `mistral`, `groq`, `xai`, `meta_llama_api`, `cohere`, `perplexity`, `together`, `fireworks`, `databricks`, `aleph_alpha`, `nebius`, `ovhcloud`, `scaleway`, `deepseek`, `qwen`, `zhipu`, `kimi`, `ernie`, `doubao`, `hunyuan`, `yi`, `minimax`, `baichuan`, `gigachat`, `yandex_gpt`, `cloud_ru`, `mts_ai`, `naver`, `upstage`, `rinna`, `rakuten`, `sarvam`, `krutrim`, `falcon`, `system_one`, or `infinity`. Use `openai_compatible` for vLLM, TGI, Ollama, or any other OpenAI-schema endpoint.
 </ParamField>
 
 <ParamField path="api_base" type="string" required>
@@ -537,15 +537,19 @@ model = "gpt-4o"
 Catalog metadata and model-scoped policy for one route. The dashboard's model sheet writes it; [Per-model advanced settings](/concepts/providers-and-routes#per-model-advanced-settings) explains what each part means and the ranges the control plane accepts.
 
 <ParamField path="model_type" type="string">
-  The catalog family of the model, such as `chat` or `embedding`. A label the dashboard reads to choose which parameters and prices its model sheet offers. The gateway does not enforce it.
+  The catalog family of the model, such as `chat` or `embedding`. A label the dashboard reads to choose which parameters and prices its model sheet offers, and `GET /v1/models` serves on the route's entry. The gateway does not enforce it.
 </ParamField>
 
 <ParamField path="capabilities" default="[]" type="list">
-  Capability labels recorded for the model, such as `vision`. A label for the dashboard: the gateway forwards a request whether or not a flag is set.
+  Capability labels recorded for the model, such as `vision`. A label for the dashboard and for `GET /v1/models`: the gateway forwards a request whether or not a flag is set.
+</ParamField>
+
+<ParamField path="context_length" type="u32">
+  The model's context window in tokens, at least `1`. Served on `GET /v1/models` as `context_length`; advertised, not enforced. Unset by default.
 </ParamField>
 
 <ParamField path="description" type="string">
-  A note about the model for other operators. The dashboard and the routes API return it; it is never sent to API clients.
+  A note about the model for other operators. The dashboard and the routes API return it; it is never sent to API clients and never listed on `GET /v1/models`.
 </ParamField>
 
 <ParamField path="headers" type="table">
@@ -1300,6 +1304,8 @@ backpressure = "error"
 block_timeout_ms = 1000
 ```
 
+A `[queue]` change takes effect for requests that start after the reload. Requests already buffered in the replaced queue are not dropped: its workers finish them, so for that short window a provider can see the old and the new `workers` at the same time.
+
 Queue shedding is exposed through `rolter_provider_queue_rejections_total`; timed-out blocking admissions use `rolter_provider_queue_timeouts_total`. Depth, in-flight calls and the time requests wait for a worker are per-provider series described under [Provider queue](/observability/metrics#provider-queue).
 
 ---
@@ -1336,6 +1342,10 @@ When enabled, a background task periodically probes each provider with a lightwe
   Consecutive probe successes before an unhealthy provider returns to rotation, so a flapping upstream does not bounce in and out. A value of `0` is treated as `1`.
 </ParamField>
 
+<ParamField path="catalogue_interval_secs" default="900" type="u64">
+  Seconds between refreshes of each provider's model catalogue, which `GET /v1/models` lists as `provider-slug/model`. The refresh is one free model-list request per provider and runs even with `enabled = false`. `0` turns it off. See [Models](/api/models).
+</ParamField>
+
 <ParamField path="status_page_interval_secs" default="60" type="u64">
   Seconds between polls of provider status pages. Only providers with a `status_page_url` are polled, and the poller runs even with `enabled = false`. A status page is a secondary signal: it records a `status_page` event and never changes routing on its own. See [Health checks](/reliability/health-checks).
 </ParamField>
@@ -1349,6 +1359,7 @@ path = "/"
 probe_concurrency = 2
 consecutive_failure_threshold = 3
 recovery_success_threshold = 2
+catalogue_interval_secs = 900
 status_page_interval_secs = 60
 ```
 

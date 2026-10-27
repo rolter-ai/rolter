@@ -91,7 +91,7 @@ function ToastCard({
         if (!event.currentTarget.contains(event.relatedTarget)) setFocused(false);
       }}
       className={cn(
-        "rl-fade-in pointer-events-auto flex items-start gap-2.5 rounded-[10px] border border-[color:var(--border-default)] bg-[color:var(--surface-elevated)] px-3.5 py-3 shadow-lg",
+        "rl-fade-in pointer-events-auto flex items-start gap-2.5 rounded-lg border border-[color:var(--border-default)] bg-[color:var(--surface-elevated)] px-3.5 py-3 shadow-lg",
       )}
     >
       <Icon aria-hidden className={cn("mt-0.5 h-4 w-4 flex-none", ACCENT[tone])} />

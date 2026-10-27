@@ -25,7 +25,7 @@ const GAP = 6;
 const MARGIN = 8;
 
 export type PanelSide = "right" | "below" | "above";
-export type PanelAlign = "start" | "end";
+export type PanelAlign = "start" | "end" | "center";
 
 export interface Box {
   left: number;
@@ -48,11 +48,12 @@ export interface PlaceOptions {
  * Where the panel's top-left corner goes.
  *
  * `right` stands beside the anchor's container, level with the anchor's top
- * (`start`) or its bottom (`end`), so a menu opened from the card at the foot of
- * the rail grows upward instead of off the screen. `below` and `above` stand
- * against the anchor's edge and line up with its left (`start`) or right (`end`)
- * side. `below` turns `above` when the viewport has no room under the anchor and
- * more over it. Every answer is clamped so the panel stays inside the viewport.
+ * (`start`), its middle (`center`) or its bottom (`end`), so a menu opened from
+ * the card at the foot of the rail grows upward instead of off the screen.
+ * `below` and `above` stand against the anchor's edge and line up with its left
+ * (`start`) or right (`end`) side, or centre on it. `below` turns `above` when
+ * the viewport has no room under the anchor and more over it. Every answer is
+ * clamped so the panel stays inside the viewport.
  */
 export function placePanel({ anchor, edge, panel, viewport, side, align }: PlaceOptions): {
   left: number;
@@ -60,12 +61,18 @@ export function placePanel({ anchor, edge, panel, viewport, side, align }: Place
 } {
   const clamp = (value: number, size: number, available: number) =>
     Math.max(MARGIN, Math.min(value, available - MARGIN - size));
-  const across = (from: number, to: number) => (align === "end" ? to - panel.width : from);
+  const across = (from: number, to: number) =>
+    align === "end" ? to - panel.width : align === "center" ? (from + to - panel.width) / 2 : from;
   let left: number;
   let top: number;
   if (side === "right") {
     left = edge + GAP;
-    top = align === "end" ? anchor.bottom - panel.height : anchor.top;
+    top =
+      align === "end"
+        ? anchor.bottom - panel.height
+        : align === "center"
+          ? (anchor.top + anchor.bottom - panel.height) / 2
+          : anchor.top;
   } else {
     const fitsBelow = anchor.bottom + GAP + panel.height <= viewport.height - MARGIN;
     const fitsAbove = anchor.top - GAP - panel.height >= MARGIN;

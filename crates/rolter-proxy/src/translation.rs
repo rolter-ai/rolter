@@ -27,6 +27,9 @@ pub enum Protocol {
     /// stateful agentic surface whose thread is carried by
     /// `previous_interaction_id`
     GeminiInteractions,
+    /// a michaelfeil/infinity rerank (`POST {api_base}/rerank`): the client's
+    /// Cohere/Jina rerank with its documents reshaped (see `crate::infinity`)
+    InfinityRerank,
     Passthrough,
 }
 
@@ -42,6 +45,8 @@ enum StreamTranslation {
     InteractionsToOpenAi,
     InteractionsToAnthropic,
     InteractionsToResponses,
+    /// a pair whose upstream never streams: frames are handed on unchanged
+    Verbatim,
 }
 
 struct TranslationPair {
@@ -127,6 +132,13 @@ static TRANSLATION_PAIRS: &[TranslationPair] = &[
         response: interactions_to_responses,
         stream: StreamTranslation::InteractionsToResponses,
     },
+    TranslationPair {
+        source: Protocol::Passthrough,
+        target: Protocol::InfinityRerank,
+        request: crate::infinity::rerank_request,
+        response: crate::infinity::rerank_response,
+        stream: StreamTranslation::Verbatim,
+    },
 ];
 
 /// The Anthropic Messages API rejects a request without `max_tokens`, so a
@@ -151,7 +163,10 @@ fn max_tokens_key(upstream: Protocol) -> Option<&'static str> {
     match upstream {
         Protocol::OpenAiChat | Protocol::AnthropicMessages => Some("max_tokens"),
         Protocol::OpenAiResponses => Some("max_output_tokens"),
-        Protocol::GeminiGenerate | Protocol::GeminiInteractions | Protocol::Passthrough => None,
+        Protocol::GeminiGenerate
+        | Protocol::GeminiInteractions
+        | Protocol::InfinityRerank
+        | Protocol::Passthrough => None,
     }
 }
 
@@ -256,6 +271,11 @@ impl TranslationPlan {
             (Protocol::OpenAiResponses, ProviderKind::Openai) => Protocol::OpenAiResponses,
             (Protocol::OpenAiResponses, ProviderKind::Anthropic) => Protocol::AnthropicMessages,
             (Protocol::OpenAiResponses, _) => Protocol::OpenAiChat,
+            // infinity's rerank differs from the cohere/jina one only in how a
+            // document is written; every other endpoint it serves is openai's
+            (Protocol::Passthrough, ProviderKind::Infinity) if path == upstream::RERANK_PATH => {
+                Protocol::InfinityRerank
+            }
             (other, _) => other,
         };
         Self {
@@ -311,6 +331,7 @@ impl TranslationPlan {
             // interactions is a single model-less endpoint; the model travels
             // in the body, so the gateway route path is replaced outright
             Protocol::GeminiInteractions => upstream::GEMINI_INTERACTIONS_PATH,
+            Protocol::InfinityRerank => upstream::RERANK_PATH,
             Protocol::Passthrough => original,
         }
     }
@@ -2471,7 +2492,9 @@ impl SseConverter {
                     .flat_map(|chunk| self.openai_to_responses_frame(&chunk))
                     .collect()
             }
-            None => vec![Bytes::from(format!("{text}\n\n"))],
+            Some(StreamTranslation::Verbatim) | None => {
+                vec![Bytes::from(format!("{text}\n\n"))]
+            }
         }
     }
 

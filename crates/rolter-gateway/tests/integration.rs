@@ -1334,6 +1334,122 @@ async fn models_endpoint_lists_the_whole_probed_provider_catalogue() {
     assert_eq!(resp.status(), 200);
 }
 
+/// A route's machine-meaningful catalog metadata reaches an API client; its
+/// free-text description does not (#2939).
+#[tokio::test]
+async fn models_endpoint_serves_route_catalog_metadata_but_not_the_description() {
+    let mut config = GatewayConfig::default();
+    config.providers.push(ProviderConfig {
+        name: "openai-edge".to_string(),
+        slug: Some("openai-edge".to_string()),
+        ..Default::default()
+    });
+    config.routes.push(ModelRoute {
+        model: "chat".to_string(),
+        strategy: BalancingStrategy::RoundRobin,
+        targets: vec![Target {
+            provider: "openai-edge".to_string(),
+            model: Some("gpt-4o".to_string()),
+            weight: 1,
+        }],
+        params: Default::default(),
+        param_policy: Default::default(),
+        advanced: rolter_core::AdvancedModelConfig {
+            model_type: Some("chat".to_string()),
+            capabilities: vec!["vision".to_string(), "tools".to_string()],
+            context_length: Some(128_000),
+            description: Some("internal routing note".to_string()),
+            ..Default::default()
+        },
+        cache: None,
+        variants: Default::default(),
+        tenancy: None,
+    });
+    let state = rolter_gateway::AppState::with_logging(&config, None);
+    let gw = serve(rolter_gateway::build_router(
+        state,
+        &config.server.metrics_path,
+        config.server.max_body_bytes,
+    ))
+    .await;
+
+    let models: Value = reqwest::get(format!("http://{gw}/v1/models"))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let chat = models["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["id"] == "chat")
+        .expect("the route is listed");
+    assert_eq!(chat["capabilities"], json!(["vision", "tools"]));
+    assert_eq!(chat["model_type"], "chat");
+    assert_eq!(chat["context_length"], 128_000);
+    assert!(
+        !chat.to_string().contains("internal routing note"),
+        "{chat}"
+    );
+}
+
+/// The catalogue no longer rides the health sweep: a deployment that never
+/// turned `[health]` on lists the provider's whole catalogue too (#1729).
+#[tokio::test]
+async fn models_endpoint_lists_the_catalogue_with_health_checks_off() {
+    async fn upstream_catalogue() -> Json<Value> {
+        Json(json!({"object": "list", "data": [{"id": "gpt-4o"}, {"id": "o3-mini"}]}))
+    }
+
+    let upstream = serve(Router::new().route("/v1/models", get(upstream_catalogue))).await;
+    let mut config = GatewayConfig::default();
+    config.providers.push(ProviderConfig {
+        name: "openai-edge".to_string(),
+        slug: Some("openai-edge".to_string()),
+        kind: ProviderKind::OpenaiCompatible,
+        api_base: format!("http://{upstream}"),
+        ..Default::default()
+    });
+    assert!(!config.health.enabled, "the point is that health is off");
+    config.health.catalogue_interval_secs = 1;
+
+    let state = rolter_gateway::AppState::with_logging(&config, None);
+    rolter_gateway::model_catalog::spawn_refresher(state.clone());
+    let app = rolter_gateway::build_router(
+        state,
+        &config.server.metrics_path,
+        config.server.max_body_bytes,
+    );
+    let gw = serve(app).await;
+
+    let client = reqwest::Client::new();
+    let mut ids: Vec<String> = Vec::new();
+    for _ in 0..100 {
+        let models: Value = client
+            .get(format!("http://{gw}/v1/models"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        ids = models["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["id"].as_str().unwrap().to_string())
+            .collect();
+        if ids.iter().any(|id| id == "openai-edge/o3-mini") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    for id in ["openai-edge/gpt-4o", "openai-edge/o3-mini"] {
+        assert!(ids.contains(&id.to_string()), "{id} missing from {ids:?}");
+    }
+}
+
 #[tokio::test]
 async fn provider_slug_model_pins_provider_and_rewrites_upstream_model() {
     // a mock that echoes back the `model` field it received, so the test can
@@ -1385,6 +1501,87 @@ async fn provider_slug_model_pins_provider_and_rewrites_upstream_model() {
         .await
         .unwrap();
     assert_eq!(missing.status(), 404);
+}
+
+/// A server that reports Hugging Face ids (Infinity, vLLM) is listed under the
+/// whole id, and the listed address reaches it as `model = "org/model"` (#3245).
+#[tokio::test]
+async fn a_listed_hugging_face_id_round_trips_to_the_upstream_whole() {
+    async fn catalogue() -> Json<Value> {
+        Json(json!({"object": "list", "data": [{"id": "BAAI/bge-small-en-v1.5"}]}))
+    }
+    async fn echo_model(Json(body): Json<Value>) -> impl IntoResponse {
+        let model = body.get("model").and_then(Value::as_str).unwrap_or("");
+        Json(json!({
+            "id": "chatcmpl-mock",
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": model},
+                "finish_reason": "stop"
+            }]
+        }))
+    }
+
+    let upstream = serve(
+        Router::new()
+            .route("/v1/models", get(catalogue))
+            .route("/v1/chat/completions", post(echo_model)),
+    )
+    .await;
+    let mut config = GatewayConfig::default();
+    config.providers.push(ProviderConfig {
+        name: "vLLM SPB".to_string(),
+        slug: Some("vllm-spb".to_string()),
+        kind: ProviderKind::OpenaiCompatible,
+        api_base: format!("http://{upstream}"),
+        ..Default::default()
+    });
+    config.health.catalogue_interval_secs = 1;
+    let state = rolter_gateway::AppState::with_logging(&config, None);
+    rolter_gateway::model_catalog::spawn_refresher(state.clone());
+    let gw = serve(rolter_gateway::build_router(
+        state,
+        &config.server.metrics_path,
+        config.server.max_body_bytes,
+    ))
+    .await;
+
+    let client = reqwest::Client::new();
+    let listed = "vllm-spb/BAAI/bge-small-en-v1.5";
+    let mut found = false;
+    for _ in 0..100 {
+        let models: Value = client
+            .get(format!("http://{gw}/v1/models"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        found = models["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["id"] == listed);
+        if found {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(found, "{listed} was never listed");
+
+    let resp = client
+        .post(format!("http://{gw}/v1/chat/completions"))
+        .json(&json!({"model": listed, "messages": [{"role": "user", "content": "ping"}]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(
+        body["choices"][0]["message"]["content"],
+        "BAAI/bge-small-en-v1.5"
+    );
 }
 
 #[tokio::test]
