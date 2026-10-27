@@ -14,6 +14,13 @@ use crate::ProviderKind;
 
 /// The anthropic messages api rejects requests without a version header, even on
 /// the free `GET /v1/models` list endpoint.
+///
+/// The one place the dated version is written: it is also the default of
+/// `[compatibility] anthropic_version`, the value forwarded traffic carries
+/// when the client stated none. Probes always send this value rather than an
+/// operator's pin: a probe asks whether the API answers and accepts the key,
+/// which no dated version changes. The `anthropic-messages` record of the
+/// specification registry names it, and a test holds the three together.
 pub const ANTHROPIC_VERSION: &str = "2023-06-01";
 
 /// Resolve the probe request for a provider: the URL and any header the upstream
