@@ -202,6 +202,10 @@ jobs:
         if: matrix.leg == 'rust' && steps.scope.outputs.analyze != 'false'
         uses: github/codeql-action/analyze@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
         with:
+          # the cli writes the category into the sarif, and upload-sarif only
+          # fills in one the run lacks, so the category is set here rather
+          # than left to the upload step
+          category: "/language:rust"
           upload: failure-only
           output: ${{ runner.temp }}/codeql-sarif
       # test fixtures (a deliberately wrong nonce, a loopback url) raise alerts
