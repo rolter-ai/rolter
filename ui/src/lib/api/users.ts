@@ -1,3 +1,4 @@
+// users and memberships (crates/rolter-control/src/crud/users.rs and memberships.rs, ROL-223)
 import { getJson, sendJson } from "./request";
 
 export const ROLES = ["admin", "member", "viewer"] as const;

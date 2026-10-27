@@ -1,7 +1,8 @@
+// budgets and rate limits (crates/rolter-control/src/crud/budgets.rs and rate_limits.rs)
 import { getJson, sendJson } from "./request";
 
 // every scope a budget or rate limit may hang off, in the order of the
-// `SCOPE_TYPES` allowlist in `crates/rolter-control/src/crud.rs`. business unit
+// `SCOPE_TYPES` allowlist in `crates/rolter-control/src/crud/budgets.rs`. business unit
 // and customer are the governance dimensions a key's spend rolls up to (#539);
 // leaving them out made those budgets uncreatable from the dashboard
 export const SCOPE_TYPES = [

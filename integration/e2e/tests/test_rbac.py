@@ -88,7 +88,7 @@ def world(admin: ControlClient) -> World:
 # endpoint catalogue: each entry drives one guarded action with a *fresh*,     #
 # valid body (so repeated allowed-role calls never collide) and declares the   #
 # minimum role rank the control plane enforces for it (see crates/             #
-# rolter-control/src/crud.rs authorize() / require_superadmin call sites).     #
+# rolter-control/src/crud/ authorize() / require_superadmin call sites).     #
 # --------------------------------------------------------------------------- #
 # rank: viewer=0, member=1, admin=2, superadmin=3
 VIEWER, MEMBER, ADMIN, SUPERADMIN = 0, 1, 2, 3

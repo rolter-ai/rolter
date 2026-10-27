@@ -742,7 +742,7 @@ function SkillWorkbench({
   const problem = problemKey && t(`pages.skillsRepo.${problemKey}`);
   const selectedPublished = baseVersion?.version === skill.published_version;
   // settings, publish and save all land on a `skill:update` guard in
-  // crates/rolter-control/src/crud.rs — publishing is a version pointer move,
+  // crates/rolter-control/src/crud/skills.rs — publishing is a version pointer move,
   // not a capability of its own — and only the delete asks for `skill:delete`
   return (
     <main className="min-w-0 overflow-hidden rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-raised)]">
