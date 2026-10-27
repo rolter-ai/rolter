@@ -14,7 +14,8 @@ The control plane resolves the token to that role, so every permission check wor
 - It **never** reaches deployment-wide settings (feature flags, the security settings, cluster nodes, alerting, the configuration export) and never holds a [deployment role](/security/rbac#deployment-roles). Those stay with the admin token, superadmins and the deployment roles.
 - It **cannot manage tokens**: minting, listing, rotating and revoking answer `403` for a token, so a leaked one cannot mint a successor that outlives its own revocation.
 - It cannot read request logs or analytics, which are scoped to people, and it is not a session: the dashboard's account endpoints answer `401`.
-- An `admin` token can do what an admin of its scope can do, including granting memberships there. Give automation the narrowest role that does the job.
+- It **never grants access**: adding, changing or removing a membership, sending or revoking an invitation, editing a custom role or its assignments, resetting a password, editing an account, and changing an identity provider, a SCIM token, a group mapping or the org's sign-in policy all answer `403` for a token, whatever its role. It can still read them. Access a leaked token handed out would outlive the token's revocation, so these stay with people.
+- Otherwise an `admin` token can do what an admin of its scope can do. Give automation the narrowest role that does the job.
 
 It is not a virtual key (the data plane, `/v1/*`) and not a SCIM token (provisioning, `/scim/v2/*`); each is refused at the other's door. See [which key do I need](/security/which-key).
 

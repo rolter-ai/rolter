@@ -56,7 +56,7 @@ use uuid::Uuid;
 
 use crate::auth::{bearer_token, session_pepper};
 use crate::crud::{pool, ApiError, ApiResult};
-use crate::rbac_matrix::{action_key, Authority, DeploymentRole, Requirement};
+use crate::rbac_matrix::{action_key, Action, Authority, DeploymentRole, Requirement};
 use crate::ControlState;
 
 /// The authenticated caller behind a control-plane mutation.
@@ -465,15 +465,39 @@ pub(crate) async fn authorize(
     }
 }
 
+/// What an API token never changes, whatever role it holds: who may sign in,
+/// and with which roles. A token that could grant a membership or a custom
+/// role, send an invitation, reset someone's password or register an identity
+/// provider would leave access behind that outlives its own revocation, so
+/// these writes stay with people. Reading them is unaffected.
+pub(crate) const TOKEN_REFUSED_WRITES: &[&str] = &[
+    "access_profile_assignment",
+    "api_token",
+    "custom_role",
+    "invitation",
+    "membership",
+    "org_auth_policy",
+    "password_reset",
+    "scim_group_mapping",
+    "scim_token",
+    "sso_group_mapping",
+    "sso_provider",
+    "user",
+];
+
 /// [`authorize`] for an API token: the same rules as a user holding its role,
 /// over the memberships and grants it carries, with no query. A deployment-wide
 /// capability, superadmin-only or reached by a deployment role, is never a
 /// token's: neither its membership nor a custom role can express it.
+/// Nor is a write to anything in [`TOKEN_REFUSED_WRITES`].
 fn authorize_token(
     held: &TokenPrincipal,
     chain: ScopeChain,
     requirement: Requirement,
 ) -> ApiResult<()> {
+    if requirement.action != Action::Read && TOKEN_REFUSED_WRITES.contains(&requirement.resource) {
+        return Err(ApiError::Forbidden);
+    }
     let required = match requirement.authority {
         Authority::Role(required) => required,
         Authority::Authenticated => return Ok(()),
@@ -1354,6 +1378,18 @@ mod tests {
         assert_eq!(principal.deployment_role(), None);
         assert_eq!(principal.account_id(), None);
         assert!(principal.api_token().is_some());
+        // nor does it grant access to anyone, though it may read who has it
+        let Principal::Token(held) = &principal else {
+            unreachable!()
+        };
+        // (a person who is this project's admin may grant in it, #3074)
+        for write in [cap!("membership", Create), cap!("invitation", Create)] {
+            assert!(
+                authorize_token(held, at(project), write).is_err(),
+                "{write:?}"
+            );
+        }
+        assert!(authorize_token(held, at(project), cap!("membership", Read)).is_ok());
     }
 
     #[test]

@@ -2155,6 +2155,22 @@ mod tests {
         assert_eq!(names, deduped, "duplicate resource in the capability table");
     }
 
+    #[test]
+    fn every_write_refused_to_a_token_names_a_resource_with_writes() {
+        for resource in crate::rbac::TOKEN_REFUSED_WRITES {
+            let row = CAPABILITIES
+                .iter()
+                .find(|c| c.resource == *resource)
+                .unwrap_or_else(|| panic!("{resource} is not in the capability table"));
+            assert!(
+                [Action::Create, Action::Update, Action::Delete]
+                    .into_iter()
+                    .any(|action| row.authority(action).is_some()),
+                "{resource} has no write for a token to be refused"
+            );
+        }
+    }
+
     // ------------------------------------------------------------------- //
     // drift guards (#704): the table is the only place a requirement lives //
     // ------------------------------------------------------------------- //

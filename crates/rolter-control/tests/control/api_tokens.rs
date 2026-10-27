@@ -502,3 +502,49 @@ async fn a_token_cannot_manage_a_cap_that_counts_a_person_everywhere() {
         assert_eq!(status, 200, "{path} within the org: {body}");
     }
 }
+
+/// A token never grants access to anyone, whatever role it holds: an admin
+/// token reads who has access but cannot add a member, send an invitation or
+/// change how people sign in, so a leaked one leaves nothing behind.
+#[tokio::test]
+async fn a_token_reads_access_but_never_grants_it() {
+    skip_without_db!();
+    let w = world().await;
+    let (status, minted) = w
+        .mint(admin_token(), json!({"name": "ops", "role": "admin"}))
+        .await;
+    assert_eq!(status, 200, "{minted}");
+    let token = secret(&minted);
+    let person = seed_user(&w.pool, "grace@acme.test", false).await;
+    let org = &w.org;
+
+    let refused = [
+        (
+            reqwest::Method::POST,
+            format!("/api/v1/orgs/{org}/memberships"),
+            json!({"user_id": person, "scope_type": "org", "scope_id": org, "role": "admin"}),
+        ),
+        (
+            reqwest::Method::POST,
+            format!("/api/v1/orgs/{org}/invitations"),
+            json!({"email": "eve@acme.test", "role": "admin"}),
+        ),
+        (
+            reqwest::Method::PUT,
+            format!("/api/v1/orgs/{org}/auth-policy"),
+            json!({"allow_password_login": true, "allow_sso": true, "mfa_policy": "off"}),
+        ),
+    ];
+    for (method, path, body) in refused {
+        let (status, answer) = w.send(method.clone(), &path, &token, body).await;
+        assert_eq!(status, 403, "{method} {path}: {answer}");
+    }
+    for path in [
+        format!("/api/v1/orgs/{org}/memberships"),
+        format!("/api/v1/orgs/{org}/invitations"),
+        format!("/api/v1/orgs/{org}/auth-policy"),
+    ] {
+        let (status, answer) = w.get(&path, &token).await;
+        assert_eq!(status, 200, "GET {path}: {answer}");
+    }
+}
