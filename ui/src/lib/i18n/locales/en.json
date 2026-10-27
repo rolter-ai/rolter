@@ -3940,6 +3940,10 @@
         "bypassRoute": {
           "label": "Auth bypass route added:",
           "effect": "It answers with no virtual key checked, and no budget or per-key rate limit applies to it."
+        },
+        "requiredHeader": {
+          "label": "Required header removed:",
+          "effect": "Requests without it are now served, and the ingress filter that relied on it (a mesh identity, a WAF marker) no longer applies."
         }
       },
       "errors": {
