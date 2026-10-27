@@ -39,6 +39,8 @@ import type {
   ProviderRow,
   RouteRow,
   RouteTargetRow,
+  RouteVariantInput,
+  RouteVariantRow,
   TimelineRow,
   UptimeRow,
 } from "@/lib/api";
@@ -193,6 +195,8 @@ const answer = (routes: RouteRow[], status = 200, labels: LabelRow[] = []): Fetc
     }
     const targets = /\/routes\/([^/]+)\/targets/.exec(url);
     if (targets) return json(TARGETS[targets[1]] ?? []);
+    // the route sheet reads the variants beside the targets (#391)
+    if (/\/routes\/[^/]+\/variants/.test(url)) return json([]);
     // the route list embeds each route's targets when it is asked to, which
     // is how the screen reads them (#3031)
     if (status === 200 && url.includes("include=targets")) {
@@ -1144,6 +1148,337 @@ export const RejectedSave: Story = {
     // fixing the line clears the refusal
     await userEvent.type(dialog.getByLabelText("Target 2 weight"), "0");
     await waitFor(() => expect(dialog.getByLabelText("Target 2 weight")).toBeValid());
+  },
+};
+
+// ------------------------------------------------ route variants (#391)
+
+const variantRow = (
+  name: string,
+  weight: number,
+  targets: { provider_id: string; upstream_model?: string | null; weight: number }[],
+  position: number,
+): RouteVariantRow => ({
+  id: `var-${name}`,
+  route_id: "route-1",
+  name,
+  weight,
+  position,
+  params: {},
+  created_at: "2026-05-01T00:00:00Z",
+  targets: targets.map((tg, i) => ({
+    id: `vt-${name}-${i}`,
+    variant_id: `var-${name}`,
+    upstream_model: null,
+    ...tg,
+    position: i,
+  })),
+});
+
+const SPLIT: RouteVariantRow[] = [
+  variantRow("stable", 9, [{ provider_id: "prov-1", upstream_model: "gpt-4o", weight: 1 }], 0),
+  variantRow(
+    "canary",
+    1,
+    [
+      { provider_id: "prov-2", weight: 1 },
+      { provider_id: "prov-1", weight: 1 },
+    ],
+    1,
+  ),
+];
+
+/**
+ * route-1 with `stored` as its variants; `put` answers the variants PUT, which
+ * by default echoes what was sent
+ */
+const withVariants = (stored: RouteVariantRow[], put?: () => Response) =>
+  recording(
+    scoped(async (input, init) => {
+      const url = String(input);
+      if (/\/routes\/route-1\/variants$/.test(url)) {
+        if (init?.method === "PUT") return put ? put() : json([]);
+        return json(stored);
+      }
+      return answer(ROUTES)(input, init);
+    }),
+  );
+
+async function openRouteSheet(canvasElement: HTMLElement) {
+  const canvas = within(canvasElement);
+  await expectAllowed(canvasElement, "Edit route gpt-4o");
+  await userEvent.click(await canvas.findByRole("button", { name: "Edit route gpt-4o" }));
+  const dialog = within(await within(document.body).findByRole("dialog"));
+  await waitFor(() => expect(dialog.getByRole("heading", { name: "Edit route" })).toBeVisible());
+  return dialog;
+}
+
+/** the open sheet's own element, for an assertion that must not read the cards behind it */
+const sheetElement = () => within(document.body).getByRole("dialog");
+
+/**
+ * A stored 9:1 split is previewed as the gateway applies it, a weight edit
+ * moves the preview, and reordering moves the fallback chain. Only the
+ * variants changed, so only the variants PUT is sent, carrying the whole set
+ * in its new order.
+ */
+let splits: Recorder;
+export const EditsAVariantSplit: Story = {
+  render: () => {
+    splits = withVariants(SPLIT);
+    return (
+      <Harness fetchStub={splits.stub} role="admin">
+        <Toasted>
+          <RoutingRules />
+        </Toasted>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const dialog = await openRouteSheet(canvasElement);
+    const preview = within(await dialog.findByRole("list", { name: "Traffic split" }));
+    await expect(preview.getByText("90%")).toBeInTheDocument();
+    await expect(preview.getByText("10%")).toBeInTheDocument();
+    await expect(dialog.getByText(/its targets above are not used/)).toBeVisible();
+    // the second variant's targets are in the order they are tried
+    await expect(dialog.getByLabelText("Variant 2 target 1 provider")).toHaveValue("azure-west");
+    // story-wait-allow: the first line has nowhere to move up to, a prop from its first paint
+    await expect(dialog.getByLabelText("Move variant 2 target 1 up")).toBeDisabled();
+
+    const weight = dialog.getByLabelText("Variant 2 weight");
+    await userEvent.clear(weight);
+    await userEvent.type(weight, "3");
+    // the list is redrawn while the field is briefly empty, so it is found again
+    const redrawn = async () => within(await dialog.findByRole("list", { name: "Traffic split" }));
+    await waitFor(async () => expect((await redrawn()).getByText("75%")).toBeInTheDocument());
+    await expect((await redrawn()).getByText("25%")).toBeInTheDocument();
+
+    await userEvent.click(dialog.getByRole("button", { name: "Move variant 2 up" }));
+    await expect(dialog.getByLabelText("Variant 1 name")).toHaveValue("canary");
+    await userEvent.click(dialog.getByRole("button", { name: "Move variant 1 target 2 up" }));
+    await expect(dialog.getByLabelText("Variant 1 target 1 provider")).toHaveValue("openai-prod");
+
+    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
+    await expect(
+      await splits.expectSentBody<{ variants: RouteVariantInput[] }>(
+        "PUT",
+        "/api/v1/routes/route-1/variants",
+      ),
+    ).toEqual({
+      variants: [
+        {
+          name: "canary",
+          weight: 3,
+          params: {},
+          targets: [
+            { provider_id: "prov-1", upstream_model: null, weight: 1 },
+            { provider_id: "prov-2", upstream_model: null, weight: 1 },
+          ],
+        },
+        {
+          name: "stable",
+          weight: 9,
+          params: {},
+          targets: [{ provider_id: "prov-1", upstream_model: "gpt-4o", weight: 1 }],
+        },
+      ],
+    });
+    await expectToast(canvasElement, /gpt-4o updated/);
+    // the route itself did not change, so it was not written
+    splits.expectNotSent("PUT", "/api/v1/routes/route-1?");
+    await expect(
+      splits.calls.filter((c) => c.method === "PUT" && /\/routes\/route-1$/.test(c.url)),
+    ).toHaveLength(0);
+  },
+};
+
+/** A route with no variants says so, and the first one is added and named in place. */
+let adds: Recorder;
+export const AddsAVariant: Story = {
+  render: () => {
+    adds = withVariants([]);
+    return (
+      <Harness fetchStub={adds.stub} role="admin">
+        <RoutingRules />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const dialog = await openRouteSheet(canvasElement);
+    await expect(await dialog.findByText(/^No variants\./)).toBeVisible();
+    await userEvent.click(dialog.getByRole("button", { name: "Add variant" }));
+    const name = dialog.getByLabelText("Variant 1 name");
+    await expect(name).toHaveValue("variant-1");
+    await userEvent.clear(name);
+    await userEvent.type(name, "canary");
+    await userEvent.type(dialog.getByLabelText("Variant 1 target 1 upstream model"), "gpt-4o-mini");
+    const preview = within(dialog.getByRole("list", { name: "Traffic split" }));
+    await expect(preview.getByText("100%")).toBeInTheDocument();
+    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
+    await expect(await adds.expectSentBody("PUT", "/api/v1/routes/route-1/variants")).toEqual({
+      variants: [
+        {
+          name: "canary",
+          weight: 1,
+          params: {},
+          targets: [{ provider_id: "prov-1", upstream_model: "gpt-4o-mini", weight: 1 }],
+        },
+      ],
+    });
+  },
+};
+
+/**
+ * Weights that are all zero, a repeated name and a variant left without a
+ * target are refused in the sheet, each at its field, and nothing is sent. A
+ * zero beside a positive weight is allowed, and the preview says what the
+ * gateway does with it.
+ */
+let refusesSplit: Recorder;
+export const RefusesASplitTheGatewayCannotRoute: Story = {
+  render: () => {
+    refusesSplit = withVariants(SPLIT);
+    return (
+      <Harness fetchStub={refusesSplit.stub} role="admin">
+        <RoutingRules />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const dialog = await openRouteSheet(canvasElement);
+    const second = await dialog.findByLabelText("Variant 2 weight");
+    await userEvent.clear(second);
+    await userEvent.type(second, "0");
+    // a fallback-only variant is sampled as weight 1, and the preview says so
+    await expect(await dialog.findByText(/A weight of 0 is still sampled as 1/)).toBeVisible();
+    await expect(
+      within(dialog.getByRole("list", { name: "Traffic split" })).getByText("10%"),
+    ).toBeInTheDocument();
+    const first = dialog.getByLabelText("Variant 1 weight");
+    await userEvent.clear(first);
+    await userEvent.type(first, "0");
+    const name = dialog.getByLabelText("Variant 2 name");
+    await userEvent.clear(name);
+    await userEvent.type(name, "stable");
+    await userEvent.click(dialog.getByRole("button", { name: "Remove variant 2 target 2" }));
+    await userEvent.click(dialog.getByRole("button", { name: "Remove variant 2 target 1" }));
+    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
+
+    await waitFor(() =>
+      expect(dialog.getByText(/At least one variant needs a weight above 0/)).toBeVisible(),
+    );
+    await expect(dialog.getByText(/Another variant of this route has this name/)).toBeVisible();
+    await expect(dialog.getByText("A variant needs at least one target.")).toBeVisible();
+    await expect(dialog.getByLabelText("Variant 2 name")).toBeInvalid();
+    await expect(dialog.getByLabelText("Variant 1 weight")).toBeInvalid();
+    await expect(dialog.getByText(/3 fields need attention/)).toBeVisible();
+    refusesSplit.expectNotSent("PUT", "/variants");
+  },
+};
+
+/**
+ * The control plane refuses one variant's weight. The refusal is said on that
+ * field and the sheet keeps the draft; a stored route edit is not repeated.
+ */
+export const VariantRefusedByTheControlPlane: Story = {
+  render: () => (
+    <Harness
+      role="admin"
+      fetchStub={
+        withVariants(SPLIT, () =>
+          json(
+            {
+              error: {
+                code: "invalid_field",
+                message: "variants[1].weight: weight must be 0 or more",
+                field: "variants[1].weight",
+              },
+            },
+            400,
+          ),
+        ).stub
+      }
+    >
+      <RoutingRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const dialog = await openRouteSheet(canvasElement);
+    const weight = await dialog.findByLabelText("Variant 2 weight");
+    await userEvent.clear(weight);
+    await userEvent.type(weight, "4");
+    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
+    await waitFor(() => expect(dialog.getByLabelText("Variant 2 weight")).toBeInvalid());
+    await expect(dialog.getByLabelText("Variant 1 weight")).toBeValid();
+    await expect(dialog.getByText(/The control plane refused this field/)).toBeVisible();
+    // editing the field clears the refusal
+    await userEvent.type(dialog.getByLabelText("Variant 2 weight"), "0");
+    await waitFor(() => expect(dialog.getByLabelText("Variant 2 weight")).toBeValid());
+  },
+};
+
+/** The sheet waits for the variants as well as the targets before it offers a draft. */
+export const VariantsLoading: Story = {
+  render: () => (
+    <Harness
+      role="admin"
+      fetchStub={scoped(async (input, init) => {
+        if (/\/routes\/route-1\/variants/.test(String(input))) return pending(input, init);
+        return answer(ROUTES)(input, init);
+      })}
+    >
+      <RoutingRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const dialog = await openRouteSheet(canvasElement);
+    await expectSkeleton(sheetElement());
+    await expectNoFalseEmpty(sheetElement(), /^No variants\./);
+    // story-wait-allow: the save button is disabled by the sheet's own read, from the first paint
+    await expect(dialog.getByRole("button", { name: "Save route" })).toBeDisabled();
+  },
+};
+
+/** A failed variants read is an error with a retry, never an empty split. */
+export const VariantsLoadFailed: Story = {
+  render: () => (
+    <Harness
+      role="admin"
+      fetchStub={scoped(async (input, init) => {
+        if (/\/routes\/route-1\/variants/.test(String(input))) {
+          return json({ error: { message: "boom" } }, 500);
+        }
+        return answer(ROUTES)(input, init);
+      })}
+    >
+      <RoutingRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await openRouteSheet(canvasElement);
+    await expectLoadError(sheetElement(), /route variants/);
+    await expectNoFalseEmpty(sheetElement(), /^No variants\./);
+  },
+};
+
+/**
+ * Editing variants is editing the route: a viewer is refused the sheet, and so
+ * never reads or writes a variant.
+ */
+let viewerReads: Recorder;
+export const VariantEditorRefusedToAViewer: Story = {
+  render: () => {
+    viewerReads = withVariants(SPLIT);
+    return (
+      <Harness fetchStub={viewerReads.stub} role="viewer">
+        <RoutingRules />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    await expectRefused(canvasElement, "Edit route gpt-4o");
+    viewerReads.expectNotSent("GET", "/variants");
+    viewerReads.expectNotSent("PUT", "/variants");
   },
 };
 
