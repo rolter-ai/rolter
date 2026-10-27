@@ -16,6 +16,9 @@ export const SUMMARY = {
   cost_usd: 41.27,
   unpriced_requests: 0,
   unpriced_models: 0,
+  withheld_requests: 0,
+  withheld_cost: 0,
+  usage_unknown_requests: 0,
   // a quarter of the requests were answered from a cache
   cache_hit_requests: 33,
   errors: 7,

@@ -721,6 +721,18 @@ const INVOCATIONS_QUERY: &[QueryParam] = &[
         "`true` returns only requests recorded as unpriced; omit for every request",
     ),
     QueryParam::new(
+        "withheld",
+        "boolean",
+        "`true` returns only requests whose response a policy withheld after the provider billed \
+         them; omit for every request",
+    ),
+    QueryParam::new(
+        "usage_unknown",
+        "boolean",
+        "`true` returns only requests the upstream answered without reporting usage, so their \
+         tokens and cost are unknown; omit for every request",
+    ),
+    QueryParam::new(
         "guardrail",
         "string",
         "only requests a guardrail acted on, named as the guardrails rollup does: \
@@ -4285,6 +4297,9 @@ mod tests {
         assert!(names.contains("trace_id"), "{names:?}");
         // and the unpriced ones can be asked for by themselves
         assert!(names.contains("unpriced"), "{names:?}");
+        // and so can the withheld and the unknown-usage ones (#3302)
+        assert!(names.contains("withheld"), "{names:?}");
+        assert!(names.contains("usage_unknown"), "{names:?}");
         // the list no longer pages on an offset, so documenting one would send
         // a caller down a path that silently returns the same page (#1394)
         assert!(!names.contains("offset"), "{names:?}");

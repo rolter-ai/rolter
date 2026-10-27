@@ -10,6 +10,7 @@ import { FleetHealthTile } from "@/components/FleetHealthTile";
 import { GettingStarted } from "@/components/GettingStarted";
 import { IncompleteSpendNotice } from "@/components/IncompleteSpendNotice";
 import { SampledLogNotice } from "@/components/SampledLogNotice";
+import { WithheldSpendNotice } from "@/components/WithheldSpendNotice";
 import { LoadError } from "@/components/LoadError";
 import { RowFilterPicker, useAddressRowFilters } from "@/components/RowFilters";
 import { SavedViews } from "@/components/SavedViews";
@@ -582,6 +583,12 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
       <IncompleteSpendNotice
         requests={num(summary.data?.unpriced_requests)}
         models={num(summary.data?.unpriced_models)}
+      />
+      <WithheldSpendNotice
+        withheld={num(summary.data?.withheld_requests)}
+        withheldCost={num(summary.data?.withheld_cost)}
+        unknownUsage={num(summary.data?.usage_unknown_requests)}
+        search={search}
       />
 
       {served && gettingStarted}

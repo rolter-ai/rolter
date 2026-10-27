@@ -321,6 +321,8 @@ Two more flags keep a total honest. A **withheld** response is one the provider 
 
 `GET /api/v1/analytics/summary` and `GET /api/v1/analytics/by-model` report `withheld_requests`, `withheld_cost` (the part of `cost_usd` that bought an answer nobody saw) and `usage_unknown_requests`, scaled by the log's sampling weight like every other count. Every row from `GET /api/v1/analytics/invocations` carries `withheld` and `usage_unknown` as `0` or `1`.
 
+The **Dashboard** says so whenever either count is non-zero in the window: a notice gives the withheld requests and the part of the spend they account for, and another gives the successful requests with no reported usage. Each links to **LLM Logs** over the same window and filters, narrowed to those rows with `withheld=true` or `usage_unknown=true` on `GET /api/v1/analytics/invocations`. The server applies both flags before the page is cut, inside the caller's row scope, so a page of 50 is 50 matching rows.
+
 **LLM Logs** marks a withheld row with its 403, the billed cost and the policy named in `error`, and shows a muted dash with an explanation instead of `0` for a row whose usage is unknown, the way it does for an unpriced one.
 
 ### Unpriced traffic
@@ -436,7 +438,7 @@ That covers a date the calendar does not have (`2026-02-30`), a lowercase `t` or
 - **Status** is one of **All**, **Errors** and **OK**. **Errors** is every request answered with a status of 400 or above, plus every request that got no answer at all (status `0`, shown as `ERR` in the table and **No response** in the drawer), since an upstream that never answered is the failure you are looking for. **OK** is every request answered with a status below 400, which includes a redirect as well as a `2xx`, and never a request that got no answer. **All** applies no filter.
 - **Model** takes one model, because the API filters on one exact model name. Picking a second model replaces the first.
 - **Virtual key** takes one key, picked by name from the keys of the project you are looking at. The address carries it as `key=<id>`.
-- **Cost** has one check, **Unpriced only**, which keeps the requests recorded as unpriced (see [Unpriced traffic](#unpriced-traffic)). The API takes it as `unpriced=true`.
+- **Cost** has three checks. **Unpriced only** keeps the requests recorded as unpriced (see [Unpriced traffic](#unpriced-traffic)); the API takes it as `unpriced=true`. **Withheld responses only** keeps the requests a policy refused to deliver after the provider billed them, and **Unknown usage only** keeps the successes whose upstream reported no usage (see [Withheld and unknown-usage traffic](#withheld-and-unknown-usage-traffic)); the API takes them as `withheld=true` and `usage_unknown=true`. They combine, so ticking two keeps the rows that are both. Like every filter here they narrow the rows your roles can read and never widen them.
 - **Business unit** and **Customer** each take several values. A request matches when it was charged to any of the ones you picked.
 - **Plugin** appears when the address names one (`plugin=blocked:<slug>`), and keeps the requests that plugin acted on. **Clear filters** drops it.
 
@@ -448,11 +450,11 @@ The filters are part of the page's address, so a reload keeps them and a copied 
 /logs?status=error&model=gpt-4o&business_unit=<unit-id>&unpriced=true
 ```
 
-A link can outlive what it names. A status value the API does not know is ignored, and so is an `unpriced` value other than `true`, and a model that has since been removed from the catalogue still filters the log and still shows in the picker, so you can see it and clear it. The row open in the detail drawer is not part of the address, except when it was opened by [an id lookup](#looking-a-request-up-in-the-dashboard), whose link opens the drawer again.
+A link can outlive what it names. A status value the API does not know is ignored, and so is an `unpriced`, `withheld` or `usage_unknown` value other than `true`, and a model that has since been removed from the catalogue still filters the log and still shows in the picker, so you can see it and clear it. The row open in the detail drawer is not part of the address, except when it was opened by [an id lookup](#looking-a-request-up-in-the-dashboard), whose link opens the drawer again.
 
 ### Saved views
 
-**Saved views** beside **Filters** keeps the filters you have applied under a name, so you can come back to them in one click. On **LLM Logs** a view holds the time window, status, model, key, business unit and customer; on the Dashboard it holds the window, model, key, business unit and customer. It never holds an id lookup, the page you were on or the **Unpriced only** check. Pick **Apply** to set the screen's filters from the view, **Rename** to change its name, or the bin to delete it. Each account keeps up to 50 views per screen, and a name can be used once.
+**Saved views** beside **Filters** keeps the filters you have applied under a name, so you can come back to them in one click. On **LLM Logs** a view holds the time window, status, model, key, business unit and customer; on the Dashboard it holds the window, model, key, business unit and customer. It never holds an id lookup, the page you were on or the **Cost** checks. Pick **Apply** to set the screen's filters from the view, **Rename** to change its name, or the bin to delete it. Each account keeps up to 50 views per screen, and a name can be used once.
 
 Views are private: they follow your account to any browser you sign in from, and nobody else sees them. They never widen what you can read. If a view names a key, business unit or customer that you can no longer read, it is applied without that filter and the screen says how many it left out, for example _Applied without: 1 key, 2 customers_. The ids are not shown. Saving again keeps only the filters applied at that moment.
 

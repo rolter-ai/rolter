@@ -761,6 +761,18 @@
         "body_other": "They ran against {{count}} models with no price set, so spend below is a floor, not a total. Set prices to include them.",
         "link": "See which models"
       },
+      "withheld": {
+        "title_one": "{{count}} request in this window was billed but its response was withheld.",
+        "title_other": "{{count}} requests in this window were billed but their responses were withheld.",
+        "body": "{{cost}} of the spend above bought answers nobody received: a guardrail or plugin refused to deliver them.",
+        "link": "Show withheld requests"
+      },
+      "usageUnknown": {
+        "title_one": "{{count}} successful request in this window reported no usage.",
+        "title_other": "{{count}} successful requests in this window reported no usage.",
+        "body": "Their tokens and cost are unknown, not zero, so the figures above may be a floor.",
+        "link": "Show requests with unknown usage"
+      },
       "spendChartAria": "Spend, {{window}}",
       "scope": {
         "label": "Scope of these figures",
@@ -3351,6 +3363,8 @@
       "guardrail": "Guardrail",
       "plugin": "Plugin",
       "unpricedOnly": "Unpriced only",
+      "withheldOnly": "Withheld responses only",
+      "usageUnknownOnly": "Unknown usage only",
       "tokens": "Tokens",
       "tokensInOut": "{{in}} in · {{out}} out",
       "virtualKey": "Virtual key",

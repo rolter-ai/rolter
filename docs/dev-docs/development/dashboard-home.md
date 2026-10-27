@@ -69,4 +69,5 @@ rather than showing the mean as a p95 or a rate of zero.
 
 Provider and target health per upstream (`fetchUptime`, `fetchHealthTimeline`) stay on the Health
 screen; the home carries the fleet roll-up, not a per-provider grid. Withheld spend and unknown-usage
-counts arrive with #3302 as a notice under the strip, the way unpriced spend already does.
+counts (#3302) are a notice under the strip, the way unpriced spend already is, each linking to
+LLM Logs narrowed to those rows by `withheld=true` or `usage_unknown=true`.

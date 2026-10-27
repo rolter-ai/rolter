@@ -1537,6 +1537,56 @@ export const TheScopeLineSaysWhatTheFiguresCover: Story = {
   },
 };
 
+/**
+ * #3302: spend a policy withheld, and successes with no reported usage, are in
+ * the figures above and would read as clean. The home says how much and how many
+ * when either is non-zero, and each notice links to LLM Logs over the same window
+ * and filters, narrowed to those rows.
+ */
+export const WithheldSpendAndUnknownUsageAreSaidOnTheHome: Story = {
+  render: () => (
+    <MemoryRouter initialEntries={["/?window=7d&model=gpt-4o"]}>
+      <Harness
+        fetchStub={loadedWith({
+          ...SUMMARY,
+          withheld_requests: 3,
+          withheld_cost: 1.25,
+          usage_unknown_requests: 2,
+        })}
+      >
+        <Dashboard />
+        <Where />
+      </Harness>
+    </MemoryRouter>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const d = en.pages.dashboard;
+    const withheld = await canvas.findByText(d.withheld.title_other.replace("{{count}}", "3"));
+    await expect(withheld.closest('[role="status"]')).toHaveTextContent(
+      d.withheld.body.replace("{{cost}}", fmt.currency(1.25, "USD")),
+    );
+    await expect(
+      await canvas.findByText(d.usageUnknown.title_other.replace("{{count}}", "2")),
+    ).toBeVisible();
+    await userEvent.click(canvas.getByRole("link", { name: d.withheld.link }));
+    await expect(canvas.getByTestId("where")).toHaveTextContent(
+      "/logs?window=7d&model=gpt-4o&withheld=true",
+    );
+  },
+};
+
+/** A window with nothing withheld and no unknown usage shows neither notice. */
+export const NoWithheldNoticeWhenNothingWasWithheld: Story = {
+  render: () => render(loaded),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findAllByText(fmt.number(132));
+    await expect(canvas.queryByText(/billed but/)).toBeNull();
+    await expect(canvas.queryByText(/reported no usage/)).toBeNull();
+  },
+};
+
 const MEMBER_ME = {
   user: { id: "user-1", email: "anya@acme.co", is_superadmin: false },
   memberships: [{ role: "member", org_id: "org-1", team_id: null, project_id: null }],

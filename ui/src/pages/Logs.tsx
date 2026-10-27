@@ -179,6 +179,8 @@ type FilterParam =
   | "business_unit"
   | "customer"
   | "unpriced"
+  | "withheld"
+  | "usage_unknown"
   | "guardrail"
   | "plugin"
   | "request_id"
@@ -214,6 +216,9 @@ function useLogFilters() {
   const unitParam = params.get("business_unit") ?? "";
   const customerParam = params.get("customer") ?? "";
   const unpriced = params.get("unpriced") === "true";
+  // the other two states a billed request can be in (#3302), read the same way
+  const withheld = params.get("withheld") === "true";
+  const usageUnknown = params.get("usage_unknown") === "true";
   // one guardrail outcome, as the Guardrail Rules cards link it (#2158)
   const guardrail = (params.get("guardrail") ?? "").trim();
   // one plugin outcome, as the plugin rollup names it (#2243)
@@ -257,6 +262,8 @@ function useLogFilters() {
     units,
     customers,
     unpriced,
+    withheld,
+    usageUnknown,
     guardrail,
     plugin,
     /** the id being looked up, if any */
@@ -270,6 +277,8 @@ function useLogFilters() {
       unitParam,
       customerParam,
       unpriced,
+      withheld,
+      usageUnknown,
       guardrail,
       plugin,
       lookup?.kind,
@@ -298,7 +307,14 @@ function useLogFilters() {
     setKey: (next: string) => update({ key: next }),
     setUnits: (next: string[]) => update({ business_unit: next.join(",") }),
     setCustomers: (next: string[]) => update({ customer: next.join(",") }),
-    setUnpriced: (next: boolean) => update({ unpriced: next ? "true" : "" }),
+    // the three flags of the Cost section in one write: separate writes in one
+    // click would each start from the address as it was, and the last would win
+    setCostFlags: (picked: string[]) =>
+      update({
+        unpriced: picked.includes("unpriced") ? "true" : "",
+        withheld: picked.includes("withheld") ? "true" : "",
+        usage_unknown: picked.includes("usage_unknown") ? "true" : "",
+      }),
     clearGuardrail: () => update({ guardrail: "" }),
     clearPlugin: () => update({ plugin: "" }),
     clear: () =>
@@ -309,6 +325,8 @@ function useLogFilters() {
         business_unit: "",
         customer: "",
         unpriced: "",
+        withheld: "",
+        usage_unknown: "",
         guardrail: "",
         plugin: "",
       }),
@@ -326,6 +344,8 @@ function useLogFilters() {
               business_unit: "",
               customer: "",
               unpriced: "",
+              withheld: "",
+              usage_unknown: "",
               guardrail: "",
               plugin: "",
             }
@@ -403,6 +423,8 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
     units: unitSel,
     customers: customerSel,
     unpriced,
+    withheld,
+    usageUnknown,
     guardrail,
     plugin,
     lookup,
@@ -454,6 +476,8 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
       unitSel.join(","),
       customerSel.join(","),
       unpriced,
+      withheld,
+      usageUnknown,
       guardrail,
       plugin,
       cursors[page - 1] ?? "",
@@ -474,6 +498,8 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
         business_unit: unitSel.length ? unitSel : undefined,
         customer: customerSel.length ? customerSel : undefined,
         unpriced: unpriced || undefined,
+        withheld: withheld || undefined,
+        usage_unknown: usageUnknown || undefined,
         guardrail: guardrail || undefined,
         plugin: plugin || undefined,
         status,
@@ -586,6 +612,8 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
     unitSel.length +
     customerSel.length +
     (unpriced ? 1 : 0) +
+    (withheld ? 1 : 0) +
+    (usageUnknown ? 1 : 0) +
     (guardrail ? 1 : 0) +
     (plugin ? 1 : 0);
   // what a saved view keeps of the screen: the lookup, the page and the
@@ -867,11 +895,23 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
               />
               {/* the flag the gateway recorded per request, applied by the server
                 before the page is cut like every other filter here (#1986) */}
-              <FilterSection title={t("pages.logs.cost")} defaultOpen count={unpriced ? 1 : 0}>
+              <FilterSection
+                title={t("pages.logs.cost")}
+                defaultOpen
+                count={(unpriced ? 1 : 0) + (withheld ? 1 : 0) + (usageUnknown ? 1 : 0)}
+              >
                 <FilterCheckList
-                  options={[{ value: "unpriced", label: t("pages.logs.unpricedOnly") }]}
-                  selected={unpriced ? ["unpriced"] : []}
-                  onChange={(picked) => filters.setUnpriced(picked.includes("unpriced"))}
+                  options={[
+                    { value: "unpriced", label: t("pages.logs.unpricedOnly") },
+                    { value: "withheld", label: t("pages.logs.withheldOnly") },
+                    { value: "usage_unknown", label: t("pages.logs.usageUnknownOnly") },
+                  ]}
+                  selected={[
+                    ...(unpriced ? ["unpriced"] : []),
+                    ...(withheld ? ["withheld"] : []),
+                    ...(usageUnknown ? ["usage_unknown"] : []),
+                  ]}
+                  onChange={filters.setCostFlags}
                 />
               </FilterSection>
               {/* arrives from a Guardrail Rules card, and is the only way to drop it */}

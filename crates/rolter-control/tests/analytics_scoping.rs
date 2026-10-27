@@ -1345,3 +1345,126 @@ async fn summary_reports_weighted_cache_hits_and_an_overall_p95() {
     let p95 = row["p95_latency_ms"].as_f64().unwrap();
     assert!((100.0..=300.0).contains(&p95), "{p95}");
 }
+
+/// The invocation list's request ids for `token`, among `request_ids`, for one
+/// query string, sorted.
+async fn invocation_ids(
+    client: &reqwest::Client,
+    addr: SocketAddr,
+    token: &str,
+    query: &str,
+    request_ids: &[&str],
+) -> Vec<String> {
+    let response = client
+        .get(format!(
+            "http://{addr}/api/v1/analytics/invocations?limit=200&{query}"
+        ))
+        .bearer_auth(token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200, "invocations {query}");
+    let body: Value = response.json().await.unwrap();
+    let mut ids: Vec<String> = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|row| row["request_id"].as_str())
+        .filter(|id| request_ids.contains(id))
+        .map(str::to_string)
+        .collect();
+    ids.sort();
+    ids
+}
+
+/// `withheld=true` and `usage_unknown=true` narrow the list on the flags the
+/// gateway recorded (#3302), inside the caller's row scope: a member of one
+/// project never sees another tenant's withheld row through the filter.
+#[tokio::test]
+async fn withheld_and_unknown_usage_filters_narrow_inside_the_callers_scope() {
+    let ch = skip_without_stack!();
+    let http = reqwest::Client::new();
+    ensure_schema(&http, &ch).await;
+
+    let db = TestSchema::create(&test_database::url().await.unwrap()).await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_clickhouse_and_admin_token(
+        pool.clone(),
+        &ch,
+        Some(ADMIN_TOKEN.to_string()),
+    )
+    .await
+    .unwrap();
+    let addr = serve(app).await;
+    let mine = seed_tenant(&pool, "withheld-mine").await;
+    let other = seed_tenant(&pool, "withheld-other").await;
+    let member = seed_user(
+        &pool,
+        Some(mine.org),
+        Some(mine.team),
+        Some(mine.project_a),
+        "member",
+    )
+    .await;
+
+    let ts = chrono::Utc::now()
+        .format("%Y-%m-%d %H:%M:%S%.3f")
+        .to_string();
+    let tag = Uuid::new_v4().simple().to_string();
+    let log = |label: &str, tenant: &Tenant, withheld: u8, usage_unknown: u8| {
+        json!({
+            "ts": ts, "request_id": format!("flag-{label}-{tag}"),
+            "org_id": tenant.org.to_string(), "team_id": tenant.team.to_string(),
+            "project_id": tenant.project_a.to_string(),
+            "model": "fake-llm", "status": if withheld == 1 { 403 } else { 200 },
+            "withheld": withheld, "usage_unknown": usage_unknown,
+        })
+    };
+    insert_rows(
+        &http,
+        &ch,
+        "request_logs",
+        &[
+            log("plain", &mine, 0, 0),
+            log("withheld", &mine, 1, 0),
+            log("unknown", &mine, 0, 1),
+            log("theirs", &other, 1, 1),
+        ],
+    )
+    .await;
+    let id = |label: &str| format!("flag-{label}-{tag}");
+    let all: Vec<String> = ["plain", "withheld", "unknown", "theirs"]
+        .iter()
+        .map(|l| id(l))
+        .collect();
+    let all: Vec<&str> = all.iter().map(String::as_str).collect();
+    let ids = |labels: &[&str]| {
+        let mut v: Vec<String> = labels.iter().map(|l| id(l)).collect();
+        v.sort();
+        v
+    };
+
+    // no filter: the member's three rows, never the other tenant's
+    assert_eq!(
+        invocation_ids(&http, addr, &member, "", &all).await,
+        ids(&["plain", "unknown", "withheld"])
+    );
+    assert_eq!(
+        invocation_ids(&http, addr, &member, "withheld=true", &all).await,
+        ids(&["withheld"])
+    );
+    assert_eq!(
+        invocation_ids(&http, addr, &member, "usage_unknown=true", &all).await,
+        ids(&["unknown"])
+    );
+    // `false` is the filter left off
+    assert_eq!(
+        invocation_ids(&http, addr, &member, "withheld=false", &all).await,
+        ids(&["plain", "unknown", "withheld"])
+    );
+    // the admin token sees the other tenant's row through the same filter
+    assert_eq!(
+        invocation_ids(&http, addr, ADMIN_TOKEN, "withheld=true", &all).await,
+        ids(&["theirs", "withheld"])
+    );
+}
