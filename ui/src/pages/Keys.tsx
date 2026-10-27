@@ -358,7 +358,7 @@ export default function Keys() {
                 <Badge tone="neutral">{t("pages.virtualKeys.allModels")}</Badge>
               )}
               {key.models.length > 3 && (
-                <span className="font-mono text-3xs text-[color:var(--text-subtle)]">
+                <span className="font-mono text-2xs text-[color:var(--text-subtle)]">
                   +{key.models.length - 3}
                 </span>
               )}

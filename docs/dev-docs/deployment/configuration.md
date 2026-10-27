@@ -17,7 +17,7 @@ The gateway boots from a TOML file (`--config`, default `rolter.toml`); see [`ro
 ### `[[providers]]`
 
 - `name` (string, unique) — referenced by route targets
-- `kind` (`openai` | `anthropic` | `openai_compatible` | `ollama` | `ollama_cloud` | `llama_cpp` | `openrouter` | `tei` | `azure_openai` | `bedrock` | `vertex` | `gemini` | `gemini_native` | `gemini_interactions` | `mistral` | `groq` | `xai` | `meta_llama_api` | `cohere` | `perplexity` | `together` | `fireworks` | `databricks` | `aleph_alpha` | `nebius` | `ovhcloud` | `scaleway` | `deepseek` | `qwen` | `zhipu` | `kimi` | `ernie` | `doubao` | `hunyuan` | `yi` | `minimax` | `baichuan` | `gigachat` | `yandex_gpt` | `cloud_ru` | `mts_ai` | `naver` | `upstage` | `rinna` | `rakuten` | `sarvam` | `krutrim` | `falcon`)
+- `kind` (`openai` | `anthropic` | `openai_compatible` | `ollama` | `ollama_cloud` | `llama_cpp` | `openrouter` | `tei` | `azure_openai` | `bedrock` | `vertex` | `gemini` | `gemini_native` | `gemini_interactions` | `mistral` | `groq` | `xai` | `meta_llama_api` | `cohere` | `perplexity` | `together` | `fireworks` | `databricks` | `aleph_alpha` | `nebius` | `ovhcloud` | `scaleway` | `deepseek` | `qwen` | `zhipu` | `kimi` | `ernie` | `doubao` | `hunyuan` | `yi` | `minimax` | `baichuan` | `gigachat` | `yandex_gpt` | `cloud_ru` | `mts_ai` | `naver` | `upstage` | `rinna` | `rakuten` | `sarvam` | `krutrim` | `falcon` | `system_one` | `infinity`)
 - `api_base` (string) — base URL, no trailing slash
 - `api_key` (string, optional) — prefer `api_key_env`
 - `api_key_env` (string, optional) — environment variable to read the key from. It is read from the environment of each process that needs the key: the gateway reads it for every request, and the control plane reads it for **Test connection**, so a deployment that runs them apart sets it in both (#2811)
@@ -56,6 +56,7 @@ preview cannot disagree with the forwarder:
 | --------------------- | -------------------------- | ------------------------------------- |
 | `anthropic`           | a chat completion          | `/v1/messages`                        |
 | `tei`                 | an embedding               | `/v1/embeddings`                      |
+| `infinity`            | an embedding               | `/v1/embeddings`                      |
 | `gemini_native`       | a chat completion          | `/models/{model}:generateContent`     |
 | `gemini_interactions` | a chat completion          | `/interactions`                       |
 | every other kind      | a chat completion          | `/v1/chat/completions`                |
@@ -101,8 +102,8 @@ path):
 - the body is a `max_tokens = 1` chat completion put through the same
   `TranslationPlan` a client request takes, so `anthropic`, `gemini_native` and
   `gemini_interactions` get their own wire format;
-- a text-embeddings server (`tei`) answers no completion, so it is sent the
-  embedding of one word;
+- a text-embeddings server (`tei`, `infinity`) answers no completion, so it is
+  sent the embedding of one word;
 - the key goes out in the header `ProviderKind::auth_header` names.
 
 If the plan cannot be built the check logs why and falls back to the free probe,
@@ -323,6 +324,7 @@ Deployment-wide policy for routes using the `adaptive` strategy. See [load balan
 - `probe_concurrency` (usize, default `2`) — max probes in flight at once during a sweep, so probing never stampedes upstreams
 - `consecutive_failure_threshold` (u32, default `3`) — consecutive probe failures before a provider is marked unhealthy
 - `recovery_success_threshold` (u32, default `2`) — consecutive successes before an unhealthy provider recovers
+- `catalogue_interval_secs` (u64, default `900`) — seconds between refreshes of each provider's model catalogue for `GET /v1/models`; runs even when `enabled = false`, `0` turns it off
 - `status_page_interval_secs` (u64, default `60`) — seconds between provider status-page polls; only providers with a `status_page_url` are polled, and the poller runs even when `enabled = false`
 - probes are jittered across the first quarter of the interval (per-provider stable offset), and a `429` on the probe itself pauses that provider's probing with exponential backoff (1, 2, 4, 8 sweeps) without marking it unhealthy
 

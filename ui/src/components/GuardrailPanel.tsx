@@ -81,7 +81,7 @@ export function PolicyCard({
   };
   const Heading = headingLevel;
   return (
-    <article className="flex min-h-[172px] min-w-0 flex-col rounded-[10px] border border-[color:var(--border-subtle)] bg-[color:var(--surface-raised)] p-4 transition-colors hover:border-[color:var(--border-default)]">
+    <article className="flex min-h-[172px] min-w-0 flex-col rounded-lg border border-[color:var(--border-subtle)] bg-card p-4 transition-colors hover:border-[color:var(--border-default)]">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
@@ -138,7 +138,7 @@ export function GuardrailBanner({
     <section
       aria-labelledby={titleId}
       className={cn(
-        "flex flex-col gap-3 rounded-[10px] border p-4 sm:flex-row sm:items-start",
+        "flex flex-col gap-3 rounded-lg border p-4 sm:flex-row sm:items-start",
         BANNER_TONE[tone],
       )}
     >

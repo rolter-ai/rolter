@@ -33,6 +33,11 @@ pub const ANTHROPIC_MESSAGES_PATH: &str = "/v1/messages";
 /// OpenAI embeddings, which is what a text-embeddings server answers.
 pub const EMBEDDINGS_PATH: &str = "/v1/embeddings";
 
+/// Cohere/Jina-style rerank. Of the kinds with a dialect of their own only
+/// Infinity is sent it (`{url_prefix}/rerank`, through the `/v1` rule); every
+/// other kind receives the gateway path unchanged.
+pub const RERANK_PATH: &str = "/v1/rerank";
+
 /// Gemini Interactions: a single model-less endpoint, the model travels in the
 /// body.
 pub const GEMINI_INTERACTIONS_PATH: &str = "/interactions";
@@ -68,7 +73,7 @@ impl ProviderKind {
     /// would answer `404` to.
     pub fn primary_request(self) -> RequestKind {
         match self {
-            ProviderKind::Tei => RequestKind::Embeddings,
+            ProviderKind::Tei | ProviderKind::Infinity => RequestKind::Embeddings,
             ProviderKind::SystemOne => RequestKind::Decision,
             _ => RequestKind::Chat,
         }
@@ -102,7 +107,7 @@ impl ProviderKind {
     /// [`Self::resolve_upstream_url`], that [`Self::primary_request`] is sent to.
     pub fn primary_upstream_path(self) -> &'static str {
         match self {
-            ProviderKind::Tei => EMBEDDINGS_PATH,
+            ProviderKind::Tei | ProviderKind::Infinity => EMBEDDINGS_PATH,
             ProviderKind::Anthropic => ANTHROPIC_MESSAGES_PATH,
             ProviderKind::GeminiNative => GEMINI_GENERATE_PATH,
             ProviderKind::GeminiInteractions => GEMINI_INTERACTIONS_PATH,
@@ -128,6 +133,7 @@ mod tests {
         assert_eq!(path(ProviderKind::OpenaiCompatible), "/v1/chat/completions");
         assert_eq!(path(ProviderKind::Anthropic), "/v1/messages");
         assert_eq!(path(ProviderKind::Tei), "/v1/embeddings");
+        assert_eq!(path(ProviderKind::Infinity), "/v1/embeddings");
         assert_eq!(
             path(ProviderKind::GeminiNative),
             "/models/{model}:generateContent"
@@ -137,10 +143,10 @@ mod tests {
     }
 
     #[test]
-    fn only_tei_embeds_and_only_system_one_decides() {
+    fn only_the_embedding_servers_embed_and_only_system_one_decides() {
         for kind in ProviderKind::ALL {
             let expected = match kind {
-                ProviderKind::Tei => RequestKind::Embeddings,
+                ProviderKind::Tei | ProviderKind::Infinity => RequestKind::Embeddings,
                 ProviderKind::SystemOne => RequestKind::Decision,
                 _ => RequestKind::Chat,
             };
@@ -181,6 +187,16 @@ mod tests {
         assert_eq!(
             ProviderKind::Tei.primary_upstream_url("http://tei:80"),
             "http://tei:80/v1/embeddings"
+        );
+        // infinity's default `--url-prefix` is empty, so its routes sit at the
+        // server root and the base carries no `/v1` of its own
+        assert_eq!(
+            ProviderKind::Infinity.primary_upstream_url("http://infinity:7997"),
+            "http://infinity:7997/embeddings"
+        );
+        assert_eq!(
+            ProviderKind::Infinity.resolve_upstream_url("http://infinity:7997/v1/", RERANK_PATH),
+            "http://infinity:7997/v1/rerank"
         );
         assert_eq!(
             ProviderKind::GeminiInteractions

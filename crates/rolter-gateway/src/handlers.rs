@@ -149,6 +149,28 @@ pub async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
     ([(header::CONTENT_TYPE, "text/plain; version=0.0.4")], body)
 }
 
+/// Add the catalog metadata a route sets to its `/v1/models` entry (#2939).
+///
+/// Only the machine-meaningful fields are served, and only when set, so an
+/// entry for a route that sets none is byte-identical to what it always was.
+/// `description` is deliberately absent: it is a free-text note for the team
+/// and may hold internal routing notes.
+fn add_model_metadata(item: &mut Value, advanced: &rolter_core::AdvancedModelConfig) {
+    let Some(object) = item.as_object_mut() else {
+        return;
+    };
+    if !advanced.capabilities.is_empty() {
+        object.insert("capabilities".to_string(), json!(advanced.capabilities));
+    }
+    if let Some(model_type) = advanced.model_type.as_deref().filter(|t| !t.is_empty()) {
+        object.insert("model_type".to_string(), json!(model_type));
+    }
+    // zero is not a window; a row written around validation is not advertised
+    if let Some(context_length) = advanced.context_length.filter(|n| *n > 0) {
+        object.insert("context_length".to_string(), json!(context_length));
+    }
+}
+
 /// OpenAI-compatible model listing built from configured routes, filtered to
 /// the models the caller's virtual key is allowed to see.
 pub async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> Response {
@@ -172,10 +194,16 @@ pub async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> R
             vk.as_ref()
                 .is_none_or(|key| authorize_route(Some(key), entry).is_ok())
         })
-        .map(|(model, _)| model.clone())
-        .chain(builtin)
-        .filter(|m| vk.as_ref().is_none_or(|vk| vk.model_permitted(m)))
-        .map(|m| json!({"id": m, "object": "model", "owned_by": "rolter"}))
+        .map(|(model, entry)| (model.clone(), Some(&entry.route.advanced)))
+        .chain(builtin.map(|model| (model, None)))
+        .filter(|(m, _)| vk.as_ref().is_none_or(|vk| vk.model_permitted(m)))
+        .map(|(m, advanced)| {
+            let mut item = json!({"id": m, "object": "model", "owned_by": "rolter"});
+            if let Some(advanced) = advanced {
+                add_model_metadata(&mut item, advanced);
+            }
+            item
+        })
         .collect();
 
     // provider-slug/model ids (ADR-0017): make every provider-addressable model
@@ -229,8 +257,8 @@ pub async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> R
         }
     }
     // widen with each provider's probed catalogue. the cache is empty until the
-    // first health sweep lands (and stays empty while probing is off), in which
-    // case this is exactly the route-derived listing it always was
+    // first refresh lands (and stays empty if it is turned off), in which case
+    // this is exactly the route-derived listing it always was
     for name in snap.providers.keys() {
         let Some(models) = state.model_catalog.models(name) else {
             continue;
@@ -2271,14 +2299,16 @@ async fn proxy(
     // prefix affinity reads the conversation, not the JSON envelope every
     // request to the model shares (#1851); a shape it cannot read keeps the
     // raw body, as before
-    let affinity = crate::prompt_affinity::affinity(path, &parsed);
+    let affinity = crate::prompt_affinity::affinity_for(entry, path, &parsed);
     let token_ids = parse_vllm_token_ids(&headers);
     // the affinity text is only the prompt's leading bytes; route_context also
     // hands over the whole prompt's length and digest, which the predictor's
     // token estimate and consistent_hash need
     let ctx = crate::prompt_affinity::route_context(
         affinity.as_ref(),
-        &body,
+        // the raw body stands in for a prompt this cannot read, but only on a
+        // route whose balancers read one (#1929)
+        entry.reads_prompt().then_some(&body[..]),
         session_key,
         token_ids.as_deref(),
         // adapter identity only exists when the request addresses something
@@ -2673,6 +2703,7 @@ async fn proxy(
                 .provider_queues
                 .forward_json(
                     &snap.queue,
+                    snap.generation,
                     provider,
                     path,
                     forward_body.clone(),
@@ -3330,16 +3361,12 @@ async fn proxy_multipart(
     let recorder = SpendRecorder::new(state.budgets.clone(), snap.budgets.clone(), scope);
 
     let token_ids = parse_vllm_token_ids(&headers);
-    let ctx = RouteContext {
-        session_key: headers.get("x-session-id").and_then(|v| v.to_str().ok()),
-        prompt: None,
-        prompt_len: None,
-        prompt_digest: None,
-        token_ids: token_ids.as_deref(),
+    let ctx = RouteContext::new()
+        .with_session_key(headers.get("x-session-id").and_then(|v| v.to_str().ok()))
+        .with_token_ids(token_ids.as_deref())
         // see the chat path: an adapter only exists when the request addresses
         // something other than the route's own model
-        adapter: (model != entry.route.model).then_some(model.as_str()),
-    };
+        .with_adapter((model != entry.route.model).then_some(model.as_str()));
     // trace context plus any client headers the operator allowlisted (#564)
     let trace_ctx =
         crate::trace::outbound_headers(&headers, &state.forwarder.forwarded_header_names());
@@ -3445,6 +3472,7 @@ async fn proxy_multipart(
             .provider_queues
             .forward_raw(
                 &snap.queue,
+                snap.generation,
                 provider,
                 path,
                 body.clone(),
@@ -3781,23 +3809,47 @@ fn variant_target_order(
     order
 }
 
-/// Whether target `ti` of variant `v` (balanced under `key`) can lead an
-/// attempt: the same skip rules the attempt loop applies, so the variant's
-/// balancer weighs only targets it can lead with (#1851).
-fn variant_target_eligible(
-    state: &AppState,
-    key_meta: Option<&KeyMeta>,
-    key: &str,
-    v: &rolter_core::Variant,
-    cd_enabled: bool,
-    ti: usize,
-) -> bool {
-    v.targets.get(ti).is_some_and(|target| {
-        key_meta.is_none_or(|meta| meta.provider_allowed(&target.provider))
-            && !(cd_enabled && state.cooldowns.is_parked(key, ti))
-            && state.health.is_healthy(&target.provider)
-            && state.breaker.allows(key, ti)
-    })
+/// Which targets of one pool cannot lead an attempt, read once per attempt:
+/// parked on a cooldown, on an unhealthy provider, or behind an open breaker.
+///
+/// Each registry answers for the whole pool under one lock, so an attempt takes
+/// three acquisitions however many targets the pool has. Asking the registries
+/// per target, as the eligibility closure used to, took about three per target
+/// and ran once per target the balancer weighed (#1942).
+struct Blocked {
+    parked: crate::target_mask::TargetMask,
+    unhealthy: crate::target_mask::TargetMask,
+    open: crate::target_mask::TargetMask,
+}
+
+impl Blocked {
+    /// Read the registries for the first `n` targets of the pool `model`,
+    /// whose providers are `providers` in target order. `cd_enabled` is the
+    /// route's cooldown switch: with it off nothing counts as parked.
+    fn read<'a>(
+        cooldowns: &crate::cooldowns::Cooldowns,
+        health: &crate::health::Health,
+        breaker: &crate::breaker::Breaker,
+        model: &str,
+        cd_enabled: bool,
+        n: usize,
+        providers: impl IntoIterator<Item = &'a str>,
+    ) -> Self {
+        Self {
+            parked: if cd_enabled {
+                cooldowns.parked_mask(model, n)
+            } else {
+                Default::default()
+            },
+            unhealthy: health.unhealthy_mask(providers),
+            open: breaker.open_mask(model, n),
+        }
+    }
+
+    /// Whether target `idx` is parked, unhealthy or behind an open breaker.
+    fn contains(&self, idx: usize) -> bool {
+        self.parked.contains(idx) || self.unhealthy.contains(idx) || self.open.contains(idx)
+    }
 }
 
 /// The `(variant, target)` pairs an attempt walks, in order: `primary` first,
@@ -3824,8 +3876,23 @@ fn variant_candidates(
                     *l = l.saturating_add(state.upstream_metrics.queue_depth(&target.provider));
                 }
             }
-            let eligible =
-                |ti: usize| variant_target_eligible(state, key_meta, &key, v, cd_enabled, ti);
+            // the variant's balancer weighs only targets it can lead with
+            // (#1851), asked of the registries once, not once per target
+            let blocked = Blocked::read(
+                &state.cooldowns,
+                &state.health,
+                &state.breaker,
+                &key,
+                cd_enabled,
+                v.targets.len(),
+                v.targets.iter().map(|t| t.provider.as_str()),
+            );
+            let eligible = |ti: usize| {
+                v.targets.get(ti).is_some_and(|target| {
+                    key_meta.is_none_or(|meta| meta.provider_allowed(&target.provider))
+                        && !blocked.contains(ti)
+                })
+            };
             for ti in variant_target_order(entry, ctx, vi, v.targets.len(), &loads, &eligible) {
                 if key_meta.is_none_or(|key| key.provider_allowed(&v.targets[ti].provider)) {
                     candidates.push((vi, ti));
@@ -3956,6 +4023,7 @@ async fn forward_variants(
             .provider_queues
             .forward_json(
                 &snap.queue,
+                snap.generation,
                 provider,
                 path,
                 forward_body,
@@ -4119,19 +4187,43 @@ pub(crate) fn pick_untried(
     cd_enabled: bool,
     key_meta: Option<&KeyMeta>,
 ) -> Option<usize> {
+    let n = entry.route.targets.len();
+    let key_allows = |i: usize| {
+        key_meta.is_none_or(|key| key.provider_allowed(&entry.route.targets[i].provider))
+    };
     // a target is skippable when parked on a cooldown, when its provider is
     // currently marked unhealthy by the active prober, or when its circuit
-    // breaker is open
+    // breaker is open. this is the check for one target: the pick the balancer
+    // returns, which is all a strategy that ignores eligibility ever asks about
     let skip = |i: usize| {
-        key_meta.is_some_and(|key| !key.provider_allowed(&entry.route.targets[i].provider))
+        !key_allows(i)
             || (cd_enabled && cooldowns.is_parked(model, i))
             || !health.is_healthy(&entry.route.targets[i].provider)
             || !breaker.allows(model, i)
     };
-    let n = entry.route.targets.len();
+    // the same rules for every target at once, read from each registry in one
+    // lock acquisition and only if something asks. a strategy that weighs
+    // targets against each other asks about all of them, and per-target
+    // answers would take about three locks each (#1942)
+    let snapshot = std::cell::OnceCell::new();
+    let blocked = |i: usize| {
+        snapshot
+            .get_or_init(|| {
+                Blocked::read(
+                    cooldowns,
+                    health,
+                    breaker,
+                    model,
+                    cd_enabled,
+                    n,
+                    entry.route.targets.iter().map(|t| t.provider.as_str()),
+                )
+            })
+            .contains(i)
+    };
     // the balancer weighs only the targets this attempt can use, so a dead
     // replica's empty queue never reads as the least-loaded target (#1851)
-    let usable = |i: usize| i < n && !tried.contains(&i) && !skip(i);
+    let usable = |i: usize| i < n && !tried.contains(&i) && key_allows(i) && !blocked(i);
     // a pick past the target list is treated as no pick rather than indexed:
     // a balancer shared across per-request pools (#1655) can be sized from a
     // different list than the one it is picking over, and `skip` indexes
@@ -4146,9 +4238,11 @@ pub(crate) fn pick_untried(
         }
     }
     // prefer an untried, non-skipped target; fail open to any untried one when
-    // every remaining sibling is parked or unhealthy
+    // every remaining sibling is parked or unhealthy. the snapshot above does
+    // not move an open breaker whose window has elapsed to half-open, so the
+    // target chosen here asks `allows`, which does
     (0..n)
-        .find(|i| !tried.contains(i) && !skip(*i))
+        .find(|&i| usable(i) && breaker.allows(model, i))
         .or_else(|| first_untried_allowed(entry, tried, key_meta))
 }
 
@@ -5583,6 +5677,49 @@ mod tests {
         assert!(!ids.iter().any(|id| id == "openai-edge/o3-mini"), "{ids:?}");
     }
 
+    async fn listed_entries(state: AppState) -> Vec<Value> {
+        let resp = list_models(State(state), HeaderMap::new()).await;
+        let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        value["data"].as_array().unwrap().clone()
+    }
+
+    /// A route that sets catalog metadata serves the machine-meaningful part of
+    /// it; the free-text description stays out (#2939).
+    #[tokio::test]
+    async fn a_route_serves_its_capabilities_model_type_and_context_length() {
+        let mut config = config_with_a_wide_provider();
+        config.routes[0].advanced = rolter_core::AdvancedModelConfig {
+            model_type: Some("chat".to_string()),
+            capabilities: vec!["vision".to_string(), "tools".to_string()],
+            context_length: Some(128_000),
+            description: Some("internal: fails over to the eu pool".to_string()),
+            ..Default::default()
+        };
+        let entries = listed_entries(AppState::new(&config)).await;
+        let chat = entries.iter().find(|e| e["id"] == "chat").unwrap();
+        assert_eq!(chat["capabilities"], json!(["vision", "tools"]));
+        assert_eq!(chat["model_type"], "chat");
+        assert_eq!(chat["context_length"], 128_000);
+        assert!(chat.get("description").is_none(), "{chat}");
+        // an address has no route, so it carries no metadata
+        let pinned = entries
+            .iter()
+            .find(|e| e["id"] == "openai-edge/gpt-4o")
+            .unwrap();
+        assert!(pinned.get("context_length").is_none(), "{pinned}");
+    }
+
+    /// A route that sets nothing gains none of the catalog fields.
+    #[tokio::test]
+    async fn a_route_without_metadata_lists_no_catalog_fields() {
+        let entries = listed_entries(AppState::new(&config_with_a_wide_provider())).await;
+        let chat = entries.iter().find(|e| e["id"] == "chat").unwrap();
+        for key in ["capabilities", "model_type", "context_length"] {
+            assert!(chat.get(key).is_none(), "{key} listed for {chat}");
+        }
+    }
+
     /// The catalogue widens what is discoverable, never what a key may reach.
     #[tokio::test]
     async fn a_key_allow_list_still_filters_catalogued_models() {
@@ -6061,10 +6198,8 @@ mod tests {
             variants: vec![variant.clone()],
             tenancy: None,
         };
-        let ctx = RouteContext {
-            prompt: Some("system: you are a careful assistant\nuser: hi\n"),
-            ..Default::default()
-        };
+        let ctx = RouteContext::new()
+            .with_prompt(Some("system: you are a careful assistant\nuser: hi\n"));
         let cache_aware = rolter_balancer::CacheAware::new(3, 0.5);
         rolter_balancer::LoadBalancer::observe(&cache_aware, 1, &ctx);
         let entry = crate::state::RouteEntry {
@@ -6485,10 +6620,8 @@ mod tests {
             variant_balancers: Vec::new(),
             route,
         };
-        let ctx = RouteContext {
-            prompt: Some("system: you are a careful assistant\nuser: hi\n"),
-            ..Default::default()
-        };
+        let ctx = RouteContext::new()
+            .with_prompt(Some("system: you are a careful assistant\nuser: hi\n"));
         entry.balancer.observe(1, &ctx);
         let cd = crate::cooldowns::Cooldowns::default();
         let hh = crate::health::Health::new();
@@ -7049,5 +7182,113 @@ mod tests {
             Err(AccessDenial::ModelNotAllowed)
         );
         assert_eq!(authorize_model(None, "gpt-4o"), Ok(()));
+    }
+
+    /// #1942: the load-aware strategies weigh only the targets the attempt can
+    /// use. Target 0 reads as the emptiest in every case here, so a strategy
+    /// that ignores eligibility hands it back and `pick_untried` falls over to
+    /// the lowest usable index (target 1, the busiest) instead of target 2.
+    #[test]
+    fn pick_untried_weighs_load_only_among_usable_targets() {
+        enum Dead {
+            Parked,
+            Unhealthy,
+            BreakerOpen,
+        }
+        for strategy in [BalancingStrategy::PowerOfTwo, BalancingStrategy::Pipeline] {
+            for dead in [Dead::Parked, Dead::Unhealthy, Dead::BreakerOpen] {
+                let route = ModelRoute {
+                    model: "m".to_string(),
+                    strategy,
+                    params: Default::default(),
+                    param_policy: Default::default(),
+                    advanced: Default::default(),
+                    cache: None,
+                    variants: Default::default(),
+                    targets: ["a", "b", "c"]
+                        .map(|provider| Target {
+                            provider: provider.to_string(),
+                            model: None,
+                            weight: 1,
+                        })
+                        .to_vec(),
+                    tenancy: None,
+                };
+                let entry = crate::state::RouteEntry {
+                    project_scope: None,
+                    overrides: Default::default(),
+                    throughput: None,
+                    guardrails: Default::default(),
+                    balancer: rolter_balancer::build(route.strategy, &[1, 1, 1]).into(),
+                    variant_balancers: Vec::new(),
+                    route,
+                };
+                let ctx = RouteContext::default();
+                let cd = crate::cooldowns::Cooldowns::new();
+                let hh = crate::health::Health::new();
+                let bb = crate::breaker::Breaker::new(true, 1, 3600);
+                match dead {
+                    Dead::Parked => cd.park("m", 0, 60),
+                    Dead::Unhealthy => hh.set("a", false),
+                    Dead::BreakerOpen => {
+                        bb.on_failure("m", 0);
+                    }
+                }
+                let loads = [0, 9, 1];
+                for _ in 0..100 {
+                    assert_eq!(
+                        pick_untried(&entry, &ctx, &[], &loads, &cd, &hh, &bb, "m", true, None),
+                        Some(2),
+                        "{strategy:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// An open breaker whose window has elapsed still admits its probe: the
+    /// mask does not count it as blocked, and the pick moves it to half-open.
+    #[test]
+    fn pick_untried_admits_a_probe_after_the_open_window() {
+        let route = ModelRoute {
+            model: "m".to_string(),
+            strategy: BalancingStrategy::RoundRobin,
+            params: Default::default(),
+            param_policy: Default::default(),
+            advanced: Default::default(),
+            cache: None,
+            variants: Default::default(),
+            targets: vec![Target {
+                provider: "a".to_string(),
+                model: None,
+                weight: 1,
+            }],
+            tenancy: None,
+        };
+        let entry = crate::state::RouteEntry {
+            project_scope: None,
+            overrides: Default::default(),
+            throughput: None,
+            guardrails: Default::default(),
+            balancer: rolter_balancer::build(route.strategy, &[1]).into(),
+            variant_balancers: Vec::new(),
+            route,
+        };
+        let bb = crate::breaker::Breaker::new(true, 1, 0);
+        bb.on_failure("m", 0);
+        assert!(bb.open_mask("m", 1).is_empty());
+        let picked = pick_untried(
+            &entry,
+            &RouteContext::default(),
+            &[],
+            &[],
+            &crate::cooldowns::Cooldowns::new(),
+            &crate::health::Health::default(),
+            &bb,
+            "m",
+            true,
+            None,
+        );
+        assert_eq!(picked, Some(0));
     }
 }

@@ -27,7 +27,7 @@ export function FormSection({
 }: FormSectionProps) {
   const { t } = useTranslation();
   return (
-    <div className="rounded-[10px] border border-[color:var(--border-subtle)]">
+    <div className="rounded-lg border border-[color:var(--border-subtle)]">
       {/* the toggle is a real button and the InfoHint sits beside it rather
           than inside it: this used to be a `div role="button"` wrapping the
           hint's own button, which is a nested interactive control — invalid
