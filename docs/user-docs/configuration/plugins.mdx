@@ -3,15 +3,6 @@ title: "Plugins"
 description: "Store org- and project-scoped webhook middleware configuration for the Rolter request pipeline."
 ---
 
-<Warning>
-  **Experimental.** Plugins may change shape or be removed in a minor release.
-  The webhook payload Rolter posts to a plugin carries no version of its own, so
-  a change to that payload cannot be made compatibly — an endpoint written
-  against today's fields may need editing when it moves. The stored
-  configuration (slug, scope, order, failure policy, endpoint) is the settled
-  part; the request body is not.
-</Warning>
-
 Open **Plugins** to arrange desired request and response middleware across three stages:
 
 - **Pre-route** — before Rolter selects a route.
@@ -34,6 +25,34 @@ At each stage the gateway sends the request or response body under inspection to
 - `transform` — replace the content with the plugin's response before continuing to the next plugin (or upstream/the client)
 - `block` — reject the request with an OpenAI-compatible error, ending the chain
 - `annotate` — forward unchanged, annotations are recorded but not applied
+
+### The request body
+
+The gateway POSTs one JSON object to the endpoint. Its fields:
+
+| Field              | Type    | Meaning                                                                                                           |
+| ------------------ | ------- | ----------------------------------------------------------------------------------------------------------------- |
+| `contract_version` | integer | The version of this body, currently `1`. See [Contract version](#contract-version).                               |
+| `plugin`           | string  | The plugin's slug, so one endpoint serving several instances can tell them apart.                                 |
+| `stage`            | string  | `pre_route`, `pre_upstream` or `post_response`.                                                                   |
+| `model`            | string  | The model the caller asked for.                                                                                   |
+| `route`            | string  | The route it resolved to.                                                                                         |
+| `trace_id`         | string  | The request's trace id. The same value is sent in the `X-Rolter-Trace-Id` header.                                 |
+| `tenant`           | object  | Ids only, never secrets: any of `org`, `team`, `project` and `key` that apply to the request.                     |
+| `truncated`        | boolean | Present, as `true`, only when `content` was cut to the dispatcher's size cap and is a string preview of the body. |
+| `content`          | any     | The request or response body under inspection.                                                                    |
+
+### Contract version
+
+`contract_version` names the shape of the body above. Rolter sends exactly one version, the current one, in every call; it does not negotiate and it does not send two shapes at once.
+
+The rule for changing it, which is also the rule your endpoint can rely on:
+
+- **The number stays the same** for an additive change: a new optional field, or a new value of a field whose documentation already says new values may appear. Write your endpoint to ignore fields it does not know, and to treat a field that is absent as absent.
+- **The number goes up** for anything that can break an endpoint written against the old body: removing or renaming a field, changing a field's type, or changing what a field means.
+- A bump is announced in the release notes of the release that makes it, and the previous number stops being sent in that release.
+
+An endpoint that wants to refuse a version it was not written for can answer with a non-`2xx` status; the plugin's [failure policy](#failure-policy) then decides whether the request continues. The decision a plugin returns (`allow`, `transform`, `block`, `annotate`) is not versioned by this number.
 
 ### Streamed responses
 

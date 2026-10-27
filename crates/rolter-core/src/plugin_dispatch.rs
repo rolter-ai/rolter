@@ -122,6 +122,19 @@ impl PluginsConfig {
     }
 }
 
+/// Version of the request body the gateway POSTs to a plugin, sent as
+/// `contract_version` in every envelope (#1405).
+///
+/// A plugin author reads it to know which body they are looking at, and rolter
+/// bumps it to change the body incompatibly. The rule for bumping is written
+/// down for plugin authors in `docs/user-docs/configuration/plugins.mdx`: an
+/// additive change (a new optional field, a new value of an existing field the
+/// plugin was told to expect) keeps the number; removing, renaming or
+/// retyping a field, or changing what one means, raises it. The gateway sends
+/// exactly one version, the current one, so a bump is a release note, not a
+/// negotiation.
+pub const PLUGIN_CONTRACT_VERSION: u32 = 1;
+
 /// The JSON envelope the gateway POSTs to a plugin's endpoint. Shares its
 /// shape with the guardrail webhook's [`crate::guardrail_webhook::WebhookRequest`]
 /// deliberately — the wire contract is the same idea (content in, a decision
@@ -129,6 +142,8 @@ impl PluginsConfig {
 /// guardrail's pre/post-call pair, so it is its own type.
 #[derive(Debug, Clone, Serialize)]
 pub struct PluginRequest<'a> {
+    /// the version of this body; see [`PLUGIN_CONTRACT_VERSION`]
+    pub contract_version: u32,
     /// the plugin instance's slug, so one endpoint serving several instances
     /// can tell them apart
     pub plugin: &'a str,

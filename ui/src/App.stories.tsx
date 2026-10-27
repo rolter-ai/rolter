@@ -734,7 +734,7 @@ export const ExperimentalMarker: Story = {
   play: async ({ canvasElement }) => {
     const rail = await railOf(canvasElement);
     const marked = await within(rail).findByRole("button", {
-      name: `${nav.plugins} ${en.shell.experimental}`,
+      name: `${nav["skills-repo"]} ${en.shell.experimental}`,
     });
     await expect(marked).toBeVisible();
     // the badge is the entry's own, not a row of its own
@@ -742,7 +742,7 @@ export const ExperimentalMarker: Story = {
     await expect(badge).toBeVisible();
     // its note is the catalog's copy for the subsystem id, not the English
     // prose the stub sent on the wire (#1401)
-    await expect(badge).toHaveAttribute("title", en.stability.notes.plugins);
+    await expect(badge).toHaveAttribute("title", en.stability.notes.skills_repository);
     // and the marker is the exception it claims to be: a sibling the answer
     // did not name carries nothing
     const plain = within(rail).getByRole("button", { name: nav.playground });
@@ -764,10 +764,10 @@ export const ExperimentalMarkerTranslated: Story = {
   play: async ({ canvasElement }) => {
     const rail = await railOf(canvasElement, ru.shell.navLabel);
     const marked = await within(rail).findByRole("button", {
-      name: `${ru.nav.plugins} ${ru.shell.experimental}`,
+      name: `${ru.nav["skills-repo"]} ${ru.shell.experimental}`,
     });
     const badge = within(marked).getByText(ru.shell.experimental);
-    await expect(badge).toHaveAttribute("title", ru.stability.notes.plugins);
+    await expect(badge).toHaveAttribute("title", ru.stability.notes.skills_repository);
     await expect(badge).not.toHaveAttribute("title", EXPERIMENTAL_SUBSYSTEM.note);
   },
 };
@@ -787,7 +787,7 @@ export const ExperimentalMarkerWithoutNote: Story = {
   play: async ({ canvasElement }) => {
     const rail = await railOf(canvasElement);
     const marked = await within(rail).findByRole("button", {
-      name: `${nav.plugins} ${en.shell.experimental}`,
+      name: `${nav["skills-repo"]} ${en.shell.experimental}`,
     });
     const badge = within(marked).getByText(en.shell.experimental);
     await expect(badge).toBeVisible();
@@ -809,7 +809,7 @@ export const ExperimentalMarkerOnIconRail: Story = {
     const rail = await railOf(canvasElement);
     await waitFor(() => expect(rail.getBoundingClientRect().width).toBe(52));
     const marked = await within(rail).findByRole("button", {
-      name: en.shell.experimentalItem.replace("{{label}}", nav.plugins),
+      name: en.shell.experimentalItem.replace("{{label}}", nav["skills-repo"]),
     });
     await expect(marked).toBeVisible();
     // the word itself is not painted at this width
