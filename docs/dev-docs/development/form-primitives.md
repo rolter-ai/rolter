@@ -77,6 +77,37 @@ stories are grouped under **Forms/** in Storybook.
   into a new signed-out screen; AcceptInvite lost its landmark and heading that
   way (#2069, #2228).
 
+## The (i) note beside a field
+
+A field whose effect is not obvious from its label and control explains itself
+in an (i) beside the label (#487). There is one primitive for it, `InfoHint`
+(`ui/src/components/ui/info-hint.tsx`), and a form row reaches it through the
+`info` prop of `Field`, `FieldLabel`, `SwitchRow` and `FormSection`, never by
+laying a second copy out by hand.
+
+- **`info` and `hint` are different jobs.** `hint` is the line always visible
+  under the control, for a state of this field right now (a clash, an
+  unreadable value, what the chosen option does). `info` is the note a reader
+  opens to learn what the field is and which values fit. A field that already
+  says all of it in a `hint` needs no `info`; do not write the same sentence in
+  both.
+- **The copy is short and lives in the catalogs.** One or two sentences: what
+  the field does, then the sensible value or the default. Put it under
+  `<screen>.<field>Info` (`pages.guardrailProviders.timeoutInfo`) in **every**
+  catalog, like any other string; `check:i18n` and `check:literals` fail on a
+  literal. State a default only where the code or the backend says it.
+- **The note is an `AnchoredPanel`.** It is fixed and placed from the (i)'s
+  rectangle, so the scroll area of a dialog or sheet cannot clip it (the old,
+  absolutely placed note was cut off at the edge of a field with a short label
+  or one in the last column), and it turns over near the foot of the window. It
+  opens on hover and on focus, a press toggles it, Escape closes it without
+  closing the dialog around it, and the pointer can travel onto it.
+- **A screen's story asserts its notes** with `expectFieldHint` from
+  `ui/src/lib/story-hints.ts`: it points at the button named
+  `About <label>`, reads the note, checks both edges of the note are hit-testable
+  (whole, not clipped) and moves away. Cover the second locale where the copy is
+  long.
+
 ## What they already guarantee
 
 Each primitive owns an accessibility detail that is invisible on screen and

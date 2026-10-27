@@ -51,6 +51,7 @@ import type {
 import { AuthProvider } from "@/lib/auth";
 import en from "@/lib/i18n/locales/en.json";
 import ru from "@/lib/i18n/locales/ru.json";
+import { expectFieldHint } from "@/lib/story-hints";
 import {
   atMobile,
   atSplit,
@@ -808,6 +809,48 @@ export const InvitesAUser: Story = {
     await expect(
       await within(document.body).findByText("https://rolter.local/invite/one-time"),
     ).toBeInTheDocument();
+  },
+};
+
+/**
+ * The invite sheet explains the three choices whose effect is not obvious from
+ * the control (#487): how the person gets in, where the role applies, and what
+ * each role can do. The same scope and role notes sit on the grant sheet and
+ * the change-role dialog.
+ */
+function explainsTheInviteFields(locale: "en" | "ru"): Story {
+  const catalog = locale === "ru" ? ru : en;
+  const u = catalog.pages.users;
+  const about = (label: string) => catalog.common.aboutField.replace("{{label}}", label);
+  return {
+    ...(locale === "ru" ? { globals: { locale: "ru" } } : {}),
+    render: () => (
+      <Harness fetchStub={loaded}>
+        <Users />
+      </Harness>
+    ),
+    play: async ({ canvasElement }) => {
+      await clickWhenEnabled(canvasElement, u.inviteAction);
+      const form = sheet();
+      await expectFieldHint(form, about(u.method), u.methodInfo);
+      await expectFieldHint(form, about(u.scope), u.scopeInfo);
+      await expectFieldHint(form, about(u.orgRole), u.roleInfo);
+    },
+  };
+}
+export const ExplainsTheInviteFieldsInAHint: Story = explainsTheInviteFields("en");
+export const ExplainsTheInviteFieldsInAHintInRussian: Story = explainsTheInviteFields("ru");
+
+export const ExplainsTheNewRoleInAHint: Story = {
+  render: () => (
+    <Harness fetchStub={directory()}>
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await userEvent.click(await within(canvasElement).findByRole("button", { name: CHANGE_GRACE }));
+    const dialog = await confirmation();
+    await expectFieldHint(dialog, "About New role", en.pages.users.roleInfo);
   },
 };
 
