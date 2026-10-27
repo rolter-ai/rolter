@@ -849,7 +849,24 @@
         "more_one": "and {{count}} more",
         "more_other": "and {{count}} more"
       },
-      "colScope": "Scope"
+      "colScope": "Scope",
+      "colCache": "Cache metrics",
+      "probeCache": "Probe",
+      "probeOne": "Probe cache reporting of {{name}}",
+      "probe": {
+        "title": "Probe cache reporting of {{name}}",
+        "body": "Sends one real one-token completion to this provider and records whether the answer reports prompt-cache usage. It costs a token and uses the provider's credential.",
+        "model": "Upstream model",
+        "modelHint": "The model id this provider serves. A provider that adds the field only on a cache hit reads as not reporting, so note the model beside the verdict.",
+        "modelPlaceholder": "gpt-4o-mini",
+        "run": "Run probe",
+        "recordedReports": "Recorded: the provider reports prompt-cache usage ({{spelling}}).",
+        "recordedNone": "Recorded: the answer carried no prompt-cache usage field.",
+        "notRecorded": "Nothing learned, the earlier verdict is unchanged. {{error}}",
+        "noReason": "The provider did not answer with a completion that has a usage object.",
+        "answered": "{{url}} answered {{status}} in {{ms}} ms",
+        "noAnswer": "{{url}} gave no answer after {{ms}} ms"
+      }
     },
     "plugins": {
       "intro": "Request and response middleware the gateway consults on live traffic. Enabled plugins run at their stage, in position order.",
@@ -3447,7 +3464,8 @@
         "strategy": "Strategy",
         "address": "Address",
         "members": "Members",
-        "scope": "Scope"
+        "scope": "Scope",
+        "cache": "Cache metrics"
       },
       "copyAddress": "Copy address prefix",
       "address": "{{slug}}/<model>",
@@ -5470,5 +5488,21 @@
         "same": "unchanged"
       }
     }
+  },
+  "cacheReporting": {
+    "reports": "Reports cache",
+    "none": "No cache metrics",
+    "unprobed": "Not probed yet",
+    "withTime": "{{label}} · {{when}}",
+    "hint": {
+      "reports": "Responses carried a prompt-cache usage field",
+      "none": "Responses carried no prompt-cache usage field",
+      "unprobed": "Never probed, so nothing is known about its cache reporting"
+    },
+    "established": "Established {{when}}",
+    "model": "Model: {{model}}",
+    "spelling": "Field: {{spelling}}",
+    "coverage": "{{count}} of {{total}} providers",
+    "coverageProbed": "{{count}} of {{total}} providers probed"
   }
 }

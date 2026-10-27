@@ -28,7 +28,14 @@ import {
   uxEvents,
   type Recorder,
 } from "./story-harness";
-import type { EffectiveModelDto, LabelRow, RouteRow, TimelineRow, UptimeRow } from "@/lib/api";
+import type {
+  EffectiveModelDto,
+  LabelRow,
+  ProviderCacheVerdict,
+  RouteRow,
+  TimelineRow,
+  UptimeRow,
+} from "@/lib/api";
 import { UxScreenProvider } from "@/lib/ux-react";
 
 // each entry carries its own targets (#2210): provider names, not row ids
@@ -846,5 +853,110 @@ export const SuperadminCanWriteAModelLabel: Story = {
     // still no way to touch the observation, asked once the list is on screen —
     // before that the absence would be the skeleton's, not the rule's
     await expect(panel.queryByRole("button", { name: "Remove tier=priced" })).toBeNull();
+  },
+};
+
+// --- whether the providers behind a route report prompt-cache metrics (#984)
+
+const CACHE_PROVIDERS = [
+  { id: "prov-a", name: "sim-a" },
+  { id: "prov-b", name: "sim-b" },
+  { id: "prov-c", name: "anthropic" },
+];
+
+const verdict = (provider_id: string, reports: boolean): ProviderCacheVerdict => ({
+  provider_id,
+  reports,
+  spelling: reports ? "cached_tokens" : null,
+  model: "probe-model",
+  probed_at: "2026-10-01T10:00:00Z",
+});
+
+const withCache = (read: () => unknown, status = 200) =>
+  routes(
+    [
+      ["/provider-cache-probes", read],
+      ["/model-prices", () => []],
+      ["/currency", () => ({ base: "USD", rates: {} })],
+      ["/health/uptime", () => ({ data: [] })],
+      ["/models", () => MODELS],
+      ["/providers", () => CACHE_PROVIDERS],
+      ["/routes", () => []],
+    ],
+    status,
+  );
+
+const rowOf = async (canvas: ReturnType<typeof within>, name: string) =>
+  within((await canvas.findByText(name)).closest('[role="row"]') as HTMLElement);
+
+/**
+ * A route reports only when every provider behind it does: gpt-4o's two
+ * providers both do, claude-sonnet's has never been probed and so is "not
+ * probed yet", not "no".
+ */
+export const CacheReportingNeedsEveryProviderToReport: Story = {
+  render: () => (
+    <Harness fetchStub={withCache(() => [verdict("prov-a", true), verdict("prov-b", true)])}>
+      <Models />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await (await rowOf(canvas, "gpt-4o")).findByText(/^Reports cache/)).toBeVisible();
+    await expect(
+      await (await rowOf(canvas, "claude-sonnet")).findByText("Not probed yet"),
+    ).toBeVisible();
+  },
+};
+
+/** One provider known not to report makes the route "no cache metrics", whatever its sibling says. */
+export const CacheReportingOneSilentProviderMakesTheRouteSilent: Story = {
+  render: () => (
+    <Harness fetchStub={withCache(() => [verdict("prov-a", true), verdict("prov-b", false)])}>
+      <Models />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const badge = await (await rowOf(canvas, "gpt-4o")).findByText(/^No cache metrics/);
+    await expect(badge).toBeVisible();
+    await expect(badge).toHaveAttribute("title", expect.stringContaining("1 of 2 providers"));
+  },
+};
+
+/** A reporting provider beside an unprobed one proves nothing about the route. */
+export const CacheReportingPartlyProbedIsNotProbedYet: Story = {
+  render: () => (
+    <Harness fetchStub={withCache(() => [verdict("prov-a", true)])}>
+      <Models />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const row = await rowOf(canvas, "gpt-4o");
+    await expect(await row.findByText("Not probed yet")).toBeVisible();
+    await expect(row.queryByText(/^Reports cache/)).toBeNull();
+  },
+};
+
+/** A failed read of the verdicts shows no badge on any route, and the catalog still loads. */
+export const CacheReportingFailedReadShowsNothing: Story = {
+  render: () => (
+    <Harness
+      fetchStub={scoped(async (input) => {
+        const url = String(input);
+        if (url.includes("/provider-cache-probes"))
+          return json({ error: { message: "boom" } }, 500);
+        return withCache(() => [])(input);
+      })}
+    >
+      <Models />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText("gpt-4o")).toBeVisible());
+    await waitFor(() => expect(canvas.getByText("sim-a +1 more")).toBeVisible());
+    await expect(canvas.queryByText(/Not probed yet|Reports cache|No cache metrics/)).toBeNull();
   },
 };
