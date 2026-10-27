@@ -702,7 +702,7 @@ async fn a_missing_route_is_404_and_a_wrong_method_is_405() {
 /// An oversized batch is refused whole, and the client's own cap is what keeps
 /// it from ever being sent.
 ///
-/// `UI_EVENTS_MAX_BATCH` in `ui/src/lib/api.ts` mirrors `MAX_BATCH` here, so
+/// `UI_EVENTS_MAX_BATCH` in `ui/src/lib/api/ux.ts` mirrors `MAX_BATCH` here, so
 /// this only fires when the two drift — at which point every flush from a busy
 /// session is a 400 and the busiest sessions are the ones that vanish.
 #[tokio::test]

@@ -256,7 +256,7 @@ rolter, since it issues the client id and secret the add form asks for. So the
 add sheet previews it from the slug as it is typed, on the base
 `GET /api/v1/public-url` returns (`public_url.rs`, capability `public_url`,
 readable by any authenticated caller), with `ssoRedirectUri()` in
-`ui/src/lib/api.ts` mirroring the Rust path. One read serves every keystroke.
+`ui/src/lib/api/sso.ts` mirroring the Rust path. One read serves every keystroke.
 The endpoint also reports `configured: false` when `ROLTER_PUBLIC_URL` is unset,
 and the screen warns that the default only reaches rolter from a browser on the
 control plane's own host. It is deployment-wide rather than SSO-specific so the
