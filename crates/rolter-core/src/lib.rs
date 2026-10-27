@@ -22,6 +22,7 @@ pub mod guardrail_webhook;
 pub mod guardrails;
 pub mod mcp_log;
 pub mod node_identity;
+pub mod payload_redaction;
 pub mod pii_sanitizer;
 pub mod plugin_dispatch;
 pub mod probe;
@@ -78,7 +79,9 @@ pub use pii_sanitizer::{
     RestoreResponse, SanitizeDirection, SanitizeRequest, SanitizeResponse, StreamingResponse,
     TokenScope,
 };
-pub use plugin_dispatch::{PluginInstanceConfig, PluginRequest, PluginStage, PluginsConfig};
+pub use plugin_dispatch::{
+    PluginInstanceConfig, PluginRequest, PluginStage, PluginsConfig, PLUGIN_CONTRACT_VERSION,
+};
 pub use probe::{
     count_catalogue, probe_expectation, probe_request, ProbeExpectation, ANTHROPIC_VERSION,
 };

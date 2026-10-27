@@ -135,6 +135,13 @@ fn group_slug(group: &ProviderGroupConfig) -> String {
         .unwrap_or_else(|| rolter_core::slug::slugify(&group.name))
 }
 
+/// One `api_keys` entry as the export writes it: the variable name and nothing
+/// else, so an inline `key` has no field to land in.
+#[derive(Serialize)]
+struct EnvKey<'a> {
+    env: &'a str,
+}
+
 fn render_providers(out: &mut String, config: &GatewayConfig) {
     // ADR-0022's tiered spelling, not the deprecated flat `[[providers]]` array.
     // `[[providers.readonly]]` is the array-of-tables form of the same document
@@ -164,18 +171,22 @@ fn render_provider_tier(out: &mut String, tier: &str, entries: &[ProviderConfig]
         // decrypted key cannot reach the document by accident. the accessor is
         // what makes a provider written in the plural `api_keys` spelling
         // export its variable name instead of the omission comment (#1514)
+        //
+        // written in the plural spelling the migration chain produces (#1720),
+        // so `rolter check --migrations` reports the file as up to date. one
+        // entry with the default weight is exactly what the store holds
         match provider.api_key_env_name() {
-            Some(env) => key(out, "api_key_env", env),
+            Some(env) => key(out, "api_keys", &[EnvKey { env }]),
             None => out.push_str(
                 "# api_key: not exported; any credential for this provider stays sealed in \
                  the control-plane store\n",
             ),
         }
-        if let Some(proxy) = &provider.egress_proxy {
-            key(out, "egress_proxy", proxy);
-        }
-        if !provider.egress_proxies.is_empty() {
-            key(out, "egress_proxies", &provider.egress_proxies);
+        // the pool the provider actually uses, in the plural spelling: a legacy
+        // `egress_proxy` is a one-element pool exactly when the list is empty
+        let proxies = provider.egress_proxy_pool();
+        if !proxies.is_empty() {
+            key(out, "egress_proxies", &proxies);
         }
         // inline tables, so they cannot capture the keys after them; every
         // field is written out, which a re-import reads back identically
@@ -382,9 +393,16 @@ fn render_logging(out: &mut String, config: &GatewayConfig) {
     key(out, "enabled", &capture.enabled);
     key(out, "max_bytes", &capture.max_bytes);
     key(out, "redact_fields", &capture.redact_fields);
+    key(out, "redact_detectors", &capture.redact_detectors);
     key(out, "models", &capture.models);
     out.push_str("# virtual key ids are this deployment's own; drop them when promoting\n");
     key(out, "virtual_key_ids", &capture.virtual_key_ids);
+    // array-of-tables entries attach to the table above, so they come last
+    for pattern in &capture.redact_patterns {
+        out.push_str("\n[[logging.payload_capture.redact_patterns]]\n");
+        key(out, "name", &pattern.name);
+        key(out, "pattern", &pattern.pattern);
+    }
 }
 
 fn strategy_name(strategy: BalancingStrategy) -> &'static str {
@@ -709,7 +727,7 @@ models = ["gpt-4o"]
         );
         // and the omission is visible in the file rather than silent
         assert!(rendered.contains("# api_key: not exported"));
-        assert!(rendered.contains("api_key_env = \"ANTHROPIC_API_KEY\""));
+        assert!(rendered.contains("api_keys = [{ env = \"ANTHROPIC_API_KEY\" }]"));
     }
 
     /// A provider written in the plural `api_keys` spelling exported the
@@ -737,7 +755,7 @@ models = ["gpt-4o"]
 
         let rendered = render(&config);
         assert!(
-            rendered.contains("api_key_env = \"OPENAI_KEY_A\""),
+            rendered.contains("api_keys = [{ env = \"OPENAI_KEY_A\" }]"),
             "the plural credential did not reach the export:\n{rendered}"
         );
         assert!(
@@ -1002,7 +1020,13 @@ models = ["gpt-4o"]
         );
         let lmcache = vllm.lmcache.as_ref().expect("lmcache survives");
         assert_eq!((lmcache.refresh_secs, lmcache.stale_secs), (3, 15));
-        assert_eq!(vllm.egress_proxy.as_deref(), Some("http://egress:3128"));
+        // the export writes the pool the provider actually used, as the plural
+        // `egress_proxies`; the legacy single proxy beside a non-empty list was
+        // never part of it
+        assert_eq!(
+            vllm.egress_proxy_pool(),
+            vec!["http://egress-a:3128", "http://egress-b:3128"]
+        );
     }
 
     /// The `default` tier survives an export/import round trip.
@@ -1124,7 +1148,7 @@ models = ["gpt-4o"]
                 !first.contains("sk-live-must-never-be-exported"),
                 "a sealed credential was exported in plaintext:\n{first}"
             );
-            assert!(first.contains("api_key_env = \"OPENAI_API_KEY\""));
+            assert!(first.contains("api_keys = [{ env = \"OPENAI_API_KEY\" }]"));
             assert!(
                 first.contains("# api_key: not exported"),
                 "the provider without an api_key_env carries no omission marker:\n{first}"

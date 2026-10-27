@@ -1157,6 +1157,19 @@ impl ProviderConfig {
         self.api_key.as_deref()
     }
 
+    /// Whether this provider carries a credential that is not one environment
+    /// variable: an inline secret in either spelling, or more than one key.
+    ///
+    /// The kinds that [`ProviderKind::requires_env_api_key`] are refused when
+    /// this is true. It reads both spellings because a document migrated to the
+    /// plural form (#1720) holds its one variable as an `api_keys` entry, which
+    /// must keep passing the rule the singular `api_key_env` always passed.
+    pub fn has_non_env_credential(&self) -> bool {
+        self.api_key.is_some()
+            || self.api_keys.len() > 1
+            || self.api_keys.iter().any(|k| k.key.is_some())
+    }
+
     /// How many configured keys a single-credential store cannot hold.
     ///
     /// `providers` carries one `api_key_env` and `provider_keys` one sealed
@@ -3631,6 +3644,15 @@ pub struct PayloadCaptureConfig {
     /// case-insensitive and recursive, covering nested tool arguments too.
     #[serde(default = "default_payload_redact_fields")]
     pub redact_fields: Vec<String>,
+    /// built-in value detectors (see [`crate::payload_redaction::detector_names`])
+    /// that scan the text of every captured string and replace a match with a
+    /// typed marker such as `[redacted:aws_key]` (#1835). All on by default;
+    /// an empty list turns the built-ins off.
+    #[serde(default = "crate::payload_redaction::detector_names")]
+    pub redact_detectors: Vec<String>,
+    /// operator-supplied value patterns applied after the built-in detectors
+    #[serde(default)]
+    pub redact_patterns: Vec<crate::payload_redaction::RedactPattern>,
     /// optional public-model allow-list. Empty captures every route when
     /// enabled; non-empty limits capture to the named routes.
     #[serde(default)]
@@ -3647,8 +3669,35 @@ impl Default for PayloadCaptureConfig {
             enabled: false,
             max_bytes: default_payload_capture_max_bytes(),
             redact_fields: default_payload_redact_fields(),
+            redact_detectors: crate::payload_redaction::detector_names(),
+            redact_patterns: Vec::new(),
             models: Vec::new(),
             virtual_key_ids: Vec::new(),
+        }
+    }
+}
+
+impl PayloadCaptureConfig {
+    /// Compile the redaction policy. A value policy that does not compile (a
+    /// hand-edited file; the control plane validates what it stores) degrades to
+    /// the key rule alone rather than to no redaction, and the error is returned
+    /// for the caller to log.
+    pub fn redactor(
+        &self,
+    ) -> (
+        crate::payload_redaction::PayloadRedactor,
+        Option<crate::payload_redaction::RedactionPolicyError>,
+    ) {
+        match crate::payload_redaction::PayloadRedactor::compile(
+            &self.redact_fields,
+            &self.redact_detectors,
+            &self.redact_patterns,
+        ) {
+            Ok(redactor) => (redactor, None),
+            Err(err) => (
+                crate::payload_redaction::PayloadRedactor::fields_only(&self.redact_fields),
+                Some(err),
+            ),
         }
     }
 }
@@ -4711,13 +4760,13 @@ impl GatewayConfig {
             ));
         }
         if provider.kind == ProviderKind::OllamaCloud {
-            if provider.api_key_env.as_deref().is_none_or(str::is_empty) {
+            if provider.api_key_env_name().is_none_or(str::is_empty) {
                 problems.push(format!(
                     "ollama_cloud provider '{}' requires api_key_env",
                     provider.name
                 ));
             }
-            if provider.api_key.is_some() || !provider.api_keys.is_empty() {
+            if provider.has_non_env_credential() {
                 problems.push(format!(
                     "ollama_cloud provider '{}' must source its key from api_key_env",
                     provider.name
@@ -4725,13 +4774,13 @@ impl GatewayConfig {
             }
         }
         if provider.kind == ProviderKind::Openrouter {
-            if provider.api_key_env.as_deref().is_none_or(str::is_empty) {
+            if provider.api_key_env_name().is_none_or(str::is_empty) {
                 problems.push(format!(
                     "openrouter provider '{}' requires api_key_env",
                     provider.name
                 ));
             }
-            if provider.api_key.is_some() || !provider.api_keys.is_empty() {
+            if provider.has_non_env_credential() {
                 problems.push(format!(
                     "openrouter provider '{}' must source its key from api_key_env",
                     provider.name
@@ -4790,13 +4839,13 @@ impl GatewayConfig {
                 ProviderKind::Falcon => "falcon",
                 _ => "unknown",
             };
-            if provider.api_key_env.as_deref().is_none_or(str::is_empty) {
+            if provider.api_key_env_name().is_none_or(str::is_empty) {
                 problems.push(format!(
                     "{kind} provider '{}' requires api_key_env",
                     provider.name
                 ));
             }
-            if provider.api_key.is_some() || !provider.api_keys.is_empty() {
+            if provider.has_non_env_credential() {
                 problems.push(format!(
                     "{kind} provider '{}' must source its key from api_key_env",
                     provider.name

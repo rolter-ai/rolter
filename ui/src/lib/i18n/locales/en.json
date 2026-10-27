@@ -3857,6 +3857,24 @@
       "redacted": "Redacted fields",
       "redactedHint": "Comma-separated JSON keys stripped from captured payloads before they are stored. Redaction happens before the write, so a redacted value never reaches storage.",
       "redactedPlaceholder": "authorization, api_key, ssn",
+      "redaction": {
+        "detectors": "Redact credential shapes",
+        "detectorsHint": "Scans the text of every captured string and replaces a match with a marker such as [redacted:aws_key], before the write.",
+        "patterns": "Custom patterns",
+        "patternsHint": "One per line as name=regular expression. The name becomes the marker. Linear-time engine: no look-around or backreferences; at most 16 patterns of 256 bytes.",
+        "patternsPlaceholder": "employee_id=EMP-\\d{6}",
+        "patternLine": "Each line must be name=pattern, with a name of lowercase letters, digits or underscore.",
+        "previewTitle": "Preview redaction",
+        "previewHint": "Runs the policy as edited above against a sample body. Nothing is stored or logged; the sample goes to the server only for this check.",
+        "sample": "Sample body",
+        "samplePlaceholder": "{\"messages\":[{\"role\":\"user\",\"content\":\"my key is AKIAIOSFODNN7EXAMPLE\"}]}",
+        "run": "Run preview",
+        "output": "Stored as",
+        "found": "Found: {{kinds}}",
+        "foundNothing": "Nothing matched this sample.",
+        "fieldsFound": "{{count}} by field name",
+        "failed": "The preview failed."
+      },
       "onlyModels": "Capture only these models",
       "onlyModelsHint": "Pick from the models that carried traffic in the last 30 days, or type one that has not yet. Leave empty to capture payloads for every model.",
       "onlyModelsPlaceholder": "Add a model",
@@ -5345,7 +5363,6 @@
       "labels": "Labels are display and filter only: no route can select its targets by label yet, and making them selectable turns them into configuration the data plane consumes",
       "mcp_settings": "Organization MCP defaults for transport, timeout intent, retries and undeclared tools are stored but not yet read by the proxy. A per-server override is read; a server without one falls back to the deployment-level transport timeouts rather than to these",
       "mcp_tool_groups": "Tool-group manifests are stored and published to MCP-aware clients, but the proxy does not enforce group membership as an access boundary",
-      "plugins": "The webhook payload a plugin receives carries no version of its own, so the dispatch contract cannot change without silently breaking every endpoint already written against it",
       "realtime": "Guardrails, the guardrail webhook and pre_upstream plugins run on /v1/realtime text events and function-call arguments, but the PII sanitizer and pre_route / post_response plugins do not; a fail_closed PII sanitizer refuses the session, a fail_open one admits it unsanitized",
       "skills_repository": "A skill resolves only through the control-plane API; the gateway serves no skill surface, so how a client addresses and fetches one is not settled"
     }

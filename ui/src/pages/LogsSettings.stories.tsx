@@ -24,6 +24,8 @@ const BASE: LoggingSettingsDto = {
   payload_capture_enabled: true,
   payload_capture_max_bytes: 65536,
   payload_capture_redact_fields: ["authorization", "api_key"],
+  payload_capture_redact_detectors: ["aws_key", "jwt"],
+  payload_capture_redact_patterns: [],
   payload_capture_models: [],
   payload_capture_virtual_key_ids: [],
   retention_days: 90,
@@ -799,5 +801,39 @@ export const SwitchesWaitForSave: Story = {
     await expect(canvas.getAllByText("Not saved")).toHaveLength(1);
     await userEvent.click(canvas.getByRole("button", { name: "Discard changes" }));
     await expect(canvas.queryByText("Not saved")).toBeNull();
+  },
+};
+
+/**
+ * #1835: the preview runs the policy as edited against a pasted sample and
+ * shows what capture would store, without saving anything. The request carries
+ * the form's own detectors and patterns, so an unsaved edit is what is tried.
+ */
+export const PreviewShowsTheRedactedSample: Story = {
+  render: () => {
+    const stub: FetchStub = async (input, init) => {
+      const path = new URL(String(input), "http://localhost").pathname;
+      if (path === "/api/v1/logging-settings/redaction-preview") {
+        const sent = JSON.parse(String(init?.body)) as {
+          sample: string;
+          redact_detectors: string[];
+        };
+        const hit = sent.redact_detectors.includes("aws_key");
+        return json({
+          output: hit ? "key [redacted:aws_key]" : sent.sample,
+          report: { fields: 0, detections: hit ? { aws_key: 1 } : {} },
+        });
+      }
+      return json(BASE);
+    };
+    return <Harness fetchStub={stub} />;
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const sample = await canvas.findByLabelText("Sample body");
+    await userEvent.type(sample, "key AKIAIOSFODNN7EXAMPLE");
+    await userEvent.click(canvas.getByRole("button", { name: "Run preview" }));
+    await expect(await canvas.findByText("Found: aws_key ×1")).toBeVisible();
+    await expect(canvas.getByText("key [redacted:aws_key]")).toBeVisible();
   },
 };

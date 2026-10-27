@@ -224,6 +224,30 @@ impl ClickHouseClient {
         Ok(())
     }
 
+    /// Run one already-built statement that returns no rows — an
+    /// `alter table … delete`, whose predicate cannot be a query parameter.
+    /// Every value in it is a validated id or an escaped string; see
+    /// [`crate::log_erasure`]. A mutation is queued, not finished, when this
+    /// returns.
+    // only reachable via the postgres-gated log-erasure router
+    #[cfg_attr(not(feature = "postgres"), allow(dead_code))]
+    pub(crate) async fn execute_ddl(&self, statement: &str) -> anyhow::Result<()> {
+        let response = self
+            .client
+            .post(format!("{}/", self.base))
+            .body(statement.to_string())
+            .timeout(DDL_TIMEOUT)
+            .send()
+            .await
+            .map_err(strip_url)?;
+        if response.status().is_success() {
+            return Ok(());
+        }
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        anyhow::bail!("clickhouse statement failed ({status}): {body}")
+    }
+
     /// Persist one already-sanitized MCP tool-call event. The table and insert
     /// statement are fixed here rather than supplied by a caller, so event
     /// metadata can never alter ClickHouse SQL.
@@ -488,10 +512,16 @@ pub(crate) fn attribution_column(dimension: &str) -> Option<&'static str> {
 
 /// Map a status filter name to a whitelisted SQL predicate. Anything else is
 /// rejected so it can never be spliced into SQL. `all` applies no filter.
+///
+/// `error` includes status `0`, the row of a transport failure or an exhausted
+/// retry that never got an upstream status: the dashboard paints it as `ERR`,
+/// and an "errors" filter that dropped it hid the failures an operator most
+/// needs to see (#1995). The predicate is spliced after `and`, so the `or` is
+/// parenthesised.
 pub(crate) fn status_predicate(status: &str) -> Option<&'static str> {
     match status {
         "all" => Some("1"),
-        "error" => Some("status >= 400"),
+        "error" => Some("(status = 0 or status >= 400)"),
         "success" => Some("status > 0 and status < 400"),
         _ => None,
     }
@@ -1842,7 +1872,7 @@ mod tests {
             status_predicate("error").expect("error is whitelisted"),
             &Columns::default(),
         );
-        assert!(sql.contains("and status >= 400"));
+        assert!(sql.contains("and (status = 0 or status >= 400)"));
         assert!(sql.contains("{model:String}"));
         assert!(sql.contains("{key:String}"));
         assert!(sql.contains("{limit:UInt32}"));
@@ -1970,7 +2000,10 @@ mod tests {
     #[test]
     fn status_predicate_whitelists() {
         assert_eq!(status_predicate("all"), Some("1"));
-        assert_eq!(status_predicate("error"), Some("status >= 400"));
+        assert_eq!(
+            status_predicate("error"),
+            Some("(status = 0 or status >= 400)")
+        );
         assert_eq!(
             status_predicate("success"),
             Some("status > 0 and status < 400")

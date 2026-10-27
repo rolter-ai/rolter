@@ -128,6 +128,7 @@
               "observability/tracing",
               "observability/what-to-look-at",
               "observability/log-settings",
+              "observability/log-erasure",
               "observability/connectors",
               "observability/alerting"
             ]

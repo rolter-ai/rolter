@@ -71,6 +71,8 @@ pub mod ldap;
 #[cfg(feature = "postgres")]
 mod ldap_signin;
 #[cfg(feature = "postgres")]
+mod log_erasure;
+#[cfg(feature = "postgres")]
 mod logging_settings;
 mod login_throttle;
 /// outbound mail for invitations (#1828); `pub` for the `Mailer` seam the
@@ -1289,6 +1291,7 @@ fn build_app_with(state: ControlState, mount_internal: bool) -> Router {
             .merge(guardrail_trial::router())
             .merge(labels::router())
             .merge(logging_settings::router())
+            .merge(log_erasure::router())
             .merge(runtime_policy::router())
             .merge(compatibility_policy::router())
             .merge(client_settings::router())
