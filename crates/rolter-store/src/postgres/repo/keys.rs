@@ -4,10 +4,10 @@ use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use rolter_core::{Error, Result};
+use rolter_core::Result;
 
 use super::super::models::{OwnedVirtualKey, VirtualKey};
-use super::support::store_err;
+use super::support::{fetch_optional_or_not_found, require_affected, store_err};
 
 /// Virtual keys, scoped to a project. Callers are responsible for hashing
 /// the presented key before it reaches `key_hash` — this repository never
@@ -38,15 +38,17 @@ impl VirtualKeyRepo<'_> {
     }
 
     pub async fn get(&self, id: Uuid) -> Result<VirtualKey> {
-        sqlx::query_as(
+        fetch_optional_or_not_found(
+sqlx::query_as(
             "select id, project_id, key_hash, key_prefix, name, models, providers, disabled, expires_at, cache_enabled, created_by, business_unit_id, customer_id, created_at, purpose
              from virtual_keys where id = $1",
         )
         .bind(id)
-        .fetch_optional(self.0)
-        .await
-        .map_err(store_err)?
-        .ok_or_else(|| Error::NotFound(format!("virtual key {id}")))
+        ,
+self.0,
+|| format!("virtual key {id}"),
+)
+.await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -118,46 +120,52 @@ impl VirtualKeyRepo<'_> {
     }
 
     pub async fn set_disabled(&self, id: Uuid, disabled: bool) -> Result<VirtualKey> {
-        sqlx::query_as(
+        fetch_optional_or_not_found(
+sqlx::query_as(
             "update virtual_keys set disabled = $2 where id = $1
              returning id, project_id, key_hash, key_prefix, name, models, providers, disabled, expires_at, cache_enabled, created_by, business_unit_id, customer_id, created_at, purpose",
         )
         .bind(id)
         .bind(disabled)
-        .fetch_optional(self.0)
-        .await
-        .map_err(store_err)?
-        .ok_or_else(|| Error::NotFound(format!("virtual key {id}")))
+        ,
+self.0,
+|| format!("virtual key {id}"),
+)
+.await
     }
 
     /// Set (or clear) the per-key response-cache override. `None` restores the
     /// inherit-the-route default; `Some(bool)` forces caching off/on for the key.
     pub async fn set_cache(&self, id: Uuid, cache_enabled: Option<bool>) -> Result<VirtualKey> {
-        sqlx::query_as(
+        fetch_optional_or_not_found(
+sqlx::query_as(
             "update virtual_keys set cache_enabled = $2 where id = $1
              returning id, project_id, key_hash, key_prefix, name, models, providers, disabled, expires_at, cache_enabled, created_by, business_unit_id, customer_id, created_at, purpose",
         )
         .bind(id)
         .bind(cache_enabled)
-        .fetch_optional(self.0)
-        .await
-        .map_err(store_err)?
-        .ok_or_else(|| Error::NotFound(format!("virtual key {id}")))
+        ,
+self.0,
+|| format!("virtual key {id}"),
+)
+.await
     }
 
     /// Replace the key's provider allow-list. An empty list restores the
     /// permissive default while leaving the model allow-list unchanged.
     pub async fn set_providers(&self, id: Uuid, providers: &[String]) -> Result<VirtualKey> {
-        sqlx::query_as(
+        fetch_optional_or_not_found(
+sqlx::query_as(
             "update virtual_keys set providers = $2 where id = $1
              returning id, project_id, key_hash, key_prefix, name, models, providers, disabled, expires_at, cache_enabled, created_by, business_unit_id, customer_id, created_at, purpose",
         )
         .bind(id)
         .bind(providers)
-        .fetch_optional(self.0)
-        .await
-        .map_err(store_err)?
-        .ok_or_else(|| Error::NotFound(format!("virtual key {id}")))
+        ,
+self.0,
+|| format!("virtual key {id}"),
+)
+.await
     }
 
     /// Point the key's spend at a business unit and/or customer. `None` clears
@@ -169,28 +177,28 @@ impl VirtualKeyRepo<'_> {
         business_unit_id: Option<Uuid>,
         customer_id: Option<Uuid>,
     ) -> Result<VirtualKey> {
-        sqlx::query_as(
+        fetch_optional_or_not_found(
+sqlx::query_as(
             "update virtual_keys set business_unit_id = $2, customer_id = $3 where id = $1
              returning id, project_id, key_hash, key_prefix, name, models, providers, disabled, expires_at, cache_enabled, created_by, business_unit_id, customer_id, created_at, purpose",
         )
         .bind(id)
         .bind(business_unit_id)
         .bind(customer_id)
-        .fetch_optional(self.0)
-        .await
-        .map_err(store_err)?
-        .ok_or_else(|| Error::NotFound(format!("virtual key {id}")))
+        ,
+self.0,
+|| format!("virtual key {id}"),
+)
+.await
     }
 
     pub async fn delete(&self, id: Uuid) -> Result<()> {
-        let res = sqlx::query("delete from virtual_keys where id = $1")
-            .bind(id)
-            .execute(self.0)
-            .await
-            .map_err(store_err)?;
-        if res.rows_affected() == 0 {
-            return Err(Error::NotFound(format!("virtual key {id}")));
-        }
+        require_affected(
+            sqlx::query("delete from virtual_keys where id = $1").bind(id),
+            self.0,
+            || format!("virtual key {id}"),
+        )
+        .await?;
         Ok(())
     }
 }

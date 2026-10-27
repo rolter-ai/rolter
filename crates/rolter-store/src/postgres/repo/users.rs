@@ -3,13 +3,13 @@
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use rolter_core::{Error, Result};
+use rolter_core::Result;
 
 use super::super::models::User;
 use super::lockout::{
     last_active_superadmin, lock_org_admins, lock_superadmins, DeactivationGuard, LockoutGuard,
 };
-use super::support::store_err;
+use super::support::{fetch_optional_or_not_found, require_affected, store_err};
 
 /// local accounts. see [`super::super::models::User`]; `find_by_email` backs login.
 pub struct UserRepo<'a>(pub &'a PgPool);
@@ -38,16 +38,17 @@ impl UserRepo<'_> {
     }
 
     pub async fn get(&self, id: Uuid) -> Result<User> {
-        sqlx::query_as(
-            "select id, email, password_hash, is_superadmin, deactivated_at, created_at,
+        fetch_optional_or_not_found(
+            sqlx::query_as(
+                "select id, email, password_hash, is_superadmin, deactivated_at, created_at,
                     display_name, bio
              from users where id = $1",
+            )
+            .bind(id),
+            self.0,
+            || format!("user {id}"),
         )
-        .bind(id)
-        .fetch_optional(self.0)
         .await
-        .map_err(store_err)?
-        .ok_or_else(|| Error::NotFound(format!("user {id}")))
     }
 
     /// list every user that holds at least one membership anywhere in `org_id`'s
@@ -161,8 +162,9 @@ impl UserRepo<'_> {
                 return Ok(LockoutGuard::WouldLockOut);
             }
         }
-        let user: Option<User> = sqlx::query_as(
-            "update users set
+        let user: User = fetch_optional_or_not_found(
+            sqlx::query_as(
+                "update users set
                  email = coalesce($2, email),
                  password_hash = coalesce($3, password_hash),
                  is_superadmin = coalesce($4, is_superadmin),
@@ -173,16 +175,16 @@ impl UserRepo<'_> {
              where id = $1
              returning id, email, password_hash, is_superadmin, deactivated_at, created_at,
                     display_name, bio",
+            )
+            .bind(id)
+            .bind(email)
+            .bind(password_hash)
+            .bind(is_superadmin)
+            .bind(deactivated),
+            &mut *tx,
+            || format!("user {id}"),
         )
-        .bind(id)
-        .bind(email)
-        .bind(password_hash)
-        .bind(is_superadmin)
-        .bind(deactivated)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(store_err)?;
-        let user = user.ok_or_else(|| Error::NotFound(format!("user {id}")))?;
+        .await?;
         tx.commit().await.map_err(store_err)?;
         Ok(LockoutGuard::Done(user))
     }
@@ -248,19 +250,20 @@ impl UserRepo<'_> {
                 }
             }
         }
-        let user: Option<User> = sqlx::query_as(
-            "update users set
+        let user: User = fetch_optional_or_not_found(
+            sqlx::query_as(
+                "update users set
                  deactivated_at = case when $2 then coalesce(deactivated_at, now()) else null end
              where id = $1
              returning id, email, password_hash, is_superadmin, deactivated_at, created_at,
                     display_name, bio",
+            )
+            .bind(id)
+            .bind(deactivated),
+            &mut *tx,
+            || format!("user {id}"),
         )
-        .bind(id)
-        .bind(deactivated)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(store_err)?;
-        let user = user.ok_or_else(|| Error::NotFound(format!("user {id}")))?;
+        .await?;
         tx.commit().await.map_err(store_err)?;
         Ok(DeactivationGuard::Done(user))
     }
@@ -277,23 +280,24 @@ impl UserRepo<'_> {
         display_name: Option<Option<&str>>,
         bio: Option<Option<&str>>,
     ) -> Result<User> {
-        sqlx::query_as(
-            "update users set
+        fetch_optional_or_not_found(
+            sqlx::query_as(
+                "update users set
                  display_name = case when $2 then $3 else display_name end,
                  bio = case when $4 then $5 else bio end
              where id = $1
              returning id, email, password_hash, is_superadmin, deactivated_at, created_at,
                        display_name, bio",
+            )
+            .bind(id)
+            .bind(display_name.is_some())
+            .bind(display_name.flatten())
+            .bind(bio.is_some())
+            .bind(bio.flatten()),
+            self.0,
+            || format!("user {id}"),
         )
-        .bind(id)
-        .bind(display_name.is_some())
-        .bind(display_name.flatten())
-        .bind(bio.is_some())
-        .bind(bio.flatten())
-        .fetch_optional(self.0)
         .await
-        .map_err(store_err)?
-        .ok_or_else(|| Error::NotFound(format!("user {id}")))
     }
 
     /// give an account that has no display name the one its identity provider
@@ -320,14 +324,12 @@ impl UserRepo<'_> {
         if last_active_superadmin(&mut tx, id).await? {
             return Ok(LockoutGuard::WouldLockOut);
         }
-        let res = sqlx::query("delete from users where id = $1")
-            .bind(id)
-            .execute(&mut *tx)
-            .await
-            .map_err(store_err)?;
-        if res.rows_affected() == 0 {
-            return Err(Error::NotFound(format!("user {id}")));
-        }
+        require_affected(
+            sqlx::query("delete from users where id = $1").bind(id),
+            &mut *tx,
+            || format!("user {id}"),
+        )
+        .await?;
         tx.commit().await.map_err(store_err)?;
         Ok(LockoutGuard::Done(()))
     }

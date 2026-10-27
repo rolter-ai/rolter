@@ -2,13 +2,13 @@
 
 use sqlx::PgPool;
 
-use rolter_core::{Error, Result};
+use rolter_core::Result;
 
 use super::super::models::{
     AdaptiveRoutingPolicy, ClientSettings, CompatibilityPolicy, FeatureFlags, LoggingSettings,
     ModelDefaults, RuntimePolicy, SecuritySettings,
 };
-use super::support::store_err;
+use super::support::{fetch_optional_or_not_found, store_err};
 
 impl CompatibilityPolicyRepo<'_> {
     pub async fn get(&self) -> Result<CompatibilityPolicy> {
@@ -26,18 +26,19 @@ impl CompatibilityPolicyRepo<'_> {
         anthropic_version: &str,
         default_max_tokens: i32,
     ) -> Result<CompatibilityPolicy> {
-        sqlx::query_as(
-            "update compatibility_policy set \
+        fetch_optional_or_not_found(
+            sqlx::query_as(
+                "update compatibility_policy set \
                 anthropic_version = $1, default_max_tokens = $2, updated_at = now() \
              where id = true \
              returning anthropic_version, default_max_tokens, updated_at",
+            )
+            .bind(anthropic_version)
+            .bind(default_max_tokens),
+            self.0,
+            || "compatibility policy".to_string(),
         )
-        .bind(anthropic_version)
-        .bind(default_max_tokens)
-        .fetch_optional(self.0)
         .await
-        .map_err(store_err)?
-        .ok_or_else(|| Error::NotFound("compatibility policy".to_string()))
     }
 }
 
@@ -61,21 +62,22 @@ impl ClientSettingsRepo<'_> {
         injected_headers: &serde_json::Value,
         request_id_header: &str,
     ) -> Result<ClientSettings> {
-        sqlx::query_as(sqlx::AssertSqlSafe(format!(
-            "update client_settings set \
+        fetch_optional_or_not_found(
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "update client_settings set \
                 public_base_url = $1, forwarded_headers = $2, injected_headers = $3, \
                 request_id_header = $4, updated_at = now() \
              where id = true \
              returning {CLIENT_SETTINGS_COLUMNS}"
-        )))
-        .bind(public_base_url)
-        .bind(forwarded_headers)
-        .bind(injected_headers)
-        .bind(request_id_header)
-        .fetch_optional(self.0)
+            )))
+            .bind(public_base_url)
+            .bind(forwarded_headers)
+            .bind(injected_headers)
+            .bind(request_id_header),
+            self.0,
+            || "client settings".to_string(),
+        )
         .await
-        .map_err(store_err)?
-        .ok_or_else(|| Error::NotFound("client settings".to_string()))
     }
 }
 
@@ -100,22 +102,23 @@ impl ModelDefaultsRepo<'_> {
         default_top_p: Option<f64>,
         default_max_tokens: Option<i32>,
     ) -> Result<ModelDefaults> {
-        sqlx::query_as(sqlx::AssertSqlSafe(format!(
-            "update model_defaults set \
+        fetch_optional_or_not_found(
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "update model_defaults set \
                 enabled = $1, default_model = $2, default_temperature = $3, \
                 default_top_p = $4, default_max_tokens = $5, updated_at = now() \
              where id = true \
              returning {MODEL_DEFAULTS_COLUMNS}"
-        )))
-        .bind(enabled)
-        .bind(default_model)
-        .bind(default_temperature)
-        .bind(default_top_p)
-        .bind(default_max_tokens)
-        .fetch_optional(self.0)
+            )))
+            .bind(enabled)
+            .bind(default_model)
+            .bind(default_temperature)
+            .bind(default_top_p)
+            .bind(default_max_tokens),
+            self.0,
+            || "model defaults".to_string(),
+        )
         .await
-        .map_err(store_err)?
-        .ok_or_else(|| Error::NotFound("model defaults".to_string()))
     }
 }
 
@@ -142,22 +145,23 @@ impl AdaptiveRoutingPolicyRepo<'_> {
         exploration_ratio: f32,
         min_samples: i32,
     ) -> Result<AdaptiveRoutingPolicy> {
-        sqlx::query_as(sqlx::AssertSqlSafe(format!(
-            "update adaptive_routing_policy set \
+        fetch_optional_or_not_found(
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "update adaptive_routing_policy set \
                 enabled = $1, latency_weight = $2, cost_weight = $3, load_weight = $4, \
                 exploration_ratio = $5, min_samples = $6, updated_at = now() \
              where id = true returning {ADAPTIVE_POLICY_COLUMNS}"
-        )))
-        .bind(enabled)
-        .bind(latency_weight)
-        .bind(cost_weight)
-        .bind(load_weight)
-        .bind(exploration_ratio)
-        .bind(min_samples)
-        .fetch_optional(self.0)
+            )))
+            .bind(enabled)
+            .bind(latency_weight)
+            .bind(cost_weight)
+            .bind(load_weight)
+            .bind(exploration_ratio)
+            .bind(min_samples),
+            self.0,
+            || "adaptive routing policy".to_string(),
+        )
         .await
-        .map_err(store_err)?
-        .ok_or_else(|| Error::NotFound("adaptive routing policy".to_string()))
     }
 }
 

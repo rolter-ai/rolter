@@ -3,12 +3,14 @@
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use rolter_core::{Error, Result};
+use rolter_core::Result;
 
 use super::super::models::{
     BusinessUnit, BusinessUnitListing, Customer, CustomerListing, Org, OrgProject, Project, Team,
 };
-use super::support::store_err;
+use super::support::{
+    fetch_optional_or_not_found, fetch_scalar_or_not_found, require_affected, store_err,
+};
 
 /// Orgs: the top of the org → team → project tenancy hierarchy.
 pub struct OrgRepo<'a>(pub &'a PgPool);
@@ -22,12 +24,12 @@ impl OrgRepo<'_> {
     }
 
     pub async fn get(&self, id: Uuid) -> Result<Org> {
-        sqlx::query_as("select id, name, slug, created_at from orgs where id = $1")
-            .bind(id)
-            .fetch_optional(self.0)
-            .await
-            .map_err(store_err)?
-            .ok_or_else(|| Error::NotFound(format!("org {id}")))
+        fetch_optional_or_not_found(
+            sqlx::query_as("select id, name, slug, created_at from orgs where id = $1").bind(id),
+            self.0,
+            || format!("org {id}"),
+        )
+        .await
     }
 
     pub async fn create(&self, name: &str, slug: &str) -> Result<Org> {
@@ -43,14 +45,12 @@ impl OrgRepo<'_> {
     }
 
     pub async fn delete(&self, id: Uuid) -> Result<()> {
-        let res = sqlx::query("delete from orgs where id = $1")
-            .bind(id)
-            .execute(self.0)
-            .await
-            .map_err(store_err)?;
-        if res.rows_affected() == 0 {
-            return Err(Error::NotFound(format!("org {id}")));
-        }
+        require_affected(
+            sqlx::query("delete from orgs where id = $1").bind(id),
+            self.0,
+            || format!("org {id}"),
+        )
+        .await?;
         Ok(())
     }
 }
@@ -70,12 +70,12 @@ impl TeamRepo<'_> {
     }
 
     pub async fn get(&self, id: Uuid) -> Result<Team> {
-        sqlx::query_as("select id, org_id, name, created_at from teams where id = $1")
-            .bind(id)
-            .fetch_optional(self.0)
-            .await
-            .map_err(store_err)?
-            .ok_or_else(|| Error::NotFound(format!("team {id}")))
+        fetch_optional_or_not_found(
+            sqlx::query_as("select id, org_id, name, created_at from teams where id = $1").bind(id),
+            self.0,
+            || format!("team {id}"),
+        )
+        .await
     }
 
     pub async fn create(&self, org_id: Uuid, name: &str) -> Result<Team> {
@@ -92,27 +92,26 @@ impl TeamRepo<'_> {
 
     /// Rename a team. A name another team of the org holds is `AlreadyExists`.
     pub async fn rename(&self, id: Uuid, name: &str) -> Result<Team> {
-        sqlx::query_as(
-            "update teams set name = $2 where id = $1
+        fetch_optional_or_not_found(
+            sqlx::query_as(
+                "update teams set name = $2 where id = $1
              returning id, org_id, name, created_at",
+            )
+            .bind(id)
+            .bind(name),
+            self.0,
+            || format!("team {id}"),
         )
-        .bind(id)
-        .bind(name)
-        .fetch_optional(self.0)
         .await
-        .map_err(store_err)?
-        .ok_or_else(|| Error::NotFound(format!("team {id}")))
     }
 
     pub async fn delete(&self, id: Uuid) -> Result<()> {
-        let res = sqlx::query("delete from teams where id = $1")
-            .bind(id)
-            .execute(self.0)
-            .await
-            .map_err(store_err)?;
-        if res.rows_affected() == 0 {
-            return Err(Error::NotFound(format!("team {id}")));
-        }
+        require_affected(
+            sqlx::query("delete from teams where id = $1").bind(id),
+            self.0,
+            || format!("team {id}"),
+        )
+        .await?;
         Ok(())
     }
 }
@@ -151,12 +150,13 @@ impl ProjectRepo<'_> {
     }
 
     pub async fn get(&self, id: Uuid) -> Result<Project> {
-        sqlx::query_as("select id, team_id, name, created_at from projects where id = $1")
-            .bind(id)
-            .fetch_optional(self.0)
-            .await
-            .map_err(store_err)?
-            .ok_or_else(|| Error::NotFound(format!("project {id}")))
+        fetch_optional_or_not_found(
+            sqlx::query_as("select id, team_id, name, created_at from projects where id = $1")
+                .bind(id),
+            self.0,
+            || format!("project {id}"),
+        )
+        .await
     }
 
     /// Whether `project_id` belongs to `org_id`, through its team.
@@ -232,14 +232,12 @@ impl ProjectRepo<'_> {
     }
 
     pub async fn delete(&self, id: Uuid) -> Result<()> {
-        let res = sqlx::query("delete from projects where id = $1")
-            .bind(id)
-            .execute(self.0)
-            .await
-            .map_err(store_err)?;
-        if res.rows_affected() == 0 {
-            return Err(Error::NotFound(format!("project {id}")));
-        }
+        require_affected(
+            sqlx::query("delete from projects where id = $1").bind(id),
+            self.0,
+            || format!("project {id}"),
+        )
+        .await?;
         Ok(())
     }
 
@@ -247,27 +245,26 @@ impl ProjectRepo<'_> {
     /// bodies of this project's traffic: `member` unless an admin lowered it to
     /// `viewer` (#1820).
     pub async fn payload_min_role(&self, id: Uuid) -> Result<String> {
-        sqlx::query_scalar("select payload_min_role from projects where id = $1")
-            .bind(id)
-            .fetch_optional(self.0)
-            .await
-            .map_err(store_err)?
-            .ok_or_else(|| Error::NotFound(format!("project {id}")))
+        fetch_scalar_or_not_found(
+            sqlx::query_scalar("select payload_min_role from projects where id = $1").bind(id),
+            self.0,
+            || format!("project {id}"),
+        )
+        .await
     }
 
     /// Set [`Self::payload_min_role`]. The column's check constraint admits only
     /// `member` and `viewer`, so an unknown role is refused by the database even
     /// if a caller skipped its own validation.
     pub async fn set_payload_min_role(&self, id: Uuid, role: &str) -> Result<()> {
-        let res = sqlx::query("update projects set payload_min_role = $2 where id = $1")
-            .bind(id)
-            .bind(role)
-            .execute(self.0)
-            .await
-            .map_err(store_err)?;
-        if res.rows_affected() == 0 {
-            return Err(Error::NotFound(format!("project {id}")));
-        }
+        require_affected(
+            sqlx::query("update projects set payload_min_role = $2 where id = $1")
+                .bind(id)
+                .bind(role),
+            self.0,
+            || format!("project {id}"),
+        )
+        .await?;
         Ok(())
     }
 
@@ -339,15 +336,16 @@ impl BusinessUnitRepo<'_> {
     }
 
     pub async fn get(&self, id: Uuid) -> Result<BusinessUnit> {
-        sqlx::query_as(
-            "select id, org_id, name, slug, retired_at, created_at
+        fetch_optional_or_not_found(
+            sqlx::query_as(
+                "select id, org_id, name, slug, retired_at, created_at
              from business_units where id = $1",
+            )
+            .bind(id),
+            self.0,
+            || format!("business unit {id}"),
         )
-        .bind(id)
-        .fetch_optional(self.0)
         .await
-        .map_err(store_err)?
-        .ok_or_else(|| Error::NotFound(format!("business unit {id}")))
     }
 
     pub async fn create(&self, org_id: Uuid, name: &str, slug: &str) -> Result<BusinessUnit> {
@@ -370,8 +368,9 @@ impl BusinessUnitRepo<'_> {
         slug: Option<&str>,
         retired: Option<bool>,
     ) -> Result<BusinessUnit> {
-        sqlx::query_as(
-            "update business_units set
+        fetch_optional_or_not_found(
+            sqlx::query_as(
+                "update business_units set
                  name = coalesce($2, name),
                  slug = coalesce($3, slug),
                  retired_at = case
@@ -381,26 +380,24 @@ impl BusinessUnitRepo<'_> {
                  end
              where id = $1
              returning id, org_id, name, slug, retired_at, created_at",
+            )
+            .bind(id)
+            .bind(name)
+            .bind(slug)
+            .bind(retired),
+            self.0,
+            || format!("business unit {id}"),
         )
-        .bind(id)
-        .bind(name)
-        .bind(slug)
-        .bind(retired)
-        .fetch_optional(self.0)
         .await
-        .map_err(store_err)?
-        .ok_or_else(|| Error::NotFound(format!("business unit {id}")))
     }
 
     pub async fn delete(&self, id: Uuid) -> Result<()> {
-        let res = sqlx::query("delete from business_units where id = $1")
-            .bind(id)
-            .execute(self.0)
-            .await
-            .map_err(store_err)?;
-        if res.rows_affected() == 0 {
-            return Err(Error::NotFound(format!("business unit {id}")));
-        }
+        require_affected(
+            sqlx::query("delete from business_units where id = $1").bind(id),
+            self.0,
+            || format!("business unit {id}"),
+        )
+        .await?;
         Ok(())
     }
 }
@@ -444,15 +441,16 @@ impl CustomerRepo<'_> {
     }
 
     pub async fn get(&self, id: Uuid) -> Result<Customer> {
-        sqlx::query_as(
-            "select id, org_id, business_unit_id, name, slug, retired_at, created_at
+        fetch_optional_or_not_found(
+            sqlx::query_as(
+                "select id, org_id, business_unit_id, name, slug, retired_at, created_at
              from customers where id = $1",
+            )
+            .bind(id),
+            self.0,
+            || format!("customer {id}"),
         )
-        .bind(id)
-        .fetch_optional(self.0)
         .await
-        .map_err(store_err)?
-        .ok_or_else(|| Error::NotFound(format!("customer {id}")))
     }
 
     pub async fn create(
@@ -484,8 +482,9 @@ impl CustomerRepo<'_> {
         slug: Option<&str>,
         retired: Option<bool>,
     ) -> Result<Customer> {
-        sqlx::query_as(
-            "update customers set
+        fetch_optional_or_not_found(
+            sqlx::query_as(
+                "update customers set
                  business_unit_id = case when $2 then $3 else business_unit_id end,
                  name = coalesce($4, name),
                  slug = coalesce($5, slug),
@@ -496,28 +495,26 @@ impl CustomerRepo<'_> {
                  end
              where id = $1
              returning id, org_id, business_unit_id, name, slug, retired_at, created_at",
+            )
+            .bind(id)
+            .bind(business_unit_id.is_some())
+            .bind(business_unit_id.flatten())
+            .bind(name)
+            .bind(slug)
+            .bind(retired),
+            self.0,
+            || format!("customer {id}"),
         )
-        .bind(id)
-        .bind(business_unit_id.is_some())
-        .bind(business_unit_id.flatten())
-        .bind(name)
-        .bind(slug)
-        .bind(retired)
-        .fetch_optional(self.0)
         .await
-        .map_err(store_err)?
-        .ok_or_else(|| Error::NotFound(format!("customer {id}")))
     }
 
     pub async fn delete(&self, id: Uuid) -> Result<()> {
-        let res = sqlx::query("delete from customers where id = $1")
-            .bind(id)
-            .execute(self.0)
-            .await
-            .map_err(store_err)?;
-        if res.rows_affected() == 0 {
-            return Err(Error::NotFound(format!("customer {id}")));
-        }
+        require_affected(
+            sqlx::query("delete from customers where id = $1").bind(id),
+            self.0,
+            || format!("customer {id}"),
+        )
+        .await?;
         Ok(())
     }
 }

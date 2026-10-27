@@ -6,7 +6,9 @@ use uuid::Uuid;
 use rolter_core::{Error, Result};
 
 use super::super::models::{Provider, ProviderGroup, ProviderGroupMember};
-use super::support::store_err;
+use super::support::{
+    fetch_optional_or_not_found, fetch_scalar_or_not_found, require_affected, store_err,
+};
 
 /// What [`ProviderRepo::delete`] did with a provider that exists.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -180,15 +182,17 @@ impl ProviderRepo<'_> {
     }
 
     pub async fn get(&self, id: Uuid) -> Result<Provider> {
-        sqlx::query_as(
+        fetch_optional_or_not_found(
+sqlx::query_as(
             "select id, org_id, name, slug, kind, api_base, api_key_env, egress_proxy, egress_proxies, kv_events, lmcache, project_id, allow_custom_api_base, created_at
              from providers where id = $1",
         )
         .bind(id)
-        .fetch_optional(self.0)
-        .await
-        .map_err(store_err)?
-        .ok_or_else(|| Error::NotFound(format!("provider {id}")))
+        ,
+self.0,
+|| format!("provider {id}"),
+)
+.await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -249,7 +253,8 @@ impl ProviderRepo<'_> {
         project_id: Option<Option<Uuid>>,
         allow_custom_api_base: Option<bool>,
     ) -> Result<Provider> {
-        sqlx::query_as(
+        fetch_optional_or_not_found(
+sqlx::query_as(
             "update providers set
                  slug = coalesce($2, slug),
                  kind = coalesce($3, kind),
@@ -281,10 +286,11 @@ impl ProviderRepo<'_> {
         .bind(lmcache.is_some())
         .bind(setting_json(lmcache.flatten())?)
         .bind(allow_custom_api_base)
-        .fetch_optional(self.0)
-        .await
-        .map_err(store_err)?
-        .ok_or_else(|| Error::NotFound(format!("provider {id}")))
+        ,
+self.0,
+|| format!("provider {id}"),
+)
+.await
     }
 
     /// Delete provider `id` unless a route target or a provider-group member
@@ -298,15 +304,12 @@ impl ProviderRepo<'_> {
     /// with that, so no reference can land between the check and the delete.
     pub async fn delete(&self, id: Uuid) -> Result<ProviderDeletion> {
         let mut tx = self.0.begin().await.map_err(store_err)?;
-        let found: Option<Uuid> =
-            sqlx::query_scalar("select id from providers where id = $1 for update")
-                .bind(id)
-                .fetch_optional(&mut *tx)
-                .await
-                .map_err(store_err)?;
-        if found.is_none() {
-            return Err(Error::NotFound(format!("provider {id}")));
-        }
+        let _: Uuid = fetch_scalar_or_not_found(
+            sqlx::query_scalar("select id from providers where id = $1 for update").bind(id),
+            &mut *tx,
+            || format!("provider {id}"),
+        )
+        .await?;
         let routes: Vec<String> = sqlx::query_scalar(
             "select distinct r.model from route_targets rt
              join routes r on r.id = rt.route_id
@@ -444,15 +447,16 @@ impl ProviderGroupRepo<'_> {
     }
 
     pub async fn get(&self, id: Uuid) -> Result<ProviderGroup> {
-        sqlx::query_as(
-            "select id, org_id, name, slug, strategy, project_id, created_at
+        fetch_optional_or_not_found(
+            sqlx::query_as(
+                "select id, org_id, name, slug, strategy, project_id, created_at
              from provider_groups where id = $1",
+            )
+            .bind(id),
+            self.0,
+            || format!("provider group {id}"),
         )
-        .bind(id)
-        .fetch_optional(self.0)
         .await
-        .map_err(store_err)?
-        .ok_or_else(|| Error::NotFound(format!("provider group {id}")))
     }
 
     pub async fn create(
@@ -488,36 +492,35 @@ impl ProviderGroupRepo<'_> {
         strategy: Option<&str>,
         project_id: Option<Option<Uuid>>,
     ) -> Result<ProviderGroup> {
-        sqlx::query_as(
-            "update provider_groups set
+        fetch_optional_or_not_found(
+            sqlx::query_as(
+                "update provider_groups set
                  name = coalesce($2, name),
                  slug = coalesce($3, slug),
                  strategy = coalesce($4, strategy),
                  project_id = case when $5 then $6 else project_id end
              where id = $1
              returning id, org_id, name, slug, strategy, project_id, created_at",
+            )
+            .bind(id)
+            .bind(name)
+            .bind(slug)
+            .bind(strategy)
+            .bind(project_id.is_some())
+            .bind(project_id.flatten()),
+            self.0,
+            || format!("provider group {id}"),
         )
-        .bind(id)
-        .bind(name)
-        .bind(slug)
-        .bind(strategy)
-        .bind(project_id.is_some())
-        .bind(project_id.flatten())
-        .fetch_optional(self.0)
         .await
-        .map_err(store_err)?
-        .ok_or_else(|| Error::NotFound(format!("provider group {id}")))
     }
 
     pub async fn delete(&self, id: Uuid) -> Result<()> {
-        let res = sqlx::query("delete from provider_groups where id = $1")
-            .bind(id)
-            .execute(self.0)
-            .await
-            .map_err(store_err)?;
-        if res.rows_affected() == 0 {
-            return Err(Error::NotFound(format!("provider group {id}")));
-        }
+        require_affected(
+            sqlx::query("delete from provider_groups where id = $1").bind(id),
+            self.0,
+            || format!("provider group {id}"),
+        )
+        .await?;
         Ok(())
     }
 

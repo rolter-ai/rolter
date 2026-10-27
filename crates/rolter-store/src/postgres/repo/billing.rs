@@ -9,7 +9,7 @@ use rolter_core::{Error, Result};
 use super::super::models::{Budget, ModelPrice, RateLimit};
 use super::keys::{keeps_a_cap, Edited};
 use super::labels::{AutoLabelInput, LabelRepo, PRICED_LABEL_KEY};
-use super::support::store_err;
+use super::support::{fetch_optional_or_not_found, require_affected, store_err};
 
 /// The `where` clause (a literal, so it can sit inside `concat!`) shared by the org-wide budget and rate-limit lists: a row
 /// belongs to org `$1` when its scope is the org, one of its teams, projects or
@@ -62,15 +62,17 @@ impl BudgetRepo<'_> {
     }
 
     pub async fn get(&self, id: Uuid) -> Result<Budget> {
-        sqlx::query_as(
+        fetch_optional_or_not_found(
+sqlx::query_as(
             "select id, scope_type, scope_id, limit_usd::text as limit_usd, period, unpriced_policy, created_at
              from budgets where id = $1",
         )
         .bind(id)
-        .fetch_optional(self.0)
-        .await
-        .map_err(store_err)?
-        .ok_or_else(|| Error::NotFound(format!("budget {id}")))
+        ,
+self.0,
+|| format!("budget {id}"),
+)
+.await
     }
 
     /// `unpriced_policy` is `None` for a budget that inherits the
@@ -174,14 +176,12 @@ impl BudgetRepo<'_> {
     }
 
     pub async fn delete(&self, id: Uuid) -> Result<()> {
-        let res = sqlx::query("delete from budgets where id = $1")
-            .bind(id)
-            .execute(self.0)
-            .await
-            .map_err(store_err)?;
-        if res.rows_affected() == 0 {
-            return Err(Error::NotFound(format!("budget {id}")));
-        }
+        require_affected(
+            sqlx::query("delete from budgets where id = $1").bind(id),
+            self.0,
+            || format!("budget {id}"),
+        )
+        .await?;
         Ok(())
     }
 }
@@ -217,15 +217,16 @@ impl RateLimitRepo<'_> {
     }
 
     pub async fn get(&self, id: Uuid) -> Result<RateLimit> {
-        sqlx::query_as(
-            "select id, scope_type, scope_id, rpm, tpm, created_at
+        fetch_optional_or_not_found(
+            sqlx::query_as(
+                "select id, scope_type, scope_id, rpm, tpm, created_at
              from rate_limits where id = $1",
+            )
+            .bind(id),
+            self.0,
+            || format!("rate limit {id}"),
         )
-        .bind(id)
-        .fetch_optional(self.0)
         .await
-        .map_err(store_err)?
-        .ok_or_else(|| Error::NotFound(format!("rate limit {id}")))
     }
 
     /// Store a new rate limit.
@@ -283,16 +284,17 @@ impl RateLimitRepo<'_> {
         tpm: Option<Option<i32>>,
     ) -> Result<Edited<RateLimit>> {
         let mut tx = self.0.begin().await.map_err(store_err)?;
-        let before: RateLimit = sqlx::query_as(
-            "select id, scope_type, scope_id, rpm, tpm, created_at
+        let before: RateLimit = fetch_optional_or_not_found(
+            sqlx::query_as(
+                "select id, scope_type, scope_id, rpm, tpm, created_at
              from rate_limits where id = $1
              for update",
+            )
+            .bind(id),
+            &mut *tx,
+            || format!("rate limit {id}"),
         )
-        .bind(id)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(store_err)?
-        .ok_or_else(|| Error::NotFound(format!("rate limit {id}")))?;
+        .await?;
         let next_rpm = rpm.unwrap_or(before.rpm);
         let next_tpm = tpm.unwrap_or(before.tpm);
         if !keeps_a_cap(next_rpm, next_tpm) {
@@ -325,14 +327,12 @@ impl RateLimitRepo<'_> {
     }
 
     pub async fn delete(&self, id: Uuid) -> Result<()> {
-        let res = sqlx::query("delete from rate_limits where id = $1")
-            .bind(id)
-            .execute(self.0)
-            .await
-            .map_err(store_err)?;
-        if res.rows_affected() == 0 {
-            return Err(Error::NotFound(format!("rate limit {id}")));
-        }
+        require_affected(
+            sqlx::query("delete from rate_limits where id = $1").bind(id),
+            self.0,
+            || format!("rate limit {id}"),
+        )
+        .await?;
         Ok(())
     }
 }
@@ -524,14 +524,12 @@ impl ModelPriceRepo<'_> {
 
     pub async fn delete(&self, model: &str) -> Result<()> {
         let mut tx = self.0.begin().await.map_err(store_err)?;
-        let res = sqlx::query("delete from model_prices where model = $1")
-            .bind(model)
-            .execute(&mut *tx)
-            .await
-            .map_err(store_err)?;
-        if res.rows_affected() == 0 {
-            return Err(Error::NotFound(format!("model price '{model}'")));
-        }
+        require_affected(
+            sqlx::query("delete from model_prices where model = $1").bind(model),
+            &mut *tx,
+            || format!("model price '{model}'"),
+        )
+        .await?;
         // the fact stops holding with the row, and an auto label that outlived
         // its observation would be worse than none
         LabelRepo::clear_auto(&mut *tx, "model", model, PRICED_LABEL_KEY).await?;

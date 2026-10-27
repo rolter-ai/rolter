@@ -3,10 +3,10 @@
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use rolter_core::{Error, Result};
+use rolter_core::Result;
 
 use super::super::models::{ScimGroup, ScimGroupMapping, ScimIdentity, ScimToken};
-use super::support::store_err;
+use super::support::{fetch_optional_or_not_found, require_affected, store_err};
 
 /// SCIM provisioning tokens. Lookup is by peppered digest only; the plaintext
 /// token never reaches the database.
@@ -48,14 +48,15 @@ impl ScimTokenRepo<'_> {
     }
 
     pub async fn get(&self, id: Uuid) -> Result<ScimToken> {
-        sqlx::query_as(sqlx::AssertSqlSafe(format!(
-            "select {SCIM_TOKEN_COLUMNS} from scim_tokens where id = $1"
-        )))
-        .bind(id)
-        .fetch_optional(self.0)
+        fetch_optional_or_not_found(
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "select {SCIM_TOKEN_COLUMNS} from scim_tokens where id = $1"
+            )))
+            .bind(id),
+            self.0,
+            || format!("scim token {id}"),
+        )
         .await
-        .map_err(store_err)?
-        .ok_or_else(|| Error::NotFound(format!("scim token {id}")))
     }
 
     /// Resolve a presented token by digest. Revoked tokens never resolve, so a
@@ -72,15 +73,16 @@ impl ScimTokenRepo<'_> {
     }
 
     pub async fn revoke(&self, id: Uuid) -> Result<ScimToken> {
-        sqlx::query_as(sqlx::AssertSqlSafe(format!(
-            "update scim_tokens set revoked_at = coalesce(revoked_at, now()) \
+        fetch_optional_or_not_found(
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "update scim_tokens set revoked_at = coalesce(revoked_at, now()) \
              where id = $1 returning {SCIM_TOKEN_COLUMNS}"
-        )))
-        .bind(id)
-        .fetch_optional(self.0)
+            )))
+            .bind(id),
+            self.0,
+            || format!("scim token {id}"),
+        )
         .await
-        .map_err(store_err)?
-        .ok_or_else(|| Error::NotFound(format!("scim token {id}")))
     }
 
     /// Best-effort last-used stamp for the provisioning screen.
@@ -263,18 +265,19 @@ impl ScimGroupRepo<'_> {
         external_id: Option<&str>,
         display_name: &str,
     ) -> Result<ScimGroup> {
-        sqlx::query_as(sqlx::AssertSqlSafe(format!(
-            "update scim_groups set external_id = $3, display_name = $4, updated_at = now() \
+        fetch_optional_or_not_found(
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "update scim_groups set external_id = $3, display_name = $4, updated_at = now() \
              where id = $1 and org_id = $2 returning {SCIM_GROUP_COLUMNS}"
-        )))
-        .bind(id)
-        .bind(org_id)
-        .bind(external_id)
-        .bind(display_name)
-        .fetch_optional(self.0)
+            )))
+            .bind(id)
+            .bind(org_id)
+            .bind(external_id)
+            .bind(display_name),
+            self.0,
+            || format!("scim group {id}"),
+        )
         .await
-        .map_err(store_err)?
-        .ok_or_else(|| Error::NotFound(format!("scim group {id}")))
     }
 
     pub async fn delete(&self, id: Uuid, org_id: Uuid) -> Result<()> {
@@ -428,25 +431,24 @@ impl ScimGroupMappingRepo<'_> {
     }
 
     pub async fn get(&self, id: Uuid) -> Result<ScimGroupMapping> {
-        sqlx::query_as(sqlx::AssertSqlSafe(format!(
-            "select {SCIM_GROUP_MAPPING_COLUMNS} from scim_group_mappings where id = $1"
-        )))
-        .bind(id)
-        .fetch_optional(self.0)
+        fetch_optional_or_not_found(
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "select {SCIM_GROUP_MAPPING_COLUMNS} from scim_group_mappings where id = $1"
+            )))
+            .bind(id),
+            self.0,
+            || format!("scim group mapping {id}"),
+        )
         .await
-        .map_err(store_err)?
-        .ok_or_else(|| Error::NotFound(format!("scim group mapping {id}")))
     }
 
     pub async fn delete(&self, id: Uuid) -> Result<()> {
-        let res = sqlx::query("delete from scim_group_mappings where id = $1")
-            .bind(id)
-            .execute(self.0)
-            .await
-            .map_err(store_err)?;
-        if res.rows_affected() == 0 {
-            return Err(Error::NotFound(format!("scim group mapping {id}")));
-        }
+        require_affected(
+            sqlx::query("delete from scim_group_mappings where id = $1").bind(id),
+            self.0,
+            || format!("scim group mapping {id}"),
+        )
+        .await?;
         Ok(())
     }
 }

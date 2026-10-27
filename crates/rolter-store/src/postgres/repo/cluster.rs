@@ -2,10 +2,10 @@
 
 use sqlx::PgPool;
 
-use rolter_core::{Error, Result};
+use rolter_core::Result;
 
 use super::super::models::{AdaptiveRoutingTelemetry, ClusterNode};
-use super::support::store_err;
+use super::support::{fetch_optional_or_not_found, require_affected, store_err};
 
 /// Cluster inventory: one row per gateway/control node, upserted from the
 /// snapshot poll each node already performs.
@@ -53,18 +53,19 @@ impl ClusterNodeRepo<'_> {
     /// Set the operator-requested state for a node. Returns the updated row so
     /// the caller can audit what actually changed.
     pub async fn set_desired_state(&self, id: &str, desired_state: &str) -> Result<ClusterNode> {
-        sqlx::query_as(
-            "update cluster_nodes set desired_state = $2, state_changed_at = now() \
+        fetch_optional_or_not_found(
+            sqlx::query_as(
+                "update cluster_nodes set desired_state = $2, state_changed_at = now() \
              where id = $1 \
              returning id, role, build_version, config_version, desired_state, \
                        state_changed_at, first_seen_at, last_seen_at",
+            )
+            .bind(id)
+            .bind(desired_state),
+            self.0,
+            || format!("cluster node {id}"),
         )
-        .bind(id)
-        .bind(desired_state)
-        .fetch_optional(self.0)
         .await
-        .map_err(store_err)?
-        .ok_or_else(|| Error::NotFound(format!("cluster node {id}")))
     }
 
     /// The state a node should move to, read on its snapshot poll. `None` when
@@ -80,14 +81,12 @@ impl ClusterNodeRepo<'_> {
     /// Forget a node an operator has decommissioned. A node that is still
     /// running reappears on its next poll.
     pub async fn delete(&self, id: &str) -> Result<()> {
-        let res = sqlx::query("delete from cluster_nodes where id = $1")
-            .bind(id)
-            .execute(self.0)
-            .await
-            .map_err(store_err)?;
-        if res.rows_affected() == 0 {
-            return Err(Error::NotFound(format!("cluster node {id}")));
-        }
+        require_affected(
+            sqlx::query("delete from cluster_nodes where id = $1").bind(id),
+            self.0,
+            || format!("cluster node {id}"),
+        )
+        .await?;
         Ok(())
     }
 }

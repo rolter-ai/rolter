@@ -3,13 +3,13 @@
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use rolter_core::{Error, Result};
+use rolter_core::Result;
 
 use super::super::models::{
     AccessProfile, AccessProfileAssignment, AccessProfilePolicy, AccessProfileRole, CustomRole,
     CustomRoleGrant, EffectiveGrant,
 };
-use super::support::store_err;
+use super::support::{fetch_optional_or_not_found, store_err};
 
 /// One role a profile confers, and where: `(role, org, team, project)`. Exactly
 /// one of the three scopes is `Some`, which the schema enforces.
@@ -33,14 +33,15 @@ impl CustomRoleRepo<'_> {
     }
 
     pub async fn get(&self, id: Uuid) -> Result<CustomRole> {
-        sqlx::query_as(sqlx::AssertSqlSafe(format!(
-            "select {CUSTOM_ROLE_COLUMNS} from custom_roles where id = $1"
-        )))
-        .bind(id)
-        .fetch_optional(self.0)
+        fetch_optional_or_not_found(
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "select {CUSTOM_ROLE_COLUMNS} from custom_roles where id = $1"
+            )))
+            .bind(id),
+            self.0,
+            || format!("custom role {id}"),
+        )
         .await
-        .map_err(store_err)?
-        .ok_or_else(|| Error::NotFound(format!("custom role {id}")))
     }
 
     pub async fn create(
@@ -72,19 +73,20 @@ impl CustomRoleRepo<'_> {
         description: Option<&str>,
         base_role: &str,
     ) -> Result<CustomRole> {
-        sqlx::query_as(sqlx::AssertSqlSafe(format!(
-            "update custom_roles set name = $2, description = $3, base_role = $4, \
+        fetch_optional_or_not_found(
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "update custom_roles set name = $2, description = $3, base_role = $4, \
                     updated_at = now() \
              where id = $1 returning {CUSTOM_ROLE_COLUMNS}"
-        )))
-        .bind(id)
-        .bind(name)
-        .bind(description)
-        .bind(base_role)
-        .fetch_optional(self.0)
+            )))
+            .bind(id)
+            .bind(name)
+            .bind(description)
+            .bind(base_role),
+            self.0,
+            || format!("custom role {id}"),
+        )
         .await
-        .map_err(store_err)?
-        .ok_or_else(|| Error::NotFound(format!("custom role {id}")))
     }
 
     pub async fn delete(&self, id: Uuid) -> Result<()> {
@@ -182,14 +184,15 @@ impl AccessProfileRepo<'_> {
     }
 
     pub async fn get(&self, id: Uuid) -> Result<AccessProfile> {
-        sqlx::query_as(sqlx::AssertSqlSafe(format!(
-            "select {ACCESS_PROFILE_COLUMNS} from access_profiles where id = $1"
-        )))
-        .bind(id)
-        .fetch_optional(self.0)
+        fetch_optional_or_not_found(
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "select {ACCESS_PROFILE_COLUMNS} from access_profiles where id = $1"
+            )))
+            .bind(id),
+            self.0,
+            || format!("access profile {id}"),
+        )
         .await
-        .map_err(store_err)?
-        .ok_or_else(|| Error::NotFound(format!("access profile {id}")))
     }
 
     pub async fn create(
@@ -218,17 +221,18 @@ impl AccessProfileRepo<'_> {
         name: &str,
         description: Option<&str>,
     ) -> Result<AccessProfile> {
-        sqlx::query_as(sqlx::AssertSqlSafe(format!(
-            "update access_profiles set name = $2, description = $3, updated_at = now() \
+        fetch_optional_or_not_found(
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "update access_profiles set name = $2, description = $3, updated_at = now() \
              where id = $1 returning {ACCESS_PROFILE_COLUMNS}"
-        )))
-        .bind(id)
-        .bind(name)
-        .bind(description)
-        .fetch_optional(self.0)
+            )))
+            .bind(id)
+            .bind(name)
+            .bind(description),
+            self.0,
+            || format!("access profile {id}"),
+        )
         .await
-        .map_err(store_err)?
-        .ok_or_else(|| Error::NotFound(format!("access profile {id}")))
     }
 
     pub async fn delete(&self, id: Uuid) -> Result<()> {
@@ -320,15 +324,16 @@ impl AccessProfileRepo<'_> {
     }
 
     pub async fn get_assignment(&self, id: Uuid) -> Result<AccessProfileAssignment> {
-        sqlx::query_as(
-            "select id, profile_id, user_id, team_id, created_at \
+        fetch_optional_or_not_found(
+            sqlx::query_as(
+                "select id, profile_id, user_id, team_id, created_at \
              from access_profile_assignments where id = $1",
+            )
+            .bind(id),
+            self.0,
+            || format!("access profile assignment {id}"),
         )
-        .bind(id)
-        .fetch_optional(self.0)
         .await
-        .map_err(store_err)?
-        .ok_or_else(|| Error::NotFound(format!("access profile assignment {id}")))
     }
 
     /// Assign the profile to a user or a team. Re-assigning the same subject is

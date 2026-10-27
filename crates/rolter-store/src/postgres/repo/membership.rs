@@ -4,11 +4,11 @@ use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use rolter_core::{Error, Result};
+use rolter_core::Result;
 
 use super::super::models::{Invitation, Membership, PasswordReset};
 use super::lockout::{lock_org_admins, LockoutGuard};
-use super::support::store_err;
+use super::support::{fetch_optional_or_not_found, require_affected, store_err};
 
 /// role grants at an org/team/project scope. see [`super::super::models::Membership`].
 pub struct MembershipRepo<'a>(pub &'a PgPool);
@@ -66,15 +66,16 @@ impl MembershipRepo<'_> {
     }
 
     pub async fn get(&self, id: Uuid) -> Result<Membership> {
-        sqlx::query_as(
-            "select id, user_id, org_id, team_id, project_id, role, source, created_at
+        fetch_optional_or_not_found(
+            sqlx::query_as(
+                "select id, user_id, org_id, team_id, project_id, role, source, created_at
              from memberships where id = $1",
+            )
+            .bind(id),
+            self.0,
+            || format!("membership {id}"),
         )
-        .bind(id)
-        .fetch_optional(self.0)
         .await
-        .map_err(store_err)?
-        .ok_or_else(|| Error::NotFound(format!("membership {id}")))
     }
 
     /// grant `role` to `user_id` at exactly one scope. exactly one of
@@ -167,14 +168,12 @@ impl MembershipRepo<'_> {
                 }
             }
         }
-        let res = sqlx::query("delete from memberships where id = $1")
-            .bind(id)
-            .execute(&mut *tx)
-            .await
-            .map_err(store_err)?;
-        if res.rows_affected() == 0 {
-            return Err(Error::NotFound(format!("membership {id}")));
-        }
+        require_affected(
+            sqlx::query("delete from memberships where id = $1").bind(id),
+            &mut *tx,
+            || format!("membership {id}"),
+        )
+        .await?;
         tx.commit().await.map_err(store_err)?;
         Ok(LockoutGuard::Done(()))
     }
@@ -224,15 +223,16 @@ impl MembershipRepo<'_> {
                 }
             }
         }
-        let before: Membership = sqlx::query_as(
-            "select id, user_id, org_id, team_id, project_id, role, source, created_at
+        let before: Membership = fetch_optional_or_not_found(
+            sqlx::query_as(
+                "select id, user_id, org_id, team_id, project_id, role, source, created_at
              from memberships where id = $1 for update",
+            )
+            .bind(id),
+            &mut *tx,
+            || format!("membership {id}"),
         )
-        .bind(id)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(store_err)?
-        .ok_or_else(|| Error::NotFound(format!("membership {id}")))?;
+        .await?;
         // a manual edit is operator intent: it must survive sso reconciliation,
         // which only ever touches rows whose source is 'sso'
         let after: Membership = sqlx::query_as(
@@ -249,14 +249,12 @@ impl MembershipRepo<'_> {
     }
 
     pub async fn delete(&self, id: Uuid) -> Result<()> {
-        let res = sqlx::query("delete from memberships where id = $1")
-            .bind(id)
-            .execute(self.0)
-            .await
-            .map_err(store_err)?;
-        if res.rows_affected() == 0 {
-            return Err(Error::NotFound(format!("membership {id}")));
-        }
+        require_affected(
+            sqlx::query("delete from memberships where id = $1").bind(id),
+            self.0,
+            || format!("membership {id}"),
+        )
+        .await?;
         Ok(())
     }
 }
@@ -486,26 +484,28 @@ impl InvitationRepo<'_> {
     }
 
     pub async fn revoke(&self, id: Uuid) -> Result<Invitation> {
-        sqlx::query_as(sqlx::AssertSqlSafe(format!(
-            "update invitations set revoked_at = now() \
+        fetch_optional_or_not_found(
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "update invitations set revoked_at = now() \
              where id = $1 and accepted_at is null \
              returning {INVITATION_COLUMNS}"
-        )))
-        .bind(id)
-        .fetch_optional(self.0)
+            )))
+            .bind(id),
+            self.0,
+            || format!("pending invitation {id}"),
+        )
         .await
-        .map_err(store_err)?
-        .ok_or_else(|| Error::NotFound(format!("pending invitation {id}")))
     }
 
     pub async fn get(&self, id: Uuid) -> Result<Invitation> {
-        sqlx::query_as(sqlx::AssertSqlSafe(format!(
-            "select {INVITATION_COLUMNS} from invitations where id = $1"
-        )))
-        .bind(id)
-        .fetch_optional(self.0)
+        fetch_optional_or_not_found(
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "select {INVITATION_COLUMNS} from invitations where id = $1"
+            )))
+            .bind(id),
+            self.0,
+            || format!("invitation {id}"),
+        )
         .await
-        .map_err(store_err)?
-        .ok_or_else(|| Error::NotFound(format!("invitation {id}")))
     }
 }

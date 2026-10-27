@@ -7,7 +7,7 @@ use rolter_core::{Error, Result};
 
 use super::super::models::{Route, RouteTarget};
 use super::providers::ProviderRepo;
-use super::support::store_err;
+use super::support::{fetch_optional_or_not_found, require_affected, store_err};
 
 /// Routes, scoped to a project.
 pub struct RouteRepo<'a>(pub &'a PgPool);
@@ -68,14 +68,16 @@ impl RouteRepo<'_> {
     }
 
     pub async fn get(&self, id: Uuid) -> Result<Route> {
-        sqlx::query_as(
+        fetch_optional_or_not_found(
+sqlx::query_as(
             "select id, project_id, model, strategy, enabled, params, param_policy, advanced, created_at from routes where id = $1",
         )
         .bind(id)
-        .fetch_optional(self.0)
-        .await
-        .map_err(store_err)?
-        .ok_or_else(|| Error::NotFound(format!("route {id}")))
+        ,
+self.0,
+|| format!("route {id}"),
+)
+.await
     }
 
     pub async fn create(&self, project_id: Uuid, model: &str, strategy: &str) -> Result<Route> {
@@ -97,29 +99,33 @@ impl RouteRepo<'_> {
     /// desired state rather than a first-write-wins snapshot (#927); the value
     /// is constrained by the database to the strategies a migration allows.
     pub async fn set_strategy(&self, id: Uuid, strategy: &str) -> Result<Route> {
-        sqlx::query_as(
+        fetch_optional_or_not_found(
+sqlx::query_as(
             "update routes set strategy = $2 where id = $1
              returning id, project_id, model, strategy, enabled, params, param_policy, advanced, created_at",
         )
         .bind(id)
         .bind(strategy)
-        .fetch_optional(self.0)
-        .await
-        .map_err(store_err)?
-        .ok_or_else(|| Error::NotFound(format!("route {id}")))
+        ,
+self.0,
+|| format!("route {id}"),
+)
+.await
     }
 
     pub async fn set_enabled(&self, id: Uuid, enabled: bool) -> Result<Route> {
-        sqlx::query_as(
+        fetch_optional_or_not_found(
+sqlx::query_as(
             "update routes set enabled = $2 where id = $1
              returning id, project_id, model, strategy, enabled, params, param_policy, advanced, created_at",
         )
         .bind(id)
         .bind(enabled)
-        .fetch_optional(self.0)
-        .await
-        .map_err(store_err)?
-        .ok_or_else(|| Error::NotFound(format!("route {id}")))
+        ,
+self.0,
+|| format!("route {id}"),
+)
+.await
     }
 
     /// Set a route's admin param defaults and override policy (both jsonb).
@@ -131,31 +137,35 @@ impl RouteRepo<'_> {
         params: &serde_json::Value,
         param_policy: &serde_json::Value,
     ) -> Result<Route> {
-        sqlx::query_as(
+        fetch_optional_or_not_found(
+sqlx::query_as(
             "update routes set params = $2, param_policy = $3 where id = $1
              returning id, project_id, model, strategy, enabled, params, param_policy, advanced, created_at",
         )
         .bind(id)
         .bind(params)
         .bind(param_policy)
-        .fetch_optional(self.0)
-        .await
-        .map_err(store_err)?
-        .ok_or_else(|| Error::NotFound(format!("route {id}")))
+        ,
+self.0,
+|| format!("route {id}"),
+)
+.await
     }
 
     /// Set the model-catalog configuration projected into gateway snapshots.
     pub async fn set_advanced(&self, id: Uuid, advanced: &serde_json::Value) -> Result<Route> {
-        sqlx::query_as(
+        fetch_optional_or_not_found(
+sqlx::query_as(
             "update routes set advanced = $2 where id = $1
              returning id, project_id, model, strategy, enabled, params, param_policy, advanced, created_at",
         )
         .bind(id)
         .bind(advanced)
-        .fetch_optional(self.0)
-        .await
-        .map_err(store_err)?
-        .ok_or_else(|| Error::NotFound(format!("route {id}")))
+        ,
+self.0,
+|| format!("route {id}"),
+)
+.await
     }
 
     /// Change any of a route's `enabled` flag, strategy and target list in one
@@ -184,15 +194,17 @@ impl RouteRepo<'_> {
         // foreign key, which only this mode conflicts with, so a concurrent
         // `POST .../targets` cannot slip a row in between the read of the
         // stored targets below and the commit
-        let mut route: Route = sqlx::query_as(
+        let mut route: Route = fetch_optional_or_not_found(
+sqlx::query_as(
             "select id, project_id, model, strategy, enabled, params, param_policy, advanced, created_at
              from routes where id = $1 for update",
         )
         .bind(id)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(store_err)?
-        .ok_or_else(|| Error::NotFound(format!("route {id}")))?;
+        ,
+&mut *tx,
+|| format!("route {id}"),
+)
+.await?;
 
         if update.enabled.is_some() || update.strategy.is_some() {
             route = sqlx::query_as(
@@ -270,14 +282,12 @@ impl RouteRepo<'_> {
     }
 
     pub async fn delete(&self, id: Uuid) -> Result<()> {
-        let res = sqlx::query("delete from routes where id = $1")
-            .bind(id)
-            .execute(self.0)
-            .await
-            .map_err(store_err)?;
-        if res.rows_affected() == 0 {
-            return Err(Error::NotFound(format!("route {id}")));
-        }
+        require_affected(
+            sqlx::query("delete from routes where id = $1").bind(id),
+            self.0,
+            || format!("route {id}"),
+        )
+        .await?;
         Ok(())
     }
 
@@ -329,15 +339,16 @@ impl RouteTargetRepo<'_> {
     }
 
     pub async fn get(&self, id: Uuid) -> Result<RouteTarget> {
-        sqlx::query_as(
-            "select id, route_id, provider_id, upstream_model, weight, created_at
+        fetch_optional_or_not_found(
+            sqlx::query_as(
+                "select id, route_id, provider_id, upstream_model, weight, created_at
              from route_targets where id = $1",
+            )
+            .bind(id),
+            self.0,
+            || format!("route target {id}"),
         )
-        .bind(id)
-        .fetch_optional(self.0)
         .await
-        .map_err(store_err)?
-        .ok_or_else(|| Error::NotFound(format!("route target {id}")))
     }
 
     pub async fn create(
@@ -367,27 +378,26 @@ impl RouteTargetRepo<'_> {
     /// weights were edited actually applies them (#927), instead of matching
     /// the target as "already there" and moving on.
     pub async fn set_weight(&self, id: Uuid, weight: i32) -> Result<RouteTarget> {
-        sqlx::query_as(
-            "update route_targets set weight = $2 where id = $1
+        fetch_optional_or_not_found(
+            sqlx::query_as(
+                "update route_targets set weight = $2 where id = $1
              returning id, route_id, provider_id, upstream_model, weight, created_at",
+            )
+            .bind(id)
+            .bind(weight),
+            self.0,
+            || format!("route target {id}"),
         )
-        .bind(id)
-        .bind(weight)
-        .fetch_optional(self.0)
         .await
-        .map_err(store_err)?
-        .ok_or_else(|| Error::NotFound(format!("route target {id}")))
     }
 
     pub async fn delete(&self, id: Uuid) -> Result<()> {
-        let res = sqlx::query("delete from route_targets where id = $1")
-            .bind(id)
-            .execute(self.0)
-            .await
-            .map_err(store_err)?;
-        if res.rows_affected() == 0 {
-            return Err(Error::NotFound(format!("route target {id}")));
-        }
+        require_affected(
+            sqlx::query("delete from route_targets where id = $1").bind(id),
+            self.0,
+            || format!("route target {id}"),
+        )
+        .await?;
         Ok(())
     }
 }

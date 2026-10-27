@@ -3,12 +3,14 @@
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use rolter_core::{Error, Result};
+use rolter_core::Result;
 
 use super::super::models::{
     PluginInstance, PromptTemplate, PromptTemplateScope, PromptTemplateVersion, Skill, SkillVersion,
 };
-use super::support::store_err;
+use super::support::{
+    fetch_optional_or_not_found, fetch_scalar_or_not_found, require_affected, store_err,
+};
 
 /// Prompt templates with immutable versions and explicit scope assignments.
 pub struct PromptTemplateRepo<'a>(pub &'a PgPool);
@@ -26,15 +28,16 @@ impl PromptTemplateRepo<'_> {
     }
 
     pub async fn get_template(&self, id: Uuid) -> Result<PromptTemplate> {
-        sqlx::query_as(
-            "select id, org_id, name, slug, description, published_version, created_at
+        fetch_optional_or_not_found(
+            sqlx::query_as(
+                "select id, org_id, name, slug, description, published_version, created_at
              from prompt_templates where id = $1",
+            )
+            .bind(id),
+            self.0,
+            || format!("prompt template {id}"),
         )
-        .bind(id)
-        .fetch_optional(self.0)
         .await
-        .map_err(store_err)?
-        .ok_or_else(|| Error::NotFound(format!("prompt template {id}")))
     }
 
     pub async fn create_template(
@@ -64,21 +67,22 @@ impl PromptTemplateRepo<'_> {
         name: Option<&str>,
         description: Option<&str>,
     ) -> Result<PromptTemplate> {
-        sqlx::query_as(
-            "update prompt_templates set
+        fetch_optional_or_not_found(
+            sqlx::query_as(
+                "update prompt_templates set
                  name = coalesce($2, name),
                  description = case when $3::bool then $4 else description end
              where id = $1
              returning id, org_id, name, slug, description, published_version, created_at",
+            )
+            .bind(id)
+            .bind(name)
+            .bind(description.is_some())
+            .bind(description.unwrap_or("")),
+            self.0,
+            || format!("prompt template {id}"),
         )
-        .bind(id)
-        .bind(name)
-        .bind(description.is_some())
-        .bind(description.unwrap_or(""))
-        .fetch_optional(self.0)
         .await
-        .map_err(store_err)?
-        .ok_or_else(|| Error::NotFound(format!("prompt template {id}")))
     }
 
     pub async fn create_version(
@@ -125,31 +129,29 @@ impl PromptTemplateRepo<'_> {
     }
 
     pub async fn publish_version(&self, template_id: Uuid, version: i32) -> Result<PromptTemplate> {
-        let exists: Option<i32> = sqlx::query_scalar(
-            "select 1 from prompt_template_versions where template_id = $1 and version = $2",
+        let _: i32 = fetch_scalar_or_not_found(
+            sqlx::query_scalar(
+                "select 1 from prompt_template_versions where template_id = $1 and version = $2",
+            )
+            .bind(template_id)
+            .bind(version),
+            self.0,
+            || format!("prompt template version {template_id}:{version}"),
         )
-        .bind(template_id)
-        .bind(version)
-        .fetch_optional(self.0)
-        .await
-        .map_err(store_err)?;
-        if exists.is_none() {
-            return Err(Error::NotFound(format!(
-                "prompt template version {template_id}:{version}"
-            )));
-        }
-        sqlx::query_as(
-            "update prompt_templates
+        .await?;
+        fetch_optional_or_not_found(
+            sqlx::query_as(
+                "update prompt_templates
              set published_version = $2
              where id = $1
              returning id, org_id, name, slug, description, published_version, created_at",
+            )
+            .bind(template_id)
+            .bind(version),
+            self.0,
+            || format!("prompt template {template_id}"),
         )
-        .bind(template_id)
-        .bind(version)
-        .fetch_optional(self.0)
         .await
-        .map_err(store_err)?
-        .ok_or_else(|| Error::NotFound(format!("prompt template {template_id}")))
     }
 
     /// Replace all scope bindings for a template version.
@@ -211,14 +213,12 @@ impl PromptTemplateRepo<'_> {
     }
 
     pub async fn delete_template(&self, id: Uuid) -> Result<()> {
-        let res = sqlx::query("delete from prompt_templates where id = $1")
-            .bind(id)
-            .execute(self.0)
-            .await
-            .map_err(store_err)?;
-        if res.rows_affected() == 0 {
-            return Err(Error::NotFound(format!("prompt template {id}")));
-        }
+        require_affected(
+            sqlx::query("delete from prompt_templates where id = $1").bind(id),
+            self.0,
+            || format!("prompt template {id}"),
+        )
+        .await?;
         Ok(())
     }
 }
@@ -254,14 +254,15 @@ impl PluginRepo<'_> {
     }
 
     pub async fn get(&self, id: Uuid) -> Result<PluginInstance> {
-        sqlx::query_as(sqlx::AssertSqlSafe(format!(
-            "select {PLUGIN_COLUMNS} from plugin_instances where id=$1"
-        )))
-        .bind(id)
-        .fetch_optional(self.0)
+        fetch_optional_or_not_found(
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "select {PLUGIN_COLUMNS} from plugin_instances where id=$1"
+            )))
+            .bind(id),
+            self.0,
+            || format!("plugin {id}"),
+        )
         .await
-        .map_err(store_err)?
-        .ok_or_else(|| Error::NotFound(format!("plugin {id}")))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -319,37 +320,36 @@ impl PluginRepo<'_> {
         secret_env: Option<&str>,
         config: &serde_json::Value,
     ) -> Result<PluginInstance> {
-        sqlx::query_as(sqlx::AssertSqlSafe(format!(
-            "update plugin_instances set project_id=$2, name=$3, description=$4, stage=$5, \
+        fetch_optional_or_not_found(
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "update plugin_instances set project_id=$2, name=$3, description=$4, stage=$5, \
              enabled=$6, position=$7, failure_mode=$8, endpoint=$9, secret_env=$10, config=$11, \
              updated_at=now() where id=$1 returning {PLUGIN_COLUMNS}"
-        )))
-        .bind(id)
-        .bind(project_id)
-        .bind(name)
-        .bind(description)
-        .bind(stage)
-        .bind(enabled)
-        .bind(position)
-        .bind(failure_mode)
-        .bind(endpoint)
-        .bind(secret_env)
-        .bind(config)
-        .fetch_optional(self.0)
+            )))
+            .bind(id)
+            .bind(project_id)
+            .bind(name)
+            .bind(description)
+            .bind(stage)
+            .bind(enabled)
+            .bind(position)
+            .bind(failure_mode)
+            .bind(endpoint)
+            .bind(secret_env)
+            .bind(config),
+            self.0,
+            || format!("plugin {id}"),
+        )
         .await
-        .map_err(store_err)?
-        .ok_or_else(|| Error::NotFound(format!("plugin {id}")))
     }
 
     pub async fn delete(&self, id: Uuid) -> Result<()> {
-        let result = sqlx::query("delete from plugin_instances where id=$1")
-            .bind(id)
-            .execute(self.0)
-            .await
-            .map_err(store_err)?;
-        if result.rows_affected() == 0 {
-            return Err(Error::NotFound(format!("plugin {id}")));
-        }
+        require_affected(
+            sqlx::query("delete from plugin_instances where id=$1").bind(id),
+            self.0,
+            || format!("plugin {id}"),
+        )
+        .await?;
         Ok(())
     }
 }
@@ -370,30 +370,32 @@ impl SkillRepo<'_> {
     }
 
     pub async fn get_skill(&self, id: Uuid) -> Result<Skill> {
-        sqlx::query_as(
-            "select id, org_id, name, slug, description, retired_at, published_version,
+        fetch_optional_or_not_found(
+            sqlx::query_as(
+                "select id, org_id, name, slug, description, retired_at, published_version,
                     allowed_team_ids, minimum_role, created_at
              from skills where id = $1",
+            )
+            .bind(id),
+            self.0,
+            || format!("skill {id}"),
         )
-        .bind(id)
-        .fetch_optional(self.0)
         .await
-        .map_err(store_err)?
-        .ok_or_else(|| Error::NotFound(format!("skill {id}")))
     }
 
     pub async fn get_by_slug(&self, org_id: Uuid, slug: &str) -> Result<Skill> {
-        sqlx::query_as(
-            "select id, org_id, name, slug, description, retired_at, published_version,
+        fetch_optional_or_not_found(
+            sqlx::query_as(
+                "select id, org_id, name, slug, description, retired_at, published_version,
                     allowed_team_ids, minimum_role, created_at
              from skills where org_id = $1 and slug = $2",
+            )
+            .bind(org_id)
+            .bind(slug),
+            self.0,
+            || format!("skill {org_id}:{slug}"),
         )
-        .bind(org_id)
-        .bind(slug)
-        .fetch_optional(self.0)
         .await
-        .map_err(store_err)?
-        .ok_or_else(|| Error::NotFound(format!("skill {org_id}:{slug}")))
     }
 
     pub async fn create_skill(
@@ -433,8 +435,9 @@ impl SkillRepo<'_> {
         allowed_team_ids: Option<&[Uuid]>,
         minimum_role: Option<&str>,
     ) -> Result<Skill> {
-        sqlx::query_as(
-            "update skills set
+        fetch_optional_or_not_found(
+            sqlx::query_as(
+                "update skills set
                  name = coalesce($2, name),
                  description = case when $3::bool then $4 else description end,
                  retired_at = case
@@ -447,18 +450,18 @@ impl SkillRepo<'_> {
              where id = $1
              returning id, org_id, name, slug, description, retired_at, published_version,
                        allowed_team_ids, minimum_role, created_at",
+            )
+            .bind(id)
+            .bind(name)
+            .bind(description.is_some())
+            .bind(description.unwrap_or(""))
+            .bind(retired)
+            .bind(allowed_team_ids)
+            .bind(minimum_role),
+            self.0,
+            || format!("skill {id}"),
         )
-        .bind(id)
-        .bind(name)
-        .bind(description.is_some())
-        .bind(description.unwrap_or(""))
-        .bind(retired)
-        .bind(allowed_team_ids)
-        .bind(minimum_role)
-        .fetch_optional(self.0)
         .await
-        .map_err(store_err)?
-        .ok_or_else(|| Error::NotFound(format!("skill {id}")))
     }
 
     pub async fn create_version(
@@ -508,58 +511,54 @@ impl SkillRepo<'_> {
     }
 
     pub async fn resolve_published(&self, skill_id: Uuid) -> Result<SkillVersion> {
-        sqlx::query_as(
-            "select v.skill_id, v.version, v.content, v.content_ref, v.metadata, v.created_at
+        fetch_optional_or_not_found(
+            sqlx::query_as(
+                "select v.skill_id, v.version, v.content, v.content_ref, v.metadata, v.created_at
              from skill_versions v
              join skills s
                on s.id = v.skill_id
               and s.published_version = v.version
              where s.id = $1 and s.retired_at is null",
+            )
+            .bind(skill_id),
+            self.0,
+            || format!("published skill {skill_id}"),
         )
-        .bind(skill_id)
-        .fetch_optional(self.0)
         .await
-        .map_err(store_err)?
-        .ok_or_else(|| Error::NotFound(format!("published skill {skill_id}")))
     }
 
     pub async fn publish_version(&self, skill_id: Uuid, version: i32) -> Result<Skill> {
-        let exists: Option<i32> =
+        let _: i32 = fetch_scalar_or_not_found(
             sqlx::query_scalar("select 1 from skill_versions where skill_id = $1 and version = $2")
                 .bind(skill_id)
-                .bind(version)
-                .fetch_optional(self.0)
-                .await
-                .map_err(store_err)?;
-        if exists.is_none() {
-            return Err(Error::NotFound(format!(
-                "skill version {skill_id}:{version}"
-            )));
-        }
-        sqlx::query_as(
-            "update skills
+                .bind(version),
+            self.0,
+            || format!("skill version {skill_id}:{version}"),
+        )
+        .await?;
+        fetch_optional_or_not_found(
+            sqlx::query_as(
+                "update skills
              set published_version = $2
              where id = $1
              returning id, org_id, name, slug, description, retired_at, published_version,
                        allowed_team_ids, minimum_role, created_at",
+            )
+            .bind(skill_id)
+            .bind(version),
+            self.0,
+            || format!("skill {skill_id}"),
         )
-        .bind(skill_id)
-        .bind(version)
-        .fetch_optional(self.0)
         .await
-        .map_err(store_err)?
-        .ok_or_else(|| Error::NotFound(format!("skill {skill_id}")))
     }
 
     pub async fn delete_skill(&self, id: Uuid) -> Result<()> {
-        let res = sqlx::query("delete from skills where id = $1")
-            .bind(id)
-            .execute(self.0)
-            .await
-            .map_err(store_err)?;
-        if res.rows_affected() == 0 {
-            return Err(Error::NotFound(format!("skill {id}")));
-        }
+        require_affected(
+            sqlx::query("delete from skills where id = $1").bind(id),
+            self.0,
+            || format!("skill {id}"),
+        )
+        .await?;
         Ok(())
     }
 }

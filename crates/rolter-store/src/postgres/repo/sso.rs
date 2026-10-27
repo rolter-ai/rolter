@@ -7,7 +7,7 @@ use rolter_core::{Error, Result};
 
 use super::super::models::{SsoExchangeCode, SsoGroupMapping, SsoLoginState, SsoProvider};
 use super::lockout::{lock_org_sign_in, other_enabled_provider, passwords_off, LockoutGuard};
-use super::support::store_err;
+use super::support::{fetch_optional_or_not_found, require_affected, store_err};
 
 /// OIDC identity providers, their group→role mappings, and the short-lived
 /// state rows that make the authorization-code flow replay-safe.
@@ -107,14 +107,12 @@ impl SsoRepo<'_> {
             SecretUpdate::Set(c, n) => (true, Some(c), Some(n)),
         };
         let mut tx = self.0.begin().await.map_err(store_err)?;
-        let existing: Option<(Uuid, bool)> =
-            sqlx::query_as("select org_id, enabled from sso_providers where id = $1")
-                .bind(id)
-                .fetch_optional(&mut *tx)
-                .await
-                .map_err(store_err)?;
-        let (org_id, was_enabled) =
-            existing.ok_or_else(|| Error::NotFound(format!("sso provider {id}")))?;
+        let (org_id, was_enabled): (Uuid, bool) = fetch_optional_or_not_found(
+            sqlx::query_as("select org_id, enabled from sso_providers where id = $1").bind(id),
+            &mut *tx,
+            || format!("sso provider {id}"),
+        )
+        .await?;
         if was_enabled && !update.enabled {
             lock_org_sign_in(&mut tx, org_id).await?;
             if passwords_off(&mut tx, org_id).await?
@@ -123,30 +121,31 @@ impl SsoRepo<'_> {
                 return Ok(LockoutGuard::WouldLockOut);
             }
         }
-        let row = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-            "update sso_providers set \
+        let row = fetch_optional_or_not_found(
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "update sso_providers set \
                     name = $2, issuer = $3, client_id = $4, \
                     secret_ciphertext = case when $5 then $6 else secret_ciphertext end, \
                     secret_nonce = case when $5 then $7 else secret_nonce end, \
                     scopes = $8, group_claim = $9, default_role = $10, enabled = $11 \
              where id = $1 \
              returning {SSO_PROVIDER_COLUMNS}"
-        )))
-        .bind(id)
-        .bind(update.name)
-        .bind(update.issuer)
-        .bind(update.client_id)
-        .bind(replace)
-        .bind(ciphertext)
-        .bind(nonce)
-        .bind(update.scopes)
-        .bind(update.group_claim)
-        .bind(update.default_role)
-        .bind(update.enabled)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(store_err)?
-        .ok_or_else(|| Error::NotFound(format!("sso provider {id}")))?;
+            )))
+            .bind(id)
+            .bind(update.name)
+            .bind(update.issuer)
+            .bind(update.client_id)
+            .bind(replace)
+            .bind(ciphertext)
+            .bind(nonce)
+            .bind(update.scopes)
+            .bind(update.group_claim)
+            .bind(update.default_role)
+            .bind(update.enabled),
+            &mut *tx,
+            || format!("sso provider {id}"),
+        )
+        .await?;
         tx.commit().await.map_err(store_err)?;
         Ok(LockoutGuard::Done(row))
     }
@@ -162,14 +161,15 @@ impl SsoRepo<'_> {
     }
 
     pub async fn get_provider(&self, id: Uuid) -> Result<SsoProvider> {
-        sqlx::query_as(sqlx::AssertSqlSafe(format!(
-            "select {SSO_PROVIDER_COLUMNS} from sso_providers where id = $1"
-        )))
-        .bind(id)
-        .fetch_optional(self.0)
+        fetch_optional_or_not_found(
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "select {SSO_PROVIDER_COLUMNS} from sso_providers where id = $1"
+            )))
+            .bind(id),
+            self.0,
+            || format!("sso provider {id}"),
+        )
         .await
-        .map_err(store_err)?
-        .ok_or_else(|| Error::NotFound(format!("sso provider {id}")))
     }
 
     /// Resolve the provider a login URL names. Slugs are unique per org, and a
@@ -218,14 +218,12 @@ impl SsoRepo<'_> {
     /// password sign-in is off (#2233).
     pub async fn delete_provider(&self, id: Uuid) -> Result<LockoutGuard<()>> {
         let mut tx = self.0.begin().await.map_err(store_err)?;
-        let existing: Option<(Uuid, bool)> =
-            sqlx::query_as("select org_id, enabled from sso_providers where id = $1")
-                .bind(id)
-                .fetch_optional(&mut *tx)
-                .await
-                .map_err(store_err)?;
-        let (org_id, was_enabled) =
-            existing.ok_or_else(|| Error::NotFound(format!("sso provider {id}")))?;
+        let (org_id, was_enabled): (Uuid, bool) = fetch_optional_or_not_found(
+            sqlx::query_as("select org_id, enabled from sso_providers where id = $1").bind(id),
+            &mut *tx,
+            || format!("sso provider {id}"),
+        )
+        .await?;
         if was_enabled {
             lock_org_sign_in(&mut tx, org_id).await?;
             if passwords_off(&mut tx, org_id).await?
@@ -234,14 +232,12 @@ impl SsoRepo<'_> {
                 return Ok(LockoutGuard::WouldLockOut);
             }
         }
-        let res = sqlx::query("delete from sso_providers where id = $1")
-            .bind(id)
-            .execute(&mut *tx)
-            .await
-            .map_err(store_err)?;
-        if res.rows_affected() == 0 {
-            return Err(Error::NotFound(format!("sso provider {id}")));
-        }
+        require_affected(
+            sqlx::query("delete from sso_providers where id = $1").bind(id),
+            &mut *tx,
+            || format!("sso provider {id}"),
+        )
+        .await?;
         tx.commit().await.map_err(store_err)?;
         Ok(LockoutGuard::Done(()))
     }
@@ -296,14 +292,12 @@ impl SsoRepo<'_> {
     }
 
     pub async fn delete_mapping(&self, id: Uuid) -> Result<()> {
-        let res = sqlx::query("delete from sso_group_mappings where id = $1")
-            .bind(id)
-            .execute(self.0)
-            .await
-            .map_err(store_err)?;
-        if res.rows_affected() == 0 {
-            return Err(Error::NotFound(format!("sso group mapping {id}")));
-        }
+        require_affected(
+            sqlx::query("delete from sso_group_mappings where id = $1").bind(id),
+            self.0,
+            || format!("sso group mapping {id}"),
+        )
+        .await?;
         Ok(())
     }
 
