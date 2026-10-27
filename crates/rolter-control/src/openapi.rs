@@ -2297,6 +2297,26 @@ fn operations() -> Vec<Op> {
                 "Replace the request-logging, retention and UX-event settings",
             ),
             Op::get(
+                "/api/v1/log-erasures",
+                "listLogErasures",
+                "List recent subject-scoped log erasures",
+            ),
+            Op::post(
+                "/api/v1/log-erasures",
+                "createLogErasure",
+                "Erase one virtual key's, user's, organization's or single request's logs and captured payloads",
+            ),
+            Op::get(
+                "/api/v1/log-erasures/{id}",
+                "getLogErasure",
+                "Read an erasure, settling it once ClickHouse reports its mutations done",
+            ),
+            Op::post(
+                "/api/v1/logging-settings/redaction-preview",
+                "previewPayloadRedaction",
+                "Dry-run the payload redaction policy against a pasted sample; stores and logs nothing",
+            ),
+            Op::get(
                 "/api/v1/client-settings",
                 "getClientSettings",
                 "Read the upstream HTTP client settings",

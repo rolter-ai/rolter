@@ -393,9 +393,16 @@ fn render_logging(out: &mut String, config: &GatewayConfig) {
     key(out, "enabled", &capture.enabled);
     key(out, "max_bytes", &capture.max_bytes);
     key(out, "redact_fields", &capture.redact_fields);
+    key(out, "redact_detectors", &capture.redact_detectors);
     key(out, "models", &capture.models);
     out.push_str("# virtual key ids are this deployment's own; drop them when promoting\n");
     key(out, "virtual_key_ids", &capture.virtual_key_ids);
+    // array-of-tables entries attach to the table above, so they come last
+    for pattern in &capture.redact_patterns {
+        out.push_str("\n[[logging.payload_capture.redact_patterns]]\n");
+        key(out, "name", &pattern.name);
+        key(out, "pattern", &pattern.pattern);
+    }
 }
 
 fn strategy_name(strategy: BalancingStrategy) -> &'static str {

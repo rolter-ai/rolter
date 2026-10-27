@@ -262,6 +262,9 @@ pub struct Snapshot {
     pub cache: CacheConfig,
     /// live raw-payload capture settings; the writer still remains asynchronous
     pub logging: LoggingConfig,
+    /// the payload-capture redaction policy of `logging`, compiled once per
+    /// snapshot so a request pays for matching, never for compiling (#1835)
+    pub payload_redactor: Arc<rolter_core::payload_redaction::PayloadRedactor>,
     /// guardrails for long-lived WebSocket Realtime sessions
     pub realtime: RealtimeConfig,
     /// built-in regex guardrails / PII redaction, compiled once per snapshot and
@@ -625,6 +628,15 @@ impl Snapshot {
             health: config.health.clone(),
             cache: config.cache.clone(),
             logging: config.logging.clone(),
+            payload_redactor: {
+                let (redactor, error) = config.logging.payload_capture.redactor();
+                if let Some(error) = error {
+                    // the key rule still holds; the value detectors are off
+                    // until the policy is fixed
+                    tracing::error!(%error, "payload redaction policy does not compile");
+                }
+                Arc::new(redactor)
+            },
             realtime: config.realtime.clone(),
             guardrails: compiled_guardrails,
             guardrail_webhook: config.guardrail_webhook.clone(),
