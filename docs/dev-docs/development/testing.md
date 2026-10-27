@@ -483,8 +483,19 @@ follow, and both have bitten:
 
 When the coverage job goes red, each failing test is named in an `::error`
 annotation on the check run ("coverage test failed"), with its panic location
-and message (`.github/scripts/annotate-test-failures.sh`, #2753). Read those
-rather than the raw job log, which not every triage path can download.
+and message (`.github/scripts/annotate-test-failures.sh`, #2753). The
+`nextest / doctests` job does the same ("nextest test failed", #2771): it tees
+`cargo nextest run` into a log and, when nextest fails, runs the annotator over
+it, so the check run names the test instead of "Process completed with exit code
+100". A test that hung is named too, without a panic to quote. Read those rather
+than the raw job log, which not every triage path can download.
+
+The annotator reads two output shapes, nextest's `FAIL [ 0.2s] (2/4) <binary>
+<test>` with the test's stderr under it, and libtest's `---- <test> stdout ----`
+sections. `scripts/test-annotate-test-failures.sh` runs it over a log of each
+(`static checks` job, and the `annotate-test-failures` prek hook), so a nextest
+release that changes its output fails there rather than annotating nothing. Doc
+tests run under `cargo test --doc` and are not annotated.
 
 - **Never set a process-wide environment variable to a value only your test
   wants.** `Kek::from_env()` is read at request time, so a test that installs

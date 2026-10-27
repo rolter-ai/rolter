@@ -293,6 +293,16 @@ language = "system"
 files = "^(\\.github/workflows/project-automation\\.yml|scripts/test-project-automation\\.sh)$"
 pass_filenames = false
 
+# the nextest and coverage jobs name a failing test in an annotation by parsing
+# cargo's output; this runs the parser over a nextest and a libtest log
+[[repos.hooks]]
+id = "annotate-test-failures"
+name = "failing-test annotations"
+entry = "bash scripts/test-annotate-test-failures.sh"
+language = "system"
+files = "^(\\.github/scripts/annotate-test-failures\\.sh|scripts/test-annotate-test-failures\\.sh)$"
+pass_filenames = false
+
 # integration/dogfood/*.sh decide what an operator is told to do next from their
 # exit codes and nothing else ran them. this drives them against a stub server
 [[repos.hooks]]

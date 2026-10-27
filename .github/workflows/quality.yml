@@ -651,7 +651,18 @@ jobs:
         with:
           tool: nextest
       - name: nextest (workspace, all features)
-        run: cargo nextest run --workspace --all-features
+        # `shell: bash` adds pipefail, so the `| tee` keeps nextest's exit status
+        shell: bash
+        run: |
+          # a failing job's only annotation is "Process completed with exit code
+          # 100", and job logs are not readable from every place that triages
+          # it, so a failing test is named in an annotation as well as the log
+          # (#2771)
+          log="${RUNNER_TEMP}/nextest.log"
+          if ! cargo nextest run --workspace --all-features --color never 2>&1 | tee "${log}"; then
+            bash .github/scripts/annotate-test-failures.sh "${log}" "nextest test failed"
+            exit 1
+          fi
       - name: doc tests
         run: cargo test --doc --workspace --all-features
       # the chart's own preflight must pass on the env it renders (#1939). it
@@ -1035,6 +1046,13 @@ jobs:
       # nothing else ran them. this drives them against a stub http server
       # that plays SigNoz's and the control plane's answers, so it needs no
       # docker and no secrets (#1928)
+      # the annotator behind the failing-test annotations of the nextest and
+      # coverage jobs is parsing, and parsing breaks quietly when nextest
+      # changes its output. this runs it over a nextest and a libtest log (#2771)
+      - name: failing-test annotations
+        id: annotate-test-failures
+        if: ${{ !cancelled() }}
+        run: bash scripts/test-annotate-test-failures.sh
       - name: dogfood scripts against a stub server
         id: dogfood-scripts
         if: ${{ !cancelled() }}
