@@ -71,7 +71,7 @@ export function apiBaseDoublesV1(apiBase: string, baseIncludesV1: boolean): bool
 
 /**
  * Every provider kind the control plane accepts, in the order of the
- * `PROVIDER_KINDS` allowlist in `crates/rolter-control/src/crud.rs`.
+ * `PROVIDER_KINDS` allowlist in `crates/rolter-control/src/crud/providers.rs`.
  *
  * A fallback and a type, not the menu: `ProviderSheet` builds its picker from
  * `fetchProviderKinds()` so a kind the deployment gained is selectable without

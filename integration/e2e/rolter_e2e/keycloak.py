@@ -160,16 +160,16 @@ class Keycloak:
                 "lastName": user.last_name,
                 "emailVerified": True,
                 "enabled": True,
-                "credentials": [
-                    {"type": "password", "value": user.password, "temporary": False}
-                ],
+                "credentials": [{"type": "password", "value": user.password, "temporary": False}],
             },
         )
         for group in member_of:
             self.set_group_membership(realm, user.username, group, member=True)
 
     def _user_id(self, realm: str, username: str) -> str:
-        users = self._admin("GET", f"/{realm}/users", params={"username": username, "exact": True}).json()
+        users = self._admin(
+            "GET", f"/{realm}/users", params={"username": username, "exact": True}
+        ).json()
         assert users, f"no keycloak user {username!r} in realm {realm}"
         return users[0]["id"]
 
@@ -183,7 +183,9 @@ class Keycloak:
     def set_group_membership(self, realm: str, username: str, group: str, *, member: bool) -> None:
         """Add or remove a user from a group — the operation an IdP admin
         performs to grant or revoke access."""
-        path = f"/{realm}/users/{self._user_id(realm, username)}/groups/{self._group_id(realm, group)}"
+        path = (
+            f"/{realm}/users/{self._user_id(realm, username)}/groups/{self._group_id(realm, group)}"
+        )
         self._admin("PUT" if member else "DELETE", path)
 
 

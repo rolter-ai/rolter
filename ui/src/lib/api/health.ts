@@ -58,6 +58,3 @@ export function fetchHealthTimeline(bucket = "hour"): Promise<TimelineRow[]> {
     (r) => r.data,
   );
 }
-
-// --- control-plane CRUD (only reachable when rolter-control is started
-// with --database-url; see crates/rolter-control/src/crud.rs) ---

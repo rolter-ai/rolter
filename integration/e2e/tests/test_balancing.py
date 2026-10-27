@@ -45,7 +45,9 @@ class _Balancer:
         self.admin = admin
         self.tenant = tenant
 
-    def build(self, strategy: str, *, engines=None, weights=None) -> tuple[str, GatewayClient, list[str]]:
+    def build(
+        self, strategy: str, *, engines=None, weights=None
+    ) -> tuple[str, GatewayClient, list[str]]:
         engines = engines or SIM_ENGINES
         tok = uuid.uuid4().hex[:6]
         model = f"bal-{strategy}-{tok}"
@@ -56,7 +58,9 @@ class _Balancer:
         route = self.admin.create_route(self.tenant.project_id, model, strategy=strategy)
         for i, p in enumerate(providers):
             w = weights[i] if weights else 1
-            self.admin.add_route_target(route["id"], p["id"], upstream_model=UPSTREAM_MODEL, weight=w)
+            self.admin.add_route_target(
+                route["id"], p["id"], upstream_model=UPSTREAM_MODEL, weight=w
+            )
         # scope a key to this model so the burst works regardless of whether other
         # tests have flipped the gateway into key-enforcing mode
         key = self.admin.create_virtual_key(self.tenant.project_id, models=[model])
@@ -65,8 +69,9 @@ class _Balancer:
         _warmup(gw, model)
         return model, gw, names
 
-    def fire(self, gw: GatewayClient, model: str, n: int, *, prompt: str = "ping",
-             distinct: bool = False) -> Counter:
+    def fire(
+        self, gw: GatewayClient, model: str, n: int, *, prompt: str = "ping", distinct: bool = False
+    ) -> Counter:
         tally: Counter = Counter()
         for i in range(n):
             body = f"{prompt}-{i}" if distinct else prompt
@@ -78,6 +83,7 @@ class _Balancer:
 
 def _warmup(gw: GatewayClient, model: str, tries: int = 30) -> None:
     import time
+
     for _ in range(tries):
         if gw.chat(model, "warmup").status_code == 200:
             return
@@ -118,7 +124,7 @@ def test_weighted_tracks_target_weight(bal: _Balancer) -> None:
 
 def test_cache_aware_pins_same_prefix(bal: _Balancer) -> None:
     """cache_aware sends the same prompt prefix to the same target (affinity)."""
-    model, gw, names = bal.build("cache_aware")
+    model, gw, _names = bal.build("cache_aware")
     same = bal.fire(gw, model, 20, prompt="the-same-prefix", distinct=False)
     gw.close()
 
@@ -156,7 +162,7 @@ def test_power_of_two_distributes(bal: _Balancer) -> None:
     more than one target. deterministic load-skew under real concurrency is
     covered by the crate-level balancer unit tests.
     """
-    model, gw, names = bal.build("power_of_two")
+    model, gw, _names = bal.build("power_of_two")
     tally = bal.fire(gw, model, 30)
     gw.close()
     assert len(tally) >= 2, f"power_of_two pinned a single target: {dict(tally)}"
@@ -169,7 +175,9 @@ def test_unhealthy_target_is_skipped(bal: _Balancer) -> None:
     fires a burst and asserts every response is served (failover works) and the
     dead target serves none of them.
     """
-    model, gw, names = bal.build("round_robin", engines=[SIM_ENGINES[0], SIM_ENGINES[1], DEAD_ENGINE])
+    model, gw, names = bal.build(
+        "round_robin", engines=[SIM_ENGINES[0], SIM_ENGINES[1], DEAD_ENGINE]
+    )
     dead = names[2]
     healthy = {names[0], names[1]}
 

@@ -12,6 +12,7 @@
 //! rolter check              # pre-boot validation for a production deployment
 //! rolter kek verify         # does ROLTER_KEK open what the store already holds
 //! rolter config export      # the live config as an importable rolter.toml
+//! rolter seed               # create the first admin / import a rolter.toml as desired state
 //! ```
 //!
 //! The `gateway`/`control` subcommands reuse the exact argument set of the
@@ -63,6 +64,10 @@ enum Command {
     /// export the live configuration as an importable rolter.toml
     #[cfg(feature = "postgres")]
     Config(config::ConfigArgs),
+    /// bootstrap the control-plane database: org, first administrator, and a
+    /// rolter.toml imported as desired state
+    #[cfg(feature = "postgres")]
+    Seed(rolter_control::seed::SeedArgs),
     /// break-glass management of local accounts' second factor
     #[cfg(feature = "postgres")]
     Mfa(mfa::MfaArgs),
@@ -87,6 +92,8 @@ async fn main() -> anyhow::Result<()> {
         #[cfg(feature = "postgres")]
         Command::Config(args) => config::run(args).await,
         #[cfg(feature = "postgres")]
+        Command::Seed(args) => rolter_control::seed::run(args).await,
+        #[cfg(feature = "postgres")]
         Command::Mfa(args) => mfa::run(args).await,
     }
 }
@@ -103,5 +110,36 @@ mod tests {
     fn secret_env_values_stay_out_of_help() {
         let checked = rolter_core::cli_guard::assert_secret_envs_hidden(&super::Cli::command());
         assert!(checked > 0, "the walk found no secret-looking env flags");
+    }
+
+    /// `rolter seed` keeps `rolter-seed`'s flags, so the packaged command is a
+    /// drop-in for the one operators found in the docs (#1897)
+    #[cfg(feature = "postgres")]
+    #[test]
+    fn seed_takes_the_rolter_seed_flags() {
+        use clap::Parser;
+        let cli = super::Cli::try_parse_from([
+            "rolter",
+            "seed",
+            "--database-url",
+            "postgres://u@h/db",
+            "--org",
+            "acme",
+            "--org-slug",
+            "acme-co",
+            "--admin-email",
+            "a@example.com",
+            "--admin-password",
+            "pw",
+            "--import",
+            "rolter.toml",
+        ])
+        .expect("every rolter-seed flag parses under `rolter seed`");
+        let super::Command::Seed(args) = cli.command else {
+            panic!("parsed a different subcommand");
+        };
+        assert_eq!(args.org, "acme");
+        assert_eq!(args.admin_email.as_deref(), Some("a@example.com"));
+        assert!(args.import.is_some());
     }
 }

@@ -4,7 +4,7 @@ sidebarTitle: "Config Export"
 description: "Write a running deployment's providers, groups, routes, prices and prompt templates back out as a rolter.toml that rolter-seed --import accepts, for GitOps, environment promotion and config diffs."
 ---
 
-Rolter's seeding tool treats a TOML file as **desired state**: `rolter-seed --import rolter.toml` converges the database onto the file, so re-importing an edited copy applies the edits instead of duplicating rows.
+Rolter's seeding command (`rolter seed`, also shipped as the standalone `rolter-seed`) treats a TOML file as **desired state**: `rolter-seed --import rolter.toml` converges the database onto the file, so re-importing an edited copy applies the edits instead of duplicating rows.
 
 The config export is the other direction. It writes what the database holds back out in exactly the shape the importer accepts, so a deployment built entirely through the dashboard still has a file you can commit to git, promote to another environment, or diff after a change.
 
@@ -14,7 +14,7 @@ rolter config export --output rolter.toml
 
 ```bash
 # and back into another deployment
-rolter-seed --database-url "$STAGING_DATABASE_URL" --import rolter.toml
+rolter seed --database-url "$STAGING_DATABASE_URL" --import rolter.toml
 ```
 
 Exporting is read-only. It never writes to the database it reads.

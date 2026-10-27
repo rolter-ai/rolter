@@ -221,7 +221,6 @@ priorities live on the issues.
 | #2405 | the published image is built without the postgres feature                                                                             | A0.6 (image and Helm)         |
 | #2408 | the bundled `sk-rolter-dev` key reaches gateways through the control plane snapshot                                                   | A0-c, A0.6                    |
 | #1939 | a default Helm install fails its own strict preflight                                                                                 | A0-c, A0.6                    |
-| #1897 | `rolter-seed` ships in no image or package                                                                                            | A0.8                          |
 | #1891 | the published image binds loopback, so `docker run -p` reaches nothing                                                                | the quickstart's `docker run` |
 | #1832 | raw MCP traffic inspection for local servers (mcp-snoop)                                                                              | E7                            |
 | #1839 | a member cannot route their own local model through rolter (idea)                                                                     | E8                            |

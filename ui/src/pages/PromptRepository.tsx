@@ -717,7 +717,7 @@ function PromptWorkbench({
     });
   const selectedPublished = baseVersion?.version === template.published_version;
   // publishing, rolling back, saving a version and renaming are one guard in
-  // crates/rolter-control/src/crud.rs — `prompt_template:update` — so the
+  // crates/rolter-control/src/crud/prompts.rs — `prompt_template:update` — so the
   // header gates on that and reserves `prompt_template:delete` for the delete
   return (
     <main className="min-w-0 overflow-hidden rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-raised)]">

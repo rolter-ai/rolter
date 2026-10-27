@@ -1,3 +1,4 @@
+// virtual keys (crates/rolter-control/src/crud/virtual_keys.rs)
 import { getJson, sendJson } from "./request";
 
 export interface VirtualKeyRow {
@@ -97,5 +98,3 @@ export function setVirtualKeyAttribution(
 export function deleteVirtualKey(id: string): Promise<void> {
   return sendJson<void>("DELETE", `/api/v1/virtual-keys/${id}`);
 }
-
-// --- prompt template repository (crates/rolter-control/src/crud.rs) ---

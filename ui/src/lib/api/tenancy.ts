@@ -1,3 +1,5 @@
+// control-plane CRUD, only mounted when rolter-control runs with --database-url
+// (crates/rolter-control/src/crud/)
 import { getJson, sendJson } from "./request";
 
 export interface OrgRow {
