@@ -334,6 +334,35 @@ impl RouteTargetRepo<'_> {
         .map_err(store_err)
     }
 
+    /// The `(org, provider name)` of every provider a route in these teams or
+    /// projects targets, once each. Bounded by the scopes a caller holds a role
+    /// in, like `ProjectRepo::viewer_payload_projects`, so provider health can
+    /// follow the routes a project member actually uses (#1833). Nothing about
+    /// the provider but its name leaves here.
+    pub async fn targeted_providers(
+        &self,
+        team_ids: &[Uuid],
+        project_ids: &[Uuid],
+    ) -> Result<Vec<(Uuid, String)>> {
+        if team_ids.is_empty() && project_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        sqlx::query_as(
+            "select distinct p.org_id, p.name
+             from route_targets t
+             join routes r on r.id = t.route_id
+             join projects pr on pr.id = r.project_id
+             join providers p on p.id = t.provider_id
+             where r.project_id = any($1) or pr.team_id = any($2)
+             order by p.org_id, p.name",
+        )
+        .bind(project_ids)
+        .bind(team_ids)
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)
+    }
+
     pub async fn list(&self, route_id: Uuid) -> Result<Vec<RouteTarget>> {
         sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "select {ROUTE_TARGET_COLUMNS}

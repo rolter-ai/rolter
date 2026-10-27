@@ -969,6 +969,28 @@ async fn requests_refused_before_the_caller_is_known_leave_no_row() {
     assert_eq!(response.status(), 401);
 
     assert_eq!(rows.row_count_after_settling().await, 0);
+
+    // counted by reason instead (#1395), and still in the auth-failure total
+    let metrics = client
+        .get(format!("http://{gw}/metrics"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(
+        metrics.contains("rolter_rejected_requests_total{reason=\"missing_key\"} 1"),
+        "{metrics}"
+    );
+    assert!(
+        metrics.contains("rolter_rejected_requests_total{reason=\"invalid_key\"} 1"),
+        "{metrics}"
+    );
+    assert!(
+        metrics.contains("rolter_auth_failures_total 2"),
+        "{metrics}"
+    );
 }
 
 // ── refusals that need redis: budgets and rate limits ───────────────────────

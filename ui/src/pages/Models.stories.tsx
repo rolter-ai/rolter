@@ -28,7 +28,15 @@ import {
   uxEvents,
   type Recorder,
 } from "./story-harness";
-import type { EffectiveModelDto, LabelRow, RouteRow, TimelineRow, UptimeRow } from "@/lib/api";
+import type {
+  BreakerStateDto,
+  BreakerTargetDto,
+  EffectiveModelDto,
+  LabelRow,
+  RouteRow,
+  TimelineRow,
+  UptimeRow,
+} from "@/lib/api";
 import { UxScreenProvider } from "@/lib/ux-react";
 
 // each entry carries its own targets (#2210): provider names, not row ids
@@ -846,5 +854,115 @@ export const SuperadminCanWriteAModelLabel: Story = {
     // still no way to touch the observation, asked once the list is on screen —
     // before that the absence would be the skeleton's, not the rule's
     await expect(panel.queryByRole("button", { name: "Remove tier=priced" })).toBeNull();
+  },
+};
+
+// ------------------------------------------------ live circuit breakers (#2254)
+
+const breakerTarget = (patch: Partial<BreakerTargetDto>): BreakerTargetDto => ({
+  model: "llama-70b",
+  target_index: 0,
+  provider: "vllm-a",
+  upstream_model: "meta-llama/Llama-3.1-70B",
+  state: "open",
+  nodes_open: 2,
+  nodes_half_open: 0,
+  nodes: [],
+  ...patch,
+});
+
+const breakerState = (targets: BreakerTargetDto[], gateways_live = 3): BreakerStateDto => ({
+  generated_at: "2026-09-29T08:00:00Z",
+  fresh_window_secs: 40,
+  gateways_live,
+  targets,
+});
+
+const withBreakers = (answer: () => Response | Promise<Response>) =>
+  scoped(async (input, init) => {
+    if (String(input).includes("/breaker-state")) return answer();
+    return routes([
+      ["/model-prices", () => []],
+      ["/currency", () => ({ base: "USD", rates: {} })],
+      ["/health/uptime", () => ({ data: FLEET_UPTIME })],
+      ["/models", () => [FLEET_MODEL]],
+      ["/providers", () => []],
+      ["/routes", () => []],
+    ])(input, init);
+  });
+
+/**
+ * A target whose breaker is open on two gateways says so beside its health, and
+ * one letting a trial request through says it is probing. A target the
+ * gateways list nowhere is closed everywhere and shows nothing new; the model's
+ * row names the worst breaker without opening the list.
+ */
+export const BreakerOpenAndProbing: Story = {
+  render: () => (
+    <Harness
+      fetchStub={withBreakers(() =>
+        json(
+          breakerState([
+            breakerTarget({ target_index: 0, state: "open", nodes_open: 2 }),
+            breakerTarget({
+              target_index: 1,
+              provider: "vllm-b",
+              state: "half_open",
+              nodes_open: 0,
+              nodes_half_open: 1,
+            }),
+          ]),
+        ),
+      )}
+    >
+      <Models />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const toggle = await canvas.findByRole("button", { name: "3 targets for llama-70b" });
+    await waitFor(() => expect(canvas.getByText("Breaker open on 2 gateways")).toBeVisible());
+    await userEvent.click(toggle);
+    const list = await canvas.findByRole("list", { name: "Targets of llama-70b" });
+    const lines = within(list).getAllByRole("listitem");
+    await expect(lines[0]).toHaveTextContent(/vllm-a.*Breaker open on 2 gateways/);
+    await expect(lines[1]).toHaveTextContent(/vllm-b.*Probing on 1 gateway/);
+    // the third target is closed on every gateway: nothing is added to its line
+    await expect(lines[2]).not.toHaveTextContent(/Breaker|Probing/);
+  },
+};
+
+/** a closed breaker row (failing, not yet tripped) and an empty answer add nothing */
+export const BreakerClosedShowsNothing: Story = {
+  render: () => (
+    <Harness
+      fetchStub={withBreakers(() =>
+        json(breakerState([breakerTarget({ state: "closed", nodes_open: 0 })])),
+      )}
+    >
+      <Models />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByRole("button", { name: "3 targets for llama-70b" });
+    await waitFor(() => expect(canvas.getByText("1 below SLA")).toBeVisible());
+    await expect(canvas.queryByTestId("breaker-badge")).toBeNull();
+  },
+};
+
+/** no breaker state (a control plane without a store) leaves the catalog as it was */
+export const BreakerStateUnavailable: Story = {
+  render: () => (
+    <Harness fetchStub={withBreakers(() => json({ error: { message: "no store" } }, 404))}>
+      <Models />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByRole("button", { name: "3 targets for llama-70b" });
+    await waitFor(() => expect(canvas.getByText("1 below SLA")).toBeVisible());
+    await expect(canvas.queryByTestId("breaker-badge")).toBeNull();
+    await expect(canvas.queryByRole("alert")).toBeNull();
   },
 };

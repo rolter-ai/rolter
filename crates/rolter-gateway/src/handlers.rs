@@ -1121,7 +1121,7 @@ pub async fn enforce_required_headers(
             headers.get(name).and_then(|value| value.to_str().ok())
         });
         if let Some(name) = missing {
-            state.metrics.auth_failures_total.fetch_add(1, Relaxed);
+            state.metrics.observe_rejection("required_header_missing");
             return crate::error::ApiError::new(
                 StatusCode::FORBIDDEN,
                 format!("request is missing the required header `{name}`"),
@@ -1424,7 +1424,7 @@ pub(crate) fn authenticate(
         // whoever runs the process (#2357)
         let required = snap.require_auth.unwrap_or(state.managed_auth);
         if required {
-            state.metrics.auth_failures_total.fetch_add(1, Relaxed);
+            state.metrics.observe_rejection("missing_key");
             return Err(invalid_api_key_json(MISSING_KEY_MESSAGE));
         }
         return Ok(None);
@@ -1440,13 +1440,13 @@ pub(crate) fn authenticate(
                 // nothing: both answer the same way, so a caller cannot probe
                 // which of the two happened
                 Some(_) | None => {
-                    state.metrics.auth_failures_total.fetch_add(1, Relaxed);
+                    state.metrics.observe_rejection("invalid_key");
                     Err(invalid_api_key_json(&invalid_key_message(&key)))
                 }
             }
         }
         None => {
-            state.metrics.auth_failures_total.fetch_add(1, Relaxed);
+            state.metrics.observe_rejection("missing_key");
             Err(invalid_api_key_json(MISSING_KEY_MESSAGE))
         }
     }
