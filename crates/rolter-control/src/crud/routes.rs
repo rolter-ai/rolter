@@ -493,9 +493,15 @@ async fn disable_route_complexity(
 ) -> ApiResult<Json<Route>> {
     let org_id = authorize_route(&state, &principal, id, cap!("route", Update)).await?;
     let existing = RouteRepo(pool(&state)).get(id).await?;
-    let mut params = normalize_json_object(existing.params, "params")?;
-    if let Some(object) = params.as_object_mut() {
-        object.remove(rolter_balancer::complexity::POLICY_PARAM);
+    let mut params = normalize_json_object(existing.params.clone(), "params")?;
+    let removed = params
+        .as_object_mut()
+        .and_then(|object| object.remove(rolter_balancer::complexity::POLICY_PARAM));
+    // nothing to disable: answer with the route as it is, so a repeated or stray
+    // disable neither bumps the config version, publishes to the gateways nor
+    // leaves an audit row that reads like a routing change (#3221)
+    if removed.is_none() {
+        return Ok(Json(existing));
     }
     let row = RouteRepo(pool(&state))
         .set_params(id, &params, &existing.param_policy)

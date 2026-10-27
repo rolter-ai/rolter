@@ -9,10 +9,10 @@
 # mcp_oauth_sessions, plugins and feature_flags. see the config reference at
 # docs/user-docs/configuration/config-file.mdx
 
-# the schema version this file was written for (current: 2). optional: a file
+# the schema version this file was written for (current: 3). optional: a file
 # without the key is read as the oldest version. `rolter check --migrations`
 # reports a file that is behind, and `rolter config export` writes the stamp.
-# schema_version = 2
+# schema_version = 3
 
 [server]
 host = "0.0.0.0"

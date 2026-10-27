@@ -1157,6 +1157,19 @@ impl ProviderConfig {
         self.api_key.as_deref()
     }
 
+    /// Whether this provider carries a credential that is not one environment
+    /// variable: an inline secret in either spelling, or more than one key.
+    ///
+    /// The kinds that [`ProviderKind::requires_env_api_key`] are refused when
+    /// this is true. It reads both spellings because a document migrated to the
+    /// plural form (#1720) holds its one variable as an `api_keys` entry, which
+    /// must keep passing the rule the singular `api_key_env` always passed.
+    pub fn has_non_env_credential(&self) -> bool {
+        self.api_key.is_some()
+            || self.api_keys.len() > 1
+            || self.api_keys.iter().any(|k| k.key.is_some())
+    }
+
     /// How many configured keys a single-credential store cannot hold.
     ///
     /// `providers` carries one `api_key_env` and `provider_keys` one sealed
@@ -4711,13 +4724,13 @@ impl GatewayConfig {
             ));
         }
         if provider.kind == ProviderKind::OllamaCloud {
-            if provider.api_key_env.as_deref().is_none_or(str::is_empty) {
+            if provider.api_key_env_name().is_none_or(str::is_empty) {
                 problems.push(format!(
                     "ollama_cloud provider '{}' requires api_key_env",
                     provider.name
                 ));
             }
-            if provider.api_key.is_some() || !provider.api_keys.is_empty() {
+            if provider.has_non_env_credential() {
                 problems.push(format!(
                     "ollama_cloud provider '{}' must source its key from api_key_env",
                     provider.name
@@ -4725,13 +4738,13 @@ impl GatewayConfig {
             }
         }
         if provider.kind == ProviderKind::Openrouter {
-            if provider.api_key_env.as_deref().is_none_or(str::is_empty) {
+            if provider.api_key_env_name().is_none_or(str::is_empty) {
                 problems.push(format!(
                     "openrouter provider '{}' requires api_key_env",
                     provider.name
                 ));
             }
-            if provider.api_key.is_some() || !provider.api_keys.is_empty() {
+            if provider.has_non_env_credential() {
                 problems.push(format!(
                     "openrouter provider '{}' must source its key from api_key_env",
                     provider.name
@@ -4790,13 +4803,13 @@ impl GatewayConfig {
                 ProviderKind::Falcon => "falcon",
                 _ => "unknown",
             };
-            if provider.api_key_env.as_deref().is_none_or(str::is_empty) {
+            if provider.api_key_env_name().is_none_or(str::is_empty) {
                 problems.push(format!(
                     "{kind} provider '{}' requires api_key_env",
                     provider.name
                 ));
             }
-            if provider.api_key.is_some() || !provider.api_keys.is_empty() {
+            if provider.has_non_env_credential() {
                 problems.push(format!(
                     "{kind} provider '{}' must source its key from api_key_env",
                     provider.name

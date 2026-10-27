@@ -25,15 +25,15 @@ Exporting is read-only. It never writes to the database it reads.
 
 The export deliberately carries only the sections the importer consumes, so nothing in the file is dropped on the way back in.
 
-| Section                                                                             | Notes                                                                                      |
-| ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
-| `[[providers.readonly]]` and `[[providers.default]]`                                | name, slug, kind, `api_base`, `api_key_env`, egress proxies, in both tiers                 |
-| `[[provider_groups.readonly]]` / `[[provider_groups.default]]` and their `.members` | group strategy and its weighted members                                                    |
-| `[[routes]]`, `[routes.params]`, `[routes.param_policy]`, `[[routes.targets]]`      | strategy, admin parameter defaults, the override policy, and the weighted upstream targets |
-| `[[model_prices]]`                                                                  | input, output, cached-input and cache-write rates with their currency                      |
-| `[prompt_templates]`                                                                | published templates with their variables, decorators and route bindings                    |
-| `[logging]` `ui_events`                                                             | whether the control plane records dashboard usage events                                   |
-| `[logging.payload_capture]`                                                         | the capture policy, its size cap and its redaction and model filters                       |
+| Section                                                                             | Notes                                                                                              |
+| ----------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `[[providers.readonly]]` and `[[providers.default]]`                                | name, slug, kind, `api_base`, `api_keys` (the variable name only), `egress_proxies`, in both tiers |
+| `[[provider_groups.readonly]]` / `[[provider_groups.default]]` and their `.members` | group strategy and its weighted members                                                            |
+| `[[routes]]`, `[routes.params]`, `[routes.param_policy]`, `[[routes.targets]]`      | strategy, admin parameter defaults, the override policy, and the weighted upstream targets         |
+| `[[model_prices]]`                                                                  | input, output, cached-input and cache-write rates with their currency                              |
+| `[prompt_templates]`                                                                | published templates with their variables, decorators and route bindings                            |
+| `[logging]` `ui_events`                                                             | whether the control plane records dashboard usage events                                           |
+| `[logging.payload_capture]`                                                         | the capture policy, its size cap and its redaction and model filters                               |
 
 ### Import warnings
 
@@ -69,7 +69,7 @@ A provider key is exported only as the **name** of the environment variable it i
 name = "openai-primary"
 kind = "openai"
 api_base = "https://api.openai.com"
-api_key_env = "OPENAI_API_KEY"
+api_keys = [{ env = "OPENAI_API_KEY" }]
 ```
 
 A key that was sealed through the dashboard has no environment variable to name, so nothing is written where the credential would be, and a comment says so:
@@ -82,9 +82,9 @@ api_base = "http://vllm-1:8000"
 # api_key: not exported; any credential for this provider stays sealed in the control-plane store
 ```
 
-On the receiving deployment, set that provider's key through the dashboard or point it at an `api_key_env` before sending traffic. `ROLTER_KEK` is not required to run an export.
+On the receiving deployment, set that provider's key through the dashboard or point it at an `api_keys` entry with an `env` before sending traffic. `ROLTER_KEK` is not required to run an export.
 
-Both credential spellings are read. A provider written as `api_keys = [{ env = "OPENAI_API_KEY" }]` exports the variable name just as a provider written with `api_key_env` does — an inline `key` inside `api_keys` is a secret and is never emitted, exactly like a top-level `api_key`. Only one variable name per provider survives, because the control-plane store holds one credential per provider.
+Both credential spellings are read. A provider written as `api_keys = [{ env = "OPENAI_API_KEY" }]` exports the variable name just as a provider written with the deprecated `api_key_env` does — an inline `key` inside `api_keys` is a secret and is never emitted, exactly like a top-level `api_key`. Only one variable name per provider survives, because the control-plane store holds one credential per provider. The export always writes the plural spellings (`api_keys`, and `egress_proxies` for a single legacy `egress_proxy`), so `rolter check --migrations` reports it as up to date.
 
 <Warning>
   `rolter-seed --import` never overwrites a credential sealed through the dashboard, so re-importing an export into the deployment it came from cannot clear a key that is already there.
@@ -95,7 +95,7 @@ Both credential spellings are read. A provider written as `api_keys = [{ env = "
 The export opens with a `schema_version` stamp and uses the tiered provider spelling, so `rolter check --migrations` reports the file it writes as up to date rather than as something to migrate:
 
 ```toml
-schema_version = 2
+schema_version = 3
 
 [[providers.readonly]]
 name = "openai-primary"

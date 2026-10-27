@@ -163,6 +163,9 @@ struct Op {
     conflict: Option<&'static str>,
     /// a ClickHouse-backed read, which can answer `502` or `504`
     clickhouse: bool,
+    /// seals a credential with `ROLTER_KEK`, so it can answer `503`
+    /// `kek_unavailable` on a control plane that has none
+    needs_kek: bool,
 }
 
 impl Op {
@@ -185,6 +188,7 @@ impl Op {
             see_other: None,
             conflict: None,
             clickhouse: false,
+            needs_kek: false,
         }
     }
 
@@ -236,6 +240,14 @@ impl Op {
 
     fn conflict(mut self, description: &'static str) -> Self {
         self.conflict = Some(description);
+        self
+    }
+
+    /// Mark an operation that seals a credential with `ROLTER_KEK`: without the
+    /// key it answers `503` `kek_unavailable` rather than a field-validation
+    /// `400` (#3218).
+    fn needs_kek(mut self) -> Self {
+        self.needs_kek = true;
         self
     }
 
@@ -296,6 +308,15 @@ impl Op {
             responses.insert(
                 "409".into(),
                 json!({"$ref": "#/components/responses/Error", "description": description}),
+            );
+        }
+        if self.needs_kek {
+            responses.insert(
+                "503".into(),
+                json!({
+                    "$ref": "#/components/responses/Error",
+                    "description": "`ROLTER_KEK` is not configured on the control plane, so the credential cannot be sealed (`kek_unavailable`)"
+                }),
             );
         }
         if self.clickhouse {
@@ -721,8 +742,9 @@ fn tagged(tag: &'static str, ops: Vec<Op>) -> Vec<Op> {
     ops.into_iter().map(|op| Op { tag, ..op }).collect()
 }
 
-/// Whether the document publishes `method path`; the deprecation registry is
-/// held to this so it cannot name an operation that does not exist.
+/// Whether the document publishes `method path` (the OpenAPI path template).
+/// The deprecation registry is held to this so it cannot name an operation that
+/// does not exist, and the seed lint so a renamed route it names fails a test.
 #[cfg(test)]
 pub(crate) fn documents_operation(method: &str, path: &str) -> bool {
     operations()
@@ -854,6 +876,7 @@ fn operations() -> Vec<Op> {
                 "beginSignInMfaEnrolment",
                 "Issue a TOTP secret against an enrolment challenge (shown once)",
             )
+            .needs_kek()
             .public(),
             Op::post(
                 "/api/v1/auth/mfa/confirm",
@@ -1213,6 +1236,7 @@ fn operations() -> Vec<Op> {
                 "createProvider",
                 "Register an upstream provider",
             )
+            .needs_kek()
             .body(Payload::Ref("CreateProvider"))
             .ok(Payload::Ref("Provider")),
             Op::put(
@@ -1220,6 +1244,7 @@ fn operations() -> Vec<Op> {
                 "updateProvider",
                 "Update an upstream provider",
             )
+            .needs_kek()
             .body(Payload::Ref("UpdateProvider"))
             .ok(Payload::Ref("Provider")),
             Op::delete(
@@ -1490,7 +1515,8 @@ fn operations() -> Vec<Op> {
                 "/api/v1/me/mfa/enroll",
                 "beginMyMfaEnrolment",
                 "Issue a TOTP secret for the calling account (shown once)",
-            ),
+            )
+            .needs_kek(),
             Op::post(
                 "/api/v1/me/mfa/confirm",
                 "confirmMyMfaEnrolment",
@@ -1831,12 +1857,14 @@ fn operations() -> Vec<Op> {
                 "/api/v1/orgs/{org_id}/mcp-servers",
                 "createMcpServer",
                 "Register an MCP server",
-            ),
+            )
+            .needs_kek(),
             Op::patch(
                 "/api/v1/mcp-servers/{id}",
                 "updateMcpServer",
                 "Update a registered MCP server",
-            ),
+            )
+            .needs_kek(),
             Op::delete(
                 "/api/v1/mcp-servers/{id}",
                 "deleteMcpServer",
@@ -1846,7 +1874,8 @@ fn operations() -> Vec<Op> {
                 "/api/v1/mcp-servers/{id}/auth",
                 "setMcpServerAuth",
                 "Set how rolter authenticates to an MCP server",
-            ),
+            )
+            .needs_kek(),
             Op::get(
                 "/api/v1/mcp-servers/{id}/oauth-client",
                 "getMcpOauthClient",
@@ -1856,7 +1885,8 @@ fn operations() -> Vec<Op> {
                 "/api/v1/mcp-servers/{id}/oauth-client",
                 "setMcpOauthClient",
                 "Replace an MCP server's OAuth client",
-            ),
+            )
+            .needs_kek(),
             Op::post(
                 "/api/v1/mcp-servers/{id}/oauth/authorize",
                 "startMcpAuthorize",
@@ -1981,12 +2011,14 @@ fn operations() -> Vec<Op> {
                 "/api/v1/alert-channels",
                 "createAlertChannel",
                 "Create an alert channel",
-            ),
+            )
+            .needs_kek(),
             Op::put(
                 "/api/v1/alert-channels/{id}",
                 "updateAlertChannel",
                 "Update an alert channel",
-            ),
+            )
+            .needs_kek(),
             Op::delete(
                 "/api/v1/alert-channels/{id}",
                 "deleteAlertChannel",
@@ -2194,12 +2226,14 @@ fn operations() -> Vec<Op> {
                 "/api/v1/connectors",
                 "createConnector",
                 "Create an observability connector",
-            ),
+            )
+            .needs_kek(),
             Op::put(
                 "/api/v1/connectors/{id}",
                 "updateConnector",
                 "Update an observability connector (managed_auth_secret: omit to keep, null or blank to remove)",
-            ),
+            )
+            .needs_kek(),
             Op::delete(
                 "/api/v1/connectors/{id}",
                 "deleteConnector",
@@ -2355,12 +2389,14 @@ fn operations() -> Vec<Op> {
                 "/api/v1/orgs/{org_id}/sso-providers",
                 "createSsoProvider",
                 "Register an SSO provider",
-            ),
+            )
+            .needs_kek(),
             Op::put(
                 "/api/v1/sso-providers/{id}",
                 "updateSsoProvider",
                 "Update an SSO provider in place",
-            ),
+            )
+            .needs_kek(),
             Op::delete(
                 "/api/v1/sso-providers/{id}",
                 "deleteSsoProvider",
@@ -4433,6 +4469,48 @@ mod tests {
             assert!(names.contains("cursor"), "{path}: {names:?}");
             assert!(names.contains("limit"), "{path}: {names:?}");
         }
+    }
+
+    /// The operations that seal a credential with `ROLTER_KEK` document the
+    /// `503` `kek_unavailable` refusal, and no other operation claims it (#3218).
+    #[test]
+    fn the_credential_sealing_operations_document_the_kek_refusal() {
+        let doc = document();
+        let sealing = [
+            ("post", "/api/v1/orgs/{org_id}/providers"),
+            ("put", "/api/v1/providers/{id}"),
+            ("post", "/api/v1/orgs/{org_id}/mcp-servers"),
+            ("patch", "/api/v1/mcp-servers/{id}"),
+            ("put", "/api/v1/mcp-servers/{id}/auth"),
+            ("put", "/api/v1/mcp-servers/{id}/oauth-client"),
+            ("post", "/api/v1/alert-channels"),
+            ("put", "/api/v1/alert-channels/{id}"),
+            ("post", "/api/v1/connectors"),
+            ("put", "/api/v1/connectors/{id}"),
+            ("post", "/api/v1/orgs/{org_id}/sso-providers"),
+            ("put", "/api/v1/sso-providers/{id}"),
+            ("post", "/api/v1/me/mfa/enroll"),
+            ("post", "/api/v1/auth/mfa/enroll"),
+        ];
+        for (method, path) in sealing {
+            assert!(
+                doc["paths"][path][method]["responses"]["503"].is_object(),
+                "{method} {path} seals a credential, so it must document the 503"
+            );
+        }
+        let mut documented = 0;
+        for (path, item) in doc["paths"].as_object().expect("paths") {
+            for (method, op) in item.as_object().into_iter().flatten() {
+                if op["responses"]["503"].is_object() {
+                    documented += 1;
+                    assert!(
+                        sealing.contains(&(method.as_str(), path.as_str())),
+                        "{method} {path} documents a 503 but is not a sealing operation"
+                    );
+                }
+            }
+        }
+        assert_eq!(documented, sealing.len());
     }
 
     #[test]
