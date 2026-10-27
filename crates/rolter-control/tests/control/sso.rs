@@ -2013,3 +2013,140 @@ async fn first_sso_sign_in_defaults_a_missing_display_name_without_managing_it()
     let token = sign_in("linus@example.com", " Linus\u{7} T ").await;
     assert_eq!(me(token).await["user"]["display_name"], "Linus T");
 }
+
+/// An org's provider signs in as an existing account only when every role that
+/// account holds sits inside the provider's org, and never as a superadmin:
+/// whoever registers a provider chooses the emails it asserts, so anything
+/// wider would hand one org's admins another org's member, or the break-glass
+/// account. The account's roles are left exactly as they were.
+#[tokio::test]
+async fn sso_never_adopts_a_superadmin_or_an_account_with_roles_in_another_org() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let addr = serve_with_public_url(pool.clone(), Some(admin_token().to_string())).await;
+    std::env::set_var("ROLTER_KEK", TEST_KEK);
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let base = format!("http://{addr}");
+    let (issuer, stub) = stub_idp::serve_stub().await;
+
+    let mut org_ids = Vec::new();
+    for (name, slug) in [("Acme", "acme-adopt"), ("Globex", "globex-adopt")] {
+        let org: Value = client
+            .post(format!("{base}/api/v1/orgs"))
+            .bearer_auth(admin_token())
+            .json(&json!({"name": name, "slug": slug}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        org_ids.push(org["id"].as_str().unwrap().parse::<uuid::Uuid>().unwrap());
+    }
+    let (acme, globex) = (org_ids[0], org_ids[1]);
+    let created = client
+        .post(format!("{base}/api/v1/orgs/{acme}/sso-providers"))
+        .bearer_auth(admin_token())
+        .json(&json!({
+            "name": "Acme IdP", "slug": "acme-idp", "issuer": issuer,
+            "client_id": "rolter", "client_secret": "s3cret",
+            "default_role": "member"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(created.status().is_success());
+
+    let ada = seed_user(&pool, "ada@example.com", false).await;
+    seed_membership(&pool, ada, Some(globex), None, None, "admin").await;
+    seed_user(&pool, "root@example.com", true).await;
+    let grace = seed_user(&pool, "grace@example.com", false).await;
+    seed_membership(&pool, grace, Some(acme), None, None, "viewer").await;
+
+    let sign_in = |email: &'static str| {
+        let client = client.clone();
+        let base = base.clone();
+        let issuer = issuer.clone();
+        let stub = stub.clone();
+        async move {
+            let start = client
+                .get(format!("{base}/auth/sso/acme-idp/start"))
+                .send()
+                .await
+                .unwrap();
+            let location = start
+                .headers()
+                .get("location")
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_string();
+            let state = url_param(&location, "state");
+            let nonce = url_param(&location, "nonce");
+            let mut claims = stub_idp::claims(&issuer, "rolter", &nonce, json!([]));
+            claims["email"] = json!(email);
+            *stub.next_claims.lock().unwrap() = claims;
+            client
+                .get(format!(
+                    "{base}/auth/sso/acme-idp/callback?code=abc&state={state}"
+                ))
+                .header("accept", "text/html")
+                .send()
+                .await
+                .unwrap()
+        }
+    };
+    let refused = format!("{base}/login?sso_error=account_outside_org&sso=acme-idp");
+    let roles = |user: uuid::Uuid| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_as::<_, (Option<uuid::Uuid>, String, String)>(
+                "select org_id, role, source from memberships where user_id = $1 order by org_id",
+            )
+            .bind(user)
+            .fetch_all(&pool)
+            .await
+            .unwrap()
+        }
+    };
+
+    // another org's admin: refused, and nothing is granted in acme
+    let response = sign_in("ada@example.com").await;
+    assert_eq!(response.status(), 303);
+    assert_eq!(redirect_of(&response), refused);
+    assert_eq!(
+        roles(ada).await,
+        [(Some(globex), "admin".to_string(), "manual".to_string())]
+    );
+
+    // the break-glass account: refused
+    let response = sign_in("root@example.com").await;
+    assert_eq!(redirect_of(&response), refused);
+
+    // an account whose roles are all in acme is adopted, as before
+    let response = sign_in("grace@example.com").await;
+    assert_eq!(response.status(), 303);
+    let location = redirect_of(&response);
+    assert!(
+        !url_param(&location, "sso_code").is_empty(),
+        "grace is adopted: {location}"
+    );
+
+    // a new address is created in acme, as before
+    let response = sign_in("new@example.com").await;
+    assert!(!url_param(&redirect_of(&response), "sso_code").is_empty());
+}
+
+fn redirect_of(response: &reqwest::Response) -> String {
+    response
+        .headers()
+        .get("location")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string()
+}
