@@ -258,7 +258,7 @@ id = "assert-gate-ran"
 name = "ci-ok fast path against a fake gh"
 entry = "bash scripts/test-assert-gate-ran.sh"
 language = "system"
-files = "^(\\.github/workflows/ci\\.yml|scripts/(assert|test-assert)-gate-ran\\.sh)$"
+files = "^(\\.github/workflows/ci\\.yml|scripts/(assert|test-assert)-gate-ran\\.sh|scripts/resolve-gated-base\\.sh)$"
 pass_filenames = false
 
 # scripts/fleet/ is what the fleet agents run to claim, board and land a pull

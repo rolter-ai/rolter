@@ -166,10 +166,11 @@ path uses passes `exclude_pull_requests=true`.
 What counts as "no pass against this base", and is red:
 
 - A pass whose step recorded a different base sha — the case above.
-- A pass that recorded `none`. A run with no pull request in its payload
-  (`workflow_dispatch`, which is how the release PR is gated, and `push`)
-  gated the head on its own, not merged into any base. An `edited` run on such
-  a PR needs a `pull_request` gate run, or a new commit.
+- A pass that recorded `none`. A run with no pull request in its payload and
+  none to resolve (`push`, `merge_group`, or a `workflow_dispatch` of a ref no
+  open pull request has as its head) gated the head on its own, not merged into
+  any base. An `edited` run on such a PR needs a `pull_request` gate run, or a
+  new commit.
 - A pass from a `gate-ok` without the step at all, which is every run made
   before #2649 landed. A PR gated before then and only retitled afterwards
   goes red, and needs a push or a re-run of its gate run followed by a re-run
@@ -179,6 +180,36 @@ What counts as "no pass against this base", and is red:
 A gate run whose `gate-ok` has not concluded has no rendered step yet, so its
 base is unknown while it runs. The fast path waits for it as before and judges
 it by its base once it has concluded.
+
+### A dispatch-gated release PR records its base too (#2657)
+
+The release PR is gated through `workflow_dispatch` (#1025), and a dispatch run
+has no `pull_request` payload, so `gate-ok` recorded `none` for it. After #2649
+that made a human edit to the release PR's title or body leave `ci-ok` red until
+a new commit landed.
+
+A dispatch run now resolves its pull request from the API. `gate-ok` runs
+`scripts/resolve-gated-base.sh` first, on a dispatch only, which lists the open
+pull requests whose head is the dispatched ref (`GET
+/repos/{o}/{r}/pulls?state=open&head={owner}:{ref}`) and prints the base sha of
+the one in this repository. The step is named from it:
+
+```yaml
+- name: gated against base ${{ github.event.pull_request.base.sha || steps.base.outputs.sha || 'none' }}
+```
+
+The job gained `pull-requests: read` for the listing and a sparse checkout of the
+one script; `quality.yml` is untouched and stays secret-free. The resolver never
+fails the run. A ref with no open pull request, or an API that fails three times,
+records `none`, which the fast path never accepts, so a lookup that went wrong
+costs a re-dispatch and never a hollow green.
+
+The recorded base is the one the pull request had when the dispatch ran. If the
+base branch moves on afterwards, the fast path compares against the new tip and
+reads the old pass as another base: re-dispatch the gate (or push) to record the
+current one, exactly as for a `pull_request` run.
+`scripts/test-assert-gate-ran.sh` covers the resolver against a fake `gh` and the
+chain from a dispatch-gated release PR to a green `edited` run.
 
 ## Why that was a hole
 
