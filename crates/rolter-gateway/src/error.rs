@@ -2,6 +2,8 @@
 //! request path is shaped like the OpenAI/Anthropic error envelope so existing
 //! client SDKs surface a useful `type`/`code`/`param` instead of an opaque blob:
 //!
+//! spec-ref: openai-errors
+//!
 //! ```json
 //! { "error": { "message": "...", "type": "invalid_request_error",
 //!              "param": "model", "code": "model_not_found" } }

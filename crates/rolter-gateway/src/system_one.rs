@@ -1,5 +1,7 @@
 //! System One typed decisions on the gateway (#3150).
 //!
+//! spec-ref: system-one
+//!
 //! A decision model answers typed questions (choice, score, yes/no) about a
 //! `state` instead of generating text. Every server rolter fronts for it speaks
 //! one endpoint, `POST /v1/systemone`, and the request travels through the same

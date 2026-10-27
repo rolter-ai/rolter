@@ -1,5 +1,7 @@
 //! Authenticated MCP HTTP proxying.
 //!
+//! spec-ref: mcp-transport
+//!
 //! A virtual key authenticates the workload, while its database owner selects
 //! the user's OAuth session. Server, owner and scope checks all happen before
 //! any downstream connection is attempted.
@@ -340,6 +342,7 @@ fn downstream_url(base: &str, tail: Option<&str>, query: Option<&str>) -> Option
     Some(url.into())
 }
 
+// spec-ref: http-semantics
 fn end_to_end_headers(mut headers: HeaderMap) -> HeaderMap {
     for name in [
         "authorization",

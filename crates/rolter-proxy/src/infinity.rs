@@ -1,5 +1,7 @@
 //! Request and response translation for a michaelfeil/infinity rerank.
 //!
+//! spec-ref: infinity, rerank
+//!
 //! Infinity's embeddings endpoint is OpenAI's own shape (`OpenAIEmbeddingResult`
 //! in `infinity_emb/fastapi_schemas/pymodels.py`: `object: "list"`, `data[]` of
 //! `{object, embedding, index}`, `model`, `usage.{prompt_tokens,total_tokens}`),

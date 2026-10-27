@@ -1,6 +1,8 @@
 //! Token acquisition for MCP OAuth: authorization code, refresh, and
 //! on-behalf-of exchange (#707).
 //!
+//! spec-ref: mcp-authorization, oauth2, pkce, oauth2-token-exchange
+//!
 //! [`crate::mcp_oauth`] owns the *shelf* — servers, consent grants, sealed
 //! sessions, listing and revocation. Until now nothing filled it: a grant row
 //! could only be written directly. This module is the lifecycle that mints and

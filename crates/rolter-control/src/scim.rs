@@ -1,5 +1,7 @@
 //! SCIM 2.0 Users provisioning (#540).
 //!
+//! spec-ref: scim
+//!
 //! An IdP authenticates with an org-scoped bearer token minted through the
 //! admin API, and drives `/scim/v2/Users` to create, update, deactivate and
 //! reconcile accounts. Three properties shape the implementation:

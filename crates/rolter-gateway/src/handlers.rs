@@ -146,6 +146,7 @@ pub async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
             u8::from(counts.engaged)
         );
     }
+    // spec-ref: prometheus-text
     ([(header::CONTENT_TYPE, "text/plain; version=0.0.4")], body)
 }
 

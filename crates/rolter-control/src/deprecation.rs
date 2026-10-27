@@ -1,5 +1,7 @@
 //! The deprecation machinery ADR-0032 promises (#1423).
 //!
+//! spec-ref: deprecation-header, sunset-header
+//!
 //! `/api/v1/*` is additive within `v1`. Removing or incompatibly changing
 //! anything the control-plane OpenAPI document publishes needs a deprecation
 //! window of at least two minor releases **and** 90 days, announced three ways:

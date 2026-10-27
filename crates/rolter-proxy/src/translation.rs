@@ -1,5 +1,7 @@
 //! Wire-protocol translation between client and upstream API dialects.
 //!
+//! spec-ref: translation-openai-anthropic, translation-responses, translation-gemini
+//!
 //! A [`TranslationPlan`] is resolved independently from provider identity. New
 //! dialects add a protocol mapping and a pair implementation here; forwarding,
 //! retries, caching and response accounting do not need provider-specific code.
@@ -141,6 +143,7 @@ static TRANSLATION_PAIRS: &[TranslationPair] = &[
     },
 ];
 
+// spec-ref: anthropic-messages
 /// The Anthropic Messages API rejects a request without `max_tokens`, so a
 /// translated request that carried neither `max_tokens` nor
 /// `max_completion_tokens` gets the deployment's configured default (#546).
@@ -1693,6 +1696,7 @@ fn remove_keys(obj: &mut Map<String, Value>, keys: &[&str]) {
 
 // --- google gemini native generateContent translation ----------------------
 
+// spec-ref: gemini-generate-content
 /// Translate an OpenAI Chat Completions request into a Gemini `generateContent`
 /// body. System/developer messages become `systemInstruction`; user/assistant
 /// turns become `contents` with roles `user`/`model`; tool messages become
@@ -1954,6 +1958,7 @@ fn gemini_finish(v: Option<&Value>) -> Value {
     }
 }
 
+// spec-ref: gemini-interactions
 /// Translate an OpenAI Chat Completions request into a Gemini Interactions
 /// `interactions.create` body (#599).
 ///
@@ -2353,6 +2358,7 @@ fn interaction_finish(status: Option<&Value>) -> Value {
     }
 }
 
+// spec-ref: sse
 struct SseConverter {
     plan: TranslationPlan,
     pending: Vec<u8>,

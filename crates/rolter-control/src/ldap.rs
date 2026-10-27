@@ -1,5 +1,7 @@
 //! LDAP bind + group mapping (#241).
 //!
+//! spec-ref: ldap
+//!
 //! **Not shipped: nothing signs a user in through this provider.** No
 //! configuration key, environment variable, route or dashboard screen
 //! constructs [`LdapIdentityProvider`], and `POST /api/v1/auth/login` resolves

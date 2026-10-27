@@ -1,5 +1,7 @@
 //! OIDC single sign-on (#240).
 //!
+//! spec-ref: oidc-core, oidc-discovery, pkce
+//!
 //! An org registers an identity provider; a user hits `/auth/sso/{slug}/start`,
 //! is bounced through the provider's authorization-code flow with PKCE, and
 //! comes back with an id token that rolter verifies against the provider's

@@ -3,6 +3,8 @@
 //! under `provider-slug/model` — not only the ones a configured route target
 //! happens to name (#1647).
 //!
+//! spec-ref: openai-models
+//!
 //! The models were always routable: `Snapshot::resolve_pinned` turns any
 //! `provider-slug/model` into a pinned single-target route, so a caller who
 //! already knew the name got a `200`. Only the listing was narrower than the

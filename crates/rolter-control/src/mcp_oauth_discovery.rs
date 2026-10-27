@@ -1,5 +1,7 @@
 //! The three client-side MUSTs the MCP OAuth flow of #707 predates (#1347).
 //!
+//! spec-ref: mcp-authorization, oauth2-protected-resource-metadata, oauth2-resource-indicators, oauth2-iss, oauth2-as-metadata
+//!
 //! The flow in [`crate::mcp_oauth_flow`] was a correct authorization-code +
 //! PKCE client when it landed. The MCP specification has since made three
 //! things a client MUST do, and this module is all three, kept apart from the

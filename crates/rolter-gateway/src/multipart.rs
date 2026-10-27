@@ -1,5 +1,7 @@
 //! Minimal `multipart/form-data` helpers for the audio endpoints.
 //!
+//! spec-ref: multipart-form-data
+//!
 //! The gateway forwards multipart uploads (`/v1/audio/transcriptions`,
 //! `/v1/audio/translations`) verbatim; it only needs to peek at the `model`
 //! form field for auth, routing, budgets and rate limits. Rather than pull in a
