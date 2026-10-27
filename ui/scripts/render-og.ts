@@ -1,8 +1,9 @@
 #!/usr/bin/env bun
 // social preview renderer (#855). `assets/og.svg` is the source of truth; this
 // turns it into the two committed images — `docs/user-docs/images/og.png` for the
-// Mintlify `seo.metatags` entry and `ui/public/og.png` for the dashboard's own
-// `og:image`, which has to be vendored because rolter must run air-gapped.
+// `seo.metatags` entry in the user docs' `docs.json` and `ui/public/og.png` for
+// the dashboard's own `og:image`, which has to be vendored because rolter must
+// run air-gapped.
 //
 // the render is deterministic: chromium rasterises the svg at exactly
 // 1200x630 with no device-pixel scaling, and Geist comes from node_modules

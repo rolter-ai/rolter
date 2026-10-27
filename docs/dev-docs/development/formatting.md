@@ -69,7 +69,7 @@ Three things follow from that table.
   file it is quoting, and it turned documented JSX fragments such as
   `{keys.error && (<LoadError … />)}` into statements with a trailing semicolon.
   Turning it off also removed the only case where prettier rewrapped prose
-  against `proseWrap: preserve` — inside a Mintlify `<Note>` or `<Warning>`,
+  against `proseWrap: preserve` — inside an MDX `<Note>` or `<Warning>`,
   whose children it was printing as JSX.
 - **`printWidth` is a free choice, so it matches `ui/.prettierrc`.** With
   `proseWrap: preserve` and embedded formatting off, nothing in these files is
@@ -125,7 +125,7 @@ every one of those files before and after with `remark-parse` + `remark-gfm` +
 `remark-mdx` and comparing the resulting document trees: headings, link targets, code-block
 contents, list nesting and every MDX element name and attribute are identical.
 That is the check that matters for the two navs — `docs/dev-docs/SUMMARY.md` for
-mdBook and `docs/user-docs/docs.json` for Mintlify — since a reflow that moved a
+mdBook and `docs/user-docs/docs.json` for Docs7 — since a reflow that moved a
 link target would break the book build or the docs site silently. The
 `llms.txt tracks the docs nav` check was confirmed green on the reformatted tree
 for the same reason.
