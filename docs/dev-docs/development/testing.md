@@ -140,13 +140,26 @@ run, they just share the database the url names.
 
 `ROLTER_TEST_DATABASE_URL` names the **server**, not the database the tests end
 up writing to. The database is derived from the workspace the test binary was
-compiled in — `rolter_test_wt_<worktree>_<digest>` — and created on first use by
+running in — `rolter_test_wt_<worktree>_<digest>` — and created on first use by
 [`rolter_store::postgres::test_database`](../../../crates/rolter-store/src/postgres/test_database.rs).
 A new worktree is therefore isolated without exporting anything, which is the
 point: this repository expects several agents working several worktrees at once
 (see [worktrees.md](worktrees.md)), so concurrent suites against one database is
 the normal case rather than an edge case, and an isolation scheme that has to be
 opted into is forgotten exactly when it is needed (#1430).
+
+The worktree is found at run time, by walking up from the `CARGO_MANIFEST_DIR`
+that cargo and nextest export to the test process, not from a path compiled into
+the binary, so every test binary in a worktree agrees on it even when the
+`rolter-store` artifact was built elsewhere (#2770). A binary run by hand, with no
+such variable, falls back to the path it was compiled in.
+
+**Give every worktree its own `CARGO_TARGET_DIR`.** Sharing one across worktrees
+saves disk but makes cargo reuse a build from another worktree: a worktree whose
+sources differ can link the other's library and run its tests against the wrong
+code, which gives false greens as well as false reds. The database name above
+no longer depends on it, but nothing else compensates, so the default
+`target/` inside each worktree is the safe choice.
 
 Two things that used to be true stop being true:
 
@@ -470,8 +483,19 @@ follow, and both have bitten:
 
 When the coverage job goes red, each failing test is named in an `::error`
 annotation on the check run ("coverage test failed"), with its panic location
-and message (`.github/scripts/annotate-test-failures.sh`, #2753). Read those
-rather than the raw job log, which not every triage path can download.
+and message (`.github/scripts/annotate-test-failures.sh`, #2753). The
+`nextest / doctests` job does the same ("nextest test failed", #2771): it tees
+`cargo nextest run` into a log and, when nextest fails, runs the annotator over
+it, so the check run names the test instead of "Process completed with exit code
+100". A test that hung is named too, without a panic to quote. Read those rather
+than the raw job log, which not every triage path can download.
+
+The annotator reads two output shapes, nextest's `FAIL [ 0.2s] (2/4) <binary>
+<test>` with the test's stderr under it, and libtest's `---- <test> stdout ----`
+sections. `scripts/test-annotate-test-failures.sh` runs it over a log of each
+(`static checks` job, and the `annotate-test-failures` prek hook), so a nextest
+release that changes its output fails there rather than annotating nothing. Doc
+tests run under `cargo test --doc` and are not annotated.
 
 - **Never set a process-wide environment variable to a value only your test
   wants.** `Kek::from_env()` is read at request time, so a test that installs
@@ -584,9 +608,14 @@ http interface at once and a fake `docker` on `PATH` plays
 signs in (the environment's over `creds.env`'s, one variable at a time), the
 second-factor step, what each broken hop tells the operator, credentials in
 `CLICKHOUSE_URL` reaching ClickHouse as a `Basic` header and never the output,
-and `--team` reaching ClickHouse through compose and not http. A new
+and `--team` reaching ClickHouse through compose and not http. For
+`payload-capture.sh` it covers both modes, that only `payload_capture_enabled`
+changes on the way back, and a refused read and write. A new
 script gets a `cases_<name>` function and one `run_cases <name>` line at the
-bottom. The job also runs `shellcheck` over every
+bottom. The test fails for an `integration/dogfood/*.sh` that has neither (#2693),
+unless it is on the explicit `not_covered_reason` list in the script with its
+reason: today `sheet.sh`, `personas.sh` and `watch.sh`, which need the live stack.
+An entry for a script that no longer exists fails too. The job also runs `shellcheck` over every
 `integration/**/*.sh`; the test alone is the prek hook `dogfood-scripts`.
 
 #### Git fixture scripts clear the hook environment (#3196)
@@ -1742,12 +1771,13 @@ failure has to reach the `report failure` job as `failure`. On `master` that
 job opens an issue titled `extended.yml: nightly checks failing`, labelled `ci`,
 the first time a run fails, and comments on it with the run link and each job's
 result while it stays open. Close it once the fix lands; the next failure opens
-a new one. It is the only job in the workflow with write scopes, `issues: write`
-and `actions: write` at job level with no checkout.
+a new one. The job is a call to the shared
+[`report-failure.yml`](#the-shared-report-failure-workflow), the only job in the
+workflow with write scopes: `issues: write` and `actions: write` at job level.
 
 An issue opened with the workflow's own token raises no `issues` event, so
-`project-automation` never sees it. The job triages a new issue itself instead:
-it sets the `Maintenance, CI & DX` milestone, then dispatches
+`project-automation` never sees it. The shared workflow triages a new issue
+itself instead: it sets the `Maintenance, CI & DX` milestone, then dispatches
 `project-automation.yml` with the issue number, `area=ci` and `effort=XS`, which
 puts it on the board with `Todo` and `Priority: Medium` as well (#2201). Either
 half only warns when it fails, since a renamed milestone must not cost the issue
@@ -1801,7 +1831,8 @@ stays out of `ci-ok` is in
 
 A failing `master` run used to sit unread in the Actions tab; it was red for a
 week before anyone noticed (#2677). The workflow now ends in a `report failure`
-job, a copy of `extended.yml`'s: on `master` it opens an issue titled
+job, a call to the shared [`report-failure.yml`](#the-shared-report-failure-workflow)
+that `extended.yml` uses too: on `master` it opens an issue titled
 `ui-e2e.yml: dashboard journeys failing`, labelled `ci`, the first time a run
 fails, and comments on it with the run link while it stays open. The run's
 `playwright-report` artifact holds the trace and screenshots. A new issue gets
@@ -1817,6 +1848,54 @@ failure there shows in that run and leaves the issue alone:
 ```bash
 gh workflow run ui-e2e.yml --ref <branch>
 ```
+
+### Nightly SSO and SCIM journeys
+
+[`.github/workflows/sso-e2e.yml`](../../../.github/workflows/sso-e2e.yml) runs
+`tests/test_sso.py --idp` from `integration/e2e/` against the compose stack plus
+a throwaway Keycloak, nightly at 04:11 UTC and on `workflow_dispatch` (#714). It
+gates nothing, for the same reason as `ui-e2e.yml`. Until #2682 it also had no
+failure alert, so a red SSO or SCIM journey would have gone unnoticed; it now ends
+in the same `report failure` call, with its own issue title. A pull request that
+changes `sso.rs`, `scim.rs` or the identity provider settings should dispatch it
+on its branch before merging:
+
+```bash
+gh workflow run sso-e2e.yml --ref <branch>
+```
+
+### The shared report-failure workflow
+
+The three nightly suites gate nothing, so the only thing that makes a red night
+visible is an issue. One reusable workflow,
+[`report-failure.yml`](../../../.github/workflows/report-failure.yml), opens or
+comments on it for all of them (#2682); it used to be a copy in each, and the
+copies drifted. A caller says when to report (a failed job, on `master`) and
+passes four things: the issue `title`, a `results` table of `label|result` lines,
+the project `area` and `effort` a new issue is triaged into, and optionally a
+`note` placed under the table. The logic is
+[`scripts/report-failure.sh`](../../../scripts/report-failure.sh), which the
+workflow checks out alone (sparse, no credentials kept).
+
+| Suite          | Workflow       | Tracking issue title                         | Triage     |
+| -------------- | -------------- | -------------------------------------------- | ---------- |
+| nightly checks | `extended.yml` | `extended.yml: nightly checks failing`       | `ci`, `XS` |
+| dashboard      | `ui-e2e.yml`   | `ui-e2e.yml: dashboard journeys failing`     | `ui`, `S`  |
+| SSO and SCIM   | `sso-e2e.yml`  | `sso-e2e.yml: sso and scim journeys failing` | `ci`, `S`  |
+
+Each issue carries the `ci` label, so a suite's failures collect on one issue
+while it stays open, and the three never share one. A caller job must grant
+`issues: write` and `actions: write` itself, because a called workflow cannot
+hold more than its caller gives it, and keeps them at job level: zizmor rates
+them high at workflow level. `quality.yml` does not call it and stays
+secret-free (#734).
+
+`scripts/test-report-failure.sh` runs the script against a fake `gh` (a first
+failure opens and triages the issue, a later one comments, a milestone or dispatch
+that fails only warns, a failing issue listing fails the run instead of opening a
+duplicate, a title with shell metacharacters arrives verbatim) and checks that
+every caller uses a title of its own, grants the scopes and reports on `master`
+only. It runs in the `static checks` job and as the `report-failure` prek hook.
 
 ### Published-port image smoke
 

@@ -16,7 +16,9 @@
 # hook.
 #
 # adding a script: write a `cases_<name>` function below that sets up scenarios
-# and calls `expect`, then add one `run_cases <name>` line at the bottom.
+# and calls `expect`, then add one `run_cases <name>` line at the bottom. a script
+# that cannot be run against the stub goes in `not_covered_reason` instead, with
+# the reason: the run fails for an integration/dogfood/*.sh that is neither (#2693).
 #
 # needs python3 and curl. bash 3.2 compatible, so it runs on a stock mac too.
 set -euo pipefail
@@ -178,9 +180,13 @@ check() {
   fi
 }
 
+# the scripts whose cases have run, space separated, for the coverage guard at
+# the bottom
+covered=" "
 run_cases() {
   echo "== $1"
   reset
+  covered="$covered$1 "
   "cases_$1"
 }
 
@@ -372,6 +378,56 @@ cases_adaptive_routing() {
   expect "nothing listening is exit 1" 1 "no answer from" -- \
     env ROLTER_CONTROL_URL=http://127.0.0.1:9 ROLTER_ADMIN_TOKEN=admin-tok CONTROL_WAIT_SECS=1 \
       bash "$dogfood/adaptive-routing.sh" on
+}
+
+# ── payload-capture.sh ────────────────────────────────────────────────────────
+LOGGING='{"payload_capture_enabled":false,"payload_capture_max_bytes":4096,"updated_at":"2026-10-01T00:00:00Z"}'
+LOGGING_ON='{"payload_capture_enabled":true,"payload_capture_max_bytes":4096,"updated_at":"2026-10-01T00:00:01Z"}'
+
+capture() {
+  ROLTER_CONTROL_URL="$stub" ROLTER_ADMIN_TOKEN=admin-tok CONTROL_WAIT_SECS=2 \
+    bash "$dogfood/payload-capture.sh" "$@"
+}
+
+cases_payload_capture() {
+  json GET /api/v1/logging-settings 200 "$LOGGING"
+  json PUT /api/v1/logging-settings 200 "$LOGGING_ON"
+  expect "on turns capture on" 0 "payload capture on" "max_bytes=4096" -- capture on
+  check "the policy was read with the admin token" requested "GET /api/v1/logging-settings auth=Bearer admin-tok"
+  check "on sends payload_capture_enabled true" requested '"payload_capture_enabled": true'
+  check "the rest of the policy is sent back as read" requested '"payload_capture_max_bytes": 4096'
+  check "updated_at is not sent back" not_requested "updated_at"
+
+  reset
+  json GET /api/v1/logging-settings 200 "$LOGGING_ON"
+  json PUT /api/v1/logging-settings 200 "$LOGGING"
+  expect "off turns capture off" 0 "payload capture off" -- capture off
+  check "off sends payload_capture_enabled false" requested '"payload_capture_enabled": false'
+
+  reset
+  json GET /api/v1/logging-settings 200 "$LOGGING"
+  json PUT /api/v1/logging-settings 200 "$LOGGING_ON"
+  expect "the mode defaults to on" 0 "payload capture on" -- capture
+
+  reset
+  expect "an unknown mode is a usage error" 2 "usage:" -- capture sideways
+  check "an unknown mode makes no request" nothing_requested
+
+  reset
+  json GET /api/v1/logging-settings 401 '{"error":{"message":"bad token"}}'
+  expect "401 reading the policy is exit 1" 1 "answered 401" "bad token" -- capture on
+  check "a refused read does not write" not_requested "PUT "
+
+  reset
+  json GET /api/v1/logging-settings 200 "$LOGGING"
+  json PUT /api/v1/logging-settings 403 '{"error":{"message":"viewer cannot write"}}'
+  expect "403 writing the policy is exit 1, not a success line" 1 \
+    "PUT" "answered 403" "viewer cannot write" "!payload capture on" -- capture on
+
+  reset
+  expect "nothing listening is exit 1" 1 "no answer from" -- \
+    env ROLTER_CONTROL_URL=http://127.0.0.1:9 ROLTER_ADMIN_TOKEN=admin-tok CONTROL_WAIT_SECS=1 \
+      bash "$dogfood/payload-capture.sh" on
 }
 
 # ── ux-capture.sh ─────────────────────────────────────────────────────────────
@@ -619,6 +675,46 @@ cases_ux_capture() {
 run_cases provision_signoz
 run_cases adaptive_routing
 run_cases ux_capture
+run_cases payload_capture
+
+# ── every script is covered or says why not ───────────────────────────────────
+# the reason a script has no cases here. a script that is neither covered nor
+# listed fails the run, so a new one cannot land untested by accident (#2693).
+# the stub only plays HTTP, so what is left out is what needs the real stack
+not_covered_reason() {
+  case "$1" in
+    sheet) echo "prints the stack's credentials and probes live service ports; no exit-code contract" ;;
+    personas) echo "creates accounts through a live control plane's write API and needs its answers to chain" ;;
+    watch) echo "read-only report over a live ClickHouse's ui_events and request_logs; no exit-code contract" ;;
+    *) return 1 ;;
+  esac
+}
+
+unlisted=0
+for script in "$dogfood"/*.sh; do
+  name=$(basename "$script" .sh)
+  fn=$(printf '%s' "$name" | tr - _)
+  checks=$((checks + 1))
+  if reason=$(not_covered_reason "$name"); then
+    if [ -z "$reason" ] || [ "${covered#* $fn }" != "$covered" ]; then
+      echo "FAIL [$name] is on the not-covered list but has cases or no reason" >&2
+      unlisted=$((unlisted + 1))
+    fi
+  elif [ "${covered#* $fn }" = "$covered" ]; then
+    echo "FAIL [$name] has no cases_$fn and is not on the not-covered list in $0:" \
+      "add cases and a run_cases line, or a not_covered_reason entry with the reason" >&2
+    unlisted=$((unlisted + 1))
+  fi
+done
+# an entry for a script that is gone would hide the next one that reuses the name
+for name in sheet personas watch; do
+  checks=$((checks + 1))
+  if [ ! -f "$dogfood/$name.sh" ]; then
+    echo "FAIL [$name] is on the not-covered list but integration/dogfood/$name.sh does not exist" >&2
+    unlisted=$((unlisted + 1))
+  fi
+done
+failures=$((failures + unlisted))
 
 if [ "$failures" -gt 0 ]; then
   echo "$failures of $checks dogfood script checks failed" >&2

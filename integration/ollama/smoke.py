@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Opt-in smoke checks against a real self-hosted Ollama daemon."""
 
+from __future__ import annotations
+
 import json
 import sys
 import urllib.request
-
 
 base = sys.argv[1].rstrip("/")
 

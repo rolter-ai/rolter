@@ -61,7 +61,7 @@ jobs:
   # fails the job when one was skipped
   rust-lint:
     name: rust lint
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     # about 4 min warm and 8-10 cold after a Cargo.lock bump, which pull
     # requests no longer cache for each other. a hung step fails the gate in
     # half an hour instead of GitHub's 360-minute default
@@ -226,7 +226,7 @@ jobs:
   # failure into a warning, never an error (ADR-0032, ADR-0034)
   rust-build:
     name: rust build
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     # about 3.5 min warm before the image smoke, which adds a debug build of the
     # image binaries, a vite build and the smoke itself; the builds can take 20
     # cold, and the semver step carries a limit of its own
@@ -577,6 +577,9 @@ jobs:
   # explicit doc-test pass since nextest does not run doc tests.
   test:
     name: nextest / doctests
+    # still 24.04: some tests shell out to the runner's pg_dump and psql against
+    # the postgres:16 service, and 26.04 ships a postgres 18 client whose dumps
+    # a 16 server refuses (`SET transaction_timeout`). moves with #3235
     runs-on: ubuntu-24.04
     # warm runs take 6-10 min. the limit leaves room for a cold build after a
     # Cargo.lock bump, which pull requests no longer cache for each other, while
@@ -650,7 +653,18 @@ jobs:
         with:
           tool: nextest
       - name: nextest (workspace, all features)
-        run: cargo nextest run --workspace --all-features
+        # `shell: bash` adds pipefail, so the `| tee` keeps nextest's exit status
+        shell: bash
+        run: |
+          # a failing job's only annotation is "Process completed with exit code
+          # 100", and job logs are not readable from every place that triages
+          # it, so a failing test is named in an annotation as well as the log
+          # (#2771)
+          log="${RUNNER_TEMP}/nextest.log"
+          if ! cargo nextest run --workspace --all-features --color never 2>&1 | tee "${log}"; then
+            bash .github/scripts/annotate-test-failures.sh "${log}" "nextest test failed"
+            exit 1
+          fi
       - name: doc tests
         run: cargo test --doc --workspace --all-features
       # the chart's own preflight must pass on the env it renders (#1939). it
@@ -693,7 +707,7 @@ jobs:
   # report, or it runs without the report ever vouching for it
   static:
     name: static checks
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     # about 90 s of work. without a timeout a hung step would hold the runner,
     # and every sibling's verdict with it, for GitHub's 360-minute default
     timeout-minutes: 20
@@ -1003,18 +1017,19 @@ jobs:
         if: ${{ !cancelled() }}
         run: bash scripts/test-release-gate.sh
 
-      # ── python: the gate scripts under scripts/ ───────────────────────────
+      # ── python: the gate scripts under scripts/ and the harnesses under integration/
       # the release handoff and rendered-manifest checkers are part of the merge
-      # gate, so drift in them is drift in the gate. rules live in ruff.toml;
-      # the pin is bumped by hand like the zizmor one (#2185). formatting is
-      # gated too, like prettier is for the docs (#2769)
-      - name: ruff (scripts)
+      # gate, so drift in them is drift in the gate. rules live in ruff.toml
+      # (integration/e2e/ruff.toml overrides only its python floor); the pin is
+      # bumped by hand like the zizmor one (#2185). formatting is gated too, like
+      # prettier is for the docs (#2769), and covers integration/ since #2669
+      - name: ruff (python)
         id: ruff
         if: ${{ !cancelled() && steps.uv.outcome == 'success' }}
         run: |
           ruff=$(bash scripts/tool-pin.sh ruff)
-          uvx --from "$ruff" ruff check scripts
-          uvx --from "$ruff" ruff format --check scripts
+          uvx --from "$ruff" ruff check scripts integration
+          uvx --from "$ruff" ruff format --check scripts integration
 
       # ── board automation: the add-to-board retry policy ───────────────────
       # project-automation.yml decides which GitHub API failures to wait out and
@@ -1034,6 +1049,20 @@ jobs:
       # nothing else ran them. this drives them against a stub http server
       # that plays SigNoz's and the control plane's answers, so it needs no
       # docker and no secrets (#1928)
+      # the annotator behind the failing-test annotations of the nextest and
+      # coverage jobs is parsing, and parsing breaks quietly when nextest
+      # changes its output. this runs it over a nextest and a libtest log (#2771)
+      - name: failing-test annotations
+        id: annotate-test-failures
+        if: ${{ !cancelled() }}
+        run: bash scripts/test-annotate-test-failures.sh
+      # the nightly suites gate nothing, so their `report failure` job is the
+      # only thing that makes a red night visible, and it only runs when
+      # something is already broken. this drives it against a fake gh (#2682)
+      - name: report-failure against a fake gh
+        id: report-failure
+        if: ${{ !cancelled() }}
+        run: bash scripts/test-report-failure.sh
       - name: dogfood scripts against a stub server
         id: dogfood-scripts
         if: ${{ !cancelled() }}
@@ -1217,7 +1246,7 @@ jobs:
             "prek run release-handoff-self-test --all-files"
           row "release handoff wired" "release gate scripts against a fake gh" "${OUTCOME_RELEASE_GATE}" yes \
             "prek run release-gate --all-files"
-          row "ruff" "ruff (scripts)" "${OUTCOME_RUFF}" yes "prek run ruff --all-files"
+          row "ruff" "ruff (python)" "${OUTCOME_RUFF}" yes "prek run ruff --all-files"
           row "board automation retry policy" "board automation retry policy" "${OUTCOME_PROJECT_AUTOMATION}" yes \
             "prek run project-automation --all-files"
           row "dogfood scripts" "dogfood scripts against a stub server" "${OUTCOME_DOGFOOD_SCRIPTS}" yes \
@@ -1260,7 +1289,7 @@ jobs:
   # `bun install` does not hide a docs failure
   ui:
     name: ui, storybook, docs
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     # about 4 min, three of them the play tests (2,146 stories on vitest, #2907);
     # the chromium download and the storybook build are under a minute together.
     # a hung play test fails the gate in 25 minutes instead of GitHub's
@@ -1555,6 +1584,7 @@ jobs:
   coverage:
     name: coverage (informational)
     if: github.event_name == 'pull_request'
+    # still 24.04 for the same postgres client reason as the nextest job (#3235)
     runs-on: ubuntu-24.04
     continue-on-error: true
     # same postgres service as the nextest job so the store + control-plane
