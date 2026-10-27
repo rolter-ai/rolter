@@ -833,7 +833,7 @@ function InviteUserDialog({
             placeholder={t("pages.users.emailPlaceholder")}
           />
         </Field>
-        <Field label={t("pages.users.method")}>
+        <Field label={t("pages.users.method")} info={t("pages.users.methodInfo")}>
           <Combobox
             value={method}
             onChange={(picked) => setMethod(picked as "link" | "password")}
@@ -858,6 +858,7 @@ function InviteUserDialog({
         )}
         <Field
           label={t("pages.users.scope")}
+          info={t("pages.users.scopeInfo")}
           hint={
             orgOnly
               ? t("pages.users.scopeOrgOnly")
@@ -876,7 +877,7 @@ function InviteUserDialog({
             disabled={orgOnly}
           />
         </Field>
-        <Field label={roleFieldLabel}>
+        <Field label={roleFieldLabel} info={t("pages.users.roleInfo")}>
           <Combobox
             value={role}
             onChange={setRole}
@@ -1449,7 +1450,7 @@ function AddRoleDialog({
       onSubmit={() => create.mutate()}
     >
       <div className="space-y-3">
-        <Field label={t("pages.users.scope")}>
+        <Field label={t("pages.users.scope")} info={t("pages.users.scopeInfo")}>
           <OrgScopePicker
             orgId={orgId}
             value={target}
@@ -1461,6 +1462,7 @@ function AddRoleDialog({
         </Field>
         <Field
           label={t("pages.users.role")}
+          info={t("pages.users.roleInfo")}
           hint={
             held
               ? t("pages.users.alreadyHeld", {
@@ -1858,7 +1860,7 @@ function ChangeRoleDialog({
       onConfirm={confirm}
     >
       {target && (
-        <Field label={t("pages.users.newRole")}>
+        <Field label={t("pages.users.newRole")} info={t("pages.users.roleInfo")}>
           <Combobox
             value={role}
             onChange={setRole}

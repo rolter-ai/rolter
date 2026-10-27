@@ -118,7 +118,7 @@ export function Pill({
     <span
       title={title}
       className={cn(
-        "inline-flex items-center gap-1 rounded-[6px] px-2 py-0.5 font-mono text-2xs tracking-[0.03em]",
+        "inline-flex items-center gap-1 rounded-sm px-2 py-0.5 font-mono text-2xs tracking-[0.03em]",
         verbatim ? "normal-case" : "uppercase",
         tone && TONE_CLASSES[tone],
         className,
@@ -205,7 +205,7 @@ export function ListTable({
         // resolve against the page and drag the *document* out to the table's
         // unscrolled width, which is the overflow this scroll container exists
         // to prevent
-        "relative overflow-x-auto rounded-[10px] border border-[color:var(--border-subtle)] [container-type:inline-size] [&>*]:min-w-[var(--rl-list-min-w)]",
+        "relative overflow-x-auto rounded-lg border border-[color:var(--border-subtle)] [container-type:inline-size] [&>*]:min-w-[var(--rl-list-min-w)]",
         className,
       )}
       style={{ "--rl-list-min-w": `${minWidth}px`, ...style } as React.CSSProperties}
@@ -514,7 +514,7 @@ export function RowIconButton({
         title={denied ? reason : title}
         className={cn(
           denied && "cursor-not-allowed opacity-50",
-          "flex flex-none items-center justify-center rounded-[6px] border border-[color:var(--border-subtle)] bg-transparent p-[5px] transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+          "flex flex-none items-center justify-center rounded-sm border border-[color:var(--border-subtle)] bg-transparent p-[5px] transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
           danger
             ? "text-[color:var(--status-danger-text)] hover:bg-[color:var(--red-tint)]"
             : "text-muted-foreground hover:text-foreground",

@@ -30,6 +30,15 @@ pub trait Scorer: Send + Sync {
     /// in-flight count for target `i`. Returns one score per candidate.
     fn score(&self, ctx: &RouteContext, candidates: &[usize], loads: &[u64]) -> Vec<f32>;
 
+    /// Whether this scorer reads [`RouteContext::prompt`], `prompt_len` or
+    /// `prompt_digest`. Defaults to `true`, the safe answer for a scorer the
+    /// gateway knows nothing about; the ones that rank on load, price, latency,
+    /// weight, session, adapter or token ids override it to `false`
+    /// ([`LoadBalancer::reads_prompt`]).
+    fn reads_prompt(&self) -> bool {
+        true
+    }
+
     /// Record that `target` served `ctx`. Scorers that learn from traffic
     /// (prefix cache) override this; stateless ones ignore it.
     fn observe(&self, _target: usize, _ctx: &RouteContext) {}
@@ -219,6 +228,27 @@ impl LoadBalancer for Pipeline {
         self.select(ctx, loads, |_| true)
     }
 
+    /// Score only the targets the caller can use, so a dead replica's empty
+    /// queue cannot read as the best one on the load and prefix scorers
+    /// (#1942). With nothing eligible this scores every target, as `pick` does.
+    fn pick_eligible(
+        &self,
+        ctx: &RouteContext,
+        loads: &[u64],
+        eligible: &dyn Fn(usize) -> bool,
+    ) -> Option<usize> {
+        if self.n == 0 {
+            return None;
+        }
+        let usable = crate::Usable::ask(self.n, eligible);
+        self.select(ctx, loads, |i| usable.contains(i))
+    }
+
+    /// A pipeline reads the prompt when any of its scorers does.
+    fn reads_prompt(&self) -> bool {
+        self.scorers.iter().any(|(scorer, _)| scorer.reads_prompt())
+    }
+
     fn observe(&self, target: usize, ctx: &RouteContext) {
         Pipeline::observe(self, target, ctx);
     }
@@ -270,6 +300,10 @@ impl Scorer for StaticScorer {
     fn name(&self) -> &'static str {
         "static_weight"
     }
+
+    fn reads_prompt(&self) -> bool {
+        false
+    }
     fn score(&self, _ctx: &RouteContext, candidates: &[usize], _loads: &[u64]) -> Vec<f32> {
         candidates
             .iter()
@@ -300,6 +334,10 @@ impl CheapestScorer {
 impl Scorer for CheapestScorer {
     fn name(&self) -> &'static str {
         "cheapest"
+    }
+
+    fn reads_prompt(&self) -> bool {
+        false
     }
     fn score(&self, _ctx: &RouteContext, candidates: &[usize], _loads: &[u64]) -> Vec<f32> {
         rank_lower_better(&self.costs, candidates)
@@ -379,6 +417,10 @@ impl Scorer for PreciseKvScorer {
         "precise_kv_cache"
     }
 
+    fn reads_prompt(&self) -> bool {
+        false
+    }
+
     fn score(&self, ctx: &RouteContext, candidates: &[usize], _loads: &[u64]) -> Vec<f32> {
         let Some(token_ids) = ctx.token_ids.filter(|ids| !ids.is_empty()) else {
             return vec![0.0; candidates.len()];
@@ -406,6 +448,10 @@ impl LmCacheScorer {
 impl Scorer for LmCacheScorer {
     fn name(&self) -> &'static str {
         "lmcache"
+    }
+
+    fn reads_prompt(&self) -> bool {
+        false
     }
 
     fn score(&self, _ctx: &RouteContext, candidates: &[usize], _loads: &[u64]) -> Vec<f32> {
@@ -439,6 +485,10 @@ impl FastestScorer {
 impl Scorer for FastestScorer {
     fn name(&self) -> &'static str {
         "fastest"
+    }
+
+    fn reads_prompt(&self) -> bool {
+        false
     }
     fn score(&self, _ctx: &RouteContext, candidates: &[usize], _loads: &[u64]) -> Vec<f32> {
         let latencies = self.source.latencies(self.n);
@@ -500,6 +550,10 @@ impl LeastLoadScorer {
 impl Scorer for LeastLoadScorer {
     fn name(&self) -> &'static str {
         "least_load"
+    }
+
+    fn reads_prompt(&self) -> bool {
+        false
     }
     fn score(&self, _ctx: &RouteContext, candidates: &[usize], loads: &[u64]) -> Vec<f32> {
         if loads.len() != self.n {
@@ -615,6 +669,10 @@ impl SessionAffinityScorer {
 impl Scorer for SessionAffinityScorer {
     fn name(&self) -> &'static str {
         "session_affinity"
+    }
+
+    fn reads_prompt(&self) -> bool {
+        false
     }
 
     fn score(&self, ctx: &RouteContext, candidates: &[usize], _loads: &[u64]) -> Vec<f32> {
@@ -746,6 +804,10 @@ impl LoraScorer {
 impl Scorer for LoraScorer {
     fn name(&self) -> &'static str {
         "lora"
+    }
+
+    fn reads_prompt(&self) -> bool {
+        false
     }
 
     fn score(&self, ctx: &RouteContext, candidates: &[usize], _loads: &[u64]) -> Vec<f32> {
@@ -1263,5 +1325,22 @@ mod tests {
             .filter(|_| stack.pick(&ctx, &[9, 0, 9]) == Some(1))
             .count();
         assert!(picks > 30, "cold stack should follow load, got {picks}/40");
+    }
+
+    #[test]
+    fn pipeline_pick_eligible_skips_a_dead_target_at_load_zero() {
+        // equal weights, so the load scorer decides: the dead target's empty
+        // queue is the best score on offer (#1942)
+        let pipeline = Pipeline::default_stack(&[1, 1, 1]);
+        let ctx = RouteContext::default();
+        let loads = [0, 9, 9];
+        assert_eq!(pipeline.pick(&ctx, &loads), Some(0));
+        for _ in 0..50 {
+            let pick = pipeline.pick_eligible(&ctx, &loads, &|i| i != 0);
+            assert!(matches!(pick, Some(1 | 2)), "{pick:?}");
+        }
+        // with nothing eligible it scores every target, as pick does
+        assert_eq!(pipeline.pick_eligible(&ctx, &loads, &|_| false), Some(0));
+        assert_eq!(Pipeline::new(0).pick_eligible(&ctx, &[], &|_| true), None);
     }
 }

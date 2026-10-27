@@ -55,3 +55,8 @@ tracing-subscriber.workspace = true
 [[bench]]
 name = "admission"
 harness = false
+
+# hot-path benches with allocation counting (#1054)
+[[bench]]
+name = "hot_path"
+harness = false
