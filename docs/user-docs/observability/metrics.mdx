@@ -323,15 +323,18 @@ Both histograms are labelled `{model="..."}` so you can track latency per model 
 
     | Metric | What it counts |
     | --- | --- |
-    | `rolter_reload_total` | Successful configuration reloads |
-    | `rolter_log_total` | Request log rows enqueued for ClickHouse |
-    | `rolter_budget_exceeded_total` | Requests blocked by a spend budget (HTTP 402) |
-    | `rolter_rate_limit_total` | Requests rejected by a rate limit (HTTP 429) |
-    | `rolter_retry_total` | Upstream retries attempted |
-    | `rolter_cooldown_total` | Targets placed into cooldown |
-    | `rolter_health_probe_total` | Active health probe attempts |
-    | `rolter_breaker_trip_total` | Circuit breaker trips |
-    | `rolter_scrape_total` | Upstream engine metrics scrape attempts |
+    | `rolter_config_reloads_total` | Successful configuration hot-reloads applied |
+    | `rolter_config_reload_failures_total` | Failed configuration snapshot fetches |
+    | `rolter_budget_blocks_total` | Requests rejected because a spend budget was exhausted |
+    | `rolter_rate_limit_blocks_total` | Requests rejected because a rate limit was exhausted |
+    | `rolter_retries_total` | Upstream attempts made again after a transient failure |
+    | `rolter_cooldowns_tripped_total` | Targets parked on a cooldown after a transient failure |
+    | `rolter_key_cooldowns_tripped_total` | API keys parked on a cooldown after a key-level failure |
+    | `rolter_health_down_total` | Providers marked unhealthy by an active health probe |
+    | `rolter_health_recovered_total` | Providers restored to healthy by an active health probe |
+    | `rolter_breaker_opened_total` | Targets tripped open by the circuit breaker after sustained failures |
+    | `rolter_breaker_closed_total` | Targets closed by the circuit breaker after a successful half-open probe |
+    | `rolter_metrics_scrapes_total` | Upstream `/metrics` scrape sweeps completed |
 
   </Accordion>
 </AccordionGroup>
