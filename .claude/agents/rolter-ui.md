@@ -68,7 +68,7 @@ All of these land together:
 - the story's API faked with the fetch stubs in `ui/src/pages/story-harness.tsx`
   (`Harness` around `routes` / `scoped` / `json`, `pending` for loading,
   `recording` to assert what was sent) — there is no shared `mock.ts`
-- the API call in `ui/src/lib/api.ts` when it talks to a new endpoint
+- the API call in `ui/src/lib/api/<domain>.ts` when it talks to a new endpoint
 
 # Toolchain
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// docs/user-docs/llms.txt, generated from the Mintlify nav (#1582).
+// docs/user-docs/llms.txt, generated from the docs.json nav (#1582).
 //
 // The file is an index for a coding agent: what Rolter is, the commands that
 // matter, and every documentation page with the one line that says what is on
@@ -9,9 +9,10 @@
 // frontmatter, and `--check` fails the build when the committed file and the
 // docs have drifted apart.
 //
-// Links are site-relative on purpose. The docs site has no canonical domain yet
-// (#1360); absolute urls would have to be guessed now and rewritten later,
-// while a relative one resolves against whatever host serves the file.
+// Links are site-relative on purpose. The published site's domain can change
+// and operators mirror the docs internally, so an absolute url would have to be
+// rewritten each time, while a relative one resolves against whatever host
+// serves the file.
 //
 //   bun scripts/gen-llms-txt.ts          # write the file
 //   bun scripts/gen-llms-txt.ts --check  # fail if it is out of date
