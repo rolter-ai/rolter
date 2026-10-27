@@ -344,10 +344,10 @@ jobs:
       # it now builds `runtime-prebuilt`, the same runtime layout (base, user,
       # workdir, bundled config, env, ports, default command) around debug
       # binaries built here on this job's warm cache and a dashboard built
-      # here with vite. its base is distroless debian13 rather than the
-      # published debian12: this runner's glibc headers make aws-lc link
-      # glibc 2.38 symbols, which debian 12's 2.36 lacks, so the binaries would
-      # not start there. the release build itself is still exercised: nightly by
+      # here with vite, on the same distroless debian13 base the published
+      # image uses (#2702), so the runner's glibc must be no newer than the
+      # base's 2.41 for the binaries to start. the release build itself is still
+      # exercised: nightly by
       # extended.yml's compose smoke, and before anything is published by
       # release.yml's `smoke image`, which runs the same script against every
       # pushed architecture's digest

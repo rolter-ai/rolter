@@ -103,7 +103,8 @@ CMD ["/usr/local/bin/rolter", "easy-up", "--host", "0.0.0.0", "--config", "/app/
 #     --build-context rolter-bin=<dir with rolter, rolter-gateway, rolter-control> \
 #     --build-context rolter-ui=ui/dist -t rolter:dev .
 #
-# the binaries must run on the base's glibc (2.41), which any host build can.
+# the binaries must run on the base's glibc (2.41): build them on a host whose
+# glibc is no newer, or a newer one may have linked symbols this base lacks.
 # the release image is never built this way: it is `runtime`, the last stage
 FROM scratch AS rolter-bin
 FROM scratch AS rolter-ui

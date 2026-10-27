@@ -532,7 +532,8 @@ jobs:
   #     (actions/attest), pushed next to the image and recorded in github's
   #     attestation api
   #   - a cyclonedx sbom per platform image, attested with cosign: syft over the
-  #     image layers merged with the tagged Cargo.lock and ui/bun.lock
+  #     image layers, which reads the rust crates from the binaries' `cargo
+  #     auditable` section, merged with the tagged ui/bun.lock
   #     (scripts/image-sbom.sh says why the image alone is not enough)
   # then scripts/verify-image.sh, the command the user docs hand readers, runs
   # against what was just signed, so the documented check cannot rot.
@@ -582,15 +583,15 @@ jobs:
             scripts/verify-image.sh
           sparse-checkout-cone-mode: false
 
-      # the lockfiles from the tag, since they describe what was built. only
-      # those two files, so the sbom's directory scan sees nothing else
+      # the dashboard's lockfile from the tag, since it describes what was
+      # built. only that file, so the sbom's directory scan sees nothing else;
+      # the rust crates come from the binaries themselves (#2747)
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           ref: ${{ inputs.tag || github.ref }}
           path: release-src
           sparse-checkout: |
-            Cargo.lock
             ui/bun.lock
           sparse-checkout-cone-mode: false
 
