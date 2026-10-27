@@ -201,6 +201,22 @@ impl VirtualKeyRepo<'_> {
         Ok(row)
     }
 
+    /// What each of `ids` is called: its name, or its prefix when it has none.
+    /// A key that no longer exists is absent from the map (#3128).
+    pub async fn names(&self, ids: &[Uuid]) -> Result<std::collections::HashMap<Uuid, String>> {
+        if ids.is_empty() {
+            return Ok(Default::default());
+        }
+        let rows: Vec<(Uuid, String)> = sqlx::query_as(
+            "select id, coalesce(name, key_prefix) from virtual_keys where id = any($1)",
+        )
+        .bind(ids)
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)?;
+        Ok(rows.into_iter().collect())
+    }
+
     /// every key minted by `user_id` via the self-service panel, newest first,
     /// enriched with the owning project + org names. omits the key hash.
     pub async fn list_for_user(&self, user_id: Uuid) -> Result<Vec<OwnedVirtualKey>> {

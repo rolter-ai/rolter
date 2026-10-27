@@ -1382,6 +1382,103 @@ async fn budget_spend_reads_the_gateway_counter_and_never_invents_zero() {
     assert_eq!(report["budgets"][0]["spent_usd"], "12.5000");
 }
 
+/// #3128: the batch read returns the counter the per-scope read would, for
+/// each budget of the org, in one request.
+#[tokio::test]
+async fn the_org_wide_spend_read_returns_every_counter() {
+    skip_without_db!();
+    let Some(redis_url) = std::env::var("ROLTER_TEST_REDIS_URL")
+        .ok()
+        .filter(|url| !url.is_empty())
+    else {
+        eprintln!("ROLTER_TEST_REDIS_URL unset; skipping");
+        return;
+    };
+    let db = fresh_db().await;
+    let app = rolter_control::test_app_with_redis(db.pool().clone(), &redis_url)
+        .await
+        .expect("build app");
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let org: Value = client
+        .post(format!("{base}/api/v1/orgs"))
+        .json(&json!({"name": "Batch", "slug": format!("batch-{}", uuid::Uuid::new_v4().simple())}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_id = org["id"].as_str().unwrap().to_string();
+    let team: Value = client
+        .post(format!("{base}/api/v1/orgs/{org_id}/teams"))
+        .json(&json!({"name": "T"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let team_id = team["id"].as_str().unwrap().to_string();
+    let mut ids = Vec::new();
+    for (scope, id) in [("org", &org_id), ("team", &team_id)] {
+        let budget: Value = client
+            .post(format!("{base}/api/v1/budgets"))
+            .json(&json!({"scope_type": scope, "scope_id": id, "limit_usd": "100", "period": "monthly"}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        ids.push((
+            scope,
+            id.clone(),
+            budget["id"].as_str().unwrap().to_string(),
+        ));
+    }
+    let redis = redis::Client::open(redis_url.as_str()).unwrap();
+    let mut conn = redis.get_multiplexed_async_connection().await.unwrap();
+    let month = chrono::Utc::now().format("%Y%m");
+    let mut keys = Vec::new();
+    for (n, (scope, id, _)) in ids.iter().enumerate() {
+        let key = format!("rolter:budget:{scope}:{id}:{month}");
+        let _: f64 = redis::cmd("INCRBYFLOAT")
+            .arg(&key)
+            .arg(10.0 * (n as f64 + 1.0))
+            .query_async(&mut conn)
+            .await
+            .unwrap();
+        keys.push(key);
+    }
+    let report: Value = client
+        .get(format!("{base}/api/v1/orgs/{org_id}/budgets/spend"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    for key in &keys {
+        let _: i64 = redis::cmd("DEL")
+            .arg(key)
+            .query_async(&mut conn)
+            .await
+            .unwrap();
+    }
+    assert_eq!(report["status"], "ok", "{report}");
+    for (n, (_, _, budget_id)) in ids.iter().enumerate() {
+        let row = report["budgets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|b| b["id"] == budget_id.as_str())
+            .unwrap_or_else(|| panic!("budget {budget_id} missing: {report}"));
+        assert_eq!(row["spent_usd"], format!("{:.4}", 10.0 * (n as f64 + 1.0)));
+    }
+}
+
 /// #1171: a key is minted with its cap. The cap is a budget and a rate limit
 /// scoped to the key, written in the mint's own transaction, so it reaches the
 /// snapshot with the key; a cap the gateway would misread is refused before a
@@ -1746,4 +1843,110 @@ async fn a_budget_scopes_to_a_person_and_is_managed_through_its_org() {
     .await
     .unwrap();
     assert_eq!(left, 0);
+}
+
+/// #3128: the org-wide list names a key's budget, and one batch read carries
+/// the counter of every budget the caller may read, with the same `status`
+/// rules as the per-scope read.
+#[tokio::test]
+async fn the_org_wide_reads_name_keys_and_carry_every_counter() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_admin_token(pool.clone(), Some("org".to_string()))
+        .await
+        .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let post = |path: String, body: Value| {
+        let client = client.clone();
+        let url = format!("{base}{path}");
+        async move {
+            let resp = client
+                .post(url)
+                .bearer_auth("org")
+                .json(&body)
+                .send()
+                .await
+                .unwrap();
+            assert!(resp.status().is_success(), "{}", resp.status());
+            resp.json::<Value>().await.unwrap()
+        }
+    };
+    let org = post(
+        "/api/v1/orgs".into(),
+        json!({"name": "Acme", "slug": "acme"}),
+    )
+    .await;
+    let org_id = org["id"].as_str().unwrap().to_string();
+    let team = post(
+        format!("/api/v1/orgs/{org_id}/teams"),
+        json!({"name": "Platform"}),
+    )
+    .await;
+    let project = post(
+        format!("/api/v1/teams/{}/projects", team["id"].as_str().unwrap()),
+        json!({"name": "Gateway"}),
+    )
+    .await;
+    let key = post(
+        format!(
+            "/api/v1/projects/{}/virtual-keys",
+            project["id"].as_str().unwrap()
+        ),
+        json!({"name": "contractor", "budget": {"limit_usd": "50"}, "rate_limit": {"rpm": 5}}),
+    )
+    .await;
+    post(
+        "/api/v1/budgets".into(),
+        json!({"scope_type": "org", "scope_id": org_id, "limit_usd": "900"}),
+    )
+    .await;
+
+    let get = |path: String| {
+        let client = client.clone();
+        let url = format!("{base}{path}");
+        async move {
+            client
+                .get(url)
+                .bearer_auth("org")
+                .send()
+                .await
+                .unwrap()
+                .json::<Value>()
+                .await
+                .unwrap()
+        }
+    };
+    let listed = get(format!("/api/v1/orgs/{org_id}/budgets")).await;
+    let rows = listed.as_array().unwrap();
+    assert_eq!(rows.len(), 2);
+    let keyed = rows
+        .iter()
+        .find(|b| b["scope_type"] == "virtual_key")
+        .unwrap();
+    assert_eq!(keyed["scope_name"], "contractor");
+    assert_eq!(keyed["scope_id"], key["id"]);
+    let orged = rows.iter().find(|b| b["scope_type"] == "org").unwrap();
+    assert!(orged["scope_name"].is_null());
+    let limits = get(format!("/api/v1/orgs/{org_id}/rate-limits")).await;
+    assert_eq!(limits[0]["scope_name"], "contractor");
+
+    // no Redis behind this control plane: every budget is listed, none is
+    // reported as zero
+    let spend = get(format!("/api/v1/orgs/{org_id}/budgets/spend")).await;
+    assert_eq!(spend["status"], "not_configured");
+    let ids: Vec<&Value> = spend["budgets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| &b["id"])
+        .collect();
+    assert_eq!(ids.len(), 2);
+    assert!(spend["budgets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|b| b["spent_usd"].is_null()));
 }

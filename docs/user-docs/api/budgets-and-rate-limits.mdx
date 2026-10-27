@@ -11,6 +11,7 @@ Budgets and rate limits stored in the database are managed through the control p
 | `GET`    | `/api/v1/budgets?scope_type=…&scope_id=…`       | list the budgets on one scope                |
 | `GET`    | `/api/v1/budgets/spend?scope_type=…&scope_id=…` | spend so far against each of those budgets   |
 | `GET`    | `/api/v1/orgs/{org_id}/budgets`                 | list the budgets across one organization     |
+| `GET`    | `/api/v1/orgs/{org_id}/budgets/spend`           | spend so far against all of those budgets    |
 | `POST`   | `/api/v1/budgets`                               | create a budget                              |
 | `PATCH`  | `/api/v1/budgets/{id}`                          | change a budget in place                     |
 | `DELETE` | `/api/v1/budgets/{id}`                          | delete a budget                              |
@@ -100,6 +101,8 @@ The row keeps its `id` and `created_at`. Spend counters in Redis are keyed by sc
 
 </Note>
 
+The organization-wide lists name a key's cap: a row whose `scope_type` is `virtual_key` carries `scope_name`, the key's name (its prefix when it has none), and it is `null` on every other scope. Keys have no list of their own across an organization, so without it a key's cap could only be told apart by the start of its id.
+
 ### Spend so far
 
 `GET /api/v1/budgets/spend?scope_type=…&scope_id=…` returns, for each budget on the scope, what the gateway has counted against it in the current window. It reads the same Redis counter the gateway checks on every request, so the figure is the one a `402` is decided on. It needs the same permission as listing the budgets.
@@ -116,6 +119,8 @@ The row keeps its `id` and `created_at`. Spend counters in Redis are keyed by sc
   ]
 }
 ```
+
+`GET /api/v1/orgs/{org_id}/budgets/spend` is the same read for every budget in the organization the caller may read (exactly the rows of the organization-wide list), in one request and one Redis round trip, so a screen that lists many caps does not issue one spend read per scope. It answers with the same body and the same `status` and `null` rules.
 
 `resets_at` is the start of the next window in UTC, and `null` for a budget that never resets. An absent counter is a window nothing has been spent in, so it reads `"0.0000"`.
 

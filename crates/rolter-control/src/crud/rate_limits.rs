@@ -73,7 +73,7 @@ async fn list_org_rate_limits(
     principal: Principal,
     State(state): State<ControlState>,
     Path(org_id): Path<Uuid>,
-) -> ApiResult<Json<Vec<RateLimit>>> {
+) -> ApiResult<Json<Vec<OrgRateLimit>>> {
     let rows = RateLimitRepo(pool(&state)).list_in_org(org_id).await?;
     let rows = readable_caps(
         &state,
@@ -93,7 +93,30 @@ async fn list_org_rate_limits(
         },
     )
     .await?;
-    Ok(Json(rows))
+    let names = super::budgets::key_names(
+        &state,
+        rows.iter().map(|r| (r.scope_type.as_str(), r.scope_id)),
+    )
+    .await?;
+    Ok(Json(
+        rows.into_iter()
+            .map(|row| OrgRateLimit {
+                scope_name: (row.scope_type == "virtual_key")
+                    .then(|| names.get(&row.scope_id).cloned())
+                    .flatten(),
+                row,
+            })
+            .collect(),
+    ))
+}
+
+/// A rate limit of an org-wide list, with the name of the key it caps (#3128);
+/// see `OrgBudget`.
+#[derive(serde::Serialize)]
+struct OrgRateLimit {
+    #[serde(flatten)]
+    row: RateLimit,
+    scope_name: Option<String>,
 }
 
 #[derive(Deserialize)]

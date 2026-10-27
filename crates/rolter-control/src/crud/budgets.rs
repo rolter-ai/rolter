@@ -27,6 +27,7 @@ pub(super) fn router() -> Router<ControlState> {
         .route("/api/v1/budgets/spend", get(budget_spend))
         .route("/api/v1/me/budgets", get(my_budgets))
         .route("/api/v1/orgs/{org_id}/budgets", get(list_org_budgets))
+        .route("/api/v1/orgs/{org_id}/budgets/spend", get(org_budget_spend))
         .route(
             "/api/v1/budgets/{id}",
             patch(update_budget).delete(delete_budget),
@@ -207,33 +208,88 @@ pub(super) async fn readable_caps<T>(
     Ok(visible)
 }
 
+/// The budgets of an org the caller may read.
+async fn readable_org_budgets(
+    state: &ControlState,
+    principal: &Principal,
+    org_id: Uuid,
+) -> ApiResult<Vec<Budget>> {
+    let rows = BudgetRepo(pool(state)).list_in_org(org_id).await?;
+    readable_caps(state, principal, cap!("budget", Read), org_id, rows, |b| {
+        (
+            b.scope_type.as_str(),
+            b.scope_id,
+            Within {
+                org: b.within_org_id,
+                project: b.within_project_id,
+            },
+        )
+    })
+    .await
+}
+
+/// A budget of an org-wide list, with the name of the virtual key it caps when
+/// that is its scope (#3128). Every other scope is named by the dashboard from
+/// the lists it already reads; keys have no org-wide list, so without this a
+/// key's budget could only be told apart by the start of its id.
+#[derive(Serialize)]
+struct OrgBudget {
+    #[serde(flatten)]
+    row: Budget,
+    /// the key's name, or its prefix when it has none; `null` on any other scope
+    scope_name: Option<String>,
+}
+
+/// The names of the keys among `scopes`, by id (#3128).
+pub(super) async fn key_names<'a>(
+    state: &ControlState,
+    scopes: impl Iterator<Item = (&'a str, Uuid)>,
+) -> ApiResult<HashMap<Uuid, String>> {
+    let ids: Vec<Uuid> = scopes
+        .filter(|(scope_type, _)| *scope_type == "virtual_key")
+        .map(|(_, id)| id)
+        .collect();
+    Ok(rolter_store::postgres::repo::VirtualKeyRepo(pool(state))
+        .names(&ids)
+        .await?)
+}
+
 /// Every budget the caller may read across one org, so "which caps exist here"
 /// is one request instead of one per scope.
 async fn list_org_budgets(
     principal: Principal,
     State(state): State<ControlState>,
     Path(org_id): Path<Uuid>,
-) -> ApiResult<Json<Vec<Budget>>> {
-    let rows = BudgetRepo(pool(&state)).list_in_org(org_id).await?;
-    let rows = readable_caps(
+) -> ApiResult<Json<Vec<OrgBudget>>> {
+    let rows = readable_org_budgets(&state, &principal, org_id).await?;
+    let names = key_names(
         &state,
-        &principal,
-        cap!("budget", Read),
-        org_id,
-        rows,
-        |b| {
-            (
-                b.scope_type.as_str(),
-                b.scope_id,
-                Within {
-                    org: b.within_org_id,
-                    project: b.within_project_id,
-                },
-            )
-        },
+        rows.iter().map(|b| (b.scope_type.as_str(), b.scope_id)),
     )
     .await?;
-    Ok(Json(rows))
+    Ok(Json(
+        rows.into_iter()
+            .map(|row| OrgBudget {
+                scope_name: (row.scope_type == "virtual_key")
+                    .then(|| names.get(&row.scope_id).cloned())
+                    .flatten(),
+                row,
+            })
+            .collect(),
+    ))
+}
+
+/// Spend so far against every budget of an org the caller may read, as the
+/// gateway counts it (#3128): the batch counterpart of `/budgets/spend`, which
+/// reads one scope. Same rows as the org-wide list, same `status` and `null`
+/// rules, one Redis round trip however many budgets there are.
+async fn org_budget_spend(
+    principal: Principal,
+    State(state): State<ControlState>,
+    Path(org_id): Path<Uuid>,
+) -> ApiResult<Json<BudgetSpendResponse>> {
+    let rows = readable_org_budgets(&state, &principal, org_id).await?;
+    Ok(Json(spend_of(&state, &rows).await))
 }
 
 /// Spend so far against one budget, as the gateway counts it.
@@ -327,32 +383,36 @@ async fn budget_spend(
     .await?;
     authorize_scope_read(&state, &principal, &scope, chain, cap!("budget", Read)).await?;
     let rows = budgets_on(&state, &scope).await?;
-    let plan = spend_plan(&rows, Utc::now());
-    let unknown = |status: &'static str| {
-        Json(BudgetSpendResponse {
-            status,
-            budgets: plan
-                .iter()
-                .map(|(id, reset, _)| BudgetSpend {
-                    id: *id,
-                    spent_usd: None,
-                    resets_at: reset.clone(),
-                })
-                .collect(),
-        })
+    Ok(Json(spend_of(&state, &rows).await))
+}
+
+/// The counters behind `rows`, read in one round trip. A counter that cannot
+/// be read comes back `null` with a `status` saying why, never zero.
+async fn spend_of(state: &ControlState, rows: &[Budget]) -> BudgetSpendResponse {
+    let plan = spend_plan(rows, Utc::now());
+    let unknown = |status: &'static str| BudgetSpendResponse {
+        status,
+        budgets: plan
+            .iter()
+            .map(|(id, reset, _)| BudgetSpend {
+                id: *id,
+                spent_usd: None,
+                resets_at: reset.clone(),
+            })
+            .collect(),
     };
     let Some(client) = state.redis.as_ref() else {
-        return Ok(unknown("not_configured"));
+        return unknown("not_configured");
     };
     if plan.is_empty() {
-        return Ok(Json(BudgetSpendResponse {
+        return BudgetSpendResponse {
             status: "ok",
             budgets: Vec::new(),
-        }));
+        };
     }
     let keys: Vec<String> = plan.iter().map(|(_, _, key)| key.clone()).collect();
     let Some(values) = read_spend(client, &keys).await else {
-        return Ok(unknown("unavailable"));
+        return unknown("unavailable");
     };
     let mut budgets = Vec::with_capacity(plan.len());
     for ((id, reset, _), value) in plan.iter().zip(values) {
@@ -367,10 +427,10 @@ async fn budget_spend(
             resets_at: reset.clone(),
         });
     }
-    Ok(Json(BudgetSpendResponse {
+    BudgetSpendResponse {
         status: "ok",
         budgets,
-    }))
+    }
 }
 
 /// One cap that counts the caller's own keys, with what is left of it (#1830).
