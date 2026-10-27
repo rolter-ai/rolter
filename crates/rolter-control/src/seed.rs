@@ -521,7 +521,7 @@ fn same_setting<T: serde::Serialize>(stored: &Option<serde_json::Value>, file: &
 /// the gateway would read it and send it to the provider's `api_base`; the
 /// dashboard refuses the same names at save time. Checked before any row is
 /// written, so a bad file imports nothing.
-fn refuse_secret_credentials(config: &GatewayConfig) -> anyhow::Result<()> {
+fn refuse_reserved_env_names(config: &GatewayConfig) -> anyhow::Result<()> {
     for p in &config.providers {
         let envs = p
             .api_key_env
@@ -549,7 +549,7 @@ async fn import_config(
     project_id: Uuid,
     config: &GatewayConfig,
 ) -> anyhow::Result<()> {
-    refuse_secret_credentials(config)?;
+    refuse_reserved_env_names(config)?;
     let providers = ProviderRepo(pool);
     let routes = RouteRepo(pool);
     let targets = RouteTargetRepo(pool);
@@ -1143,7 +1143,7 @@ mod tests {
             )
         };
         let bad = rolter_core::GatewayConfig::from_toml_str(&toml("ROLTER_KEK")).unwrap();
-        let err = super::refuse_secret_credentials(&bad)
+        let err = super::refuse_reserved_env_names(&bad)
             .unwrap_err()
             .to_string();
         assert!(
@@ -1151,7 +1151,7 @@ mod tests {
             "{err}"
         );
         let ok = rolter_core::GatewayConfig::from_toml_str(&toml("OPENAI_API_KEY")).unwrap();
-        assert!(super::refuse_secret_credentials(&ok).is_ok());
+        assert!(super::refuse_reserved_env_names(&ok).is_ok());
     }
 
     #[test]
