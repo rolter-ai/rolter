@@ -537,15 +537,19 @@ model = "gpt-4o"
 Catalog metadata and model-scoped policy for one route. The dashboard's model sheet writes it; [Per-model advanced settings](/concepts/providers-and-routes#per-model-advanced-settings) explains what each part means and the ranges the control plane accepts.
 
 <ParamField path="model_type" type="string">
-  The catalog family of the model, such as `chat` or `embedding`. A label the dashboard reads to choose which parameters and prices its model sheet offers. The gateway does not enforce it.
+  The catalog family of the model, such as `chat` or `embedding`. A label the dashboard reads to choose which parameters and prices its model sheet offers, and `GET /v1/models` serves on the route's entry. The gateway does not enforce it.
 </ParamField>
 
 <ParamField path="capabilities" default="[]" type="list">
-  Capability labels recorded for the model, such as `vision`. A label for the dashboard: the gateway forwards a request whether or not a flag is set.
+  Capability labels recorded for the model, such as `vision`. A label for the dashboard and for `GET /v1/models`: the gateway forwards a request whether or not a flag is set.
+</ParamField>
+
+<ParamField path="context_length" type="u32">
+  The model's context window in tokens, at least `1`. Served on `GET /v1/models` as `context_length`; advertised, not enforced. Unset by default.
 </ParamField>
 
 <ParamField path="description" type="string">
-  A note about the model for other operators. The dashboard and the routes API return it; it is never sent to API clients.
+  A note about the model for other operators. The dashboard and the routes API return it; it is never sent to API clients and never listed on `GET /v1/models`.
 </ParamField>
 
 <ParamField path="headers" type="table">

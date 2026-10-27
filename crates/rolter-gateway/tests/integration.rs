@@ -1334,6 +1334,66 @@ async fn models_endpoint_lists_the_whole_probed_provider_catalogue() {
     assert_eq!(resp.status(), 200);
 }
 
+/// A route's machine-meaningful catalog metadata reaches an API client; its
+/// free-text description does not (#2939).
+#[tokio::test]
+async fn models_endpoint_serves_route_catalog_metadata_but_not_the_description() {
+    let mut config = GatewayConfig::default();
+    config.providers.push(ProviderConfig {
+        name: "openai-edge".to_string(),
+        slug: Some("openai-edge".to_string()),
+        ..Default::default()
+    });
+    config.routes.push(ModelRoute {
+        model: "chat".to_string(),
+        strategy: BalancingStrategy::RoundRobin,
+        targets: vec![Target {
+            provider: "openai-edge".to_string(),
+            model: Some("gpt-4o".to_string()),
+            weight: 1,
+        }],
+        params: Default::default(),
+        param_policy: Default::default(),
+        advanced: rolter_core::AdvancedModelConfig {
+            model_type: Some("chat".to_string()),
+            capabilities: vec!["vision".to_string(), "tools".to_string()],
+            context_length: Some(128_000),
+            description: Some("internal routing note".to_string()),
+            ..Default::default()
+        },
+        cache: None,
+        variants: Default::default(),
+        tenancy: None,
+    });
+    let state = rolter_gateway::AppState::with_logging(&config, None);
+    let gw = serve(rolter_gateway::build_router(
+        state,
+        &config.server.metrics_path,
+        config.server.max_body_bytes,
+    ))
+    .await;
+
+    let models: Value = reqwest::get(format!("http://{gw}/v1/models"))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let chat = models["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["id"] == "chat")
+        .expect("the route is listed");
+    assert_eq!(chat["capabilities"], json!(["vision", "tools"]));
+    assert_eq!(chat["model_type"], "chat");
+    assert_eq!(chat["context_length"], 128_000);
+    assert!(
+        !chat.to_string().contains("internal routing note"),
+        "{chat}"
+    );
+}
+
 /// The catalogue no longer rides the health sweep: a deployment that never
 /// turned `[health]` on lists the provider's whole catalogue too (#1729).
 #[tokio::test]

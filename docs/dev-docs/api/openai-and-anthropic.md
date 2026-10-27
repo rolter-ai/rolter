@@ -275,11 +275,17 @@ routes, providers and groups, the same boundary the route authorization
 contract enforces on a call (#1844); a key from the gateway's config file sees
 them all:
 
-| Id                    | `owned_by`          | Where it comes from                                                                                              |
-| --------------------- | ------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| a route name (`chat`) | `rolter`            | every configured route, plus the built-in `fake-llm` unless a route the key can use shadows it                   |
+| Id                    | `owned_by`          | Where it comes from                                                                                                  |
+| --------------------- | ------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| a route name (`chat`) | `rolter`            | every configured route, plus the built-in `fake-llm` unless a route the key can use shadows it                       |
 | `provider-slug/model` | the provider's name | the upstream models the provider's routes name, **plus** the catalogue the provider reported to its model-list probe |
-| `group-slug/model`    | the group's name    | the union of its member providers' models (a member with an explicit model rewrite contributes that one)         |
+| `group-slug/model`    | the group's name    | the union of its member providers' models (a member with an explicit model rewrite contributes that one)             |
+
+A route's entry also carries `capabilities`, `model_type` and `context_length`
+when the route sets them (`handlers.rs`, `add_model_metadata`; #2939). They are
+advertised, never enforced. `description` is never served: it is free text
+written for the team and may hold internal routing notes. Provider-pinned and
+group addresses have no route, so they carry none of these.
 
 The provider-pinned half used to be derived from route targets alone, which
 under-reported a fleet: `provider-slug/model` resolves for **any** model the

@@ -1299,12 +1299,14 @@ pub struct Target {
 /// transport defaults, while a model may need a narrower policy.
 ///
 /// Every field here is read by something. `model_type`, `capabilities` and
-/// `description` are catalog metadata the dashboard reads back; the gateway
+/// `context_length` are catalog metadata the dashboard reads back and
+/// `GET /v1/models` serves (#2939); `description` is dashboard-only; the gateway
 /// applies `headers`, `locked_headers`, `limits.timeout_secs`, `limits.retries`,
 /// `limits.output_tokens`, `limits.rpm`, `limits.tpm`, `limits.concurrency`,
 /// `visibility` and `guardrails`.
 // `additional_fields` (#1665) and then `base_url`, `insecure_tls`, `pricing`
-// and the `context_window` limit (#2924) used to sit here, as did `rpm`, `tpm`
+// and the `context_window` limit (#2924) used to sit here (the window is back as
+// `context_length`, with `GET /v1/models` as its reader, #2939), as did `rpm`, `tpm`
 // and `concurrency` until #2936 gave them a reader: stored, validated, put in every snapshot and read by nothing,
 // while the docs and the dashboard described them as working. `base_url` and
 // `insecure_tls` were the worst of it. a per-route endpoint would have carried
@@ -1318,14 +1320,20 @@ pub struct Target {
 pub struct AdvancedModelConfig {
     /// provider/model family selected in the catalog (for example `chat` or
     /// `embedding`). The dashboard reads it to offer the parameters and prices
-    /// that fit the family; the gateway does not enforce it
+    /// that fit the family, and `GET /v1/models` serves it; the gateway does
+    /// not enforce it
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_type: Option<String>,
     /// what the model supports (`streaming`, `tools`, ...). A label for the
-    /// dashboard, not a gate: the gateway forwards a request whether or not the
-    /// flag is set
+    /// dashboard and for `GET /v1/models`, not a gate: the gateway forwards a
+    /// request whether or not the flag is set
     #[serde(default)]
     pub capabilities: Vec<String>,
+    /// size of the model's context window in tokens, served on `GET /v1/models`
+    /// as `context_length`. Advertised, not enforced: a request longer than it
+    /// is forwarded and the upstream answers
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_length: Option<u32>,
     /// free-text note kept with the route. Shown in the dashboard and returned
     /// by the routes API; never sent to API clients
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -5193,6 +5201,12 @@ impl GatewayConfig {
             for problem in route.advanced.limits.throughput_problems() {
                 problems.push(format!("route '{}': {problem}", route.model));
             }
+            if route.advanced.context_length == Some(0) {
+                problems.push(format!(
+                    "route '{}': context_length must be at least 1",
+                    route.model
+                ));
+            }
         }
         // the same split for the request id header: a file naming a credential
         // or framing header is refused, the snapshot path resets it (#2925)
@@ -5616,6 +5630,31 @@ mod tests {
             (None, None, None)
         );
         assert!(serde_json::to_value(&older).unwrap().get("rpm").is_none());
+    }
+
+    #[test]
+    fn a_zero_context_length_is_a_config_problem() {
+        let config = GatewayConfig::from_toml_str(
+            r#"
+            [[providers]]
+            name = "openai"
+            kind = "openai"
+            api_base = "https://api.openai.com"
+
+            [[routes]]
+            model = "chat"
+            [routes.advanced]
+            context_length = 0
+            [[routes.targets]]
+            provider = "openai"
+            "#,
+        )
+        .unwrap();
+        let problems = config.validate().unwrap_err();
+        assert!(
+            problems.iter().any(|p| p.contains("context_length")),
+            "{problems:?}"
+        );
     }
 
     #[test]

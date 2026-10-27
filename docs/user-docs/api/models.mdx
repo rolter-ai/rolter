@@ -123,8 +123,22 @@ for model in models:
       `"rolter"` for a route name, otherwise the name of the provider or provider group the address pins — so a client can group the list by where each model comes from.
     </ResponseField>
 
+    <ResponseField name="capabilities" type="string[]">
+      What the model supports, such as `["vision", "tools"]`. Present on a route name when the route sets `capabilities` in its [advanced settings](/concepts/providers-and-routes#per-model-advanced-settings); omitted otherwise. A label, not a gate: Rolter forwards a request whether or not a capability is listed.
+    </ResponseField>
+
+    <ResponseField name="model_type" type="string">
+      The model family, such as `"chat"` or `"embedding"`. Present on a route name when the route sets `model_type`.
+    </ResponseField>
+
+    <ResponseField name="context_length" type="integer">
+      The model's context window in tokens. Present on a route name when the route sets `context_length`. Advertised, not enforced.
+    </ResponseField>
+
   </Expandable>
 </ResponseField>
+
+A route's `description` is never listed: it is a free-text note for your team and may hold internal routing notes. Provider-pinned and group addresses carry no metadata, because the gateway does not know their upstream model's properties.
 
 ## Virtual key filtering
 

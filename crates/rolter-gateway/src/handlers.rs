@@ -149,6 +149,28 @@ pub async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
     ([(header::CONTENT_TYPE, "text/plain; version=0.0.4")], body)
 }
 
+/// Add the catalog metadata a route sets to its `/v1/models` entry (#2939).
+///
+/// Only the machine-meaningful fields are served, and only when set, so an
+/// entry for a route that sets none is byte-identical to what it always was.
+/// `description` is deliberately absent: it is a free-text note for the team
+/// and may hold internal routing notes.
+fn add_model_metadata(item: &mut Value, advanced: &rolter_core::AdvancedModelConfig) {
+    let Some(object) = item.as_object_mut() else {
+        return;
+    };
+    if !advanced.capabilities.is_empty() {
+        object.insert("capabilities".to_string(), json!(advanced.capabilities));
+    }
+    if let Some(model_type) = advanced.model_type.as_deref().filter(|t| !t.is_empty()) {
+        object.insert("model_type".to_string(), json!(model_type));
+    }
+    // zero is not a window; a row written around validation is not advertised
+    if let Some(context_length) = advanced.context_length.filter(|n| *n > 0) {
+        object.insert("context_length".to_string(), json!(context_length));
+    }
+}
+
 /// OpenAI-compatible model listing built from configured routes, filtered to
 /// the models the caller's virtual key is allowed to see.
 pub async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> Response {
@@ -172,10 +194,16 @@ pub async fn list_models(State(state): State<AppState>, headers: HeaderMap) -> R
             vk.as_ref()
                 .is_none_or(|key| authorize_route(Some(key), entry).is_ok())
         })
-        .map(|(model, _)| model.clone())
-        .chain(builtin)
-        .filter(|m| vk.as_ref().is_none_or(|vk| vk.model_permitted(m)))
-        .map(|m| json!({"id": m, "object": "model", "owned_by": "rolter"}))
+        .map(|(model, entry)| (model.clone(), Some(&entry.route.advanced)))
+        .chain(builtin.map(|model| (model, None)))
+        .filter(|(m, _)| vk.as_ref().is_none_or(|vk| vk.model_permitted(m)))
+        .map(|(m, advanced)| {
+            let mut item = json!({"id": m, "object": "model", "owned_by": "rolter"});
+            if let Some(advanced) = advanced {
+                add_model_metadata(&mut item, advanced);
+            }
+            item
+        })
         .collect();
 
     // provider-slug/model ids (ADR-0017): make every provider-addressable model
@@ -5580,6 +5608,49 @@ mod tests {
         let ids = models_in_response(list_models(State(state), HeaderMap::new()).await).await;
         assert!(ids.contains(&"openai-edge/gpt-4o".to_string()), "{ids:?}");
         assert!(!ids.iter().any(|id| id == "openai-edge/o3-mini"), "{ids:?}");
+    }
+
+    async fn listed_entries(state: AppState) -> Vec<Value> {
+        let resp = list_models(State(state), HeaderMap::new()).await;
+        let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        value["data"].as_array().unwrap().clone()
+    }
+
+    /// A route that sets catalog metadata serves the machine-meaningful part of
+    /// it; the free-text description stays out (#2939).
+    #[tokio::test]
+    async fn a_route_serves_its_capabilities_model_type_and_context_length() {
+        let mut config = config_with_a_wide_provider();
+        config.routes[0].advanced = rolter_core::AdvancedModelConfig {
+            model_type: Some("chat".to_string()),
+            capabilities: vec!["vision".to_string(), "tools".to_string()],
+            context_length: Some(128_000),
+            description: Some("internal: fails over to the eu pool".to_string()),
+            ..Default::default()
+        };
+        let entries = listed_entries(AppState::new(&config)).await;
+        let chat = entries.iter().find(|e| e["id"] == "chat").unwrap();
+        assert_eq!(chat["capabilities"], json!(["vision", "tools"]));
+        assert_eq!(chat["model_type"], "chat");
+        assert_eq!(chat["context_length"], 128_000);
+        assert!(chat.get("description").is_none(), "{chat}");
+        // an address has no route, so it carries no metadata
+        let pinned = entries
+            .iter()
+            .find(|e| e["id"] == "openai-edge/gpt-4o")
+            .unwrap();
+        assert!(pinned.get("context_length").is_none(), "{pinned}");
+    }
+
+    /// A route that sets nothing gains none of the catalog fields.
+    #[tokio::test]
+    async fn a_route_without_metadata_lists_no_catalog_fields() {
+        let entries = listed_entries(AppState::new(&config_with_a_wide_provider())).await;
+        let chat = entries.iter().find(|e| e["id"] == "chat").unwrap();
+        for key in ["capabilities", "model_type", "context_length"] {
+            assert!(chat.get(key).is_none(), "{key} listed for {chat}");
+        }
     }
 
     /// The catalogue widens what is discoverable, never what a key may reach.
