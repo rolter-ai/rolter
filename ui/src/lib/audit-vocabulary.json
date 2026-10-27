@@ -120,6 +120,7 @@
     "route.set_complexity",
     "route.set_enabled",
     "route.set_params",
+    "route.set_variants",
     "route.update",
     "route_target.create",
     "route_target.delete",

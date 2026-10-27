@@ -369,6 +369,24 @@ struct TargetRow {
 }
 
 #[derive(FromRow)]
+struct VariantRow {
+    id: Uuid,
+    route_id: Uuid,
+    name: String,
+    weight: i32,
+    params: serde_json::Value,
+}
+
+#[derive(FromRow)]
+struct VariantTargetRow {
+    variant_id: Uuid,
+    provider_org_id: Uuid,
+    provider_name: String,
+    upstream_model: Option<String>,
+    weight: i32,
+}
+
+#[derive(FromRow)]
 struct ProviderGroupRow {
     id: Uuid,
     org_id: Uuid,
@@ -804,6 +822,27 @@ impl PostgresConfigStore {
         .await
         .map_err(store_err)?;
 
+        // the weighted variants (#391), in declared order with their targets
+        // in routing order: the gateway samples by weight and falls back
+        // through the rest in that order, so the order is the routing
+        let variant_rows: Vec<VariantRow> = sqlx::query_as(
+            "select id, route_id, name, weight, params
+             from route_variants order by route_id, position",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(store_err)?;
+        let variant_target_rows: Vec<VariantTargetRow> = sqlx::query_as(
+            "select vt.variant_id, p.org_id as provider_org_id, p.name as provider_name,
+                    vt.upstream_model, vt.weight
+             from route_variant_targets vt
+             join providers p on p.id = vt.provider_id
+             order by vt.variant_id, vt.position",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(store_err)?;
+
         let mut routes = Vec::with_capacity(route_rows.len());
         for r in route_rows {
             let strategy = parse_strategy(&r.strategy)?;
@@ -841,6 +880,13 @@ impl PostgresConfigStore {
                     weight: t.weight.max(0) as u32,
                 })
                 .collect();
+            let variants = match route_variants(&r, &variant_rows, &variant_target_rows, left_out) {
+                Ok(variants) => variants,
+                Err(problem) => {
+                    tracing::warn!(route = %r.model, "{problem}");
+                    continue;
+                }
+            };
             routes.push(ModelRoute {
                 model: r.model,
                 strategy,
@@ -848,8 +894,7 @@ impl PostgresConfigStore {
                 params: settings.params,
                 param_policy: settings.param_policy,
                 advanced: settings.advanced,
-                // db-backed variants land with their own store follow-up
-                variants: Default::default(),
+                variants,
                 // response-cache opt-in is config-only for now; a db-backed
                 // cache policy lands with its own store follow-up
                 cache: None,
@@ -1498,6 +1543,69 @@ fn route_settings_from_row(row: &RouteRow) -> std::result::Result<RouteSettings,
         param_policy: column(row, "param_policy", &row.param_policy)?,
         advanced: column(row, "advanced", &row.advanced)?,
     })
+}
+
+/// The variants of route `r` as the gateway reads them (#391), built from the
+/// rows `load_routes` read for every route.
+///
+/// A variant target drops out on the same rules as a route target: a provider
+/// left out of the snapshot, or one of another org. A variant those rules
+/// leave with no target is dropped whole, as `GatewayConfig`'s own prune does,
+/// since validation reads a targetless variant as a defect of the snapshot.
+/// Variant params that do not parse leave the whole route out rather than
+/// serving the variant on no defaults, the rule the route's own params follow
+/// (#2938).
+fn route_variants(
+    r: &RouteRow,
+    variant_rows: &[VariantRow],
+    target_rows: &[VariantTargetRow],
+    left_out: &HashSet<String>,
+) -> std::result::Result<Vec<rolter_core::Variant>, String> {
+    use serde::Deserialize;
+
+    let mut variants = Vec::new();
+    for v in variant_rows.iter().filter(|v| v.route_id == r.id) {
+        let params =
+            HashMap::<String, serde_json::Value>::deserialize(&v.params).map_err(|error| {
+                format!(
+                    "route '{}' ({}) variant '{}' has a params value that does not parse \
+                     ({error}), so the route is left out of the snapshot and its model is not \
+                     served; repair the variant or delete it",
+                    r.model, r.id, v.name
+                )
+            })?;
+        let targets: Vec<Target> = target_rows
+            .iter()
+            .filter(|t| t.variant_id == v.id)
+            .filter(|t| !left_out.contains(&t.provider_name))
+            .filter(|t| {
+                let same_org = t.provider_org_id == r.org_id;
+                if !same_org {
+                    tracing::warn!(route = %r.model, variant = %v.name,
+                        provider = %t.provider_name,
+                        "dropping a variant target on another org's provider");
+                }
+                same_org
+            })
+            .map(|t| Target {
+                provider: t.provider_name.clone(),
+                model: t.upstream_model.clone(),
+                weight: t.weight.max(0) as u32,
+            })
+            .collect();
+        if targets.is_empty() {
+            tracing::warn!(route = %r.model, variant = %v.name,
+                "dropping a variant with no target the snapshot can serve");
+            continue;
+        }
+        variants.push(rolter_core::Variant {
+            name: v.name.clone(),
+            weight: v.weight.max(0) as u32,
+            targets,
+            params,
+        });
+    }
+    Ok(variants)
 }
 
 /// What kind of JSON value this is, for a problem line that must not echo it:

@@ -76,9 +76,9 @@ const HEADER: &str = "\
 # copy of this file applies the edits rather than duplicating rows.
 #
 # Round-trips: providers, provider groups and their members, routes with their
-# targets, parameter defaults and override policy, model prices, published
-# prompt templates, the payload-capture policy and the dashboard UX-event
-# opt-out.
+# targets, weighted variants, parameter defaults and override policy, model
+# prices, published prompt templates, the payload-capture policy and the
+# dashboard UX-event opt-out.
 #
 # Budgets and rate limits round-trip too, and name what they cap the way the
 # importer finds it, never by database id: `scope = \"team\"` with `id =
@@ -329,6 +329,36 @@ fn render_routes(out: &mut String, config: &GatewayConfig) {
                 key(out, "model", model);
             }
             key(out, "weight", &target.weight);
+        }
+        // declared order, never sorted: it is the fallback chain, and a
+        // variant's targets are its routing order (#391)
+        for variant in &route.variants {
+            out.push_str("\n[[routes.variants]]\n");
+            key(out, "name", &variant.name);
+            key(out, "weight", &variant.weight);
+            if !variant.params.is_empty() {
+                out.push_str("\n[routes.variants.params]\n");
+                let mut names: Vec<&String> = variant.params.keys().collect();
+                names.sort();
+                for name in names {
+                    match variant.params.get(name) {
+                        Some(value) if !value.is_null() => key(out, name, value),
+                        _ => {
+                            out.push_str(&format!(
+                                "# {name}: not representable in toml, omitted\n"
+                            ));
+                        }
+                    }
+                }
+            }
+            for target in &variant.targets {
+                out.push_str("\n[[routes.variants.targets]]\n");
+                key(out, "provider", &target.provider);
+                if let Some(model) = &target.model {
+                    key(out, "model", model);
+                }
+                key(out, "weight", &target.weight);
+            }
         }
     }
 }
@@ -711,6 +741,29 @@ strategy = "cache_aware"
 provider = "vllm-1"
 model = "meta-llama/Llama-3.1-8B-Instruct"
 weight = 3
+
+[[routes]]
+model = "split"
+strategy = "round_robin"
+[[routes.variants]]
+name = "stable"
+weight = 9
+[[routes.variants.targets]]
+provider = "openai-primary"
+model = "gpt-4o"
+weight = 1
+[[routes.variants]]
+name = "canary"
+weight = 1
+[routes.variants.params]
+temperature = 0.7
+[[routes.variants.targets]]
+provider = "vllm-1"
+model = "meta-llama/Llama-3.1-8B-Instruct"
+weight = 1
+[[routes.variants.targets]]
+provider = "openai-primary"
+weight = 2
 
 [[model_prices]]
 model = "gpt-4o"
@@ -1366,6 +1419,10 @@ tpm = 150000
                 "[[routes.targets]]",
                 "[routes.params]",
                 "[routes.param_policy]",
+                // declared order survives, and with it the fallback chain
+                "[[routes.variants]]\nname = \"stable\"\nweight = 9",
+                "[[routes.variants]]\nname = \"canary\"\nweight = 1\n\n[routes.variants.params]\ntemperature = 0.7",
+                "[[routes.variants.targets]]\nprovider = \"vllm-1\"",
                 "[[model_prices]]",
                 "[[budgets]]\nscope = \"org\"\nid = \"acme\"",
                 "id = \"acme/default/default\"",

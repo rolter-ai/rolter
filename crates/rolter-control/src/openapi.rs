@@ -385,8 +385,8 @@ const ASSIGNMENT_SUBJECT_QUERY: &[QueryParam] = &[
 const ROUTE_INCLUDE_QUERY: &[QueryParam] = &[QueryParam::new(
     "include",
     "string",
-    "comma-separated extras to embed in each route: `targets` and `complexity`; omitted, the \
-     list carries neither, and a value outside those two is a 400",
+    "comma-separated extras to embed in each route: `targets`, `variants` and `complexity`; \
+     omitted, the list carries none of them, and a value outside those three is a 400",
 )];
 
 /// The access-profile list's query string: what to embed beside each profile.
@@ -1326,7 +1326,7 @@ fn operations() -> Vec<Op> {
             Op::get(
                 "/api/v1/projects/{project_id}/routes",
                 "listRoutes",
-                "List a project's routes; `include` embeds each route's targets and complexity policy so a screen needs one request, not one per route",
+                "List a project's routes; `include` embeds each route's targets, variants and complexity policy so a screen needs one request, not one per route",
             )
             .query(ROUTE_INCLUDE_QUERY)
             .ok(Payload::List("Route")),
@@ -1357,6 +1357,19 @@ fn operations() -> Vec<Op> {
                 "Replace a route's catalog metadata and execution policy (headers, timeout, retries, output-token cap, visibility, guardrails)",
             )
             .ok(Payload::Ref("Route")),
+            Op::get(
+                "/api/v1/routes/{id}/variants",
+                "listRouteVariants",
+                "List a route's weighted variants in fallback order, each with its targets in routing order",
+            )
+            .ok(Payload::List("RouteVariant")),
+            Op::put(
+                "/api/v1/routes/{id}/variants",
+                "setRouteVariants",
+                "Replace a route's weighted variants; an empty list puts the route back on its own targets",
+            )
+            .body(Payload::Ref("SetRouteVariants"))
+            .ok(Payload::List("RouteVariant")),
             Op::get(
                 "/api/v1/routes/{id}/complexity",
                 "getRouteComplexity",
@@ -3413,6 +3426,11 @@ fn routing_schemas(p: &Prim) -> Value {
                     "description": "the route's targets, as GET /api/v1/routes/{route_id}/targets lists them; present only when the list was asked for `include=targets`",
                     "items": {"$ref": "#/components/schemas/RouteTarget"}
                 },
+                "variants": {
+                    "type": "array",
+                    "description": "the route's weighted variants, as GET /api/v1/routes/{id}/variants lists them; present only when the list was asked for `include=variants`",
+                    "items": {"$ref": "#/components/schemas/RouteVariant"}
+                },
                 "complexity": {
                     "type": "object",
                     "description": "the route's complexity policy, as GET /api/v1/routes/{id}/complexity returns it (`{\"tiers\": []}` when none is set); present only when the list was asked for `include=complexity`"
@@ -3478,6 +3496,71 @@ fn routing_schemas(p: &Prim) -> Value {
                 "weight": {"type": "integer"},
                 "created_at": timestamp
             }
+        },
+        "RouteVariant": {
+            "type": "object",
+            "required": ["id", "route_id", "name", "weight", "position", "params", "targets", "created_at"],
+            "properties": {
+                "id": uuid, "route_id": uuid,
+                "name": {"type": "string", "description": "the variant's name, unique in its route; request logs and metrics carry it"},
+                "weight": {"type": "integer", "minimum": 0, "description": "relative share of the requests that sample this variant as their primary"},
+                "position": {"type": "integer", "description": "the declared order, which is the fallback chain after the sampled primary"},
+                "params": {"type": "object", "description": "variant-scoped default inference params, layered over the route's"},
+                "targets": {
+                    "type": "array",
+                    "description": "the variant's targets in routing order",
+                    "items": {"$ref": "#/components/schemas/RouteVariantTarget"}
+                },
+                "created_at": timestamp
+            }
+        },
+        "RouteVariantTarget": {
+            "type": "object",
+            "required": ["id", "variant_id", "provider_id", "weight", "position"],
+            "properties": {
+                "id": uuid, "variant_id": uuid, "provider_id": uuid,
+                "upstream_model": nullable_string,
+                "weight": {"type": "integer", "minimum": 0},
+                "position": {"type": "integer"}
+            }
+        },
+        "SetRouteVariants": {
+            "type": "object",
+            "required": ["variants"],
+            "properties": {
+                "variants": {
+                    "type": "array",
+                    "maxItems": 32,
+                    "description": "the route's whole variant set in fallback order. Weights may not be negative, nor all zero; names are unique and not blank; each variant names 1 to 32 targets, each a provider of the route's org its project may use",
+                    "items": {
+                        "type": "object",
+                        "required": ["name", "targets"],
+                        "properties": {
+                            "name": string,
+                            "weight": {"type": "integer", "default": 1, "minimum": 0},
+                            "params": {"type": ["object", "null"], "description": "variant-scoped default inference params; omitted or null is none"},
+                            "targets": {
+                                "type": "array",
+                                "minItems": 1,
+                                "maxItems": 32,
+                                "description": "in routing order; at least one needs a weight above 0",
+                                "items": {
+                                    "type": "object",
+                                    "required": ["provider_id"],
+                                    "properties": {
+                                        "provider_id": uuid,
+                                        "upstream_model": {"type": ["string", "null"], "description": "the model name sent upstream; omitted, null or blank forwards the route's public name"},
+                                        "weight": {"type": "integer", "default": 1, "minimum": 0}
+                                    },
+                                    "additionalProperties": false
+                                }
+                            }
+                        },
+                        "additionalProperties": false
+                    }
+                }
+            },
+            "additionalProperties": false
         },
         "CreateRouteTarget": {
             "type": "object",
