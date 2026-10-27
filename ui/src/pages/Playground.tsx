@@ -50,6 +50,7 @@ import { describeError, type ErrorCopy } from "@/lib/error-copy";
 import {
   awaitingMintedKey,
   embed,
+  FAKE_MODEL,
   fetchGatewayModels,
   generateImages,
   getPlaygroundKeyState,
@@ -79,7 +80,7 @@ import { useScreenReady } from "@/lib/ux-react";
 
 // the built-in fake-llm always works with no upstream/secrets, so it's a safe
 // default for every modality in local dev.
-const FAKE = "fake-llm";
+const FAKE = FAKE_MODEL;
 
 /** One selectable address, with whatever the gateway said owns it. */
 export interface ModelOption {
@@ -1983,6 +1984,8 @@ export default function Playground() {
   const catalog = useModelCatalog(session);
   const { options: models, source, ready, preferred, hidden } = catalog;
   const sendGate = useSendGate(session, catalog);
+  // a model that serves /v1/systemone only has `chat: false`, and every mode but
+  // Decisions would end in an upstream refusal if it offered one (#3220)
   const chatModels = models.filter((m) => m.capabilities?.chat !== false);
   const decisionModels = models.filter(
     (m) => m.capabilities?.decisions === true || (m.id === FAKE && !m.capabilities),
@@ -2031,15 +2034,15 @@ export default function Playground() {
           />
         </div>
         <div hidden={mode !== "embeddings"}>
-          <EmbeddingsMode models={models} />
+          <EmbeddingsMode models={chatModels} />
         </div>
         <div hidden={mode !== "image"}>
-          <ImageMode models={models} />
+          <ImageMode models={chatModels} />
         </div>
         <div hidden={mode !== "audio"}>
-          <AudioMode models={models} active={mode === "audio"} />
+          <AudioMode models={chatModels} active={mode === "audio"} />
         </div>
-        {mode === "realtime" && <RealtimeMode models={models} />}
+        {mode === "realtime" && <RealtimeMode models={chatModels} />}
       </PageBody>
     </SendGateContext.Provider>
   );
