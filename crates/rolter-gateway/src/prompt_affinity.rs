@@ -569,7 +569,12 @@ mod tests {
         let as_string = affinity("/v1/messages", &body(json!(result))).unwrap();
         assert!(as_string.len >= result.len(), "{}", as_string.len);
         let tokens = prompt_tokens(&context(&as_string));
-        assert!(tokens >= result.len() / 4, "{tokens}");
+        // the count is left out of the message: code scanning reads a value
+        // derived from a `RouteContext` as one that may carry its session key
+        assert!(
+            tokens >= result.len() / 4,
+            "the token estimate left the tool result out"
+        );
         // the text the trie matches on stays text
         assert!(!as_string.text.contains("rrrrrrrr"));
 
@@ -657,7 +662,8 @@ mod tests {
         .unwrap();
         assert!(a.text.len() <= MAX_AFFINITY_BYTES);
         let tokens = prompt_tokens(&context(&a));
-        assert!(tokens > 8192, "{tokens}");
+        // assert_eq below reports the count if this fails
+        assert!(tokens > 8192);
         assert_eq!(tokens, a.len / 4);
     }
 
