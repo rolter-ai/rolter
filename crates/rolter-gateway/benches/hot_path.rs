@@ -26,6 +26,7 @@ use rolter_core::{BalancingStrategy, GatewayConfig, ModelRoute, ProviderConfig, 
 use rolter_gateway::breaker::Breaker;
 use rolter_gateway::cooldowns::Cooldowns;
 use rolter_gateway::health::Health;
+use rolter_gateway::target_mask::TargetMask;
 use rolter_gateway::AppState;
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
@@ -126,11 +127,37 @@ impl Fleet {
         }
     }
 
-    /// The eligibility check `pick_untried` makes for one target.
+    /// The eligibility check as it was made per target, three lock
+    /// acquisitions each: the shape `pick_untried` had before #1942.
     fn eligible(&self, idx: usize) -> bool {
         !self.cooldowns.is_parked(MODEL, idx)
             && self.health.is_healthy(&self.providers[idx])
             && self.breaker.allows(MODEL, idx)
+    }
+
+    /// One read of each registry for the whole route: three lock acquisitions
+    /// per attempt, whatever the pool size.
+    fn snapshot(&self) -> Snapshot {
+        let n = self.providers.len();
+        Snapshot {
+            parked: self.cooldowns.parked_mask(MODEL, n),
+            unhealthy: self
+                .health
+                .unhealthy_mask(self.providers.iter().map(String::as_str)),
+            open: self.breaker.open_mask(MODEL, n),
+        }
+    }
+}
+
+struct Snapshot {
+    parked: TargetMask,
+    unhealthy: TargetMask,
+    open: TargetMask,
+}
+
+impl Snapshot {
+    fn eligible(&self, idx: usize) -> bool {
+        !(self.parked.contains(idx) || self.unhealthy.contains(idx) || self.open.contains(idx))
     }
 }
 
@@ -196,6 +223,28 @@ fn route_config(routes: usize) -> GatewayConfig {
     }
 }
 
+/// A pick the way `pick_untried` made it before #1942: the balancer asks the
+/// three registries about each target it weighs, then the pick is judged again.
+fn pick_per_target(
+    lb: &dyn LoadBalancer,
+    ctx: &RouteContext,
+    loads: &[u64],
+    fleet: &Fleet,
+) -> bool {
+    let picked = lb.pick_eligible(ctx, loads, &|i| fleet.eligible(i));
+    picked.is_some_and(|i| fleet.eligible(i))
+}
+
+/// A pick the way `pick_untried` makes it now: the registries are read once, and
+/// only if the balancer asks, then the pick is judged on its own.
+fn pick_snapshot(lb: &dyn LoadBalancer, ctx: &RouteContext, loads: &[u64], fleet: &Fleet) -> bool {
+    let seen = std::cell::OnceCell::new();
+    let picked = lb.pick_eligible(ctx, loads, &|i| {
+        seen.get_or_init(|| fleet.snapshot()).eligible(i)
+    });
+    picked.is_some_and(|i| fleet.eligible(i))
+}
+
 fn admission(c: &mut Criterion) {
     let mut group = c.benchmark_group("admission");
     let fleet = Fleet::new(8);
@@ -218,13 +267,10 @@ fn eligible_pick(c: &mut Criterion) {
             let loads = loads(n);
             let lb = balancer(strategy, n, &ctx);
             group.bench_with_input(BenchmarkId::new("per_target_locks", n), &n, |b, _| {
-                b.iter(|| {
-                    black_box(
-                        lb.pick_eligible(black_box(&ctx), black_box(&loads), &|i| {
-                            fleet.eligible(i)
-                        }),
-                    )
-                });
+                b.iter(|| black_box(pick_per_target(&*lb, &ctx, &loads, &fleet)));
+            });
+            group.bench_with_input(BenchmarkId::new("snapshot", n), &n, |b, _| {
+                b.iter(|| black_box(pick_snapshot(&*lb, &ctx, &loads, &fleet)));
             });
         }
         group.finish();
@@ -272,11 +318,13 @@ fn report_allocations() {
             let loads = loads(pool);
             let lb = balancer(strategy, pool, &ctx);
             let n = allocs_per_op(RUNS, || {
-                black_box(
-                    lb.pick_eligible(black_box(&ctx), black_box(&loads), &|i| fleet.eligible(i)),
-                );
+                black_box(pick_per_target(&*lb, &ctx, &loads, &fleet));
             });
             eprintln!("  eligible_pick/{label}/per_target_locks/{pool:<4} {n:>8.2}");
+            let n = allocs_per_op(RUNS, || {
+                black_box(pick_snapshot(&*lb, &ctx, &loads, &fleet));
+            });
+            eprintln!("  eligible_pick/{label}/snapshot/{pool:<4}        {n:>8.2}");
         }
     }
 

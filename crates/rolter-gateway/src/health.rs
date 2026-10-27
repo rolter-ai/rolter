@@ -21,6 +21,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::health_events::HealthSource;
+use crate::target_mask::TargetMask;
 use rolter_core::probe::{probe_expectation, probe_request, ProbeExpectation, ANTHROPIC_VERSION};
 use rolter_core::{HealthConfig, ProviderKind};
 use rolter_proxy::TranslationPlan;
@@ -376,6 +377,27 @@ impl Health {
             .get(provider)
             .map(|s| s.healthy)
             .unwrap_or(true)
+    }
+
+    /// Which of the given providers (target `i` is the `i`-th) are currently
+    /// unhealthy, answered with one lock acquisition rather than one per
+    /// target (#1942). Unknown providers and a disabled registry read healthy,
+    /// as [`Health::is_healthy`] does.
+    pub fn unhealthy_mask<'a>(&self, providers: impl IntoIterator<Item = &'a str>) -> TargetMask {
+        let mut mask = TargetMask::new();
+        let Some(inner) = &self.inner else {
+            return mask;
+        };
+        let map = inner.lock();
+        if map.is_empty() {
+            return mask;
+        }
+        for (idx, provider) in providers.into_iter().enumerate() {
+            if map.get(provider).is_some_and(|state| !state.healthy) {
+                mask.insert(idx);
+            }
+        }
+        mask
     }
 
     /// Force-set a provider's health, resetting its counters. Used by tests and
@@ -1378,5 +1400,19 @@ mod tests {
         // the free probe's 404 is a healthy observation with no error at all
         let free = event(HealthSource::Probe, 404);
         assert!(free.error_kind.is_none());
+    }
+
+    #[test]
+    fn the_unhealthy_mask_agrees_with_asking_per_provider() {
+        let h = Health::new();
+        let providers = ["a", "b", "c", "d"];
+        assert!(h.unhealthy_mask(providers).is_empty());
+        h.set("b", false);
+        h.set("d", true);
+        let mask = h.unhealthy_mask(providers);
+        for (idx, provider) in providers.iter().enumerate() {
+            assert_eq!(mask.contains(idx), !h.is_healthy(provider), "{provider}");
+        }
+        assert!(Health::default().unhealthy_mask(providers).is_empty());
     }
 }

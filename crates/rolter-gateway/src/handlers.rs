@@ -3776,23 +3776,47 @@ fn variant_target_order(
     order
 }
 
-/// Whether target `ti` of variant `v` (balanced under `key`) can lead an
-/// attempt: the same skip rules the attempt loop applies, so the variant's
-/// balancer weighs only targets it can lead with (#1851).
-fn variant_target_eligible(
-    state: &AppState,
-    key_meta: Option<&KeyMeta>,
-    key: &str,
-    v: &rolter_core::Variant,
-    cd_enabled: bool,
-    ti: usize,
-) -> bool {
-    v.targets.get(ti).is_some_and(|target| {
-        key_meta.is_none_or(|meta| meta.provider_allowed(&target.provider))
-            && !(cd_enabled && state.cooldowns.is_parked(key, ti))
-            && state.health.is_healthy(&target.provider)
-            && state.breaker.allows(key, ti)
-    })
+/// Which targets of one pool cannot lead an attempt, read once per attempt:
+/// parked on a cooldown, on an unhealthy provider, or behind an open breaker.
+///
+/// Each registry answers for the whole pool under one lock, so an attempt takes
+/// three acquisitions however many targets the pool has. Asking the registries
+/// per target, as the eligibility closure used to, took about three per target
+/// and ran once per target the balancer weighed (#1942).
+struct Blocked {
+    parked: crate::target_mask::TargetMask,
+    unhealthy: crate::target_mask::TargetMask,
+    open: crate::target_mask::TargetMask,
+}
+
+impl Blocked {
+    /// Read the registries for the first `n` targets of the pool `model`,
+    /// whose providers are `providers` in target order. `cd_enabled` is the
+    /// route's cooldown switch: with it off nothing counts as parked.
+    fn read<'a>(
+        cooldowns: &crate::cooldowns::Cooldowns,
+        health: &crate::health::Health,
+        breaker: &crate::breaker::Breaker,
+        model: &str,
+        cd_enabled: bool,
+        n: usize,
+        providers: impl IntoIterator<Item = &'a str>,
+    ) -> Self {
+        Self {
+            parked: if cd_enabled {
+                cooldowns.parked_mask(model, n)
+            } else {
+                Default::default()
+            },
+            unhealthy: health.unhealthy_mask(providers),
+            open: breaker.open_mask(model, n),
+        }
+    }
+
+    /// Whether target `idx` is parked, unhealthy or behind an open breaker.
+    fn contains(&self, idx: usize) -> bool {
+        self.parked.contains(idx) || self.unhealthy.contains(idx) || self.open.contains(idx)
+    }
 }
 
 /// The `(variant, target)` pairs an attempt walks, in order: `primary` first,
@@ -3819,8 +3843,23 @@ fn variant_candidates(
                     *l = l.saturating_add(state.upstream_metrics.queue_depth(&target.provider));
                 }
             }
-            let eligible =
-                |ti: usize| variant_target_eligible(state, key_meta, &key, v, cd_enabled, ti);
+            // the variant's balancer weighs only targets it can lead with
+            // (#1851), asked of the registries once, not once per target
+            let blocked = Blocked::read(
+                &state.cooldowns,
+                &state.health,
+                &state.breaker,
+                &key,
+                cd_enabled,
+                v.targets.len(),
+                v.targets.iter().map(|t| t.provider.as_str()),
+            );
+            let eligible = |ti: usize| {
+                v.targets.get(ti).is_some_and(|target| {
+                    key_meta.is_none_or(|meta| meta.provider_allowed(&target.provider))
+                        && !blocked.contains(ti)
+                })
+            };
             for ti in variant_target_order(entry, ctx, vi, v.targets.len(), &loads, &eligible) {
                 if key_meta.is_none_or(|key| key.provider_allowed(&v.targets[ti].provider)) {
                     candidates.push((vi, ti));
@@ -4114,19 +4153,43 @@ pub(crate) fn pick_untried(
     cd_enabled: bool,
     key_meta: Option<&KeyMeta>,
 ) -> Option<usize> {
+    let n = entry.route.targets.len();
+    let key_allows = |i: usize| {
+        key_meta.is_none_or(|key| key.provider_allowed(&entry.route.targets[i].provider))
+    };
     // a target is skippable when parked on a cooldown, when its provider is
     // currently marked unhealthy by the active prober, or when its circuit
-    // breaker is open
+    // breaker is open. this is the check for one target: the pick the balancer
+    // returns, which is all a strategy that ignores eligibility ever asks about
     let skip = |i: usize| {
-        key_meta.is_some_and(|key| !key.provider_allowed(&entry.route.targets[i].provider))
+        !key_allows(i)
             || (cd_enabled && cooldowns.is_parked(model, i))
             || !health.is_healthy(&entry.route.targets[i].provider)
             || !breaker.allows(model, i)
     };
-    let n = entry.route.targets.len();
+    // the same rules for every target at once, read from each registry in one
+    // lock acquisition and only if something asks. a strategy that weighs
+    // targets against each other asks about all of them, and per-target
+    // answers would take about three locks each (#1942)
+    let snapshot = std::cell::OnceCell::new();
+    let blocked = |i: usize| {
+        snapshot
+            .get_or_init(|| {
+                Blocked::read(
+                    cooldowns,
+                    health,
+                    breaker,
+                    model,
+                    cd_enabled,
+                    n,
+                    entry.route.targets.iter().map(|t| t.provider.as_str()),
+                )
+            })
+            .contains(i)
+    };
     // the balancer weighs only the targets this attempt can use, so a dead
     // replica's empty queue never reads as the least-loaded target (#1851)
-    let usable = |i: usize| i < n && !tried.contains(&i) && !skip(i);
+    let usable = |i: usize| i < n && !tried.contains(&i) && key_allows(i) && !blocked(i);
     // a pick past the target list is treated as no pick rather than indexed:
     // a balancer shared across per-request pools (#1655) can be sized from a
     // different list than the one it is picking over, and `skip` indexes
@@ -4141,9 +4204,11 @@ pub(crate) fn pick_untried(
         }
     }
     // prefer an untried, non-skipped target; fail open to any untried one when
-    // every remaining sibling is parked or unhealthy
+    // every remaining sibling is parked or unhealthy. the snapshot above does
+    // not move an open breaker whose window has elapsed to half-open, so the
+    // target chosen here asks `allows`, which does
     (0..n)
-        .find(|i| !tried.contains(i) && !skip(*i))
+        .find(|&i| usable(i) && breaker.allows(model, i))
         .or_else(|| first_untried_allowed(entry, tried, key_meta))
 }
 
@@ -7040,5 +7105,113 @@ mod tests {
             Err(AccessDenial::ModelNotAllowed)
         );
         assert_eq!(authorize_model(None, "gpt-4o"), Ok(()));
+    }
+
+    /// #1942: the load-aware strategies weigh only the targets the attempt can
+    /// use. Target 0 reads as the emptiest in every case here, so a strategy
+    /// that ignores eligibility hands it back and `pick_untried` falls over to
+    /// the lowest usable index (target 1, the busiest) instead of target 2.
+    #[test]
+    fn pick_untried_weighs_load_only_among_usable_targets() {
+        enum Dead {
+            Parked,
+            Unhealthy,
+            BreakerOpen,
+        }
+        for strategy in [BalancingStrategy::PowerOfTwo, BalancingStrategy::Pipeline] {
+            for dead in [Dead::Parked, Dead::Unhealthy, Dead::BreakerOpen] {
+                let route = ModelRoute {
+                    model: "m".to_string(),
+                    strategy,
+                    params: Default::default(),
+                    param_policy: Default::default(),
+                    advanced: Default::default(),
+                    cache: None,
+                    variants: Default::default(),
+                    targets: ["a", "b", "c"]
+                        .map(|provider| Target {
+                            provider: provider.to_string(),
+                            model: None,
+                            weight: 1,
+                        })
+                        .to_vec(),
+                    tenancy: None,
+                };
+                let entry = crate::state::RouteEntry {
+                    project_scope: None,
+                    overrides: Default::default(),
+                    throughput: None,
+                    guardrails: Default::default(),
+                    balancer: rolter_balancer::build(route.strategy, &[1, 1, 1]).into(),
+                    variant_balancers: Vec::new(),
+                    route,
+                };
+                let ctx = RouteContext::default();
+                let cd = crate::cooldowns::Cooldowns::new();
+                let hh = crate::health::Health::new();
+                let bb = crate::breaker::Breaker::new(true, 1, 3600);
+                match dead {
+                    Dead::Parked => cd.park("m", 0, 60),
+                    Dead::Unhealthy => hh.set("a", false),
+                    Dead::BreakerOpen => {
+                        bb.on_failure("m", 0);
+                    }
+                }
+                let loads = [0, 9, 1];
+                for _ in 0..100 {
+                    assert_eq!(
+                        pick_untried(&entry, &ctx, &[], &loads, &cd, &hh, &bb, "m", true, None),
+                        Some(2),
+                        "{strategy:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// An open breaker whose window has elapsed still admits its probe: the
+    /// mask does not count it as blocked, and the pick moves it to half-open.
+    #[test]
+    fn pick_untried_admits_a_probe_after_the_open_window() {
+        let route = ModelRoute {
+            model: "m".to_string(),
+            strategy: BalancingStrategy::RoundRobin,
+            params: Default::default(),
+            param_policy: Default::default(),
+            advanced: Default::default(),
+            cache: None,
+            variants: Default::default(),
+            targets: vec![Target {
+                provider: "a".to_string(),
+                model: None,
+                weight: 1,
+            }],
+            tenancy: None,
+        };
+        let entry = crate::state::RouteEntry {
+            project_scope: None,
+            overrides: Default::default(),
+            throughput: None,
+            guardrails: Default::default(),
+            balancer: rolter_balancer::build(route.strategy, &[1]).into(),
+            variant_balancers: Vec::new(),
+            route,
+        };
+        let bb = crate::breaker::Breaker::new(true, 1, 0);
+        bb.on_failure("m", 0);
+        assert!(bb.open_mask("m", 1).is_empty());
+        let picked = pick_untried(
+            &entry,
+            &RouteContext::default(),
+            &[],
+            &[],
+            &crate::cooldowns::Cooldowns::new(),
+            &crate::health::Health::default(),
+            &bb,
+            "m",
+            true,
+            None,
+        );
+        assert_eq!(picked, Some(0));
     }
 }

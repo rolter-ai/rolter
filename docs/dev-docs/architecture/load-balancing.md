@@ -18,14 +18,14 @@ pub trait LoadBalancer: Send + Sync {
 }
 ```
 
-`pick` returns an index into the route's targets; `observe` lets learning strategies (cache-aware) record what a target served. The gateway calls `pick_eligible`, passing which targets the attempt can use (not tried, not parked, healthy, breaker not open, allowed to the key). The default ignores that and calls `pick`, since the gateway skips an ineligible pick itself; `cache_aware` overrides it so a target that takes no traffic cannot shape its load comparison; `power_of_two` and the pipeline stacks do not yet (#1942). `RouteContext` carries an optional `session_key` (from `x-session-id`) and the request `prompt` used for affinity scoring. The gateway bounds `prompt` to the conversation's first 32 KiB and passes the whole prompt's size and identity alongside as `prompt_len` and `prompt_digest` ([caching.md](caching.md#1-kv-cache-affinity-load-balancing)).
+`pick` returns an index into the route's targets; `observe` lets learning strategies (cache-aware) record what a target served. The gateway calls `pick_eligible`, passing which targets the attempt can use (not tried, not parked, healthy, breaker not open, allowed to the key). The default ignores that and calls `pick`, since the gateway skips an ineligible pick itself. A strategy that weighs targets against each other overrides it, so a target that takes no traffic cannot shape the comparison: `cache_aware`, `power_of_two`, `Pipeline` (and so `pipeline`, `lora_aware`, `predicted_latency`, `cheapest`, `fastest`) and `adaptive` do. `round_robin`, `weighted`, `random` and `consistent_hash` keep the default. Whatever the strategy, with nothing eligible an override behaves as `pick`. `RouteContext` carries an optional `session_key` (from `x-session-id`) and the request `prompt` used for affinity scoring. The gateway bounds `prompt` to the conversation's first 32 KiB and passes the whole prompt's size and identity alongside as `prompt_len` and `prompt_digest` ([caching.md](caching.md#1-kv-cache-affinity-load-balancing)).
 
 ## Strategies (v1)
 
 - **round_robin** — sequential rotation; predictable, zero state.
 - **random** — uniform random; good for simple homogeneous pools.
-- **power_of_two** — pick the less loaded of two random targets; needs a load snapshot.
 - **consistent_hash** — hash-ring keyed by `session_key` (falls back to a digest of the whole conversation: its text plus the identity of its images, tool calls and tool results, or to the raw body when the gateway could not read one); pins a session/user to a target for KV reuse, survives target changes with minimal reshuffle (100 vnodes per target). The ring is built over the route's target list by index, so the snapshot loads targets in a fixed order (`created_at`, then `id`) and a weight edit keeps each target's place (#2962).
+- **power_of_two** — pick the less loaded of two random targets; needs a load snapshot. The two are sampled among the eligible targets: sampling over every target would let a dead replica, drained to load 0, win each draw it was in (#1942).
 - **cache_aware** — approximate prefix affinity on the conversation text, with a load guard: a warm replica keeps its affinity until it runs more than 2 requests and 1.5× past the least-loaded usable one, then the request spreads (#1851). Unhealthy, parked and breaker-open targets are left out of the comparison through `LoadBalancer::pick_eligible`; see [caching.md](caching.md#1-kv-cache-affinity-load-balancing).
 - **weighted** — smooth weighted round-robin honouring each target's `weight`.
 - **pipeline** — composable **filter → weighted-score → argmax** selection: eligibility filtering drops ineligible targets, then a stack of `Scorer`s (session affinity + static weight + in-flight load + prefix-cache affinity) is combined as a weighted sum and the argmax wins (ties broken randomly). Session affinity pins repeat requests from the same `x-session-id` to their last-served target (TTL-bounded) for warm-cache reuse. The extension point every future cost/latency/KV-cache scorer plugs into.
@@ -47,6 +47,21 @@ three, and say the weights are ignored everywhere else (#1979, #2133). A new
 strategy that reads weights
 has to be added there too, or the dashboard will tell operators its weights do
 nothing.
+
+### Eligibility cost
+
+`pick_untried` hands the balancer an `eligible(i)` closure. Answering it per target would take the cooldown, health and breaker locks for each target the strategy weighs, about three per target. Instead the three registries each answer for the whole route in one lock acquisition (`Cooldowns::parked_mask`, `Health::unhealthy_mask`, `Breaker::open_mask`, as `TargetMask`s), read the first time the closure is called, so an attempt takes three acquisitions however many targets the route has, plus the checks on the one target it picks. A strategy that never calls the closure (`round_robin`) takes only the latter. The masks are read-only: an open breaker whose window has elapsed is left to `Breaker::allows`, which the chosen target is still asked, so the probe is admitted exactly as before.
+
+Measured with `just bench-hot-path` (a 4 vCPU cloud VM, so read the ratios, not the nanoseconds), eligible pick with one target parked and one unhealthy, per-target answers against the snapshot:
+
+| strategy       | 4 targets    | 24             | 64             | 128           |
+| -------------- | ------------ | -------------- | -------------- | ------------- |
+| `round_robin`  | 102 / 93 ns  | 112 / 112 ns   | 143 / 114 ns   | 105 / 116 ns  |
+| `power_of_two` | 472 / 394 ns | 2.93 / 0.80 µs | 6.98 / 1.79 µs | 14.1 / 3.6 µs |
+| `cache_aware`  | 8.1 / 7.5 µs | 84.6 / 85.6 µs | 282 / 275 µs   | 620 / 609 µs  |
+| `pipeline`     | 8.4 / 7.9 µs | 84.4 / 88.3 µs | 295 / 288 µs   | 597 / 587 µs  |
+
+Only `power_of_two` is dominated by the eligibility answers, and the snapshot makes its cost grow slowly with the pool. `cache_aware` and the pipeline spend their time matching prefixes and scoring (the bench gives every target the same prompt), so the per-target locks were within noise there; the snapshot is for the constant-locks bound, not a measured win for them. Each pick's allocations are unchanged: none for `round_robin`, `power_of_two` and `cache_aware` up to 64 targets, and 6 to 12 for the pipeline (its candidate and score vectors).
 
 ## Balancer lifetime, and provider groups
 

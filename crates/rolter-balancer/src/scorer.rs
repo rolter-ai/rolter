@@ -219,6 +219,22 @@ impl LoadBalancer for Pipeline {
         self.select(ctx, loads, |_| true)
     }
 
+    /// Score only the targets the caller can use, so a dead replica's empty
+    /// queue cannot read as the best one on the load and prefix scorers
+    /// (#1942). With nothing eligible this scores every target, as `pick` does.
+    fn pick_eligible(
+        &self,
+        ctx: &RouteContext,
+        loads: &[u64],
+        eligible: &dyn Fn(usize) -> bool,
+    ) -> Option<usize> {
+        if self.n == 0 {
+            return None;
+        }
+        let usable = crate::Usable::ask(self.n, eligible);
+        self.select(ctx, loads, |i| usable.contains(i))
+    }
+
     fn observe(&self, target: usize, ctx: &RouteContext) {
         Pipeline::observe(self, target, ctx);
     }
@@ -1263,5 +1279,22 @@ mod tests {
             .filter(|_| stack.pick(&ctx, &[9, 0, 9]) == Some(1))
             .count();
         assert!(picks > 30, "cold stack should follow load, got {picks}/40");
+    }
+
+    #[test]
+    fn pipeline_pick_eligible_skips_a_dead_target_at_load_zero() {
+        // equal weights, so the load scorer decides: the dead target's empty
+        // queue is the best score on offer (#1942)
+        let pipeline = Pipeline::default_stack(&[1, 1, 1]);
+        let ctx = RouteContext::default();
+        let loads = [0, 9, 9];
+        assert_eq!(pipeline.pick(&ctx, &loads), Some(0));
+        for _ in 0..50 {
+            let pick = pipeline.pick_eligible(&ctx, &loads, &|i| i != 0);
+            assert!(matches!(pick, Some(1 | 2)), "{pick:?}");
+        }
+        // with nothing eligible it scores every target, as pick does
+        assert_eq!(pipeline.pick_eligible(&ctx, &loads, &|_| false), Some(0));
+        assert_eq!(Pipeline::new(0).pick_eligible(&ctx, &[], &|_| true), None);
     }
 }

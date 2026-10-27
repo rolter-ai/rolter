@@ -176,7 +176,9 @@ Two measurement rules worth knowing when reading the JSON:
 on a cloud VM: 4 vCPU Intel Xeon @ 2.8 GHz, 16 GB, shared host, `release`
 profile, `--warm-up-time 1 --measurement-time 2`, one run. Treat the timings as
 an order of magnitude; the allocation counts are exact. The numbers below are the
-state before the eligibility change of #1942.
+state before the eligibility change of #1942; the same bench after it, with
+the per-target and snapshot variants side by side, is in
+[Load balancing](load-balancing.md#eligibility-cost).
 
 | path                                                   | time (median)           | allocs/op    |
 | ------------------------------------------------------ | ----------------------- | ------------ |
