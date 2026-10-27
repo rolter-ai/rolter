@@ -29,7 +29,7 @@
 //! ## What is never logged
 //!
 //! Neither the URL, the recipient nor the link. A send that fails is recorded
-//! on the invitation row with a short reason from [`MailFailure`], written to be
+//! on the invitation row with a short reason from `MailFailure`, written to be
 //! safe to show an admin; the relay's own reply is not kept, because it often
 //! names the recipient.
 
@@ -193,7 +193,7 @@ mod tests {
 
     #[test]
     fn a_bad_url_or_sender_is_refused_without_repeating_the_url() {
-        for url in ["not a url", "https://mail.example.com", "smtp://"] {
+        for url in ["not a url", "https://mail.example.com", "smtp://:::"] {
             let error = SmtpMailer::new(url, "noreply@example.com", &egress())
                 .err()
                 .unwrap_or_default();
