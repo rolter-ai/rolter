@@ -177,7 +177,18 @@ LLM Logs says **Streaming** only after a read that succeeded. While the first pa
 
 ## The gateway status in the header
 
-Next to the refresh button, every screen header shows whether the gateway is taking traffic. The dashboard asks the gateway's `/readyz` every 30 seconds, through the control plane, and the pill shows what came back:
+Next to the refresh button, every screen header shows whether the gateways are taking traffic. Every 30 seconds the dashboard reads the [fleet summary](/api/cluster-summary), which counts the live, stale and config-lagging gateways and is readable by every role, and the pill shows what it counted:
+
+| Pill                       | Meaning                                                                                                                      |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| _N_ gateways live          | Every live gateway runs the latest config and none has gone quiet. The green dot pulses.                                     |
+| _N_ of _M_ gateways behind | Some live gateways have not applied the latest config yet. The dot is amber.                                                 |
+| _M_ live · _N_ stale       | Every live gateway is current, but _N_ stopped polling within the last 15 minutes: crashed or partitioned. The dot is amber. |
+| no gateway live            | Gateways are in the inventory, and none has polled the control plane in the last minute. The dot is red.                     |
+
+The **Gateways** tile on the Dashboard reads the same summary, so the two never disagree.
+
+When the summary has nothing to count, the pill falls back to the gateway's own `/readyz`, asked through the control plane. That happens when the control plane has no database (`inventory: false`), when no gateway has registered in the inventory (a gateway sends a node id from `ROLTER_NODE_ID` or `HOSTNAME`), and when the request fails, as on a control plane older than the endpoint. The pill then shows what the one gateway that answered said:
 
 | Pill                   | Meaning                                                                                                                   |
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------- |
@@ -187,9 +198,9 @@ Next to the refresh button, every screen header shows whether the gateway is tak
 | gateway status unknown | The check got no answer the dashboard can read, for example because the browser lost its connection to the control plane. |
 | checking gateway       | The first check has not come back yet.                                                                                    |
 
-Hover the pill to see when it was last checked. One failed check does not change it: the pill keeps the last answer, stops pulsing, and says when that answer arrived. A second failed check turns it to unknown. Checks pause while the browser tab is hidden, and the refresh button checks again along with everything else.
+Hover the pill to see what was counted and when it was last checked. One failed check does not change it: the pill keeps the last answer, stops pulsing, and says when that answer arrived. A second failed check turns it to unknown. Checks pause while the browser tab is hidden, and the refresh button checks again along with everything else.
 
-Every role sees the same pill. It reports the gateway the control plane forwards to: with several gateway replicas behind one address it means one of them answered, and it cannot tell whether a gateway has picked up the latest configuration. The Cluster screen, for superadmins, lists every node, whether it is live, and whether it runs the current configuration.
+Every role sees the same pill. The `/readyz` fallback reports only the gateway the control plane forwards to: with several replicas behind one address it means one of them answered, and it cannot tell whether a gateway has picked up the latest configuration. The Cluster screen, for superadmins, lists every node, whether it is live, and whether it runs the current configuration.
 
 ## Models, strategies and targets
 

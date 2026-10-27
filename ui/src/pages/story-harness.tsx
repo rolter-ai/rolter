@@ -337,17 +337,43 @@ function gatewayResponse(answer: GatewayAnswer): Promise<Response> {
   }
 }
 
-/** Answer the header's gateway probe with `answer`, then fall through to `handler`. */
+/**
+ * What `GET /api/v1/cluster/summary` answers in a story (#3263): a roll-up of
+ * the fleet, `"failing"` for a control plane that errors on it, and `undefined`
+ * for one older than the endpoint, which answers 404. The check falls back to
+ * the `/readyz` probe in the last two and when `inventory` is `false`.
+ */
+export type FleetAnswer =
+  | { inventory: boolean; gateways: { live: number; stale: number; lagging: number } }
+  | "failing"
+  | undefined;
+
+/** The summary body for a counted fleet, or for one with `inventory: false`. */
+export function clusterSummary(
+  gateways: { live: number; stale: number; lagging: number },
+  inventory = true,
+) {
+  return { inventory, gateways, config_version: 412, checked_at: "2026-10-27T09:14:02.511Z" };
+}
+
+/**
+ * Answer the header's gateway checks, then fall through to `handler`: the
+ * cluster summary the pill asks first (`fleet`, a 404 when omitted) and the
+ * `/readyz` probe it falls back to (`answer`).
+ */
 export function withGateway(
   answer: GatewayAnswer | (() => GatewayAnswer),
   handler: FetchStub,
+  fleet?: FleetAnswer,
 ): FetchStub {
   return async (input, init) => {
     const path = new URL(String(input), "http://localhost").pathname;
-    // the pill asks the cluster summary first (#3263): a control plane older
-    // than it answers 404, and the check then falls back to the probe below
     if (path === "/api/v1/cluster/summary") {
-      return json({ error: { message: "not found" } }, 404);
+      return fleet === undefined
+        ? json({ error: { message: "not found" } }, 404)
+        : fleet === "failing"
+          ? json({ error: { message: "cluster summary failed" } }, 500)
+          : json(clusterSummary(fleet.gateways, fleet.inventory));
     }
     if (path === "/gw/readyz")
       return gatewayResponse(typeof answer === "function" ? answer() : answer);
