@@ -111,7 +111,7 @@ describe("DOCS_PAGES", () => {
     }
   });
 
-  it("slugs an anchor the way Mintlify does", () => {
+  it("slugs an anchor the way the docs site does", () => {
     expect(headingSlug("Break-glass: a lost device")).toBe("break-glass-a-lost-device");
   });
 });
@@ -119,7 +119,7 @@ describe("DOCS_PAGES", () => {
 // a path that no longer exists on the documentation site is a dead link in the
 // dashboard, and nothing else would notice: the site and the SPA build apart
 describe("documentation pages the dashboard links to", () => {
-  /** every `pages` string anywhere in the Mintlify nav tree */
+  /** every `pages` string anywhere in the docs.json nav tree */
   function collectPages(node: unknown, out: Set<string> = new Set()): Set<string> {
     if (typeof node === "string") out.add(node);
     else if (Array.isArray(node)) for (const child of node) collectPages(child, out);

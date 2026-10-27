@@ -276,7 +276,7 @@ fn every_user_doc_is_listed_in_docs_json() {
 
     assert!(
         missing.is_empty(),
-        "the following user documentation files exist under docs/user-docs/ but are not listed in docs.json:\n  {}\nAn unlisted page is invisible in the Mintlify navigation.",
+        "the following user documentation files exist under docs/user-docs/ but are not listed in docs.json:\n  {}\nAn unlisted page is invisible in the docs site navigation.",
         missing.join("\n  ")
     );
 }

@@ -1,8 +1,8 @@
 name: docs
 
 # build the contributor mdbook (docs/dev-docs/) and publish it to github pages.
-# the polished user docs (docs/user-docs/, mintlify) deploy separately to the
-# mintlify domain and are not built here — so this workflow triggers on the
+# the polished user docs (docs/user-docs/, docs7) deploy separately to the
+# docs7 domain and are not built here — so this workflow triggers on the
 # dev-docs subtree only, not on all of docs/.
 on:
   push:
