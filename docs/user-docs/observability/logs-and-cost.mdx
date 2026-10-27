@@ -311,6 +311,14 @@ The dashboard's pricing section links here for that reason — it is the answer
 to "where does this number come from", and the answer is "from whoever typed
 it".
 
+### Withheld and unknown-usage traffic
+
+Two more flags keep a total honest. A **withheld** response is one the provider answered and billed but an output guardrail or a `post_response` plugin refused to deliver: the caller got a 403, and the cost is still in `cost_usd`. **Unknown usage** is the other way round: the upstream answered successfully but reported no token counts, so a zero there means "not reported", not "free".
+
+`GET /api/v1/analytics/summary` and `GET /api/v1/analytics/by-model` report `withheld_requests`, `withheld_cost` (the part of `cost_usd` that bought an answer nobody saw) and `usage_unknown_requests`, scaled by the log's sampling weight like every other count. Every row from `GET /api/v1/analytics/invocations` carries `withheld` and `usage_unknown` as `0` or `1`.
+
+**LLM Logs** marks a withheld row with its 403, the billed cost and the policy named in `error`, and shows a muted dash with an explanation instead of `0` for a row whose usage is unknown, the way it does for an unpriced one.
+
 ### Unpriced traffic
 
 A zero `cost_usd` is ambiguous on its own: it means either "this request cost nothing" or "we have no price for this model". The `unpriced` column tells them apart, so a spend total can say when it is incomplete rather than presenting a partial figure as final.
