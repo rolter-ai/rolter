@@ -716,6 +716,16 @@ fn tagged(tag: &'static str, ops: Vec<Op>) -> Vec<Op> {
     ops.into_iter().map(|op| Op { tag, ..op }).collect()
 }
 
+/// Whether the served document describes `method` on `path` (the OpenAPI path
+/// template). Lets another module check an endpoint it names in operator-facing
+/// text against the document, so a renamed route fails a test.
+#[cfg(all(test, feature = "postgres"))]
+pub(crate) fn documents_operation(method: &str, path: &str) -> bool {
+    operations()
+        .iter()
+        .any(|op| op.method.eq_ignore_ascii_case(method) && op.path == path)
+}
+
 /// Every operation the control plane serves.
 ///
 /// Grouped by tag in the order the reference renders them. A route registered
