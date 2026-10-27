@@ -25,6 +25,8 @@ mod alerting;
 mod analytics;
 mod analytics_access;
 #[cfg(feature = "postgres")]
+mod api_tokens;
+#[cfg(feature = "postgres")]
 mod auth;
 #[cfg(feature = "postgres")]
 mod auth_policy;
@@ -1252,6 +1254,7 @@ fn build_app_with(state: ControlState, mount_internal: bool) -> Router {
         api = api
             .merge(access_control::router())
             .merge(alerting::router())
+            .merge(api_tokens::router())
             .merge(auth::router())
             .merge(auth_policy::router())
             .merge(mfa::router())

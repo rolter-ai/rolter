@@ -292,6 +292,9 @@ async fn resolve(
             Ok(Principal::User(user)) => scoped::for_user(state, &user, reads)
                 .await
                 .map_err(IntoResponse::into_response),
+            // request logs and analytics are read by people: a token has no
+            // account to scope them by, so it reads none (#1836)
+            Ok(Principal::Token(_)) => Err(crate::crud::ApiError::Forbidden.into_response()),
             Err(error) => Err(error.into_response()),
         };
     }

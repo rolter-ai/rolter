@@ -122,6 +122,8 @@ async fn owner_filter(
     Ok(match principal {
         Principal::Superadmin { .. } => None,
         Principal::User(user) => Some(user.id),
+        // a token owns no OAuth session, so it lists none
+        Principal::Token(_) => Some(Uuid::nil()),
     })
 }
 
@@ -1184,7 +1186,7 @@ async fn may_revoke(
     match principal {
         Principal::Superadmin { .. } => Ok(()),
         Principal::User(user) if user.id == owner_id => Ok(()),
-        Principal::User(_) => Err(ApiError::Forbidden),
+        Principal::User(_) | Principal::Token(_) => Err(ApiError::Forbidden),
     }
 }
 

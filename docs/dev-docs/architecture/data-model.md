@@ -54,6 +54,8 @@ A screen that shows many routes reads them in one request rather than one per ro
 
 The RBAC tables are split on exactly this question. `access_profile_policies`, `access_profile_assignments`, `access_profiles` and `memberships` all carry a `bump_config_version()` trigger, because the gateway resolves the model/route policy of each virtual key's owner from them and enforces it on the request path (#791, [ADR-0023](../adr/2026-08-04-access-policy-propagation.md)). `custom_roles` and `custom_role_grants` do not and must not: they decide control-plane authorization, which is evaluated live per request, so a bump would wake the fleet for a change it cannot observe.
 
+`api_tokens` (`0101`, #1836) holds scoped control-plane API tokens: `org_id`, optional `team_id` / `project_id`, a built-in `role` or a `custom_role_id`, a peppered `token_hash` (unique), `token_prefix`, `expires_at`, `revoked_at`. The data plane never reads it, so it has no `bump_config_version()` trigger. See [RBAC & authentication](rbac-and-auth.md#scoped-api-tokens-for-automation-1836).
+
 `users.deployment_role` (`operator` or `security_auditor`, nullable; `0100`, #1834) is a delegable deployment-wide role: the guard on deployment capabilities reads it, nothing scoped does, and the data plane never reads it, so no trigger watches it.
 
 `users.display_name` (1 to 80 characters) and `users.bio` (up to 500) are an optional self-service profile (`0079`, #1823), bounded by check constraints as well as by the API. The data plane never reads them and no trigger watches them: the `users` trigger fires only on `deactivated_at` and `is_superadmin`, and a profile write (`UserRepo::set_profile`) touches neither.

@@ -731,6 +731,19 @@ const CAPABILITIES: &[Capability] = &[
         delete: NA,
         action_scopes: NONE,
     },
+    // scoped automation tokens (#1836). A token lives at an org, team or
+    // project and is minted, rotated and revoked by an admin of that very
+    // scope, so the row declares `project` and a list may ask shallower. A
+    // token itself never reaches this row: the handlers refuse one
+    Capability {
+        resource: "api_token",
+        scope: "project",
+        read: ADMIN,
+        create: ADMIN,
+        update: ADMIN,
+        delete: ADMIN,
+        action_scopes: NONE,
+    },
     // who holds a deployment role (#1834). Granting one is a way to widen who
     // reaches deployment-wide settings, so it is a superadmin's alone: neither
     // deployment role can grant itself or the other
@@ -1001,6 +1014,7 @@ const MULTI_SCOPE: &[&str] = &[
     "rate_limit",
     "membership",
     "invitation",
+    "api_token",
 ];
 
 /// How many levels of the org, team, project chain a guard names.
@@ -1347,6 +1361,12 @@ async fn get_effective(
     let deployment_role = principal.deployment_role();
     let (superadmin, memberships, grants, policies) = match &principal {
         Principal::Superadmin { .. } => (true, Vec::new(), Vec::new(), Vec::new()),
+        Principal::Token(held) => (
+            false,
+            held.memberships.clone(),
+            held.grants.clone(),
+            Vec::new(),
+        ),
         Principal::User(user) => {
             let profiles = AccessProfileRepo(pool(&state));
             (
@@ -2121,6 +2141,7 @@ mod tests {
             include_str!("adaptive_telemetry.rs"),
         ),
         ("alerting.rs", include_str!("alerting.rs")),
+        ("api_tokens.rs", include_str!("api_tokens.rs")),
         ("analytics.rs", include_str!("analytics.rs")),
         ("analytics_access.rs", include_str!("analytics_access.rs")),
         ("audit_export.rs", include_str!("audit_export.rs")),

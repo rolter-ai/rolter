@@ -876,6 +876,9 @@ pub(crate) async fn caller_policy(
 ) -> ApiResult<MergedPolicy> {
     let user = match principal {
         Principal::Superadmin { .. } => return Ok(MergedPolicy::default()),
+        // access profiles are assigned to people and teams, so a token carries
+        // none: its role alone decides, as for an account with no profile
+        Principal::Token(_) => return Ok(MergedPolicy::default()),
         Principal::User(user) => user,
     };
     let policies = AccessProfileRepo(pool(state))

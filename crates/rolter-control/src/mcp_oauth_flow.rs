@@ -1563,7 +1563,7 @@ async fn owned_session(
     match principal {
         Principal::Superadmin { .. } => Ok(context),
         Principal::User(user) if user.id == context.user_id => Ok(context),
-        Principal::User(_) => Err(ApiError::Forbidden),
+        Principal::User(_) | Principal::Token(_) => Err(ApiError::Forbidden),
     }
 }
 

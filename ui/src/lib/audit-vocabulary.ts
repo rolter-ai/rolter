@@ -27,6 +27,7 @@ const GROUP_OF_FAMILY: Record<string, AuditGroup> = {
   sso_group_mapping: "identity",
   scim: "identity",
   scim_token: "identity",
+  api_token: "keys",
   scim_group_mapping: "identity",
   invitation: "identity",
   custom_role: "identity",

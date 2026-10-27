@@ -51,7 +51,7 @@ impl TenantView {
         state: &ControlState,
         principal: Option<&Principal>,
     ) -> ApiResult<Self> {
-        let Some(principal @ Principal::User(_)) = principal else {
+        let Some(principal @ (Principal::User(_) | Principal::Token(_))) = principal else {
             return Ok(Self::All);
         };
         let filter = ScopeFilter::load(state, principal, cap!("route", Read)).await?;

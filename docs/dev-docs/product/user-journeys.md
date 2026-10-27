@@ -210,10 +210,9 @@ priorities live on the issues.
 | #337  | no warning before a budget blocks                                                                                                     | A5, T4, F4                    |
 | #1830 | no budget per person across their keys                                                                                                | T4, F3, E9                    |
 | #1833 | project members cannot see the health of their own routes' providers                                                                  | E5, T5                        |
-| #1834 | no operator or security-auditor role short of superadmin                                                                              | D0, S0                        |
 | #1835 | payload redaction matches key names, not secrets inside text; no preview                                                              | S3                            |
 | #1085 | one subject's logs and captured payloads cannot be erased on request                                                                  | S3.6                          |
-| #1836 | no scoped control-plane token for automation                                                                                          | P4, D6                        |
+| #1836 | scoped API tokens have no dashboard screen yet (API only)                                                                             | P4, D6                        |
 | #1837 | shared project keys cannot be rotated in place                                                                                        | P3                            |
 | #1838 | no CSV export of spend or logs                                                                                                        | F5                            |
 | #1817 | the dogfood fleet's adaptive route never engages                                                                                      | A3-d (adaptive), D2           |

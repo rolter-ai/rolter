@@ -1145,6 +1145,36 @@
       ]
     },
     {
+      "resource": "api_token",
+      "scope": "project",
+      "actions": [
+        {
+          "action": "read",
+          "minimum_role": "admin",
+          "superadmin_only": false,
+          "authenticated_only": false
+        },
+        {
+          "action": "create",
+          "minimum_role": "admin",
+          "superadmin_only": false,
+          "authenticated_only": false
+        },
+        {
+          "action": "update",
+          "minimum_role": "admin",
+          "superadmin_only": false,
+          "authenticated_only": false
+        },
+        {
+          "action": "delete",
+          "minimum_role": "admin",
+          "superadmin_only": false,
+          "authenticated_only": false
+        }
+      ]
+    },
+    {
       "resource": "deployment_role",
       "scope": "deployment",
       "actions": [

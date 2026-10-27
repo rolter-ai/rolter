@@ -17,6 +17,7 @@ macro_rules! skip_without_db {
     };
 }
 
+mod api_tokens;
 mod audit;
 mod auth;
 mod budgets;
