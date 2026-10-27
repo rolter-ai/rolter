@@ -1855,6 +1855,7 @@ fn provider_kind_str(kind: &rolter_core::ProviderKind) -> &'static str {
         Krutrim => "krutrim",
         Falcon => "falcon",
         SystemOne => "system_one",
+        Infinity => "infinity",
     }
 }
 
@@ -3378,6 +3379,8 @@ mod tests {
             Sarvam,
             Krutrim,
             Falcon,
+            SystemOne,
+            Infinity,
         ] {
             let s = provider_kind_str(&kind);
             assert!(!s.is_empty());
@@ -3519,6 +3522,12 @@ mod tests {
         assert_eq!(of("system_one")["request_path"], "/v1/systemone");
         assert_eq!(of("system_one")["request"], "decision");
         assert_eq!(of("system_one")["auth_header"], "authorization");
+        // infinity's routes sit at the server root (`--url-prefix` is empty by
+        // default), so the base carries no `/v1` and rolter strips its own
+        assert_eq!(of("infinity")["request_path"], "/v1/embeddings");
+        assert_eq!(of("infinity")["request"], "embeddings");
+        assert_eq!(of("infinity")["base_includes_v1"], true);
+        assert_eq!(of("infinity")["auth_header"], "authorization");
 
         assert_eq!(of("anthropic")["auth_header"], "x-api-key");
         assert_eq!(of("azure_openai")["auth_header"], "api-key");

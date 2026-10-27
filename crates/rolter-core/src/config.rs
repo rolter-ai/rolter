@@ -335,6 +335,10 @@ impl ProviderKind {
                 | ProviderKind::Sarvam
                 | ProviderKind::Krutrim
                 | ProviderKind::Falcon
+                // infinity serves `{url_prefix}/embeddings` and
+                // `{url_prefix}/rerank`, and its default prefix is empty, so
+                // the base is the server address plus any `--url-prefix`
+                | ProviderKind::Infinity
         )
     }
 
@@ -342,7 +346,7 @@ impl ProviderKind {
     ///
     /// `kind_is_listed_in_all` keeps this honest: it matches exhaustively, so
     /// adding a variant without adding it here fails to compile.
-    pub const ALL: [ProviderKind; 49] = [
+    pub const ALL: [ProviderKind; 50] = [
         ProviderKind::Openai,
         ProviderKind::Anthropic,
         ProviderKind::OpenaiCompatible,
@@ -392,6 +396,7 @@ impl ProviderKind {
         ProviderKind::Krutrim,
         ProviderKind::Falcon,
         ProviderKind::SystemOne,
+        ProviderKind::Infinity,
     ];
 
     /// Whether a configured `api_base` is expected to already carry the API
@@ -810,6 +815,9 @@ pub enum ProviderKind {
     /// choice, score and yes/no questions instead of generated text. TypeSafe's
     /// Jev, vLLM Semantic Router's decision models and Ollama's all speak it
     SystemOne,
+    /// a self-hosted michaelfeil/infinity server: openai-shaped embeddings and
+    /// a cohere-style rerank, many models from one process, keyless by default
+    Infinity,
 }
 
 /// Instruction-role semantics supported by an upstream target.
@@ -5760,10 +5768,11 @@ mod tests {
                 ProviderKind::Krutrim => "krutrim",
                 ProviderKind::Falcon => "falcon",
                 ProviderKind::SystemOne => "system_one",
+                ProviderKind::Infinity => "infinity",
             };
             assert!(!named.is_empty());
         }
-        assert_eq!(ProviderKind::ALL.len(), 49);
+        assert_eq!(ProviderKind::ALL.len(), 50);
     }
 
     /// #2806: the scheme per kind, checked across every kind so a new variant

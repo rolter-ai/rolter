@@ -47,6 +47,11 @@ pub fn probe_request(
         // semantic router engine publishes its list at `/v1/systemone/models`;
         // a 404 here still reads healthy, it only lists no models
         ProviderKind::SystemOne => (format!("{base}/v1/models"), Vec::new()),
+        // infinity lists its engines at `{url_prefix}/models` (`{"data": [{"id":
+        // ...}]}`), behind the api key when one is set, so it proves the key
+        // and names every model the one process serves. its `/health` sits
+        // outside the prefix and checks neither
+        ProviderKind::Infinity => (format!("{base}/models"), Vec::new()),
         ProviderKind::Bedrock => (bedrock_models_url(base), Vec::new()),
         ProviderKind::Vertex => (vertex_models_url(base), Vec::new()),
         ProviderKind::Openai
@@ -219,6 +224,29 @@ mod tests {
         );
         let listed = serde_json::json!({"models": [{"name": "jev-latest", "description": "", "release_date": ""}]});
         assert_eq!(catalogue_ids(&listed), Some(vec!["jev-latest".to_string()]));
+    }
+
+    #[test]
+    fn infinity_probes_its_engine_list() {
+        let (url, headers) = probe_request(ProviderKind::Infinity, "http://infinity:7997/", "/");
+        assert_eq!(url, "http://infinity:7997/models");
+        assert!(headers.is_empty());
+        assert_eq!(
+            probe_expectation(ProviderKind::Infinity, "/"),
+            ProbeExpectation::Catalogue
+        );
+        let listed = serde_json::json!({"object": "list", "data": [
+            {"id": "BAAI/bge-small-en-v1.5", "object": "model", "capabilities": ["embed"]},
+            {"id": "mixedbread-ai/mxbai-rerank-xsmall-v1", "object": "model", "capabilities": ["rerank"]},
+        ]});
+        // ids are compared by their last path segment, like every catalogue's
+        assert_eq!(
+            catalogue_ids(&listed),
+            Some(vec![
+                "bge-small-en-v1.5".to_string(),
+                "mxbai-rerank-xsmall-v1".to_string()
+            ])
+        );
     }
 
     #[test]
