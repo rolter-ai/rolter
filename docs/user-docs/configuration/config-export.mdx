@@ -31,6 +31,7 @@ The export deliberately carries only the sections the importer consumes, so noth
 | `[[provider_groups.readonly]]` / `[[provider_groups.default]]` and their `.members` | group strategy and its weighted members                                                            |
 | `[[routes]]`, `[routes.params]`, `[routes.param_policy]`, `[[routes.targets]]`      | strategy, admin parameter defaults, the override policy, and the weighted upstream targets         |
 | `[[model_prices]]`                                                                  | input, output, cached-input and cache-write rates with their currency                              |
+| `[[budgets]]` and `[[rate_limits]]`                                                 | spend and rate caps, each naming its scope by a portable reference (below)                         |
 | `[prompt_templates]`                                                                | published templates with their variables, decorators and route bindings                            |
 | `[logging]` `ui_events`                                                             | whether the control plane records dashboard usage events                                           |
 | `[logging.payload_capture]`                                                         | the capture policy, its size cap and its redaction and model filters                               |
@@ -50,12 +51,38 @@ contains only `ui_events` and `payload_capture`; other recognised logging
 settings produce one warning for `logging`. Unknown keys still receive the
 separate typo warning. Warnings never print section values or credentials.
 
+### Budgets and rate limits
+
+A cap names what it limits by `scope` and an `id` that is a **name, never a database id**, so the file means the same thing on another deployment:
+
+```toml
+[[budgets]]
+scope = "team"
+id = "acme/platform"      # org slug / team name
+limit_usd = 500.0
+period = "monthly"
+
+[[rate_limits]]
+scope = "project"
+id = "acme/platform/api"  # org slug / team name / project name
+rpm = 600
+```
+
+| `scope`                     | `id`                    |
+| --------------------------- | ----------------------- |
+| `org`                       | the org's slug          |
+| `team`                      | `org-slug/team-name`    |
+| `project`                   | `org-slug/team/project` |
+| `business_unit`, `customer` | `org-slug/their-slug`   |
+
+On import each reference is looked up on the receiving deployment. A cap whose scope does not exist there, or whose `id` is a database id, is left alone and reported in the log; it is never half applied. A cap is matched to an existing row by its scope (and, for a budget, its window), so re-importing an edited file changes the cap instead of adding another, and an unchanged file writes nothing. Caps the file does not mention are not deleted. Caps on a virtual key or on a person have no name that survives a move, and the export counts them in a comment instead. A team or project whose name contains `/` is not portable for the same reason and is counted the same way.
+
 ### What is deliberately left out
 
 An export that carried rows the importer ignores would promise more than a re-import delivers, so those rows are not written at all. The emitted file states this in a header comment, so the omission is visible in the artifact rather than only in this page.
 
 - **Virtual keys.** Only a one-way digest of a key is stored; there is nothing to export that would work on the receiving side.
-- **Budgets and rate limits.** Both are keyed by the database id of the org, team, project or key they cap, and those ids do not survive a move to another deployment.
+- **Caps on a virtual key or a person.** Neither has a name that survives a move to another deployment.
 - **MCP servers and OAuth sessions, guardrails, SSO and SCIM configuration.**
 - **Users, teams, projects and memberships.** `rolter-seed` creates the org, team and project it imports into.
 - **Operational tables** — request logs, sessions, audit records and usage. These are history, not configuration.

@@ -314,7 +314,8 @@
       "preferences": "your preferences",
       "yourProfile": "your profile",
       "auditLogExport": "the audit log export",
-      "unpricedModels": "unpriced models"
+      "unpricedModels": "unpriced models",
+      "yourBudget": "your budget"
     },
     "requestFailed": "request failed: {{status}}",
     "gateway": {
@@ -578,6 +579,20 @@
       "summary_one": "{{count}} field needs attention before this route can be saved.",
       "summary_other": "{{count}} fields need attention before this route can be saved."
     }
+  },
+  "breaker": {
+    "open_one": "Breaker open on {{count}} gateway",
+    "open_other": "Breaker open on {{count}} gateways",
+    "probing_one": "Probing on {{count}} gateway",
+    "probing_other": "Probing on {{count}} gateways",
+    "states": {
+      "open": "open",
+      "half_open": "probing",
+      "closed": "closed"
+    },
+    "failures_one": "{{count}} consecutive failure",
+    "failures_other": "{{count}} consecutive failures",
+    "retryIn": "retries in {{duration}}"
   },
   "routeTargets": {
     "count_one": "{{count}} target",
@@ -3139,6 +3154,13 @@
       "subtitle": "Last 7 days against a {{sla}} SLA. SLA at risk means the 7 days still meet it, but the last two hours failed more often than it allows.",
       "targets_one": "{{count}} target",
       "targets_other": "{{count}} targets",
+      "breakerTitle": "Live circuit breakers",
+      "breakerNote_one": "Live state held in memory by {{count}} gateway, reported about every 10 seconds. It is what the gateway is doing now, separate from the 7-day SLA verdict, which comes from recorded traffic.",
+      "breakerNote_other": "Live state held in memory by each of {{count}} gateways, reported about every 10 seconds. It is what the gateways are doing now, separate from the 7-day SLA verdict, which comes from recorded traffic.",
+      "breakerNone": "No breaker is open or probing on any live gateway.",
+      "breakerNoGateways": "No gateway is reporting its breakers, so live breaker state is not shown.",
+      "breakerModels": "Models: {{models}}",
+      "breakerTarget": "{{model}} (target {{index}}) via {{upstream}}",
       "uptimeMeta": "uptime · {{events}} events",
       "bucketTitle": "{{bucket}}: {{ok}} ok, {{errors}} error, {{timeouts}} timeout"
     },
@@ -3178,7 +3200,8 @@
         "project": "Project",
         "virtual_key": "Virtual key",
         "business_unit": "Business unit",
-        "customer": "Customer"
+        "customer": "Customer",
+        "user": "User"
       },
       "selectBusinessUnit": "Select a business unit",
       "selectCustomer": "Select a customer",
@@ -3260,7 +3283,12 @@
       "rateLimitSheetSubtitle": "Throughput caps for {{scope}} — blank leaves a field uncapped",
       "rpmLabel": "Requests per minute (optional)",
       "tpmLabel": "Tokens per minute (optional)",
-      "uncapped": "unlimited"
+      "uncapped": "unlimited",
+      "userScope": {
+        "all": "every key they minted",
+        "org": "keys they minted in one organization",
+        "project": "keys they minted in one project"
+      }
     },
     "logs": {
       "emptyTitle": "Nothing logged yet",
@@ -3344,6 +3372,7 @@
         "promptCacheTokens": "{{read}} read · {{write}} written",
         "cacheWriteSplit": "Cache write by lifetime",
         "cacheWriteSplitTokens": "{{short}} to the 5 minute cache · {{long}} to the 1 hour cache",
+        "delivery": "Delivery",
         "attribution": "Attribution",
         "lifecycle": {
           "label": "Stored response call",
@@ -5134,6 +5163,22 @@
           "tooLong": "A bio is at most {{max}} characters."
         }
       }
+    },
+    "budget": {
+      "title": "Your budget",
+      "description": "Caps on the spend and traffic of the keys you minted. Once a cap is reached, requests on those keys are refused until it resets.",
+      "spendHeading": "Spend caps",
+      "rateHeading": "Rate limits",
+      "spent": "{{spent}} spent",
+      "left": "{{remaining}} left",
+      "exhausted": "Cap reached",
+      "resets": "Resets {{when}}",
+      "unknown": "Spend so far unknown",
+      "reach": {
+        "all": "Counts every key you minted",
+        "org": "Counts keys you minted in one organization",
+        "project": "Counts keys you minted in one project"
+      }
     }
   },
   "keyMint": {
@@ -5169,7 +5214,13 @@
       "thisProject": "this project",
       "allProviders": "Every provider on an allowed route",
       "someProviders_one": "One provider: {{providers}}",
-      "someProviders_other": "{{count}} providers: {{providers}}"
+      "someProviders_other": "{{count}} providers: {{providers}}",
+      "noSpendCap": "No spend cap of its own",
+      "spendCap": "Spend capped at {{amount}} ({{period}})",
+      "spendCapPending": "Spend cap: enter an amount",
+      "noRateCap": "No rate cap of its own",
+      "rateCap": "Rate capped at {{caps}}",
+      "rateCapPending": "Rate cap: enter a limit"
     },
     "cache": "Response cache",
     "cacheHint": "Inherit uses the route setting; the deployment-wide cache switch still applies.",
@@ -5184,7 +5235,30 @@
     "businessUnitHint": "Charge this key's spend to a business unit.",
     "customer": "Customer",
     "customerHint": "Charge this key's spend to one of your customers. Only customers that fit the chosen business unit are offered.",
-    "unattributed": "Unattributed"
+    "unattributed": "Unattributed",
+    "caps": {
+      "title": "Spend and rate caps",
+      "spend": "Spend cap",
+      "spendHint": "Stop this key once it has spent a set amount in a window. Off means no cap of its own; the project, team and org budgets still apply.",
+      "limit": "Cap ({{currency}})",
+      "limitPlaceholder": "25.00",
+      "limitProblem": {
+        "blank": "Enter the amount this key may spend",
+        "invalid": "Enter a plain number such as 25 or 12.50",
+        "range": "The cap must be below 100,000,000"
+      },
+      "window": "Window",
+      "rate": "Rate cap",
+      "rateHint": "Limit how fast this key may call the gateway. Off means no cap of its own; the project, team and org limits still apply.",
+      "rpm": "Requests per minute",
+      "tpm": "Tokens per minute",
+      "noCap": "No cap",
+      "rateProblem": {
+        "invalid": "Enter a whole number, or leave it empty for no cap",
+        "range": "Enter a whole number from 1 to 2,147,483,647"
+      },
+      "rateEmpty": "Fill in requests per minute, tokens per minute or both"
+    }
   },
   "analytics": {
     "noRowsYet": "No requests logged in this window. Either nothing was served, or the gateways are not writing to ClickHouse — an unconfigured destination looks exactly like a quiet deployment.",
@@ -5193,7 +5267,10 @@
     "openDetails": "Open request details for {{model}}",
     "ms": "{{value}} ms",
     "unpriced": "unpriced",
-    "unpricedHint": "No price is configured for this model, so this request was recorded as unpriced rather than as free."
+    "unpricedHint": "No price is configured for this model, so this request was recorded as unpriced rather than as free.",
+    "withheld": "withheld",
+    "withheldHint": "The provider answered and billed for this response, but an output guardrail or plugin refused to deliver it: the caller received a 403. The cost is real; the policy that refused is named in the error.",
+    "usageUnknownHint": "The upstream answered but reported no usage, so the tokens and cost are unknown, not zero."
   },
   "savedViews": {
     "open": "Saved views",
@@ -5470,5 +5547,13 @@
         "same": "unchanged"
       }
     }
+  },
+  "keyCaps": {
+    "spend": "Spend cap {{amount}} ({{period}})",
+    "left": "{{spent}} spent · {{remaining}} left",
+    "exhausted": "{{spent}} spent · cap reached",
+    "resets": "resets {{when}}",
+    "unknown": "spend so far unknown",
+    "rate": "Rate cap {{caps}}"
   }
 }

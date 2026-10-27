@@ -522,6 +522,18 @@
       ]
     },
     {
+      "resource": "my_budget",
+      "scope": "deployment",
+      "actions": [
+        {
+          "action": "read",
+          "minimum_role": null,
+          "superadmin_only": false,
+          "authenticated_only": true
+        }
+      ]
+    },
+    {
       "resource": "business_unit",
       "scope": "org",
       "actions": [
@@ -1351,6 +1363,18 @@
       ]
     },
     {
+      "resource": "breaker_state",
+      "scope": "deployment",
+      "actions": [
+        {
+          "action": "read",
+          "minimum_role": null,
+          "superadmin_only": false,
+          "authenticated_only": true
+        }
+      ]
+    },
+    {
       "resource": "cluster_node",
       "scope": "deployment",
       "actions": [
@@ -1371,6 +1395,18 @@
           "minimum_role": null,
           "superadmin_only": true,
           "authenticated_only": false
+        }
+      ]
+    },
+    {
+      "resource": "cluster_summary",
+      "scope": "deployment",
+      "actions": [
+        {
+          "action": "read",
+          "minimum_role": null,
+          "superadmin_only": false,
+          "authenticated_only": true
         }
       ]
     },

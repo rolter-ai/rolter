@@ -114,7 +114,14 @@ async fn crud_roundtrip_across_the_tenancy_and_routing_tables() {
 
     let budgets = BudgetRepo(&pool);
     let budget = budgets
-        .create("project", project.id, "100.5000", "30d", None)
+        .create(
+            "project",
+            project.id,
+            "100.5000",
+            "30d",
+            None,
+            Within::default(),
+        )
         .await
         .unwrap();
     assert_eq!(budget.limit_usd, "100.5000");
@@ -122,7 +129,14 @@ async fn crud_roundtrip_across_the_tenancy_and_routing_tables() {
     // it round-trips as null rather than as a guessed default (#996)
     assert_eq!(budget.unpriced_policy, None);
     let strict = budgets
-        .create("project", project.id, "10.0000", "30d", Some("block"))
+        .create(
+            "project",
+            project.id,
+            "10.0000",
+            "30d",
+            Some("block"),
+            Within::default(),
+        )
         .await
         .unwrap();
     assert_eq!(strict.unpriced_policy, Some("block".to_string()));
@@ -143,7 +157,13 @@ async fn crud_roundtrip_across_the_tenancy_and_routing_tables() {
 
     let limits = RateLimitRepo(&pool);
     let limit = limits
-        .create("project", project.id, Some(60), Some(100_000))
+        .create(
+            "project",
+            project.id,
+            Some(60),
+            Some(100_000),
+            Within::default(),
+        )
         .await
         .unwrap();
     assert_eq!(limit.rpm, Some(60));
@@ -157,7 +177,9 @@ async fn crud_roundtrip_across_the_tenancy_and_routing_tables() {
     ] {
         assert!(
             matches!(
-                limits.create("project", project.id, rpm, tpm).await,
+                limits
+                    .create("project", project.id, rpm, tpm, Within::default())
+                    .await,
                 Err(Error::Config(_))
             ),
             "{rpm:?} / {tpm:?} should be refused"
@@ -1533,4 +1555,75 @@ async fn route_update_is_one_transaction() {
         .await
         .expect_err("unknown route");
     assert!(matches!(missing, Error::NotFound(_)), "{missing:?}");
+}
+
+/// Provider health follows the routes a project or team uses (#1833): only the
+/// providers its routes target come back, by `(org, name)`, once each.
+#[tokio::test]
+async fn targeted_providers_are_those_the_scopes_routes_use() {
+    if !super::super::test_database::is_configured() {
+        eprintln!("skipping: {} not set", super::super::test_database::URL_ENV);
+        return;
+    }
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let org = OrgRepo(&pool).create("acme", "acme").await.unwrap();
+    let team = TeamRepo(&pool).create(org.id, "core").await.unwrap();
+    let used = ProjectRepo(&pool).create(team.id, "used").await.unwrap();
+    let idle = ProjectRepo(&pool).create(team.id, "idle").await.unwrap();
+    let other_team = TeamRepo(&pool).create(org.id, "other").await.unwrap();
+    let elsewhere = ProjectRepo(&pool)
+        .create(other_team.id, "elsewhere")
+        .await
+        .unwrap();
+    let mut provider_ids = Vec::new();
+    for name in ["alpha", "beta", "unused"] {
+        let id: Uuid = sqlx::query_scalar(
+            "insert into providers (org_id, name, slug, kind, api_base) \
+             values ($1, $2, $2, 'openai', 'http://127.0.0.1:9') returning id",
+        )
+        .bind(org.id)
+        .bind(name)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        provider_ids.push(id);
+    }
+    // `used` routes to alpha twice (two routes) and `elsewhere` to beta
+    for (project, model, provider) in [
+        (used.id, "m1", provider_ids[0]),
+        (used.id, "m2", provider_ids[0]),
+        (elsewhere.id, "m3", provider_ids[1]),
+    ] {
+        let route: Uuid = sqlx::query_scalar(
+            "insert into routes (project_id, model) values ($1, $2) returning id",
+        )
+        .bind(project)
+        .bind(model)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        sqlx::query("insert into route_targets (route_id, provider_id) values ($1, $2)")
+            .bind(route)
+            .bind(provider)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    let repo = RouteTargetRepo(&pool);
+    let by_project = repo.targeted_providers(&[], &[used.id]).await.unwrap();
+    assert_eq!(by_project, vec![(org.id, "alpha".to_string())]);
+    // a project with no routes, or no scope at all, reaches nothing
+    assert!(repo
+        .targeted_providers(&[], &[idle.id])
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(repo.targeted_providers(&[], &[]).await.unwrap().is_empty());
+    // a team reaches the providers of every project under it
+    let by_team = repo
+        .targeted_providers(&[other_team.id], &[])
+        .await
+        .unwrap();
+    assert_eq!(by_team, vec![(org.id, "beta".to_string())]);
 }

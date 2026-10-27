@@ -111,6 +111,7 @@ Most tables flow control plane → gateway. Two flow the other way, written from
 
 - `cluster_nodes` — one row per node, upserted from the snapshot poll (#543).
 - `adaptive_routing_telemetry` — one row per `(node, model)` holding the newest adaptive-routing sample that node pushed (#751): the decision split, the sanitized policy it runs, and a JSON document of per-target scores and signals. A scoreboard, not history — every report overwrites the row, so the table is the size of the fleet rather than of the traffic.
+- `breaker_state` — one row per `(node, model, target index)` holding the circuit-breaker state that gateway reports for a target it has a non-closed or failing breaker for (#2254). Replaced as a whole by each node's report, so a breaker that closes leaves the table; the data plane writes it and never reads it, so there is deliberately no `bump_config_version()` trigger.
 
 Neither carries a `bump_config_version()` trigger, and neither may grow one: the data plane does not consume them, and a version bump on every heartbeat or sample would make routine bookkeeping look like a config change and wake the whole fleet.
 
