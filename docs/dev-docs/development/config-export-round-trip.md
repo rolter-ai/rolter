@@ -60,8 +60,8 @@ Emitting both tiers is also what keeps the export lossless. The flat array _is_ 
 
 `ConfigStore::load` returns providers with `api_key` **decrypted** — the gateway
 needs the plaintext, so the snapshot path has to carry it. The exporter
-therefore renders provider credentials from `api_key_env` only and never reads
-`api_key` at all. `config_export::tests::a_decrypted_provider_key_never_reaches_the_document`
+therefore renders provider credentials from `api_key_env_name()` only, as an
+`api_keys = [{ env = "..." }]` entry (#1720), and never reads `api_key` at all. `config_export::tests::a_decrypted_provider_key_never_reaches_the_document`
 pins that against the emitted bytes rather than by review.
 
 A provider with no `api_key_env` gets a comment where the credential would be,
@@ -86,5 +86,11 @@ into `provider_keys`.
 `providers.api_key_env` is a single column and `provider_keys` holds one sealed
 row per provider, so a multi-key provider is not representable in the store. The
 importer keeps the first entry naming an `env` and warns with the count it
-dropped rather than failing the import; #1720 covers normalising the spellings
-and must not imply that the array itself round-trips.
+dropped rather than failing the import. Normalising the spellings (#1720) does not
+change that: the export writes the plural form, but the array itself does not
+round-trip.
+
+The export also writes the proxy pool as `egress_proxies` (`egress_proxy_pool()`),
+so a provider stored with the legacy single `egress_proxy` is rewritten into the
+plural column the first time its export is re-imported; both resolve to the same
+pool.

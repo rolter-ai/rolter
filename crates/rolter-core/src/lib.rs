@@ -79,7 +79,9 @@ pub use pii_sanitizer::{
     RestoreResponse, SanitizeDirection, SanitizeRequest, SanitizeResponse, StreamingResponse,
     TokenScope,
 };
-pub use plugin_dispatch::{PluginInstanceConfig, PluginRequest, PluginStage, PluginsConfig};
+pub use plugin_dispatch::{
+    PluginInstanceConfig, PluginRequest, PluginStage, PluginsConfig, PLUGIN_CONTRACT_VERSION,
+};
 pub use probe::{
     count_catalogue, probe_expectation, probe_request, ProbeExpectation, ANTHROPIC_VERSION,
 };
