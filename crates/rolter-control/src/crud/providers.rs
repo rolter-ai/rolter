@@ -1724,7 +1724,7 @@ async fn probe_provider_cache(
             return Ok(Json(failed(
                 None,
                 if e.is_timeout() {
-                    "no response within 10s".to_string()
+                    format!("no response within {CACHE_PROBE_TIMEOUT_SECS}s")
                 } else if e.is_connect() {
                     "could not connect — check the host, port and TLS".to_string()
                 } else {
@@ -1760,6 +1760,10 @@ async fn probe_provider_cache(
     }))
 }
 
+/// How long a cache probe waits for the upstream: a full completion, so
+/// longer than the connectivity test's model listing.
+const CACHE_PROBE_TIMEOUT_SECS: u64 = 30;
+
 /// POST the probe body through the connect-time egress client, authenticated
 /// the way the proxy authenticates `kind`.
 async fn send_cache_probe(
@@ -1771,7 +1775,7 @@ async fn send_cache_probe(
     body: &serde_json::Value,
 ) -> Result<reqwest::Response, reqwest::Error> {
     let client = crate::egress_client::builder(egress)
-        .timeout(std::time::Duration::from_secs(30))
+        .timeout(std::time::Duration::from_secs(CACHE_PROBE_TIMEOUT_SECS))
         .build()?;
     let mut req = client.post(url).json(body);
     for (k, v) in headers {

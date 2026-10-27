@@ -67,4 +67,7 @@ extend-ignore-re = [
 [files]
 # vendored upstream build artifact (the mermaid runtime the mdbook build ships
 # so the docs render air-gapped). minified identifier soup, not our prose.
-extend-exclude = ["docs/dev-docs/mermaid.min.js", "crates/rolter-control/catalogue/"]
+extend-exclude = [
+  "docs/dev-docs/mermaid.min.js",
+  "crates/rolter-control/catalogue/",
+]
