@@ -522,6 +522,18 @@
       ]
     },
     {
+      "resource": "my_budget",
+      "scope": "deployment",
+      "actions": [
+        {
+          "action": "read",
+          "minimum_role": null,
+          "superadmin_only": false,
+          "authenticated_only": true
+        }
+      ]
+    },
+    {
       "resource": "business_unit",
       "scope": "org",
       "actions": [

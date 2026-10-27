@@ -417,6 +417,19 @@ const CAPABILITIES: &[Capability] = &[
         delete: NA,
         action_scopes: NONE,
     },
+    // an account reading the caps that count its own keys and what is left of
+    // them (#1830). Every signed-in account's to read, a viewer included: the
+    // route returns only rows whose scope is the caller, so it widens no
+    // `budget:read`, which reads the caps of a place
+    Capability {
+        resource: "my_budget",
+        scope: "deployment",
+        read: ANYONE,
+        create: NA,
+        update: NA,
+        delete: NA,
+        action_scopes: NONE,
+    },
     Capability {
         resource: "business_unit",
         scope: "org",
@@ -1866,7 +1879,10 @@ mod tests {
                 "public_url:read",
                 // changing one's own password (#2804): the route writes only
                 // the caller's own row, so there is no membership to hold
-                "my_password:update"
+                "my_password:update",
+                // reading the caps that count one's own keys (#1830): the route
+                // returns only rows whose scope is the caller
+                "my_budget:read"
             ]
         );
     }

@@ -1115,7 +1115,8 @@ async fn rbac_matrix_and_effective_permissions_are_api_backed() {
             "version:read",
             "stability:read",
             "public_url:read",
-            "my_password:update"
+            "my_password:update",
+            "my_budget:read"
         ]
     );
 

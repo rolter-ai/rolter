@@ -1465,6 +1465,11 @@ fn operations() -> Vec<Op> {
             )
             .clickhouse_read()
             .query(WINDOW_QUERY),
+            Op::get(
+                "/api/v1/me/budgets",
+                "getMyBudgets",
+                "The per-user budgets and rate limits that count the calling account's keys, with the spend so far",
+            ),
             Op::patch(
                 "/api/v1/me/profile",
                 "updateMyProfile",
@@ -1551,9 +1556,15 @@ fn operations() -> Vec<Op> {
             Op::get(
                 "/api/v1/orgs/{org_id}/budgets",
                 "listOrgBudgets",
-                "List every spend budget in this organization the caller may read, at any scope",
+                "List every spend budget in this organization the caller may read, at any scope; a key's budget carries `scope_name`",
             )
             .ok(Payload::List("Budget")),
+            Op::get(
+                "/api/v1/orgs/{org_id}/budgets/spend",
+                "getOrgBudgetSpend",
+                "Spend so far against every budget in this organization the caller may read, from the gateway's Redis counters",
+            )
+            .ok(Payload::Ref("BudgetSpendReport")),
             Op::post("/api/v1/budgets", "createBudget", "Create a spend budget")
                 .body(Payload::Ref("CreateBudget"))
                 .ok(Payload::Ref("Budget")),
@@ -3527,7 +3538,26 @@ fn virtual_key_schemas(p: &Prim) -> Value {
                 "models": string_list,
                 "providers": string_list,
                 "cache": {"type": ["boolean", "null"]},
-                "expires_in_days": {"type": ["integer", "null"], "minimum": 1}
+                "expires_in_days": {"type": ["integer", "null"], "minimum": 1},
+                "budget": {
+                    "type": ["object", "null"],
+                    "description": "a spend cap minted with the key: a budget scoped to the key, written in the same transaction (#1171)",
+                    "required": ["limit_usd"],
+                    "properties": {
+                        "limit_usd": {"type": "string", "description": "decimal, 0 to 99999999.9999"},
+                        "period": {"type": "string", "description": "daily, monthly or total (default monthly)"}
+                    },
+                    "additionalProperties": false
+                },
+                "rate_limit": {
+                    "type": ["object", "null"],
+                    "description": "a throughput cap minted with the key: a rate limit scoped to the key (#1171). At least one of rpm and tpm, each at least 1",
+                    "properties": {
+                        "rpm": {"type": ["integer", "null"], "minimum": 1},
+                        "tpm": {"type": ["integer", "null"], "minimum": 1}
+                    },
+                    "additionalProperties": false
+                }
             },
             "additionalProperties": false
         },
@@ -3567,7 +3597,7 @@ fn governance_schemas(p: &Prim) -> Value {
     // the governance dimensions a key's spend rolls up to (#539)
     let scope_type = json!({
         "type": "string",
-        "enum": ["org", "team", "project", "virtual_key", "business_unit", "customer"]
+        "enum": ["org", "team", "project", "virtual_key", "business_unit", "customer", "user"]
     });
     // what `validate_period` in `crud/` accepts, read off the same table the
     // snapshot loader uses, so the documented set cannot drift from it (#1902)
@@ -3594,7 +3624,10 @@ fn governance_schemas(p: &Prim) -> Value {
                     "description": "as stored. A budget written before the period was checked may hold a value the gateway does not recognise; it is enforced as monthly and listed by GET /api/v1/config/problems"
                 },
                 "unpriced_policy": {"type": ["string", "null"], "enum": ["ignore", "warn", "block", null]},
-                "created_at": timestamp
+                "created_at": timestamp,
+                "within_org_id": {"type": ["string", "null"], "format": "uuid", "description": "a user cap only: counts the keys the person minted in this org"},
+                "within_project_id": {"type": ["string", "null"], "format": "uuid", "description": "a user cap only: counts the keys the person minted in this project"},
+                "scope_name": {"type": ["string", "null"], "description": "the org-wide list only: the name (else the prefix) of the key a virtual_key budget caps"}
             }
         },
         "BudgetSpendReport": {
@@ -3633,7 +3666,9 @@ fn governance_schemas(p: &Prim) -> Value {
                     "description": period["description"],
                     "default": "30d"
                 },
-                "unpriced_policy": {"type": ["string", "null"], "enum": ["ignore", "warn", "block", null]}
+                "unpriced_policy": {"type": ["string", "null"], "enum": ["ignore", "warn", "block", null]},
+                "within_org_id": {"type": ["string", "null"], "format": "uuid", "description": "a user cap only: counts the keys the person minted in this org"},
+                "within_project_id": {"type": ["string", "null"], "format": "uuid", "description": "a user cap only: counts the keys the person minted in this project"}
             },
             "additionalProperties": false
         },
@@ -3661,7 +3696,10 @@ fn governance_schemas(p: &Prim) -> Value {
                 "scope_id": uuid,
                 "rpm": {"type": ["integer", "null"]},
                 "tpm": {"type": ["integer", "null"]},
-                "created_at": timestamp
+                "created_at": timestamp,
+                "within_org_id": {"type": ["string", "null"], "format": "uuid", "description": "a user cap only: counts the keys the person minted in this org"},
+                "within_project_id": {"type": ["string", "null"], "format": "uuid", "description": "a user cap only: counts the keys the person minted in this project"},
+                "scope_name": {"type": ["string", "null"], "description": "the org-wide list only: the name (else the prefix) of the key a virtual_key limit caps"}
             }
         },
         "CreateRateLimit": {
@@ -3672,7 +3710,9 @@ fn governance_schemas(p: &Prim) -> Value {
                 "scope_type": scope_type,
                 "scope_id": uuid,
                 "rpm": {"type": ["integer", "null"], "minimum": 1},
-                "tpm": {"type": ["integer", "null"], "minimum": 1}
+                "tpm": {"type": ["integer", "null"], "minimum": 1},
+                "within_org_id": {"type": ["string", "null"], "format": "uuid", "description": "a user cap only: counts the keys the person minted in this org"},
+                "within_project_id": {"type": ["string", "null"], "format": "uuid", "description": "a user cap only: counts the keys the person minted in this project"}
             },
             "additionalProperties": false
         },

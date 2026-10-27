@@ -2519,6 +2519,43 @@ pub enum BudgetScope {
     BusinessUnit,
     /// customer the key's spend rolls up to (#539)
     Customer,
+    /// the person who minted the key, counted across every key they minted
+    /// (`created_by`), so "each engineer may spend $50 a month however many
+    /// keys they mint" is expressible (#1830)
+    User,
+}
+
+/// Where a [`BudgetScope::User`] cap applies, when it does not apply to the
+/// person's keys everywhere (#1830): only the keys they minted in one org, or
+/// in one project. Meaningless on every other scope, where the id already
+/// names a place.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScopeWithin {
+    /// an org id
+    Org(String),
+    /// a project id
+    Project(String),
+}
+
+impl ScopeWithin {
+    /// The part of a counter key that tells a narrowed cap from the person's
+    /// un-narrowed one, and from the same person's cap in another place: two
+    /// caps on one user must not share a counter.
+    pub fn key_segment(&self) -> String {
+        match self {
+            ScopeWithin::Org(id) => format!("org:{id}"),
+            ScopeWithin::Project(id) => format!("project:{id}"),
+        }
+    }
+
+    /// Whether a request in `org` and `project` is inside this place.
+    pub fn contains(&self, org: &str, project: &str) -> bool {
+        match self {
+            ScopeWithin::Org(id) => !org.is_empty() && id == org,
+            ScopeWithin::Project(id) => !project.is_empty() && id == project,
+        }
+    }
 }
 
 impl BudgetScope {
@@ -2531,6 +2568,7 @@ impl BudgetScope {
             BudgetScope::Key => "key",
             BudgetScope::BusinessUnit => "business_unit",
             BudgetScope::Customer => "customer",
+            BudgetScope::User => "user",
         }
     }
 
@@ -2544,6 +2582,7 @@ impl BudgetScope {
             "virtual_key" => BudgetScope::Key,
             "business_unit" => BudgetScope::BusinessUnit,
             "customer" => BudgetScope::Customer,
+            "user" => BudgetScope::User,
             _ => return None,
         })
     }
@@ -2695,6 +2734,10 @@ pub struct BudgetConfig {
     /// resolution is a `max`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unpriced_policy: Option<UnpricedPolicy>,
+    /// narrows a [`BudgetScope::User`] budget to the keys the person minted in
+    /// one org or project; `None` counts all of them (#1830)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub within: Option<ScopeWithin>,
 }
 
 impl BudgetConfig {
@@ -2704,12 +2747,21 @@ impl BudgetConfig {
     /// The gateway writes and reads it, and the control plane reads it to show
     /// the spend so far, so the layout lives here once.
     pub fn spend_key(&self, now: DateTime<Utc>) -> String {
-        format!(
-            "rolter:budget:{}:{}:{}",
-            self.scope.key_label(),
-            self.id,
-            self.period.bucket(now)
-        )
+        match &self.within {
+            None => format!(
+                "rolter:budget:{}:{}:{}",
+                self.scope.key_label(),
+                self.id,
+                self.period.bucket(now)
+            ),
+            Some(within) => format!(
+                "rolter:budget:{}:{}:{}:{}",
+                self.scope.key_label(),
+                self.id,
+                within.key_segment(),
+                self.period.bucket(now)
+            ),
+        }
     }
 }
 
@@ -2731,6 +2783,10 @@ pub struct RateLimitConfig {
     /// capped
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tpm: Option<u32>,
+    /// narrows a [`BudgetScope::User`] limit to the keys the person minted in
+    /// one org or project; `None` counts all of them (#1830)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub within: Option<ScopeWithin>,
 }
 
 /// Upstream retry policy. On a transient upstream failure (HTTP 408/429/5xx or a
@@ -5793,6 +5849,27 @@ mod tests {
     }
 
     #[test]
+    fn a_narrowed_user_cap_keeps_its_own_counter() {
+        let cap = |within: Option<ScopeWithin>| BudgetConfig {
+            scope: BudgetScope::User,
+            id: "u-1".into(),
+            limit_usd: Default::default(),
+            period: BudgetPeriod::Monthly,
+            unpriced_policy: None,
+            within,
+        };
+        let now = at(2026, 10, 11, 1);
+        let keys = [
+            cap(None).spend_key(now),
+            cap(Some(ScopeWithin::Org("o".into()))).spend_key(now),
+            cap(Some(ScopeWithin::Project("o".into()))).spend_key(now),
+        ];
+        assert_eq!(keys[0], "rolter:budget:user:u-1:202610");
+        assert_eq!(keys[1], "rolter:budget:user:u-1:org:o:202610");
+        assert_ne!(keys[1], keys[2], "an org and a project of one id differ");
+    }
+
+    #[test]
     fn the_spend_key_names_scope_id_and_window() {
         let budget = BudgetConfig {
             scope: BudgetScope::Key,
@@ -5800,6 +5877,7 @@ mod tests {
             limit_usd: Default::default(),
             period: BudgetPeriod::Monthly,
             unpriced_policy: None,
+            within: None,
         };
         assert_eq!(
             budget.spend_key(at(2026, 10, 11, 1)),
@@ -7567,6 +7645,7 @@ mod tests {
             limit_usd: d("100.5"),
             period: BudgetPeriod::default(),
             unpriced_policy: None,
+            within: None,
         };
         let json = serde_json::to_value(&budget).expect("serializes");
         assert!(json["limit_usd"].is_number(), "{json}");

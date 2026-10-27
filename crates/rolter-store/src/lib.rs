@@ -664,6 +664,7 @@ mod tests {
             limit_usd: d("10.0"),
             period: Default::default(),
             unpriced_policy: None,
+            within: None,
         }
     }
 
@@ -673,6 +674,7 @@ mod tests {
             id: id.to_string(),
             rpm: Some(60),
             tpm: None,
+            within: None,
         }
     }
 

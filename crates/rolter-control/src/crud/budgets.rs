@@ -11,13 +11,13 @@ use uuid::Uuid;
 
 use rolter_core::{BudgetConfig, BudgetPeriod, BudgetScope};
 use rolter_store::postgres::models::Budget;
-use rolter_store::postgres::repo::BudgetRepo;
+use rolter_store::postgres::repo::{BudgetRepo, Within};
 
 use super::{
     explicit_null, invalid_field, log_audit, pool, publish_config_change, ApiError, ApiResult,
     Query, SafeJson,
 };
-use crate::rbac::{authorize, reaches_org, Principal, ScopeChain, ScopeFilter};
+use crate::rbac::{authorize, authorize_cap, reaches_org, Principal, ScopeChain, ScopeFilter};
 use crate::rbac_matrix::{cap, Requirement};
 use crate::ControlState;
 
@@ -25,7 +25,9 @@ pub(super) fn router() -> Router<ControlState> {
     Router::new()
         .route("/api/v1/budgets", get(list_budgets).post(create_budget))
         .route("/api/v1/budgets/spend", get(budget_spend))
+        .route("/api/v1/me/budgets", get(my_budgets))
         .route("/api/v1/orgs/{org_id}/budgets", get(list_org_budgets))
+        .route("/api/v1/orgs/{org_id}/budgets/spend", get(org_budget_spend))
         .route(
             "/api/v1/budgets/{id}",
             patch(update_budget).delete(delete_budget),
@@ -38,16 +40,49 @@ pub(super) fn router() -> Router<ControlState> {
 pub(super) struct ScopeQuery {
     pub(super) scope_type: String,
     pub(super) scope_id: Uuid,
+    /// a `user` scope only (#1830): read the caps narrowed to this org
+    #[serde(default)]
+    pub(super) within_org_id: Option<Uuid>,
+    /// a `user` scope only: read the caps narrowed to this project
+    #[serde(default)]
+    pub(super) within_project_id: Option<Uuid>,
 }
 
-const SCOPE_TYPES: [&str; 6] = [
+impl ScopeQuery {
+    pub(super) fn within(&self) -> Within {
+        Within {
+            org: self.within_org_id,
+            project: self.within_project_id,
+        }
+    }
+}
+
+const SCOPE_TYPES: [&str; 7] = [
     "org",
     "team",
     "project",
     "virtual_key",
     "business_unit",
     "customer",
+    "user",
 ];
+
+/// A narrowing means something only on a `user` cap, and names one place.
+pub(super) fn validate_within(scope_type: &str, within: Within) -> ApiResult<()> {
+    if within.org.is_some() && within.project.is_some() {
+        return Err(invalid_field(
+            "within_project_id",
+            "a cap is narrowed to an org or to a project, not both",
+        ));
+    }
+    if scope_type != "user" && (within.org.is_some() || within.project.is_some()) {
+        return Err(invalid_field(
+            "within_org_id",
+            "only a user cap can be narrowed to an org or a project",
+        ));
+    }
+    Ok(())
+}
 
 pub(super) fn validate_scope(scope_type: &str) -> ApiResult<()> {
     if !SCOPE_TYPES.contains(&scope_type) {
@@ -75,7 +110,7 @@ pub(super) async fn authorize_scope_read(
     chain: ScopeChain,
     requirement: Requirement,
 ) -> ApiResult<()> {
-    match authorize(state, principal, chain, requirement).await {
+    match authorize_cap(state, principal, chain, requirement).await {
         Err(ApiError::Forbidden) if matches!(scope.scope_type.as_str(), "org" | "team") => {}
         other => return other,
     }
@@ -98,13 +133,28 @@ async fn list_budgets(
     Query(scope): Query<ScopeQuery>,
 ) -> ApiResult<Json<Vec<Budget>>> {
     validate_scope(&scope.scope_type)?;
-    let chain = ScopeChain::from_scope(pool(&state), &scope.scope_type, scope.scope_id).await?;
+    let chain = ScopeChain::from_cap(
+        pool(&state),
+        &scope.scope_type,
+        scope.scope_id,
+        scope.within(),
+    )
+    .await?;
     authorize_scope_read(&state, &principal, &scope, chain, cap!("budget", Read)).await?;
-    Ok(Json(
-        BudgetRepo(pool(&state))
-            .list_for_scope(&scope.scope_type, scope.scope_id)
-            .await?,
-    ))
+    Ok(Json(budgets_on(&state, &scope).await?))
+}
+
+/// The budgets on the scope a query names; for a `user`, the ones narrowed to
+/// exactly the place it names, since the place is what the caller was
+/// authorized for.
+async fn budgets_on(state: &ControlState, scope: &ScopeQuery) -> ApiResult<Vec<Budget>> {
+    let repo = BudgetRepo(pool(state));
+    Ok(if scope.scope_type == "user" {
+        repo.list_for_user(scope.scope_id, scope.within()).await?
+    } else {
+        repo.list_for_scope(&scope.scope_type, scope.scope_id)
+            .await?
+    })
 }
 
 /// The caps of an org-wide list the caller may read, each decided by the rule
@@ -118,7 +168,7 @@ pub(super) async fn readable_caps<T>(
     requirement: Requirement,
     org_id: Uuid,
     rows: Vec<T>,
-    scope_of: impl Fn(&T) -> (&str, Uuid),
+    scope_of: impl Fn(&T) -> (&str, Uuid, Within),
 ) -> ApiResult<Vec<T>> {
     let filter = ScopeFilter::load(state, principal, requirement).await?;
     if filter.allows(ScopeChain::org(org_id)) {
@@ -128,15 +178,15 @@ pub(super) async fn readable_caps<T>(
     if !reaches_org(&reach, org_id) {
         return Err(ApiError::Forbidden);
     }
-    let mut chains: HashMap<(String, Uuid), ScopeChain> = HashMap::new();
+    let mut chains: HashMap<(String, Uuid, Within), ScopeChain> = HashMap::new();
     let mut visible = Vec::new();
     for row in rows {
-        let (scope_type, scope_id) = scope_of(&row);
-        let key = (scope_type.to_string(), scope_id);
+        let (scope_type, scope_id, within) = scope_of(&row);
+        let key = (scope_type.to_string(), scope_id, within);
         let chain = match chains.get(&key) {
             Some(chain) => *chain,
             None => {
-                let chain = ScopeChain::from_scope(pool(state), scope_type, scope_id).await?;
+                let chain = ScopeChain::from_cap(pool(state), scope_type, scope_id, within).await?;
                 chains.insert(key, chain);
                 chain
             }
@@ -158,24 +208,88 @@ pub(super) async fn readable_caps<T>(
     Ok(visible)
 }
 
+/// The budgets of an org the caller may read.
+async fn readable_org_budgets(
+    state: &ControlState,
+    principal: &Principal,
+    org_id: Uuid,
+) -> ApiResult<Vec<Budget>> {
+    let rows = BudgetRepo(pool(state)).list_in_org(org_id).await?;
+    readable_caps(state, principal, cap!("budget", Read), org_id, rows, |b| {
+        (
+            b.scope_type.as_str(),
+            b.scope_id,
+            Within {
+                org: b.within_org_id,
+                project: b.within_project_id,
+            },
+        )
+    })
+    .await
+}
+
+/// A budget of an org-wide list, with the name of the virtual key it caps when
+/// that is its scope (#3128). Every other scope is named by the dashboard from
+/// the lists it already reads; keys have no org-wide list, so without this a
+/// key's budget could only be told apart by the start of its id.
+#[derive(Serialize)]
+struct OrgBudget {
+    #[serde(flatten)]
+    row: Budget,
+    /// the key's name, or its prefix when it has none; `null` on any other scope
+    scope_name: Option<String>,
+}
+
+/// The names of the keys among `scopes`, by id (#3128).
+pub(super) async fn key_names<'a>(
+    state: &ControlState,
+    scopes: impl Iterator<Item = (&'a str, Uuid)>,
+) -> ApiResult<HashMap<Uuid, String>> {
+    let ids: Vec<Uuid> = scopes
+        .filter(|(scope_type, _)| *scope_type == "virtual_key")
+        .map(|(_, id)| id)
+        .collect();
+    Ok(rolter_store::postgres::repo::VirtualKeyRepo(pool(state))
+        .names(&ids)
+        .await?)
+}
+
 /// Every budget the caller may read across one org, so "which caps exist here"
 /// is one request instead of one per scope.
 async fn list_org_budgets(
     principal: Principal,
     State(state): State<ControlState>,
     Path(org_id): Path<Uuid>,
-) -> ApiResult<Json<Vec<Budget>>> {
-    let rows = BudgetRepo(pool(&state)).list_in_org(org_id).await?;
-    let rows = readable_caps(
+) -> ApiResult<Json<Vec<OrgBudget>>> {
+    let rows = readable_org_budgets(&state, &principal, org_id).await?;
+    let names = key_names(
         &state,
-        &principal,
-        cap!("budget", Read),
-        org_id,
-        rows,
-        |b| (b.scope_type.as_str(), b.scope_id),
+        rows.iter().map(|b| (b.scope_type.as_str(), b.scope_id)),
     )
     .await?;
-    Ok(Json(rows))
+    Ok(Json(
+        rows.into_iter()
+            .map(|row| OrgBudget {
+                scope_name: (row.scope_type == "virtual_key")
+                    .then(|| names.get(&row.scope_id).cloned())
+                    .flatten(),
+                row,
+            })
+            .collect(),
+    ))
+}
+
+/// Spend so far against every budget of an org the caller may read, as the
+/// gateway counts it (#3128): the batch counterpart of `/budgets/spend`, which
+/// reads one scope. Same rows as the org-wide list, same `status` and `null`
+/// rules, one Redis round trip however many budgets there are.
+async fn org_budget_spend(
+    principal: Principal,
+    State(state): State<ControlState>,
+    Path(org_id): Path<Uuid>,
+) -> ApiResult<Json<BudgetSpendResponse>> {
+    let rows = readable_org_budgets(&state, &principal, org_id).await?;
+    Ok(Json(spend_of(&state, &rows).await))
 }
 
 /// Spend so far against one budget, as the gateway counts it.
@@ -201,6 +315,16 @@ struct BudgetSpendResponse {
 /// How long the dashboard waits on Redis before it shows the spend as unknown.
 const SPEND_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// The place a `user` budget row is narrowed to, as the gateway keys its
+/// counter (#1830).
+fn row_within(row: &Budget) -> Option<rolter_core::ScopeWithin> {
+    match (row.within_org_id, row.within_project_id) {
+        (Some(org), None) => Some(rolter_core::ScopeWithin::Org(org.to_string())),
+        (None, Some(project)) => Some(rolter_core::ScopeWithin::Project(project.to_string())),
+        _ => None,
+    }
+}
+
 /// The Redis keys of a scope's budgets, in row order, with each row's reset.
 fn spend_plan(rows: &[Budget], now: DateTime<Utc>) -> Vec<(Uuid, Option<String>, String)> {
     rows.iter()
@@ -215,6 +339,7 @@ fn spend_plan(rows: &[Budget], now: DateTime<Utc>) -> Vec<(Uuid, Option<String>,
                 limit_usd: Default::default(),
                 period,
                 unpriced_policy: None,
+                within: row_within(row),
             };
             let reset = period
                 .next_reset(now)
@@ -249,37 +374,45 @@ async fn budget_spend(
     Query(scope): Query<ScopeQuery>,
 ) -> ApiResult<Json<BudgetSpendResponse>> {
     validate_scope(&scope.scope_type)?;
-    let chain = ScopeChain::from_scope(pool(&state), &scope.scope_type, scope.scope_id).await?;
+    let chain = ScopeChain::from_cap(
+        pool(&state),
+        &scope.scope_type,
+        scope.scope_id,
+        scope.within(),
+    )
+    .await?;
     authorize_scope_read(&state, &principal, &scope, chain, cap!("budget", Read)).await?;
-    let rows = BudgetRepo(pool(&state))
-        .list_for_scope(&scope.scope_type, scope.scope_id)
-        .await?;
-    let plan = spend_plan(&rows, Utc::now());
-    let unknown = |status: &'static str| {
-        Json(BudgetSpendResponse {
-            status,
-            budgets: plan
-                .iter()
-                .map(|(id, reset, _)| BudgetSpend {
-                    id: *id,
-                    spent_usd: None,
-                    resets_at: reset.clone(),
-                })
-                .collect(),
-        })
+    let rows = budgets_on(&state, &scope).await?;
+    Ok(Json(spend_of(&state, &rows).await))
+}
+
+/// The counters behind `rows`, read in one round trip. A counter that cannot
+/// be read comes back `null` with a `status` saying why, never zero.
+async fn spend_of(state: &ControlState, rows: &[Budget]) -> BudgetSpendResponse {
+    let plan = spend_plan(rows, Utc::now());
+    let unknown = |status: &'static str| BudgetSpendResponse {
+        status,
+        budgets: plan
+            .iter()
+            .map(|(id, reset, _)| BudgetSpend {
+                id: *id,
+                spent_usd: None,
+                resets_at: reset.clone(),
+            })
+            .collect(),
     };
     let Some(client) = state.redis.as_ref() else {
-        return Ok(unknown("not_configured"));
+        return unknown("not_configured");
     };
     if plan.is_empty() {
-        return Ok(Json(BudgetSpendResponse {
+        return BudgetSpendResponse {
             status: "ok",
             budgets: Vec::new(),
-        }));
+        };
     }
     let keys: Vec<String> = plan.iter().map(|(_, _, key)| key.clone()).collect();
     let Some(values) = read_spend(client, &keys).await else {
-        return Ok(unknown("unavailable"));
+        return unknown("unavailable");
     };
     let mut budgets = Vec::with_capacity(plan.len());
     for ((id, reset, _), value) in plan.iter().zip(values) {
@@ -294,9 +427,116 @@ async fn budget_spend(
             resets_at: reset.clone(),
         });
     }
-    Ok(Json(BudgetSpendResponse {
+    BudgetSpendResponse {
         status: "ok",
         budgets,
+    }
+}
+
+/// One cap that counts the caller's own keys, with what is left of it (#1830).
+#[derive(Serialize, Debug)]
+struct MyBudget {
+    id: Uuid,
+    limit_usd: String,
+    period: String,
+    /// the org or project the cap is narrowed to; both null counts the keys
+    /// the caller minted anywhere
+    within_org_id: Option<Uuid>,
+    within_project_id: Option<Uuid>,
+    /// the counter as the gateway holds it; `null` when it could not be read,
+    /// never zero
+    spent_usd: Option<String>,
+    resets_at: Option<String>,
+}
+
+#[derive(Serialize, Debug)]
+struct MyRateLimit {
+    id: Uuid,
+    rpm: Option<i32>,
+    tpm: Option<i32>,
+    within_org_id: Option<Uuid>,
+    within_project_id: Option<Uuid>,
+}
+
+#[derive(Serialize)]
+struct MyBudgetsResponse {
+    /// `ok`, `not_configured` or `unavailable`, as for `/api/v1/budgets/spend`
+    status: &'static str,
+    budgets: Vec<MyBudget>,
+    rate_limits: Vec<MyRateLimit>,
+}
+
+/// The per-user caps that count the calling account's keys, and what is left of
+/// them (#1830). Rows are selected by the session's own user id, never by a
+/// parameter, so there is nothing to ask for another person's.
+async fn my_budgets(
+    current: crate::auth::CurrentUser,
+    State(state): State<ControlState>,
+) -> ApiResult<Json<MyBudgetsResponse>> {
+    authorize(
+        &state,
+        &Principal::for_user(current.user.clone()),
+        ScopeChain::default(),
+        cap!("my_budget", Read),
+    )
+    .await?;
+    let rows = BudgetRepo(pool(&state))
+        .list_all_for_user(current.user.id)
+        .await?;
+    let limits = rolter_store::postgres::repo::RateLimitRepo(pool(&state))
+        .list_all_for_user(current.user.id)
+        .await?;
+    let plan = spend_plan(&rows, Utc::now());
+    let (status, values): (&'static str, Vec<Option<String>>) = match state.redis.as_ref() {
+        None => ("not_configured", vec![None; plan.len()]),
+        Some(_) if plan.is_empty() => ("ok", Vec::new()),
+        Some(client) => {
+            let keys: Vec<String> = plan.iter().map(|(_, _, key)| key.clone()).collect();
+            match read_spend(client, &keys).await {
+                // an absent counter is a window nothing was spent in
+                Some(values) => (
+                    "ok",
+                    values
+                        .into_iter()
+                        .map(|v| match v {
+                            None => Some("0.0000".to_string()),
+                            Some(text) => text
+                                .parse::<f64>()
+                                .ok()
+                                .filter(|v| v.is_finite())
+                                .map(|v| format!("{v:.4}")),
+                        })
+                        .collect(),
+                ),
+                None => ("unavailable", vec![None; plan.len()]),
+            }
+        }
+    };
+    let mut budgets = Vec::with_capacity(rows.len());
+    for (row, ((_, reset, _), spent)) in rows.iter().zip(plan.iter().zip(values)) {
+        budgets.push(MyBudget {
+            id: row.id,
+            limit_usd: row.limit_usd.clone(),
+            period: row.period.clone(),
+            within_org_id: row.within_org_id,
+            within_project_id: row.within_project_id,
+            spent_usd: spent,
+            resets_at: reset.clone(),
+        });
+    }
+    Ok(Json(MyBudgetsResponse {
+        status,
+        budgets,
+        rate_limits: limits
+            .into_iter()
+            .map(|l| MyRateLimit {
+                id: l.id,
+                rpm: l.rpm,
+                tpm: l.tpm,
+                within_org_id: l.within_org_id,
+                within_project_id: l.within_project_id,
+            })
+            .collect(),
     }))
 }
 
@@ -305,6 +545,15 @@ async fn budget_spend(
 struct CreateBudget {
     scope_type: String,
     scope_id: Uuid,
+    /// a `user` budget only: count only the keys the person minted in this
+    /// org (#1830). Omit both for every key they minted, which only a
+    /// superadmin may set
+    #[serde(default)]
+    within_org_id: Option<Uuid>,
+    /// a `user` budget only: count only the keys the person minted in this
+    /// project. Not together with `within_org_id`
+    #[serde(default)]
+    within_project_id: Option<Uuid>,
     limit_usd: String,
     #[serde(default = "default_period")]
     period: String,
@@ -343,9 +592,14 @@ async fn create_budget(
     SafeJson(body): SafeJson<CreateBudget>,
 ) -> ApiResult<Json<Budget>> {
     validate_scope(&body.scope_type)?;
-    let chain = ScopeChain::from_scope(pool(&state), &body.scope_type, body.scope_id).await?;
+    let within = Within {
+        org: body.within_org_id,
+        project: body.within_project_id,
+    };
+    validate_within(&body.scope_type, within)?;
+    let chain = ScopeChain::from_cap(pool(&state), &body.scope_type, body.scope_id, within).await?;
     let org_id = chain.org;
-    authorize(&state, &principal, chain, cap!("budget", Create)).await?;
+    authorize_cap(&state, &principal, chain, cap!("budget", Create)).await?;
     // the same checks an edit gets (#1903): a cap the gateway would read as
     // no cap, or as already spent, is refused here rather than stored
     validate_limit_usd(&body.limit_usd)?;
@@ -358,6 +612,7 @@ async fn create_budget(
             body.limit_usd.trim(),
             body.period.trim(),
             body.unpriced_policy.as_deref(),
+            within,
         )
         .await?;
     publish_config_change(&state).await?;
@@ -371,6 +626,8 @@ async fn create_budget(
         serde_json::json!({
             "scope_type": body.scope_type,
             "scope_id": body.scope_id,
+            "within_org_id": body.within_org_id,
+            "within_project_id": body.within_project_id,
             "limit_usd": body.limit_usd,
             // an override changes what the gateway will serve, so the audit
             // row has to say when one was set (#996)
@@ -379,6 +636,87 @@ async fn create_budget(
     )
     .await;
     Ok(Json(row))
+}
+
+/// The caps a key is minted with (#1171), shared by the operator mint
+/// (`CreateVirtualKey`) and the self-service one (`MintKey`) so the two cannot
+/// disagree about what a cap is. Each is the body of the budget or rate limit
+/// the key would otherwise need a second screen for; both are optional and a
+/// key may carry either, both or neither.
+///
+/// The two bodies carry `budget` and `rate_limit` as plain fields, not through
+/// `#[serde(flatten)]`, which cannot be combined with `deny_unknown_fields`.
+#[derive(Default)]
+pub(crate) struct KeyCapsBody {
+    /// a spend cap over a window
+    pub(crate) budget: Option<KeyBudgetBody>,
+    /// a request and/or token cap per minute
+    pub(crate) rate_limit: Option<KeyRateLimitBody>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct KeyBudgetBody {
+    limit_usd: String,
+    #[serde(default = "default_period")]
+    period: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct KeyRateLimitBody {
+    #[serde(default)]
+    rpm: Option<i32>,
+    #[serde(default)]
+    tpm: Option<i32>,
+}
+
+impl KeyCapsBody {
+    /// Refuse a cap the gateway would misread, before a key exists: the key's
+    /// plaintext is shown once, so a mint that fails halfway cannot be retried
+    /// by looking at what was made.
+    pub(crate) fn validate(&self) -> ApiResult<()> {
+        if let Some(budget) = &self.budget {
+            validate_limit_usd(&budget.limit_usd)?;
+            validate_period(&budget.period)?;
+        }
+        if let Some(limit) = &self.rate_limit {
+            super::rate_limits::validate_rate_limit_caps(limit.rpm, limit.tpm)?;
+            if limit.rpm.is_none() && limit.tpm.is_none() {
+                return Err(invalid_field(
+                    "rate_limit",
+                    "a rate limit needs an rpm cap, a tpm cap or both",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// The store's view of the caps, borrowing from `self`.
+    pub(crate) fn as_new(&self) -> rolter_store::postgres::repo::KeyCaps<'_> {
+        use rolter_store::postgres::repo::{KeyCaps, NewKeyBudget, NewKeyRateLimit};
+        KeyCaps {
+            budget: self.budget.as_ref().map(|b| NewKeyBudget {
+                limit_usd: b.limit_usd.trim(),
+                period: b.period.trim(),
+            }),
+            rate_limit: self.rate_limit.as_ref().map(|l| NewKeyRateLimit {
+                rpm: l.rpm,
+                tpm: l.tpm,
+            }),
+            inherit_from: None,
+        }
+    }
+
+    /// What the audit row says about the caps.
+    pub(crate) fn audit(&self) -> serde_json::Value {
+        serde_json::json!({
+            "limit_usd": self.budget.as_ref().map(|b| b.limit_usd.trim()),
+            "period": self.budget.as_ref().map(|b| b.period.trim()),
+            "rpm": self.rate_limit.as_ref().and_then(|l| l.rpm),
+            "tpm": self.rate_limit.as_ref().and_then(|l| l.tpm),
+        })
+    }
 }
 
 #[derive(Deserialize)]
@@ -491,10 +829,18 @@ async fn update_budget(
     SafeJson(body): SafeJson<UpdateBudget>,
 ) -> ApiResult<Json<Budget>> {
     let existing = BudgetRepo(pool(&state)).get(id).await?;
-    let chain =
-        ScopeChain::from_scope(pool(&state), &existing.scope_type, existing.scope_id).await?;
+    let chain = ScopeChain::from_cap(
+        pool(&state),
+        &existing.scope_type,
+        existing.scope_id,
+        Within {
+            org: existing.within_org_id,
+            project: existing.within_project_id,
+        },
+    )
+    .await?;
     let org_id = chain.org;
-    authorize(&state, &principal, chain, cap!("budget", Update)).await?;
+    authorize_cap(&state, &principal, chain, cap!("budget", Update)).await?;
     if let Some(limit) = &body.limit_usd {
         validate_limit_usd(limit)?;
     }
@@ -544,9 +890,18 @@ async fn delete_budget(
     Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
     let budget = BudgetRepo(pool(&state)).get(id).await?;
-    let chain = ScopeChain::from_scope(pool(&state), &budget.scope_type, budget.scope_id).await?;
+    let chain = ScopeChain::from_cap(
+        pool(&state),
+        &budget.scope_type,
+        budget.scope_id,
+        Within {
+            org: budget.within_org_id,
+            project: budget.within_project_id,
+        },
+    )
+    .await?;
     let org_id = chain.org;
-    authorize(&state, &principal, chain, cap!("budget", Delete)).await?;
+    authorize_cap(&state, &principal, chain, cap!("budget", Delete)).await?;
     BudgetRepo(pool(&state)).delete(id).await?;
     publish_config_change(&state).await?;
     log_audit(

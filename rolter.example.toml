@@ -492,6 +492,9 @@ disabled = false # revoke without deleting
 # across the scope chain and against the deployment setting, so a budget can
 # tighten what the deployment asked for but never loosen it:
 # unpriced_policy = "block"   # ignore | warn | block
+# a `user` budget counts every key that person minted (id is the user's uuid);
+# narrow it to one org or project with `within`:
+# within = { org = "org-uuid" }   # or { project = "project-uuid" }
 
 # what to do about traffic the gateway cannot price. a model with no
 # [[model_prices]] row accrues zero spend, so it can never exceed a budget no
@@ -516,6 +519,8 @@ disabled = false # revoke without deleting
 # id = "vk-uuid"
 # rpm = 600            # requests per minute; omit to leave requests uncapped
 # tpm = 150000         # tokens per minute; omit to leave tokens uncapped
+# a `user` limit counts every key that person minted; narrow it with `within`:
+# within = { org = "org-uuid" }   # or { project = "project-uuid" }
 
 # --- upstream retry policy ---
 # on a transient upstream failure (http 408/429/5xx or a connection error) the
