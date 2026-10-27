@@ -662,7 +662,7 @@ pub(super) struct CreateProvider {
     allow_custom_api_base: bool,
 }
 
-const PROVIDER_KINDS: [&str; 49] = [
+const PROVIDER_KINDS: [&str; 50] = [
     "openai",
     "anthropic",
     "openai_compatible",
@@ -712,6 +712,7 @@ const PROVIDER_KINDS: [&str; 49] = [
     "krutrim",
     "falcon",
     "system_one",
+    "infinity",
 ];
 
 /// Seal `api_key` with the deployment KEK for at-rest storage. An empty or
