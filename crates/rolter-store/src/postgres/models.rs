@@ -739,6 +739,17 @@ pub struct McpServer {
     pub tools_discovered_at: Option<DateTime<Utc>>,
     /// when discovery last ran, whether or not it succeeded
     pub tools_discovery_attempted_at: Option<DateTime<Utc>>,
+    /// when the control plane last got an MCP handshake out of the server, by
+    /// a status probe or a discovery (#951)
+    pub last_contact_at: Option<DateTime<Utc>>,
+    /// what that handshake negotiated and who answered it
+    pub last_protocol_version: Option<String>,
+    pub last_server_name: Option<String>,
+    /// the reason of the last failed contact (`unreachable`, `handshake_failed`,
+    /// `auth_rejected`, `egress_denied`) and when it happened. Kept after a
+    /// later success, so a status can say when it last broke
+    pub last_error_kind: Option<String>,
+    pub last_error_at: Option<DateTime<Utc>>,
 }
 
 /// One in-flight authorization-code consent, opened by the callback. The PKCE

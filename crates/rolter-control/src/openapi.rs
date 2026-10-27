@@ -1829,6 +1829,16 @@ fn operations() -> Vec<Op> {
                 "discoverMcpServerTools",
                 "Ask an MCP server for its tools with tools/list",
             ),
+            Op::post(
+                "/api/v1/mcp-servers/{id}/test",
+                "testMcpServerConnection",
+                "Run the MCP handshake against a server and report its status",
+            ),
+            Op::post(
+                "/api/v1/mcp-servers/{id}/tools/call",
+                "callMcpServerTool",
+                "Run one of an MCP server's tools and return the raw exchange",
+            ),
             Op::get(
                 "/api/v1/mcp-servers/{id}/tools",
                 "listMcpServerTools",

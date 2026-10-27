@@ -101,6 +101,47 @@ SSE replies). The answer is written back to the server row (#1283):
 The `streamable_http` transport is what is spoken; a server registered as `sse`
 is asked the same way, since the gateway proxies both as plain HTTP.
 
+## Connection status and try-it
+
+`crates/rolter-control/src/mcp_probe.rs` (#951) lets an operator see whether a
+server works, and run its tools, without reading gateway logs. Both endpoints
+need the capability to update the server (`mcp_server` / `update`), since a tool
+call has consequences and spends the operator's credential; both speak MCP
+through the same client and egress rules as discovery, and a server behind OAuth
+is spoken to with the _caller's own_ session, so the admin token and open mode
+(which are nobody) get `needs_session`.
+
+- `POST /api/v1/mcp-servers/{id}/test` runs the `initialize` handshake and
+  answers `status`: `reachable`, or the failure it was — `unreachable` (no
+  answer: refused, DNS, timeout), `handshake_failed` (it answered, not as an MCP
+  server does), `auth_rejected` (`401`/`403`), `egress_denied` (policy refused
+  the address), or `needs_session` / `credential_unavailable` when there was
+  nothing to authenticate with. It also returns `reachable`,
+  `handshake_completed`, the negotiated `protocol_version`, the server's name
+  and version and the latency.
+- `POST /api/v1/mcp-servers/{id}/tools/call` takes `{tool, arguments}` and
+  returns the raw JSON-RPC `request` and `response`. The tool must be in the
+  server's manifest and `arguments` an object. `outcome` is `success`,
+  `tool_errored` (the server answered and the tool reported `isError` or a
+  JSON-RPC error: a fifth state, because the server did answer), or a failure
+  state above. A reply over 256 KiB is returned as a marked preview. The call is
+  audited as `mcp_server.tool_call` with the tool and the outcome, never the
+  arguments, and does not appear in the MCP tool-call log because it does not go
+  through the gateway.
+- **What the row remembers** (migration `0115`): `last_contact_at`,
+  `last_protocol_version` and `last_server_name` from the last completed
+  handshake, and `last_error_kind` / `last_error_at` from the last failed one.
+  Discovery records them too. The failure is **kept after a later success**, so
+  a status can say both "reachable" and "it last broke at". Which is current is
+  whichever of `last_contact_at` and `last_error_at` is later.
+- **`config_version`.** `0115` also narrows the `mcp_servers` update trigger to
+  the columns the gateway reads (`org_id`, `slug`, `url`, `transport`,
+  `enabled`, `tools`, `required_scopes`, the auth and credential columns and the
+  three transport overrides); insert and delete still bump. Probes, discovery
+  bookkeeping and OAuth-client edits therefore no longer wake every gateway for a
+  snapshot that did not change. A new column the snapshot starts reading must be
+  added to that list.
+
 ## Tool groups as an access boundary
 
 The gateway enforces enabled tool groups (#1403) in `crates/rolter-gateway/src/mcp_policy.rs`,

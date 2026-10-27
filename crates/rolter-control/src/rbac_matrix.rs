@@ -1954,6 +1954,7 @@ mod tests {
         ("mcp_client.rs", include_str!("mcp_client.rs")),
         ("mcp_discovery.rs", include_str!("mcp_discovery.rs")),
         ("mcp_logs.rs", include_str!("mcp_logs.rs")),
+        ("mcp_probe.rs", include_str!("mcp_probe.rs")),
         ("model_defaults.rs", include_str!("model_defaults.rs")),
         ("mcp_oauth.rs", include_str!("mcp_oauth.rs")),
         (

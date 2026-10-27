@@ -314,7 +314,8 @@
       "preferences": "your preferences",
       "yourProfile": "your profile",
       "auditLogExport": "the audit log export",
-      "unpricedModels": "unpriced models"
+      "unpricedModels": "unpriced models",
+      "mcpServerTools": "tools of the MCP server"
     },
     "requestFailed": "request failed: {{status}}",
     "gateway": {
@@ -2088,6 +2089,107 @@
           "credential_unavailable": "the stored credential could not be read",
           "unknown": "unknown reason"
         }
+      },
+      "probe": {
+        "statuses": {
+          "unchecked": "Not checked yet",
+          "reachable": "Reachable",
+          "unreachable": "Unreachable",
+          "handshake_failed": "Handshake failed",
+          "auth_rejected": "Auth rejected",
+          "egress_denied": "Blocked by egress policy",
+          "needs_session": "Needs a session",
+          "credential_unavailable": "Credential unavailable",
+          "success": "Succeeded",
+          "tool_errored": "Tool reported an error",
+          "unknown": "Unknown state"
+        },
+        "explain": {
+          "reachable": "The server answered and completed the MCP handshake.",
+          "unreachable": "Nothing answered at this address.",
+          "handshake_failed": "Something answered, but not as an MCP server.",
+          "auth_rejected": "The server rejected the credential (401 or 403).",
+          "egress_denied": "The egress policy refused this address, so rolter did not connect.",
+          "needs_session": "This server uses OAuth and you have no live session. Connect first, then try again.",
+          "credential_unavailable": "The control plane could not read the stored credential.",
+          "success": "The tool ran and returned a result.",
+          "tool_errored": "The server answered and the tool reported an error. The connection itself is fine.",
+          "unknown": "The control plane answered with a state this dashboard does not know."
+        },
+        "health": {
+          "unchecked": "No handshake has been attempted yet.",
+          "contact": "Last contact {{when}}",
+          "protocol": "Protocol {{version}}",
+          "serverName": "Server {{name}}",
+          "failedAt": "Failed {{when}}",
+          "lastFailure": "Last failure: {{reason}}, {{when}}",
+          "aria": "Connection status of {{name}}"
+        },
+        "yes": "Yes",
+        "no": "No"
+      },
+      "test": {
+        "action": "Test connection",
+        "running": "Testing…",
+        "aria": "Test the connection of server {{name}}",
+        "failedToast": "Could not test the connection of {{name}}",
+        "title": "Connection test of {{name}}",
+        "status": "Status",
+        "reachable": "Reachable",
+        "handshake": "MCP handshake",
+        "handshakeDone": "Completed",
+        "handshakeNot": "Not completed",
+        "protocol": "Protocol version",
+        "serverName": "Server name",
+        "serverVersion": "Server version",
+        "latency": "Latency",
+        "checkedAt": "Checked",
+        "message": "Message",
+        "none": "—"
+      },
+      "tools": {
+        "open": "Tools & try it",
+        "openAria": "Browse the tools of server {{name}} and try them",
+        "title": "Tools of {{name}}",
+        "stale": "Not returned by the last discovery",
+        "noDescription": "No description.",
+        "schema": "Input schema",
+        "schemaAria": "Input schema of {{tool}}",
+        "declaresNoneTitle": "{{name}} declares no tools",
+        "declaresNoneBody": "The server answered the tools list with an empty manifest.",
+        "notDiscoveredTitle": "Tools not discovered yet",
+        "notDiscoveredBody": "Use Discover now on the server card to ask it for its tools.",
+        "failedTitle": "Discovery failed",
+        "failedBody": "The server has not returned a tool list: {{reason}}.",
+        "list": "Tools"
+      },
+      "try": {
+        "title": "Try a tool",
+        "warning": "Running a tool calls the real server and can change data there. Each run is written to the audit log.",
+        "tool": "Tool",
+        "toolPlaceholder": "Pick a tool",
+        "toolEmpty": "This server has no tools to run.",
+        "arguments": "Arguments (JSON object)",
+        "argumentsHint": "Edit the arguments as a JSON object. Leave it blank for none.",
+        "invalidJson": "Not valid JSON: {{detail}}",
+        "notObject": "Arguments must be a JSON object, not an array or a single value.",
+        "run": "Run tool",
+        "running": "Running…",
+        "runAria": "Run the selected tool on server {{name}}",
+        "failed": "Could not run the tool",
+        "result": "Result",
+        "outcome": "Outcome",
+        "latency": "Latency",
+        "message": "Message",
+        "request": "Request",
+        "response": "Response",
+        "noRequest": "No request was recorded.",
+        "noResponse": "No response was recorded.",
+        "truncated": "The response was too large to keep in full; the first part is shown ({{size}} B)."
+      },
+      "logs": {
+        "link": "View logs",
+        "aria": "View the MCP call logs of server {{name}}"
       }
     },
     "mcpOAuth": {
@@ -3407,7 +3509,7 @@
       "emptyTitle": "No MCP tool calls yet",
       "emptyBody": "Every tool call the gateway proxies to an MCP server lands here, with its arguments and result redacted to policy. You see the calls of the organizations, teams and projects you hold a role in, plus every call made through your own MCP sign-ins.",
       "noMatchTitle": "No calls match these filters",
-      "noMatchBody": "Nothing in this window matched the status and transport you selected.",
+      "noMatchBody": "Nothing in this window matched the filters you selected.",
       "statusFilterAria": "Filter by status",
       "transportFilterAria": "Filter by transport",
       "calls": "Calls",
@@ -3445,7 +3547,11 @@
         "timeout": "Timed out",
         "auth_denied": "Auth denied",
         "transport_error": "Transport error"
-      }
+      },
+      "serverFilterAria": "Filter by server",
+      "toolFilterAria": "Filter by tool",
+      "allServers": "all servers",
+      "allTools": "all tools"
     },
     "providerGroups": {
       "emptyTitle": "No provider groups yet",

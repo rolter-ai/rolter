@@ -168,7 +168,25 @@ export interface McpServerRow {
   /// names in `tools` the last successful discovery no longer returned. they
   /// are kept, never pruned, so a tool group naming one keeps working
   tools_stale: string[];
+  /// the last completed MCP handshake, or `null` when none ever completed
+  last_contact_at: string | null;
+  /// what that handshake negotiated
+  last_protocol_version: string | null;
+  last_server_name: string | null;
+  /// the last failed contact. kept after a later success, so the current state
+  /// is whichever of `last_contact_at` and `last_error_at` is later
+  last_error_kind: McpConnectionError | null;
+  last_error_at: string | null;
 }
+
+export const MCP_CONNECTION_ERRORS = [
+  "unreachable",
+  "handshake_failed",
+  "auth_rejected",
+  "egress_denied",
+] as const;
+
+export type McpConnectionError = (typeof MCP_CONNECTION_ERRORS)[number];
 
 export type McpToolsDiscoveryStatus = "pending" | "discovered" | "failed";
 
@@ -356,6 +374,64 @@ export function discoverMcpServerTools(id: string): Promise<McpServerRow> {
 
 export function fetchMcpServerTools(id: string): Promise<McpServerToolsResponse> {
   return getJson<McpServerToolsResponse>(`/api/v1/mcp-servers/${id}/tools`);
+}
+
+/// every answer a connection test can give; it is always an HTTP 200, so the
+/// failure is in `status`
+export const MCP_PROBE_STATUSES = [
+  "reachable",
+  "unreachable",
+  "handshake_failed",
+  "auth_rejected",
+  "egress_denied",
+  "needs_session",
+  "credential_unavailable",
+] as const;
+
+export type McpProbeStatus = (typeof MCP_PROBE_STATUSES)[number];
+
+export interface McpConnectionTest {
+  status: McpProbeStatus;
+  reachable: boolean;
+  handshake_completed: boolean;
+  protocol_version: string | null;
+  server_name: string | null;
+  server_version: string | null;
+  latency_ms: number;
+  message: string | null;
+  checked_at: string;
+}
+
+/// `tool_errored` is the server answering and the tool reporting an error: not
+/// a connection failure. the rest are the failure statuses of a connection test
+export type McpToolCallOutcome = "success" | "tool_errored" | Exclude<McpProbeStatus, "reachable">;
+
+export interface McpToolCallInput {
+  tool: string;
+  arguments?: Record<string, unknown>;
+}
+
+export interface McpToolCallResult {
+  outcome: McpToolCallOutcome;
+  ok: boolean;
+  latency_ms: number;
+  /// the raw JSON-RPC messages. a response too large to keep arrives as
+  /// `{ truncated: true, size_bytes, preview }`
+  request: unknown;
+  response: unknown;
+  message: string | null;
+}
+
+// a live handshake against the server, with the caller's own credential or
+// session. a failure answers 200 with the reason in `status`
+export function testMcpServerConnection(id: string): Promise<McpConnectionTest> {
+  return sendJson<McpConnectionTest>("POST", `/api/v1/mcp-servers/${id}/test`);
+}
+
+// runs one tool of the server's manifest for real. a 400 means the tool is not
+// in the manifest or the arguments are not an object
+export function callMcpServerTool(id: string, input: McpToolCallInput): Promise<McpToolCallResult> {
+  return sendJson<McpToolCallResult>("POST", `/api/v1/mcp-servers/${id}/tools/call`, input);
 }
 
 export function deleteMcpServer(id: string): Promise<void> {

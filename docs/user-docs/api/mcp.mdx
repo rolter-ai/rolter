@@ -19,6 +19,26 @@ The virtual key is stripped before forwarding and replaced with the session's
 OAuth bearer. A missing owner, cross-organization server, expired or revoked
 session, or insufficient scope fails before any downstream connection.
 
+### Connection status and trying a tool
+
+**Test connection** on a server's card (or
+`POST /api/v1/mcp-servers/{id}/test`) runs the MCP handshake and tells you which
+of these it was: **reachable** (with the protocol version the server negotiated
+and its name), **unreachable** (nothing answered), **handshake failed** (it
+answered, but not as an MCP server does), **auth rejected** (it answered
+`401` or `403`), or that rolter's egress policy refused the address. The card
+keeps the time it last answered and the time and reason of its last failure, even
+after a later success.
+
+**Try it** runs one tool from the server's list with arguments you supply
+(`POST /api/v1/mcp-servers/{id}/tools/call`) and shows the raw JSON-RPC request
+and reply. A tool that ran and reported an error is shown as **tool errored**,
+separately from the server not answering. For a server behind OAuth both use
+your own signed-in session, so connect first; both need permission to update the
+server. The call goes from the control plane, not through the gateway, so it is
+in the audit log (the tool and its outcome, not the arguments) and not in the MCP
+logs.
+
 ### When an upstream asks for a wider scope
 
 If the MCP server refuses a call because the user's token lacks a scope

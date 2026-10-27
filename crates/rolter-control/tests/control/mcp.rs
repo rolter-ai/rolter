@@ -2209,10 +2209,11 @@ async fn repinning_the_oauth_issuer_invalidates_its_discovery_cache() {
         cached_first,
         "an edit that left the issuer and discovery mode alone must not invalidate the cache"
     );
-    assert_eq!(
-        config_version(&pool).await - before,
-        1,
-        "one edit must bump config_version exactly once"
+    // an OAuth client is not something the gateway reads, so since 0115 this
+    // edit bumps nothing; what must never happen is more than once
+    assert!(
+        config_version(&pool).await - before <= 1,
+        "one edit must not bump config_version more than once"
     );
 
     // the operator rotates to a different authorization server: a new issuer
@@ -2241,9 +2242,8 @@ async fn repinning_the_oauth_issuer_invalidates_its_discovery_cache() {
     );
     // the clearing rides on the update that wrote the issuer; a second
     // statement would bump config_version twice for one logical edit
-    assert_eq!(
-        config_version(&pool).await - before,
-        1,
+    assert!(
+        config_version(&pool).await - before <= 1,
         "clearing the cache must not cost a second config_version bump"
     );
 

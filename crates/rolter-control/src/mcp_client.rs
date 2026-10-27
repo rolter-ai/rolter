@@ -50,6 +50,12 @@ pub(crate) enum FailureKind {
 }
 
 impl FailureKind {
+    /// Whether a connection was made and something answered. `EgressDenied`
+    /// never connected, and `Unreachable` got no answer; the others did.
+    pub(crate) fn reached_server(self) -> bool {
+        !matches!(self, Self::EgressDenied | Self::Unreachable)
+    }
+
     /// The value stored on the server row and shown by the dashboard.
     pub(crate) fn code(self) -> &'static str {
         match self {
@@ -236,6 +242,18 @@ impl McpClient {
             }
         }
         Ok(tools)
+    }
+
+    /// Run one tool and return the raw exchange. Whether the tool itself
+    /// reported an error is the caller's to read from the reply: the call
+    /// reached the server and got an answer, which is not a transport failure.
+    pub(crate) async fn call_tool(
+        &mut self,
+        name: &str,
+        arguments: Value,
+    ) -> Result<Exchange, Failure> {
+        self.request("tools/call", json!({"name": name, "arguments": arguments}))
+            .await
     }
 
     async fn notify(&mut self, method: &str) -> Result<(), Failure> {
@@ -437,9 +455,12 @@ mod tests {
     use axum::Router;
     use parking_lot::Mutex;
 
+    /// a request the mock saw: its method and the `Authorization` it carried
+    type Seen = (String, Option<String>);
+
     #[derive(Clone, Default)]
     struct Server {
-        seen: Arc<Mutex<Vec<(String, Option<String>)>>>,
+        seen: Arc<Mutex<Vec<Seen>>>,
         sse: bool,
         status: Option<u16>,
         tools: Vec<Value>,
@@ -612,6 +633,30 @@ mod tests {
             .unwrap();
         assert_eq!(failure.kind, FailureKind::EgressDenied);
         assert_eq!(listener.accepted(), 0);
+    }
+
+    #[tokio::test]
+    async fn calls_a_tool_and_returns_the_raw_exchange() {
+        let url = serve(Server {
+            tools: vec![tool("a")],
+            ..Default::default()
+        })
+        .await;
+        let mut client = McpClient::connect(&policy(), &url, ClientAuth::None)
+            .await
+            .unwrap();
+        let exchange = client.call_tool("a", json!({"x": 1})).await.unwrap();
+        assert_eq!(exchange.request["params"]["name"], "a");
+        assert_eq!(exchange.request["params"]["arguments"]["x"], 1);
+        assert_eq!(exchange.response["result"]["content"][0]["text"], "ok");
+    }
+
+    #[test]
+    fn only_a_refused_or_silent_server_never_answered() {
+        assert!(!FailureKind::EgressDenied.reached_server());
+        assert!(!FailureKind::Unreachable.reached_server());
+        assert!(FailureKind::AuthRejected.reached_server());
+        assert!(FailureKind::HandshakeFailed.reached_server());
     }
 
     #[test]

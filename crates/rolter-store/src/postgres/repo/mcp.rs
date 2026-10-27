@@ -28,7 +28,8 @@ const MCP_SERVER_COLUMNS: &str = "id, org_id, name, slug, url, transport, descri
      oauth_issuer, oauth_discovery, oauth_discovered_issuer, oauth_discovered_authorize_url, \
      oauth_discovered_token_url, oauth_discovered_iss_supported, oauth_discovered_at, \
      tools_stale, tools_discovery_status, tools_discovery_error, tools_discovered_at, \
-     tools_discovery_attempted_at, \
+     tools_discovery_attempted_at, last_contact_at, last_protocol_version, last_server_name, \
+     last_error_kind, last_error_at, \
      (client_secret_ciphertext is not null) as has_client_secret, \
      (credential_ciphertext is not null) as has_credential";
 
@@ -64,6 +65,18 @@ pub struct McpServerUpdate<'a> {
     pub connect_timeout_ms: Option<i32>,
     pub request_timeout_ms: Option<i32>,
     pub max_retries: Option<i32>,
+}
+
+/// One conversation with a server, as recorded on its row (#951).
+#[derive(Debug, Clone, Copy)]
+pub enum McpContact<'a> {
+    /// the `initialize` handshake completed
+    Reached {
+        protocol_version: &'a str,
+        server_name: Option<&'a str>,
+    },
+    /// it did not; `kind` is one of the values the column's check allows
+    Failed { kind: &'a str },
 }
 
 /// What a successful `tools/list` call leaves on the row (#1283).
@@ -327,6 +340,32 @@ impl McpServerRepo<'_> {
             || format!("mcp server {id}"),
         )
         .await
+    }
+
+    /// Note what a conversation with the server came to (#951). A failure
+    /// leaves the last success alone and a success leaves the last failure
+    /// alone, so the row can say both "reached it at" and "it last broke at".
+    pub async fn record_contact(&self, id: Uuid, contact: McpContact<'_>) -> Result<()> {
+        let query = match contact {
+            McpContact::Reached {
+                protocol_version,
+                server_name,
+            } => sqlx::query(
+                "update mcp_servers set last_contact_at = now(), last_protocol_version = $2, \
+                 last_server_name = $3 where id = $1",
+            )
+            .bind(id)
+            .bind(protocol_version)
+            .bind(server_name),
+            McpContact::Failed { kind } => sqlx::query(
+                "update mcp_servers set last_error_kind = $2, last_error_at = now() \
+                 where id = $1",
+            )
+            .bind(id)
+            .bind(kind),
+        };
+        query.execute(self.0).await.map_err(store_err)?;
+        Ok(())
     }
 
     /// Set how rolter authenticates to this server, sealing the credential

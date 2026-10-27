@@ -8,6 +8,7 @@ import {
   Plus,
   Puzzle,
   Radar,
+  ScrollText,
   Server,
   Settings2,
   Wrench,
@@ -21,10 +22,11 @@ import { EditorSheet } from "@/components/EditorSheet";
 import { GatedButton } from "@/components/GatedButton";
 import { GatedSwitch } from "@/components/GatedSwitch";
 import { LoadError } from "@/components/LoadError";
+import { ConnectionHealth, ConnectionTestResult, ToolsSheet } from "@/components/McpServerProbe";
 import { CardGridSkeleton } from "@/components/LoadingState";
 import { PageBody } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { ChipGroup } from "@/components/ui/chip-group";
 import { Combobox } from "@/components/ui/combobox";
 import {
@@ -60,11 +62,13 @@ import {
   MCP_OAUTH_DISCOVERY_MODES,
   setMcpOAuthClient,
   setMcpServerAuth,
+  testMcpServerConnection,
   updateMcpServer,
   updateMcpSettings,
   updateMcpToolGroup,
   type McpGatewaySettingsRow,
   type McpAuthKind,
+  type McpConnectionTest,
   type McpLibraryItem,
   type McpOAuthClientInput,
   type McpOAuthDiscovery,
@@ -769,6 +773,24 @@ export function McpCatalog() {
         detail: errorText(error, t),
       }),
   });
+  // a connection test answers 200 whatever it found, so only a failed request
+  // lands in onError; the result is kept per card until the next test replaces it
+  const [tested, setTested] = React.useState<Record<string, McpConnectionTest>>({});
+  const testConnection = useMutation({
+    mutationFn: (server: McpServerRow) => testMcpServerConnection(server.id),
+    onSuccess: (result, server) => setTested((prev) => ({ ...prev, [server.id]: result })),
+    onSettled: () => void client.invalidateQueries({ queryKey: ["mcp-servers", orgId] }),
+    onError: (error, server) =>
+      toast.push({
+        tone: "error",
+        title: t("pages.mcpCatalog.test.failedToast", { name: server.name }),
+        detail: errorText(error, t),
+      }),
+  });
+  const testing = testConnection.isPending ? testConnection.variables?.id : undefined;
+  // the tools panel follows the list, so a discovery that lands behind it shows
+  const [toolsFor, setToolsFor] = React.useState<string | null>(null);
+  const toolsServer = query.data?.find((server) => server.id === toolsFor);
   const discovering = discover.isPending ? discover.variables?.id : undefined;
   // only the card whose request is in flight locks; the others stay live
   const toggling = toggle.isPending ? toggle.variables?.id : undefined;
@@ -881,6 +903,10 @@ export function McpCatalog() {
                 )}
                 <DiscoveryLine server={server} />
               </div>
+              <ConnectionHealth server={server} />
+              {tested[server.id] && (
+                <ConnectionTestResult server={server} result={tested[server.id]} />
+              )}
               {server.auth_kind === "oauth" && (
                 <ConnectionLine
                   id={`mcp-connection-${server.id}`}
@@ -917,6 +943,37 @@ export function McpCatalog() {
                       : t("pages.mcpCatalog.discovery.discover")}
                   </GatedButton>
                   <GatedButton
+                    gate="mcp_server:update"
+                    control="mcp-server-test"
+                    variant="outline"
+                    disabled={testing === server.id}
+                    aria-label={t("pages.mcpCatalog.test.aria", { name: server.name })}
+                    onClick={() => testConnection.mutate(server)}
+                  >
+                    {testing === server.id && (
+                      <Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" aria-hidden />
+                    )}
+                    {testing === server.id
+                      ? t("pages.mcpCatalog.test.running")
+                      : t("pages.mcpCatalog.test.action")}
+                  </GatedButton>
+                  <Button
+                    variant="outline"
+                    aria-label={t("pages.mcpCatalog.tools.openAria", { name: server.name })}
+                    onClick={() => setToolsFor(server.id)}
+                  >
+                    <Wrench className="mr-2 h-4 w-4" aria-hidden />
+                    {t("pages.mcpCatalog.tools.open")}
+                  </Button>
+                  <Link
+                    to={`/mcp-logs?server=${encodeURIComponent(server.slug)}`}
+                    aria-label={t("pages.mcpCatalog.logs.aria", { name: server.name })}
+                    className={buttonVariants({ variant: "ghost" })}
+                  >
+                    <ScrollText className="mr-2 h-4 w-4" aria-hidden />
+                    {t("pages.mcpCatalog.logs.link")}
+                  </Link>
+                  <GatedButton
                     gate="mcp_server:delete"
                     control="mcp-server-delete"
                     variant="ghost"
@@ -952,6 +1009,7 @@ export function McpCatalog() {
           onSave={(draft) => save.mutate({ initial: editing, draft })}
         />
       )}
+      {toolsServer && <ToolsSheet server={toolsServer} onClose={() => setToolsFor(null)} />}
       {/* mounted whether or not a server is picked: the dialog reads how the
           delete ended on its own closing edge, which an unmount never has */}
       <ConfirmDialog

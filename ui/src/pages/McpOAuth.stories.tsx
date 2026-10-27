@@ -76,6 +76,11 @@ const SERVERS: McpServerRow[] = [
     tools_discovered_at: "2026-09-12T08:30:00Z",
     tools_discovery_attempted_at: "2026-09-12T08:30:00Z",
     tools_stale: [],
+    last_contact_at: null,
+    last_protocol_version: null,
+    last_server_name: null,
+    last_error_kind: null,
+    last_error_at: null,
   },
   {
     id: "srv-jira",
@@ -113,6 +118,11 @@ const SERVERS: McpServerRow[] = [
     tools_discovered_at: "2026-09-12T08:30:00Z",
     tools_discovery_attempted_at: "2026-09-12T08:30:00Z",
     tools_stale: [],
+    last_contact_at: null,
+    last_protocol_version: null,
+    last_server_name: null,
+    last_error_kind: null,
+    last_error_at: null,
   },
 ];
 

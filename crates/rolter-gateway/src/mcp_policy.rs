@@ -436,13 +436,18 @@ mod tests {
 
     #[test]
     fn groups_and_the_manifest_both_have_to_agree() {
-        let (mut snapshot, mut server) = snapshot(vec![group("org", "srv", &["a", "stale"])]);
-        server.tools = vec!["a".into()];
         // `stale` is in the group but no longer in the manifest
+        let server = McpServerConfig {
+            id: "srv".into(),
+            org_id: "org".into(),
+            slug: "github".into(),
+            tools: vec!["a".into()],
+            ..Default::default()
+        };
         let mut config = GatewayConfig::default();
         config.mcp_servers.push(server.clone());
         config.mcp_tool_groups = vec![group("org", "srv", &["a", "stale"])];
-        snapshot = Snapshot::build(&config, &crate::load::LoadTracker::default());
+        let snapshot = Snapshot::build(&config, &crate::load::LoadTracker::default());
         assert!(matches!(
             enforce(&snapshot, &server, call("a").as_bytes()),
             Verdict::Allow

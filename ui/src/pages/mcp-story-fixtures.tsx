@@ -58,6 +58,14 @@ export const DISCOVERED_OK = {
   tools_discovery_attempted_at: "2026-09-12T08:30:00Z",
   tools_stale: [] as string[],
 } as const;
+// no handshake and no failure ever recorded (#951): a server nobody has tested
+export const NEVER_CONTACTED = {
+  last_contact_at: null,
+  last_protocol_version: null,
+  last_server_name: null,
+  last_error_kind: null,
+  last_error_at: null,
+} as const;
 export const SERVERS: McpServerRow[] = [
   {
     id: "server-github",
@@ -80,6 +88,7 @@ export const SERVERS: McpServerRow[] = [
     ...NO_AUTH,
     ...UNDISCOVERED,
     ...DISCOVERED_OK,
+    ...NEVER_CONTACTED,
   },
   {
     id: "server-sentry",
@@ -102,6 +111,7 @@ export const SERVERS: McpServerRow[] = [
     ...NO_AUTH,
     ...UNDISCOVERED,
     ...DISCOVERED_OK,
+    ...NEVER_CONTACTED,
   },
 ];
 // a server whose OAuth client is already registered: Connect needs a client id,

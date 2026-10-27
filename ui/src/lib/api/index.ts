@@ -261,6 +261,10 @@ export {
   startMcpOAuth,
   refreshMcpSession,
   exchangeMcpSession,
+  MCP_CONNECTION_ERRORS,
+  MCP_PROBE_STATUSES,
+  testMcpServerConnection,
+  callMcpServerTool,
 } from "./mcp";
 export type {
   McpLogRow,
@@ -272,6 +276,12 @@ export type {
   McpToolsDiscoveryError,
   McpServerToolRow,
   McpServerToolsResponse,
+  McpConnectionError,
+  McpProbeStatus,
+  McpConnectionTest,
+  McpToolCallOutcome,
+  McpToolCallInput,
+  McpToolCallResult,
   McpOAuthDiscovery,
   McpAuthKind,
   McpServerAuthInput,

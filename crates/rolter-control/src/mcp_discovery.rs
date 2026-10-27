@@ -32,7 +32,7 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 use rolter_store::postgres::models::McpServer;
-use rolter_store::postgres::repo::{McpOAuthRepo, McpServerRepo, McpToolDiscovery};
+use rolter_store::postgres::repo::{McpContact, McpOAuthRepo, McpServerRepo, McpToolDiscovery};
 
 use crate::crud::{log_audit, pool, ApiResult};
 use crate::mcp_client::{ClientAuth, DiscoveredTool, McpClient};
@@ -109,7 +109,7 @@ fn schemas_json(discovered: &[DiscoveredTool]) -> Value {
 
 /// How to authenticate a discovery call, or the code to record when it cannot
 /// be done yet.
-async fn resolve_auth(
+pub(crate) async fn resolve_auth(
     state: &ControlState,
     server: &McpServer,
     user: Option<Uuid>,
@@ -189,6 +189,8 @@ pub(crate) async fn discover(
     };
     let listed = async {
         let mut client = McpClient::connect(&state.egress, &server.url, auth).await?;
+        // the handshake completing is contact whether or not the list follows
+        record_reached(&repo, server_id, &client).await;
         client.list_tools().await
     }
     .await;
@@ -208,6 +210,7 @@ pub(crate) async fn discover(
                 .await?)
         }
         Err(failure) => {
+            record_failed(&repo, server_id, failure.kind).await;
             // the sentence is secret-free by construction, so it may be logged
             tracing::debug!(
                 %server_id,
@@ -220,6 +223,33 @@ pub(crate) async fn discover(
                 .await?)
         }
     }
+}
+
+/// Note on the row that the handshake completed. Bookkeeping: a failure to
+/// write it is not worth failing the call it describes.
+pub(crate) async fn record_reached(repo: &McpServerRepo<'_>, id: Uuid, client: &McpClient) {
+    let handshake = &client.handshake;
+    let _ = repo
+        .record_contact(
+            id,
+            McpContact::Reached {
+                protocol_version: &handshake.protocol_version,
+                server_name: handshake.server_name.as_deref(),
+            },
+        )
+        .await;
+}
+
+/// Note on the row why contact failed. `FailureKind` only reaches the column's
+/// allowed values, which is what the check constraint holds it to.
+pub(crate) async fn record_failed(
+    repo: &McpServerRepo<'_>,
+    id: Uuid,
+    kind: crate::mcp_client::FailureKind,
+) {
+    let _ = repo
+        .record_contact(id, McpContact::Failed { kind: kind.code() })
+        .await;
 }
 
 /// Run discovery in the background for a server that was just installed or

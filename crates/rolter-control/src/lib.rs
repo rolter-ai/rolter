@@ -85,6 +85,8 @@ mod mcp_oauth_discovery;
 #[cfg(feature = "postgres")]
 mod mcp_oauth_flow;
 #[cfg(feature = "postgres")]
+mod mcp_probe;
+#[cfg(feature = "postgres")]
 mod me;
 #[cfg(feature = "postgres")]
 mod me_saved_views;
@@ -1267,6 +1269,7 @@ fn build_app_with(state: ControlState, mount_internal: bool) -> Router {
             .merge(public_url::router())
             .merge(mcp_logs::router())
             .merge(mcp_discovery::router())
+            .merge(mcp_probe::router())
             .merge(ui_events::router())
             .merge(mcp_oauth::router())
             .merge(mcp_oauth_flow::router())
