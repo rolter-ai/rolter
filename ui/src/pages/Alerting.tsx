@@ -639,7 +639,7 @@ function AlertRulesScreen() {
             <article
               key={r.id}
               aria-labelledby={nameId}
-              className="flex flex-col gap-3 rounded-[10px] border border-[color:var(--border-default)] bg-card p-4"
+              className="flex flex-col gap-3 rounded-lg border border-[color:var(--border-default)] bg-card p-4"
             >
               <div className="flex items-center gap-2.5">
                 <StatusDot color={tone.fill} />

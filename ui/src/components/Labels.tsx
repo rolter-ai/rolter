@@ -253,7 +253,7 @@ export function LabelSheet({
               {custom.map((row) => (
                 <div
                   key={row.id}
-                  className="flex items-center gap-2 rounded-[10px] border border-[color:var(--border-default)] px-3 py-2"
+                  className="flex items-center gap-2 rounded-lg border border-[color:var(--border-default)] px-3 py-2"
                 >
                   <span className="w-40 flex-none truncate font-mono text-xs">{row.key}</span>
                   <Input
@@ -290,7 +290,7 @@ export function LabelSheet({
               {auto.map((row) => (
                 <div
                   key={row.id}
-                  className="flex flex-col gap-1 rounded-[10px] border border-dashed border-[color:var(--border-default)] px-3 py-2"
+                  className="flex flex-col gap-1 rounded-lg border border-dashed border-[color:var(--border-default)] px-3 py-2"
                 >
                   <LabelChips labels={[row]} />
                   <p className="text-xs text-muted-foreground">

@@ -27,6 +27,7 @@ import {
 import type { GuardrailProviderInput, GuardrailProviderRow } from "@/lib/api";
 import ru from "@/lib/i18n/locales/ru.json";
 import en from "@/lib/i18n/locales/en.json";
+import { expectFieldHint } from "@/lib/story-hints";
 import { phoneFits } from "@/lib/story-viewport";
 import { UxScreenProvider } from "@/lib/ux-react";
 
@@ -519,6 +520,41 @@ export const ExplainsFailOpen: Story = {
     );
   },
 };
+
+/**
+ * The fields whose effect is hardest to predict explain themselves in an (i)
+ * beside the label (#487): what the stage covers, what a failure does to a
+ * request, and what the three limits cost. The notes sit whole inside the
+ * dialog, also for the last column of the limits row.
+ */
+function explainsEveryField(locale: "en" | "ru"): Story {
+  const catalog = locale === "ru" ? ru : en;
+  const p = catalog.pages.guardrailProviders;
+  const about = (label: string) => catalog.common.aboutField.replace("{{label}}", label);
+  return {
+    ...(locale === "ru" ? { globals: { locale: "ru" } } : {}),
+    render: () => <Harness fetchStub={registry(PROVIDERS)} />,
+    play: async ({ canvasElement }) => {
+      await userEvent.click(
+        await within(canvasElement).findByRole("button", { name: p.addProvider }),
+      );
+      const dialog = await within(document.body).findByRole("dialog", { name: p.dialogAddTitle });
+      for (const [label, says] of [
+        [p.fieldName, p.nameInfo],
+        [p.fieldStage, p.stageInfo],
+        [p.fieldFailure, p.failureInfo],
+        [p.fieldTimeout, p.timeoutInfo],
+        [p.fieldRetries, p.retriesInfo],
+        [p.fieldBodyCap, p.bodyCapInfo],
+        [p.fieldAuth, p.authInfo],
+      ] as const) {
+        await expectFieldHint(dialog, about(label), says);
+      }
+    },
+  };
+}
+export const ExplainsEachFieldInAHint: Story = explainsEveryField("en");
+export const ExplainsEachFieldInAHintInRussian: Story = explainsEveryField("ru");
 
 // What a non-superadmin gets: the screen refused before it asks (#1606).
 //
