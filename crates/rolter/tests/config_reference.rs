@@ -309,6 +309,14 @@ const CHECKS: &[Check] = &[
         "##### \\[\\[prompt_templates.templates.decorators\\]\\]",
         "Decorator",
     ),
+    with_exempt(
+        "### \\[plugins\\]",
+        "PluginsConfig",
+        &[(
+            "instances",
+            "owned by the control plane and documented in prose",
+        )],
+    ),
 ];
 
 impl Keys {
