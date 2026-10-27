@@ -3,7 +3,7 @@ import { getJson, sendJson } from "./request";
 
 /**
  * Every balancing strategy the control plane accepts, in the order of the
- * `STRATEGIES` allowlist in `crates/rolter-control/src/crud.rs` (#897).
+ * `STRATEGIES` allowlist in `crates/rolter-control/src/crud/routes.rs` (#897).
  *
  * This is the API contract, not the menu: which of these a picker offers, and
  * with what caveat, is decided in `lib/strategies.ts`. Adding a strategy to the
@@ -167,8 +167,6 @@ export function fetchModels(): Promise<EffectiveModelDto[]> {
 export function deleteModel(model: string): Promise<void> {
   return sendJson<void>("DELETE", `/api/v1/models/${encodeURIComponent(model)}`);
 }
-
-// --- virtual keys (crates/rolter-control/src/crud.rs) ---
 
 export interface ComplexityTier {
   name: string;

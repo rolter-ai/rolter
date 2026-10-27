@@ -1,3 +1,4 @@
+// prompt template repository (crates/rolter-control/src/crud/prompts.rs)
 import { getJson, sendJson } from "./request";
 
 export interface PromptTemplateVariable {
@@ -129,5 +130,3 @@ export function rollbackPromptTemplateVersion(
     version,
   });
 }
-
-// --- organization skills repository (crates/rolter-control/src/crud.rs) ---

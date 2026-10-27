@@ -3459,13 +3459,13 @@ fn governance_schemas(p: &Prim) -> Value {
     let timestamp = &p.timestamp;
     let string = &p.string;
     let nullable_string = &p.nullable_string;
-    // the `SCOPE_TYPES` allowlist in `crud.rs`: business unit and customer are
+    // the `SCOPE_TYPES` allowlist in `crud/`: business unit and customer are
     // the governance dimensions a key's spend rolls up to (#539)
     let scope_type = json!({
         "type": "string",
         "enum": ["org", "team", "project", "virtual_key", "business_unit", "customer"]
     });
-    // what `validate_period` in `crud.rs` accepts, read off the same table the
+    // what `validate_period` in `crud/` accepts, read off the same table the
     // snapshot loader uses, so the documented set cannot drift from it (#1902)
     let periods: Vec<&str> = rolter_core::BudgetPeriod::SPELLINGS
         .iter()
@@ -4162,10 +4162,10 @@ mod tests {
     /// Handler names in one file whose signature takes an axum `Query<T>`.
     ///
     /// Scoped to a single file on purpose. Keying by bare function name across
-    /// the crate collides: `list_users` exists in both `crud.rs` (no query
+    /// the crate collides: `list_users` exists in both `crud/` (no query
     /// string) and `scim.rs` (RFC 7644's), and `callback` in both
     /// `mcp_oauth_flow.rs` and `sso.rs`. A crate-wide map reported the
-    /// `crud.rs` route as taking a query string it does not take. Handlers and
+    /// `crud/` route as taking a query string it does not take. Handlers and
     /// the `router()` that mounts them live in the same module here, so
     /// matching within the file is both correct and stricter.
     fn handlers_taking_query(text: &str) -> BTreeSet<String> {

@@ -202,6 +202,27 @@ jobs:
         if: matrix.leg == 'rust' && steps.scope.outputs.analyze != 'false'
         uses: github/codeql-action/analyze@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
         with:
+          # the cli writes the category into the sarif, and upload-sarif only
+          # fills in one the run lacks, so the category is set here rather
+          # than left to the upload step
+          category: "/language:rust"
+          upload: failure-only
+          output: ${{ runner.temp }}/codeql-sarif
+      # test fixtures (a deliberately wrong nonce, a loopback url) raise alerts
+      # on every pr that rewrites a test file and `paths-ignore` cannot stop the
+      # rust extractor, so results under crates/*/tests/ are dropped from the
+      # sarif before upload (#2749). crates/*/src/ keeps the full query suite
+      - name: drop test-fixture results (rust)
+        if: matrix.leg == 'rust' && steps.scope.outputs.analyze != 'false'
+        run: >-
+          bash scripts/filter-codeql-sarif.sh
+          "${RUNNER_TEMP}/codeql-sarif/rust.sarif"
+          "${RUNNER_TEMP}/codeql-sarif/rust.filtered.sarif"
+      - name: upload rust results
+        if: matrix.leg == 'rust' && steps.scope.outputs.analyze != 'false'
+        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
+        with:
+          sarif_file: ${{ runner.temp }}/codeql-sarif/rust.filtered.sarif
           category: "/language:rust"
       # analyze takes one `category` for every language it ran, and the cli
       # writes it verbatim into each run, so three languages under one

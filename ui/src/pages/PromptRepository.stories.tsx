@@ -880,7 +880,7 @@ export const RequiresSlugToDeleteTemplate: Story = {
 // A viewer reaches the same workbench — `prompt_template:read` is a viewer's —
 // and every control on it that writes is refused before the click rather than
 // after the 403. Publishing, rolling back and saving a version are all one
-// `prompt_template:update` guard in crates/rolter-control/src/crud.rs, so the
+// `prompt_template:update` guard in crates/rolter-control/src/crud/prompts.rs, so the
 // role that would allow them is Admin.
 export const AsViewer: Story = {
   render: () => (

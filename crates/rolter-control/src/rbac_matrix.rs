@@ -191,7 +191,7 @@ const CAPABILITIES: &[Capability] = &[
     // a provider or group may be scoped to one project of an org (#1919), whose
     // admin then manages it. The scope is `project` so the advisory answer
     // reaches a project role; an org admin still passes there through the
-    // org membership. An org-wide row stays an org admin's: crud.rs checks
+    // org membership. An org-wide row stays an org admin's: the crud module checks
     // the org for it, and that, not this table, is the authority.
     // The provider test, with or without its `model` lookup (#2008), and the
     // model listing both spend the stored credential, so they stay behind
@@ -1635,7 +1635,7 @@ mod tests {
     }
 
     /// a provider or group may be scoped to one project (#1919), so a project
-    /// admin's own project reaches the capability crud.rs grants them, while a
+    /// admin's own project reaches the capability the crud module grants them, while a
     /// project viewer and a caller who names no project get no write
     #[test]
     fn a_project_admin_is_promised_provider_writes_on_their_project() {
@@ -1914,7 +1914,29 @@ mod tests {
         ("config_export.rs", include_str!("config_export.rs")),
         ("connectors.rs", include_str!("connectors.rs")),
         ("cors.rs", include_str!("cors.rs")),
-        ("crud.rs", include_str!("crud.rs")),
+        ("crud/mod.rs", include_str!("crud/mod.rs")),
+        ("crud/audit_log.rs", include_str!("crud/audit_log.rs")),
+        ("crud/budgets.rs", include_str!("crud/budgets.rs")),
+        (
+            "crud/business_units.rs",
+            include_str!("crud/business_units.rs"),
+        ),
+        ("crud/customers.rs", include_str!("crud/customers.rs")),
+        ("crud/memberships.rs", include_str!("crud/memberships.rs")),
+        ("crud/models.rs", include_str!("crud/models.rs")),
+        ("crud/pricing.rs", include_str!("crud/pricing.rs")),
+        ("crud/prompts.rs", include_str!("crud/prompts.rs")),
+        (
+            "crud/provider_groups.rs",
+            include_str!("crud/provider_groups.rs"),
+        ),
+        ("crud/providers.rs", include_str!("crud/providers.rs")),
+        ("crud/rate_limits.rs", include_str!("crud/rate_limits.rs")),
+        ("crud/routes.rs", include_str!("crud/routes.rs")),
+        ("crud/skills.rs", include_str!("crud/skills.rs")),
+        ("crud/tenancy.rs", include_str!("crud/tenancy.rs")),
+        ("crud/users.rs", include_str!("crud/users.rs")),
+        ("crud/virtual_keys.rs", include_str!("crud/virtual_keys.rs")),
         ("egress_client.rs", include_str!("egress_client.rs")),
         ("feature_flags.rs", include_str!("feature_flags.rs")),
         ("expiry_sweep.rs", include_str!("expiry_sweep.rs")),
@@ -2007,13 +2029,24 @@ mod tests {
     #[test]
     fn the_module_list_covers_the_whole_control_plane() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let mut on_disk: Vec<String> = std::fs::read_dir(dir)
-            .expect("src/ is readable")
-            .filter_map(|entry| {
-                let name = entry.ok()?.file_name().to_string_lossy().into_owned();
-                name.ends_with(".rs").then_some(name)
-            })
-            .collect();
+        // a module directory (`crud/`) is walked too, its files named by their
+        // path under src/, so a submodule cannot quietly escape the checks
+        fn rust_files(dir: &std::path::Path, prefix: &str, found: &mut Vec<String>) {
+            for entry in std::fs::read_dir(dir).expect("src/ is readable").flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if entry.path().is_dir() {
+                    // `bin/` holds separate binaries, not control-plane handlers
+                    if name == "bin" {
+                        continue;
+                    }
+                    rust_files(&entry.path(), &format!("{prefix}{name}/"), found);
+                } else if name.ends_with(".rs") {
+                    found.push(format!("{prefix}{name}"));
+                }
+            }
+        }
+        let mut on_disk = Vec::new();
+        rust_files(&dir, "", &mut on_disk);
         on_disk.sort();
         let mut listed: Vec<String> = MODULES.iter().map(|(name, _)| name.to_string()).collect();
         listed.sort();

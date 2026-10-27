@@ -103,5 +103,3 @@ export function acceptInvitation(
     password === undefined ? {} : { password },
   );
 }
-
-// --- users + memberships (crates/rolter-control/src/crud.rs, ROL-223) ---
