@@ -109,10 +109,10 @@ The result is a CycloneDX JSON document you can hand to a scanner, for example `
 
 The SBOM is two scans merged into one document:
 
-- **The image layers**: the Debian packages of the distroless base image and the files they own.
-- **The lockfiles of the release tag**: every crate in `Cargo.lock` and every package in the dashboard's `ui/bun.lock`. The Rust binaries and the dashboard bundle do not carry their own dependency lists, so an image scan alone would miss them.
+- **The image layers**: the Debian packages of the distroless base image and the files they own, and the Rust crates the three rolter binaries link. The binaries are built with `cargo auditable`, which embeds their exact dependency list, so the crates are read from the binaries and not from `Cargo.lock`.
+- **The dashboard's lockfile**: every package in the release tag's `ui/bun.lock`. The dashboard bundle does not carry its own dependency list, so an image scan alone would miss it.
 
-It lists more than the image runs, never less. `Cargo.lock` includes development and platform-specific crates, and the `bun.lock` scan includes the dashboard's build tooling. A scanner finding in a development-only package may not reach the running image.
+The Rust list is exact. The dashboard list still contains more than the image runs, because the `bun.lock` scan includes the dashboard's build tooling: the scanner cannot split production from development packages reliably, and an SBOM that drops shipped packages is worse than one that lists too many. A scanner finding in a development-only npm package may not reach the running image.
 
 ## Docker Hub
 

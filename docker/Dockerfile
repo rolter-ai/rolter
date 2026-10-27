@@ -15,6 +15,14 @@ COPY ui/Cargo.toml ui/changelog.rs ./ui/
 # on every member that declares it. pass --build-arg CARGO_FEATURES= to build
 # the in-memory-only variant
 ARG CARGO_FEATURES="postgres"
+# cargo-auditable embeds the exact crate graph each binary links (a compressed
+# `.dep-v0` section) so the release sbom reads the shipped crates from the
+# binaries instead of over-reporting Cargo.lock (#2747). pinned and --locked
+# like every other build input
+ARG CARGO_AUDITABLE_VERSION=0.7.7
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
+    cargo install cargo-auditable --locked --version "${CARGO_AUDITABLE_VERSION}"
 # the crate registry, the git checkouts and the target directory are buildkit
 # cache mounts, so a rebuild reuses downloaded crates and compiled dependency
 # artifacts instead of starting from nothing. without them a one-line source
@@ -27,7 +35,7 @@ ARG CARGO_FEATURES="postgres"
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
     --mount=type=cache,target=/app/target,sharing=locked \
-    cargo build --release --workspace ${CARGO_FEATURES:+--features "$CARGO_FEATURES"} \
+    cargo auditable build --release --workspace ${CARGO_FEATURES:+--features "$CARGO_FEATURES"} \
     && mkdir -p /out \
     && cp target/release/rolter target/release/rolter-gateway target/release/rolter-control /out/
 
