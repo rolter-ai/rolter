@@ -4,7 +4,7 @@ import { createMemoryRouter, RouterProvider, useInRouterContext } from "react-ro
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import { Toaster } from "@/components/ui/toaster";
-import type { RbacEffective, Role } from "@/lib/api";
+import type { DeploymentRole, RbacEffective, Role } from "@/lib/api";
 import { AuthProvider } from "@/lib/auth";
 import { CapabilityProvider, useCapabilities } from "@/lib/can";
 import en from "@/lib/i18n/locales/en.json";
@@ -237,8 +237,11 @@ function GateProbe() {
   return <span data-testid={GATE_PROBE} data-gate={state} hidden />;
 }
 
-/** The four kinds of caller the gating stories are written for. */
-export type StoryRole = Role | "superadmin";
+/**
+ * The kinds of caller the gating stories are written for: an org role, a
+ * superadmin, or an account whose only authority is a deployment role (#1834).
+ */
+export type StoryRole = Role | "superadmin" | DeploymentRole;
 
 /**
  * A caller held by memberships rather than one org role (#2522). The stub reads
@@ -273,7 +276,12 @@ export function adminOfProject(projectId: string): StoryMemberships {
  * A bare role is one org membership, which every row of every chain reaches.
  */
 export function effectiveFor(role: StoryRole): RbacEffective {
-  return role === "superadmin" ? effectiveFromTable(null, true) : effectiveFromTable(role);
+  if (role === "superadmin") return effectiveFromTable(null, true);
+  // a deployment role is held on the account and reaches no scope
+  if (role === "operator" || role === "security_auditor") {
+    return effectiveFromTable(null, false, role);
+  }
+  return effectiveFromTable(role);
 }
 
 /** The published rules, which is where a disabled control reads its role from. */

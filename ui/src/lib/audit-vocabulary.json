@@ -147,6 +147,7 @@
     "team.update",
     "user.create",
     "user.delete",
+    "user.deployment_role",
     "user.password_reset",
     "user.password_reset_complete",
     "user.preferences.update",

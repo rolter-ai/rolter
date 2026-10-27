@@ -1349,6 +1349,18 @@ function AlertHistoryScreen() {
 // deployment-scoped settings: superadmin-only in the capability table, so a
 // lesser caller sees the refusal instead of a screen that loads and then 403s
 // (#1183)
-export const AlertChannels = superadminOnly(AlertChannelsScreen, "errors.resources.alertChannels");
-export const AlertRules = superadminOnly(AlertRulesScreen, "errors.resources.alertRules");
-export const AlertHistory = superadminOnly(AlertHistoryScreen, "errors.resources.alertHistory");
+export const AlertChannels = superadminOnly(
+  AlertChannelsScreen,
+  "errors.resources.alertChannels",
+  "alert_channel:read",
+);
+export const AlertRules = superadminOnly(
+  AlertRulesScreen,
+  "errors.resources.alertRules",
+  "alert_rule:read",
+);
+export const AlertHistory = superadminOnly(
+  AlertHistoryScreen,
+  "errors.resources.alertHistory",
+  "alert_history:read",
+);

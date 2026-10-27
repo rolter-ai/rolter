@@ -53,7 +53,7 @@ use uuid::Uuid;
 
 use crate::auth::{bearer_token, session_pepper};
 use crate::crud::{pool, ApiError, ApiResult};
-use crate::rbac_matrix::{action_key, Authority, Requirement};
+use crate::rbac_matrix::{action_key, Authority, DeploymentRole, Requirement};
 use crate::ControlState;
 
 /// The authenticated caller behind a control-plane mutation.
@@ -362,6 +362,15 @@ pub(crate) async fn authorize(
         // a superadmin-only capability has no scope a membership could satisfy,
         // so a plain user is refused without touching the database
         Authority::Superadmin => return Err(ApiError::Forbidden),
+        // nor does one a deployment role reaches: the role is on the account,
+        // read from the row the extractor already loaded
+        Authority::Deployment(roles) => {
+            return if holds_deployment_role(principal, roles) {
+                Ok(())
+            } else {
+                Err(ApiError::Forbidden)
+            };
+        }
     };
     let memberships = MembershipRepo(pool(state)).list_for_user(user.id).await?;
     if user_authorized(&memberships, chain, required) {
@@ -415,6 +424,19 @@ impl Principal {
             Principal::User(user) => Some(user.id),
         }
     }
+
+    /// The deployment role a plain account holds (#1834). A superadmin holds
+    /// none because it needs none: it passes every deployment capability. An
+    /// unrecognised stored value reads as no role, never as a wider one.
+    pub(crate) fn deployment_role(&self) -> Option<DeploymentRole> {
+        match self {
+            Principal::Superadmin { .. } => None,
+            Principal::User(user) => user
+                .deployment_role
+                .as_deref()
+                .and_then(DeploymentRole::parse),
+        }
+    }
 }
 
 /// One caller's authority, checked against many scopes, with the memberships
@@ -427,6 +449,7 @@ impl Principal {
 /// [`authorize`] would apply to it alone.
 pub(crate) struct ScopeFilter {
     superadmin: bool,
+    deployment_role: Option<DeploymentRole>,
     memberships: Vec<Membership>,
     grants: Vec<EffectiveGrant>,
     requirement: Requirement,
@@ -450,6 +473,7 @@ impl ScopeFilter {
         };
         Ok(Self {
             superadmin,
+            deployment_role: principal.deployment_role(),
             memberships,
             grants,
             requirement,
@@ -475,6 +499,9 @@ impl ScopeFilter {
         match requirement.authority {
             Authority::Authenticated => true,
             Authority::Superadmin => false,
+            Authority::Deployment(roles) => self
+                .deployment_role
+                .is_some_and(|held| roles.contains(&held)),
             Authority::Role(required) => {
                 user_authorized(&self.memberships, chain, required)
                     || custom_grants_allow(&self.grants, chain, requirement)
@@ -678,6 +705,14 @@ fn require_superadmin(principal: &Principal) -> ApiResult<()> {
     }
 }
 
+/// Whether `principal` is a superadmin or holds one of `roles` (#1834).
+fn holds_deployment_role(principal: &Principal, roles: &[DeploymentRole]) -> bool {
+    matches!(principal, Principal::Superadmin { .. })
+        || principal
+            .deployment_role()
+            .is_some_and(|held| roles.contains(&held))
+}
+
 /// Guard for a capability with no tenancy scope to resolve a role in.
 ///
 /// `requirement` comes from [`crate::rbac_matrix::superadmin_cap`], which is a
@@ -689,7 +724,10 @@ pub(crate) fn authorize_superadmin(
 ) -> ApiResult<()> {
     match requirement.authority {
         Authority::Superadmin => require_superadmin(principal),
-        Authority::Role(_) | Authority::Authenticated => Err(ApiError::Forbidden),
+        Authority::Deployment(roles) if holds_deployment_role(principal, roles) => Ok(()),
+        Authority::Deployment(_) | Authority::Role(_) | Authority::Authenticated => {
+            Err(ApiError::Forbidden)
+        }
     }
 }
 
@@ -1076,6 +1114,7 @@ mod tests {
             created_at: Utc::now(),
             display_name: None,
             bio: None,
+            deployment_role: None,
         }
     }
 
@@ -1096,6 +1135,57 @@ mod tests {
         assert_eq!(Principal::for_user(member).account_id(), Some(member_id));
 
         assert_eq!(Principal::Superadmin { account: None }.account_id(), None);
+    }
+
+    fn user_with_deployment_role(role: Option<&str>) -> Principal {
+        let mut user = user_with_superadmin(false);
+        user.deployment_role = role.map(str::to_string);
+        Principal::for_user(user)
+    }
+
+    /// a deployment role opens exactly the capabilities that name it, through
+    /// the same guard every deployment handler already calls (#1834)
+    #[test]
+    fn a_deployment_role_passes_only_the_capabilities_that_name_it() {
+        use crate::rbac_matrix::superadmin_cap;
+        let operator = user_with_deployment_role(Some("operator"));
+        let auditor = user_with_deployment_role(Some("security_auditor"));
+        let plain = user_with_deployment_role(None);
+
+        let drain = superadmin_cap!("cluster_node", Update);
+        let read_security = superadmin_cap!("security_settings", Read);
+        let write_security = superadmin_cap!("security_settings", Update);
+        let grant = superadmin_cap!("deployment_role", Update);
+
+        assert!(authorize_superadmin(&operator, drain).is_ok());
+        assert!(authorize_superadmin(&operator, read_security).is_err());
+        assert!(authorize_superadmin(&auditor, read_security).is_ok());
+        assert!(authorize_superadmin(&auditor, write_security).is_err());
+        assert!(authorize_superadmin(&auditor, drain).is_err());
+        assert!(authorize_superadmin(&plain, drain).is_err());
+        // neither role can grant one
+        assert!(authorize_superadmin(&operator, grant).is_err());
+        assert!(authorize_superadmin(&auditor, grant).is_err());
+        // the admin token and a superadmin account pass every one of them
+        let token = Principal::Superadmin { account: None };
+        assert!(authorize_superadmin(&token, drain).is_ok());
+        assert!(authorize_superadmin(&token, grant).is_ok());
+    }
+
+    #[test]
+    fn an_unrecognised_stored_deployment_role_holds_nothing() {
+        let stale = user_with_deployment_role(Some("superadmin"));
+        assert_eq!(stale.deployment_role(), None);
+        assert!(authorize_superadmin(
+            &stale,
+            crate::rbac_matrix::superadmin_cap!("cluster_node", Update)
+        )
+        .is_err());
+        // a superadmin holds no deployment role and needs none
+        assert_eq!(
+            Principal::Superadmin { account: None }.deployment_role(),
+            None
+        );
     }
 
     #[test]

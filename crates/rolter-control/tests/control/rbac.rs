@@ -1024,14 +1024,23 @@ async fn rbac_matrix_and_effective_permissions_are_api_backed() {
         .unwrap();
     assert_eq!(create["minimum_role"], "admin");
     assert_eq!(create["superadmin_only"], false);
-    // deployment-wide policy is not something an org admin can reach
+    // deployment-wide policy is not something an org admin can reach: the row
+    // takes no scoped role, and names the one deployment role that also does
     let flags = matrix["resources"]
         .as_array()
         .unwrap()
         .iter()
         .find(|r| r["resource"] == "feature_flags")
         .expect("feature_flags in the matrix");
-    assert_eq!(flags["actions"][0]["superadmin_only"], true);
+    assert_eq!(flags["actions"][0]["minimum_role"], Value::Null);
+    assert_eq!(flags["actions"][0]["deployment_roles"], json!(["operator"]));
+    let grant = matrix["resources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["resource"] == "deployment_role")
+        .expect("deployment_role in the matrix");
+    assert_eq!(grant["actions"][0]["superadmin_only"], true);
 
     let org: Value = client
         .post(format!("{base}/api/v1/orgs"))
@@ -3332,4 +3341,239 @@ async fn a_route_update_takes_the_project_admin() {
     let (status, body) = call(reqwest::Method::PUT, route_path, project_admin, edit).await;
     assert_eq!(status, 200, "{body}");
     assert_eq!(body["strategy"], "weighted");
+}
+
+/// An operator maintains the deployment and a security auditor reads how it is
+/// secured; neither reaches tenant data or can grant a role, and only a
+/// superadmin hands the roles out, with an audit row (#1834).
+#[tokio::test]
+async fn deployment_roles_open_their_capabilities_and_nothing_more() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app =
+        rolter_control::test_app_with_admin_token(pool.clone(), Some(admin_token().to_string()))
+            .await
+            .unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let org: Value = client
+        .post(format!("{base}/api/v1/orgs"))
+        .bearer_auth(admin_token())
+        .json(&json!({"name": "Acme", "slug": "acme"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_id = org["id"].as_str().unwrap().to_string();
+
+    let operator = seed_user(&pool, "ops@acme.test", false).await;
+    let auditor = seed_user(&pool, "sec@acme.test", false).await;
+    let org_admin = seed_user(&pool, "admin@acme.test", false).await;
+    seed_membership(
+        &pool,
+        org_admin,
+        Some(org_id.parse().unwrap()),
+        None,
+        None,
+        "admin",
+    )
+    .await;
+    let operator_token = seed_session(&pool, operator, "ops").await;
+    let auditor_token = seed_session(&pool, auditor, "sec").await;
+    let org_admin_token = seed_session(&pool, org_admin, "admin").await;
+
+    let status = |method: reqwest::Method, path: String, token: String, body: Value| {
+        let client = client.clone();
+        let base = base.clone();
+        async move {
+            client
+                .request(method, format!("{base}{path}"))
+                .bearer_auth(token)
+                .json(&body)
+                .send()
+                .await
+                .unwrap()
+                .status()
+                .as_u16()
+        }
+    };
+    let get = |path: &str, token: &str| {
+        status(
+            reqwest::Method::GET,
+            path.to_string(),
+            token.to_string(),
+            Value::Null,
+        )
+    };
+    let grant = |token: &str, id: uuid::Uuid, role: Value| {
+        status(
+            reqwest::Method::PUT,
+            format!("/api/v1/users/{id}/deployment-role"),
+            token.to_string(),
+            json!({ "role": role }),
+        )
+    };
+
+    // before any grant, an account with no deployment role reaches none of it
+    assert_eq!(get("/api/v1/feature-flags", &operator_token).await, 403);
+    assert_eq!(get("/api/v1/security-settings", &auditor_token).await, 403);
+
+    // only a superadmin grants a role: an org admin, and the roles themselves,
+    // are refused, and the role must be one of the two
+    assert_eq!(
+        grant(&org_admin_token, operator, json!("operator")).await,
+        403
+    );
+    assert_eq!(
+        grant(admin_token(), operator, json!("superadmin")).await,
+        400
+    );
+    assert_eq!(grant(admin_token(), operator, json!("operator")).await, 200);
+    assert_eq!(
+        grant(admin_token(), auditor, json!("security_auditor")).await,
+        200
+    );
+    assert_eq!(
+        grant(&operator_token, auditor, json!("operator")).await,
+        403
+    );
+    assert_eq!(
+        grant(&auditor_token, auditor, json!(null)).await,
+        403,
+        "a role cannot be cleared or widened by its holder"
+    );
+
+    // the operator maintains: reads and writes what it is named for, reads no
+    // security settings, and has no way into a tenant
+    assert_eq!(get("/api/v1/feature-flags", &operator_token).await, 200);
+    assert_eq!(get("/api/v1/cluster/nodes", &operator_token).await, 200);
+    assert_eq!(get("/api/v1/security-settings", &operator_token).await, 403);
+    assert_eq!(get("/api/v1/audit-log", &operator_token).await, 403);
+    assert_eq!(get("/api/v1/config/export", &operator_token).await, 403);
+    assert_eq!(get("/api/v1/users", &operator_token).await, 403);
+    assert_eq!(
+        get(&format!("/api/v1/orgs/{org_id}/audit-log"), &operator_token).await,
+        403
+    );
+    assert_eq!(
+        get(&format!("/api/v1/orgs/{org_id}/users"), &operator_token).await,
+        403
+    );
+
+    // the auditor reads and never writes
+    assert_eq!(get("/api/v1/security-settings", &auditor_token).await, 200);
+    assert_eq!(get("/api/v1/audit-log", &auditor_token).await, 200);
+    assert_eq!(
+        get("/api/v1/users", &auditor_token).await,
+        200,
+        "the audit log names its actors from this list"
+    );
+    assert_eq!(get("/api/v1/feature-flags", &auditor_token).await, 403);
+    assert_eq!(get("/api/v1/cluster/nodes", &auditor_token).await, 403);
+    assert_eq!(
+        status(
+            reqwest::Method::PUT,
+            "/api/v1/security-settings".into(),
+            auditor_token.clone(),
+            json!({})
+        )
+        .await,
+        403
+    );
+    assert_eq!(
+        get(&format!("/api/v1/orgs/{org_id}/audit-log"), &auditor_token).await,
+        403
+    );
+
+    // `rbac/effective` publishes the role and the pairs it opens
+    let effective = |token: &str| {
+        let client = client.clone();
+        let url = format!("{base}/api/v1/rbac/effective");
+        let token = token.to_string();
+        async move {
+            client
+                .get(url)
+                .bearer_auth(token)
+                .send()
+                .await
+                .unwrap()
+                .json::<Value>()
+                .await
+                .unwrap()
+        }
+    };
+    let as_operator = effective(&operator_token).await;
+    assert_eq!(as_operator["deployment_role"], "operator");
+    assert_eq!(as_operator["superadmin"], false);
+    let allowed: Vec<&str> = as_operator["allowed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert!(allowed.contains(&"cluster_node:update"));
+    assert!(!allowed.contains(&"security_settings:read"));
+    assert!(!allowed.contains(&"deployment_role:update"));
+    let as_auditor = effective(&auditor_token).await;
+    assert_eq!(as_auditor["deployment_role"], "security_auditor");
+    let allowed: Vec<&str> = as_auditor["allowed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert!(allowed.contains(&"security_settings:read"));
+    assert!(!allowed.contains(&"security_settings:update"));
+
+    // the matrix names the roles on the rows they reach
+    let matrix: Value = client
+        .get(format!("{base}/api/v1/rbac/matrix"))
+        .bearer_auth(admin_token())
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        matrix["deployment_roles"],
+        json!(["operator", "security_auditor"])
+    );
+    let flags = matrix["resources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["resource"] == "feature_flags")
+        .unwrap();
+    assert_eq!(flags["actions"][0]["superadmin_only"], false);
+    assert_eq!(flags["actions"][0]["deployment_roles"], json!(["operator"]));
+
+    // the grants are audited unscoped, naming the account and the change
+    let log: Value = client
+        .get(format!(
+            "{base}/api/v1/audit-log?action=user.deployment_role"
+        ))
+        .bearer_auth(admin_token())
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let rows = log["items"].as_array().unwrap();
+    assert!(
+        rows.iter().any(|row| {
+            row["target_id"] == operator.to_string() && row["detail"]["to"] == "operator"
+        }),
+        "no audit row for the grant: {log}"
+    );
+
+    // clearing the role takes the access away on the next request
+    assert_eq!(grant(admin_token(), operator, json!(null)).await, 200);
+    assert_eq!(get("/api/v1/feature-flags", &operator_token).await, 403);
 }

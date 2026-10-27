@@ -1037,6 +1037,13 @@ fn operations() -> Vec<Op> {
                 .body(Payload::Ref("UpdateUser"))
                 .ok(Payload::Ref("User"))
                 .conflict(LAST_SUPERADMIN_409),
+            Op::put(
+                "/api/v1/users/{id}/deployment-role",
+                "setUserDeploymentRole",
+                "Give an account a deployment role (operator or security auditor), or clear it (superadmin)",
+            )
+            .body(Payload::Ref("SetDeploymentRole"))
+            .ok(Payload::Ref("User")),
             Op::delete("/api/v1/users/{id}", "deleteUser", "Delete an account")
                 .conflict(LAST_SUPERADMIN_409),
             Op::get(
@@ -3005,8 +3012,18 @@ fn identity_schemas(p: &Prim) -> Value {
                 "id": uuid, "email": {"type": "string", "format": "email"},
                 "is_superadmin": {"type": "boolean"},
                 "deactivated_at": nullable_timestamp,
-                "created_at": timestamp
+                "created_at": timestamp,
+                "deployment_role": {"type": ["string", "null"], "enum": ["operator", "security_auditor", null]}
             }
+        },
+        "SetDeploymentRole": {
+            "type": "object",
+            "required": ["role"],
+            "properties": {
+                "role": {"type": ["string", "null"], "enum": ["operator", "security_auditor", null],
+                    "description": "null clears the account's deployment role"}
+            },
+            "additionalProperties": false
         },
         "CreateUser": {
             "type": "object",

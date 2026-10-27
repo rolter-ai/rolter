@@ -346,7 +346,7 @@ mod scoped {
         match requirement.authority {
             Authority::Role(role) => role_rank(role) as i8,
             Authority::Authenticated => 0,
-            Authority::Superadmin => i8::MAX,
+            Authority::Superadmin | Authority::Deployment(_) => i8::MAX,
         }
     }
 

@@ -128,7 +128,9 @@ function cellState(resource: RbacResourceView, action: RbacAction, column: RoleC
   const view = resource.actions.find((a) => a.action === action);
   // absent from `actions` means the backend's authority was None
   if (!view) return "na";
-  if (view.superadmin_only) return "superadmin";
+  // a deployment role (#1834) is held on the account, never at a scope, so no
+  // column of this table reaches such a row either
+  if (view.superadmin_only || view.deployment_roles?.length) return "superadmin";
   if (view.authenticated_only) return "allowed";
   if (view.minimum_role !== null && column.rank >= RANK[view.minimum_role]) {
     return "allowed";
@@ -1022,12 +1024,13 @@ function GrantGrid({
                       </span>
                     );
                   }
+                  const deploymentWide = view.superadmin_only || !!view.deployment_roles?.length;
                   return (
                     <span key={action} className="flex w-6 justify-center">
                       <Checkbox
                         aria-label={label}
-                        title={view.superadmin_only ? t("pages.rbac.custom.superadminHint") : label}
-                        disabled={view.superadmin_only}
+                        title={deploymentWide ? t("pages.rbac.custom.superadminHint") : label}
+                        disabled={deploymentWide}
                         checked={grants.includes(key)}
                         onChange={() => onToggle(key)}
                       />

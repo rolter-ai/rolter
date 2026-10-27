@@ -287,4 +287,4 @@ function ClusterScreen() {
 // deployment-scoped settings: superadmin-only in the capability table, so a
 // lesser caller sees the refusal instead of a screen that loads and then 403s
 // (#1183)
-export default superadminOnly(ClusterScreen, "errors.resources.clusterNodes");
+export default superadminOnly(ClusterScreen, "errors.resources.clusterNodes", "cluster_node:read");

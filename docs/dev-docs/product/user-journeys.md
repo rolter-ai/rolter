@@ -33,13 +33,14 @@ persona below is one of those, at one scope:
 | LLM / ML / software engineer      | member at a project                 | [engineer.md](journeys/engineer.md)             | "How do I get a key, call models, and see why my call failed?"               |
 | Application / service account     | a virtual key (no human)            | [app-service.md](journeys/app-service.md)       | "What happens to my traffic, my limits and my key over time?"                |
 | Finance / FinOps                  | viewer at the org (admin to cap)    | [finops.md](journeys/finops.md)                 | "What did we spend, on what, for whom — and can it stop at a limit?"         |
-| SecOps                            | superadmin (a narrower role: #1834) | [secops.md](journeys/secops.md)                 | "Can I prove who reads what, and that secrets never land in a log?"          |
-| DevOps / SRE (maintenance only)   | superadmin (a narrower role: #1834) | [devops.md](journeys/devops.md)                 | "Is it healthy, and can I upgrade, drain and restore it without a surprise?" |
+| SecOps                            | superadmin, or the security auditor | [secops.md](journeys/secops.md)                 | "Can I prove who reads what, and that secrets never land in a log?"          |
+| DevOps / SRE (maintenance only)   | superadmin, or the operator         | [devops.md](journeys/devops.md)                 | "Is it healthy, and can I upgrade, drain and restore it without a surprise?" |
 | Viewer (stakeholder, PM, auditor) | viewer at a project, team or org    | [viewer.md](journeys/viewer.md)                 | "What is happening here — and can I keep my own view of it?"                 |
 
-SecOps and DevOps are superadmin today only because nothing narrower reaches the
-deployment-wide settings they need. Both scripts start from that and mark it as
-the first gap.
+SecOps and DevOps no longer need superadmin: the deployment roles `security_auditor`
+and `operator` (#1834) reach the deployment-wide settings each job needs and no tenant
+data. The scripts below still run as the superadmin dogfood account, and their first step
+(D0.1, S0.1) checks the narrower role instead.
 
 ## The simplest paths
 

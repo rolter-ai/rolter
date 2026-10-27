@@ -2,8 +2,9 @@
 
 **Maintenance only.** Keeps the deployment healthy, upgraded, backed up and
 observable; drains a node before a change and restores a database after one. Has
-no reason to read prompts, mint keys or change who may do what — but today the
-screens they need are all superadmin-only, so they hold superadmin anyway.
+no reason to read prompts, mint keys or change who may do what — which is why
+the `operator` deployment role (#1834) reaches the cluster, runtime policy, feature
+flags, alerting and connectors and nothing inside a tenant.
 
 **Goal:** "I know it is healthy, I can change it without an outage, and I can put
 it back if the change goes wrong."
@@ -16,9 +17,9 @@ D2–D4 run, and SigNoz `rolter · overview` for anything that got slower.
 
 ## D0 — the role
 
-| #    | step                                      | where | expect                                                                                            | status      |
-| ---- | ----------------------------------------- | ----- | ------------------------------------------------------------------------------------------------- | ----------- |
-| D0.1 | operate the deployment without superadmin | —     | an operator role: cluster, health, runtime policy, alerting, connectors; no tenant data or grants | gap — #1834 |
+| #    | step                                      | where | expect                                                                                            | status        |
+| ---- | ----------------------------------------- | ----- | ------------------------------------------------------------------------------------------------- | ------------- |
+| D0.1 | operate the deployment without superadmin | —     | an operator role: cluster, health, runtime policy, alerting, connectors; no tenant data or grants | works — #1834 |
 
 ## D1 — stand it up and upgrade it
 

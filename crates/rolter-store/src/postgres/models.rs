@@ -922,6 +922,11 @@ pub struct User {
     /// self-service profile (#1823): up to 500 chars, trimmed
     #[serde(default)]
     pub bio: Option<String>,
+    /// delegable deployment role (#1834): `operator`, `security_auditor`, or
+    /// none. Read only by the guard on deployment-wide capabilities; it grants
+    /// nothing at any org, team or project
+    #[serde(default)]
+    pub deployment_role: Option<String>,
 }
 
 /// a role grant at a scope; scope is the most specific non-null id among

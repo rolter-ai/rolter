@@ -1006,9 +1006,10 @@ ones included, and is guarded by the superadmin-only `deployment_audit_log:read`
 capability. It is the same keyset-paged read as the per-org one: the handlers
 share the query-string parsing (`audit_log_filter`), the `(at, id)` cursor and
 the response builder, and differ only in the store call (`list_page_all` /
-`count_all` have no org predicate). A security-auditor role (#1834) does not
-exist yet, so the endpoint admits superadmins alone; that role is to be added
-at the guard in `list_deployment_audit_log`.
+`count_all` have no org predicate). The `security_auditor` deployment role (#1834) holds the same capability, so a
+read-only reviewer reads it without being a superadmin; an `operator` does not
+(see [RBAC & authentication](rbac-and-auth.md#deployment-roles-an-operator-and-a-security-auditor-1834)).
+Granting a deployment role is itself audited, as `user.deployment_role`, in this log.
 
 ## Three credentials, one word (#943)
 
