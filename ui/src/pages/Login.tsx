@@ -27,6 +27,7 @@ import {
 import { useAuth } from "@/lib/auth";
 import { useDocumentTitle } from "@/lib/document-title";
 import { useFormat } from "@/lib/i18n/format";
+import { isOpenMode } from "@/lib/telemetry";
 import { useToast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 
@@ -94,6 +95,14 @@ export default function Login() {
   // one case the email-only gate exists for, and it is identifiable up front
   // rather than inferred from a failed sign-in (#1160)
   const [openMode, setOpenMode] = useState(false);
+  // the same 404 with an admin token configured: no database means no accounts
+  // and no sessions, and the analytics and health routes accept the admin token
+  // alone. The card takes that token instead of an address, and keeps it as the
+  // bearer every request carries (#1909). The control plane says whether it is
+  // open in the block it injects into the page, so the two are told apart
+  // without a request
+  const tokenMode = openMode && !isOpenMode();
+  const [adminToken, setAdminToken] = useState("");
   // the password was right and the account owes a factor (#1078). Holding the
   // challenge is what turns this screen into two steps; until #1324 the
   // dashboard modelled only the session branch, so an org that set
@@ -236,6 +245,14 @@ export default function Login() {
     const addr = email.trim() || "operator";
     setError(null);
     setPending(true);
+    if (tokenMode) {
+      // nothing to verify against: there is no endpoint that checks it. A wrong
+      // token is refused by the first screen that uses it, with an explanation
+      // and a way back here (LoadError, `adminToken`)
+      signIn("admin", adminToken.trim());
+      setPending(false);
+      return;
+    }
     if (openMode) {
       signIn(addr);
       setPending(false);
@@ -419,30 +436,45 @@ export default function Login() {
             void submit();
           }}
         >
-          <Field label={t("auth.email")}>
-            <Input
-              type="email"
-              name="email"
-              autoComplete="email"
-              autoFocus
-              required
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              aria-invalid={error ? true : undefined}
-              aria-describedby={error ? errorId : undefined}
-            />
-          </Field>
-          <Field label={t("auth.password")}>
-            <PasswordInput
-              name="password"
-              autoComplete="current-password"
-              required
-              value={pw}
-              onChange={(e) => setPw(e.target.value)}
-              aria-invalid={error ? true : undefined}
-              aria-describedby={error ? errorId : undefined}
-            />
-          </Field>
+          {tokenMode ? (
+            <Field label={t("auth.adminToken.label")} hint={t("auth.adminToken.hint")}>
+              <PasswordInput
+                name="admin-token"
+                autoComplete="off"
+                autoFocus
+                required
+                value={adminToken}
+                onChange={(e) => setAdminToken(e.target.value)}
+              />
+            </Field>
+          ) : (
+            <>
+              <Field label={t("auth.email")}>
+                <Input
+                  type="email"
+                  name="email"
+                  autoComplete="email"
+                  autoFocus
+                  required
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  aria-invalid={error ? true : undefined}
+                  aria-describedby={error ? errorId : undefined}
+                />
+              </Field>
+              <Field label={t("auth.password")}>
+                <PasswordInput
+                  name="password"
+                  autoComplete="current-password"
+                  required
+                  value={pw}
+                  onChange={(e) => setPw(e.target.value)}
+                  aria-invalid={error ? true : undefined}
+                  aria-describedby={error ? errorId : undefined}
+                />
+              </Field>
+            </>
+          )}
           {error && (
             <div
               id={errorId}
@@ -455,7 +487,7 @@ export default function Login() {
           )}
           <Button
             type="submit"
-            disabled={pending}
+            disabled={pending || (tokenMode && adminToken.trim().length === 0)}
             className="w-full bg-brand-folk text-white hover:bg-brand-press"
           >
             {pending ? (
@@ -464,7 +496,8 @@ export default function Login() {
               </>
             ) : (
               <>
-                {t("auth.signIn")} <ArrowRight className="h-4 w-4" />
+                {tokenMode ? t("auth.adminToken.submit") : t("auth.signIn")}{" "}
+                <ArrowRight className="h-4 w-4" />
               </>
             )}
           </Button>

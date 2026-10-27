@@ -4331,6 +4331,41 @@ mod tests {
         assert_eq!(echoed, "hello gateway");
     }
 
+    /// a control plane with an admin token and no database has no sessions, so
+    /// its analytics routes answer a missing or wrong token with a code the
+    /// dashboard can act on, and accept the right one (#1909)
+    #[tokio::test]
+    async fn analytics_without_a_database_asks_for_the_admin_token_by_code() {
+        let addr = serve(build_app_with(state_with_token(Some("admin-secret")), true)).await;
+        let client = reqwest::Client::new();
+        let url = format!("http://{addr}/api/v1/analytics/summary");
+
+        let anonymous = client.get(&url).send().await.unwrap();
+        assert_eq!(anonymous.status(), 401);
+        let body: serde_json::Value = anonymous.json().await.unwrap();
+        assert_eq!(body["error"]["code"], "admin_token_required");
+
+        let wrong = client
+            .get(&url)
+            .bearer_auth("not-the-token")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(wrong.status(), 401);
+        let body: serde_json::Value = wrong.json().await.unwrap();
+        assert_eq!(body["error"]["code"], "admin_token_required");
+
+        // the right token passes the guard; with no ClickHouse the read itself
+        // then answers something other than the 401
+        let admitted = client
+            .get(&url)
+            .bearer_auth("admin-secret")
+            .send()
+            .await
+            .unwrap();
+        assert_ne!(admitted.status(), 401);
+    }
+
     /// the dashboard's config view names every provider, `api_base` and route,
     /// which is topology even with the credentials gone (#1840)
     #[tokio::test]
