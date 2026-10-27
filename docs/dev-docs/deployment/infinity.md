@@ -48,4 +48,4 @@ Read from Infinity's own source (`libs/infinity_emb/infinity_emb/`):
 Infinity that reproduces the behaviour above: both endpoints, three models on
 one server, a non-empty `--url-prefix`, the bearer key and its `401`, the
 `400`/`422` refusals, a malformed body and a route timeout. There is no
-real-server suite yet; the TEI one under `integration/tei` is the model for one.
+real-server suite yet (#3246); the TEI one under `integration/tei` is the model for one.
