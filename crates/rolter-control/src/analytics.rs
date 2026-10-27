@@ -710,8 +710,10 @@ async fn summary(
                 {WITHHELD} as withheld_requests, \
                 {WITHHELD_COST} as withheld_cost, \
                 {USAGE_UNKNOWN} as usage_unknown_requests, \
+                {CACHE_HITS} as cache_hit_requests, \
                 {ERRORS} as errors, \
-                round(avg(latency_ms), 1) as avg_latency_ms \
+                round(avg(latency_ms), 1) as avg_latency_ms, \
+                round(quantile(0.95)(latency_ms), 1) as p95_latency_ms \
          from request_logs where {WHERE_WINDOW} and {ROW_VISIBLE} and {ROW_FILTERS} \
          format JSON"
     );
@@ -743,6 +745,10 @@ pub(crate) const WITHHELD_COST: &str =
 /// Requests the upstream answered successfully but reported no usage for, so
 /// their zero tokens and cost are unknown rather than free (#1478).
 pub(crate) const USAGE_UNKNOWN: &str = "round(sumIf(sample_weight, usage_unknown = 1))";
+/// Requests the gateway answered from a cache (#1978): the numerator of the
+/// dashboard's cache-hit rate, over `requests`. `cache_hit` is not a select
+/// alias in any read that uses this, so it needs no table qualifier.
+pub(crate) const CACHE_HITS: &str = "round(sumIf(sample_weight, cache_hit = 1))";
 pub(crate) const ERRORS: &str = "round(sumIf(sample_weight, status >= 400))";
 
 /// Per-bucket time series of requests, tokens and cost.
@@ -1820,6 +1826,13 @@ mod tests {
             USAGE_UNKNOWN,
             "round(sumIf(sample_weight, usage_unknown = 1))"
         );
+    }
+
+    #[test]
+    fn cache_hits_are_a_weighted_sum_of_the_recorded_flag() {
+        // the numerator of the dashboard's cache-hit rate, scaled by the
+        // sampling weight like the `requests` it is divided by (#1978)
+        assert_eq!(CACHE_HITS, "round(sumIf(sample_weight, cache_hit = 1))");
     }
 
     #[test]

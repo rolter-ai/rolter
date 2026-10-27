@@ -141,8 +141,13 @@ export type {
   UpdateRateLimitInput,
   UserScopeNarrowing,
 } from "./budgets";
-export { fetchClusterNodes, setClusterNodeDrain, forgetClusterNode } from "./cluster";
-export type { ClusterNodeRow } from "./cluster";
+export {
+  fetchClusterNodes,
+  fetchClusterSummary,
+  setClusterNodeDrain,
+  forgetClusterNode,
+} from "./cluster";
+export type { ClusterNodeRow, ClusterSummary } from "./cluster";
 export {
   fetchConfig,
   UNNAMED_KEY,

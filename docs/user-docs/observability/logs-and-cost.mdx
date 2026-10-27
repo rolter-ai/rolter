@@ -311,6 +311,10 @@ The dashboard's pricing section links here for that reason — it is the answer
 to "where does this number come from", and the answer is "from whoever typed
 it".
 
+### Cache hits and overall p95
+
+`GET /api/v1/analytics/summary` also reports `cache_hit_requests`, the requests answered from a cache, and `p95_latency_ms`, the 95th percentile of latency over the whole window. The hit count is scaled by the log's sampling weight like every other count, so the cache-hit rate is `cache_hit_requests / requests`; the percentile is read from the sampled rows as they are, since a uniform sample already estimates it. The dashboard home shows both.
+
 ### Withheld and unknown-usage traffic
 
 Two more flags keep a total honest. A **withheld** response is one the provider answered and billed but an output guardrail or a `post_response` plugin refused to deliver: the caller got a 403, and the cost is still in `cost_usd`. **Unknown usage** is the other way round: the upstream answered successfully but reported no token counts, so a zero there means "not reported", not "free".

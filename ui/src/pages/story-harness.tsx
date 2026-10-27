@@ -344,6 +344,11 @@ export function withGateway(
 ): FetchStub {
   return async (input, init) => {
     const path = new URL(String(input), "http://localhost").pathname;
+    // the pill asks the cluster summary first (#3263): a control plane older
+    // than it answers 404, and the check then falls back to the probe below
+    if (path === "/api/v1/cluster/summary") {
+      return json({ error: { message: "not found" } }, 404);
+    }
     if (path === "/gw/readyz")
       return gatewayResponse(typeof answer === "function" ? answer() : answer);
     return handler(input, init);

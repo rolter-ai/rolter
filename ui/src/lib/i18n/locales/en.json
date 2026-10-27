@@ -257,7 +257,6 @@
       "analytics": "analytics",
       "dashboardFigures": "the overview figures",
       "dashboardSpend": "hourly spend",
-      "dashboardTrafficShare": "the traffic share",
       "dashboardByModel": "requests by model",
       "dashboardRecent": "recent requests",
       "savedViews": "your saved views",
@@ -715,9 +714,11 @@
       "hideSteps": "Hide steps"
     },
     "dashboard": {
-      "statRequests": "Requests (24h)",
-      "statSpend": "Spend (24h)",
-      "statAvgLatency": "Avg latency",
+      "statRequests": "Requests",
+      "statSpend": "Spend",
+      "statP95": "p95 latency",
+      "statCacheHit": "Cache hit rate",
+      "statFleet": "Gateways",
       "statErrorRate": "Error rate",
       "notMeasured": "—",
       "noRequestsInWindow": "No requests in this window",
@@ -725,6 +726,8 @@
       "withChange": "{{detail}} · {{change}}",
       "errors_one": "{{count}} error",
       "errors_other": "{{count}} errors",
+      "cacheHits_one": "{{count}} cache hit",
+      "cacheHits_other": "{{count}} cache hits",
       "live": "Live",
       "feed": {
         "loading": "Loading",
@@ -734,15 +737,17 @@
       "spendTitle": "Spend",
       "spendSub": "Hourly gateway spend, {{currency}}",
       "noSpendRecorded": "No spend recorded for this window. Requests were served, but none of them were priced — add pricing for the models in use to see cost here.",
-      "trafficTitle": "Traffic share",
-      "trafficSub": "Requests by model",
       "noTraffic": "No traffic yet.",
       "noMatch": "No requests match these filters in this window.",
-      "sharedRead": "This card reads the same data as {{card}}, which failed to load. Use {{retry}} there.",
-      "requests_one": "request",
-      "requests_other": "requests",
-      "byModelTitle": "Requests by model",
+      "byModelTitle": "By model",
+      "byModelSub": "Requests, p95 latency and spend, busiest first",
+      "byModelMore_one": "+{{count}} more model not shown",
+      "byModelMore_other": "+{{count}} more models not shown",
+      "colRequests": "Requests",
+      "colP95": "p95",
+      "colSpend": "Spend",
       "recentTitle": "Recent requests",
+      "recentAll": "Open in LLM Logs",
       "nothingLogged": "Nothing logged yet.",
       "colTime": "Time",
       "colModel": "Model",
@@ -757,6 +762,31 @@
         "link": "See which models"
       },
       "spendChartAria": "Spend, {{window}}",
+      "scope": {
+        "label": "Scope of these figures",
+        "all": "Every request on this deployment",
+        "member": "The requests your roles can read",
+        "filters_one": "{{count}} filter",
+        "filters_other": "{{count}} filters"
+      },
+      "fleet": {
+        "liveUnit": "live",
+        "allCurrent": "All on the latest config",
+        "lagging_one": "{{count}} not on the latest config",
+        "lagging_other": "{{count}} not on the latest config",
+        "stale_one": "{{count}} stale",
+        "stale_other": "{{count}} stale",
+        "none": "No gateway is live",
+        "probeNote": "One gateway checked; the fleet could not be counted",
+        "unknownNote": "The gateway could not be checked",
+        "probe": {
+          "checking": "Checking",
+          "healthy": "Ready",
+          "degraded": "Draining",
+          "down": "Unreachable",
+          "unknown": "Unknown"
+        }
+      },
       "noAnalytics": {
         "title": "Traffic and spend need ClickHouse",
         "body": "This control plane runs without <0>CLICKHOUSE_URL</0>, or is older than the endpoints this screen reads, so it has no traffic to count. Set <0>CLICKHOUSE_URL</0> and restart the control plane: gateways with no address of their own inherit it, and every request they serve from then on is counted here."

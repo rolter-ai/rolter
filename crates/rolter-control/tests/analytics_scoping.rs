@@ -1291,3 +1291,57 @@ async fn sampled_rows_scale_counts_and_sums_but_not_percentiles() {
     let p50 = row["p50_latency_ms"].as_f64().unwrap();
     assert!((100.0..=300.0).contains(&p50), "{p50}");
 }
+
+/// The summary's cache-hit count is weighted like the other counts and its p95
+/// is read unscaled (#1978). Both sit beside aliased aggregates in one select,
+/// which a fake ClickHouse cannot tell from a real one that nests them.
+#[tokio::test]
+async fn summary_reports_weighted_cache_hits_and_an_overall_p95() {
+    let ch = skip_without_stack!();
+    let http = reqwest::Client::new();
+    ensure_schema(&http, &ch).await;
+
+    let db = TestSchema::create(&test_database::url().await.unwrap()).await;
+    let app = rolter_control::test_app_with_clickhouse_and_admin_token(
+        db.pool().clone(),
+        &ch,
+        Some(ADMIN_TOKEN.to_string()),
+    )
+    .await
+    .unwrap();
+    let addr = serve(app).await;
+
+    let model = format!("cache-{}", Uuid::new_v4().simple());
+    let ts = chrono::Utc::now()
+        .format("%Y-%m-%d %H:%M:%S%.3f")
+        .to_string();
+    // two kept rows weigh two requests each: one hit, one miss
+    let rows: Vec<Value> = [(1, 100), (0, 300)]
+        .iter()
+        .enumerate()
+        .map(|(i, (hit, latency))| {
+            json!({
+                "ts": ts, "request_id": format!("cache-{i}-{}", Uuid::new_v4().simple()),
+                "model": model, "status": 200, "latency_ms": latency, "cache_hit": hit,
+                "sample_weight": 2.0,
+            })
+        })
+        .collect();
+    insert_rows(&http, &ch, "request_logs", &rows).await;
+
+    let response = http
+        .get(format!(
+            "http://{addr}/api/v1/analytics/summary?model={model}"
+        ))
+        .bearer_auth(ADMIN_TOKEN)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let body: Value = response.json().await.unwrap();
+    let row = &body["data"][0];
+    assert_eq!(row["requests"].as_f64(), Some(4.0));
+    assert_eq!(row["cache_hit_requests"].as_f64(), Some(2.0));
+    let p95 = row["p95_latency_ms"].as_f64().unwrap();
+    assert!((100.0..=300.0).contains(&p95), "{p95}");
+}

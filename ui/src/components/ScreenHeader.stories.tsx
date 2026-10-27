@@ -203,6 +203,11 @@ export const ProbesWithTheSession: Story = {
       <HeaderStory
         {...args}
         fetchStub={async (input, init) => {
+          // a control plane older than the cluster summary (#3263): the check
+          // falls back to the probe this story is about
+          if (String(input).includes("/api/v1/cluster/summary")) {
+            return json({ error: { message: "not found" } }, 404);
+          }
           if (String(input).includes("/gw/readyz")) {
             probeAuth.push(new Headers(init?.headers).get("Authorization"));
             return new Response("ok", { status: 200 });
@@ -233,9 +238,11 @@ export const RefusedSessionIsUnknown: Story = {
     <HeaderStory
       {...args}
       fetchStub={async (input) =>
-        String(input).includes("/gw/readyz")
+        String(input).includes("/api/v1/cluster/summary")
           ? json({ error: { message: "unauthorized" } }, 401)
-          : pending(input)
+          : String(input).includes("/gw/readyz")
+            ? json({ error: { message: "unauthorized" } }, 401)
+            : pending(input)
       }
     />
   ),
