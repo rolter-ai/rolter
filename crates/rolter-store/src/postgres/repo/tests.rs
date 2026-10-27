@@ -41,17 +41,19 @@ async fn crud_roundtrip_across_the_tenancy_and_routing_tables() {
     let provider = providers
         .create(
             org.id,
-            "openai",
-            "openai",
-            "openai",
-            "https://api.openai.com",
-            Some("OPENAI_API_KEY"),
-            None,
-            &[],
-            None,
-            None,
-            None,
-            false,
+            NewProvider {
+                name: "openai",
+                slug: "openai",
+                kind: "openai",
+                api_base: "https://api.openai.com",
+                api_key_env: Some("OPENAI_API_KEY"),
+                egress_proxy: None,
+                egress_proxies: &[],
+                kv_events: None,
+                lmcache: None,
+                project_id: None,
+                allow_custom_api_base: false,
+            },
         )
         .await
         .unwrap();
@@ -79,15 +81,17 @@ async fn crud_roundtrip_across_the_tenancy_and_routing_tables() {
     let vk = keys
         .create(
             project.id,
-            "hash123",
-            "sk-abc",
-            Some("ci key"),
-            &["gpt-4o".to_string()],
-            &[],
-            None,
-            None,
-            Some(Utc::now() + Duration::days(30)),
-            None,
+            NewVirtualKey {
+                key_hash: "hash123",
+                key_prefix: "sk-abc",
+                name: Some("ci key"),
+                models: &["gpt-4o".to_string()],
+                providers: &[],
+                cache_enabled: None,
+                created_by: None,
+                expires_at: Some(Utc::now() + Duration::days(30)),
+                purpose: None,
+            },
         )
         .await
         .unwrap();
@@ -170,12 +174,30 @@ async fn crud_roundtrip_across_the_tenancy_and_routing_tables() {
 
     let prices = ModelPriceRepo(&pool);
     let price = prices
-        .upsert("gpt-4o", "2.500000", "10.000000", None, None, None, "USD")
+        .upsert(NewModelPrice {
+            model: "gpt-4o",
+            input_per_mtok: "2.500000",
+            output_per_mtok: "10.000000",
+            cached_input_per_mtok: None,
+            cache_write_per_mtok: None,
+            cache_write_1h_per_mtok: None,
+            currency: "USD",
+            ..Default::default()
+        })
         .await
         .unwrap();
     assert_eq!(price.input_per_mtok, "2.500000");
     let updated = prices
-        .upsert("gpt-4o", "3.000000", "10.000000", None, None, None, "USD")
+        .upsert(NewModelPrice {
+            model: "gpt-4o",
+            input_per_mtok: "3.000000",
+            output_per_mtok: "10.000000",
+            cached_input_per_mtok: None,
+            cache_write_per_mtok: None,
+            cache_write_1h_per_mtok: None,
+            currency: "USD",
+            ..Default::default()
+        })
         .await
         .unwrap();
     assert_eq!(updated.input_per_mtok, "3.000000");
@@ -201,22 +223,32 @@ async fn a_price_keeps_its_cache_write_rate_unless_told_otherwise() {
 
     // a new row with no rate has none, which prices writes as input
     let bare = prices
-        .upsert("claude", "3", "15", Some("0.3"), None, None, "USD")
+        .upsert(NewModelPrice {
+            model: "claude",
+            input_per_mtok: "3",
+            output_per_mtok: "15",
+            cached_input_per_mtok: Some("0.3"),
+            cache_write_per_mtok: None,
+            cache_write_1h_per_mtok: None,
+            currency: "USD",
+            ..Default::default()
+        })
         .await
         .unwrap();
     assert_eq!(bare.cache_write_per_mtok, None);
 
     // setting it
     let set = prices
-        .upsert(
-            "claude",
-            "3",
-            "15",
-            Some("0.3"),
-            Some(Some("3.75")),
-            None,
-            "USD",
-        )
+        .upsert(NewModelPrice {
+            model: "claude",
+            input_per_mtok: "3",
+            output_per_mtok: "15",
+            cached_input_per_mtok: Some("0.3"),
+            cache_write_per_mtok: Some(Some("3.75")),
+            cache_write_1h_per_mtok: None,
+            currency: "USD",
+            ..Default::default()
+        })
         .await
         .unwrap();
     assert_eq!(set.cache_write_per_mtok.as_deref(), Some("3.750000"));
@@ -224,7 +256,16 @@ async fn a_price_keeps_its_cache_write_rate_unless_told_otherwise() {
 
     // replacing the rest of the row without naming it keeps the rate
     let kept = prices
-        .upsert("claude", "4", "20", None, None, None, "USD")
+        .upsert(NewModelPrice {
+            model: "claude",
+            input_per_mtok: "4",
+            output_per_mtok: "20",
+            cached_input_per_mtok: None,
+            cache_write_per_mtok: None,
+            cache_write_1h_per_mtok: None,
+            currency: "USD",
+            ..Default::default()
+        })
         .await
         .unwrap();
     assert_eq!(kept.input_per_mtok, "4.000000");
@@ -247,7 +288,16 @@ async fn a_price_keeps_its_cache_write_rate_unless_told_otherwise() {
 
     // clearing is its own, explicit request
     let cleared = prices
-        .upsert("claude", "4", "20", None, Some(None), None, "USD")
+        .upsert(NewModelPrice {
+            model: "claude",
+            input_per_mtok: "4",
+            output_per_mtok: "20",
+            cached_input_per_mtok: None,
+            cache_write_per_mtok: Some(None),
+            cache_write_1h_per_mtok: None,
+            currency: "USD",
+            ..Default::default()
+        })
         .await
         .unwrap();
     assert_eq!(cleared.cache_write_per_mtok, None);
@@ -271,21 +321,31 @@ async fn a_price_keeps_its_one_hour_cache_write_rate_unless_told_otherwise() {
     let prices = ModelPriceRepo(&pool);
 
     let bare = prices
-        .upsert("claude", "3", "15", None, None, None, "USD")
+        .upsert(NewModelPrice {
+            model: "claude",
+            input_per_mtok: "3",
+            output_per_mtok: "15",
+            cached_input_per_mtok: None,
+            cache_write_per_mtok: None,
+            cache_write_1h_per_mtok: None,
+            currency: "USD",
+            ..Default::default()
+        })
         .await
         .unwrap();
     assert_eq!(bare.cache_write_1h_per_mtok, None);
 
     let set = prices
-        .upsert(
-            "claude",
-            "3",
-            "15",
-            None,
-            Some(Some("3.75")),
-            Some(Some("6")),
-            "USD",
-        )
+        .upsert(NewModelPrice {
+            model: "claude",
+            input_per_mtok: "3",
+            output_per_mtok: "15",
+            cached_input_per_mtok: None,
+            cache_write_per_mtok: Some(Some("3.75")),
+            cache_write_1h_per_mtok: Some(Some("6")),
+            currency: "USD",
+            ..Default::default()
+        })
         .await
         .unwrap();
     assert_eq!(set.cache_write_per_mtok.as_deref(), Some("3.750000"));
@@ -293,7 +353,16 @@ async fn a_price_keeps_its_one_hour_cache_write_rate_unless_told_otherwise() {
 
     // omitted keeps both
     let kept = prices
-        .upsert("claude", "4", "20", None, None, None, "USD")
+        .upsert(NewModelPrice {
+            model: "claude",
+            input_per_mtok: "4",
+            output_per_mtok: "20",
+            cached_input_per_mtok: None,
+            cache_write_per_mtok: None,
+            cache_write_1h_per_mtok: None,
+            currency: "USD",
+            ..Default::default()
+        })
         .await
         .unwrap();
     assert_eq!(kept.input_per_mtok, "4.000000");
@@ -302,13 +371,31 @@ async fn a_price_keeps_its_one_hour_cache_write_rate_unless_told_otherwise() {
 
     // naming the 5 minute rate leaves the 1 hour one alone, and back
     let only_5m = prices
-        .upsert("claude", "4", "20", None, Some(Some("5")), None, "USD")
+        .upsert(NewModelPrice {
+            model: "claude",
+            input_per_mtok: "4",
+            output_per_mtok: "20",
+            cached_input_per_mtok: None,
+            cache_write_per_mtok: Some(Some("5")),
+            cache_write_1h_per_mtok: None,
+            currency: "USD",
+            ..Default::default()
+        })
         .await
         .unwrap();
     assert_eq!(only_5m.cache_write_per_mtok.as_deref(), Some("5.000000"));
     assert_eq!(only_5m.cache_write_1h_per_mtok.as_deref(), Some("6.000000"));
     let only_1h = prices
-        .upsert("claude", "4", "20", None, None, Some(Some("8")), "USD")
+        .upsert(NewModelPrice {
+            model: "claude",
+            input_per_mtok: "4",
+            output_per_mtok: "20",
+            cached_input_per_mtok: None,
+            cache_write_per_mtok: None,
+            cache_write_1h_per_mtok: Some(Some("8")),
+            currency: "USD",
+            ..Default::default()
+        })
         .await
         .unwrap();
     assert_eq!(only_1h.cache_write_per_mtok.as_deref(), Some("5.000000"));
@@ -333,7 +420,16 @@ async fn a_price_keeps_its_one_hour_cache_write_rate_unless_told_otherwise() {
 
     // clearing is its own, explicit request, and only for the rate named
     let cleared = prices
-        .upsert("claude", "4", "20", None, None, Some(None), "USD")
+        .upsert(NewModelPrice {
+            model: "claude",
+            input_per_mtok: "4",
+            output_per_mtok: "20",
+            cached_input_per_mtok: None,
+            cache_write_per_mtok: None,
+            cache_write_1h_per_mtok: Some(None),
+            currency: "USD",
+            ..Default::default()
+        })
         .await
         .unwrap();
     assert_eq!(cleared.cache_write_1h_per_mtok, None);
@@ -359,21 +455,21 @@ async fn a_price_keeps_its_unit_rates_unless_told_otherwise() {
     let prices = ModelPriceRepo(&pool);
 
     let set = prices
-        .upsert_with_units(
-            "media",
-            "0",
-            "0",
-            None,
-            None,
-            None,
-            UnitRates {
+        .upsert(NewModelPrice {
+            model: "media",
+            input_per_mtok: "0",
+            output_per_mtok: "0",
+            cached_input_per_mtok: None,
+            cache_write_per_mtok: None,
+            cache_write_1h_per_mtok: None,
+            units: UnitRates {
                 image_per_unit: Some(Some("0.04")),
                 audio_input_per_minute: Some(Some("0.006")),
                 speech_per_mchar: Some(Some("15")),
                 ..UnitRates::default()
             },
-            "USD",
-        )
+            currency: "USD",
+        })
         .await
         .unwrap();
     assert_eq!(set.image_per_unit.as_deref(), Some("0.040000"));
@@ -381,7 +477,16 @@ async fn a_price_keeps_its_unit_rates_unless_told_otherwise() {
 
     // the plain upsert names none of them
     let kept = prices
-        .upsert("media", "1", "2", None, None, None, "USD")
+        .upsert(NewModelPrice {
+            model: "media",
+            input_per_mtok: "1",
+            output_per_mtok: "2",
+            cached_input_per_mtok: None,
+            cache_write_per_mtok: None,
+            cache_write_1h_per_mtok: None,
+            currency: "USD",
+            ..Default::default()
+        })
         .await
         .unwrap();
     assert_eq!(kept.input_per_mtok, "1.000000");
@@ -390,38 +495,38 @@ async fn a_price_keeps_its_unit_rates_unless_told_otherwise() {
     assert_eq!(kept.speech_per_mchar.as_deref(), Some("15.000000"));
 
     let cleared = prices
-        .upsert_with_units(
-            "media",
-            "1",
-            "2",
-            None,
-            None,
-            None,
-            UnitRates {
+        .upsert(NewModelPrice {
+            model: "media",
+            input_per_mtok: "1",
+            output_per_mtok: "2",
+            cached_input_per_mtok: None,
+            cache_write_per_mtok: None,
+            cache_write_1h_per_mtok: None,
+            units: UnitRates {
                 image_per_unit: Some(None),
                 ..UnitRates::default()
             },
-            "USD",
-        )
+            currency: "USD",
+        })
         .await
         .unwrap();
     assert_eq!(cleared.image_per_unit, None);
     assert_eq!(cleared.speech_per_mchar.as_deref(), Some("15.000000"));
 
     let negative = prices
-        .upsert_with_units(
-            "media",
-            "1",
-            "2",
-            None,
-            None,
-            None,
-            UnitRates {
+        .upsert(NewModelPrice {
+            model: "media",
+            input_per_mtok: "1",
+            output_per_mtok: "2",
+            cached_input_per_mtok: None,
+            cache_write_per_mtok: None,
+            cache_write_1h_per_mtok: None,
+            units: UnitRates {
                 speech_per_mchar: Some(Some("-1")),
                 ..UnitRates::default()
             },
-            "USD",
-        )
+            currency: "USD",
+        })
         .await;
     assert!(negative.is_err(), "a negative rate must be refused");
 }
@@ -440,21 +545,21 @@ async fn a_price_keeps_its_audio_rates_unless_told_otherwise() {
     let prices = ModelPriceRepo(&pool);
 
     let set = prices
-        .upsert_with_units(
-            "voice",
-            "4",
-            "16",
-            Some("0.4"),
-            None,
-            None,
-            UnitRates {
+        .upsert(NewModelPrice {
+            model: "voice",
+            input_per_mtok: "4",
+            output_per_mtok: "16",
+            cached_input_per_mtok: Some("0.4"),
+            cache_write_per_mtok: None,
+            cache_write_1h_per_mtok: None,
+            units: UnitRates {
                 audio_input_per_mtok: Some(Some("32")),
                 audio_output_per_mtok: Some(Some("64")),
                 cached_audio_input_per_mtok: Some(Some("0.4")),
                 ..UnitRates::default()
             },
-            "USD",
-        )
+            currency: "USD",
+        })
         .await
         .unwrap();
     assert_eq!(set.audio_input_per_mtok.as_deref(), Some("32.000000"));
@@ -462,7 +567,16 @@ async fn a_price_keeps_its_audio_rates_unless_told_otherwise() {
 
     // a client that predates the fields replaces the row without them
     let kept = prices
-        .upsert("voice", "5", "20", None, None, None, "USD")
+        .upsert(NewModelPrice {
+            model: "voice",
+            input_per_mtok: "5",
+            output_per_mtok: "20",
+            cached_input_per_mtok: None,
+            cache_write_per_mtok: None,
+            cache_write_1h_per_mtok: None,
+            currency: "USD",
+            ..Default::default()
+        })
         .await
         .unwrap();
     assert_eq!(kept.input_per_mtok, "5.000000");
@@ -474,38 +588,38 @@ async fn a_price_keeps_its_audio_rates_unless_told_otherwise() {
     );
 
     let cleared = prices
-        .upsert_with_units(
-            "voice",
-            "5",
-            "20",
-            None,
-            None,
-            None,
-            UnitRates {
+        .upsert(NewModelPrice {
+            model: "voice",
+            input_per_mtok: "5",
+            output_per_mtok: "20",
+            cached_input_per_mtok: None,
+            cache_write_per_mtok: None,
+            cache_write_1h_per_mtok: None,
+            units: UnitRates {
                 audio_output_per_mtok: Some(None),
                 ..UnitRates::default()
             },
-            "USD",
-        )
+            currency: "USD",
+        })
         .await
         .unwrap();
     assert_eq!(cleared.audio_output_per_mtok, None);
     assert_eq!(cleared.audio_input_per_mtok.as_deref(), Some("32.000000"));
 
     let negative = prices
-        .upsert_with_units(
-            "voice",
-            "5",
-            "20",
-            None,
-            None,
-            None,
-            UnitRates {
+        .upsert(NewModelPrice {
+            model: "voice",
+            input_per_mtok: "5",
+            output_per_mtok: "20",
+            cached_input_per_mtok: None,
+            cache_write_per_mtok: None,
+            cache_write_1h_per_mtok: None,
+            units: UnitRates {
                 cached_audio_input_per_mtok: Some(Some("-1")),
                 ..UnitRates::default()
             },
-            "USD",
-        )
+            currency: "USD",
+        })
         .await;
     assert!(negative.is_err(), "a negative rate must be refused");
 }
@@ -524,7 +638,16 @@ async fn a_negative_one_hour_rate_is_refused_by_the_database() {
     let prices = ModelPriceRepo(&pool);
     for bad in ["-1", "NaN"] {
         let refused = prices
-            .upsert("claude", "3", "15", None, None, Some(Some(bad)), "USD")
+            .upsert(NewModelPrice {
+                model: "claude",
+                input_per_mtok: "3",
+                output_per_mtok: "15",
+                cached_input_per_mtok: None,
+                cache_write_per_mtok: None,
+                cache_write_1h_per_mtok: Some(Some(bad)),
+                currency: "USD",
+                ..Default::default()
+            })
             .await;
         assert!(refused.is_err(), "{bad}: {refused:?}");
     }
@@ -722,36 +845,40 @@ async fn plugin_instances_round_trip_at_org_and_project_scope() {
     let org_plugin = repo
         .create(
             org.id,
-            None,
-            "audit",
-            "audit",
-            "org audit",
-            "webhook",
-            "post_response",
-            false,
-            20,
-            "fail_open",
-            "https://plugins.internal/audit",
-            None,
-            &serde_json::json!({}),
+            NewPlugin {
+                project_id: None,
+                name: "audit",
+                slug: "audit",
+                description: "org audit",
+                kind: "webhook",
+                stage: "post_response",
+                enabled: false,
+                position: 20,
+                failure_mode: "fail_open",
+                endpoint: "https://plugins.internal/audit",
+                secret_env: None,
+                config: &serde_json::json!({}),
+            },
         )
         .await
         .unwrap();
     let project_plugin = repo
         .create(
             org.id,
-            Some(project.id),
-            "audit override",
-            "audit",
-            "project audit",
-            "webhook",
-            "pre_upstream",
-            true,
-            10,
-            "fail_closed",
-            "https://plugins.internal/project-audit",
-            Some("PLUGIN_TOKEN"),
-            &serde_json::json!({"sample": 1.0}),
+            NewPlugin {
+                project_id: Some(project.id),
+                name: "audit override",
+                slug: "audit",
+                description: "project audit",
+                kind: "webhook",
+                stage: "pre_upstream",
+                enabled: true,
+                position: 10,
+                failure_mode: "fail_closed",
+                endpoint: "https://plugins.internal/project-audit",
+                secret_env: Some("PLUGIN_TOKEN"),
+                config: &serde_json::json!({"sample": 1.0}),
+            },
         )
         .await
         .unwrap();
@@ -759,16 +886,18 @@ async fn plugin_instances_round_trip_at_org_and_project_scope() {
     let updated = repo
         .update(
             project_plugin.id,
-            Some(project.id),
-            "audit override",
-            "updated",
-            "pre_route",
-            false,
-            5,
-            "fail_open",
-            "https://plugins.internal/project-audit",
-            None,
-            &serde_json::json!({"sample": 0.5}),
+            PluginUpdate {
+                project_id: Some(project.id),
+                name: "audit override",
+                description: "updated",
+                stage: "pre_route",
+                enabled: false,
+                position: 5,
+                failure_mode: "fail_open",
+                endpoint: "https://plugins.internal/project-audit",
+                secret_env: None,
+                config: &serde_json::json!({"sample": 0.5}),
+            },
         )
         .await
         .unwrap();
@@ -930,14 +1059,16 @@ async fn sso_sweeps_drop_expired_rows_nobody_used_and_keep_live_ones() {
     let provider = repo
         .create_provider(
             org.id,
-            "idp",
-            "idp",
-            "https://idp.example.com",
-            "client",
-            None,
-            &[],
-            "groups",
-            None,
+            NewSsoProvider {
+                name: "idp",
+                slug: "idp",
+                issuer: "https://idp.example.com",
+                client_id: "client",
+                secret: None,
+                scopes: &[],
+                group_claim: "groups",
+                default_role: None,
+            },
         )
         .await
         .unwrap();
@@ -1223,7 +1354,19 @@ async fn a_provider_with_a_non_string_proxy_entry_lists_and_can_be_rewritten() {
     // an update that leaves the pool alone still answers
     let kept = repo
         .update(
-            id, None, None, None, None, None, None, None, None, None, None,
+            id,
+            ProviderUpdate {
+                slug: None,
+                kind: None,
+                api_base: None,
+                api_key_env: None,
+                egress_proxy: None,
+                egress_proxies: None,
+                kv_events: None,
+                lmcache: None,
+                project_id: None,
+                allow_custom_api_base: None,
+            },
         )
         .await
         .expect("an update that omits the pool succeeds");
@@ -1233,16 +1376,18 @@ async fn a_provider_with_a_non_string_proxy_entry_lists_and_can_be_rewritten() {
     let rewritten = repo
         .update(
             id,
-            None,
-            None,
-            None,
-            None,
-            None,
-            Some(&pool_now),
-            None,
-            None,
-            None,
-            None,
+            ProviderUpdate {
+                slug: None,
+                kind: None,
+                api_base: None,
+                api_key_env: None,
+                egress_proxy: None,
+                egress_proxies: Some(&pool_now),
+                kv_events: None,
+                lmcache: None,
+                project_id: None,
+                allow_custom_api_base: None,
+            },
         )
         .await
         .expect("a write that sets the pool succeeds");
@@ -1276,17 +1421,19 @@ async fn route_update_is_one_transaction() {
         let provider = ProviderRepo(&pool)
             .create(
                 org.id,
-                name,
-                name,
-                "openai",
-                "https://api.openai.com",
-                Some("OPENAI_API_KEY"),
-                None,
-                &[],
-                None,
-                None,
-                None,
-                false,
+                NewProvider {
+                    name,
+                    slug: name,
+                    kind: "openai",
+                    api_base: "https://api.openai.com",
+                    api_key_env: Some("OPENAI_API_KEY"),
+                    egress_proxy: None,
+                    egress_proxies: &[],
+                    kv_events: None,
+                    lmcache: None,
+                    project_id: None,
+                    allow_custom_api_base: false,
+                },
             )
             .await
             .unwrap();

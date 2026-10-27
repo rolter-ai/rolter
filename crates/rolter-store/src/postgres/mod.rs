@@ -2752,17 +2752,19 @@ mod tests {
             let provider = repo::ProviderRepo(&pool)
                 .create(
                     org.id,
-                    name,
-                    name,
-                    "openai",
-                    "https://api.openai.com",
-                    Some("OPENAI_API_KEY"),
-                    None,
-                    &[],
-                    None,
-                    None,
-                    None,
-                    false,
+                    repo::NewProvider {
+                        name,
+                        slug: name,
+                        kind: "openai",
+                        api_base: "https://api.openai.com",
+                        api_key_env: Some("OPENAI_API_KEY"),
+                        egress_proxy: None,
+                        egress_proxies: &[],
+                        kv_events: None,
+                        lmcache: None,
+                        project_id: None,
+                        allow_custom_api_base: false,
+                    },
                 )
                 .await
                 .unwrap();
@@ -3451,12 +3453,32 @@ mod tests {
         // a writer with no opinion on the column keeps what is stored
         let repo = repo::LoggingSettingsRepo(&pool);
         let row = repo
-            .update(1.0, false, 32768, &[], &[], &[], 90, 168, None)
+            .update(repo::LoggingSettingsUpdate {
+                sample_rate: 1.0,
+                payload_capture_enabled: false,
+                payload_capture_max_bytes: 32768,
+                payload_capture_redact_fields: &[],
+                payload_capture_models: &[],
+                payload_capture_virtual_key_ids: &[],
+                retention_days: 90,
+                payload_retention_hours: 168,
+                ui_events: None,
+            })
             .await
             .unwrap();
         assert!(!row.ui_events, "a None update re-enabled the stream");
         let row = repo
-            .update(1.0, false, 32768, &[], &[], &[], 90, 168, Some(true))
+            .update(repo::LoggingSettingsUpdate {
+                sample_rate: 1.0,
+                payload_capture_enabled: false,
+                payload_capture_max_bytes: 32768,
+                payload_capture_redact_fields: &[],
+                payload_capture_models: &[],
+                payload_capture_virtual_key_ids: &[],
+                retention_days: 90,
+                payload_retention_hours: 168,
+                ui_events: Some(true),
+            })
             .await
             .unwrap();
         assert!(row.ui_events);

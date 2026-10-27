@@ -47,20 +47,35 @@ pub struct SsoProviderUpdate<'a> {
     pub enabled: bool,
 }
 
+/// The identity provider and sign-in settings of an SSO provider being registered.
+#[derive(Debug, Clone, Copy)]
+pub struct NewSsoProvider<'a> {
+    pub name: &'a str,
+    pub slug: &'a str,
+    pub issuer: &'a str,
+    pub client_id: &'a str,
+    pub secret: Option<(&'a [u8], &'a [u8])>,
+    pub scopes: &'a [String],
+    pub group_claim: &'a str,
+    pub default_role: Option<&'a str>,
+}
+
 impl SsoRepo<'_> {
-    #[allow(clippy::too_many_arguments)]
     pub async fn create_provider(
         &self,
         org_id: Uuid,
-        name: &str,
-        slug: &str,
-        issuer: &str,
-        client_id: &str,
-        secret: Option<(&[u8], &[u8])>,
-        scopes: &[String],
-        group_claim: &str,
-        default_role: Option<&str>,
+        values: NewSsoProvider<'_>,
     ) -> Result<SsoProvider> {
+        let NewSsoProvider {
+            name,
+            slug,
+            issuer,
+            client_id,
+            secret,
+            scopes,
+            group_claim,
+            default_role,
+        } = values;
         let (ciphertext, nonce) = match secret {
             Some((c, n)) => (Some(c), Some(n)),
             None => (None, None),

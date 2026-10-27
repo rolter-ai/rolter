@@ -43,8 +43,8 @@ use uuid::Uuid;
 use rolter_store::postgres::crypto::Kek;
 use rolter_store::postgres::models::{Membership, SsoGroupMapping, SsoProvider, User};
 use rolter_store::postgres::repo::{
-    AuditLogRepo, LockoutGuard, MembershipRepo, OrgAuthPolicyRepo, SecretUpdate, SessionRepo,
-    SsoProviderUpdate, SsoRepo, UserRepo,
+    AuditLogRepo, LockoutGuard, MembershipRepo, NewSsoProvider, OrgAuthPolicyRepo, SecretUpdate,
+    SessionRepo, SsoProviderUpdate, SsoRepo, UserRepo,
 };
 
 use crate::auth::session_pepper;
@@ -1307,14 +1307,16 @@ async fn create_provider(
     let provider = SsoRepo(pool(&state))
         .create_provider(
             org_id,
-            &body.name,
-            &body.slug,
-            body.issuer.trim_end_matches('/'),
-            &body.client_id,
-            sealed.as_ref().map(|(c, n)| (c.as_slice(), n.as_slice())),
-            &scopes,
-            body.group_claim.as_deref().unwrap_or("groups"),
-            body.default_role.as_deref(),
+            NewSsoProvider {
+                name: &body.name,
+                slug: &body.slug,
+                issuer: body.issuer.trim_end_matches('/'),
+                client_id: &body.client_id,
+                secret: sealed.as_ref().map(|(c, n)| (c.as_slice(), n.as_slice())),
+                scopes: &scopes,
+                group_claim: body.group_claim.as_deref().unwrap_or("groups"),
+                default_role: body.default_role.as_deref(),
+            },
         )
         .await?;
     log_audit(

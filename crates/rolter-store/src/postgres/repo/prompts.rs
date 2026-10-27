@@ -244,6 +244,41 @@ pub struct PluginRepo<'a>(pub &'a PgPool);
 const PLUGIN_COLUMNS: &str = "id, org_id, project_id, name, slug, description, kind, stage, \
     enabled, position, failure_mode, endpoint, secret_env, config, created_at, updated_at";
 
+/// The settings a plugin instance is created with. A struct rather than twelve
+/// positional arguments, so a caller cannot transpose `kind` and `stage` or
+/// `endpoint` and `secret_env`.
+#[derive(Debug, Clone, Copy)]
+pub struct NewPlugin<'a> {
+    pub project_id: Option<Uuid>,
+    pub name: &'a str,
+    pub slug: &'a str,
+    pub description: &'a str,
+    pub kind: &'a str,
+    pub stage: &'a str,
+    pub enabled: bool,
+    pub position: i32,
+    pub failure_mode: &'a str,
+    pub endpoint: &'a str,
+    pub secret_env: Option<&'a str>,
+    pub config: &'a serde_json::Value,
+}
+
+/// The editable settings of a plugin instance; `update` replaces all of them.
+/// Kind and slug are fixed at creation.
+#[derive(Debug, Clone, Copy)]
+pub struct PluginUpdate<'a> {
+    pub project_id: Option<Uuid>,
+    pub name: &'a str,
+    pub description: &'a str,
+    pub stage: &'a str,
+    pub enabled: bool,
+    pub position: i32,
+    pub failure_mode: &'a str,
+    pub endpoint: &'a str,
+    pub secret_env: Option<&'a str>,
+    pub config: &'a serde_json::Value,
+}
+
 impl PluginRepo<'_> {
     pub async fn list(&self, org_id: Uuid) -> Result<Vec<PluginInstance>> {
         sqlx::query_as(sqlx::AssertSqlSafe(format!(
@@ -281,23 +316,21 @@ impl PluginRepo<'_> {
         .await
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub async fn create(
-        &self,
-        org_id: Uuid,
-        project_id: Option<Uuid>,
-        name: &str,
-        slug: &str,
-        description: &str,
-        kind: &str,
-        stage: &str,
-        enabled: bool,
-        position: i32,
-        failure_mode: &str,
-        endpoint: &str,
-        secret_env: Option<&str>,
-        config: &serde_json::Value,
-    ) -> Result<PluginInstance> {
+    pub async fn create(&self, org_id: Uuid, values: NewPlugin<'_>) -> Result<PluginInstance> {
+        let NewPlugin {
+            project_id,
+            name,
+            slug,
+            description,
+            kind,
+            stage,
+            enabled,
+            position,
+            failure_mode,
+            endpoint,
+            secret_env,
+            config,
+        } = values;
         sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "insert into plugin_instances (org_id, project_id, name, slug, description, kind, \
              stage, enabled, position, failure_mode, endpoint, secret_env, config) values \
@@ -321,21 +354,19 @@ impl PluginRepo<'_> {
         .map_err(store_err)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub async fn update(
-        &self,
-        id: Uuid,
-        project_id: Option<Uuid>,
-        name: &str,
-        description: &str,
-        stage: &str,
-        enabled: bool,
-        position: i32,
-        failure_mode: &str,
-        endpoint: &str,
-        secret_env: Option<&str>,
-        config: &serde_json::Value,
-    ) -> Result<PluginInstance> {
+    pub async fn update(&self, id: Uuid, values: PluginUpdate<'_>) -> Result<PluginInstance> {
+        let PluginUpdate {
+            project_id,
+            name,
+            description,
+            stage,
+            enabled,
+            position,
+            failure_mode,
+            endpoint,
+            secret_env,
+            config,
+        } = values;
         fetch_optional_or_not_found(
             sqlx::query_as(sqlx::AssertSqlSafe(format!(
                 "update plugin_instances set project_id=$2, name=$3, description=$4, stage=$5, \

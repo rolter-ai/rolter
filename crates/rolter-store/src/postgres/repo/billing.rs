@@ -358,6 +358,22 @@ pub struct UnitRates<'a> {
     pub cached_audio_input_per_mtok: Option<Option<&'a str>>,
 }
 
+/// A model price being created or replaced. The cache-write rates and the
+/// [`UnitRates`] are tri-state, as on [`ModelPriceRepo::upsert`]; `Default`
+/// keeps every stored rate, so a caller names the model, the two token rates and
+/// the currency.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NewModelPrice<'a> {
+    pub model: &'a str,
+    pub input_per_mtok: &'a str,
+    pub output_per_mtok: &'a str,
+    pub cached_input_per_mtok: Option<&'a str>,
+    pub cache_write_per_mtok: Option<Option<&'a str>>,
+    pub cache_write_1h_per_mtok: Option<Option<&'a str>>,
+    pub units: UnitRates<'a>,
+    pub currency: &'a str,
+}
+
 impl ModelPriceRepo<'_> {
     pub async fn list(&self) -> Result<Vec<ModelPrice>> {
         sqlx::query_as(
@@ -389,44 +405,20 @@ impl ModelPriceRepo<'_> {
     /// sends a body without it, and replacing the row must not wipe a rate an
     /// operator set since, which "omitted means null" would do on the next
     /// save.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn upsert(
-        &self,
-        model: &str,
-        input_per_mtok: &str,
-        output_per_mtok: &str,
-        cached_input_per_mtok: Option<&str>,
-        cache_write_per_mtok: Option<Option<&str>>,
-        cache_write_1h_per_mtok: Option<Option<&str>>,
-        currency: &str,
-    ) -> Result<ModelPrice> {
-        self.upsert_with_units(
+    ///
+    /// The non-token rates (#2937) keep their stored value unless `units` names
+    /// them.
+    pub async fn upsert(&self, values: NewModelPrice<'_>) -> Result<ModelPrice> {
+        let NewModelPrice {
             model,
             input_per_mtok,
             output_per_mtok,
             cached_input_per_mtok,
             cache_write_per_mtok,
             cache_write_1h_per_mtok,
-            UnitRates::default(),
+            units,
             currency,
-        )
-        .await
-    }
-
-    /// [`Self::upsert`] that also sets the non-token rates (#2937), which keep
-    /// their stored value unless `units` names them.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn upsert_with_units(
-        &self,
-        model: &str,
-        input_per_mtok: &str,
-        output_per_mtok: &str,
-        cached_input_per_mtok: Option<&str>,
-        cache_write_per_mtok: Option<Option<&str>>,
-        cache_write_1h_per_mtok: Option<Option<&str>>,
-        units: UnitRates<'_>,
-        currency: &str,
-    ) -> Result<ModelPrice> {
+        } = values;
         let mut tx = self.0.begin().await.map_err(store_err)?;
         let row = sqlx::query_as(
             "insert into model_prices

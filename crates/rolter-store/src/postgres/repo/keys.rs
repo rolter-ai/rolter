@@ -19,6 +19,26 @@ const VIRTUAL_KEY_COLUMNS: &str = "id, project_id, key_hash, key_prefix, name, m
 /// sees or stores plaintext keys.
 pub struct VirtualKeyRepo<'a>(pub &'a PgPool);
 
+/// What a virtual key is minted with. A struct rather than ten positional
+/// arguments, so a caller cannot transpose `key_hash` and `key_prefix` or the
+/// two string lists.
+#[derive(Debug, Clone, Copy)]
+pub struct NewVirtualKey<'a> {
+    pub key_hash: &'a str,
+    pub key_prefix: &'a str,
+    pub name: Option<&'a str>,
+    pub models: &'a [String],
+    pub providers: &'a [String],
+    pub cache_enabled: Option<bool>,
+    pub created_by: Option<Uuid>,
+    /// When the key stops working; `None` mints an immortal key, which the
+    /// callers only pass for a deliberate "never expires" choice (#945).
+    pub expires_at: Option<DateTime<Utc>>,
+    /// Why the key exists when a person did not mint it by hand; `None` for
+    /// every operator-created key (#1640).
+    pub purpose: Option<&'a str>,
+}
+
 impl VirtualKeyRepo<'_> {
     pub async fn list(&self, project_id: Uuid) -> Result<Vec<VirtualKey>> {
         sqlx::query_as(sqlx::AssertSqlSafe(format!(
@@ -55,24 +75,18 @@ impl VirtualKeyRepo<'_> {
         .await
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub async fn create(
-        &self,
-        project_id: Uuid,
-        key_hash: &str,
-        key_prefix: &str,
-        name: Option<&str>,
-        models: &[String],
-        providers: &[String],
-        cache_enabled: Option<bool>,
-        created_by: Option<Uuid>,
-        // when the key stops working; `None` mints an immortal key, which the
-        // callers only pass for a deliberate "never expires" choice (#945)
-        expires_at: Option<DateTime<Utc>>,
-        // why the key exists when a person did not mint it by hand; `None` for
-        // every operator-created key (#1640)
-        purpose: Option<&str>,
-    ) -> Result<VirtualKey> {
+    pub async fn create(&self, project_id: Uuid, key: NewVirtualKey<'_>) -> Result<VirtualKey> {
+        let NewVirtualKey {
+            key_hash,
+            key_prefix,
+            name,
+            models,
+            providers,
+            cache_enabled,
+            created_by,
+            expires_at,
+            purpose,
+        } = key;
         sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "insert into virtual_keys (project_id, key_hash, \
                 key_prefix, name, models, providers, cache_enabled, created_by, expires_at, \

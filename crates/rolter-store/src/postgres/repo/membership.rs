@@ -376,6 +376,18 @@ pub struct InvitationRepo<'a>(pub &'a PgPool);
 const INVITATION_COLUMNS: &str = "id, org_id, email, role, team_id, project_id, token_hash, \
      invited_by, expires_at, accepted_at, revoked_at, created_at";
 
+/// The address, grant and token of an invitation being created.
+#[derive(Debug, Clone, Copy)]
+pub struct NewInvitation<'a> {
+    pub email: &'a str,
+    pub role: &'a str,
+    pub team_id: Option<Uuid>,
+    pub project_id: Option<Uuid>,
+    pub token_hash: &'a str,
+    pub invited_by: Option<Uuid>,
+    pub expires_at: chrono::DateTime<chrono::Utc>,
+}
+
 impl InvitationRepo<'_> {
     /// Create an invitation, replacing the address's live one in the same
     /// transaction. Returns the new row and the id of the invitation it
@@ -389,18 +401,20 @@ impl InvitationRepo<'_> {
     /// lock on `(org, lower(email))` orders concurrent creates for one
     /// address: the second waits, then revokes the first's row, so neither
     /// trips the index.
-    #[allow(clippy::too_many_arguments)]
     pub async fn create(
         &self,
         org_id: Uuid,
-        email: &str,
-        role: &str,
-        team_id: Option<Uuid>,
-        project_id: Option<Uuid>,
-        token_hash: &str,
-        invited_by: Option<Uuid>,
-        expires_at: chrono::DateTime<chrono::Utc>,
+        values: NewInvitation<'_>,
     ) -> Result<(Invitation, Option<Uuid>)> {
+        let NewInvitation {
+            email,
+            role,
+            team_id,
+            project_id,
+            token_hash,
+            invited_by,
+            expires_at,
+        } = values;
         let mut tx = self.0.begin().await.map_err(store_err)?;
         sqlx::query("select pg_advisory_xact_lock(hashtextextended('invitation:' || $1::text || ':' || lower($2), 0))")
             .bind(org_id)

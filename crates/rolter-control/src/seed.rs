@@ -47,8 +47,9 @@ use argon2::password_hash::PasswordHasher;
 use argon2::Argon2;
 use rolter_core::{BalancingStrategy, GatewayConfig, PromptTemplate, ProviderKind};
 use rolter_store::postgres::repo::{
-    LoggingSettingsRepo, ModelPriceRepo, OrgRepo, ProjectRepo, ProviderGroupRepo, ProviderRepo,
-    RouteRepo, RouteTargetRepo, TeamRepo, UnitRates,
+    LoggingSettingsRepo, LoggingSettingsUpdate, ModelPriceRepo, NewModelPrice, NewProvider,
+    OrgRepo, ProjectRepo, ProviderGroupRepo, ProviderRepo, ProviderUpdate, RouteRepo,
+    RouteTargetRepo, TeamRepo, UnitRates,
 };
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -381,17 +382,17 @@ fn declares_ui_events(path: &Path) -> anyhow::Result<bool> {
 async fn import_ui_events(pool: &PgPool, enabled: bool) -> anyhow::Result<()> {
     let repo = LoggingSettingsRepo(pool);
     let current = repo.get().await?;
-    repo.update(
-        current.sample_rate,
-        current.payload_capture_enabled,
-        current.payload_capture_max_bytes,
-        &current.payload_capture_redact_fields,
-        &current.payload_capture_models,
-        &current.payload_capture_virtual_key_ids,
-        current.retention_days,
-        current.payload_retention_hours,
-        Some(enabled),
-    )
+    repo.update(LoggingSettingsUpdate {
+        sample_rate: current.sample_rate,
+        payload_capture_enabled: current.payload_capture_enabled,
+        payload_capture_max_bytes: current.payload_capture_max_bytes,
+        payload_capture_redact_fields: &current.payload_capture_redact_fields,
+        payload_capture_models: &current.payload_capture_models,
+        payload_capture_virtual_key_ids: &current.payload_capture_virtual_key_ids,
+        retention_days: current.retention_days,
+        payload_retention_hours: current.payload_retention_hours,
+        ui_events: Some(enabled),
+    })
     .await?;
     tracing::info!(enabled, "imported ui events policy");
     Ok(())
@@ -419,17 +420,17 @@ async fn import_payload_capture(
     let repo = LoggingSettingsRepo(pool);
     let current = repo.get().await?;
     let max_bytes = i32::try_from(capture.max_bytes).unwrap_or(i32::MAX);
-    repo.update(
-        current.sample_rate,
-        capture.enabled,
-        max_bytes,
-        &capture.redact_fields,
-        &capture.models,
-        &capture.virtual_key_ids,
-        current.retention_days,
-        current.payload_retention_hours,
-        None,
-    )
+    repo.update(LoggingSettingsUpdate {
+        sample_rate: current.sample_rate,
+        payload_capture_enabled: capture.enabled,
+        payload_capture_max_bytes: max_bytes,
+        payload_capture_redact_fields: &capture.redact_fields,
+        payload_capture_models: &capture.models,
+        payload_capture_virtual_key_ids: &capture.virtual_key_ids,
+        retention_days: current.retention_days,
+        payload_retention_hours: current.payload_retention_hours,
+        ui_events: None,
+    })
     .await?;
     tracing::info!(
         enabled = capture.enabled,
@@ -556,19 +557,21 @@ async fn import_config(
                     let updated = providers
                         .update(
                             row.id,
-                            // slug is immutable once assigned; renaming the
-                            // stable identity of a provider is not something a
-                            // re-import should do behind the operator's back
-                            None,
-                            Some(kind),
-                            Some(&p.api_base),
-                            Some(api_key_env),
-                            Some(p.egress_proxy.as_deref()),
-                            Some(&p.egress_proxies),
-                            Some(p.kv_events.as_ref()),
-                            Some(p.lmcache.as_ref()),
-                            Some(scope),
-                            Some(p.allow_custom_api_base),
+                            ProviderUpdate {
+                                // slug is immutable once assigned; renaming the
+                                // stable identity of a provider is not something a
+                                // re-import should do behind the operator's back
+                                slug: None,
+                                kind: Some(kind),
+                                api_base: Some(&p.api_base),
+                                api_key_env: Some(api_key_env),
+                                egress_proxy: Some(p.egress_proxy.as_deref()),
+                                egress_proxies: Some(&p.egress_proxies),
+                                kv_events: Some(p.kv_events.as_ref()),
+                                lmcache: Some(p.lmcache.as_ref()),
+                                project_id: Some(scope),
+                                allow_custom_api_base: Some(p.allow_custom_api_base),
+                            },
                         )
                         .await?;
                     tracing::info!(provider = %p.name, "updated provider from file");
@@ -587,17 +590,19 @@ async fn import_config(
                 let created = providers
                     .create(
                         org_id,
-                        &p.name,
-                        &slug,
-                        kind,
-                        &p.api_base,
-                        api_key_env,
-                        p.egress_proxy.as_deref(),
-                        &p.egress_proxies,
-                        p.kv_events.as_ref(),
-                        p.lmcache.as_ref(),
-                        scope,
-                        p.allow_custom_api_base,
+                        NewProvider {
+                            name: &p.name,
+                            slug: &slug,
+                            kind,
+                            api_base: &p.api_base,
+                            api_key_env,
+                            egress_proxy: p.egress_proxy.as_deref(),
+                            egress_proxies: &p.egress_proxies,
+                            kv_events: p.kv_events.as_ref(),
+                            lmcache: p.lmcache.as_ref(),
+                            project_id: scope,
+                            allow_custom_api_base: p.allow_custom_api_base,
+                        },
                     )
                     .await?;
                 tracing::info!(provider = %p.name, "created provider");
@@ -862,27 +867,30 @@ async fn import_model_prices(pool: &PgPool, config: &GatewayConfig) -> anyhow::R
         // the column is `numeric`, so the rate crosses as text rather than
         // through a float bind that would round it on the way in
         prices
-            .upsert_with_units(
-                &price.model,
-                &price.input_per_mtok.to_string(),
-                &price.output_per_mtok.to_string(),
-                price
+            .upsert(NewModelPrice {
+                model: &price.model,
+                input_per_mtok: &price.input_per_mtok.to_string(),
+                output_per_mtok: &price.output_per_mtok.to_string(),
+                cached_input_per_mtok: price
                     .cached_input_per_mtok
                     .map(|v| v.to_string())
                     .as_deref(),
                 // the file is the desired state, so a price without the key
                 // is a price without a write rate: `Some(None)` clears one
                 // rather than leaving a stale rate behind
-                Some(price.cache_write_per_mtok.map(|v| v.to_string()).as_deref()),
+                cache_write_per_mtok: Some(
+                    price.cache_write_per_mtok.map(|v| v.to_string()).as_deref(),
+                ),
                 // and the same for the 1 hour rate (#2891)
-                Some(
+                cache_write_1h_per_mtok: Some(
                     price
                         .cache_write_1h_per_mtok
                         .map(|v| v.to_string())
                         .as_deref(),
                 ),
                 // and the unit rates (#2937)
-                UnitRates {
+                // and the audio token rates (#1882)
+                units: UnitRates {
                     image_per_unit: Some(price.image_per_unit.map(|v| v.to_string()).as_deref()),
                     audio_input_per_minute: Some(
                         price
@@ -893,7 +901,7 @@ async fn import_model_prices(pool: &PgPool, config: &GatewayConfig) -> anyhow::R
                     speech_per_mchar: Some(
                         price.speech_per_mchar.map(|v| v.to_string()).as_deref(),
                     ),
-                    // and the audio token rates (#1882)
+
                     audio_input_per_mtok: Some(
                         price.audio_input_per_mtok.map(|v| v.to_string()).as_deref(),
                     ),
@@ -910,8 +918,8 @@ async fn import_model_prices(pool: &PgPool, config: &GatewayConfig) -> anyhow::R
                             .as_deref(),
                     ),
                 },
-                &price.currency,
-            )
+                currency: &price.currency,
+            })
             .await?;
         tracing::info!(model = %price.model, "imported model price");
     }

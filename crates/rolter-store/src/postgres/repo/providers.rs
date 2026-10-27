@@ -41,6 +41,41 @@ fn setting_json<T: serde::Serialize>(setting: Option<&T>) -> Result<Option<serde
         .map_err(|err| Error::Store(format!("provider setting is not representable: {err}")))
 }
 
+/// The settings a provider is created with. A struct rather than twelve
+/// positional arguments, so a caller cannot transpose `kind` and `api_base` or
+/// the optional env and proxy names.
+#[derive(Debug, Clone, Copy)]
+pub struct NewProvider<'a> {
+    pub name: &'a str,
+    pub slug: &'a str,
+    pub kind: &'a str,
+    pub api_base: &'a str,
+    pub api_key_env: Option<&'a str>,
+    pub egress_proxy: Option<&'a str>,
+    pub egress_proxies: &'a [String],
+    pub kv_events: Option<&'a rolter_core::KvEventsConfig>,
+    pub lmcache: Option<&'a rolter_core::LmCacheConfig>,
+    pub project_id: Option<Uuid>,
+    pub allow_custom_api_base: bool,
+}
+
+/// The fields of a provider an update may change. `None` leaves a field
+/// unchanged and the nullable fields take `Some(None)` to clear, as on
+/// [`ProviderRepo::update`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ProviderUpdate<'a> {
+    pub slug: Option<&'a str>,
+    pub kind: Option<&'a str>,
+    pub api_base: Option<&'a str>,
+    pub api_key_env: Option<Option<&'a str>>,
+    pub egress_proxy: Option<Option<&'a str>>,
+    pub egress_proxies: Option<&'a [String]>,
+    pub kv_events: Option<Option<&'a rolter_core::KvEventsConfig>>,
+    pub lmcache: Option<Option<&'a rolter_core::LmCacheConfig>>,
+    pub project_id: Option<Option<Uuid>>,
+    pub allow_custom_api_base: Option<bool>,
+}
+
 impl ProviderRepo<'_> {
     /// Whether any provider in the deployment already has `name`. The gateway
     /// keys providers by name alone, across every org, so a second one would
@@ -202,22 +237,20 @@ impl ProviderRepo<'_> {
         .await
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub async fn create(
-        &self,
-        org_id: Uuid,
-        name: &str,
-        slug: &str,
-        kind: &str,
-        api_base: &str,
-        api_key_env: Option<&str>,
-        egress_proxy: Option<&str>,
-        egress_proxies: &[String],
-        kv_events: Option<&rolter_core::KvEventsConfig>,
-        lmcache: Option<&rolter_core::LmCacheConfig>,
-        project_id: Option<Uuid>,
-        allow_custom_api_base: bool,
-    ) -> Result<Provider> {
+    pub async fn create(&self, org_id: Uuid, values: NewProvider<'_>) -> Result<Provider> {
+        let NewProvider {
+            name,
+            slug,
+            kind,
+            api_base,
+            api_key_env,
+            egress_proxy,
+            egress_proxies,
+            kv_events,
+            lmcache,
+            project_id,
+            allow_custom_api_base,
+        } = values;
         sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "insert into providers (org_id, name, slug, kind, \
                 api_base, api_key_env, egress_proxy, egress_proxies, project_id, kv_events, \
@@ -247,21 +280,19 @@ impl ProviderRepo<'_> {
     /// default — callers must only pass `Some` after an explicit override
     /// (the control API gates this); the charset constraint is enforced by the
     /// database.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn update(
-        &self,
-        id: Uuid,
-        slug: Option<&str>,
-        kind: Option<&str>,
-        api_base: Option<&str>,
-        api_key_env: Option<Option<&str>>,
-        egress_proxy: Option<Option<&str>>,
-        egress_proxies: Option<&[String]>,
-        kv_events: Option<Option<&rolter_core::KvEventsConfig>>,
-        lmcache: Option<Option<&rolter_core::LmCacheConfig>>,
-        project_id: Option<Option<Uuid>>,
-        allow_custom_api_base: Option<bool>,
-    ) -> Result<Provider> {
+    pub async fn update(&self, id: Uuid, values: ProviderUpdate<'_>) -> Result<Provider> {
+        let ProviderUpdate {
+            slug,
+            kind,
+            api_base,
+            api_key_env,
+            egress_proxy,
+            egress_proxies,
+            kv_events,
+            lmcache,
+            project_id,
+            allow_custom_api_base,
+        } = values;
         fetch_optional_or_not_found(
             sqlx::query_as(sqlx::AssertSqlSafe(format!(
                 "update providers set

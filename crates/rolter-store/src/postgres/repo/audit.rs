@@ -94,7 +94,6 @@ pub struct AuditLogPage {
 }
 
 impl AuditLogRepo<'_> {
-    #[allow(clippy::too_many_arguments)]
     pub async fn create(
         &self,
         org_id: Option<Uuid>,

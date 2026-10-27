@@ -135,7 +135,6 @@ impl AdaptiveRoutingPolicyRepo<'_> {
         .map_err(store_err)
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub async fn update(
         &self,
         enabled: bool,
@@ -165,6 +164,21 @@ impl AdaptiveRoutingPolicyRepo<'_> {
     }
 }
 
+/// The retry, timeout and queue settings the runtime policy is replaced with.
+#[derive(Debug, Clone, Copy)]
+pub struct RuntimePolicyUpdate<'a> {
+    pub retry_max_retries: i32,
+    pub retry_base_ms: i32,
+    pub retry_max_ms: i32,
+    pub timeout_connect_s: i32,
+    pub timeout_request_s: i32,
+    pub queue_enabled: bool,
+    pub queue_capacity: i32,
+    pub queue_workers: i32,
+    pub queue_backpressure: &'a str,
+    pub queue_block_ms: i32,
+}
+
 impl RuntimePolicyRepo<'_> {
     pub async fn get(&self) -> Result<RuntimePolicy> {
         sqlx::query_as(
@@ -178,20 +192,19 @@ impl RuntimePolicyRepo<'_> {
         .map_err(store_err)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub async fn update(
-        &self,
-        retry_max_retries: i32,
-        retry_base_ms: i32,
-        retry_max_ms: i32,
-        timeout_connect_s: i32,
-        timeout_request_s: i32,
-        queue_enabled: bool,
-        queue_capacity: i32,
-        queue_workers: i32,
-        queue_backpressure: &str,
-        queue_block_ms: i32,
-    ) -> Result<RuntimePolicy> {
+    pub async fn update(&self, values: RuntimePolicyUpdate<'_>) -> Result<RuntimePolicy> {
+        let RuntimePolicyUpdate {
+            retry_max_retries,
+            retry_base_ms,
+            retry_max_ms,
+            timeout_connect_s,
+            timeout_request_s,
+            queue_enabled,
+            queue_capacity,
+            queue_workers,
+            queue_backpressure,
+            queue_block_ms,
+        } = values;
         sqlx::query_as(
             "update runtime_policy set \
                 retry_max_retries = $1, retry_base_ms = $2, retry_max_ms = $3, \
@@ -317,6 +330,21 @@ impl FeatureFlagsRepo<'_> {
     }
 }
 
+/// The logging settings that replace the stored row. `ui_events` is `None` to
+/// keep the stored value.
+#[derive(Debug, Clone, Copy)]
+pub struct LoggingSettingsUpdate<'a> {
+    pub sample_rate: f64,
+    pub payload_capture_enabled: bool,
+    pub payload_capture_max_bytes: i32,
+    pub payload_capture_redact_fields: &'a [String],
+    pub payload_capture_models: &'a [String],
+    pub payload_capture_virtual_key_ids: &'a [String],
+    pub retention_days: i32,
+    pub payload_retention_hours: i32,
+    pub ui_events: Option<bool>,
+}
+
 impl LoggingSettingsRepo<'_> {
     pub async fn get(&self) -> Result<LoggingSettings> {
         sqlx::query_as(
@@ -330,19 +358,18 @@ impl LoggingSettingsRepo<'_> {
         .map_err(store_err)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub async fn update(
-        &self,
-        sample_rate: f64,
-        payload_capture_enabled: bool,
-        payload_capture_max_bytes: i32,
-        payload_capture_redact_fields: &[String],
-        payload_capture_models: &[String],
-        payload_capture_virtual_key_ids: &[String],
-        retention_days: i32,
-        payload_retention_hours: i32,
-        ui_events: Option<bool>,
-    ) -> Result<LoggingSettings> {
+    pub async fn update(&self, values: LoggingSettingsUpdate<'_>) -> Result<LoggingSettings> {
+        let LoggingSettingsUpdate {
+            sample_rate,
+            payload_capture_enabled,
+            payload_capture_max_bytes,
+            payload_capture_redact_fields,
+            payload_capture_models,
+            payload_capture_virtual_key_ids,
+            retention_days,
+            payload_retention_hours,
+            ui_events,
+        } = values;
         // `None` keeps the stored ui_events: a caller that has no opinion on it
         // (the seed importer, a client written before the column) must not
         // silently re-enable a stream an operator switched off
