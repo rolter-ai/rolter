@@ -9,6 +9,13 @@ use super::super::models::{MfaPolicyBinding, OrgAuthPolicy, Session};
 use super::lockout::{lock_org_sign_in, other_enabled_provider, LockoutGuard};
 use super::support::store_err;
 
+/// Every column of `sessions` that its row type reads.
+const SESSION_COLUMNS: &str = "id, user_id, token_hash, created_at, expires_at, last_seen_at";
+
+/// Every column of `org_auth_policies` that its row type reads.
+const ORG_AUTH_POLICY_COLUMNS: &str =
+    "org_id, allow_password_login, allow_sso, mfa_policy, mfa_enforce_after, updated_at";
+
 /// How strict an `mfa_policy` value is, for picking the strictest across a
 /// user's orgs: `off` 0, `optional` 1, `required_superadmin` 2,
 /// `required_all` 3.
@@ -34,11 +41,10 @@ impl OrgAuthPolicyRepo<'_> {
     /// Orgs created before single sign-on existed have no row, and must keep
     /// logging in exactly as they did.
     pub async fn get(&self, org_id: Uuid) -> Result<OrgAuthPolicy> {
-        let found: Option<OrgAuthPolicy> = sqlx::query_as(
-            "select org_id, allow_password_login, allow_sso, mfa_policy, mfa_enforce_after,
-                    updated_at
-             from org_auth_policies where org_id = $1",
-        )
+        let found: Option<OrgAuthPolicy> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "select {ORG_AUTH_POLICY_COLUMNS}
+             from org_auth_policies where org_id = $1"
+        )))
         .bind(org_id)
         .fetch_optional(self.0)
         .await
@@ -70,7 +76,7 @@ impl OrgAuthPolicyRepo<'_> {
         if !allow_password_login && !other_enabled_provider(&mut tx, org_id, Uuid::nil()).await? {
             return Ok(LockoutGuard::WouldLockOut);
         }
-        let row = sqlx::query_as(
+        let row = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "insert into org_auth_policies
                  (org_id, allow_password_login, allow_sso, mfa_policy, mfa_enforce_after)
              values ($1, $2, $3, $4, $5)
@@ -80,9 +86,8 @@ impl OrgAuthPolicyRepo<'_> {
                      mfa_policy = excluded.mfa_policy,
                      mfa_enforce_after = excluded.mfa_enforce_after,
                      updated_at = now()
-             returning org_id, allow_password_login, allow_sso, mfa_policy, mfa_enforce_after,
-                       updated_at",
-        )
+             returning {ORG_AUTH_POLICY_COLUMNS}"
+        )))
         .bind(org_id)
         .bind(allow_password_login)
         .bind(allow_sso)
@@ -191,11 +196,11 @@ impl SessionRepo<'_> {
         token_hash: &str,
         expires_at: chrono::DateTime<chrono::Utc>,
     ) -> Result<Session> {
-        sqlx::query_as(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "insert into sessions (user_id, token_hash, expires_at)
              values ($1, $2, $3)
-             returning id, user_id, token_hash, created_at, expires_at, last_seen_at",
-        )
+             returning {SESSION_COLUMNS}"
+        )))
         .bind(user_id)
         .bind(token_hash)
         .bind(expires_at)
@@ -207,11 +212,11 @@ impl SessionRepo<'_> {
     /// look up a live (unexpired) session by its token digest and bump
     /// `last_seen_at`; returns `None` for a missing, wrong, or expired token
     pub async fn find_active_by_hash(&self, token_hash: &str) -> Result<Option<Session>> {
-        sqlx::query_as(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "update sessions set last_seen_at = now()
              where token_hash = $1 and expires_at > now()
-             returning id, user_id, token_hash, created_at, expires_at, last_seen_at",
-        )
+             returning {SESSION_COLUMNS}"
+        )))
         .bind(token_hash)
         .fetch_optional(self.0)
         .await

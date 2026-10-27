@@ -9,6 +9,11 @@ use rolter_core::Result;
 use super::super::models::{OwnedVirtualKey, VirtualKey};
 use super::support::{fetch_optional_or_not_found, require_affected, store_err};
 
+/// Every column of `virtual_keys` that its row type reads.
+const VIRTUAL_KEY_COLUMNS: &str = "id, project_id, key_hash, key_prefix, name, models, \
+    providers, disabled, expires_at, cache_enabled, created_by, business_unit_id, customer_id, \
+    created_at, purpose";
+
 /// Virtual keys, scoped to a project. Callers are responsible for hashing
 /// the presented key before it reaches `key_hash` — this repository never
 /// sees or stores plaintext keys.
@@ -16,10 +21,10 @@ pub struct VirtualKeyRepo<'a>(pub &'a PgPool);
 
 impl VirtualKeyRepo<'_> {
     pub async fn list(&self, project_id: Uuid) -> Result<Vec<VirtualKey>> {
-        sqlx::query_as(
-            "select id, project_id, key_hash, key_prefix, name, models, providers, disabled, expires_at, cache_enabled, created_by, business_unit_id, customer_id, created_at, purpose
-             from virtual_keys where project_id = $1 order by created_at",
-        )
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "select {VIRTUAL_KEY_COLUMNS}
+             from virtual_keys where project_id = $1 order by created_at"
+        )))
         .bind(project_id)
         .fetch_all(self.0)
         .await
@@ -27,10 +32,10 @@ impl VirtualKeyRepo<'_> {
     }
 
     pub async fn find_by_hash(&self, key_hash: &str) -> Result<Option<VirtualKey>> {
-        sqlx::query_as(
-            "select id, project_id, key_hash, key_prefix, name, models, providers, disabled, expires_at, cache_enabled, created_by, business_unit_id, customer_id, created_at, purpose
-             from virtual_keys where key_hash = $1",
-        )
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "select {VIRTUAL_KEY_COLUMNS}
+             from virtual_keys where key_hash = $1"
+        )))
         .bind(key_hash)
         .fetch_optional(self.0)
         .await
@@ -39,16 +44,15 @@ impl VirtualKeyRepo<'_> {
 
     pub async fn get(&self, id: Uuid) -> Result<VirtualKey> {
         fetch_optional_or_not_found(
-sqlx::query_as(
-            "select id, project_id, key_hash, key_prefix, name, models, providers, disabled, expires_at, cache_enabled, created_by, business_unit_id, customer_id, created_at, purpose
-             from virtual_keys where id = $1",
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "select {VIRTUAL_KEY_COLUMNS}
+             from virtual_keys where id = $1"
+            )))
+            .bind(id),
+            self.0,
+            || format!("virtual key {id}"),
         )
-        .bind(id)
-        ,
-self.0,
-|| format!("virtual key {id}"),
-)
-.await
+        .await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -69,11 +73,13 @@ self.0,
         // every operator-created key (#1640)
         purpose: Option<&str>,
     ) -> Result<VirtualKey> {
-        sqlx::query_as(
-            "insert into virtual_keys (project_id, key_hash, key_prefix, name, models, providers, cache_enabled, created_by, expires_at, purpose)
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "insert into virtual_keys (project_id, key_hash, \
+                key_prefix, name, models, providers, cache_enabled, created_by, expires_at, \
+                purpose)
              values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-             returning id, project_id, key_hash, key_prefix, name, models, providers, disabled, expires_at, cache_enabled, created_by, business_unit_id, customer_id, created_at, purpose",
-        )
+             returning {VIRTUAL_KEY_COLUMNS}"
+        )))
         .bind(project_id)
         .bind(key_hash)
         .bind(key_prefix)
@@ -121,51 +127,48 @@ self.0,
 
     pub async fn set_disabled(&self, id: Uuid, disabled: bool) -> Result<VirtualKey> {
         fetch_optional_or_not_found(
-sqlx::query_as(
-            "update virtual_keys set disabled = $2 where id = $1
-             returning id, project_id, key_hash, key_prefix, name, models, providers, disabled, expires_at, cache_enabled, created_by, business_unit_id, customer_id, created_at, purpose",
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "update virtual_keys set disabled = $2 where id = $1
+             returning {VIRTUAL_KEY_COLUMNS}"
+            )))
+            .bind(id)
+            .bind(disabled),
+            self.0,
+            || format!("virtual key {id}"),
         )
-        .bind(id)
-        .bind(disabled)
-        ,
-self.0,
-|| format!("virtual key {id}"),
-)
-.await
+        .await
     }
 
     /// Set (or clear) the per-key response-cache override. `None` restores the
     /// inherit-the-route default; `Some(bool)` forces caching off/on for the key.
     pub async fn set_cache(&self, id: Uuid, cache_enabled: Option<bool>) -> Result<VirtualKey> {
         fetch_optional_or_not_found(
-sqlx::query_as(
-            "update virtual_keys set cache_enabled = $2 where id = $1
-             returning id, project_id, key_hash, key_prefix, name, models, providers, disabled, expires_at, cache_enabled, created_by, business_unit_id, customer_id, created_at, purpose",
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "update virtual_keys set cache_enabled = $2 where id = $1
+             returning {VIRTUAL_KEY_COLUMNS}"
+            )))
+            .bind(id)
+            .bind(cache_enabled),
+            self.0,
+            || format!("virtual key {id}"),
         )
-        .bind(id)
-        .bind(cache_enabled)
-        ,
-self.0,
-|| format!("virtual key {id}"),
-)
-.await
+        .await
     }
 
     /// Replace the key's provider allow-list. An empty list restores the
     /// permissive default while leaving the model allow-list unchanged.
     pub async fn set_providers(&self, id: Uuid, providers: &[String]) -> Result<VirtualKey> {
         fetch_optional_or_not_found(
-sqlx::query_as(
-            "update virtual_keys set providers = $2 where id = $1
-             returning id, project_id, key_hash, key_prefix, name, models, providers, disabled, expires_at, cache_enabled, created_by, business_unit_id, customer_id, created_at, purpose",
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "update virtual_keys set providers = $2 where id = $1
+             returning {VIRTUAL_KEY_COLUMNS}"
+            )))
+            .bind(id)
+            .bind(providers),
+            self.0,
+            || format!("virtual key {id}"),
         )
-        .bind(id)
-        .bind(providers)
-        ,
-self.0,
-|| format!("virtual key {id}"),
-)
-.await
+        .await
     }
 
     /// Point the key's spend at a business unit and/or customer. `None` clears
@@ -178,18 +181,17 @@ self.0,
         customer_id: Option<Uuid>,
     ) -> Result<VirtualKey> {
         fetch_optional_or_not_found(
-sqlx::query_as(
-            "update virtual_keys set business_unit_id = $2, customer_id = $3 where id = $1
-             returning id, project_id, key_hash, key_prefix, name, models, providers, disabled, expires_at, cache_enabled, created_by, business_unit_id, customer_id, created_at, purpose",
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "update virtual_keys set business_unit_id = $2, customer_id = $3 where id = $1
+             returning {VIRTUAL_KEY_COLUMNS}"
+            )))
+            .bind(id)
+            .bind(business_unit_id)
+            .bind(customer_id),
+            self.0,
+            || format!("virtual key {id}"),
         )
-        .bind(id)
-        .bind(business_unit_id)
-        .bind(customer_id)
-        ,
-self.0,
-|| format!("virtual key {id}"),
-)
-.await
+        .await
     }
 
     pub async fn delete(&self, id: Uuid) -> Result<()> {

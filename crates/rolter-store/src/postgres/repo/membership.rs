@@ -10,15 +10,19 @@ use super::super::models::{Invitation, Membership, PasswordReset};
 use super::lockout::{lock_org_admins, LockoutGuard};
 use super::support::{fetch_optional_or_not_found, require_affected, store_err};
 
+/// Every column of `memberships` that its row type reads.
+const MEMBERSHIP_COLUMNS: &str =
+    "id, user_id, org_id, team_id, project_id, role, source, created_at";
+
 /// role grants at an org/team/project scope. see [`super::super::models::Membership`].
 pub struct MembershipRepo<'a>(pub &'a PgPool);
 
 impl MembershipRepo<'_> {
     pub async fn list_for_user(&self, user_id: Uuid) -> Result<Vec<Membership>> {
-        sqlx::query_as(
-            "select id, user_id, org_id, team_id, project_id, role, source, created_at
-             from memberships where user_id = $1 order by created_at",
-        )
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "select {MEMBERSHIP_COLUMNS}
+             from memberships where user_id = $1 order by created_at"
+        )))
         .bind(user_id)
         .fetch_all(self.0)
         .await
@@ -67,10 +71,10 @@ impl MembershipRepo<'_> {
 
     pub async fn get(&self, id: Uuid) -> Result<Membership> {
         fetch_optional_or_not_found(
-            sqlx::query_as(
-                "select id, user_id, org_id, team_id, project_id, role, source, created_at
-             from memberships where id = $1",
-            )
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "select {MEMBERSHIP_COLUMNS}
+             from memberships where id = $1"
+            )))
             .bind(id),
             self.0,
             || format!("membership {id}"),
@@ -106,11 +110,11 @@ impl MembershipRepo<'_> {
         role: &str,
         source: &str,
     ) -> Result<Membership> {
-        sqlx::query_as(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "insert into memberships (user_id, org_id, team_id, project_id, role, source)
              values ($1, $2, $3, $4, $5, $6)
-             returning id, user_id, org_id, team_id, project_id, role, source, created_at",
-        )
+             returning {MEMBERSHIP_COLUMNS}"
+        )))
         .bind(user_id)
         .bind(org_id)
         .bind(team_id)
@@ -224,10 +228,10 @@ impl MembershipRepo<'_> {
             }
         }
         let before: Membership = fetch_optional_or_not_found(
-            sqlx::query_as(
-                "select id, user_id, org_id, team_id, project_id, role, source, created_at
-             from memberships where id = $1 for update",
-            )
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "select {MEMBERSHIP_COLUMNS}
+             from memberships where id = $1 for update"
+            )))
             .bind(id),
             &mut *tx,
             || format!("membership {id}"),
@@ -235,10 +239,10 @@ impl MembershipRepo<'_> {
         .await?;
         // a manual edit is operator intent: it must survive sso reconciliation,
         // which only ever touches rows whose source is 'sso'
-        let after: Membership = sqlx::query_as(
+        let after: Membership = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "update memberships set role = $2, source = 'manual' where id = $1
-             returning id, user_id, org_id, team_id, project_id, role, source, created_at",
-        )
+             returning {MEMBERSHIP_COLUMNS}"
+        )))
         .bind(id)
         .bind(role)
         .fetch_one(&mut *tx)

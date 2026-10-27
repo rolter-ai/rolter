@@ -9,6 +9,10 @@ use rolter_core::Result;
 use super::super::models::AuditLogEntry;
 use super::support::store_err;
 
+/// Every column of `audit_log` that its row type reads.
+const AUDIT_LOG_COLUMNS: &str =
+    "id, org_id, actor_user_id, action, target_type, target_id, detail, at";
+
 /// Everyone holding a role anywhere in the org bound as `$1`: at the org, one
 /// of its teams or one of its projects.
 ///
@@ -100,11 +104,11 @@ impl AuditLogRepo<'_> {
         target_id: Option<Uuid>,
         detail: Option<serde_json::Value>,
     ) -> Result<AuditLogEntry> {
-        sqlx::query_as(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "insert into audit_log (org_id, actor_user_id, action, target_type, target_id, detail)
              values ($1, $2, $3, $4, $5, $6)
-             returning id, org_id, actor_user_id, action, target_type, target_id, detail, at",
-        )
+             returning {AUDIT_LOG_COLUMNS}"
+        )))
         .bind(org_id)
         .bind(actor_user_id)
         .bind(action)
@@ -117,10 +121,10 @@ impl AuditLogRepo<'_> {
     }
 
     pub async fn list(&self, org_id: Uuid, limit: i64) -> Result<Vec<AuditLogEntry>> {
-        sqlx::query_as(
-            "select id, org_id, actor_user_id, action, target_type, target_id, detail, at
-             from audit_log where org_id = $1 order by at desc limit $2",
-        )
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "select {AUDIT_LOG_COLUMNS}
+             from audit_log where org_id = $1 order by at desc limit $2"
+        )))
         .bind(org_id)
         .bind(limit)
         .fetch_all(self.0)

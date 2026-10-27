@@ -10,6 +10,14 @@ use super::support::{
     fetch_optional_or_not_found, fetch_scalar_or_not_found, require_affected, store_err,
 };
 
+/// Every column of `provider_groups` that its row type reads.
+const PROVIDER_GROUP_COLUMNS: &str = "id, org_id, name, slug, strategy, project_id, created_at";
+
+/// Every column of `providers` that its row type reads.
+const PROVIDER_COLUMNS: &str = "id, org_id, name, slug, kind, api_base, api_key_env, \
+    egress_proxy, egress_proxies, kv_events, lmcache, project_id, allow_custom_api_base, \
+    created_at";
+
 /// What [`ProviderRepo::delete`] did with a provider that exists.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[must_use]
@@ -171,10 +179,10 @@ impl ProviderRepo<'_> {
     }
 
     pub async fn list(&self, org_id: Uuid) -> Result<Vec<Provider>> {
-        sqlx::query_as(
-            "select id, org_id, name, slug, kind, api_base, api_key_env, egress_proxy, egress_proxies, kv_events, lmcache, project_id, allow_custom_api_base, created_at
-             from providers where org_id = $1 order by name",
-        )
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "select {PROVIDER_COLUMNS}
+             from providers where org_id = $1 order by name"
+        )))
         .bind(org_id)
         .fetch_all(self.0)
         .await
@@ -183,16 +191,15 @@ impl ProviderRepo<'_> {
 
     pub async fn get(&self, id: Uuid) -> Result<Provider> {
         fetch_optional_or_not_found(
-sqlx::query_as(
-            "select id, org_id, name, slug, kind, api_base, api_key_env, egress_proxy, egress_proxies, kv_events, lmcache, project_id, allow_custom_api_base, created_at
-             from providers where id = $1",
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "select {PROVIDER_COLUMNS}
+             from providers where id = $1"
+            )))
+            .bind(id),
+            self.0,
+            || format!("provider {id}"),
         )
-        .bind(id)
-        ,
-self.0,
-|| format!("provider {id}"),
-)
-.await
+        .await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -211,11 +218,13 @@ self.0,
         project_id: Option<Uuid>,
         allow_custom_api_base: bool,
     ) -> Result<Provider> {
-        sqlx::query_as(
-            "insert into providers (org_id, name, slug, kind, api_base, api_key_env, egress_proxy, egress_proxies, project_id, kv_events, lmcache, allow_custom_api_base)
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "insert into providers (org_id, name, slug, kind, \
+                api_base, api_key_env, egress_proxy, egress_proxies, project_id, kv_events, \
+                lmcache, allow_custom_api_base)
              values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-             returning id, org_id, name, slug, kind, api_base, api_key_env, egress_proxy, egress_proxies, kv_events, lmcache, project_id, allow_custom_api_base, created_at",
-        )
+             returning {PROVIDER_COLUMNS}"
+        )))
         .bind(org_id)
         .bind(name)
         .bind(slug)
@@ -254,8 +263,8 @@ self.0,
         allow_custom_api_base: Option<bool>,
     ) -> Result<Provider> {
         fetch_optional_or_not_found(
-sqlx::query_as(
-            "update providers set
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "update providers set
                  slug = coalesce($2, slug),
                  kind = coalesce($3, kind),
                  api_base = coalesce($4, api_base),
@@ -267,30 +276,29 @@ sqlx::query_as(
                  lmcache = case when $15 then $16 else lmcache end,
                  allow_custom_api_base = coalesce($17, allow_custom_api_base)
              where id = $1
-             returning id, org_id, name, slug, kind, api_base, api_key_env, egress_proxy, egress_proxies, kv_events, lmcache, project_id, allow_custom_api_base, created_at",
+             returning {PROVIDER_COLUMNS}"
+            )))
+            .bind(id)
+            .bind(slug)
+            .bind(kind)
+            .bind(api_base)
+            .bind(api_key_env.is_some())
+            .bind(api_key_env.flatten())
+            .bind(egress_proxy.is_some())
+            .bind(egress_proxy.flatten())
+            .bind(egress_proxies.is_some())
+            .bind(egress_proxies.map(|v| serde_json::json!(v)))
+            .bind(project_id.is_some())
+            .bind(project_id.flatten())
+            .bind(kv_events.is_some())
+            .bind(setting_json(kv_events.flatten())?)
+            .bind(lmcache.is_some())
+            .bind(setting_json(lmcache.flatten())?)
+            .bind(allow_custom_api_base),
+            self.0,
+            || format!("provider {id}"),
         )
-        .bind(id)
-        .bind(slug)
-        .bind(kind)
-        .bind(api_base)
-        .bind(api_key_env.is_some())
-        .bind(api_key_env.flatten())
-        .bind(egress_proxy.is_some())
-        .bind(egress_proxy.flatten())
-        .bind(egress_proxies.is_some())
-        .bind(egress_proxies.map(|v| serde_json::json!(v)))
-        .bind(project_id.is_some())
-        .bind(project_id.flatten())
-        .bind(kv_events.is_some())
-        .bind(setting_json(kv_events.flatten())?)
-        .bind(lmcache.is_some())
-        .bind(setting_json(lmcache.flatten())?)
-        .bind(allow_custom_api_base)
-        ,
-self.0,
-|| format!("provider {id}"),
-)
-.await
+        .await
     }
 
     /// Delete provider `id` unless a route target or a provider-group member
@@ -436,10 +444,10 @@ impl ProviderGroupRepo<'_> {
     }
 
     pub async fn list(&self, org_id: Uuid) -> Result<Vec<ProviderGroup>> {
-        sqlx::query_as(
-            "select id, org_id, name, slug, strategy, project_id, created_at
-             from provider_groups where org_id = $1 order by name",
-        )
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "select {PROVIDER_GROUP_COLUMNS}
+             from provider_groups where org_id = $1 order by name"
+        )))
         .bind(org_id)
         .fetch_all(self.0)
         .await
@@ -448,10 +456,10 @@ impl ProviderGroupRepo<'_> {
 
     pub async fn get(&self, id: Uuid) -> Result<ProviderGroup> {
         fetch_optional_or_not_found(
-            sqlx::query_as(
-                "select id, org_id, name, slug, strategy, project_id, created_at
-             from provider_groups where id = $1",
-            )
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "select {PROVIDER_GROUP_COLUMNS}
+             from provider_groups where id = $1"
+            )))
             .bind(id),
             self.0,
             || format!("provider group {id}"),
@@ -467,11 +475,11 @@ impl ProviderGroupRepo<'_> {
         strategy: &str,
         project_id: Option<Uuid>,
     ) -> Result<ProviderGroup> {
-        sqlx::query_as(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "insert into provider_groups (org_id, name, slug, strategy, project_id)
              values ($1, $2, $3, $4, $5)
-             returning id, org_id, name, slug, strategy, project_id, created_at",
-        )
+             returning {PROVIDER_GROUP_COLUMNS}"
+        )))
         .bind(org_id)
         .bind(name)
         .bind(slug)
@@ -493,15 +501,15 @@ impl ProviderGroupRepo<'_> {
         project_id: Option<Option<Uuid>>,
     ) -> Result<ProviderGroup> {
         fetch_optional_or_not_found(
-            sqlx::query_as(
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
                 "update provider_groups set
                  name = coalesce($2, name),
                  slug = coalesce($3, slug),
                  strategy = coalesce($4, strategy),
                  project_id = case when $5 then $6 else project_id end
              where id = $1
-             returning id, org_id, name, slug, strategy, project_id, created_at",
-            )
+             returning {PROVIDER_GROUP_COLUMNS}"
+            )))
             .bind(id)
             .bind(name)
             .bind(slug)

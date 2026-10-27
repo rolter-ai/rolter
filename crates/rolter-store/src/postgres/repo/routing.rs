@@ -9,6 +9,13 @@ use super::super::models::{Route, RouteTarget};
 use super::providers::ProviderRepo;
 use super::support::{fetch_optional_or_not_found, require_affected, store_err};
 
+/// Every column of `route_targets` that its row type reads.
+const ROUTE_TARGET_COLUMNS: &str = "id, route_id, provider_id, upstream_model, weight, created_at";
+
+/// Every column of `routes` that its row type reads.
+const ROUTE_COLUMNS: &str =
+    "id, project_id, model, strategy, enabled, params, param_policy, advanced, created_at";
+
 /// Routes, scoped to a project.
 pub struct RouteRepo<'a>(pub &'a PgPool);
 
@@ -44,10 +51,10 @@ impl RouteRepo<'_> {
     }
 
     pub async fn list(&self, project_id: Uuid) -> Result<Vec<Route>> {
-        sqlx::query_as(
-            "select id, project_id, model, strategy, enabled, params, param_policy, advanced, created_at
-             from routes where project_id = $1 order by model",
-        )
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "select {ROUTE_COLUMNS}
+             from routes where project_id = $1 order by model"
+        )))
         .bind(project_id)
         .fetch_all(self.0)
         .await
@@ -57,10 +64,10 @@ impl RouteRepo<'_> {
     /// Every enabled route on `strategy`, across projects. Used by the global
     /// routing policies to report which routes a change actually affects.
     pub async fn list_by_strategy(&self, strategy: &str) -> Result<Vec<Route>> {
-        sqlx::query_as(
-            "select id, project_id, model, strategy, enabled, params, param_policy, advanced, created_at
-             from routes where strategy = $1 and enabled order by model",
-        )
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "select {ROUTE_COLUMNS}
+             from routes where strategy = $1 and enabled order by model"
+        )))
         .bind(strategy)
         .fetch_all(self.0)
         .await
@@ -69,22 +76,21 @@ impl RouteRepo<'_> {
 
     pub async fn get(&self, id: Uuid) -> Result<Route> {
         fetch_optional_or_not_found(
-sqlx::query_as(
-            "select id, project_id, model, strategy, enabled, params, param_policy, advanced, created_at from routes where id = $1",
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "select {ROUTE_COLUMNS} from routes where id = $1"
+            )))
+            .bind(id),
+            self.0,
+            || format!("route {id}"),
         )
-        .bind(id)
-        ,
-self.0,
-|| format!("route {id}"),
-)
-.await
+        .await
     }
 
     pub async fn create(&self, project_id: Uuid, model: &str, strategy: &str) -> Result<Route> {
-        sqlx::query_as(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "insert into routes (project_id, model, strategy) values ($1, $2, $3)
-             returning id, project_id, model, strategy, enabled, params, param_policy, advanced, created_at",
-        )
+             returning {ROUTE_COLUMNS}"
+        )))
         .bind(project_id)
         .bind(model)
         .bind(strategy)
@@ -100,32 +106,30 @@ self.0,
     /// is constrained by the database to the strategies a migration allows.
     pub async fn set_strategy(&self, id: Uuid, strategy: &str) -> Result<Route> {
         fetch_optional_or_not_found(
-sqlx::query_as(
-            "update routes set strategy = $2 where id = $1
-             returning id, project_id, model, strategy, enabled, params, param_policy, advanced, created_at",
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "update routes set strategy = $2 where id = $1
+             returning {ROUTE_COLUMNS}"
+            )))
+            .bind(id)
+            .bind(strategy),
+            self.0,
+            || format!("route {id}"),
         )
-        .bind(id)
-        .bind(strategy)
-        ,
-self.0,
-|| format!("route {id}"),
-)
-.await
+        .await
     }
 
     pub async fn set_enabled(&self, id: Uuid, enabled: bool) -> Result<Route> {
         fetch_optional_or_not_found(
-sqlx::query_as(
-            "update routes set enabled = $2 where id = $1
-             returning id, project_id, model, strategy, enabled, params, param_policy, advanced, created_at",
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "update routes set enabled = $2 where id = $1
+             returning {ROUTE_COLUMNS}"
+            )))
+            .bind(id)
+            .bind(enabled),
+            self.0,
+            || format!("route {id}"),
         )
-        .bind(id)
-        .bind(enabled)
-        ,
-self.0,
-|| format!("route {id}"),
-)
-.await
+        .await
     }
 
     /// Set a route's admin param defaults and override policy (both jsonb).
@@ -138,34 +142,32 @@ self.0,
         param_policy: &serde_json::Value,
     ) -> Result<Route> {
         fetch_optional_or_not_found(
-sqlx::query_as(
-            "update routes set params = $2, param_policy = $3 where id = $1
-             returning id, project_id, model, strategy, enabled, params, param_policy, advanced, created_at",
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "update routes set params = $2, param_policy = $3 where id = $1
+             returning {ROUTE_COLUMNS}"
+            )))
+            .bind(id)
+            .bind(params)
+            .bind(param_policy),
+            self.0,
+            || format!("route {id}"),
         )
-        .bind(id)
-        .bind(params)
-        .bind(param_policy)
-        ,
-self.0,
-|| format!("route {id}"),
-)
-.await
+        .await
     }
 
     /// Set the model-catalog configuration projected into gateway snapshots.
     pub async fn set_advanced(&self, id: Uuid, advanced: &serde_json::Value) -> Result<Route> {
         fetch_optional_or_not_found(
-sqlx::query_as(
-            "update routes set advanced = $2 where id = $1
-             returning id, project_id, model, strategy, enabled, params, param_policy, advanced, created_at",
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "update routes set advanced = $2 where id = $1
+             returning {ROUTE_COLUMNS}"
+            )))
+            .bind(id)
+            .bind(advanced),
+            self.0,
+            || format!("route {id}"),
         )
-        .bind(id)
-        .bind(advanced)
-        ,
-self.0,
-|| format!("route {id}"),
-)
-.await
+        .await
     }
 
     /// Change any of a route's `enabled` flag, strategy and target list in one
@@ -195,24 +197,23 @@ self.0,
         // `POST .../targets` cannot slip a row in between the read of the
         // stored targets below and the commit
         let mut route: Route = fetch_optional_or_not_found(
-sqlx::query_as(
-            "select id, project_id, model, strategy, enabled, params, param_policy, advanced, created_at
-             from routes where id = $1 for update",
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "select {ROUTE_COLUMNS}
+             from routes where id = $1 for update"
+            )))
+            .bind(id),
+            &mut *tx,
+            || format!("route {id}"),
         )
-        .bind(id)
-        ,
-&mut *tx,
-|| format!("route {id}"),
-)
-.await?;
+        .await?;
 
         if update.enabled.is_some() || update.strategy.is_some() {
-            route = sqlx::query_as(
+            route = sqlx::query_as(sqlx::AssertSqlSafe(format!(
                 "update routes
                  set enabled = coalesce($2, enabled), strategy = coalesce($3, strategy)
                  where id = $1
-                 returning id, project_id, model, strategy, enabled, params, param_policy, advanced, created_at",
-            )
+                 returning {ROUTE_COLUMNS}"
+            )))
             .bind(id)
             .bind(update.enabled)
             .bind(update.strategy)
@@ -223,10 +224,10 @@ sqlx::query_as(
 
         let mut changes = RouteTargetChanges::default();
         if let Some(desired) = update.targets {
-            let stored: Vec<RouteTarget> = sqlx::query_as(
-                "select id, route_id, provider_id, upstream_model, weight, created_at
-                 from route_targets where route_id = $1 order by created_at, id",
-            )
+            let stored: Vec<RouteTarget> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "select {ROUTE_TARGET_COLUMNS}
+                 from route_targets where route_id = $1 order by created_at, id"
+            )))
             .bind(id)
             .fetch_all(&mut *tx)
             .await
@@ -242,10 +243,10 @@ sqlx::query_as(
                     .map_err(store_err)?;
             }
             for (target, weight) in plan.reweight {
-                let updated: RouteTarget = sqlx::query_as(
+                let updated: RouteTarget = sqlx::query_as(sqlx::AssertSqlSafe(format!(
                     "update route_targets set weight = $2 where id = $1
-                     returning id, route_id, provider_id, upstream_model, weight, created_at",
-                )
+                     returning {ROUTE_TARGET_COLUMNS}"
+                )))
                 .bind(target.id)
                 .bind(weight)
                 .fetch_one(&mut *tx)
@@ -260,11 +261,12 @@ sqlx::query_as(
                 // `clock_timestamp()` rather than the column's `now()` default,
                 // which is fixed for the whole transaction: distinct times keep
                 // the new targets listed in the order the caller sent them
-                let created: RouteTarget = sqlx::query_as(
-                    "insert into route_targets (route_id, provider_id, upstream_model, weight, created_at)
+                let created: RouteTarget = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                    "insert into route_targets (route_id, \
+                        provider_id, upstream_model, weight, created_at)
                      values ($1, $2, $3, $4, clock_timestamp())
-                     returning id, route_id, provider_id, upstream_model, weight, created_at",
-                )
+                     returning {ROUTE_TARGET_COLUMNS}"
+                )))
                 .bind(id)
                 .bind(spec.provider_id)
                 .bind(spec.upstream_model.as_deref())
@@ -328,10 +330,10 @@ impl RouteTargetRepo<'_> {
     }
 
     pub async fn list(&self, route_id: Uuid) -> Result<Vec<RouteTarget>> {
-        sqlx::query_as(
-            "select id, route_id, provider_id, upstream_model, weight, created_at
-             from route_targets where route_id = $1 order by created_at",
-        )
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "select {ROUTE_TARGET_COLUMNS}
+             from route_targets where route_id = $1 order by created_at"
+        )))
         .bind(route_id)
         .fetch_all(self.0)
         .await
@@ -340,10 +342,10 @@ impl RouteTargetRepo<'_> {
 
     pub async fn get(&self, id: Uuid) -> Result<RouteTarget> {
         fetch_optional_or_not_found(
-            sqlx::query_as(
-                "select id, route_id, provider_id, upstream_model, weight, created_at
-             from route_targets where id = $1",
-            )
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "select {ROUTE_TARGET_COLUMNS}
+             from route_targets where id = $1"
+            )))
             .bind(id),
             self.0,
             || format!("route target {id}"),
@@ -358,11 +360,11 @@ impl RouteTargetRepo<'_> {
         upstream_model: Option<&str>,
         weight: i32,
     ) -> Result<RouteTarget> {
-        sqlx::query_as(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "insert into route_targets (route_id, provider_id, upstream_model, weight)
              values ($1, $2, $3, $4)
-             returning id, route_id, provider_id, upstream_model, weight, created_at",
-        )
+             returning {ROUTE_TARGET_COLUMNS}"
+        )))
         .bind(route_id)
         .bind(provider_id)
         .bind(upstream_model)
@@ -379,10 +381,10 @@ impl RouteTargetRepo<'_> {
     /// the target as "already there" and moving on.
     pub async fn set_weight(&self, id: Uuid, weight: i32) -> Result<RouteTarget> {
         fetch_optional_or_not_found(
-            sqlx::query_as(
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
                 "update route_targets set weight = $2 where id = $1
-             returning id, route_id, provider_id, upstream_model, weight, created_at",
-            )
+             returning {ROUTE_TARGET_COLUMNS}"
+            )))
             .bind(id)
             .bind(weight),
             self.0,

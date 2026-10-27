@@ -11,6 +11,9 @@ use super::super::models::{
 };
 use super::support::{fetch_optional_or_not_found, store_err};
 
+/// Every column of `custom_role_grants` that its row type reads.
+const CUSTOM_ROLE_GRANT_COLUMNS: &str = "id, role_id, resource, action";
+
 /// One role a profile confers, and where: `(role, org, team, project)`. Exactly
 /// one of the three scopes is `Some`, which the schema enforces.
 pub type ProfileRoleAssignment = (Uuid, Option<Uuid>, Option<Uuid>, Option<Uuid>);
@@ -110,10 +113,10 @@ impl CustomRoleRepo<'_> {
     }
 
     pub async fn list_grants(&self, role_id: Uuid) -> Result<Vec<CustomRoleGrant>> {
-        sqlx::query_as(
-            "select id, role_id, resource, action from custom_role_grants \
-             where role_id = $1 order by resource, action",
-        )
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "select {CUSTOM_ROLE_GRANT_COLUMNS} from custom_role_grants \
+             where role_id = $1 order by resource, action"
+        )))
         .bind(role_id)
         .fetch_all(self.0)
         .await
@@ -123,10 +126,10 @@ impl CustomRoleRepo<'_> {
     /// Every grant belonging to any of `role_ids`, so the matrix can render a
     /// whole org's custom roles without a query per role.
     pub async fn list_grants_for_roles(&self, role_ids: &[Uuid]) -> Result<Vec<CustomRoleGrant>> {
-        sqlx::query_as(
-            "select id, role_id, resource, action from custom_role_grants \
-             where role_id = any($1) order by resource, action",
-        )
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "select {CUSTOM_ROLE_GRANT_COLUMNS} from custom_role_grants \
+             where role_id = any($1) order by resource, action"
+        )))
         .bind(role_ids)
         .fetch_all(self.0)
         .await

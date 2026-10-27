@@ -11,6 +11,9 @@ use super::keys::{keeps_a_cap, Edited};
 use super::labels::{AutoLabelInput, LabelRepo, PRICED_LABEL_KEY};
 use super::support::{fetch_optional_or_not_found, require_affected, store_err};
 
+/// Every column of `rate_limits` that its row type reads.
+const RATE_LIMIT_COLUMNS: &str = "id, scope_type, scope_id, rpm, tpm, created_at";
+
 /// The `where` clause (a literal, so it can sit inside `concat!`) shared by the org-wide budget and rate-limit lists: a row
 /// belongs to org `$1` when its scope is the org, one of its teams, projects or
 /// virtual keys, or one of its business units or customers.
@@ -205,10 +208,10 @@ impl RateLimitRepo<'_> {
     }
 
     pub async fn list_for_scope(&self, scope_type: &str, scope_id: Uuid) -> Result<Vec<RateLimit>> {
-        sqlx::query_as(
-            "select id, scope_type, scope_id, rpm, tpm, created_at
-             from rate_limits where scope_type = $1 and scope_id = $2 order by created_at",
-        )
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "select {RATE_LIMIT_COLUMNS}
+             from rate_limits where scope_type = $1 and scope_id = $2 order by created_at"
+        )))
         .bind(scope_type)
         .bind(scope_id)
         .fetch_all(self.0)
@@ -218,10 +221,10 @@ impl RateLimitRepo<'_> {
 
     pub async fn get(&self, id: Uuid) -> Result<RateLimit> {
         fetch_optional_or_not_found(
-            sqlx::query_as(
-                "select id, scope_type, scope_id, rpm, tpm, created_at
-             from rate_limits where id = $1",
-            )
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "select {RATE_LIMIT_COLUMNS}
+             from rate_limits where id = $1"
+            )))
             .bind(id),
             self.0,
             || format!("rate limit {id}"),
@@ -248,11 +251,11 @@ impl RateLimitRepo<'_> {
                 "a rate limit needs an rpm cap, a tpm cap or both, each at least 1".into(),
             ));
         }
-        sqlx::query_as(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "insert into rate_limits (scope_type, scope_id, rpm, tpm)
              values ($1, $2, $3, $4)
-             returning id, scope_type, scope_id, rpm, tpm, created_at",
-        )
+             returning {RATE_LIMIT_COLUMNS}"
+        )))
         .bind(scope_type)
         .bind(scope_id)
         .bind(rpm)
@@ -285,11 +288,11 @@ impl RateLimitRepo<'_> {
     ) -> Result<Edited<RateLimit>> {
         let mut tx = self.0.begin().await.map_err(store_err)?;
         let before: RateLimit = fetch_optional_or_not_found(
-            sqlx::query_as(
-                "select id, scope_type, scope_id, rpm, tpm, created_at
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "select {RATE_LIMIT_COLUMNS}
              from rate_limits where id = $1
-             for update",
-            )
+             for update"
+            )))
             .bind(id),
             &mut *tx,
             || format!("rate limit {id}"),
@@ -307,11 +310,11 @@ impl RateLimitRepo<'_> {
             tx.commit().await.map_err(store_err)?;
             return Ok(Edited::unchanged(before));
         }
-        let after = sqlx::query_as(
+        let after = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "update rate_limits set rpm = $2, tpm = $3
              where id = $1
-             returning id, scope_type, scope_id, rpm, tpm, created_at",
-        )
+             returning {RATE_LIMIT_COLUMNS}"
+        )))
         .bind(id)
         .bind(next_rpm)
         .bind(next_tpm)

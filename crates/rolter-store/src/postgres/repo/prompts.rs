@@ -12,15 +12,30 @@ use super::support::{
     fetch_optional_or_not_found, fetch_scalar_or_not_found, require_affected, store_err,
 };
 
+/// Every column of `skills` that its row type reads.
+const SKILL_COLUMNS: &str = "id, org_id, name, slug, description, retired_at, published_version, \
+    allowed_team_ids, minimum_role, created_at";
+
+/// Every column of `skill_versions` that its row type reads.
+const SKILL_VERSION_COLUMNS: &str = "skill_id, version, content, content_ref, metadata, created_at";
+
+/// Every column of `prompt_templates` that its row type reads.
+const PROMPT_TEMPLATE_COLUMNS: &str =
+    "id, org_id, name, slug, description, published_version, created_at";
+
+/// Every column of `prompt_template_versions` that its row type reads.
+const PROMPT_TEMPLATE_VERSION_COLUMNS: &str =
+    "template_id, version, variables, decorators, created_at";
+
 /// Prompt templates with immutable versions and explicit scope assignments.
 pub struct PromptTemplateRepo<'a>(pub &'a PgPool);
 
 impl PromptTemplateRepo<'_> {
     pub async fn list_templates(&self, org_id: Uuid) -> Result<Vec<PromptTemplate>> {
-        sqlx::query_as(
-            "select id, org_id, name, slug, description, published_version, created_at
-             from prompt_templates where org_id = $1 order by name",
-        )
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "select {PROMPT_TEMPLATE_COLUMNS}
+             from prompt_templates where org_id = $1 order by name"
+        )))
         .bind(org_id)
         .fetch_all(self.0)
         .await
@@ -29,10 +44,10 @@ impl PromptTemplateRepo<'_> {
 
     pub async fn get_template(&self, id: Uuid) -> Result<PromptTemplate> {
         fetch_optional_or_not_found(
-            sqlx::query_as(
-                "select id, org_id, name, slug, description, published_version, created_at
-             from prompt_templates where id = $1",
-            )
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "select {PROMPT_TEMPLATE_COLUMNS}
+             from prompt_templates where id = $1"
+            )))
             .bind(id),
             self.0,
             || format!("prompt template {id}"),
@@ -47,11 +62,11 @@ impl PromptTemplateRepo<'_> {
         slug: &str,
         description: Option<&str>,
     ) -> Result<PromptTemplate> {
-        sqlx::query_as(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "insert into prompt_templates (org_id, name, slug, description)
              values ($1, $2, $3, $4)
-             returning id, org_id, name, slug, description, published_version, created_at",
-        )
+             returning {PROMPT_TEMPLATE_COLUMNS}"
+        )))
         .bind(org_id)
         .bind(name)
         .bind(slug)
@@ -68,13 +83,13 @@ impl PromptTemplateRepo<'_> {
         description: Option<&str>,
     ) -> Result<PromptTemplate> {
         fetch_optional_or_not_found(
-            sqlx::query_as(
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
                 "update prompt_templates set
                  name = coalesce($2, name),
                  description = case when $3::bool then $4 else description end
              where id = $1
-             returning id, org_id, name, slug, description, published_version, created_at",
-            )
+             returning {PROMPT_TEMPLATE_COLUMNS}"
+            )))
             .bind(id)
             .bind(name)
             .bind(description.is_some())
@@ -98,14 +113,15 @@ impl PromptTemplateRepo<'_> {
             .await
             .map_err(store_err)?;
         let version = sqlx::query_as(
-            "insert into prompt_template_versions (template_id, version, variables, decorators)
+            sqlx::AssertSqlSafe(format!("insert into prompt_template_versions (template_id, \
+                version, variables, decorators)
              values (
                  $1,
                  coalesce((select max(version) + 1 from prompt_template_versions where template_id = $1), 1),
                  $2,
                  $3
              )
-             returning template_id, version, variables, decorators, created_at",
+             returning {PROMPT_TEMPLATE_VERSION_COLUMNS}")),
         )
         .bind(template_id)
         .bind(variables)
@@ -118,10 +134,10 @@ impl PromptTemplateRepo<'_> {
     }
 
     pub async fn list_versions(&self, template_id: Uuid) -> Result<Vec<PromptTemplateVersion>> {
-        sqlx::query_as(
-            "select template_id, version, variables, decorators, created_at
-             from prompt_template_versions where template_id = $1 order by version desc",
-        )
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "select {PROMPT_TEMPLATE_VERSION_COLUMNS}
+             from prompt_template_versions where template_id = $1 order by version desc"
+        )))
         .bind(template_id)
         .fetch_all(self.0)
         .await
@@ -140,12 +156,12 @@ impl PromptTemplateRepo<'_> {
         )
         .await?;
         fetch_optional_or_not_found(
-            sqlx::query_as(
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
                 "update prompt_templates
              set published_version = $2
              where id = $1
-             returning id, org_id, name, slug, description, published_version, created_at",
-            )
+             returning {PROMPT_TEMPLATE_COLUMNS}"
+            )))
             .bind(template_id)
             .bind(version),
             self.0,
@@ -358,11 +374,10 @@ pub struct SkillRepo<'a>(pub &'a PgPool);
 
 impl SkillRepo<'_> {
     pub async fn list_skills(&self, org_id: Uuid) -> Result<Vec<Skill>> {
-        sqlx::query_as(
-            "select id, org_id, name, slug, description, retired_at, published_version,
-                    allowed_team_ids, minimum_role, created_at
-             from skills where org_id = $1 order by name",
-        )
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "select {SKILL_COLUMNS}
+             from skills where org_id = $1 order by name"
+        )))
         .bind(org_id)
         .fetch_all(self.0)
         .await
@@ -371,11 +386,10 @@ impl SkillRepo<'_> {
 
     pub async fn get_skill(&self, id: Uuid) -> Result<Skill> {
         fetch_optional_or_not_found(
-            sqlx::query_as(
-                "select id, org_id, name, slug, description, retired_at, published_version,
-                    allowed_team_ids, minimum_role, created_at
-             from skills where id = $1",
-            )
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "select {SKILL_COLUMNS}
+             from skills where id = $1"
+            )))
             .bind(id),
             self.0,
             || format!("skill {id}"),
@@ -385,11 +399,10 @@ impl SkillRepo<'_> {
 
     pub async fn get_by_slug(&self, org_id: Uuid, slug: &str) -> Result<Skill> {
         fetch_optional_or_not_found(
-            sqlx::query_as(
-                "select id, org_id, name, slug, description, retired_at, published_version,
-                    allowed_team_ids, minimum_role, created_at
-             from skills where org_id = $1 and slug = $2",
-            )
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "select {SKILL_COLUMNS}
+             from skills where org_id = $1 and slug = $2"
+            )))
             .bind(org_id)
             .bind(slug),
             self.0,
@@ -407,14 +420,13 @@ impl SkillRepo<'_> {
         allowed_team_ids: &[Uuid],
         minimum_role: &str,
     ) -> Result<Skill> {
-        sqlx::query_as(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "insert into skills (
                  org_id, name, slug, description, allowed_team_ids, minimum_role
              )
              values ($1, $2, $3, $4, $5, $6)
-             returning id, org_id, name, slug, description, retired_at, published_version,
-                       allowed_team_ids, minimum_role, created_at",
-        )
+             returning {SKILL_COLUMNS}"
+        )))
         .bind(org_id)
         .bind(name)
         .bind(slug)
@@ -436,7 +448,7 @@ impl SkillRepo<'_> {
         minimum_role: Option<&str>,
     ) -> Result<Skill> {
         fetch_optional_or_not_found(
-            sqlx::query_as(
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
                 "update skills set
                  name = coalesce($2, name),
                  description = case when $3::bool then $4 else description end,
@@ -448,9 +460,8 @@ impl SkillRepo<'_> {
                  allowed_team_ids = coalesce($6, allowed_team_ids),
                  minimum_role = coalesce($7, minimum_role)
              where id = $1
-             returning id, org_id, name, slug, description, retired_at, published_version,
-                       allowed_team_ids, minimum_role, created_at",
-            )
+             returning {SKILL_COLUMNS}"
+            )))
             .bind(id)
             .bind(name)
             .bind(description.is_some())
@@ -477,7 +488,7 @@ impl SkillRepo<'_> {
             .execute(&mut *tx)
             .await
             .map_err(store_err)?;
-        let version = sqlx::query_as(
+        let version = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "insert into skill_versions (skill_id, version, content, content_ref, metadata)
              values (
                  $1,
@@ -486,8 +497,8 @@ impl SkillRepo<'_> {
                  $3,
                  $4
              )
-             returning skill_id, version, content, content_ref, metadata, created_at",
-        )
+             returning {SKILL_VERSION_COLUMNS}"
+        )))
         .bind(skill_id)
         .bind(content)
         .bind(content_ref)
@@ -500,10 +511,10 @@ impl SkillRepo<'_> {
     }
 
     pub async fn list_versions(&self, skill_id: Uuid) -> Result<Vec<SkillVersion>> {
-        sqlx::query_as(
-            "select skill_id, version, content, content_ref, metadata, created_at
-             from skill_versions where skill_id = $1 order by version desc",
-        )
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "select {SKILL_VERSION_COLUMNS}
+             from skill_versions where skill_id = $1 order by version desc"
+        )))
         .bind(skill_id)
         .fetch_all(self.0)
         .await
@@ -537,13 +548,12 @@ impl SkillRepo<'_> {
         )
         .await?;
         fetch_optional_or_not_found(
-            sqlx::query_as(
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
                 "update skills
              set published_version = $2
              where id = $1
-             returning id, org_id, name, slug, description, retired_at, published_version,
-                       allowed_team_ids, minimum_role, created_at",
-            )
+             returning {SKILL_COLUMNS}"
+            )))
             .bind(skill_id)
             .bind(version),
             self.0,

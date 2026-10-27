@@ -11,16 +11,19 @@ use super::lockout::{
 };
 use super::support::{fetch_optional_or_not_found, require_affected, store_err};
 
+/// Every column of `users` that its row type reads.
+const USER_COLUMNS: &str =
+    "id, email, password_hash, is_superadmin, deactivated_at, created_at, display_name, bio";
+
 /// local accounts. see [`super::super::models::User`]; `find_by_email` backs login.
 pub struct UserRepo<'a>(pub &'a PgPool);
 
 impl UserRepo<'_> {
     pub async fn find_by_email(&self, email: &str) -> Result<Option<User>> {
-        sqlx::query_as(
-            "select id, email, password_hash, is_superadmin, deactivated_at, created_at,
-                    display_name, bio
-             from users where email = $1",
-        )
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "select {USER_COLUMNS}
+             from users where email = $1"
+        )))
         .bind(email)
         .fetch_optional(self.0)
         .await
@@ -39,11 +42,10 @@ impl UserRepo<'_> {
 
     pub async fn get(&self, id: Uuid) -> Result<User> {
         fetch_optional_or_not_found(
-            sqlx::query_as(
-                "select id, email, password_hash, is_superadmin, deactivated_at, created_at,
-                    display_name, bio
-             from users where id = $1",
-            )
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "select {USER_COLUMNS}
+             from users where id = $1"
+            )))
             .bind(id),
             self.0,
             || format!("user {id}"),
@@ -106,12 +108,11 @@ impl UserRepo<'_> {
     /// deployment-wide audit log, where an actor can be from anywhere (#2871).
     /// It names no org, so the caller must be a superadmin.
     pub async fn list_all(&self) -> Result<Vec<User>> {
-        sqlx::query_as(
-            "select id, email, password_hash, is_superadmin, deactivated_at, created_at,
-                    display_name, bio
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "select {USER_COLUMNS}
              from users
-             order by email, id",
-        )
+             order by email, id"
+        )))
         .fetch_all(self.0)
         .await
         .map_err(store_err)
@@ -125,12 +126,11 @@ impl UserRepo<'_> {
         password_hash: Option<&str>,
         is_superadmin: bool,
     ) -> Result<User> {
-        sqlx::query_as(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "insert into users (email, password_hash, is_superadmin)
              values ($1, $2, $3)
-             returning id, email, password_hash, is_superadmin, deactivated_at, created_at,
-                    display_name, bio",
-        )
+             returning {USER_COLUMNS}"
+        )))
         .bind(email)
         .bind(password_hash)
         .bind(is_superadmin)
@@ -163,7 +163,7 @@ impl UserRepo<'_> {
             }
         }
         let user: User = fetch_optional_or_not_found(
-            sqlx::query_as(
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
                 "update users set
                  email = coalesce($2, email),
                  password_hash = coalesce($3, password_hash),
@@ -173,9 +173,8 @@ impl UserRepo<'_> {
                      when $5 then coalesce(deactivated_at, now())
                      else null end
              where id = $1
-             returning id, email, password_hash, is_superadmin, deactivated_at, created_at,
-                    display_name, bio",
-            )
+             returning {USER_COLUMNS}"
+            )))
             .bind(id)
             .bind(email)
             .bind(password_hash)
@@ -251,13 +250,12 @@ impl UserRepo<'_> {
             }
         }
         let user: User = fetch_optional_or_not_found(
-            sqlx::query_as(
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
                 "update users set
                  deactivated_at = case when $2 then coalesce(deactivated_at, now()) else null end
              where id = $1
-             returning id, email, password_hash, is_superadmin, deactivated_at, created_at,
-                    display_name, bio",
-            )
+             returning {USER_COLUMNS}"
+            )))
             .bind(id)
             .bind(deactivated),
             &mut *tx,
@@ -281,14 +279,13 @@ impl UserRepo<'_> {
         bio: Option<Option<&str>>,
     ) -> Result<User> {
         fetch_optional_or_not_found(
-            sqlx::query_as(
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
                 "update users set
                  display_name = case when $2 then $3 else display_name end,
                  bio = case when $4 then $5 else bio end
              where id = $1
-             returning id, email, password_hash, is_superadmin, deactivated_at, created_at,
-                       display_name, bio",
-            )
+             returning {USER_COLUMNS}"
+            )))
             .bind(id)
             .bind(display_name.is_some())
             .bind(display_name.flatten())

@@ -12,20 +12,40 @@ use super::support::{
     fetch_optional_or_not_found, fetch_scalar_or_not_found, require_affected, store_err,
 };
 
+/// Every column of `customers` that its row type reads.
+const CUSTOMER_COLUMNS: &str = "id, org_id, business_unit_id, name, slug, retired_at, created_at";
+
+/// Every column of `business_units` that its row type reads.
+const BUSINESS_UNIT_COLUMNS: &str = "id, org_id, name, slug, retired_at, created_at";
+
+/// Every column of `projects` that its row type reads.
+const PROJECT_COLUMNS: &str = "id, team_id, name, created_at";
+
+/// Every column of `teams` that its row type reads.
+const TEAM_COLUMNS: &str = "id, org_id, name, created_at";
+
+/// Every column of `orgs` that its row type reads.
+const ORG_COLUMNS: &str = "id, name, slug, created_at";
+
 /// Orgs: the top of the org → team → project tenancy hierarchy.
 pub struct OrgRepo<'a>(pub &'a PgPool);
 
 impl OrgRepo<'_> {
     pub async fn list(&self) -> Result<Vec<Org>> {
-        sqlx::query_as("select id, name, slug, created_at from orgs order by name")
-            .fetch_all(self.0)
-            .await
-            .map_err(store_err)
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "select {ORG_COLUMNS} from orgs order by name"
+        )))
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)
     }
 
     pub async fn get(&self, id: Uuid) -> Result<Org> {
         fetch_optional_or_not_found(
-            sqlx::query_as("select id, name, slug, created_at from orgs where id = $1").bind(id),
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "select {ORG_COLUMNS} from orgs where id = $1"
+            )))
+            .bind(id),
             self.0,
             || format!("org {id}"),
         )
@@ -33,10 +53,10 @@ impl OrgRepo<'_> {
     }
 
     pub async fn create(&self, name: &str, slug: &str) -> Result<Org> {
-        sqlx::query_as(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "insert into orgs (name, slug) values ($1, $2)
-             returning id, name, slug, created_at",
-        )
+             returning {ORG_COLUMNS}"
+        )))
         .bind(name)
         .bind(slug)
         .fetch_one(self.0)
@@ -60,9 +80,9 @@ pub struct TeamRepo<'a>(pub &'a PgPool);
 
 impl TeamRepo<'_> {
     pub async fn list(&self, org_id: Uuid) -> Result<Vec<Team>> {
-        sqlx::query_as(
-            "select id, org_id, name, created_at from teams where org_id = $1 order by name",
-        )
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "select {TEAM_COLUMNS} from teams where org_id = $1 order by name"
+        )))
         .bind(org_id)
         .fetch_all(self.0)
         .await
@@ -71,7 +91,10 @@ impl TeamRepo<'_> {
 
     pub async fn get(&self, id: Uuid) -> Result<Team> {
         fetch_optional_or_not_found(
-            sqlx::query_as("select id, org_id, name, created_at from teams where id = $1").bind(id),
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "select {TEAM_COLUMNS} from teams where id = $1"
+            )))
+            .bind(id),
             self.0,
             || format!("team {id}"),
         )
@@ -79,10 +102,10 @@ impl TeamRepo<'_> {
     }
 
     pub async fn create(&self, org_id: Uuid, name: &str) -> Result<Team> {
-        sqlx::query_as(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "insert into teams (org_id, name) values ($1, $2)
-             returning id, org_id, name, created_at",
-        )
+             returning {TEAM_COLUMNS}"
+        )))
         .bind(org_id)
         .bind(name)
         .fetch_one(self.0)
@@ -93,10 +116,10 @@ impl TeamRepo<'_> {
     /// Rename a team. A name another team of the org holds is `AlreadyExists`.
     pub async fn rename(&self, id: Uuid, name: &str) -> Result<Team> {
         fetch_optional_or_not_found(
-            sqlx::query_as(
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
                 "update teams set name = $2 where id = $1
-             returning id, org_id, name, created_at",
-            )
+             returning {TEAM_COLUMNS}"
+            )))
             .bind(id)
             .bind(name),
             self.0,
@@ -123,9 +146,9 @@ pub struct CustomerRepo<'a>(pub &'a PgPool);
 
 impl ProjectRepo<'_> {
     pub async fn list(&self, team_id: Uuid) -> Result<Vec<Project>> {
-        sqlx::query_as(
-            "select id, team_id, name, created_at from projects where team_id = $1 order by name",
-        )
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "select {PROJECT_COLUMNS} from projects where team_id = $1 order by name"
+        )))
         .bind(team_id)
         .fetch_all(self.0)
         .await
@@ -151,8 +174,10 @@ impl ProjectRepo<'_> {
 
     pub async fn get(&self, id: Uuid) -> Result<Project> {
         fetch_optional_or_not_found(
-            sqlx::query_as("select id, team_id, name, created_at from projects where id = $1")
-                .bind(id),
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "select {PROJECT_COLUMNS} from projects where id = $1"
+            )))
+            .bind(id),
             self.0,
             || format!("project {id}"),
         )
@@ -220,10 +245,10 @@ impl ProjectRepo<'_> {
     }
 
     pub async fn create(&self, team_id: Uuid, name: &str) -> Result<Project> {
-        sqlx::query_as(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "insert into projects (team_id, name) values ($1, $2)
-             returning id, team_id, name, created_at",
-        )
+             returning {PROJECT_COLUMNS}"
+        )))
         .bind(team_id)
         .bind(name)
         .fetch_one(self.0)
@@ -299,10 +324,10 @@ impl ProjectRepo<'_> {
 
 impl BusinessUnitRepo<'_> {
     pub async fn list(&self, org_id: Uuid) -> Result<Vec<BusinessUnit>> {
-        sqlx::query_as(
-            "select id, org_id, name, slug, retired_at, created_at
-             from business_units where org_id = $1 order by name",
-        )
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "select {BUSINESS_UNIT_COLUMNS}
+             from business_units where org_id = $1 order by name"
+        )))
         .bind(org_id)
         .fetch_all(self.0)
         .await
@@ -337,10 +362,10 @@ impl BusinessUnitRepo<'_> {
 
     pub async fn get(&self, id: Uuid) -> Result<BusinessUnit> {
         fetch_optional_or_not_found(
-            sqlx::query_as(
-                "select id, org_id, name, slug, retired_at, created_at
-             from business_units where id = $1",
-            )
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "select {BUSINESS_UNIT_COLUMNS}
+             from business_units where id = $1"
+            )))
             .bind(id),
             self.0,
             || format!("business unit {id}"),
@@ -349,10 +374,10 @@ impl BusinessUnitRepo<'_> {
     }
 
     pub async fn create(&self, org_id: Uuid, name: &str, slug: &str) -> Result<BusinessUnit> {
-        sqlx::query_as(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "insert into business_units (org_id, name, slug) values ($1, $2, $3)
-             returning id, org_id, name, slug, retired_at, created_at",
-        )
+             returning {BUSINESS_UNIT_COLUMNS}"
+        )))
         .bind(org_id)
         .bind(name)
         .bind(slug)
@@ -369,7 +394,7 @@ impl BusinessUnitRepo<'_> {
         retired: Option<bool>,
     ) -> Result<BusinessUnit> {
         fetch_optional_or_not_found(
-            sqlx::query_as(
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
                 "update business_units set
                  name = coalesce($2, name),
                  slug = coalesce($3, slug),
@@ -379,8 +404,8 @@ impl BusinessUnitRepo<'_> {
                     else null
                  end
              where id = $1
-             returning id, org_id, name, slug, retired_at, created_at",
-            )
+             returning {BUSINESS_UNIT_COLUMNS}"
+            )))
             .bind(id)
             .bind(name)
             .bind(slug)
@@ -404,10 +429,10 @@ impl BusinessUnitRepo<'_> {
 
 impl CustomerRepo<'_> {
     pub async fn list(&self, org_id: Uuid) -> Result<Vec<Customer>> {
-        sqlx::query_as(
-            "select id, org_id, business_unit_id, name, slug, retired_at, created_at
-             from customers where org_id = $1 order by name",
-        )
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "select {CUSTOMER_COLUMNS}
+             from customers where org_id = $1 order by name"
+        )))
         .bind(org_id)
         .fetch_all(self.0)
         .await
@@ -442,10 +467,10 @@ impl CustomerRepo<'_> {
 
     pub async fn get(&self, id: Uuid) -> Result<Customer> {
         fetch_optional_or_not_found(
-            sqlx::query_as(
-                "select id, org_id, business_unit_id, name, slug, retired_at, created_at
-             from customers where id = $1",
-            )
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "select {CUSTOMER_COLUMNS}
+             from customers where id = $1"
+            )))
             .bind(id),
             self.0,
             || format!("customer {id}"),
@@ -460,11 +485,11 @@ impl CustomerRepo<'_> {
         name: &str,
         slug: &str,
     ) -> Result<Customer> {
-        sqlx::query_as(
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "insert into customers (org_id, business_unit_id, name, slug)
              values ($1, $2, $3, $4)
-             returning id, org_id, business_unit_id, name, slug, retired_at, created_at",
-        )
+             returning {CUSTOMER_COLUMNS}"
+        )))
         .bind(org_id)
         .bind(business_unit_id)
         .bind(name)
@@ -483,7 +508,7 @@ impl CustomerRepo<'_> {
         retired: Option<bool>,
     ) -> Result<Customer> {
         fetch_optional_or_not_found(
-            sqlx::query_as(
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
                 "update customers set
                  business_unit_id = case when $2 then $3 else business_unit_id end,
                  name = coalesce($4, name),
@@ -494,8 +519,8 @@ impl CustomerRepo<'_> {
                     else null
                  end
              where id = $1
-             returning id, org_id, business_unit_id, name, slug, retired_at, created_at",
-            )
+             returning {CUSTOMER_COLUMNS}"
+            )))
             .bind(id)
             .bind(business_unit_id.is_some())
             .bind(business_unit_id.flatten())
