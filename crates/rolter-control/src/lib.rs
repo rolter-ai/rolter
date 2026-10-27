@@ -72,6 +72,10 @@ mod ldap_signin;
 #[cfg(feature = "postgres")]
 mod logging_settings;
 mod login_throttle;
+/// outbound mail for invitations (#1828); `pub` for the `Mailer` seam the
+/// integration suite installs
+#[cfg(feature = "postgres")]
+pub mod mail;
 #[cfg(feature = "postgres")]
 mod mcp_logs;
 #[cfg(feature = "postgres")]
@@ -606,6 +610,10 @@ struct ControlState {
     /// `ldap3` client in production, a stub in the integration suite
     #[cfg_attr(not(feature = "postgres"), allow(dead_code))]
     ldap: Arc<dyn ldap::DirectoryFactory>,
+    /// delivers an invitation's link to the invitee (#1828); `None` without
+    /// `ROLTER_SMTP_URL`, in which case the link is only returned to the admin
+    #[cfg(feature = "postgres")]
+    mailer: Option<Arc<dyn mail::Mailer>>,
 }
 
 /// Log that a datastore endpoint is in use. Every startup line that names a
@@ -813,6 +821,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         update_check: update_check.clone(),
         mfa_without_kek: false,
         ldap: Arc::new(ldap::Ldap3Factory),
+        mailer: mail::from_env(&egress),
         pool: pool.clone(),
     };
     #[cfg(not(feature = "postgres"))]
@@ -1534,6 +1543,25 @@ pub async fn test_app_with_directory(
     Ok(build_app_with(state, true))
 }
 
+/// [`test_app`] whose invitation mail goes through `mailer` instead of an SMTP
+/// relay, so delivery is tested end to end against a recorder that can also
+/// fail on demand (#1828).
+#[cfg(feature = "postgres")]
+pub async fn test_app_with_mailer(
+    pool: sqlx::PgPool,
+    admin_token: Option<String>,
+    mailer: Arc<dyn mail::Mailer>,
+) -> anyhow::Result<Router> {
+    rolter_store::postgres::run_migrations(&pool).await?;
+    let mut state = test_state(
+        pool,
+        admin_token,
+        Some("https://rolter.example.com".to_string()),
+    );
+    state.mailer = Some(mailer);
+    Ok(build_app_with(state, true))
+}
+
 /// [`test_app`] with the migrations deliberately *not* run, for exercising
 /// `/readyz` against a database whose schema is behind the binary (#1081).
 #[cfg(feature = "postgres")]
@@ -1573,6 +1601,7 @@ fn test_state(
         update_check: update_check::UpdateChecker::disabled(),
         mfa_without_kek: false,
         ldap: Arc::new(ldap::Ldap3Factory),
+        mailer: None,
         pool: Some(pool),
     }
 }
@@ -3439,6 +3468,8 @@ mod tests {
             update_check: update_check::UpdateChecker::disabled(),
             mfa_without_kek: false,
             ldap: Arc::new(ldap::Ldap3Factory),
+            #[cfg(feature = "postgres")]
+            mailer: None,
             #[cfg(feature = "postgres")]
             pool: None,
         }

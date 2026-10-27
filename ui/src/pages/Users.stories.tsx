@@ -162,6 +162,9 @@ const INVITATIONS: Invitation[] = [
     accepted_at: null,
     revoked_at: null,
     created_at: "2026-09-25T00:00:00Z",
+    mail_status: "not_configured",
+    mail_attempted_at: null,
+    mail_error: null,
   },
   {
     id: "inv-2",
@@ -176,6 +179,9 @@ const INVITATIONS: Invitation[] = [
     accepted_at: null,
     revoked_at: null,
     created_at: "2026-09-24T00:00:00Z",
+    mail_status: "not_configured",
+    mail_attempted_at: null,
+    mail_error: null,
   },
   {
     id: "inv-3",
@@ -190,6 +196,9 @@ const INVITATIONS: Invitation[] = [
     accepted_at: null,
     revoked_at: null,
     created_at: "2026-09-23T00:00:00Z",
+    mail_status: "not_configured",
+    mail_attempted_at: null,
+    mail_error: null,
   },
   {
     id: "inv-4",
@@ -204,6 +213,9 @@ const INVITATIONS: Invitation[] = [
     accepted_at: null,
     revoked_at: null,
     created_at: "2026-01-03T00:00:00Z",
+    mail_status: "not_configured",
+    mail_attempted_at: null,
+    mail_error: null,
   },
   {
     id: "inv-5",
@@ -218,6 +230,9 @@ const INVITATIONS: Invitation[] = [
     accepted_at: "2026-09-26T00:00:00Z",
     revoked_at: null,
     created_at: "2026-09-22T00:00:00Z",
+    mail_status: "not_configured",
+    mail_attempted_at: null,
+    mail_error: null,
   },
   {
     id: "inv-6",
@@ -232,6 +247,9 @@ const INVITATIONS: Invitation[] = [
     accepted_at: null,
     revoked_at: "2026-09-26T00:00:00Z",
     created_at: "2026-09-21T00:00:00Z",
+    mail_status: "not_configured",
+    mail_attempted_at: null,
+    mail_error: null,
   },
 ];
 
@@ -807,6 +825,84 @@ export const InvitesAUser: Story = {
     // invited person can never accept
     await expect(
       await within(document.body).findByText("https://rolter.local/invite/one-time"),
+    ).toBeInTheDocument();
+  },
+};
+
+/** Invite `newcomer@example.com` and answer the create call with `mail` on the invitation row. */
+function invitingWithMail(mail: {
+  mail_status: "not_configured" | "sent" | "failed";
+  mail_error?: string;
+}): Story {
+  return {
+    render: () => (
+      <Harness
+        fetchStub={scoped(async (input, init) => {
+          const url = String(input);
+          if (init?.method === "POST") {
+            return json(
+              {
+                invitation: { id: "inv-1", mail_error: null, ...mail },
+                token: "one-time",
+                accept_url: "https://rolter.local/invite/one-time",
+              },
+              201,
+            );
+          }
+          if (url.includes("/invitations")) return json([]);
+          return url.includes("/memberships") ? json(MEMBERSHIPS) : json(USERS);
+        })}
+      >
+        <Users />
+      </Harness>
+    ),
+    play: async ({ canvasElement }) => {
+      await clickWhenEnabled(canvasElement, /invite user/i);
+      const form = sheet();
+      await userEvent.type(within(form).getByLabelText("Email"), "newcomer@example.com");
+      await userEvent.click(within(form).getByRole("button", { name: "Invite" }));
+      // the link is the fallback whatever happened to the email
+      await expect(
+        await within(document.body).findByText("https://rolter.local/invite/one-time"),
+      ).toBeInTheDocument();
+    },
+  };
+}
+
+/** With a mail relay the dialog says the link was also emailed (#1828). */
+export const InviteLinkSaysItWasEmailed: Story = {
+  ...invitingWithMail({ mail_status: "sent" }),
+  play: async (context) => {
+    await invitingWithMail({ mail_status: "sent" }).play?.(context);
+    await expect(
+      await within(document.body).findByText(/also emailed this link to newcomer@example.com/),
+    ).toBeInTheDocument();
+  },
+};
+
+/** No relay: the dialog says why nothing was sent, so the admin knows the link is the only copy. */
+export const InviteLinkSaysWhyNothingWasEmailed: Story = {
+  ...invitingWithMail({ mail_status: "not_configured" }),
+  play: async (context) => {
+    await invitingWithMail({ mail_status: "not_configured" }).play?.(context);
+    await expect(
+      await within(document.body).findByText(/no mail relay configured \(ROLTER_SMTP_URL\)/),
+    ).toBeInTheDocument();
+  },
+};
+
+/** A relay that refused: the reason is on screen and the invitation still exists. */
+export const InviteLinkSaysTheEmailFailed: Story = {
+  ...invitingWithMail({
+    mail_status: "failed",
+    mail_error: "the mail server could not be reached",
+  }),
+  play: async (context) => {
+    await invitingWithMail({ mail_status: "failed" }).play?.(context);
+    await expect(
+      await within(document.body).findByText(
+        /could not email it: the mail server could not be reached/,
+      ),
     ).toBeInTheDocument();
   },
 };

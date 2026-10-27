@@ -1009,6 +1009,13 @@ pub struct Invitation {
     pub accepted_at: Option<DateTime<Utc>>,
     pub revoked_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
+    /// how emailing the link went (#1828): `not_configured` (no mail transport
+    /// when it was created), `sent` or `failed`. The link is returned to the
+    /// admin whichever it is
+    pub mail_status: String,
+    pub mail_attempted_at: Option<DateTime<Utc>>,
+    /// why a `failed` send failed, in words safe to show an admin
+    pub mail_error: Option<String>,
 }
 
 /// a one-time password reset an administrator issued for an account (#2240)

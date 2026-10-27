@@ -61,6 +61,8 @@
     "guardrail_rule.update",
     "invitation.accept",
     "invitation.create",
+    "invitation.mail_failed",
+    "invitation.mail_sent",
     "invitation.revoke",
     "label.create",
     "label.delete",

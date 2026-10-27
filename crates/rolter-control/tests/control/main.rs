@@ -22,6 +22,7 @@ mod auth;
 mod budgets;
 mod crud;
 mod guardrails;
+mod invitation_mail;
 mod ldap;
 mod mcp;
 mod profile;
