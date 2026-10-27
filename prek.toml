@@ -303,6 +303,16 @@ language = "system"
 files = "^(\\.github/scripts/annotate-test-failures\\.sh|scripts/test-annotate-test-failures\\.sh)$"
 pass_filenames = false
 
+# the nightly suites' failure alert only runs when something is already broken;
+# this drives its script against a fake gh and checks the three callers
+[[repos.hooks]]
+id = "report-failure"
+name = "report-failure against a fake gh"
+entry = "bash scripts/test-report-failure.sh"
+language = "system"
+files = "^(\\.github/workflows/(report-failure|extended|ui-e2e|sso-e2e|quality)\\.yml|scripts/(test-)?report-failure\\.sh)$"
+pass_filenames = false
+
 # integration/dogfood/*.sh decide what an operator is told to do next from their
 # exit codes and nothing else ran them. this drives them against a stub server
 [[repos.hooks]]

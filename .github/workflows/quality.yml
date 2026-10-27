@@ -1053,6 +1053,13 @@ jobs:
         id: annotate-test-failures
         if: ${{ !cancelled() }}
         run: bash scripts/test-annotate-test-failures.sh
+      # the nightly suites gate nothing, so their `report failure` job is the
+      # only thing that makes a red night visible, and it only runs when
+      # something is already broken. this drives it against a fake gh (#2682)
+      - name: report-failure against a fake gh
+        id: report-failure
+        if: ${{ !cancelled() }}
+        run: bash scripts/test-report-failure.sh
       - name: dogfood scripts against a stub server
         id: dogfood-scripts
         if: ${{ !cancelled() }}

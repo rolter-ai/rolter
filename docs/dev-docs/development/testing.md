@@ -1771,12 +1771,13 @@ failure has to reach the `report failure` job as `failure`. On `master` that
 job opens an issue titled `extended.yml: nightly checks failing`, labelled `ci`,
 the first time a run fails, and comments on it with the run link and each job's
 result while it stays open. Close it once the fix lands; the next failure opens
-a new one. It is the only job in the workflow with write scopes, `issues: write`
-and `actions: write` at job level with no checkout.
+a new one. The job is a call to the shared
+[`report-failure.yml`](#the-shared-report-failure-workflow), the only job in the
+workflow with write scopes: `issues: write` and `actions: write` at job level.
 
 An issue opened with the workflow's own token raises no `issues` event, so
-`project-automation` never sees it. The job triages a new issue itself instead:
-it sets the `Maintenance, CI & DX` milestone, then dispatches
+`project-automation` never sees it. The shared workflow triages a new issue
+itself instead: it sets the `Maintenance, CI & DX` milestone, then dispatches
 `project-automation.yml` with the issue number, `area=ci` and `effort=XS`, which
 puts it on the board with `Todo` and `Priority: Medium` as well (#2201). Either
 half only warns when it fails, since a renamed milestone must not cost the issue
@@ -1830,7 +1831,8 @@ stays out of `ci-ok` is in
 
 A failing `master` run used to sit unread in the Actions tab; it was red for a
 week before anyone noticed (#2677). The workflow now ends in a `report failure`
-job, a copy of `extended.yml`'s: on `master` it opens an issue titled
+job, a call to the shared [`report-failure.yml`](#the-shared-report-failure-workflow)
+that `extended.yml` uses too: on `master` it opens an issue titled
 `ui-e2e.yml: dashboard journeys failing`, labelled `ci`, the first time a run
 fails, and comments on it with the run link while it stays open. The run's
 `playwright-report` artifact holds the trace and screenshots. A new issue gets
@@ -1846,6 +1848,54 @@ failure there shows in that run and leaves the issue alone:
 ```bash
 gh workflow run ui-e2e.yml --ref <branch>
 ```
+
+### Nightly SSO and SCIM journeys
+
+[`.github/workflows/sso-e2e.yml`](../../../.github/workflows/sso-e2e.yml) runs
+`tests/test_sso.py --idp` from `integration/e2e/` against the compose stack plus
+a throwaway Keycloak, nightly at 04:11 UTC and on `workflow_dispatch` (#714). It
+gates nothing, for the same reason as `ui-e2e.yml`. Until #2682 it also had no
+failure alert, so a red SSO or SCIM journey would have gone unnoticed; it now ends
+in the same `report failure` call, with its own issue title. A pull request that
+changes `sso.rs`, `scim.rs` or the identity provider settings should dispatch it
+on its branch before merging:
+
+```bash
+gh workflow run sso-e2e.yml --ref <branch>
+```
+
+### The shared report-failure workflow
+
+The three nightly suites gate nothing, so the only thing that makes a red night
+visible is an issue. One reusable workflow,
+[`report-failure.yml`](../../../.github/workflows/report-failure.yml), opens or
+comments on it for all of them (#2682); it used to be a copy in each, and the
+copies drifted. A caller says when to report (a failed job, on `master`) and
+passes four things: the issue `title`, a `results` table of `label|result` lines,
+the project `area` and `effort` a new issue is triaged into, and optionally a
+`note` placed under the table. The logic is
+[`scripts/report-failure.sh`](../../../scripts/report-failure.sh), which the
+workflow checks out alone (sparse, no credentials kept).
+
+| Suite          | Workflow       | Tracking issue title                         | Triage     |
+| -------------- | -------------- | -------------------------------------------- | ---------- |
+| nightly checks | `extended.yml` | `extended.yml: nightly checks failing`       | `ci`, `XS` |
+| dashboard      | `ui-e2e.yml`   | `ui-e2e.yml: dashboard journeys failing`     | `ui`, `S`  |
+| SSO and SCIM   | `sso-e2e.yml`  | `sso-e2e.yml: sso and scim journeys failing` | `ci`, `S`  |
+
+Each issue carries the `ci` label, so a suite's failures collect on one issue
+while it stays open, and the three never share one. A caller job must grant
+`issues: write` and `actions: write` itself, because a called workflow cannot
+hold more than its caller gives it, and keeps them at job level: zizmor rates
+them high at workflow level. `quality.yml` does not call it and stays
+secret-free (#734).
+
+`scripts/test-report-failure.sh` runs the script against a fake `gh` (a first
+failure opens and triages the issue, a later one comments, a milestone or dispatch
+that fails only warns, a failing issue listing fails the run instead of opening a
+duplicate, a title with shell metacharacters arrives verbatim) and checks that
+every caller uses a title of its own, grants the scopes and reports on `master`
+only. It runs in the `static checks` job and as the `report-failure` prek hook.
 
 ### Published-port image smoke
 
