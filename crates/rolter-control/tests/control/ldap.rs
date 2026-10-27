@@ -676,7 +676,7 @@ async fn an_org_has_one_directory_and_a_bad_setting_is_refused_at_write_time() {
 }
 
 #[tokio::test]
-async fn a_mapping_cannot_grant_outside_the_directorys_org() {
+async fn a_mapping_cannot_grant_outside_the_directory_org() {
     skip_without_db!();
     let f = fixture().await;
     let other_org: Uuid = sqlx::query_scalar(

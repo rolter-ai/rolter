@@ -27,8 +27,17 @@ confidence-threshold = 0.9
 # per-crate allowances, kept narrower than widening `allow` above. win_uds is a
 # windows-only unix-socket shim pulled in by zeromq; Unlicense is a public
 # domain dedication in the same spirit as the CC0-1.0 already allowed, but it
-# is granted here rather than tree-wide
-exceptions = [{ name = "win_uds", allow = ["Unlicense"] }]
+# is granted here rather than tree-wide. quoted_printable is lettre's encoder
+# for the invitation email (#1828); 0BSD is the zero-clause BSD licence, which
+# asks for less than the MIT already allowed, granted to that crate alone
+exceptions = [
+  { name = "win_uds", allow = [
+    "Unlicense",
+  ] },
+  { name = "quoted_printable", allow = [
+    "0BSD",
+  ] },
+]
 
 [bans]
 multiple-versions = "warn"
