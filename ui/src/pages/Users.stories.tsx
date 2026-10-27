@@ -663,7 +663,7 @@ export const SuperadminIsANeutralBadge: Story = {
     await expect(rowOf(table, "ada@example.com").getByText("Superadmin")).toBe(badge);
     await expect(badge).toHaveClass("text-muted-foreground");
     await expect(getComputedStyle(badge).textTransform).toBe("none");
-    await expect(getComputedStyle(badge).fontSize).toBe("10px");
+    await expect(getComputedStyle(badge).fontSize).toBe("11px");
   },
 };
 

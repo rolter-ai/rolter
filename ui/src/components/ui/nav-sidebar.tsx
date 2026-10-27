@@ -806,7 +806,7 @@ export function NavSidebar({
                     rel="noreferrer"
                     title={updateHint}
                     aria-label={updateHint}
-                    className="inline-flex min-w-0 items-center gap-1 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] px-1.5 py-px font-mono text-3xs text-foreground transition-colors hover:border-[color:var(--border-default)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    className="inline-flex min-w-0 items-center gap-1 rounded-full border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] px-1.5 py-px font-mono text-2xs text-foreground transition-colors hover:border-[color:var(--border-default)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                   >
                     <ArrowUpCircle aria-hidden="true" className="h-3 w-3 flex-none" />
                     <span className="truncate">

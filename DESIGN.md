@@ -57,7 +57,7 @@ typography:
     lineHeight: 1.33
   badge:
     fontFamily: "Geist Variable, ui-sans-serif, system-ui, sans-serif"
-    fontSize: "0.625rem"
+    fontSize: "0.6875rem"
     fontWeight: 500
     lineHeight: 1
   overline:
@@ -319,13 +319,23 @@ prefixes, config keys, token counts, latency and money.
 - **Label** (500, 12px): `Table` headers, stat-card labels, helper lines.
 - **Overline** (400, 11px, uppercase, 0.07em tracking): `ListTable` headers and small eyebrows,
   in Subtle Zinc. `text-2xs` (`--text-2xs`, registered in `@theme`).
-- **Badge** (500, 10px): badge text only, and the floor for any text. `text-3xs` (`--text-3xs`).
+- **Badge** (500, 11px): badge text, and the floor for any text. It is the same `text-2xs` step as
+  the overline, in medium weight and without the uppercase tracking.
 - **Mono** (400, 12px): identifiers and values inline with body text; sheet subtitles.
 - **Figure** (Geist Mono 500, 28px, tight tracking): the headline number of a stat card.
   `text-figure` (`--text-figure`).
 
 A size not on this list is not spelled out as `text-[11px]` or `text-[0.625rem]`: it either is one
 of these steps, or it is a new step registered in the `@theme` block of `ui/src/index.css` (#1990).
+
+**The 11px floor.** HTML text is never set below 11px. The badge was 10px until the floor was
+raised (#2230): screens put primary data in badges (a price on Pricing, a cap on Limits), and 10px
+text was below the detector's `undersized-ui-text` line on most of them. The alternative, keeping
+10px for status words and moving data out of badges, was rejected: a badge stays free to carry a
+number, so it must stay legible as one. The old `--text-3xs` step is gone with it; a label or
+glyph that was set in it uses `text-2xs`. Two things sit outside the scale: labels drawn inside a
+chart's SVG, which are sized in viewBox units, and the `aria-hidden` provider monogram, which is a
+mark rather than text.
 
 ### Named Rules
 
@@ -442,7 +452,7 @@ is state to show.
 
 ### Badges
 
-10px medium text on a 20px pill with 6px corners. Status tones tint the status fill at 15% and set
+11px medium text on a 20px pill with 6px corners. Status tones tint the status fill at 15% and set
 the label in the `-text` half; the accent tone is Red Tint with Folk Red text.
 
 The mono uppercase `Pill` (modality, origin and strategy tags) takes the same tones through its

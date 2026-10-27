@@ -7,10 +7,10 @@
    (#1990). `static` keeps every one in `:root` even where only a `var()` reads
    it. DESIGN.md records what each is for */
 @theme static {
-  /* Overline: ListTable headers and small eyebrows */
+  /* Overline and badge text: ListTable headers, small eyebrows and badge labels,
+     and the floor for any text at all. a 10px step (`--text-3xs`) sat below it
+     until the floor was raised to 11px (#2230) */
   --text-2xs: 0.6875rem;
-  /* Badge: badge text, and the floor for any text at all */
-  --text-3xs: 0.625rem;
   /* Figure: the headline number of a stat card */
   --text-figure: 1.75rem;
 

@@ -164,7 +164,7 @@ function CellMark({
       aria-hidden
       title={title}
       className={cn(
-        "flex items-center justify-center rounded-[6px] border font-mono text-3xs font-semibold",
+        "flex items-center justify-center rounded-[6px] border font-mono text-2xs font-semibold",
         className,
       )}
       style={CELL_STYLE[state]}
@@ -373,7 +373,7 @@ function MatrixTab({
                       ? t(`shell.roles.${col.key}`, { defaultValue: col.label })
                       : col.label}
                   </span>
-                  <span className="mt-0.5 block text-3xs text-[color:var(--text-subtle)]">
+                  <span className="mt-0.5 block text-2xs text-[color:var(--text-subtle)]">
                     {col.custom
                       ? t("pages.rbac.viaAccessProfiles")
                       : membershipsFailed
@@ -448,7 +448,7 @@ function MatrixTab({
       <div className="flex flex-wrap items-center gap-x-3.5 gap-y-2 text-xs text-[color:var(--text-subtle)]">
         {ACTIONS.map((action) => (
           <span key={action} className="inline-flex items-center gap-[5px]">
-            <span className="font-mono text-3xs font-semibold text-[color:var(--text-secondary)]">
+            <span className="font-mono text-2xs font-semibold text-[color:var(--text-secondary)]">
               {t(`pages.rbac.letters.${action}`)}
             </span>
             {t(`pages.rbac.actions.${action}`)}
