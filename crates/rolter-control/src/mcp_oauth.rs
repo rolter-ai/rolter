@@ -194,7 +194,18 @@ async fn create_server(
     require_non_empty(&body.name, "name")?;
     require_non_empty(&body.slug, "slug")?;
     require_non_empty(&body.url, "url")?;
-    let transport = body.transport.as_deref().unwrap_or("streamable_http");
+    // a server registered without a transport gets the organization's saved
+    // default (#1404); a stored row always names its own, so this is the one
+    // place the default is read
+    let org_default = match body.transport {
+        Some(_) => None,
+        None => Some(McpGatewaySettingsRepo(pool(&state)).get(org_id).await?),
+    };
+    let transport = body
+        .transport
+        .as_deref()
+        .or(org_default.as_ref().map(|s| s.default_transport.as_str()))
+        .unwrap_or("streamable_http");
     if !TRANSPORTS.contains(&transport) {
         return Err(invalid_field(
             "transport",

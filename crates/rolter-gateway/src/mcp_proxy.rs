@@ -11,7 +11,7 @@ use axum::response::{IntoResponse, Response};
 use bytes::Bytes;
 use serde::Deserialize;
 
-use rolter_core::{McpAuthKind, McpServerConfig};
+use rolter_core::{McpAuthKind, McpOrgSettingsConfig, McpServerConfig};
 use rolter_proxy::{McpTransportOverrides, McpUpstreamAuth};
 
 use crate::mcp_log::{CallContext, PendingCall};
@@ -303,7 +303,7 @@ async fn proxy(
             end_to_end_headers(headers),
             body,
             auth,
-            transport_overrides(server),
+            transport_overrides(server, snapshot.mcp_org_settings.get(&server.org_id)),
         )
         .await
     {
@@ -352,17 +352,30 @@ fn missing_credential(slug: &str) -> Response {
     )
 }
 
-/// The server's transport overrides, in the form the forwarder takes. A `None`
-/// column inherits the deployment default rather than becoming a zero.
-fn transport_overrides(server: &McpServerConfig) -> McpTransportOverrides {
+/// The transport values for one call, in the form the forwarder takes.
+///
+/// Highest precedence first: the server's own override, the organization's saved
+/// MCP settings (#1404), then the deployment-level default, which is what a
+/// `None` field means to the forwarder. An organization that never saved its
+/// settings contributes nothing, so it keeps the deployment default.
+fn transport_overrides(
+    server: &McpServerConfig,
+    org: Option<&McpOrgSettingsConfig>,
+) -> McpTransportOverrides {
+    let millis = std::time::Duration::from_millis;
     McpTransportOverrides {
         connect_timeout: server
             .connect_timeout_ms
-            .map(std::time::Duration::from_millis),
+            .or(org.map(|org| org.connect_timeout_ms))
+            .map(millis),
         request_timeout: server
             .request_timeout_ms
-            .map(std::time::Duration::from_millis),
-        max_retries: server.max_retries.unwrap_or(0),
+            .or(org.map(|org| org.request_timeout_ms))
+            .map(millis),
+        max_retries: server
+            .max_retries
+            .or(org.map(|org| org.max_retries))
+            .unwrap_or(0),
     }
 }
 
@@ -801,5 +814,125 @@ mod tests {
             downstream_url("https://mcp.example/rpc/", Some("messages/1"), Some("v=2")),
             Some("https://mcp.example/rpc/messages/1?v=2".to_string())
         );
+    }
+
+    #[test]
+    fn transport_values_resolve_server_then_organization_then_deployment() {
+        let org = McpOrgSettingsConfig {
+            org_id: "org-1".into(),
+            connect_timeout_ms: 1000,
+            request_timeout_ms: 2000,
+            max_retries: 3,
+            ..Default::default()
+        };
+        let none = McpServerConfig::default();
+        let overrides = transport_overrides(&none, Some(&org));
+        assert_eq!(
+            overrides.connect_timeout,
+            Some(std::time::Duration::from_millis(1000))
+        );
+        assert_eq!(
+            overrides.request_timeout,
+            Some(std::time::Duration::from_millis(2000))
+        );
+        assert_eq!(overrides.max_retries, 3);
+
+        let server = McpServerConfig {
+            connect_timeout_ms: Some(10),
+            request_timeout_ms: Some(20),
+            max_retries: Some(0),
+            ..Default::default()
+        };
+        let overrides = transport_overrides(&server, Some(&org));
+        assert_eq!(
+            overrides.connect_timeout,
+            Some(std::time::Duration::from_millis(10))
+        );
+        assert_eq!(
+            overrides.request_timeout,
+            Some(std::time::Duration::from_millis(20))
+        );
+        assert_eq!(
+            overrides.max_retries, 0,
+            "an explicit 0 beats the organization"
+        );
+
+        // nothing saved anywhere: the forwarder falls back to the deployment
+        let overrides = transport_overrides(&none, None);
+        assert_eq!(
+            (overrides.connect_timeout, overrides.request_timeout),
+            (None, None)
+        );
+        assert_eq!(overrides.max_retries, 0);
+    }
+
+    #[tokio::test]
+    async fn the_organization_request_timeout_applies_to_a_server_without_its_own() {
+        use axum::routing::any;
+        use axum::Router;
+
+        let app = Router::new().route(
+            "/{*path}",
+            any(|| async {
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                "late"
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let mut config = config("user-1", &["tools:execute"]);
+        config.mcp_servers[0].url = format!("http://{addr}/rpc");
+        config.mcp_settings.push(McpOrgSettingsConfig {
+            org_id: "org-1".into(),
+            connect_timeout_ms: 1000,
+            request_timeout_ms: 150,
+            max_retries: 0,
+            ..Default::default()
+        });
+        let started = std::time::Instant::now();
+        let response = post(AppState::new(&config), call_body("anything")).await;
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        assert!(started.elapsed() < std::time::Duration::from_secs(3));
+    }
+
+    #[tokio::test]
+    async fn an_undeclared_tool_is_refused_and_fail_open_forwards_an_unreadable_body() {
+        use axum::routing::any;
+        use axum::Router;
+
+        let app = Router::new().route("/{*path}", any(|| async { "ok" }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let mut config = config("user-1", &["tools:execute"]);
+        config.mcp_servers[0].url = format!("http://{addr}/rpc");
+        config.mcp_servers[0].tools = vec!["get_issue".into()];
+
+        let (status, code) = code_of(post(AppState::new(&config), call_body("drop")).await).await;
+        assert_eq!(
+            (status, code.as_str()),
+            (StatusCode::FORBIDDEN, "mcp_tool_denied")
+        );
+        let allowed = post(AppState::new(&config), call_body("get_issue")).await;
+        assert_eq!(allowed.status(), StatusCode::OK);
+
+        // fail closed (the default) refuses what it cannot read; fail open forwards
+        let (status, code) =
+            code_of(post(AppState::new(&config), Bytes::from_static(b"{ nope")).await).await;
+        assert_eq!(
+            (status, code.as_str()),
+            (StatusCode::BAD_REQUEST, "mcp_request_unreadable")
+        );
+        config.mcp_settings.push(McpOrgSettingsConfig {
+            org_id: "org-1".into(),
+            connect_timeout_ms: 5000,
+            request_timeout_ms: 30000,
+            max_retries: 0,
+            fail_open: true,
+            allow_unlisted_tools: false,
+        });
+        let forwarded = post(AppState::new(&config), Bytes::from_static(b"{ nope")).await;
+        assert_eq!(forwarded.status(), StatusCode::OK);
     }
 }

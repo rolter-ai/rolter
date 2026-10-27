@@ -214,6 +214,9 @@ pub struct Snapshot {
     /// groups allow, keyed by server id (#1403). A server absent from the map
     /// is not governed by a group
     pub mcp_governed_tools: HashMap<String, std::collections::HashSet<String>>,
+    /// saved MCP settings by organization id (#1404). An organization with
+    /// none saved is absent and gets the defaults
+    pub mcp_org_settings: HashMap<String, rolter_core::McpOrgSettingsConfig>,
     /// newest live session keyed by `(server_id, user_id)`
     pub mcp_oauth_sessions: HashMap<(String, String), rolter_core::McpOAuthSessionConfig>,
     /// deployment secret used to derive the key digests above
@@ -596,6 +599,12 @@ impl Snapshot {
                 }
             }
         }
+        let mcp_org_settings = config
+            .mcp_settings
+            .iter()
+            .cloned()
+            .map(|settings| (settings.org_id.clone(), settings))
+            .collect();
         let mcp_oauth_sessions = config
             .mcp_oauth_sessions
             .iter()
@@ -616,6 +625,7 @@ impl Snapshot {
             keys,
             mcp_servers,
             mcp_governed_tools,
+            mcp_org_settings,
             mcp_oauth_sessions,
             pepper,
             require_auth: config.server.require_auth,

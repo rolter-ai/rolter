@@ -127,6 +127,25 @@ after the caller is authenticated and before anything is forwarded.
   `mcp_tool_call_logs` with the tool name and the caller's attribution, via
   `PendingCall::from_request`; the closed status set is unchanged.
 
+## Organization settings in the proxy
+
+The proxy applies `mcp_gateway_settings` (#1404). Saved rows travel in the
+snapshot as `mcp_settings` (migration `0114` adds the `bump_config_version()`
+trigger); an organization with no row is absent and gets the defaults.
+
+- **Precedence** for connect timeout, request timeout and retries: the server's
+  own column, then the organization's row, then the deployment-level default the
+  forwarder uses for `None` (`transport_overrides` in `mcp_proxy.rs`).
+- **Declared manifest.** `McpServerConfig::tools` carries the manifest. A server
+  with a non-empty one serves only those tools unless the organization sets
+  `allow_unlisted_tools`; an empty manifest checks nothing. This sits beside the
+  tool-group rule and both must pass.
+- **Failure policy.** `fail_open` / `fail_closed` governs a body the policy
+  cannot parse (the only failure of the policy check itself). It never lets a
+  call to a refused tool through, and it has no say over an upstream that fails.
+- **Transport.** The server row is authoritative at request time; the org
+  `default_transport` is applied by `create_server` when the request names none.
+
 ## Endpoints
 
 - `GET`/`POST /api/v1/orgs/{org_id}/mcp-servers`, `PATCH`/`DELETE /api/v1/mcp-servers/{id}` — viewer reads, admin writes. A server URL must be `http(s)`; the transport must be one of `stdio`, `sse`, `streamable_http`, `websocket`. `PATCH` updates registry metadata, enabled state, declared tools and required scopes without destroying grants or sessions.

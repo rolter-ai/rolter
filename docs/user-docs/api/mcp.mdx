@@ -115,15 +115,25 @@ be read as JSON-RPC is refused with `400` (`mcp_request_unreadable`) rather than
 forwarded unchecked. Disabling or deleting a group lifts its restriction on the
 next snapshot.
 
-MCP Settings stores organization defaults for transport, timeout intent,
-retries, failure policy and undeclared tools. The current HTTP proxy continues
-to use deployment-level transport timeouts; the screen calls this out rather
-than implying a saved value has already changed request-path behavior.
+MCP Settings holds organization defaults, and the proxy applies them on every
+request once they are saved:
 
-<Warning>
-  **MCP Settings is experimental** and may change shape or be
-  removed in a minor release. It is a management surface the proxy does not read
-  yet, so the shape it stores is likely to move when it starts to. The
-  MCP proxy itself — `/mcp/{server}`, its authorization and its logs — is not
-  experimental.
-</Warning>
+- **Timeouts and retries.** `connect_timeout_ms`, `request_timeout_ms` and
+  `max_retries` apply to a server that has no override of its own. Precedence,
+  highest first: the server's override, these settings, then the deployment's
+  `[timeouts]` default. An organization that never saved settings keeps the
+  deployment default. A retry only ever repeats a connection that was never
+  made; a call that reached the server is not repeated.
+- **Undeclared tools.** A server that declares tools (discovered or typed)
+  serves only those, unless `allow_unlisted_tools` is on. The default is off, so
+  a call naming a tool outside the manifest is refused with `403`
+  `mcp_tool_denied`. A server that declares no tools has nothing to check
+  against.
+- **Failure policy.** `default_failure_mode` decides what happens to a request
+  the proxy cannot read as JSON-RPC, and so cannot check against the rules
+  above: `fail_closed` (the default) refuses it with `400`, `fail_open` forwards
+  it. An upstream that does not answer is always a `502`; a gateway cannot fail
+  open on a server that is down.
+- **Transport.** A server row always names its transport, so the organization's
+  `default_transport` is what a server registered without one gets, at
+  registration.

@@ -112,3 +112,85 @@ async fn enabled_tool_groups_reach_the_snapshot_and_every_edit_bumps_the_version
         .unwrap()
         .is_empty());
 }
+
+#[tokio::test]
+async fn saved_mcp_settings_reach_the_snapshot_and_set_a_new_servers_transport() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app(pool.clone()).await.unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let org: Value = client
+        .post(format!("{base}/api/v1/orgs"))
+        .json(&json!({"name": "Acme", "slug": "acme"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org_id = org["id"].as_str().unwrap().to_string();
+
+    // never saved: the organization is absent and the gateway uses defaults
+    assert!(snapshot_config(&client, &base).await["mcp_settings"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+
+    let before = config_version(&pool).await;
+    let saved = client
+        .put(format!("{base}/api/v1/orgs/{org_id}/mcp/settings"))
+        .json(&json!({
+            "default_transport": "sse",
+            "connect_timeout_ms": 1500,
+            "request_timeout_ms": 20000,
+            "max_retries": 2,
+            "default_failure_mode": "fail_open",
+            "allow_unlisted_tools": true,
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(saved.status().is_success());
+    assert!(config_version(&pool).await > before, "saving must bump");
+    let config = snapshot_config(&client, &base).await;
+    assert_eq!(
+        config["mcp_settings"],
+        json!([{
+            "org_id": org_id,
+            "connect_timeout_ms": 1500,
+            "request_timeout_ms": 20000,
+            "max_retries": 2,
+            "fail_open": true,
+            "allow_unlisted_tools": true,
+        }])
+    );
+
+    // a server registered without a transport takes the saved default
+    let server: Value = client
+        .post(format!("{base}/api/v1/orgs/{org_id}/mcp-servers"))
+        .json(&json!({"name": "Docs", "slug": "docs", "url": "http://127.0.0.1:9/mcp", "tools": ["a"]}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(server["transport"], "sse");
+    // and the declared manifest travels with the server
+    let config = snapshot_config(&client, &base).await;
+    assert_eq!(config["mcp_servers"][0]["tools"], json!(["a"]));
+    // one that names its own keeps it
+    let explicit: Value = client
+        .post(format!("{base}/api/v1/orgs/{org_id}/mcp-servers"))
+        .json(&json!({"name": "Two", "slug": "two", "url": "http://127.0.0.1:9/mcp", "transport": "streamable_http"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(explicit["transport"], "streamable_http");
+}

@@ -110,16 +110,6 @@ pub const SUBSYSTEMS: &[SubsystemStability] = &[
         nav_keys: &[],
     },
     SubsystemStability {
-        id: "mcp_settings",
-        stability: Stability::Experimental,
-        note: "organization MCP defaults for transport, timeout intent, retries \
-               and undeclared tools are stored but not yet read by the proxy. \
-               a per-server override is read (#952); a server without one \
-               falls back to the deployment-level transport timeouts rather \
-               than to these",
-        nav_keys: &["mcp-settings"],
-    },
-    SubsystemStability {
         id: "plugins",
         stability: Stability::Experimental,
         note: "the webhook payload a plugin receives carries no version of its \
