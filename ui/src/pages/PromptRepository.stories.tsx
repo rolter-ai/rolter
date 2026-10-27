@@ -390,8 +390,9 @@ export const KeepsTheDraftWhenSwitchingVersions: Story = {
     const rail = await versionRail(canvasElement);
     const decorator = await canvas.findByRole("textbox", { name: /Decorator 1 content/ });
     await expect(canvas.queryByText("Unsaved changes")).toBeNull();
-    // a clean workbench switches at once
-    await userEvent.click(rail.getByRole("button", { name: /^v1\b/ }));
+    // a clean workbench switches at once. the rail's versions load beside the
+    // draft, so wait for them rather than read them on the next line
+    await userEvent.click(await rail.findByRole("button", { name: /^v1\b/ }));
     await waitFor(() => expect(canvas.getByText(/editing from immutable v1/)).toBeVisible());
     await userEvent.click(rail.getByRole("button", { name: /^v2\b/ }));
     await waitFor(() => expect(canvas.getByText(/editing from immutable v2/)).toBeVisible());
