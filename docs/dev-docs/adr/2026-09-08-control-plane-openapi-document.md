@@ -15,7 +15,7 @@ operations across tenancy, users, RBAC, providers, routes, virtual keys,
 budgets, guardrails, MCP, SSO, SCIM, alerting and the deployment settings
 singletons — exists only as an Axum router assembled in
 `crates/rolter-control/src/lib.rs` from about thirty `router()` functions. The
-only machine-readable description of it is the dashboard's own `ui/src/lib/api.ts`,
+only machine-readable description of it is the dashboard's own `ui/src/lib/api/`,
 which is a client, not a contract.
 
 Three SDKs are planned: Rust (#421), Python (#422) and JS/TS (#851). Without a

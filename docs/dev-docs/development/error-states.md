@@ -224,7 +224,7 @@ when it was a permission, so `isRetryable` withholds it.
 
 ## A 401 is handled once, not per screen
 
-Since #1196 the shell owns the expired session. `api.ts` calls the handler
+Since #1196 the shell owns the expired session. `api/request.ts` calls the handler
 `AuthProvider` registered through `setSessionExpiredHandler` whenever a request
 that _carried the session token_ is answered 401 — the token and the cached
 account are dropped and the sign-in screen explains why. A screen still renders

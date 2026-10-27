@@ -145,5 +145,5 @@ navigation shells (`NavSidebar`, `FilterPanel`), under `src/components/ui/`.
 - `src/App.tsx` — layout + routes
 - `src/pages/` — Models, Keys, Logs
 - `src/components/ui/` — shadcn components
-- `src/lib/api.ts` — typed fetch helpers for the control API
+- `src/lib/api/` — typed fetch helpers for the control API, one module per resource group (`index.ts` re-exports them all)
 - `src/lib/utils.ts` — `cn()` class helper
