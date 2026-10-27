@@ -363,6 +363,15 @@ const ROUTE_INCLUDE_QUERY: &[QueryParam] = &[QueryParam::new(
      list carries neither, and a value outside those two is a 400",
 )];
 
+/// The access-profile list's query string: what to embed beside each profile.
+const PROFILE_INCLUDE_QUERY: &[QueryParam] = &[QueryParam::new(
+    "include",
+    "string",
+    "comma-separated extras to embed in each profile, as the detail returns them: `roles`, \
+     `assignments` and `policy`; omitted, the list carries none, and a value outside those \
+     three is a 400",
+)];
+
 /// The provider test's query string: the model to look up.
 const PROVIDER_TEST_QUERY: &[QueryParam] = &[QueryParam::new(
     "model",
@@ -1130,8 +1139,9 @@ fn operations() -> Vec<Op> {
             Op::get(
                 "/api/v1/orgs/{org_id}/access-profiles",
                 "listAccessProfiles",
-                "List access profiles",
-            ),
+                "List access profiles; `include` embeds each profile's roles, assignments and policy so a screen needs one request, not one per profile",
+            )
+            .query(PROFILE_INCLUDE_QUERY),
             Op::post(
                 "/api/v1/orgs/{org_id}/access-profiles",
                 "createAccessProfile",
