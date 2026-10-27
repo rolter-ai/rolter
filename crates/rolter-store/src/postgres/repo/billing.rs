@@ -1,6 +1,6 @@
 //! Budgets, rate limits and model prices.
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use sqlx::{FromRow, PgPool, Row};
 use uuid::Uuid;
 
@@ -373,7 +373,104 @@ pub struct NewModelPrice<'a> {
     pub currency: &'a str,
 }
 
+/// One price a catalogue import offers (#966). Rates are per million tokens,
+/// already in `currency`, which the adapter states rather than assumes.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CataloguePrice {
+    pub model: String,
+    pub input_per_mtok: String,
+    pub output_per_mtok: String,
+    pub cached_input_per_mtok: Option<String>,
+    pub cache_write_per_mtok: Option<String>,
+    pub currency: String,
+}
+
+/// What an import did with one model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CatalogueImport {
+    /// no price existed, one was created from the catalogue
+    Created,
+    /// the model already had a catalogue price, which was refreshed
+    Updated,
+    /// an operator set this price, so the catalogue left it alone
+    KeptOverride,
+}
+
 impl ModelPriceRepo<'_> {
+    /// Import catalogue prices without replacing an operator's own (#966).
+    ///
+    /// A row with no `source` is one an operator wrote, and stays exactly as it
+    /// is; a row that names a source (this catalogue's or another's) is
+    /// replaced by the offered values and re-stamped. Tokens-only: the unit
+    /// rates (images, audio) of an existing row are left alone. Each model is
+    /// one statement inside a single transaction, so a refused row rolls back
+    /// the whole import and the config version is bumped once per statement the
+    /// trigger sees.
+    pub async fn import_catalogue(
+        &self,
+        source: &str,
+        imported_at: DateTime<Utc>,
+        prices: &[CataloguePrice],
+    ) -> Result<Vec<(String, CatalogueImport)>> {
+        let mut tx = self.0.begin().await.map_err(store_err)?;
+        let mut outcomes = Vec::with_capacity(prices.len());
+        for price in prices {
+            // `xmax = 0` is true for a row this statement inserted; no row back
+            // at all means the conflict target was an operator's, which the
+            // `where` clause refuses to touch
+            let written: Option<bool> = sqlx::query_scalar(
+                "insert into model_prices
+                        (model, input_per_mtok, output_per_mtok, cached_input_per_mtok,
+                         cache_write_per_mtok, currency, source, source_imported_at)
+                 values ($1, $2::numeric, $3::numeric, $4::numeric, $5::numeric, $6, $7, $8)
+                 on conflict (model) do update
+                    set input_per_mtok = excluded.input_per_mtok,
+                        output_per_mtok = excluded.output_per_mtok,
+                        cached_input_per_mtok = excluded.cached_input_per_mtok,
+                        cache_write_per_mtok = excluded.cache_write_per_mtok,
+                        currency = excluded.currency,
+                        source = excluded.source,
+                        source_imported_at = excluded.source_imported_at
+                    where model_prices.source is not null
+                 returning (xmax = 0)",
+            )
+            .bind(&price.model)
+            .bind(&price.input_per_mtok)
+            .bind(&price.output_per_mtok)
+            .bind(price.cached_input_per_mtok.as_deref())
+            .bind(price.cache_write_per_mtok.as_deref())
+            .bind(&price.currency)
+            .bind(source)
+            .bind(imported_at)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(store_err)?;
+            let outcome = match written {
+                Some(true) => CatalogueImport::Created,
+                Some(false) => CatalogueImport::Updated,
+                None => CatalogueImport::KeptOverride,
+            };
+            if outcome != CatalogueImport::KeptOverride {
+                LabelRepo::upsert_auto(
+                    &mut *tx,
+                    AutoLabelInput {
+                        subject_type: "model",
+                        subject_id: &price.model,
+                        key: PRICED_LABEL_KEY,
+                        value: Some(&price.currency),
+                        observation: "model_prices",
+                        observed_at: Utc::now(),
+                    },
+                )
+                .await?;
+            }
+            outcomes.push((price.model.clone(), outcome));
+        }
+        tx.commit().await.map_err(store_err)?;
+        Ok(outcomes)
+    }
+
     pub async fn list(&self) -> Result<Vec<ModelPrice>> {
         sqlx::query_as(
             "select id, model,
@@ -388,7 +485,7 @@ impl ModelPriceRepo<'_> {
                     audio_input_per_mtok::text as audio_input_per_mtok,
                     audio_output_per_mtok::text as audio_output_per_mtok,
                     cached_audio_input_per_mtok::text as cached_audio_input_per_mtok,
-                    currency, created_at
+                    currency, created_at, source, source_imported_at
              from model_prices order by model",
         )
         .fetch_all(self.0)
@@ -457,7 +554,9 @@ impl ModelPriceRepo<'_> {
                     cached_audio_input_per_mtok = case when $21::boolean
                         then excluded.cached_audio_input_per_mtok
                         else model_prices.cached_audio_input_per_mtok end,
-                    currency = excluded.currency
+                    currency = excluded.currency,
+                    source = null,
+                    source_imported_at = null
              returning id, model,
                        input_per_mtok::text as input_per_mtok,
                        output_per_mtok::text as output_per_mtok,
@@ -470,7 +569,7 @@ impl ModelPriceRepo<'_> {
                        audio_input_per_mtok::text as audio_input_per_mtok,
                        audio_output_per_mtok::text as audio_output_per_mtok,
                        cached_audio_input_per_mtok::text as cached_audio_input_per_mtok,
-                       currency, created_at",
+                       currency, created_at, source, source_imported_at",
         )
         .bind(model)
         .bind(input_per_mtok)

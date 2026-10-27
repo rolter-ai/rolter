@@ -1684,6 +1684,153 @@ async fn provider_test_reports_whether_a_model_is_listed() {
     assert!(liveness["model_listed"].is_null(), "{liveness}");
 }
 
+/// #966: an import creates catalogue prices stamped with their source, refreshes
+/// them, never replaces an operator's own price, and an edit turns an imported
+/// price into an override.
+#[tokio::test]
+async fn catalogue_import_never_replaces_an_operator_price() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let app = rolter_control::test_app(db.pool().clone()).await.unwrap();
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let listing: Value = client
+        .get(format!(
+            "{base}/api/v1/model-prices/catalogue?q=gpt-4o&limit=3"
+        ))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(listing["source"], "litellm", "{listing}");
+    assert_eq!(listing["currency"], "USD", "{listing}");
+    assert!(listing["snapshot"].is_string() && listing["licence"].is_string());
+    assert!(listing["entries"].as_array().unwrap().len() <= 3);
+
+    // the operator prices gpt-4o by hand before any import
+    let put = |model: &str, input: &str| {
+        let client = client.clone();
+        let url = format!("{base}/api/v1/model-prices");
+        let body = json!({"model": model, "input_per_mtok": input, "output_per_mtok": "9", "currency": "USD"});
+        async move { client.put(url).json(&body).send().await.unwrap() }
+    };
+    assert!(put("gpt-4o", "7").await.status().is_success());
+
+    let import = |models: Value| {
+        let client = client.clone();
+        let url = format!("{base}/api/v1/model-prices/import");
+        async move {
+            client
+                .post(url)
+                .json(&json!({"models": models}))
+                .send()
+                .await
+                .unwrap()
+        }
+    };
+    let report: Value = import(json!(["gpt-4o", "gpt-4o-mini", "no-such-model-anywhere"]))
+        .await
+        .json()
+        .await
+        .unwrap();
+    let outcome = |report: &Value, model: &str| {
+        report["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["model"] == model)
+            .map(|r| r["outcome"].as_str().unwrap().to_string())
+    };
+    assert_eq!(
+        outcome(&report, "gpt-4o").as_deref(),
+        Some("kept_override"),
+        "{report}"
+    );
+    assert_eq!(
+        outcome(&report, "gpt-4o-mini").as_deref(),
+        Some("created"),
+        "{report}"
+    );
+    assert_eq!(
+        outcome(&report, "no-such-model-anywhere").as_deref(),
+        Some("not_in_catalogue"),
+        "{report}"
+    );
+
+    let prices = || {
+        let client = client.clone();
+        let url = format!("{base}/api/v1/model-prices");
+        async move {
+            client
+                .get(url)
+                .send()
+                .await
+                .unwrap()
+                .json::<Value>()
+                .await
+                .unwrap()
+        }
+    };
+    let row = |prices: &Value, model: &str| {
+        prices
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["model"] == model)
+            .cloned()
+            .unwrap()
+    };
+    let listed = prices().await;
+    let mine = row(&listed, "gpt-4o");
+    assert_eq!(mine["input_per_mtok"], "7.000000", "{mine}");
+    assert!(
+        mine["source"].is_null(),
+        "an operator price has no source: {mine}"
+    );
+    let imported = row(&listed, "gpt-4o-mini");
+    assert_eq!(imported["source"], "litellm", "{imported}");
+    assert_eq!(imported["currency"], "USD", "{imported}");
+    assert!(imported["source_imported_at"].is_string(), "{imported}");
+
+    // a second import refreshes the catalogue row and still leaves the override
+    let again: Value = import(json!(["gpt-4o", "gpt-4o-mini"]))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        outcome(&again, "gpt-4o-mini").as_deref(),
+        Some("updated"),
+        "{again}"
+    );
+    assert_eq!(
+        outcome(&again, "gpt-4o").as_deref(),
+        Some("kept_override"),
+        "{again}"
+    );
+
+    // editing an imported price makes it the operator's own
+    assert!(put("gpt-4o-mini", "1").await.status().is_success());
+    let edited = row(&prices().await, "gpt-4o-mini");
+    assert!(edited["source"].is_null(), "{edited}");
+    let kept: Value = import(json!(["gpt-4o-mini"])).await.json().await.unwrap();
+    assert_eq!(
+        outcome(&kept, "gpt-4o-mini").as_deref(),
+        Some("kept_override"),
+        "{kept}"
+    );
+
+    assert_eq!(
+        import(json!([])).await.status(),
+        400,
+        "an empty import is refused"
+    );
+}
+
 /// #984: the cache probe records a reporting provider, a non-reporting one and
 /// leaves a provider that never answered unprobed; the listing carries only
 /// the verdicts that exist.

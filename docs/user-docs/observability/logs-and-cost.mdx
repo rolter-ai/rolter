@@ -301,16 +301,54 @@ For how a realtime session is metered, including its input-audio transcription, 
 
 ### Prices are yours, not ours
 
-Rolter ships no pricing catalog and never fetches one. Every rate comes from
-your `[[model_prices]]` entries, or from the dashboard's **Pricing** screen or
-the **Pricing override** section of a model's sheet, which write the same rows. That is deliberate:
-published list prices go stale, and most deployments have a negotiated rate, a
-committed-use discount or a self-hosted model whose real cost is a GPU bill.
-Rolter multiplies the tokens it counted by the number you gave it.
+Rolter fetches no pricing data at runtime, ever. Every rate comes from your
+`[[model_prices]]` entries, from the dashboard's **Pricing** screen or the
+**Pricing override** section of a model's sheet (which write the same rows), or
+from an explicit [catalogue import](#importing-catalogue-prices). That is
+deliberate: published list prices go stale, and most deployments have a
+negotiated rate, a committed-use discount or a self-hosted model whose real
+cost is a GPU bill. Rolter multiplies the tokens it counted by the number it
+holds for the model.
 
 The dashboard's pricing section links here for that reason — it is the answer
-to "where does this number come from", and the answer is "from whoever typed
-it".
+to "where does this number come from": from whoever typed it, or from a
+catalogue snapshot you imported on purpose.
+
+#### Importing catalogue prices
+
+To save typing the list price of a model, you can import it from a catalogue.
+The control plane carries a **vendored snapshot** of [LiteLLM's
+`model_prices_and_context_window.json`](https://github.com/BerriAI/litellm)
+(MIT, notice shipped beside it), cut down to the per-token input, output, cache
+read and cache write costs of the chat, completion, responses and embedding
+models. It is compiled into the binary, so importing works with no network, and
+the snapshot is refreshed by a maintainer running `just refresh-prices`, never
+by your deployment.
+
+- `GET /api/v1/model-prices/catalogue?q=gpt-4o` searches it and states its
+  `source`, `licence`, `currency` and `snapshot` date.
+- `POST /api/v1/model-prices/import` with `{"models": ["gpt-4o", …]}` (at most
+  500 ids; superadmin, like any price write) creates the prices. Each result is
+  `created`, `updated`, `kept_override` or `not_in_catalogue`.
+
+Three rules hold for every import:
+
+- **Your price wins.** A price you set by hand (the Pricing screen, the API,
+  `[[model_prices]]`) is an _override_: an import reports it as
+  `kept_override` and does not touch it. Editing an imported price in the
+  dashboard turns it into an override. To go back to the catalogue value,
+  delete your price and import the model again.
+- **Catalogue prices are marked.** An imported row carries its `source` and the
+  date of the snapshot it came from (`source_imported_at`), and the dashboard
+  shows both on the Pricing screen and in the model sheet.
+- **They are list prices, subject to change.** The file is a third party's
+  best effort and drifts from the provider's real price list, and the choice of
+  LiteLLM as the source is itself provisional. Check an imported rate against
+  your invoice before you rely on it for budgets.
+
+The file states no currency; the importer states **USD** explicitly, so an
+import needs USD to be convertible in your deployment (it is the default base
+currency).
 
 ### Unpriced traffic
 

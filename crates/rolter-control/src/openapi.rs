@@ -403,6 +403,19 @@ const PROVIDER_CACHE_PROBE_QUERY: &[QueryParam] = &[QueryParam::new(
     "the upstream model to ask for one token (required); the probe is a completion, so it costs a token",
 )];
 
+const PRICE_CATALOGUE_QUERY: &[QueryParam] = &[
+    QueryParam::new(
+        "q",
+        "string",
+        "a substring of the model id; every model when omitted",
+    ),
+    QueryParam::new(
+        "limit",
+        "integer",
+        "at most this many entries (default and ceiling 200)",
+    ),
+];
+
 /// The MCP call log's query string. The same keyset-paging problem as the
 /// invocation log below, and the one #1412 names first: `next_cursor` comes
 /// back in the body, and a caller who does not know to send it as `cursor`
@@ -1635,6 +1648,20 @@ fn operations() -> Vec<Op> {
                 "deleteModelPrice",
                 "Delete a model's price",
             ),
+            Op::get(
+                "/api/v1/model-prices/catalogue",
+                "listPriceCatalogue",
+                "Search the vendored price catalogue the importer reads (offline), with its source, licence and snapshot date",
+            )
+            .query(PRICE_CATALOGUE_QUERY)
+            .ok(Payload::Open),
+            Op::post(
+                "/api/v1/model-prices/import",
+                "importModelPrices",
+                "Import the named models' prices from the vendored catalogue; an operator-set price is never replaced",
+            )
+            .body(Payload::Open)
+            .ok(Payload::Open),
         ],
     ));
 
@@ -3724,7 +3751,16 @@ fn governance_schemas(p: &Prim) -> Value {
                     "description": "price per million cached audio input tokens; null charges them at cached_input_per_mtok when that is set, otherwise at the audio input rate"
                 },
                 "currency": string,
-                "created_at": timestamp
+                "created_at": timestamp,
+                "source": {
+                    "type": ["string", "null"],
+                    "description": "the catalogue this price was imported from (e.g. litellm), a value subject to change; null is a price an operator set, which is an override that an import never replaces"
+                },
+                "source_imported_at": {
+                    "type": ["string", "null"],
+                    "format": "date-time",
+                    "description": "the day the catalogue snapshot behind an imported price was taken; null for an operator-set price"
+                }
             }
         },
         "UpsertModelPrice": {

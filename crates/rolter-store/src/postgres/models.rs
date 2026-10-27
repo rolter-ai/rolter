@@ -436,6 +436,11 @@ pub struct ModelPrice {
     pub cached_audio_input_per_mtok: Option<String>,
     pub currency: String,
     pub created_at: DateTime<Utc>,
+    /// the catalogue this price was imported from (#966); `None` is a price an
+    /// operator set, which is an override that an import never replaces
+    pub source: Option<String>,
+    /// the day the catalogue snapshot the price came from was taken
+    pub source_imported_at: Option<DateTime<Utc>>,
 }
 /// singleton persisted feature flags that gate supported subsystems
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
