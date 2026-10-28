@@ -212,6 +212,8 @@ fn scope_type(scope: BudgetScope) -> &'static str {
         BudgetScope::BusinessUnit => "business_unit",
         BudgetScope::Customer => "customer",
         BudgetScope::User => "user",
+        // a scope a newer release stored (#3347); no row is named this way
+        BudgetScope::Unknown => "unknown",
     }
 }
 

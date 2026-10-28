@@ -130,7 +130,7 @@ impl ScopeRefs {
             | rolter_core::BudgetScope::BusinessUnit
             | rolter_core::BudgetScope::Customer => 2,
             rolter_core::BudgetScope::Project => 3,
-            rolter_core::BudgetScope::User => return,
+            rolter_core::BudgetScope::User | rolter_core::BudgetScope::Unknown => return,
         };
         // the org slug cannot hold a `/`, so a name that does is what makes
         // the count wrong
@@ -317,6 +317,7 @@ fn render_routes(out: &mut String, config: &GatewayConfig) {
                 match policy.mode {
                     OverrideMode::Allow => "allow",
                     OverrideMode::Deny => "deny",
+                    OverrideMode::Unknown => "unknown",
                 },
             );
             key(out, "allow", &policy.allow);
@@ -484,6 +485,7 @@ fn period_rank(period: rolter_core::BudgetPeriod) -> u8 {
         rolter_core::BudgetPeriod::Daily => 0,
         rolter_core::BudgetPeriod::Monthly => 1,
         rolter_core::BudgetPeriod::Total => 2,
+        rolter_core::BudgetPeriod::Unknown => 3,
     }
 }
 
@@ -583,6 +585,9 @@ fn strategy_name(strategy: BalancingStrategy) -> &'static str {
         BalancingStrategy::Adaptive => "adaptive",
         BalancingStrategy::LoraAware => "lora_aware",
         BalancingStrategy::PredictedLatency => "predicted_latency",
+        // a value a newer release stored (#3347); importing the file refuses
+        // it rather than guessing
+        BalancingStrategy::Unknown => "unknown",
     }
 }
 

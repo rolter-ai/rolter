@@ -63,6 +63,7 @@ fn scope_str(scope: BudgetScope) -> &'static str {
         BudgetScope::BusinessUnit => "business_unit",
         BudgetScope::Customer => "customer",
         BudgetScope::User => "user",
+        BudgetScope::Unknown => "unknown",
     }
 }
 

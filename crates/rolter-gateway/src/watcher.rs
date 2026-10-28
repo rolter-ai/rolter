@@ -378,10 +378,24 @@ async fn poll_once_reading(
     }
     state.clear_snapshot_format_refusal();
 
-    let body: SnapshotResponse = serde_json::from_slice(&bytes)?;
+    let mut body: SnapshotResponse = serde_json::from_slice(&bytes)?;
     // guard against a stale/racy response older than what we already run
     if body.version <= current && current != 0 {
         return Ok(None);
+    }
+    // a value from a newer release decoded as `Unknown` instead of failing the
+    // whole snapshot; read it fail-closed for its entity alone, so the rest of
+    // the config, revocations included, still applies (#3347)
+    let unknown = body.config.fail_closed_unknown_values();
+    if !unknown.is_empty() {
+        tracing::warn!(
+            version = body.version,
+            count = unknown.len(),
+            problems = ?unknown,
+            "this snapshot carries values this gateway does not know; each is read \
+             fail-closed (the entity is left out, or takes its most restrictive \
+             known value). Upgrade this gateway to serve them as configured"
+        );
     }
     // never apply a broken snapshot; keep serving the last good config
     if let Err(problems) = body.config.validate_snapshot() {
@@ -915,6 +929,48 @@ mod tests {
             poll_once(&client, &state, &url, None).await.unwrap(),
             Some(3)
         );
+    }
+
+    /// A newer control plane names a provider kind, a strategy and a budget
+    /// period this gateway does not know (#3347). The poll still applies: the
+    /// provider and the route that needed it are left out, the strategy's
+    /// route refuses, and the rest, keys above all, is served as configured.
+    #[tokio::test]
+    async fn a_value_this_build_does_not_know_fails_closed_for_its_entity_only() {
+        let stub = stub(StubAnswer::Ok(serde_json::json!({
+            "format": 1,
+            "version": 7,
+            "config": {
+                "providers": [
+                    {"name": "known", "kind": "openai", "api_base": "https://a.example"},
+                    {"name": "future", "kind": "quantum", "api_base": "https://q.example"}
+                ],
+                "routes": [
+                    {"model": "kept", "targets": [{"provider": "known"}]},
+                    {"model": "orphaned", "targets": [{"provider": "future"}]},
+                    {"model": "guessing", "strategy": "mind_reading",
+                     "targets": [{"provider": "known"}]}
+                ],
+                "budgets": [{"scope": "org", "id": "org-1", "limit_usd": 1,
+                             "period": "fortnightly"}],
+                "security": {"required_headers": {"x-mesh-id": "edge"}}
+            }
+        })))
+        .await;
+        let state = AppState::new(&GatewayConfig::default());
+        let client = Client::new();
+        assert_eq!(
+            poll_once(&client, &state, &stub.url, None).await.unwrap(),
+            Some(7)
+        );
+        let held = state.snapshot.load();
+        let mut providers: Vec<&str> = held.providers.keys().map(String::as_str).collect();
+        providers.sort_unstable();
+        assert_eq!(providers, ["known"]);
+        let routes: Vec<&str> = held.routes.keys().map(String::as_str).collect();
+        assert_eq!(routes, ["kept"]);
+        assert_eq!(held.budgets[0].period, rolter_core::BudgetPeriod::Unknown);
+        assert!(holds_gate(&state));
     }
 
     /// A stub standing in for a control plane of another build. It records

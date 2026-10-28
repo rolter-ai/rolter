@@ -534,6 +534,10 @@ struct RouteScopeRow {
 /// still rejected them, and because every route loads through one query, a
 /// single route on a new strategy failed `/internal/snapshot` outright. The
 /// whole fleet then held its last good config with nothing but a 500 to say why.
+///
+/// A value this build does not know, one a newer release wrote, reads as
+/// [`BalancingStrategy::Unknown`] (#3347): the snapshot sanitizer then omits
+/// that route and names it, and the rest of the config still loads.
 fn parse_strategy(s: &str) -> Result<BalancingStrategy> {
     serde_json::from_value(serde_json::Value::String(s.to_string()))
         .map_err(|_| Error::Store(format!("unknown balancing strategy '{s}'")))
@@ -1643,9 +1647,21 @@ fn route_settings_from_row(row: &RouteRow) -> std::result::Result<RouteSettings,
             )
         })
     }
+    let param_policy: ParamPolicy = column(row, "param_policy", &row.param_policy)?;
+    // a mode this build does not know decodes as `Unknown` rather than failing
+    // (#3347); the store still reads it as a row it cannot read, so it is left
+    // out and named like any other
+    if param_policy.mode == rolter_core::OverrideMode::Unknown {
+        return Err(format!(
+            "route '{}' ({}) has a param_policy value that does not parse (a mode this build \
+             does not know), so the route is left out of the snapshot and its model is not \
+             served; repair the param_policy value or delete the route",
+            row.model, row.id
+        ));
+    }
     Ok(RouteSettings {
         params: column(row, "params", &row.params)?,
-        param_policy: column(row, "param_policy", &row.param_policy)?,
+        param_policy,
         advanced: column(row, "advanced", &row.advanced)?,
     })
 }
@@ -2304,6 +2320,8 @@ mod tests {
             BalancingStrategy::Adaptive => "adaptive",
             BalancingStrategy::LoraAware => "lora_aware",
             BalancingStrategy::PredictedLatency => "predicted_latency",
+            // never stored: it stands for a value a newer release wrote (#3347)
+            BalancingStrategy::Unknown => unreachable!("Unknown has no column value"),
         }
     }
 
@@ -2346,12 +2364,13 @@ mod tests {
         }
     }
 
+    /// A strategy a newer release stored reads as `Unknown`, which the snapshot
+    /// sanitizer omits, rather than failing the whole load (#3347).
     #[test]
-    fn an_unknown_strategy_is_still_an_error() {
-        let err = parse_strategy("teleport").expect_err("unknown strategy must not parse");
-        assert!(
-            err.to_string().contains("teleport"),
-            "the message should name the offending value, got: {err}"
+    fn an_unknown_strategy_reads_as_unknown_rather_than_failing_the_load() {
+        assert_eq!(
+            parse_strategy("teleport").expect("a strategy from a newer release still loads"),
+            BalancingStrategy::Unknown
         );
     }
 

@@ -1859,6 +1859,9 @@ async fn seed_default_models(pool: &sqlx::PgPool, config: &GatewayConfig) -> any
             rolter_core::BalancingStrategy::Adaptive => "adaptive",
             rolter_core::BalancingStrategy::LoraAware => "lora_aware",
             rolter_core::BalancingStrategy::PredictedLatency => "predicted_latency",
+            // parsing a file refuses an unknown strategy (#3347); the column's
+            // check constraint would refuse it if it got here
+            rolter_core::BalancingStrategy::Unknown => "unknown",
         };
         let created = routes.create(project_id, &route.model, strategy).await?;
         let params = serde_json::to_value(&route.params)?;
@@ -1959,6 +1962,9 @@ fn provider_kind_str(kind: &rolter_core::ProviderKind) -> &'static str {
         Falcon => "falcon",
         SystemOne => "system_one",
         Infinity => "infinity",
+        // parsing a file refuses an unknown kind (#3347); the column's check
+        // constraint would refuse it if it got here
+        Unknown => "unknown",
     }
 }
 
@@ -2164,6 +2170,9 @@ fn balancing_strategy_str(strategy: rolter_core::BalancingStrategy) -> &'static 
         Adaptive => "adaptive",
         LoraAware => "lora_aware",
         PredictedLatency => "predicted_latency",
+        // parsing a file refuses an unknown strategy (#3347); the column's
+        // check constraint would refuse it if it got here
+        Unknown => "unknown",
     }
 }
 
