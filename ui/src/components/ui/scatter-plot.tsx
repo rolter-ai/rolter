@@ -124,9 +124,9 @@ export function ScatterPlot({
               />
               <text
                 x={padL - 8}
-                y={y + 3}
+                y={y + 4}
                 textAnchor="end"
-                fontSize="10"
+                fontSize="11"
                 fontFamily="var(--font-mono)"
                 fill="var(--text-subtle)"
               >
@@ -145,7 +145,7 @@ export function ScatterPlot({
               x={x}
               y={H - 18}
               textAnchor="middle"
-              fontSize="10"
+              fontSize="11"
               fontFamily="var(--font-mono)"
               fill="var(--text-subtle)"
             >
@@ -185,7 +185,7 @@ export function ScatterPlot({
             x={padL + iw / 2}
             y={H - 2}
             textAnchor="middle"
-            fontSize="10"
+            fontSize="11"
             fill="var(--text-muted)"
           >
             {xLabel}
@@ -196,7 +196,7 @@ export function ScatterPlot({
             x={12}
             y={padT + ih / 2}
             textAnchor="middle"
-            fontSize="10"
+            fontSize="11"
             fill="var(--text-muted)"
             transform={`rotate(-90 12 ${padT + ih / 2})`}
           >

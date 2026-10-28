@@ -728,7 +728,7 @@ export const Mobile: Story = {
     await expect(scale).toBeLessThan(1.05);
     const axis = [...svg.querySelectorAll("text")];
     for (const text of axis) {
-      await expect(parseFloat(getComputedStyle(text).fontSize) * scale).toBeGreaterThanOrEqual(10);
+      await expect(parseFloat(getComputedStyle(text).fontSize) * scale).toBeGreaterThanOrEqual(11);
     }
     // and the labels are thinned to what fits, so none runs into the next
     const boxes = axis

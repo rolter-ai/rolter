@@ -48,3 +48,28 @@ export const BarInACell: StoryObj = {
     await expect(fills.map((fill) => fill.style.width)).toEqual(["0%", "40%", "100%", "100%"]);
   },
 };
+
+/** Axis labels are 11 viewBox units in a 640-wide chart, so 11px at that width (#3284). */
+export const LabelsReachTheTextFloor: Story = {
+  args: {
+    height: 180,
+    data: [420, 380, 512, 640],
+    labels: ["Mon", "Tue", "Wed", "Thu"],
+    label: "Requests per day",
+  },
+  render: (args) => (
+    <div style={{ width: 640 }}>
+      <BarChart {...args} />
+    </div>
+  ),
+  play: async ({ canvasElement }) => {
+    const svg = canvasElement.querySelector("svg")!;
+    const scale = svg.getBoundingClientRect().width / svg.viewBox.baseVal.width;
+    await expect(scale).toBeCloseTo(1, 1);
+    for (const text of svg.querySelectorAll("text")) {
+      await expect(parseFloat(getComputedStyle(text).fontSize) * scale).toBeGreaterThanOrEqual(
+        10.9,
+      );
+    }
+  },
+};

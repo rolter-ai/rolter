@@ -347,9 +347,12 @@ raised (#2230): screens put primary data in badges (a price on Pricing, a cap on
 text was below the detector's `undersized-ui-text` line on most of them. The alternative, keeping
 10px for status words and moving data out of badges, was rejected: a badge stays free to carry a
 number, so it must stay legible as one. The old `--text-3xs` step is gone with it; a label or
-glyph that was set in it uses `text-2xs`. Two things sit outside the scale: labels drawn inside a
-chart's SVG, which are sized in viewBox units, and the `aria-hidden` provider monogram, which is a
-mark rather than text.
+glyph that was set in it uses `text-2xs`. Labels inside a chart's SVG are held to the same floor at
+the size the chart is drawn: `LineChart` measures its frame and sets its labels in pixels, so they
+are 11px at every width, and the vertical `BarChart` and `ScatterPlot` set theirs at 11 units of a
+fixed 640-wide viewBox, so they read at 11px at 640px and scale down with the card below that (#3284).
+Those two are the exception, named rather than waived for every chart. One thing sits outside the scale: the `aria-hidden` provider monogram,
+which is a mark rather than text.
 
 ### Named Rules
 

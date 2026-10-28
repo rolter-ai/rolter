@@ -99,9 +99,9 @@ export function BarChart({
               />
               <text
                 x={padL - 8}
-                y={y + 3}
+                y={y + 4}
                 textAnchor="end"
-                fontSize="10"
+                fontSize="11"
                 fontFamily="var(--font-mono)"
                 fill="var(--text-subtle)"
               >
@@ -124,7 +124,7 @@ export function BarChart({
             x={padL + band * i + band / 2}
             y={H - 8}
             textAnchor="middle"
-            fontSize="10"
+            fontSize="11"
             fontFamily="var(--font-mono)"
             fill="var(--text-subtle)"
           >
