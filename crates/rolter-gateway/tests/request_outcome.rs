@@ -1,4 +1,5 @@
-//! Every request-log row names its outcome (#3307).
+//! Every request-log row names its outcome (#3307), and a served one the
+//! shape of the request in either dialect (#3317).
 //!
 //! Request-log rows go to an in-process stand-in for the ClickHouse HTTP
 //! interface, so these tests always run and need no external service.
@@ -141,6 +142,17 @@ fn config(upstream: SocketAddr, clickhouse: SocketAddr) -> GatewayConfig {
 /// One request for `model` through a gateway whose only target answers with
 /// `upstream_status`; the caller's status and the one row it left.
 async fn run(upstream_status: StatusCode, model: &str) -> (u16, Value) {
+    run_body(
+        upstream_status,
+        "/v1/chat/completions",
+        json!({"model": model, "messages": [{"role": "user", "content": "hi"}]}),
+    )
+    .await
+}
+
+/// `body` sent to `path` through a gateway whose only target answers with
+/// `upstream_status`; the caller's status and the one row it left.
+async fn run_body(upstream_status: StatusCode, path: &str, body: Value) -> (u16, Value) {
     let rows = Rows::default();
     let clickhouse = rows.serve().await;
     let up = upstream(upstream_status).await;
@@ -152,9 +164,9 @@ async fn run(upstream_status: StatusCode, model: &str) -> (u16, Value) {
     ))
     .await;
     let response = reqwest::Client::new()
-        .post(format!("http://{gw}/v1/chat/completions"))
+        .post(format!("http://{gw}{path}"))
         .bearer_auth(KEY)
-        .json(&json!({"model": model, "messages": [{"role": "user", "content": "hi"}]}))
+        .json(&body)
         .send()
         .await
         .unwrap();
@@ -185,4 +197,71 @@ async fn an_unknown_model_is_refused_for_access_with_no_routing_fields() {
     assert_eq!(row["outcome"], "refused_access", "{row}");
     assert_eq!(row["provider"], "", "{row}");
     assert_eq!(row["attempts"], 0, "{row}");
+}
+
+#[tokio::test]
+async fn a_plain_request_records_one_turn_and_no_shape_flags() {
+    let (_, row) = run(StatusCode::OK, "test-model").await;
+    assert_eq!(row["turns"], 1, "{row}");
+    for flag in [
+        "has_tools",
+        "has_image_input",
+        "has_audio_input",
+        "has_response_schema",
+    ] {
+        // left out while zero, so an un-migrated clickhouse keeps every row
+        assert!(row.get(flag).is_none(), "{flag}: {row}");
+    }
+}
+
+#[tokio::test]
+async fn an_openai_request_records_its_shape() {
+    let (status, row) = run_body(
+        StatusCode::OK,
+        "/v1/chat/completions",
+        json!({
+            "model": "test-model",
+            "messages": [
+                {"role": "user", "content": [
+                    {"type": "text", "text": "what is this"},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA"}}
+                ]},
+                {"role": "assistant", "content": "a cat"},
+                {"role": "user", "content": "and this?"}
+            ],
+            "tools": [{"type": "function", "function": {"name": "lookup", "parameters": {"type": "object"}}}],
+            "response_format": {"type": "json_schema", "json_schema": {"name": "x", "schema": {}}}
+        }),
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(row["has_tools"], 1, "{row}");
+    assert_eq!(row["has_image_input"], 1, "{row}");
+    assert_eq!(row["has_response_schema"], 1, "{row}");
+    assert_eq!(row["turns"], 2, "{row}");
+    assert!(row.get("has_audio_input").is_none(), "{row}");
+}
+
+#[tokio::test]
+async fn an_anthropic_request_records_its_shape() {
+    // an anthropic client on an openai-compatible upstream: the shape is read
+    // off the body the caller sent, in the caller's dialect
+    let (status, row) = run_body(
+        StatusCode::OK,
+        "/v1/messages",
+        json!({
+            "model": "test-model",
+            "max_tokens": 16,
+            "messages": [{"role": "user", "content": [
+                {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AA"}},
+                {"type": "text", "text": "what is this"}
+            ]}],
+            "tools": [{"name": "lookup", "input_schema": {"type": "object"}}]
+        }),
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(row["has_tools"], 1, "{row}");
+    assert_eq!(row["has_image_input"], 1, "{row}");
+    assert_eq!(row["turns"], 1, "{row}");
 }

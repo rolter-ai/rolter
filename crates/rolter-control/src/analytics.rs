@@ -1149,6 +1149,12 @@ fn invocations_sql(status_expr: &str, columns: &Columns) -> String {
     // then matches: true, since no outcome was ever recorded there
     let outcome = columns.select("outcome");
     let outcome_filter = columns.expr("outcome");
+    // what the request asked for beyond its tokens (#3317)
+    let has_tools = columns.select("has_tools");
+    let has_image_input = columns.select("has_image_input");
+    let has_audio_input = columns.select("has_audio_input");
+    let has_response_schema = columns.select("has_response_schema");
+    let turns = columns.select("turns");
     format!(
         "select ts, request_id, trace_id, org_id, team_id, project_id, virtual_key_id, \
                 business_unit_id, customer_id, \
@@ -1156,7 +1162,7 @@ fn invocations_sql(status_expr: &str, columns: &Columns) -> String {
                 {cache_write_1h_tokens}, \
                 prompt_tokens, completion_tokens, total_tokens, cost_usd, unpriced, withheld, usage_unknown, latency_ms, ttft_ms, error, \
                 {upstream_status}, {attempts}, {lifecycle_operation}, {guardrail_events}, {plugin_events}, \
-                {outcome}, \
+                {outcome}, {has_tools}, {has_image_input}, {has_audio_input}, {has_response_schema}, {turns}, \
                 if({PAYLOAD_VISIBLE}, payload.request_payload, '') as request_payload, \
                 if({PAYLOAD_VISIBLE}, payload.response_payload, '') as response_payload, \
                 toUInt8(not {PAYLOAD_VISIBLE} \

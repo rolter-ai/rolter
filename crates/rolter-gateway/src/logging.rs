@@ -291,6 +291,13 @@ pub struct RequestLog {
     /// `input_format_skip_unknown_fields`, and reads its rows as `unknown`
     #[serde(serialize_with = "serialize_outcome")]
     pub outcome: Option<rolter_core::request_outcome::RequestOutcome>,
+    /// What the request asked the model to do beyond its tokens: tools, image
+    /// or audio input, a response schema, its caller turns (#3317). Read off
+    /// the parsed body for the OpenAI and Anthropic dialects; each column is
+    /// left out of a row while zero, so a ClickHouse without
+    /// `clickhouse/031_request_shape.sql` keeps accepting every row
+    #[serde(flatten)]
+    pub request_shape: crate::request_shape::RequestShape,
     /// what the request is billed by besides tokens (#2937), known once the
     /// request is parsed and finished off against the response when the stream
     /// ends. Not a column: the cost it produces is
@@ -392,6 +399,7 @@ impl Default for RequestLog {
             plugin_events: Vec::new(),
             param_adjustments: rolter_proxy::ParamAdjustments::default(),
             outcome: None,
+            request_shape: Default::default(),
             unit_basis: crate::unit_billing::UnitBasis::Tokens,
             request_payload: String::new(),
             response_payload: String::new(),

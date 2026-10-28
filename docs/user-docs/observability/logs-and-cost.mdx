@@ -568,10 +568,17 @@ These fields of a row come from ClickHouse files that an existing deployment app
 | `guardrail_events`      | array  | `018_guardrail_events.sql`    | `[]`                            |
 | `plugin_events`         | array  | `019_plugin_events.sql`       | `[]`                            |
 | `outcome`               | string | `030_request_outcome.sql`     | `"unknown"`                     |
+| `has_tools`             | number | `031_request_shape.sql`       | `0`                             |
+| `has_image_input`       | number | `031_request_shape.sql`       | `0`                             |
+| `has_audio_input`       | number | `031_request_shape.sql`       | `0`                             |
+| `has_response_schema`   | number | `031_request_shape.sql`       | `0`                             |
+| `turns`                 | number | `031_request_shape.sql`       | `0`                             |
 
 `guardrail_events` lists what each guardrail did to the request, as `<action>:<rule name>` entries (`blocked:`, `redacted:` or `annotated:`) and `provider_blocked:<provider name>` / `provider_transformed:<provider name>` for the guardrail provider (the bare `provider_blocked` / `provider_transformed` on rows that predate the name, or for a provider with none); it is empty for a request no guardrail touched. See [What each rule did](/security/guardrails#what-each-rule-did).
 
 `plugin_events` lists what each plugin did to the request, as `<outcome>:<slug>` entries (`allowed`, `blocked`, `transformed` or `annotated`) and `error:<slug>:<kind>` for a call that got no verdict; it is empty for a request no plugin was consulted on. See [What each plugin did](/configuration/plugins#what-each-plugin-did).
+
+The five request-shape fields say what a request asked the model to do beyond its tokens, read by the gateway off the body the caller sent, in the OpenAI (Chat Completions, Responses) or Anthropic (Messages) dialect: `has_tools` is `1` when it offered the model tools, `has_image_input` and `has_audio_input` when an input message carried an image or audio, `has_response_schema` when it asked for output that follows a JSON schema (a bare JSON mode is not one), and `turns` is how many user turns it carried. They are `0` for a request that is not a chat-shaped model call, such as an embedding, and the [savings advisor](/observability/savings-advisor) excludes a request that has any of them set, or more than one turn.
 
 `cache_write_1h_tokens` is the part of the row's `cache_write_tokens` that went to the provider's 1 hour cache, never more than the total. The 5 minute share is the difference: `cache_write_tokens - cache_write_1h_tokens`. It is `0` for a provider that reports no split (every provider but Anthropic), for a request that wrote only to the 5 minute cache, and for every row older than the file.
 

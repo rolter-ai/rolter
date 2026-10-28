@@ -2280,7 +2280,10 @@ fn operations() -> Vec<Op> {
                  as `0` (an empty string for `lifecycle_operation`), and the list does not fail. \
                  `outcome` (a string, `clickhouse/030`) names what happened to the request: `served`, \
                  `upstream_error`, `withheld`, `cancelled` or a `refused_*` reason, and `unknown` for a \
-                 row written before the gateway recorded one or on a table without the column",
+                 row written before the gateway recorded one or on a table without the column. \
+                 `has_tools`, `has_image_input`, `has_audio_input`, `has_response_schema` (each `0` or \
+                 `1`) and `turns` (`clickhouse/031`) say what the request asked the model to do beyond \
+                 its tokens, `0` on an older row or a table without the columns",
             )
             .clickhouse_read()
             .query(INVOCATIONS_QUERY),
@@ -4260,7 +4263,7 @@ fn governance_schemas(p: &Prim) -> Value {
                 },
                 "excluded": {
                     "type": "object",
-                    "description": "`requests` counts what was not re-priced by reason (`unpriced`, `failed`, `cache_hit`, `usage_unknown`, `not_a_model_call`, `no_token_usage`, `prompt_too_large`, `output_too_large`, `route_not_configured`, `no_cheaper_candidate`); `unknown_candidate_prices` names pool models with no price",
+                    "description": "`requests` counts what was not re-priced by reason (`unpriced`, `failed`, `cache_hit`, `usage_unknown`, `not_a_model_call`, `uses_tools`, `image_input`, `audio_input`, `structured_output`, `multi_turn`, `no_token_usage`, `prompt_too_large`, `output_too_large`, `route_not_configured`, `no_cheaper_candidate`); `unknown_candidate_prices` names pool models with no price",
                     "properties": {
                         "requests": {"type": "object", "additionalProperties": {"type": "number"}},
                         "unknown_candidate_prices": {"type": "array", "items": {"type": "string"}}

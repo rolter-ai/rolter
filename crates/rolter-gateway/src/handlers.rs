@@ -3011,6 +3011,7 @@ async fn proxy(
                 attempts,
                 stream: stream as u8,
                 unit_basis: crate::unit_billing::UnitBasis::for_json(path, &parsed),
+                request_shape: crate::request_shape::RequestShape::of(path, &parsed),
                 capture_payloads,
                 payload_max_bytes: snap.logging.payload_capture.max_bytes,
                 payload_redactor: snap.payload_redactor.clone(),

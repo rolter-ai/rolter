@@ -63,6 +63,7 @@ mod realtime;
 mod realtime_guard;
 mod realtime_metering;
 mod redis_conn;
+pub mod request_shape;
 mod response_registry;
 mod route_limits;
 mod semantic;
