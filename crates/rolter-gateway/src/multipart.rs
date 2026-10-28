@@ -6,6 +6,7 @@
 //! full multipart crate we extract a single named text field with a small,
 //! allocation-light scan over the already-buffered body.
 
+// spec-ref: multipart-form-data
 /// Pull the `boundary=...` token out of a `multipart/form-data` content-type
 /// header. Handles quoted and unquoted boundaries and ignores parameter order.
 pub fn boundary(content_type: &str) -> Option<String> {

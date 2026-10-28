@@ -682,7 +682,8 @@ fn is_timeout(err: &anyhow::Error) -> bool {
     })
 }
 
-/// Totals over the window: request count, tokens, cost, error count, avg latency.
+/// Totals over the window: request count, tokens, cost, error count, response-cache
+/// hits, and the mean and 95th-percentile latency.
 /// Totals for the window, plus how much of the window is **unpriced**.
 ///
 /// `cost_usd` alone cannot say whether it is a complete figure: traffic against
@@ -710,8 +711,10 @@ async fn summary(
                 {WITHHELD} as withheld_requests, \
                 {WITHHELD_COST} as withheld_cost, \
                 {USAGE_UNKNOWN} as usage_unknown_requests, \
+                {CACHE_HITS} as cache_hit_requests, \
                 {ERRORS} as errors, \
-                round(avg(latency_ms), 1) as avg_latency_ms \
+                round(avg(latency_ms), 1) as avg_latency_ms, \
+                round(quantile(0.95)(latency_ms), 1) as p95_latency_ms \
          from request_logs where {WHERE_WINDOW} and {ROW_VISIBLE} and {ROW_FILTERS} \
          format JSON"
     );
@@ -743,6 +746,10 @@ pub(crate) const WITHHELD_COST: &str =
 /// Requests the upstream answered successfully but reported no usage for, so
 /// their zero tokens and cost are unknown rather than free (#1478).
 pub(crate) const USAGE_UNKNOWN: &str = "round(sumIf(sample_weight, usage_unknown = 1))";
+/// Requests the gateway answered from a cache (#1978): the numerator of the
+/// dashboard's cache-hit rate, over `requests`. `cache_hit` is not a select
+/// alias in any read that uses this, so it needs no table qualifier.
+pub(crate) const CACHE_HITS: &str = "round(sumIf(sample_weight, cache_hit = 1))";
 pub(crate) const ERRORS: &str = "round(sumIf(sample_weight, status >= 400))";
 
 /// Per-bucket time series of requests, tokens and cost.
@@ -1011,6 +1018,14 @@ pub struct InvocationsQuery {
     /// `true` narrows the log to requests the gateway recorded as unpriced;
     /// `false` or omitted applies no filter
     pub(crate) unpriced: Option<bool>,
+    /// `true` narrows the log to requests whose response a post-call policy
+    /// withheld after the provider billed them (#3302); `false` or omitted
+    /// applies no filter
+    pub(crate) withheld: Option<bool>,
+    /// `true` narrows the log to requests the upstream answered without
+    /// reporting usage, so their zero tokens and cost are unknown (#3302);
+    /// `false` or omitted applies no filter
+    pub(crate) usage_unknown: Option<bool>,
     /// one guardrail event to filter to, as the `guardrails` rollup names it
     /// (`blocked:<rule>`, `redacted:<rule>`, `annotated:<rule>`,
     /// `provider_blocked`, `provider_transformed`); empty/omitted applies no
@@ -1149,6 +1164,8 @@ fn invocations_sql(status_expr: &str, columns: &Columns) -> String {
            and ({{request_id:String}} = '' or request_id = {{request_id:String}}) \
            and ({{trace_id:String}} = '' or trace_id = {{trace_id:String}}) \
            and ({{unpriced:UInt8}} = 0 or unpriced = 1) \
+           and ({{withheld:UInt8}} = 0 or request_logs.withheld = 1) \
+           and ({{usage_unknown:UInt8}} = 0 or request_logs.usage_unknown = 1) \
            and ({{guardrail:String}} = '' or has({guardrail_filter}, {{guardrail:String}})) \
            and ({{plugin:String}} = '' or has({plugin_filter}, {{plugin:String}})) \
            and {status_expr} \
@@ -1216,6 +1233,12 @@ async fn invocations(
         "param_unpriced".to_string(),
         u8::from(q.unpriced.unwrap_or(false)).to_string(),
     ));
+    for (name, on) in [("withheld", q.withheld), ("usage_unknown", q.usage_unknown)] {
+        params.push((
+            format!("param_{name}"),
+            u8::from(on.unwrap_or(false)).to_string(),
+        ));
+    }
     params.push((
         "param_guardrail".to_string(),
         q.guardrail.clone().unwrap_or_default(),
@@ -1823,6 +1846,13 @@ mod tests {
     }
 
     #[test]
+    fn cache_hits_are_a_weighted_sum_of_the_recorded_flag() {
+        // the numerator of the dashboard's cache-hit rate, scaled by the
+        // sampling weight like the `requests` it is divided by (#1978)
+        assert_eq!(CACHE_HITS, "round(sumIf(sample_weight, cache_hit = 1))");
+    }
+
+    #[test]
     fn invocations_sql_selects_the_unpriced_flag_next_to_cost() {
         let sql = invocations_sql(
             status_predicate("all").expect("all is whitelisted"),
@@ -1869,6 +1899,40 @@ mod tests {
         // re-derive "unpriced" from the live catalogue (#1226), and an unset
         // filter has to let every row through
         assert!(sql.contains("({unpriced:UInt8} = 0 or unpriced = 1)"));
+    }
+
+    #[test]
+    fn invocations_sql_filters_withheld_and_unknown_usage_on_the_recorded_flags() {
+        let sql = invocations_sql(
+            status_predicate("all").expect("all is whitelisted"),
+            &Columns::default(),
+        );
+        // bound values over the flags the gateway recorded (#3302), qualified
+        // by the table because the select list names the same columns and a
+        // bare name resolves to a select alias before a column. an unset
+        // filter lets every row through, and the row scope still applies
+        assert!(sql.contains("({withheld:UInt8} = 0 or request_logs.withheld = 1)"));
+        assert!(sql.contains("({usage_unknown:UInt8} = 0 or request_logs.usage_unknown = 1)"));
+        assert!(sql.contains(ROW_VISIBLE));
+    }
+
+    #[test]
+    fn the_withheld_and_unknown_usage_filters_read_true_and_nothing_else_narrows() {
+        let read = |query: &str| {
+            let uri: axum::http::Uri = format!("/api/v1/analytics/invocations{query}")
+                .parse()
+                .expect("a valid uri");
+            axum::extract::Query::<InvocationsQuery>::try_from_uri(&uri)
+                .map(|q| (q.0.withheld, q.0.usage_unknown))
+        };
+        assert_eq!(read("").expect("no filter"), (None, None));
+        assert_eq!(
+            read("?withheld=true&usage_unknown=true").expect("both on"),
+            (Some(true), Some(true))
+        );
+        assert_eq!(read("?withheld=false").expect("off"), (Some(false), None));
+        assert!(read("?withheld=maybe").is_err());
+        assert!(read("?usage_unknown=maybe").is_err());
     }
 
     #[test]

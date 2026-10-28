@@ -30,6 +30,7 @@
 //! deprecation`, and commit `deprecations.md` with it. The walkthrough is in
 //! `docs/dev-docs/development/deprecations.md`.
 
+// spec-ref: deprecation-header, sunset-header
 use axum::extract::{MatchedPath, Request};
 use axum::http::{HeaderName, HeaderValue};
 use axum::middleware::Next;

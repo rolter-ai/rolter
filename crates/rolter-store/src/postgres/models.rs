@@ -316,6 +316,20 @@ pub struct ProviderGroupMember {
     pub position: i32,
 }
 
+/// What the last probe of a provider observed about prompt-cache reporting
+/// (#984). A provider with no row has never been probed.
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct ProviderCacheProbe {
+    pub provider_id: Uuid,
+    /// the probed response carried a prompt-cache usage field
+    pub reports: bool,
+    /// the field it was found under, as a JSON pointer
+    pub spelling: Option<String>,
+    /// the upstream model the probe asked
+    pub model: String,
+    pub probed_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct VirtualKey {
     pub id: Uuid,
@@ -432,6 +446,11 @@ pub struct ModelPrice {
     pub cached_audio_input_per_mtok: Option<String>,
     pub currency: String,
     pub created_at: DateTime<Utc>,
+    /// the catalogue this price was imported from (#966); `None` is a price an
+    /// operator set, which is an override that an import never replaces
+    pub source: Option<String>,
+    /// the day the catalogue snapshot the price came from was taken
+    pub source_imported_at: Option<DateTime<Utc>>,
 }
 /// singleton persisted feature flags that gate supported subsystems
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
@@ -666,6 +685,32 @@ pub struct ScimToken {
     pub token_hash: String,
     pub created_by: Option<Uuid>,
     pub created_at: DateTime<Utc>,
+    pub last_used_at: Option<DateTime<Utc>>,
+    pub revoked_at: Option<DateTime<Utc>>,
+}
+
+/// a scoped control-plane API token (#1836): a service account that holds one
+/// role at an org, team or project. `token_hash` is a peppered sha-256; the
+/// plaintext is returned once, at mint or rotation, and never stored.
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct ApiToken {
+    pub id: Uuid,
+    pub org_id: Uuid,
+    pub team_id: Option<Uuid>,
+    pub project_id: Option<Uuid>,
+    pub name: String,
+    /// a built-in role (`admin` | `member` | `viewer`), or `None` when the
+    /// token holds a custom role
+    pub role: Option<String>,
+    pub custom_role_id: Option<Uuid>,
+    #[serde(skip_serializing)]
+    pub token_hash: String,
+    /// the first characters of the value, to recognise a token in a list
+    pub token_prefix: String,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub created_by: Option<Uuid>,
+    pub created_at: DateTime<Utc>,
+    pub rotated_at: Option<DateTime<Utc>>,
     pub last_used_at: Option<DateTime<Utc>>,
     pub revoked_at: Option<DateTime<Utc>>,
 }
@@ -1006,6 +1051,11 @@ pub struct User {
     /// self-service profile (#1823): up to 500 chars, trimmed
     #[serde(default)]
     pub bio: Option<String>,
+    /// delegable deployment role (#1834): `operator`, `security_auditor`, or
+    /// none. Read only by the guard on deployment-wide capabilities; it grants
+    /// nothing at any org, team or project
+    #[serde(default)]
+    pub deployment_role: Option<String>,
 }
 
 /// a role grant at a scope; scope is the most specific non-null id among

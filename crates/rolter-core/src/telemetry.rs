@@ -1952,6 +1952,7 @@ mod otlp {
     use opentelemetry_sdk::trace::SdkTracerProvider;
     use opentelemetry_sdk::Resource;
 
+    // spec-ref: otlp, otel-sdk-env
     /// Build an OTLP tracer provider from the standard `OTEL_*` environment, or
     /// `None` when no OTLP endpoint is configured (tracing stays stdout-only).
     ///

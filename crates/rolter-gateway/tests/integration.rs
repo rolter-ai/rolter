@@ -4679,6 +4679,85 @@ async fn sanitizer_restores_placeholders_for_a_trusted_downstream() {
     );
 }
 
+/// Rows written to `table` so far, one parsed JSON object each, waiting until
+/// at least one is there.
+async fn wait_for_rows(
+    seen: &parking_lot::Mutex<Vec<(String, String)>>,
+    table: &str,
+) -> Vec<Value> {
+    let rows = || -> Vec<Value> {
+        seen.lock()
+            .iter()
+            .filter(|(query, _)| query.contains(&format!("INTO {table}")))
+            .flat_map(|(_, body)| body.lines().map(|line| serde_json::from_str(line).unwrap()))
+            .collect()
+    };
+    for _ in 0..200 {
+        let found = rows();
+        if !found.is_empty() {
+            return found;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    panic!("no {table} row was written");
+}
+
+/// #3240: with payload capture on, the captured response is the
+/// placeholder-bearing body, as the captured request is, while the caller still
+/// receives the restored text.
+#[tokio::test]
+async fn payload_capture_keeps_the_pre_restore_response_body() {
+    let upstream = serve(Router::new().route("/v1/chat/completions", post(mock_echo_openai))).await;
+    let calls = Arc::new(AtomicU32::new(0));
+    let sanitizer = serve(stub_sanitizer(calls.clone())).await;
+    let (clickhouse, seen) = serve_clickhouse().await;
+    let mut config = config_with_sanitizer(
+        upstream,
+        sanitizer,
+        rolter_core::SanitizeDirection::Request,
+        rolter_core::RestorationPolicy::TrustedDownstream,
+    );
+    config.logging.clickhouse_url = Some(format!("http://{clickhouse}"));
+    config.logging.flush_ms = 20;
+    config.logging.payload_capture.enabled = true;
+    let gw = serve_gateway(&config).await;
+
+    let resp = reqwest::Client::new()
+        .post(format!("http://{gw}/v1/chat/completions"))
+        .json(&json!({
+            "model": "test-model",
+            "messages": [{"role": "user", "content": format!("mail {LEAKED_EMAIL} now")}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    // what the caller receives is unchanged: the restored text
+    assert_eq!(
+        body["choices"][0]["message"]["content"],
+        format!("mail {LEAKED_EMAIL} now")
+    );
+
+    let payloads = wait_for_rows(&seen, "request_payloads").await;
+    let row = &payloads[0];
+    let request = row["request_payload"].as_str().unwrap();
+    let response = row["response_payload"].as_str().unwrap();
+    assert!(request.contains(PLACEHOLDER), "request payload: {request}");
+    assert!(
+        response.contains(PLACEHOLDER),
+        "response payload: {response}"
+    );
+    assert!(
+        !request.contains(LEAKED_EMAIL) && !response.contains(LEAKED_EMAIL),
+        "the restored value must not reach the capture store: {row}"
+    );
+
+    // and usage still reads the delivered response
+    let logs = wait_for_rows(&seen, "request_logs").await;
+    assert_eq!(logs[0]["total_tokens"], 2, "{}", logs[0]);
+}
+
 #[tokio::test]
 async fn sanitizer_restores_only_when_the_caller_asks_under_caller_authorized() {
     let upstream = serve(Router::new().route("/v1/chat/completions", post(mock_echo_openai))).await;
@@ -4812,6 +4891,41 @@ async fn a_streamed_request_is_refused_when_the_response_leg_is_active() {
     let body: Value = resp.json().await.unwrap();
     assert_eq!(body["error"]["code"], "pii_streaming_unsupported");
     assert_eq!(body["error"]["param"], "stream");
+}
+
+/// #911: `streaming = "restore"` covers restoration only. A response leg that
+/// also sanitizes what the provider generated is still refused on a stream,
+/// before anything reaches the provider.
+#[tokio::test]
+async fn a_streamed_restore_still_refuses_a_response_side_sanitize() {
+    let upstream = serve(Router::new().route("/v1/chat/completions", post(mock_echo_openai))).await;
+    let calls = Arc::new(AtomicU32::new(0));
+    let sanitizer = serve(stub_sanitizer(calls.clone())).await;
+    let mut config = config_with_sanitizer(
+        upstream,
+        sanitizer,
+        rolter_core::SanitizeDirection::Both,
+        rolter_core::RestorationPolicy::TrustedDownstream,
+    );
+    config.pii_sanitizer.streaming = rolter_core::StreamingResponse::Restore;
+    config.pii_sanitizer.restore_stream_url = format!("http://{sanitizer}/restore-stream");
+    let gw = serve_gateway(&config).await;
+
+    let resp = reqwest::Client::new()
+        .post(format!("http://{gw}/v1/chat/completions"))
+        .json(&json!({
+            "model": "test-model",
+            "stream": true,
+            "messages": [{"role": "user", "content": "ping"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 400);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "pii_streaming_unsupported");
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "only the request leg ran");
 }
 
 #[tokio::test]

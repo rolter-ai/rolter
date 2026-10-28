@@ -1,6 +1,6 @@
 # PII restoration on streamed responses: the sanitizer restores the stream
 
-**Status:** Proposed · **Date:** 27 Oct 2026 · **Issues:** [#911](https://github.com/rolter-ai/rolter/issues/911), [#848](https://github.com/rolter-ai/rolter/issues/848)
+**Status:** Accepted (27 Oct 2026) · **Date:** 27 Oct 2026 · **Issues:** [#911](https://github.com/rolter-ai/rolter/issues/911), [#848](https://github.com/rolter-ai/rolter/issues/848)
 
 ## Context
 
@@ -310,7 +310,17 @@ a live stream and on a cached SSE replay.
 | 4. sanitizer restores pipe | sanitizer                           | kept                          | trie, plus one pipelined hop     | one stream per exchange | streaming restore endpoint |
 | 5. refuse                  | sanitizer                           | kept                          | n/a                              | none                    | none                       |
 
-## Decision (proposed)
+## Decision
+
+Accepted on 27 Oct 2026 as proposed below, and built in #911. As built, the
+`close` and `end` lines carry a `seq` like the deltas, so every reply is matched
+by its `seq`; a delta whose text is JSON source (tool-call arguments,
+`partial_json`) carries `"format": "json"`, under which a restored value is
+written JSON-escaped. The contract is specified in
+`docs/user-docs/security/pii-sanitizer.mdx` and the gateway side is described in
+`docs/dev-docs/architecture/security.md`. The reference shim for Presidio is not
+part of it; it is tracked in #3339, and the TTFT and inter-token bench in
+#3340.
 
 1. **Keep option 5 as the default.** `streaming = "reject"` stays the default
    and `passthrough` stays available. Nothing changes for an existing

@@ -34,3 +34,8 @@ charts/rolter/templates/
 # would fail the docs gate on every one of their PRs, and nothing reads these
 # files but the agents themselves
 .Jules/
+
+# the vendored model price catalogue (#966): written by
+# scripts/refresh-price-catalogue.ts as one compact line per run so a refresh
+# diffs as a whole snapshot, and the file is data nothing reads for style
+crates/rolter-control/catalogue/

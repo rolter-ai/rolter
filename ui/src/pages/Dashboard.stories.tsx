@@ -3,7 +3,14 @@ import { MemoryRouter, useLocation } from "react-router";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import Dashboard from "./Dashboard";
-import { BY_MODEL, RECENT, SERIES, SUMMARY, recentRow } from "./dashboard-fixtures";
+import {
+  BY_MODEL,
+  CLUSTER_SUMMARY,
+  RECENT,
+  SERIES,
+  SUMMARY,
+  recentRow,
+} from "./dashboard-fixtures";
 import { ScreenHeader } from "@/components/ScreenHeader";
 import {
   Harness,
@@ -19,6 +26,7 @@ import {
   recording,
   routes,
   scoped,
+  StaleSession,
   uxEvents,
   withSampleRate,
   type FetchStub,
@@ -57,6 +65,7 @@ const loadedWith = (summary: typeof SUMMARY, previous?: typeof SUMMARY): FetchSt
     ["/api/v1/analytics/timeseries", () => ({ data: SERIES })],
     ["/api/v1/analytics/by-model", () => ({ data: BY_MODEL })],
     ["/api/v1/analytics/invocations", () => ({ data: RECENT })],
+    ["/api/v1/cluster/summary", () => CLUSTER_SUMMARY],
     ["/api/v1/currency", () => ({ base: "USD", codes: ["USD"], rates: {} })],
   ]);
   return scoped(async (input, init) =>
@@ -111,17 +120,16 @@ const render = (stub: FetchStub, role?: StoryRole, pollMs?: number) => (
 );
 
 /** every card the screen draws, by the test id it carries */
-const CARDS = [
-  "dashboard-figures",
-  "dashboard-spend",
-  "dashboard-traffic",
-  "dashboard-by-model",
-  "dashboard-recent",
-];
+const CARDS = ["dashboard-figures", "dashboard-spend", "dashboard-by-model", "dashboard-recent"];
 
-/** the tile a figure is drawn in: its label sits in the tile's own element */
+/**
+ * the tile a figure is drawn in: its label sits in the tile's own element. read
+ * within the figures, since "Requests" is also a column of the by-model table
+ */
+const labelOf = (canvas: ReturnType<typeof within>, label: string): HTMLElement =>
+  within(canvas.getByTestId("dashboard-figures")).getByText(label);
 const tile = (canvas: ReturnType<typeof within>, label: string): HTMLElement =>
-  canvas.getByText(label).closest("div") as HTMLElement;
+  labelOf(canvas, label).closest("div") as HTMLElement;
 
 const pathOf = (input: RequestInfo | URL) => new URL(String(input), "http://localhost").pathname;
 
@@ -137,7 +145,6 @@ export const Loaded: Story = {
   render: () => render(loaded),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    // the count is both a stat card and the donut centre
     await expect(await canvas.findAllByText(fmt.number(132))).not.toHaveLength(0);
 
     // 7 errors in 132 requests is 5.30%, over the 1% line, so the count reads
@@ -152,10 +159,11 @@ export const Loaded: Story = {
     // and the tile draws no arrow: it would claim a movement nobody measured
     await expect(errors.querySelector("svg")).toBeNull();
 
-    // with requests to average, the latency tile is a measurement: the mean
-    // rounded, in milliseconds, and no reason line under it
-    const latency = tile(canvas, en.pages.dashboard.statAvgLatency);
-    await expect(latency).toHaveTextContent(`${fmt.number(215)}${en.pages.dashboard.colMs}`);
+    // with requests to measure, the latency tile is the 95th percentile and not
+    // the mean (214.6 ms here): rounded, in milliseconds, and no reason line
+    const latency = tile(canvas, en.pages.dashboard.statP95);
+    await expect(latency).toHaveTextContent(`${fmt.number(980)}${en.pages.dashboard.colMs}`);
+    await expect(latency).not.toHaveTextContent(fmt.number(215));
     await expect(latency).not.toHaveTextContent(en.pages.dashboard.noRequestsInWindow);
 
     // the cards carry the one frame: the recent requests table inside its card
@@ -188,12 +196,106 @@ export const ErrorsBelowThreshold: Story = {
     const canvas = within(canvasElement);
     const errors = await canvas.findByText(errorCount(3));
     await expect(getComputedStyle(errors).color).toBe(
-      getComputedStyle(canvas.getByText(en.pages.dashboard.statErrorRate)).color,
+      getComputedStyle(labelOf(canvas, en.pages.dashboard.statErrorRate)).color,
     );
     await expect(getComputedStyle(errors).color).not.toBe(
       resolveColorToken("--status-danger-text"),
     );
     await expect(errors.querySelector("svg")).toBeNull();
+  },
+};
+
+/**
+ * #1978: the cache-hit rate is the share of the window's requests a cache
+ * answered, from the summary's weighted `cache_hit_requests`. 33 of 132 is a
+ * quarter, and the line under it counts the hits.
+ */
+export const TheCacheHitRateIsTheShareOfRequestsACacheAnswered: Story = {
+  render: () => render(loaded),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const hits = await waitFor(() => {
+      const found = tile(canvas, en.pages.dashboard.statCacheHit);
+      expect(found).toHaveTextContent(`${fmt.number(25, { minimumFractionDigits: 1 })}%`);
+      return found;
+    });
+    await expect(hits).toHaveTextContent(
+      en.pages.dashboard.cacheHits_other.replace("{{count}}", "33"),
+    );
+  },
+};
+
+/**
+ * No response cache on a deployment reads as 0.0% beside a line saying nothing
+ * came from the response cache, not as a failure. The tile measures rolter's
+ * response cache; provider prompt caching is not in it.
+ */
+export const ADeploymentWithoutAResponseCacheSaysNoneCameFromIt: Story = {
+  render: () => render(loadedWith({ ...SUMMARY, cache_hit_requests: 0 })),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const hits = await waitFor(() => {
+      const found = tile(canvas, en.pages.dashboard.statCacheHit);
+      expect(found).toHaveTextContent(`${fmt.number(0, { minimumFractionDigits: 1 })}%`);
+      return found;
+    });
+    await expect(hits).toHaveTextContent(en.pages.dashboard.cacheHitsNone);
+    await expect(hits).not.toHaveTextContent(/0 cache hits/);
+  },
+};
+
+/** More hits than the window before is good news, in the success colour, with an arrow. */
+export const TheCacheHitRateIsComparedWithThePreviousWindow: Story = {
+  render: () => render(loadedWith(SUMMARY, { ...SUMMARY, requests: 100, cache_hit_requests: 20 })),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const delta = await waitFor(() => deltaOf(canvas, en.pages.dashboard.statCacheHit));
+    // 25% against 20% is a quarter more
+    await expect(delta).toHaveTextContent(vsPrevious("+25%"));
+    await expect(getComputedStyle(delta).color).toBe(resolveColorToken("--status-success-text"));
+  },
+};
+
+/**
+ * A control plane older than #1978 sends neither a p95 nor a cache-hit count.
+ * The tiles say they are not measured rather than showing the mean as a p95 or a
+ * rate of zero.
+ */
+export const AnOlderControlPlaneLeavesP95AndCacheHitsUnmeasured: Story = {
+  render: () => {
+    const { cache_hit_requests: _hits, p95_latency_ms: _p95, ...older } = SUMMARY;
+    return render(loadedWith(older as typeof SUMMARY));
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findAllByText(fmt.number(132));
+    for (const label of [en.pages.dashboard.statP95, en.pages.dashboard.statCacheHit]) {
+      const figure = tile(canvas, label);
+      await expect(within(figure).getByText(en.pages.dashboard.notMeasured)).toBeVisible();
+      await expect(figure).not.toHaveTextContent(/%|\bms\b/);
+    }
+    await expect(canvas.queryByText(fmt.number(215))).toBeNull();
+  },
+};
+
+/**
+ * #1978, #3263: the fleet leads the strip. Three live gateways, all on the
+ * control plane's config, read as the count with "live" after it and a line
+ * saying none is behind.
+ */
+export const TheFleetTileCountsTheLiveGateways: Story = {
+  render: () => render(loaded),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const fleet = await canvas.findByTestId("dashboard-fleet");
+    await waitFor(() =>
+      expect(fleet).toHaveTextContent(`${fmt.number(3)}${en.pages.dashboard.fleet.liveUnit}`),
+    );
+    await expect(fleet).toHaveTextContent(en.pages.dashboard.fleet.allCurrent);
+    // the first tile of the strip: it is read before any figure of the window
+    await expect(canvas.getByTestId("dashboard-figures").firstElementChild?.firstElementChild).toBe(
+      fleet,
+    );
   },
 };
 
@@ -216,7 +318,7 @@ export const ComparesWithThePreviousWindow: Story = {
         ...SUMMARY,
         requests: 100,
         errors: 2,
-        avg_latency_ms: 250,
+        p95_latency_ms: 1200,
         cost_usd: 30,
       }),
     ),
@@ -226,7 +328,7 @@ export const ComparesWithThePreviousWindow: Story = {
     const requests = await waitFor(() => deltaOf(canvas, d.statRequests));
     await expect(requests).toHaveTextContent(vsPrevious("+32%"));
     await expect(getComputedStyle(requests).color).toBe(resolveColorToken("--status-success-text"));
-    const latency = await waitFor(() => deltaOf(canvas, d.statAvgLatency));
+    const latency = await waitFor(() => deltaOf(canvas, d.statP95));
     await expect(latency.textContent).toMatch(/^-|^−/);
     await expect(getComputedStyle(latency).color).toBe(resolveColorToken("--status-success-text"));
     const errors = await waitFor(() => deltaOf(canvas, d.statErrorRate));
@@ -235,7 +337,7 @@ export const ComparesWithThePreviousWindow: Story = {
     const spend = await waitFor(() => deltaOf(canvas, d.statSpend));
     await expect(spend.textContent).toMatch(/^\+/);
     await expect(getComputedStyle(spend).color).toBe(
-      getComputedStyle(canvas.getByText(d.statSpend)).color,
+      getComputedStyle(labelOf(canvas, d.statSpend)).color,
     );
   },
 };
@@ -246,11 +348,11 @@ export const AnUnchangedWindowIsFlat: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const d = en.pages.dashboard;
-    for (const label of [d.statRequests, d.statAvgLatency, d.statSpend]) {
+    for (const label of [d.statRequests, d.statP95, d.statSpend]) {
       const delta = await waitFor(() => deltaOf(canvas, label));
       await expect(delta.querySelector("path")).toHaveAttribute("d", "M5 12h14");
       await expect(getComputedStyle(delta).color).toBe(
-        getComputedStyle(canvas.getByText(label)).color,
+        getComputedStyle(labelOf(canvas, label)).color,
       );
     }
   },
@@ -315,9 +417,13 @@ export const Empty: Story = {
     await expect(tile(canvas, en.pages.dashboard.statSpend)).toHaveTextContent(
       fmt.currency(0, "USD"),
     );
-    // an average and a rate over no requests are not zero, and "0 ms" and
+    // a percentile and a rate over no requests are not zero, and "0 ms" and
     // "0.00 %" said they had been measured. they read "—", with the reason
-    for (const label of [en.pages.dashboard.statAvgLatency, en.pages.dashboard.statErrorRate]) {
+    for (const label of [
+      en.pages.dashboard.statP95,
+      en.pages.dashboard.statErrorRate,
+      en.pages.dashboard.statCacheHit,
+    ]) {
       const figure = tile(canvas, label);
       await expect(within(figure).getByText(en.pages.dashboard.notMeasured)).toBeVisible();
       await expect(within(figure).getByText(en.pages.dashboard.noRequestsInWindow)).toBeVisible();
@@ -326,9 +432,6 @@ export const Empty: Story = {
     // each chart card answers its own empty read in its own words
     await expect(
       within(canvas.getByTestId("dashboard-spend")).getByText(en.analytics.noRowsYet),
-    ).toBeVisible();
-    await expect(
-      within(canvas.getByTestId("dashboard-traffic")).getByText(en.pages.dashboard.noTraffic),
     ).toBeVisible();
     await expect(
       within(canvas.getByTestId("dashboard-by-model")).getByText(en.pages.dashboard.noTraffic),
@@ -458,6 +561,9 @@ export const NoAnalyticsStore: Story = {
     // nothing on the screen is an alert: the setup checklist above reads rows
     // and is not part of this
     await expect(canvas.queryAllByRole("alert")).toHaveLength(0);
+    // the gateways do not need ClickHouse, and an operator without analytics
+    // still wants to know whether they are up
+    await expect(await canvas.findByTestId("dashboard-fleet")).toBeVisible();
     // the setting to change is named in monospace, twice: what is missing and
     // what to set
     const names = within(panel!).getAllByText("CLICKHOUSE_URL");
@@ -719,7 +825,7 @@ export const AFailedPollKeepsWhatLoaded: Story = {
     await expect(canvas.queryAllByText(REFRESH_FAILED)).toHaveLength(0);
 
     upstream = "failing";
-    // five cards read four endpoints, and each says so for itself
+    // four cards read four endpoints, and each says so for itself
     await waitFor(() => expect(canvas.getAllByText(REFRESH_FAILED)).toHaveLength(CARDS.length));
     for (const id of CARDS) {
       await expect(within(canvas.getByTestId(id)).getAllByText(REFRESH_FAILED)).toHaveLength(1);
@@ -730,7 +836,7 @@ export const AFailedPollKeepsWhatLoaded: Story = {
     }
     await expect(canvas.queryByText(en.pages.dashboard.live)).toBeNull();
     // the page that loaded is still there: no alert, no skeleton, and the
-    // figures, the chart, the donut, the bars and the rows are not blanked
+    // figures, the chart, the by-model table and the rows are not blanked
     await expect(canvas.queryByRole("alert")).toBeNull();
     await expect(canvas.queryAllByLabelText(LOADING_LABEL)).toHaveLength(0);
     await expect(canvas.getAllByText(fmt.number(132))).not.toHaveLength(0);
@@ -739,13 +845,12 @@ export const AFailedPollKeepsWhatLoaded: Story = {
         name: SPEND_CHART,
       }),
     ).toBeVisible();
-    await expect(canvas.getByTestId("dashboard-traffic")).toHaveTextContent(
-      en.pages.dashboard.requests_other,
-    );
     await expect(
       within(canvas.getByTestId("dashboard-by-model")).getByText("claude-sonnet-4"),
     ).toBeVisible();
-    await expect(canvas.getByText("gpt-4o", { selector: "td span" })).toBeVisible();
+    await expect(
+      within(canvas.getByTestId("dashboard-recent")).getByText("gpt-4o", { selector: "td span" }),
+    ).toBeVisible();
 
     // the poll goes on, so a control plane that comes back is noticed
     upstream = "ok";
@@ -869,13 +974,6 @@ async function expectTheOthersLoaded(canvasElement: HTMLElement, skip: string[])
         }),
       ).toBeVisible();
     },
-    "dashboard-traffic": async () => {
-      await expect(
-        await within(canvas.getByTestId("dashboard-traffic")).findByText(
-          en.pages.dashboard.requests_other,
-        ),
-      ).toBeVisible();
-    },
     "dashboard-by-model": async () => {
       await expect(
         await within(canvas.getByTestId("dashboard-by-model")).findByText("gpt-4o"),
@@ -904,6 +1002,8 @@ export const TheFiguresAreStillLoading: Story = {
     const figures = within(canvasElement).getByTestId("dashboard-figures");
     await expectSkeleton(figures);
     await expectNoFalseEmpty(figures, new RegExp(en.pages.dashboard.noRequestsInWindow));
+    // the fleet does not wait for the summary
+    await expect(await within(figures).findByTestId("dashboard-fleet")).toBeVisible();
     await expectTheOthersLoaded(canvasElement, ["dashboard-figures"]);
     await expect(within(canvasElement).queryByRole("alert")).toBeNull();
   },
@@ -920,18 +1020,15 @@ export const TheSpendChartIsStillLoading: Story = {
   },
 };
 
-/** the donut and the bars read the same endpoint, and each holds its own skeleton */
-export const TheTrafficCardsAreStillLoading: Story = {
+export const TheByModelCardIsStillLoading: Story = {
   render: () => render(except([ENDPOINTS[2]], never)),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    for (const id of ["dashboard-traffic", "dashboard-by-model"]) {
-      const card = canvas.getByTestId(id);
-      await expectSkeleton(card);
-      await expectNoFalseEmpty(card, new RegExp(en.pages.dashboard.noTraffic));
-    }
+    const card = canvas.getByTestId("dashboard-by-model");
+    await expectSkeleton(card);
+    await expectNoFalseEmpty(card, new RegExp(en.pages.dashboard.noTraffic));
     await expect(canvas.queryByText(en.pages.dashboard.noTraffic)).toBeNull();
-    await expectTheOthersLoaded(canvasElement, ["dashboard-traffic", "dashboard-by-model"]);
+    await expectTheOthersLoaded(canvasElement, ["dashboard-by-model"]);
     await expect(canvas.queryByRole("alert")).toBeNull();
   },
 };
@@ -1023,6 +1120,30 @@ export const OneFailedCardLeavesTheRestUp: Story = {
   },
 };
 
+const summaryDown = recording(except([ENDPOINTS[0]], refused));
+
+/**
+ * #1978: the fleet is not analytics. The summary is the heaviest read on the
+ * screen, and when it fails the Gateways tile stays, as the first tile of the
+ * strip, with the summary's own alert beside it in place of the other five.
+ */
+export const AFailedSummaryLeavesTheFleetTileUp: Story = {
+  render: () => render(summaryDown.stub),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const figures = canvas.getByTestId("dashboard-figures");
+    await expectLoadError(figures, /failed to return the overview figures/i);
+    const fleet = await within(figures).findByTestId("dashboard-fleet");
+    await waitFor(() =>
+      expect(fleet).toHaveTextContent(`${fmt.number(3)}${en.pages.dashboard.fleet.liveUnit}`),
+    );
+    await expect(fleet).toBeVisible();
+    await expect(figures.querySelector("[data-testid]")).toBe(fleet);
+    // the other reads answered, so this is a partial failure with one alert
+    await expect(canvas.getAllByRole("alert")).toHaveLength(1);
+  },
+};
+
 const recentDown = recording(except([ENDPOINTS[3]], refused));
 
 /**
@@ -1048,40 +1169,28 @@ let modelsDown = true;
 const byModelDown = recording(except([ENDPOINTS[2]], refused, () => !modelsDown));
 
 /**
- * The donut and the bars read one endpoint, so one failure of it is one alert.
- * The traffic share holds the error and its retry; requests by model says it
- * reads the same data and where to retry, in a plain sentence with no alert role
- * and no button of its own (#2342). Neither says "No traffic yet." about a read
- * that failed, and the retry asks for that read once and brings both back.
+ * The by-model card is the one reader of its endpoint, so one failure of it is
+ * one alert with its own retry, and the card does not say "No traffic yet." about
+ * a read that failed. The retry asks for that read once and brings the table back.
  */
-export const TheTwoCardsOnOneReadShareOneAlert: Story = {
+export const AFailedByModelReadIsOneAlertWithItsOwnRetry: Story = {
   beforeEach: () => {
     modelsDown = true;
   },
   render: () => render(byModelDown.stub),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const traffic = canvas.getByTestId("dashboard-traffic");
-    const bars = canvas.getByTestId("dashboard-by-model");
-    await expectLoadError(traffic, /failed to return the traffic share/i);
+    const card = canvas.getByTestId("dashboard-by-model");
+    await expectLoadError(card, /failed to return requests by model/i);
+    await expectNoFalseEmpty(card, new RegExp(en.pages.dashboard.noTraffic));
     await expect(canvas.getAllByRole("alert")).toHaveLength(1);
-    await expect(within(bars).queryByRole("alert")).toBeNull();
-    await expect(within(bars).queryByRole("button", { name: "Try again" })).toBeNull();
-    // the sentence names the card that holds the alert and the button to use
-    const shared = en.pages.dashboard.sharedRead
-      .replace("{{card}}", en.pages.dashboard.trafficTitle)
-      .replace("{{retry}}", en.errors.load.retry);
-    await expect(within(bars).getByText(shared)).toBeVisible();
-    await expect(canvas.queryByText(en.pages.dashboard.noTraffic)).toBeNull();
-    await expectTheOthersLoaded(canvasElement, ["dashboard-traffic", "dashboard-by-model"]);
+    await expectTheOthersLoaded(canvasElement, ["dashboard-by-model"]);
 
     const reads = readsOf(byModelDown, ENDPOINTS[2]);
     modelsDown = false;
-    await userEvent.click(within(traffic).getByRole("button", { name: "Try again" }));
-    await expect(await within(bars).findByText("claude-sonnet-4")).toBeVisible();
-    await expect(await within(traffic).findByText(en.pages.dashboard.requests_other)).toBeVisible();
+    await userEvent.click(within(card).getByRole("button", { name: "Try again" }));
+    await expect(await within(card).findByText("claude-sonnet-4")).toBeVisible();
     await expect(canvas.queryByRole("alert")).toBeNull();
-    await expect(canvas.queryByText(shared)).toBeNull();
     await expect(readsOf(byModelDown, ENDPOINTS[2])).toBe(reads + 1);
   },
 };
@@ -1142,8 +1251,8 @@ const lastOneOut = recording(
 
 /**
  * A read that has not answered is not a failure, so the screen is not yet an
- * outage: the three that failed each hold their own alert, and the two cards on
- * the read still out stand in skeletons rather than saying anything about it.
+ * outage: the three that failed each hold their own alert, and the card on
+ * the read still out stands in a skeleton rather than saying anything about it.
  */
 export const AReadStillOutIsNotYetAnOutage: Story = {
   render: () => render(lastOneOut.stub),
@@ -1154,9 +1263,7 @@ export const AReadStillOutIsNotYetAnOutage: Story = {
       /failed to return the overview figures/i,
     );
     await waitFor(() => expect(canvas.getAllByRole("alert")).toHaveLength(3));
-    for (const id of ["dashboard-traffic", "dashboard-by-model"]) {
-      await expectSkeleton(canvas.getByTestId(id));
-    }
+    await expectSkeleton(canvas.getByTestId("dashboard-by-model"));
     await expect(canvas.queryByText(/failed to return analytics/i)).toBeNull();
     await expect(canvas.queryByText(en.pages.dashboard.noTraffic)).toBeNull();
   },
@@ -1239,9 +1346,9 @@ export const TheNoAnalyticsPanelHoldsStill: Story = {
 };
 
 // models in the order the control plane answers, by cost. the cheap ones are
-// the busy ones, so the request order is nothing like it: re-sorted by requests,
-// claude leads and gpt-4o-mini follows. eight of them, so the donut rolls the two
-// quietest into "Other" while the bars show six
+// the busy ones, so the request order is nothing like it: ranked by requests,
+// claude leads and gpt-4o-mini follows. nine of them, so the card lists the
+// first eight, one for each colour of the sequence, and says one is not shown
 const BY_COST = [
   modelRow("gpt-4o", 48, 30.1),
   modelRow("claude-sonnet-4", 84, 11.17),
@@ -1251,6 +1358,7 @@ const BY_COST = [
   modelRow("mistral-large", 22, 3.3),
   modelRow("haiku-4", 57, 2.2),
   modelRow("gpt-4o-mini", 75, 0.9),
+  modelRow("gemma-2", 5, 0.1),
 ];
 const BUSIEST_FIRST = [
   "claude-sonnet-4",
@@ -1259,6 +1367,8 @@ const BUSIEST_FIRST = [
   "haiku-4",
   "gpt-4o",
   "gemini-2.5-pro",
+  "mistral-large",
+  "o3",
 ];
 
 /** what `var(<token>)` computes to as a background, which is how a swatch and a bar are painted */
@@ -1276,100 +1386,60 @@ const swatchIn = (card: HTMLElement, model: string) =>
     .backgroundColor;
 const barIn = (card: HTMLElement, model: string) =>
   getComputedStyle(
-    within(card).getByText(model).nextElementSibling!.firstElementChild as HTMLElement,
+    within(card).getByText(model).closest("tr")!.querySelector("[style*='width']") as HTMLElement,
   ).backgroundColor;
 
 /**
- * #1994: the donut coloured the models in the order the read arrived, by cost,
- * and the bars re-sorted by requests before colouring, so one model was two
- * colours in neighbouring cards. Both take the colour from the busiest-first
- * order now, so a model is one colour wherever it is drawn, and the six bars are
- * six colours where the fifth and the sixth used to share one.
+ * #1994, #1978: one table ranks the models by requests, busiest first, and
+ * colours the nth row the nth colour of the sequence, in the swatch and in the
+ * bar. The read arrives by cost, which is not the order, and the ninth model is
+ * not listed but is counted in the line under the table.
  */
-export const OneModelIsOneColourAcrossTheCards: Story = {
+export const ModelsAreRankedByRequestsAndColouredByRank: Story = {
   render: () => render(withByModel(BY_COST)),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const traffic = canvas.getByTestId("dashboard-traffic");
-    const bars = canvas.getByTestId("dashboard-by-model");
-    await within(bars).findByText("claude-sonnet-4");
+    const card = canvas.getByTestId("dashboard-by-model");
+    await within(card).findByText("claude-sonnet-4");
     const seen = new Set<string>();
     for (const [rank, model] of BUSIEST_FIRST.entries()) {
       const colour = backgroundOf(`--chart-${rank + 1}`);
-      await expect(barIn(bars, model)).toBe(colour);
-      await expect(swatchIn(traffic, model)).toBe(colour);
+      await expect(swatchIn(card, model)).toBe(colour);
+      await expect(barIn(card, model)).toBe(colour);
       seen.add(colour);
     }
     await expect(seen.size).toBe(BUSIEST_FIRST.length);
-    // the two quietest are in neither the bars nor a slice of their own
-    await expect(within(bars).queryByText("o3")).toBeNull();
-    await expect(within(traffic).queryByText("o3")).toBeNull();
+    const names = within(card)
+      .getAllByRole("row")
+      .slice(1)
+      .map((row) => within(row).getAllByRole("cell")[0].textContent);
+    await expect(names).toEqual(BUSIEST_FIRST);
+    await expect(within(card).queryByText("gemma-2")).toBeNull();
+    await expect(
+      within(card).getByText(en.pages.dashboard.byModelMore_one.replace("{{count}}", "1")),
+    ).toBeVisible();
   },
 };
 
 /**
- * The same, with few enough models that the donut keeps every slice and never
- * re-sorts them itself: the order it is handed is the order it colours by, which
- * is where the read's order (by cost) used to reach it.
+ * #1978: each model's row carries what an operator compares models by: its
+ * requests, its p95 latency (not a mean) and its spend, in the dashboard's
+ * currency, under the headers that name them.
  */
-export const OneModelIsOneColourWhenTheDonutKeepsEverySlice: Story = {
-  render: () =>
-    render(withByModel([modelRow("gpt-4o", 48, 30.1), modelRow("claude-sonnet-4", 84, 11.17)])),
+export const EachModelRowCarriesRequestsP95AndSpend: Story = {
+  render: () => render(loaded),
   play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    const traffic = canvas.getByTestId("dashboard-traffic");
-    const bars = canvas.getByTestId("dashboard-by-model");
-    await within(bars).findByText("claude-sonnet-4");
-    for (const [rank, model] of ["claude-sonnet-4", "gpt-4o"].entries()) {
-      const colour = backgroundOf(`--chart-${rank + 1}`);
-      await expect(swatchIn(traffic, model)).toBe(colour);
-      await expect(barIn(bars, model)).toBe(colour);
+    const card = within(canvasElement).getByTestId("dashboard-by-model");
+    const d = en.pages.dashboard;
+    for (const name of [d.colModel, d.colRequests, d.colP95, d.colSpend]) {
+      await expect(await within(card).findByRole("columnheader", { name })).toBeVisible();
     }
-  },
-};
-
-/** the donut's centre caption, as a read of `total` requests in one model draws it */
-const captionFor = (total: number) => render(withByModel([modelRow("gpt-4o", total)]));
-
-/**
- * The caption under the donut's count agrees with the count. It was the fixed
- * word "requests", so a single request read "1 requests".
- */
-export const TheDonutCaptionIsSingularForOneRequest: Story = {
-  render: () => captionFor(1),
-  play: async ({ canvasElement }) => {
-    const traffic = within(canvasElement).getByTestId("dashboard-traffic");
-    await expect(
-      await within(traffic).findByText(en.pages.dashboard.requests_one, { selector: "text" }),
-    ).toBeVisible();
-    await expect(within(traffic).queryByText(en.pages.dashboard.requests_other)).toBeNull();
-  },
-};
-
-/**
- * Russian has four forms and the caption was the fixed «запросов», right for
- * five and wrong for one. 21 is «запрос» and 3 is «запроса».
- */
-export const TheDonutCaptionInRussianIsTheOneFormForTwentyOne: Story = {
-  globals: { locale: "ru" },
-  render: () => captionFor(21),
-  play: async ({ canvasElement }) => {
-    const traffic = within(canvasElement).getByTestId("dashboard-traffic");
-    await expect(
-      await within(traffic).findByText(ru.pages.dashboard.requests_one, { selector: "text" }),
-    ).toBeVisible();
-    await expect(within(traffic).queryByText(ru.pages.dashboard.requests_many)).toBeNull();
-  },
-};
-
-export const TheDonutCaptionInRussianIsTheFewFormForThree: Story = {
-  globals: { locale: "ru" },
-  render: () => captionFor(3),
-  play: async ({ canvasElement }) => {
-    const traffic = within(canvasElement).getByTestId("dashboard-traffic");
-    await expect(
-      await within(traffic).findByText(ru.pages.dashboard.requests_few, { selector: "text" }),
-    ).toBeVisible();
+    const row = within(card).getByText("gpt-4o").closest("tr") as HTMLElement;
+    await expect(row).toHaveTextContent(fmt.number(84));
+    await expect(row).toHaveTextContent(`${fmt.number(820)} ${d.colMs}`);
+    await expect(row).toHaveTextContent(fmt.currency(30.1, "USD"));
+    // the mean is not on the card
+    await expect(card).not.toHaveTextContent(/avg|mean/i);
   },
 };
 
@@ -1436,7 +1506,8 @@ export const RecentRequestsShowTheirDayAndOpenInLlmLogs: Story = {
       within(today).getByRole("link", { name: openName("gpt-4o", TODAY_ROW.ts) }),
     ).toHaveAttribute("href", "/logs?request_id=req-today");
     await expect(within(noId).queryByRole("link")).toBeNull();
-    await expect(within(recent).getAllByRole("link")).toHaveLength(2);
+    // the two rows, and the way into the whole log beneath them
+    await expect(within(recent).getAllByRole("link")).toHaveLength(3);
 
     // the link covers the row, so a press on the model's cell lands on it
     earlier.scrollIntoView({ block: "center" });
@@ -1448,6 +1519,144 @@ export const RecentRequestsShowTheirDayAndOpenInLlmLogs: Story = {
 
     await userEvent.click(link);
     await expect(canvas.getByTestId("where")).toHaveTextContent("/logs?request_id=req-earlier");
+  },
+};
+
+/**
+ * #1978: the way into the whole log. The link under the recent rows carries the
+ * window and the filters the figures were read with, under the names LLM Logs
+ * reads them by, so what the operator was looking at is what opens.
+ */
+export const RecentRequestsLinkTheWholeLogWithTheWindowAndFilters: Story = {
+  render: () => (
+    <MemoryRouter initialEntries={["/?window=7d&model=gpt-4o"]}>
+      <Harness fetchStub={loaded}>
+        <Dashboard />
+        <Where />
+      </Harness>
+    </MemoryRouter>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const link = await canvas.findByRole("link", { name: en.pages.dashboard.recentAll });
+    await expect(link).toHaveAttribute("href", "/logs?window=7d&model=gpt-4o");
+    await userEvent.click(link);
+    await expect(canvas.getByTestId("where")).toHaveTextContent("/logs?window=7d&model=gpt-4o");
+  },
+};
+
+/** nothing logged, nothing to open: the link is not offered under an empty card */
+export const NoLinkToTheLogsWhenNothingIsLogged: Story = {
+  render: () => render(withRecent([])),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await within(canvas.getByTestId("dashboard-recent")).findByText(
+      en.pages.dashboard.nothingLogged,
+    );
+    await expect(canvas.queryByTestId("dashboard-recent-all")).toBeNull();
+  },
+};
+
+/**
+ * #1978: the figures say what they cover. Without a session (open mode) or for a
+ * superadmin that is every request on the deployment; the window is named beside
+ * it, and a filter is counted.
+ */
+export const TheScopeLineSaysWhatTheFiguresCover: Story = {
+  render: () => (
+    <MemoryRouter initialEntries={["/?window=7d&model=gpt-4o"]}>
+      <Harness fetchStub={loaded}>
+        <Dashboard />
+      </Harness>
+    </MemoryRouter>
+  ),
+  play: async ({ canvasElement }) => {
+    const scope = await within(canvasElement).findByTestId("dashboard-scope");
+    await expect(scope).toHaveTextContent(
+      [
+        en.pages.dashboard.scope.all,
+        en.common.timeWindow.last7d,
+        en.pages.dashboard.scope.filters_one.replace("{{count}}", "1"),
+      ].join(" · "),
+    );
+  },
+};
+
+/**
+ * #3302: spend a policy withheld, and successes with no reported usage, are in
+ * the figures above and would read as clean. The home says how much and how many
+ * when either is non-zero, and each notice links to LLM Logs over the same window
+ * and filters, narrowed to those rows.
+ */
+export const WithheldSpendAndUnknownUsageAreSaidOnTheHome: Story = {
+  render: () => (
+    <MemoryRouter initialEntries={["/?window=7d&model=gpt-4o"]}>
+      <Harness
+        fetchStub={loadedWith({
+          ...SUMMARY,
+          withheld_requests: 3,
+          withheld_cost: 1.25,
+          usage_unknown_requests: 2,
+        })}
+      >
+        <Dashboard />
+        <Where />
+      </Harness>
+    </MemoryRouter>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const d = en.pages.dashboard;
+    const withheld = await canvas.findByText(d.withheld.title_other.replace("{{count}}", "3"));
+    await expect(withheld.closest('[role="status"]')).toHaveTextContent(
+      d.withheld.body.replace("{{cost}}", fmt.currency(1.25, "USD")),
+    );
+    await expect(
+      await canvas.findByText(d.usageUnknown.title_other.replace("{{count}}", "2")),
+    ).toBeVisible();
+    await userEvent.click(canvas.getByRole("link", { name: d.withheld.link }));
+    await expect(canvas.getByTestId("where")).toHaveTextContent(
+      "/logs?window=7d&model=gpt-4o&withheld=true",
+    );
+  },
+};
+
+/** A window with nothing withheld and no unknown usage shows neither notice. */
+export const NoWithheldNoticeWhenNothingWasWithheld: Story = {
+  render: () => render(loaded),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findAllByText(fmt.number(132));
+    await expect(canvas.queryByText(/billed but/)).toBeNull();
+    await expect(canvas.queryByText(/reported no usage/)).toBeNull();
+  },
+};
+
+const MEMBER_ME = {
+  user: { id: "user-1", email: "anya@acme.co", is_superadmin: false },
+  memberships: [{ role: "member", org_id: "org-1", team_id: null, project_id: null }],
+};
+
+/** A member's figures are the rows their roles reach, and the line says so rather than "every request". */
+export const TheScopeLineNamesTheRowsAMemberMayRead: Story = {
+  render: () => (
+    <MemoryRouter>
+      <Harness
+        fetchStub={scoped(async (input, init) =>
+          pathOf(input) === "/api/v1/auth/me" ? json(MEMBER_ME) : loaded(input, init),
+        )}
+      >
+        <StaleSession>
+          <Dashboard />
+        </StaleSession>
+      </Harness>
+    </MemoryRouter>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const scope = await canvas.findByTestId("dashboard-scope");
+    await waitFor(() => expect(scope).toHaveTextContent(en.pages.dashboard.scope.member));
+    await expect(scope).not.toHaveTextContent(en.pages.dashboard.scope.all);
   },
 };
 
@@ -1552,11 +1761,8 @@ export const EachFailedCardRecordsOneErrorState: Story = {
   },
 };
 
-/**
- * The traffic share and the by-model bars read one endpoint and show one alert,
- * so its failure is one row, under the card that holds the alert.
- */
-export const TheSharedReadRecordsOneErrorState: Story = {
+/** The by-model card's failure is one row, under the card that holds the alert. */
+export const AFailedByModelReadRecordsOneErrorState: Story = {
   beforeEach: () => {
     modelsDown = true;
     return recordUxEvents();
@@ -1565,11 +1771,11 @@ export const TheSharedReadRecordsOneErrorState: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expectLoadError(
-      canvas.getByTestId("dashboard-traffic"),
-      /failed to return the traffic share/i,
+      canvas.getByTestId("dashboard-by-model"),
+      /failed to return requests by model/i,
     );
-    await expectUxEvent("error_state", "dashboard-traffic");
-    await expect(errorRegions()).toEqual(["dashboard-traffic"]);
+    await expectUxEvent("error_state", "dashboard-by-model");
+    await expect(errorRegions()).toEqual(["dashboard-by-model"]);
   },
 };
 
@@ -1617,9 +1823,8 @@ export const AStaleRefreshRecordsOneErrorStatePerAppearance: Story = {
       "dashboard-recent-stale",
       "dashboard-spend-stale",
       "dashboard-stale",
-      "dashboard-traffic-stale",
     ];
-    // one line per stale region: the four cards' and the recent feed's
+    // one line per stale region: the figures, the spend, the by-model table and the recent feed
     await waitFor(() => expect(canvas.getAllByText(REFRESH_FAILED)).toHaveLength(stale.length));
     await waitFor(() => expect([...errorRegions()].sort()).toEqual(stale));
     const first = await expectUxEvent("error_state", "dashboard-stale");

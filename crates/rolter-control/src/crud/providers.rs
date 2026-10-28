@@ -13,7 +13,8 @@ use rolter_core::Error;
 use rolter_store::postgres::crypto::{Kek, KEK_ENV};
 use rolter_store::postgres::models::Provider;
 use rolter_store::postgres::repo::{
-    NewProvider, ProjectRepo, ProviderDeletion, ProviderKeyRepo, ProviderRepo, ProviderUpdate,
+    NewProvider, ProjectRepo, ProviderCacheProbeRepo, ProviderDeletion, ProviderKeyRepo,
+    ProviderRepo, ProviderUpdate,
 };
 
 use super::{
@@ -41,6 +42,14 @@ pub(super) fn router() -> Router<ControlState> {
         )
         .route("/api/v1/providers/{id}/test", post(test_provider))
         .route("/api/v1/providers/{id}/models", get(list_provider_models))
+        .route(
+            "/api/v1/providers/{id}/probe-cache",
+            post(probe_provider_cache),
+        )
+        .route(
+            "/api/v1/orgs/{org_id}/provider-cache-probes",
+            get(list_provider_cache_probes),
+        )
 }
 
 // --- providers ---
@@ -1568,5 +1577,295 @@ mod probe_egress_tests {
         .expect("the upstream answers");
         assert_eq!(response.status(), StatusCode::FOUND);
         assert_eq!(target.accepted(), 0);
+    }
+}
+
+// --- prompt-cache reporting probe (#984) ---
+
+/// Query of the prompt-cache probe.
+#[derive(Deserialize)]
+struct CacheProbeQuery {
+    /// the upstream model to ask; required, since the probe is a completion
+    model: String,
+}
+
+/// What a prompt-cache probe found.
+#[derive(Serialize)]
+struct CacheProbeResult {
+    /// the verdict was stored. `false` when the provider did not answer with a
+    /// completion, which says nothing about its cache reporting, so any earlier
+    /// verdict is left alone
+    recorded: bool,
+    verdict: Option<rolter_store::postgres::models::ProviderCacheProbe>,
+    /// the URL probed, as for the connection test
+    probed_url: String,
+    status: Option<u16>,
+    latency_ms: u64,
+    error: Option<String>,
+}
+
+/// The kinds whose chat completion can be asked from here with a bearer or
+/// key header and a fixed path. Bedrock and Vertex sign or mint tokens, Azure
+/// addresses a deployment, Gemini native embeds the model in the URL, and the
+/// embedding and decision servers do not complete chat.
+fn cache_probe_supported(kind: rolter_core::ProviderKind) -> bool {
+    use rolter_core::ProviderKind as K;
+    kind.primary_request() == rolter_core::upstream::RequestKind::Chat
+        && !matches!(
+            kind,
+            K::Bedrock | K::Vertex | K::AzureOpenai | K::GeminiNative | K::GeminiInteractions
+        )
+}
+
+/// The one-token completion the probe sends, in the dialect of `kind`.
+fn cache_probe_body(kind: rolter_core::ProviderKind, model: &str) -> serde_json::Value {
+    let messages = serde_json::json!([{"role": "user", "content": "ping"}]);
+    match kind {
+        rolter_core::ProviderKind::Openai => serde_json::json!({
+            "model": model, "messages": messages, "max_completion_tokens": 1
+        }),
+        _ => serde_json::json!({"model": model, "messages": messages, "max_tokens": 1}),
+    }
+}
+
+/// Whether the response `usage` carries a prompt-cache field, and under which
+/// spelling: the same list the gateway reads (`rolter_proxy::cached_prompt_tokens`),
+/// so "reports" means the gateway will see a hit if there is one.
+fn cache_verdict(body: &serde_json::Value) -> Option<(bool, Option<&'static str>)> {
+    let usage = body.get("usage").filter(|usage| usage.is_object())?;
+    let spelling = rolter_proxy::cached_prompt_tokens_spelling(usage);
+    Some((spelling.is_some(), spelling))
+}
+
+/// Ask a provider for one token and record whether the answer's `usage`
+/// carries prompt-cache metrics (#984).
+///
+/// Unlike the connection test this is a completion, so it costs a token and
+/// needs a model; it runs only when the operator asks. The verdict is what
+/// one response showed, not a promise: a provider that adds the field only on
+/// a hit would read as "does not report", which the stored model and time let
+/// an operator weigh.
+async fn probe_provider_cache(
+    principal: Principal,
+    State(state): State<ControlState>,
+    Path(id): Path<Uuid>,
+    Query(query): Query<CacheProbeQuery>,
+) -> ApiResult<Json<CacheProbeResult>> {
+    let provider = ProviderRepo(pool(&state)).get(id).await?;
+    let chain = match provider.project_id {
+        Some(project_id) => ScopeChain::from_project(pool(&state), project_id).await?,
+        None => ScopeChain::org(provider.org_id),
+    };
+    authorize(&state, &principal, chain, cap!("provider", Update)).await?;
+    require_allowed_egress(&state, &provider.api_base, "api_base")?;
+
+    let model = query.model.trim();
+    if model.is_empty() {
+        return Err(invalid_field("model", "name the upstream model to ask"));
+    }
+    let kind: rolter_core::ProviderKind =
+        serde_json::from_value(serde_json::Value::String(provider.kind.clone()))
+            .map_err(|_| ApiError::Curated(format!("unknown provider kind '{}'", provider.kind)))?;
+    if !cache_probe_supported(kind) {
+        return Err(ApiError::Curated(format!(
+            "cache reporting cannot be probed for a '{}' provider",
+            provider.kind
+        )));
+    }
+    let (secret, credential) =
+        resolve_probe_credential(&state, id, provider.api_key_env.as_deref()).await?;
+    let unreadable = |error: String| CacheProbeResult {
+        recorded: false,
+        verdict: None,
+        probed_url: String::new(),
+        status: None,
+        latency_ms: 0,
+        error: Some(error),
+    };
+    if credential == "stored (undecryptable)" || credential == "stored (KEK unset)" {
+        return Ok(Json(unreadable(format!(
+            "the stored credential for '{}' could not be read: {KEK_ENV} is unset or does \
+             not match the key it was sealed with. The upstream was not contacted.",
+            provider.name
+        ))));
+    }
+
+    let url = kind.primary_upstream_url(&provider.api_base);
+    let mut headers = Vec::new();
+    if kind == rolter_core::ProviderKind::Anthropic {
+        headers.push((
+            "anthropic-version".to_string(),
+            rolter_core::ANTHROPIC_VERSION.to_string(),
+        ));
+    }
+    let started = std::time::Instant::now();
+    let outcome = send_cache_probe(
+        &state.egress,
+        kind,
+        &url,
+        headers,
+        secret.as_deref(),
+        &cache_probe_body(kind, model),
+    )
+    .await;
+    let latency_ms = started.elapsed().as_millis() as u64;
+    let failed = |status: Option<u16>, error: String| CacheProbeResult {
+        recorded: false,
+        verdict: None,
+        probed_url: url.clone(),
+        status,
+        latency_ms,
+        error: Some(error),
+    };
+    let resp = match outcome {
+        Ok(resp) => resp,
+        // never surface the raw reqwest error: it can carry the URL
+        Err(e) => {
+            return Ok(Json(failed(
+                None,
+                if e.is_timeout() {
+                    format!("no response within {CACHE_PROBE_TIMEOUT_SECS}s")
+                } else if e.is_connect() {
+                    "could not connect — check the host, port and TLS".to_string()
+                } else {
+                    "the request could not be completed".to_string()
+                },
+            )))
+        }
+    };
+    let status = resp.status().as_u16();
+    if !resp.status().is_success() {
+        return Ok(Json(failed(
+            Some(status),
+            format!("{status}: the upstream did not complete the request, so nothing was learned about its cache reporting"),
+        )));
+    }
+    let body = resp.json::<serde_json::Value>().await.ok();
+    let Some((reports, spelling)) = body.as_ref().and_then(cache_verdict) else {
+        return Ok(Json(failed(
+            Some(status),
+            format!("{status}: the answer carried no usage object, so nothing was learned about its cache reporting"),
+        )));
+    };
+    let verdict = ProviderCacheProbeRepo(pool(&state))
+        .record(id, reports, spelling, model)
+        .await?;
+    Ok(Json(CacheProbeResult {
+        recorded: true,
+        verdict: Some(verdict),
+        probed_url: url,
+        status: Some(status),
+        latency_ms,
+        error: None,
+    }))
+}
+
+/// How long a cache probe waits for the upstream: a full completion, so
+/// longer than the connectivity test's model listing.
+const CACHE_PROBE_TIMEOUT_SECS: u64 = 30;
+
+/// POST the probe body through the connect-time egress client, authenticated
+/// the way the proxy authenticates `kind`.
+async fn send_cache_probe(
+    egress: &std::sync::Arc<rolter_core::EgressPolicy>,
+    kind: rolter_core::ProviderKind,
+    url: &str,
+    headers: impl IntoIterator<Item = (String, String)>,
+    secret: Option<&str>,
+    body: &serde_json::Value,
+) -> Result<reqwest::Response, reqwest::Error> {
+    let client = crate::egress_client::builder(egress)
+        .timeout(std::time::Duration::from_secs(CACHE_PROBE_TIMEOUT_SECS))
+        .build()?;
+    let mut req = client.post(url).json(body);
+    for (k, v) in headers {
+        req = req.header(k, v);
+    }
+    if let Some(secret) = secret {
+        let (name, value) = kind.auth_header(secret);
+        req = req.header(name, value.as_ref());
+    }
+    req.send().await
+}
+
+/// The stored cache-reporting verdicts of the providers the caller may see. A
+/// provider with no entry has never been probed.
+async fn list_provider_cache_probes(
+    principal: Principal,
+    State(state): State<ControlState>,
+    Path(org_id): Path<Uuid>,
+) -> ApiResult<Json<Vec<rolter_store::postgres::models::ProviderCacheProbe>>> {
+    let rows = ProviderRepo(pool(&state)).list(org_id).await?;
+    let visible = visible_in_scope(
+        &state,
+        &principal,
+        cap!("provider", Read),
+        org_id,
+        rows,
+        |row| row.project_id,
+    )
+    .await?;
+    let ids: std::collections::HashSet<Uuid> = visible.iter().map(|row| row.id).collect();
+    let probes = ProviderCacheProbeRepo(pool(&state)).list(org_id).await?;
+    Ok(Json(
+        probes
+            .into_iter()
+            .filter(|probe| ids.contains(&probe.provider_id))
+            .collect(),
+    ))
+}
+
+#[cfg(test)]
+mod cache_probe_tests {
+    use super::*;
+    use rolter_core::ProviderKind;
+    use serde_json::json;
+
+    #[test]
+    fn a_stated_zero_is_a_provider_that_reports() {
+        let zero = json!({"usage":{"prompt_tokens":8,"prompt_tokens_details":{"cached_tokens":0}}});
+        assert_eq!(
+            cache_verdict(&zero),
+            Some((true, Some("/prompt_tokens_details/cached_tokens")))
+        );
+        let anthropic = json!({"usage":{"input_tokens":8,"cache_read_input_tokens":0}});
+        assert_eq!(
+            cache_verdict(&anthropic),
+            Some((true, Some("/cache_read_input_tokens")))
+        );
+    }
+
+    #[test]
+    fn an_absent_field_is_a_provider_that_does_not_report_and_no_usage_is_no_verdict() {
+        let none = json!({"usage":{"prompt_tokens":8,"completion_tokens":1}});
+        assert_eq!(cache_verdict(&none), Some((false, None)));
+        assert_eq!(cache_verdict(&json!({"choices":[]})), None);
+        assert_eq!(cache_verdict(&json!({"usage":null})), None);
+    }
+
+    #[test]
+    fn only_kinds_that_complete_chat_with_a_plain_credential_are_probed() {
+        assert!(cache_probe_supported(ProviderKind::Openai));
+        assert!(cache_probe_supported(ProviderKind::Anthropic));
+        assert!(cache_probe_supported(ProviderKind::OpenaiCompatible));
+        for kind in [
+            ProviderKind::Tei,
+            ProviderKind::SystemOne,
+            ProviderKind::Bedrock,
+            ProviderKind::Vertex,
+            ProviderKind::AzureOpenai,
+            ProviderKind::GeminiNative,
+        ] {
+            assert!(!cache_probe_supported(kind), "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn the_probe_asks_for_one_token_in_the_kinds_own_spelling() {
+        let openai = cache_probe_body(ProviderKind::Openai, "m");
+        assert_eq!(openai["max_completion_tokens"], 1);
+        let other = cache_probe_body(ProviderKind::OpenaiCompatible, "m");
+        assert_eq!(other["max_tokens"], 1);
+        assert_eq!(other["model"], "m");
     }
 }

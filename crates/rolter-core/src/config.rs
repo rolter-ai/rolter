@@ -3395,7 +3395,9 @@ fn default_adaptive_min_samples() -> u32 {
 }
 
 fn default_anthropic_version() -> String {
-    "2023-06-01".to_string()
+    // one source for the dated version, shared with the health probes;
+    // spec-ref: anthropic-messages
+    crate::probe::ANTHROPIC_VERSION.to_string()
 }
 
 fn default_translation_max_tokens() -> u32 {
@@ -5041,6 +5043,10 @@ impl GatewayConfig {
             problems.extend(self.egress_problem(
                 self.pii_sanitizer.restore_url.trim(),
                 "pii_sanitizer.restore_url",
+            ));
+            problems.extend(self.egress_problem(
+                self.pii_sanitizer.restore_stream_url.trim(),
+                "pii_sanitizer.restore_stream_url",
             ));
         }
         for instance in &self.plugins.instances {
@@ -10164,6 +10170,14 @@ mod tests {
                     c.pii_sanitizer.enabled = true;
                     c.pii_sanitizer.url = "https://presidio.example.com/s".to_string();
                     c.pii_sanitizer.restore_url = METADATA.to_string();
+                }),
+            ),
+            (
+                "pii_sanitizer.restore_stream_url",
+                Box::new(|c| {
+                    c.pii_sanitizer.enabled = true;
+                    c.pii_sanitizer.url = "https://presidio.example.com/s".to_string();
+                    c.pii_sanitizer.restore_stream_url = METADATA.to_string();
                 }),
             ),
             (

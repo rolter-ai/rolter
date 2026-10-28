@@ -87,7 +87,7 @@ prompts below, then the quickstart, then the page for whatever it is wiring.
 
 ### Access & Security
 
-- [Which key do I need?](/security/which-key): Rolter handles three different credentials that all get called an API key. This page names each one, says who holds it, and shows how to tell them apart.
+- [Which key do I need?](/security/which-key): Rolter handles four different credentials that all get called an API key. This page names each one, says who holds it, and shows how to tell them apart.
 - [Authentication](/security/authentication): Pass a virtual key in every request using the OpenAI or Anthropic header style; manage key access and expiry through virtual key properties.
 - [RBAC](/security/rbac): Assign admin, member, and viewer roles at org, team, or project scope to control what each user can manage in the Rolter control plane.
 - [Single Sign-On](/security/single-sign-on): Register an OIDC provider from the dashboard, map its groups to Rolter roles, and decide whether your organization still accepts passwords.
@@ -104,6 +104,7 @@ prompts below, then the quickstart, then the page for whatever it is wiring.
 
 - [Metrics](/observability/metrics): Scrape Rolter's Prometheus endpoint to monitor request rates, latency histograms, upstream errors, and auth failures across models and providers.
 - [Logs & Cost](/observability/logs-and-cost): Enable ClickHouse logging to record every proxied request with token counts, cost in USD, latency, and error details for analysis and billing.
+- [Savings advisor](/observability/savings-advisor): Read where a window's spend went and what the substitutable part would have cost at the cheaper models already in each route's pool. A shortlist to test, never a switch.
 - [Tracing](/observability/tracing): Configure Rolter to export OpenTelemetry traces to Grafana, Honeycomb, Datadog, SigNoz, or Langfuse for end-to-end LLM observability.
 - [What to look at](/observability/what-to-look-at): The handful of queries and trace views that answer why a request was slow and whether a dashboard screen is usable — with the shape of a healthy answer, so you can tell a real problem from noise.
 - [Log Settings](/observability/log-settings): Control what fraction of requests Rolter logs, whether raw prompt and completion bodies are captured, which fields are redacted from them, how long each half is kept, and whether dashboard usage events are recorded.
@@ -132,6 +133,7 @@ prompts below, then the quickstart, then the page for whatever it is wiring.
 ### Gateway API
 
 - [Overview](/api/overview): The Rolter gateway exposes OpenAI and Anthropic-compatible endpoints. Authenticate with a virtual key as a Bearer token or x-api-key header.
+- [Specifications](/api/specifications): Every external API, protocol and wire format Rolter implements, translates or forwards, with the revision reviewed, how much of it Rolter honours, and the tests that prove it.
 - [/v1/chat/completions](/api/chat-completions): Create a chat completion by sending a list of messages. Supports streaming via Server-Sent Events and is fully OpenAI SDK-compatible.
 - [/v1/completions](/api/completions): Create a text completion using the OpenAI legacy completions endpoint. Pass a prompt string and receive a completion response from your configured route.
 - [/v1/messages](/api/messages): Create a message using the Anthropic Messages API. Authenticate with x-api-key and pass a model name defined in your Rolter route config.
@@ -153,6 +155,7 @@ prompts below, then the quickstart, then the page for whatever it is wiring.
 - [Org projects](/api/org-projects): GET /api/v1/orgs/{org_id}/projects returns every project in an organization across all of its teams, each row naming the team that owns it — one request instead of one per team.
 - [Teams](/api/teams): PUT /api/v1/teams/{id} renames a team. A name another team of the organization holds answers 409 name_taken, and the audit log records the old and new name.
 - [Deployment users](/api/deployment-users): GET /api/v1/users returns every account in the deployment, whichever organization it belongs to, ordered by e-mail. Superadmin only; it is what names an actor in the deployment-wide audit log.
+- [API tokens](/api/api-tokens): Mint a named control-plane token that holds one role at an organization, team or project, with an expiry, for CI jobs and provisioning scripts that should not run as the admin token or as a person.
 - [Providers](/api/providers): Provider rows from the control-plane API carry has_stored_key, a boolean that says whether a sealed key is stored, so a client can tell a stored key from an environment variable or no credential.
 - [Route updates](/api/routes): PUT /api/v1/routes/{id} changes a route's enabled flag, its balancing strategy and its target list with weights in one transaction; a field you leave out keeps its stored value.
 - [Attribution listings](/api/attribution-listings): GET /api/v1/orgs/{org_id}/business-units and /customers return each row with the number of live virtual keys attributed to it, so a unit with no spend can be told apart from one that nothing could bill.

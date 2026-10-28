@@ -18,6 +18,7 @@ import {
   ListCell,
   ListEmptyRow,
   ListHeader,
+  ListHeaderCell,
   ListLoadingRow,
   ListRow,
   ListTable,
@@ -28,6 +29,7 @@ import {
   Toolbar,
   primaryColumn,
 } from "@/components/screen";
+import { CacheReportingBadge } from "@/components/CacheReportingBadge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DeleteIconButton } from "@/components/ui/delete-icon-button";
@@ -41,12 +43,14 @@ import {
 import { errorText } from "@/lib/error-copy";
 import { RowCapabilityScope } from "@/lib/can";
 import { rowGateScope } from "@/lib/provider-scope";
+import { summarizeCacheReporting } from "@/lib/cache-reporting";
 import { useScope } from "@/lib/scope";
 import { useToast } from "@/lib/toast";
 import { usesWeights } from "@/lib/strategies";
+import { useProviderCacheProbes } from "@/lib/use-provider-cache-probes";
 import { useScreenReady } from "@/lib/ux-react";
 
-const GRID = `${primaryColumn(1.2)} 1fr 1.2fr 1fr 2fr 108px`;
+const GRID = `${primaryColumn(1.2)} 1fr 1.2fr 1fr 2fr 1.3fr 108px`;
 
 export default function ProviderGroups() {
   const { t } = useTranslation();
@@ -75,6 +79,10 @@ export default function ProviderGroups() {
     queryFn: () => fetchProviders(scope.orgId as string),
     enabled: !!scope.orgId,
   });
+
+  // a group is judged over its members' providers (see summarizeCacheReporting);
+  // a failed read shows no badge rather than a false "not probed yet"
+  const cacheProbes = useProviderCacheProbes(scope.orgId);
 
   const invalidate = () =>
     queryClient.invalidateQueries({ queryKey: ["provider-groups", scope.orgId] });
@@ -160,7 +168,7 @@ export default function ProviderGroups() {
       )}
 
       {/* as on Providers, the table's floor carries the name column's (#2812) */}
-      <ListTable label={t("screens.provider-groups.title")} minWidth={840}>
+      <ListTable label={t("screens.provider-groups.title")} minWidth={980}>
         <ListHeader grid={GRID}>
           <SortLabel
             label={t("pages.providerGroups.columns.name")}
@@ -192,6 +200,7 @@ export default function ProviderGroups() {
             sort={sort}
             onCycle={(c) => cycle(c as never)}
           />
+          <ListHeaderCell>{t("pages.providerGroups.columns.cache")}</ListHeaderCell>
           <ListActionsHeader />
         </ListHeader>
         <ListLoadingRow read={groups}>
@@ -234,6 +243,14 @@ export default function ProviderGroups() {
                   </Badge>
                 ))
               )}
+            </ListCell>
+            <ListCell className="flex min-w-0 items-start">
+              <CacheReportingBadge
+                state={summarizeCacheReporting(
+                  group.members.map((m) => m.provider_id),
+                  cacheProbes.byProvider,
+                )}
+              />
             </ListCell>
             <ListCell className="flex items-center justify-end gap-1.5">
               <RowCapabilityScope at={rowGateScope(group, orgScope.byTeam)}>

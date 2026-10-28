@@ -34,6 +34,7 @@ pub mod secret_env;
 pub mod shutdown;
 pub mod slug;
 pub mod snapshot_format;
+pub mod spec_registry;
 pub mod stability;
 pub mod telemetry;
 pub mod upstream;

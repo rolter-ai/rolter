@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 use rolter_core::{Error, Result};
 
-use super::super::models::{Provider, ProviderGroup, ProviderGroupMember};
+use super::super::models::{Provider, ProviderCacheProbe, ProviderGroup, ProviderGroupMember};
 use super::support::{
     fetch_optional_or_not_found, fetch_scalar_or_not_found, require_affected, store_err,
 };
@@ -450,6 +450,53 @@ impl ProviderKeyRepo<'_> {
             .fetch_one(self.0)
             .await
             .map_err(store_err)
+    }
+}
+
+/// The prompt-cache reporting verdicts of providers (#984), written by the
+/// control plane's probe and read by the dashboard. The gateway does not read
+/// them.
+pub struct ProviderCacheProbeRepo<'a>(pub &'a PgPool);
+
+impl ProviderCacheProbeRepo<'_> {
+    /// Record what a probe of `provider_id` observed, replacing the previous
+    /// verdict and stamping the time.
+    pub async fn record(
+        &self,
+        provider_id: Uuid,
+        reports: bool,
+        spelling: Option<&str>,
+        model: &str,
+    ) -> Result<ProviderCacheProbe> {
+        sqlx::query_as(
+            "insert into provider_cache_probes (provider_id, reports, spelling, model, probed_at)
+             values ($1, $2, $3, $4, now())
+             on conflict (provider_id) do update
+             set reports = excluded.reports, spelling = excluded.spelling,
+                 model = excluded.model, probed_at = excluded.probed_at
+             returning provider_id, reports, spelling, model, probed_at",
+        )
+        .bind(provider_id)
+        .bind(reports)
+        .bind(spelling)
+        .bind(model)
+        .fetch_one(self.0)
+        .await
+        .map_err(store_err)
+    }
+
+    /// The verdicts of the providers of `org_id`; a provider never probed has
+    /// no entry.
+    pub async fn list(&self, org_id: Uuid) -> Result<Vec<ProviderCacheProbe>> {
+        sqlx::query_as(
+            "select c.provider_id, c.reports, c.spelling, c.model, c.probed_at
+             from provider_cache_probes c join providers p on p.id = c.provider_id
+             where p.org_id = $1 order by p.name",
+        )
+        .bind(org_id)
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)
     }
 }
 

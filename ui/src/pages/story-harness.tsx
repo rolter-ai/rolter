@@ -4,7 +4,7 @@ import { createMemoryRouter, RouterProvider, useInRouterContext } from "react-ro
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import { Toaster } from "@/components/ui/toaster";
-import type { RbacEffective, Role } from "@/lib/api";
+import type { DeploymentRole, RbacEffective, Role } from "@/lib/api";
 import { AuthProvider } from "@/lib/auth";
 import { CapabilityProvider, useCapabilities } from "@/lib/can";
 import en from "@/lib/i18n/locales/en.json";
@@ -237,8 +237,11 @@ function GateProbe() {
   return <span data-testid={GATE_PROBE} data-gate={state} hidden />;
 }
 
-/** The four kinds of caller the gating stories are written for. */
-export type StoryRole = Role | "superadmin";
+/**
+ * The kinds of caller the gating stories are written for: an org role, a
+ * superadmin, or an account whose only authority is a deployment role (#1834).
+ */
+export type StoryRole = Role | "superadmin" | DeploymentRole;
 
 /**
  * A caller held by memberships rather than one org role (#2522). The stub reads
@@ -273,7 +276,12 @@ export function adminOfProject(projectId: string): StoryMemberships {
  * A bare role is one org membership, which every row of every chain reaches.
  */
 export function effectiveFor(role: StoryRole): RbacEffective {
-  return role === "superadmin" ? effectiveFromTable(null, true) : effectiveFromTable(role);
+  if (role === "superadmin") return effectiveFromTable(null, true);
+  // a deployment role is held on the account and reaches no scope
+  if (role === "operator" || role === "security_auditor") {
+    return effectiveFromTable(null, false, role);
+  }
+  return effectiveFromTable(role);
 }
 
 /** The published rules, which is where a disabled control reads its role from. */
@@ -337,13 +345,44 @@ function gatewayResponse(answer: GatewayAnswer): Promise<Response> {
   }
 }
 
-/** Answer the header's gateway probe with `answer`, then fall through to `handler`. */
+/**
+ * What `GET /api/v1/cluster/summary` answers in a story (#3263): a roll-up of
+ * the fleet, `"failing"` for a control plane that errors on it, and `undefined`
+ * for one older than the endpoint, which answers 404. The check falls back to
+ * the `/readyz` probe in the last two and when `inventory` is `false`.
+ */
+export type FleetAnswer =
+  | { inventory: boolean; gateways: { live: number; stale: number; lagging: number } }
+  | "failing"
+  | undefined;
+
+/** The summary body for a counted fleet, or for one with `inventory: false`. */
+export function clusterSummary(
+  gateways: { live: number; stale: number; lagging: number },
+  inventory = true,
+) {
+  return { inventory, gateways, config_version: 412, checked_at: "2026-10-27T09:14:02.511Z" };
+}
+
+/**
+ * Answer the header's gateway checks, then fall through to `handler`: the
+ * cluster summary the pill asks first (`fleet`, a 404 when omitted) and the
+ * `/readyz` probe it falls back to (`answer`).
+ */
 export function withGateway(
   answer: GatewayAnswer | (() => GatewayAnswer),
   handler: FetchStub,
+  fleet?: FleetAnswer,
 ): FetchStub {
   return async (input, init) => {
     const path = new URL(String(input), "http://localhost").pathname;
+    if (path === "/api/v1/cluster/summary") {
+      return fleet === undefined
+        ? json({ error: { message: "not found" } }, 404)
+        : fleet === "failing"
+          ? json({ error: { message: "cluster summary failed" } }, 500)
+          : json(clusterSummary(fleet.gateways, fleet.inventory));
+    }
     if (path === "/gw/readyz")
       return gatewayResponse(typeof answer === "function" ? answer() : answer);
     return handler(input, init);

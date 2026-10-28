@@ -26,6 +26,7 @@
 //! open objects: imprecise, but present, so a generated SDK has the call even
 //! where it cannot yet have the struct.
 
+// spec-ref: openapi
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
@@ -127,6 +128,10 @@ impl QueryParam {
 /// the `409` an account write answers when it would leave no active superadmin
 const LAST_SUPERADMIN_409: &str =
     "error.code `last_superadmin`: the write would demote, deactivate or delete the last active superadmin";
+
+/// the `409` a token rotation answers for a token that no longer works
+const API_TOKEN_INACTIVE_409: &str =
+    "error.code `api_token_inactive`: the token is revoked or past its expiry, so there is nothing to rotate; mint a new one";
 
 /// the `409` a password change answers for an account with no local password
 const NO_LOCAL_PASSWORD_409: &str =
@@ -440,6 +445,25 @@ const PROVIDER_TEST_QUERY: &[QueryParam] = &[QueryParam::new(
      `model_listed`: true or false, or null when the provider has no catalogue to check",
 )];
 
+const PROVIDER_CACHE_PROBE_QUERY: &[QueryParam] = &[QueryParam::new(
+    "model",
+    "string",
+    "the upstream model to ask for one token (required); the probe is a completion, so it costs a token",
+)];
+
+const PRICE_CATALOGUE_QUERY: &[QueryParam] = &[
+    QueryParam::new(
+        "q",
+        "string",
+        "a substring of the model id; every model when omitted",
+    ),
+    QueryParam::new(
+        "limit",
+        "integer",
+        "at most this many entries (default and ceiling 200)",
+    ),
+];
+
 /// The MCP call log's query string. The same keyset-paging problem as the
 /// invocation log below, and the one #1412 names first: `next_cursor` comes
 /// back in the body, and a caller who does not know to send it as `cursor`
@@ -620,6 +644,40 @@ const DASHBOARD_QUERY: &[QueryParam] = &[
     PROJECT_FILTER,
 ];
 
+/// The savings advisor's window, scope and thresholds (#1581).
+const SAVINGS_QUERY: &[QueryParam] = &[
+    SINCE,
+    UNTIL,
+    QueryParam::new(
+        "org",
+        "string",
+        "exact org id; omit for every org the caller may read",
+    ),
+    PROJECT_FILTER,
+    QueryParam::new(
+        "route",
+        "string",
+        "exact route (its public model name); omit for every route",
+    ),
+    KEY_FILTER,
+    QueryParam::new(
+        "max_prompt_tokens",
+        "integer",
+        "a request with a longer prompt is not substitutable; defaults to 4000",
+    ),
+    QueryParam::new(
+        "max_completion_tokens",
+        "integer",
+        "a request with a longer output is not substitutable; defaults to 1000",
+    ),
+    QueryParam::new(
+        "output_margin",
+        "number",
+        "how much longer a candidate's answers are assumed to run at the high end of the \
+         range, as a fraction; defaults to 0.25 and is clamped to 0..4",
+    ),
+];
+
 /// The window plus the bucket only the timeseries endpoint reads, and the
 /// dashboard's row filters.
 const TIMESERIES_QUERY: &[QueryParam] = &[
@@ -753,6 +811,18 @@ const INVOCATIONS_QUERY: &[QueryParam] = &[
         "unpriced",
         "boolean",
         "`true` returns only requests recorded as unpriced; omit for every request",
+    ),
+    QueryParam::new(
+        "withheld",
+        "boolean",
+        "`true` returns only requests whose response a policy withheld after the provider billed \
+         them; omit for every request",
+    ),
+    QueryParam::new(
+        "usage_unknown",
+        "boolean",
+        "`true` returns only requests the upstream answered without reporting usage, so their \
+         tokens and cost are unknown; omit for every request",
     ),
     QueryParam::new(
         "guardrail",
@@ -1133,6 +1203,13 @@ fn operations() -> Vec<Op> {
                 .body(Payload::Ref("UpdateUser"))
                 .ok(Payload::Ref("User"))
                 .conflict(LAST_SUPERADMIN_409),
+            Op::put(
+                "/api/v1/users/{id}/deployment-role",
+                "setUserDeploymentRole",
+                "Give an account a deployment role (operator or security auditor), or clear it (superadmin)",
+            )
+            .body(Payload::Ref("SetDeploymentRole"))
+            .ok(Payload::Ref("User")),
             Op::delete("/api/v1/users/{id}", "deleteUser", "Delete an account")
                 .conflict(LAST_SUPERADMIN_409),
             Op::get(
@@ -1311,6 +1388,20 @@ fn operations() -> Vec<Op> {
             )
             .query(PROVIDER_TEST_QUERY)
             .body(Payload::Empty),
+            Op::post(
+                "/api/v1/providers/{id}/probe-cache",
+                "probeProviderCache",
+                "Ask a provider for one token and record whether the answer's usage carries prompt-cache metrics (needs provider:update)",
+            )
+            .query(PROVIDER_CACHE_PROBE_QUERY)
+            .body(Payload::Empty)
+            .ok(Payload::Open),
+            Op::get(
+                "/api/v1/orgs/{org_id}/provider-cache-probes",
+                "listProviderCacheProbes",
+                "List the stored prompt-cache reporting verdicts of an org's providers; a provider with no entry was never probed",
+            )
+            .ok(Payload::Open),
             Op::get(
                 "/api/v1/providers/{id}/models",
                 "listProviderModels",
@@ -1682,6 +1773,20 @@ fn operations() -> Vec<Op> {
                 "deleteModelPrice",
                 "Delete a model's price",
             ),
+            Op::get(
+                "/api/v1/model-prices/catalogue",
+                "listPriceCatalogue",
+                "Search the vendored price catalogue the importer reads (offline), with its source, licence and snapshot date",
+            )
+            .query(PRICE_CATALOGUE_QUERY)
+            .ok(Payload::Open),
+            Op::post(
+                "/api/v1/model-prices/import",
+                "importModelPrices",
+                "Import the named models' prices from the vendored catalogue; an operator-set price is never replaced",
+            )
+            .body(Payload::Open)
+            .ok(Payload::Open),
         ],
     ));
 
@@ -2219,6 +2324,20 @@ fn operations() -> Vec<Op> {
             .clickhouse_read()
             .query(WINDOW_QUERY),
             Op::get(
+                "/api/v1/analytics/savings",
+                "getAnalyticsSavings",
+                "The savings advisor: where the window's spend went (by route, upstream model and \
+                 caller, with retries and failovers, failed requests and response-cache misses \
+                 called out), which requests were substitutable, and what they would have cost at \
+                 each cheaper model already in the same route's pool, as a `low`/`high` range. It \
+                 re-prices and never evaluates quality, so it is a shortlist to test, not a \
+                 recommendation; `limits` says so on every answer. A request or a candidate whose \
+                 price is unknown is excluded and counted under `excluded`, never priced at zero",
+            )
+            .clickhouse_read()
+            .query(SAVINGS_QUERY)
+            .ok(Payload::Ref("SavingsReport")),
+            Op::get(
                 "/api/v1/analytics/sampling",
                 "getAnalyticsSampling",
                 "The request log's sample rate, for every caller the analytics reads serve. Below \
@@ -2611,6 +2730,38 @@ fn operations() -> Vec<Op> {
     ));
 
     ops.extend(tagged(
+        "api-tokens",
+        vec![
+            Op::get(
+                "/api/v1/orgs/{org_id}/api-tokens",
+                "listApiTokens",
+                "List an organization's scoped API tokens",
+            )
+            .ok(Payload::List("ApiToken")),
+            Op::post(
+                "/api/v1/orgs/{org_id}/api-tokens",
+                "createApiToken",
+                "Mint a scoped API token; the secret is returned once",
+            )
+            .body(Payload::Ref("CreateApiToken"))
+            .ok(Payload::Ref("SecretApiToken")),
+            Op::post(
+                "/api/v1/api-tokens/{id}/rotate",
+                "rotateApiToken",
+                "Replace a token's secret; the old one stops working at once",
+            )
+            .ok(Payload::Ref("SecretApiToken"))
+            .conflict(API_TOKEN_INACTIVE_409),
+            Op::delete(
+                "/api/v1/api-tokens/{id}",
+                "revokeApiToken",
+                "Revoke a scoped API token",
+            )
+            .ok(Payload::Ref("ApiToken")),
+        ],
+    ));
+
+    ops.extend(tagged(
         "scim",
         vec![
             Op::get(
@@ -2763,6 +2914,7 @@ fn tags() -> Value {
         {"name": "settings", "description": "deployment-wide singletons the gateway reads from the snapshot"},
         {"name": "invitations", "description": "email invitations into an organization"},
         {"name": "sso", "description": "SSO providers, group mappings and the login redirect"},
+        {"name": "api-tokens", "description": "scoped control-plane API tokens for automation"},
         {"name": "ldap", "description": "LDAP directories and the group mappings that turn directory groups into roles"},
         {"name": "scim", "description": "SCIM 2.0 provisioning and the tokens that authenticate it"},
         {"name": "proxy", "description": "the dashboard Playground's authenticated passthrough to the data plane"}
@@ -2810,7 +2962,7 @@ fn build_document() -> Value {
         paths.insert(path.to_string(), Value::Object(item));
     }
 
-    json!({
+    let mut doc = json!({
         "openapi": "3.1.0",
         "info": {
             "title": "rolter control plane",
@@ -2843,7 +2995,14 @@ fn build_document() -> Value {
             },
             "schemas": schemas()
         }
-    })
+    });
+    // `externalDocs` and `x-rolter-*` provenance from the specification
+    // registry (#907)
+    rolter_core::spec_registry::annotate_openapi(
+        &mut doc,
+        rolter_core::spec_registry::Plane::Control,
+    );
+    doc
 }
 
 /// The primitive schemas the entity definitions reuse, so a `uuid` is spelled
@@ -3225,8 +3384,63 @@ fn identity_schemas(p: &Prim) -> Value {
                 "id": uuid, "email": {"type": "string", "format": "email"},
                 "is_superadmin": {"type": "boolean"},
                 "deactivated_at": nullable_timestamp,
-                "created_at": timestamp
+                "created_at": timestamp,
+                "deployment_role": {"type": ["string", "null"], "enum": ["operator", "security_auditor", null]}
             }
+        },
+        "SetDeploymentRole": {
+            "type": "object",
+            "required": ["role"],
+            "properties": {
+                "role": {"type": ["string", "null"], "enum": ["operator", "security_auditor", null],
+                    "description": "null clears the account's deployment role"}
+            },
+            "additionalProperties": false
+        },
+        "ApiToken": {
+            "type": "object",
+            "required": ["id", "org_id", "name", "token_prefix", "created_at"],
+            "properties": {
+                "id": uuid, "org_id": uuid,
+                "team_id": {"type": ["string", "null"], "format": "uuid"},
+                "project_id": {"type": ["string", "null"], "format": "uuid"},
+                "name": {"type": "string"},
+                "role": {"type": ["string", "null"], "enum": ["admin", "member", "viewer", null]},
+                "custom_role_id": {"type": ["string", "null"], "format": "uuid"},
+                "token_prefix": {"type": "string", "description": "the first characters of the value, to recognise it in a list"},
+                "expires_at": nullable_timestamp,
+                "created_by": {"type": ["string", "null"], "format": "uuid"},
+                "created_at": timestamp,
+                "rotated_at": nullable_timestamp,
+                "last_used_at": nullable_timestamp,
+                "revoked_at": nullable_timestamp
+            }
+        },
+        "SecretApiToken": {
+            "type": "object",
+            "required": ["id", "org_id", "name", "token_prefix", "created_at", "secret"],
+            "description": "an ApiToken plus its secret, returned this once and never again",
+            "properties": {
+                "id": uuid, "org_id": uuid,
+                "name": {"type": "string"},
+                "token_prefix": {"type": "string"},
+                "created_at": timestamp,
+                "secret": {"type": "string", "description": "the bearer value, `rolter_api_…`"}
+            }
+        },
+        "CreateApiToken": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {
+                "name": {"type": "string", "maxLength": 80},
+                "team_id": {"type": ["string", "null"], "format": "uuid", "description": "omit team_id and project_id for an org-wide token"},
+                "project_id": {"type": ["string", "null"], "format": "uuid"},
+                "role": {"type": ["string", "null"], "enum": ["admin", "member", "viewer", null]},
+                "custom_role_id": {"type": ["string", "null"], "format": "uuid", "description": "give exactly one of role and custom_role_id"},
+                "expires_in_days": {"type": ["integer", "null"], "minimum": 1, "maximum": 730, "default": 90},
+                "never_expires": {"type": "boolean", "default": false}
+            },
+            "additionalProperties": false
         },
         "CreateUser": {
             "type": "object",
@@ -3872,7 +4086,16 @@ fn governance_schemas(p: &Prim) -> Value {
                     "description": "price per million cached audio input tokens; null charges them at cached_input_per_mtok when that is set, otherwise at the audio input rate"
                 },
                 "currency": string,
-                "created_at": timestamp
+                "created_at": timestamp,
+                "source": {
+                    "type": ["string", "null"],
+                    "description": "the catalogue this price was imported from (e.g. litellm), a value subject to change; null is a price an operator set, which is an override that an import never replaces"
+                },
+                "source_imported_at": {
+                    "type": ["string", "null"],
+                    "format": "date-time",
+                    "description": "the day the catalogue snapshot behind an imported price was taken; null for an operator-set price"
+                }
             }
         },
         "UpsertModelPrice": {
@@ -3927,6 +4150,65 @@ fn governance_schemas(p: &Prim) -> Value {
                 "currency": {"type": "string", "default": "USD"}
             },
             "additionalProperties": false
+        },
+        "SavingsReport": {
+            "type": "object",
+            "description": "money is in the deployment's base `currency`; counts and costs are scaled by the sampling weight",
+            "required": ["currency", "limits", "assumptions", "spend", "substitutable", "candidates", "excluded"],
+            "properties": {
+                "currency": {"type": "string"},
+                "limits": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "what the report does not claim, in prose"
+                },
+                "assumptions": {
+                    "type": "object",
+                    "description": "the thresholds and margin the report was built with, after defaults and clamping",
+                    "properties": {
+                        "max_prompt_tokens": {"type": "integer"},
+                        "max_completion_tokens": {"type": "integer"},
+                        "output_margin": {"type": "number"}
+                    }
+                },
+                "spend": {
+                    "type": "object",
+                    "description": "where the money went: totals, `multi_attempt` (requests that took more than one upstream attempt), `failed`, `cache` (hits, and misses on routes that cache), and `by_route`, `by_model` (upstream model) and `by_caller` (project and virtual key, the 50 most expensive)",
+                    "properties": {
+                        "requests": {"type": "number"},
+                        "cost_usd": {"type": "number"},
+                        "unpriced_requests": {"type": "number"},
+                        "multi_attempt": {"type": "object"},
+                        "failed": {"type": "object"},
+                        "cache": {"type": "object"},
+                        "by_route": {"type": "array", "items": {"type": "object"}},
+                        "by_model": {"type": "array", "items": {"type": "object"}},
+                        "by_caller": {"type": "array", "items": {"type": "object"}}
+                    }
+                },
+                "substitutable": {
+                    "type": "object",
+                    "description": "the requests with at least one cheaper candidate, their recorded cost, and the saving at the best candidate of each as `{low, high}`",
+                    "properties": {
+                        "requests": {"type": "number"},
+                        "current_cost_usd": {"type": "number"},
+                        "projected_savings_usd": {"type": "object"}
+                    }
+                },
+                "candidates": {
+                    "type": "array",
+                    "description": "one entry per route and current upstream model, biggest conservative saving first; each lists its `candidates` with `projected_cost_usd` and `savings_usd` as `{low, high}`",
+                    "items": {"type": "object"}
+                },
+                "excluded": {
+                    "type": "object",
+                    "description": "`requests` counts what was not re-priced by reason (`unpriced`, `failed`, `cache_hit`, `usage_unknown`, `not_a_model_call`, `no_token_usage`, `prompt_too_large`, `output_too_large`, `route_not_configured`, `no_cheaper_candidate`); `unknown_candidate_prices` names pool models with no price",
+                    "properties": {
+                        "requests": {"type": "object", "additionalProperties": {"type": "number"}},
+                        "unknown_candidate_prices": {"type": "array", "items": {"type": "string"}}
+                    }
+                }
+            }
         },
         "LogSampling": {
             "type": "object",
@@ -4171,6 +4453,40 @@ mod tests {
         );
     }
 
+    // #907: a control-plane endpoint the specification registry names must
+    // exist, and must carry the registry's provenance in the served document
+    #[test]
+    fn registry_endpoints_are_documented_with_their_provenance() {
+        let registry = rolter_core::spec_registry::registry().expect("the registry parses");
+        let doc = document();
+        assert_eq!(
+            doc["externalDocs"]["url"],
+            rolter_core::spec_registry::REGISTRY_URL
+        );
+        let mut checked = 0;
+        for spec in &registry.specs {
+            for endpoint in &spec.control_endpoints {
+                let (method, path) =
+                    rolter_core::spec_registry::parse_endpoint(endpoint).expect("validated");
+                let method = method.to_ascii_lowercase();
+                assert!(
+                    documents_operation(&method, path),
+                    "the registry names {endpoint}, which the document does not have"
+                );
+                let refs = doc["paths"][path][&method]["x-rolter-spec-refs"]
+                    .as_array()
+                    .unwrap_or_else(|| panic!("{endpoint} carries no x-rolter-spec-refs"));
+                assert!(refs.iter().any(|id| id == spec.id.as_str()), "{endpoint}");
+                checked += 1;
+            }
+        }
+        assert!(checked > 0);
+        assert_eq!(
+            doc["paths"]["/scim/v2/Users"]["get"]["externalDocs"]["url"],
+            "https://www.rfc-editor.org/rfc/rfc7644"
+        );
+    }
+
     #[test]
     fn operation_ids_are_unique() {
         let mut seen = BTreeSet::new();
@@ -4388,6 +4704,9 @@ mod tests {
         assert!(names.contains("trace_id"), "{names:?}");
         // and the unpriced ones can be asked for by themselves
         assert!(names.contains("unpriced"), "{names:?}");
+        // and so can the withheld and the unknown-usage ones (#3302)
+        assert!(names.contains("withheld"), "{names:?}");
+        assert!(names.contains("usage_unknown"), "{names:?}");
         // the list no longer pages on an offset, so documenting one would send
         // a caller down a path that silently returns the same page (#1394)
         assert!(!names.contains("offset"), "{names:?}");

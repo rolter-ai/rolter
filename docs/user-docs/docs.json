@@ -125,6 +125,7 @@
             "pages": [
               "observability/metrics",
               "observability/logs-and-cost",
+              "observability/savings-advisor",
               "observability/tracing",
               "observability/what-to-look-at",
               "observability/log-settings",
@@ -159,6 +160,7 @@
             "group": "Gateway API",
             "pages": [
               "api/overview",
+              "api/specifications",
               "api/chat-completions",
               "api/completions",
               "api/messages",
@@ -180,6 +182,7 @@
               "api/org-projects",
               "api/teams",
               "api/deployment-users",
+              "api/api-tokens",
               "api/providers",
               "api/routes",
               "api/attribution-listings",

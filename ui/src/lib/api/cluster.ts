@@ -15,6 +15,29 @@ export interface ClusterNodeRow {
   converged: boolean;
 }
 
+/**
+ * `GET /api/v1/cluster/summary`: the gateway fleet as counts, readable by every
+ * signed-in caller (#2013). `inventory` is `false` when the control plane has no
+ * database, which leaves nothing to count.
+ */
+export interface ClusterSummary {
+  inventory: boolean;
+  gateways: {
+    /** polled the control plane within the last minute */
+    live: number;
+    /** silent for more than a minute but less than 15: crashed or partitioned */
+    stale: number;
+    /** live, but not yet on the control plane's `config_version`; a subset of `live` */
+    lagging: number;
+  };
+  config_version: number;
+  checked_at: string;
+}
+
+export function fetchClusterSummary(): Promise<ClusterSummary> {
+  return getJson<ClusterSummary>("/api/v1/cluster/summary");
+}
+
 export function fetchClusterNodes(): Promise<ClusterNodeRow[]> {
   return getJson<ClusterNodeRow[]>("/api/v1/cluster/nodes");
 }

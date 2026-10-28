@@ -36,6 +36,7 @@
 //! does not match the server it claims to be about, or an `iss` that does not
 //! match what was recorded ends the flow rather than warning and continuing.
 
+// spec-ref: mcp-authorization, oauth2, pkce, oauth2-token-exchange
 use std::collections::HashSet;
 
 use axum::extract::{Path, Query, State};
@@ -1692,7 +1693,7 @@ async fn owned_session(
     match principal {
         Principal::Superadmin { .. } => Ok(context),
         Principal::User(user) if user.id == context.user_id => Ok(context),
-        Principal::User(_) => Err(ApiError::Forbidden),
+        Principal::User(_) | Principal::Token(_) => Err(ApiError::Forbidden),
     }
 }
 

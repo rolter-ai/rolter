@@ -28,6 +28,7 @@
 //!   they control at another org's member, or at the break-glass account, and
 //!   be handed a session carrying grants their org never gave.
 
+// spec-ref: oidc-core, oidc-discovery, pkce
 use std::collections::HashSet;
 use std::sync::Arc;
 
