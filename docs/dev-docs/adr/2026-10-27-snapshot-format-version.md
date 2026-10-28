@@ -1,6 +1,6 @@
 # A negotiated format version for `/internal/snapshot`
 
-**Status:** Proposed · **Date:** 27 Oct 2026 · **Issues:** [#1512](https://github.com/rolter-ai/rolter/issues/1512), [#326](https://github.com/rolter-ai/rolter/issues/326)
+**Status:** Accepted (28 Oct 2026) · **Date:** 27 Oct 2026 · **Issues:** [#1512](https://github.com/rolter-ai/rolter/issues/1512), [#326](https://github.com/rolter-ai/rolter/issues/326)
 **Relates:** ADR-0008 (reload-free config), ADR-0032 (1.0 compatibility guarantees)
 
 ## Context
@@ -109,7 +109,7 @@ key anyway, and it should not be taking traffic.
 - **The data plane stays lean** (AGENTS.md). Conversion between formats should
   run where the database already is, not in every gateway.
 
-## Decision (proposed)
+## Decision
 
 ### 1. Where the version lives
 
@@ -196,7 +196,10 @@ no test can see a change of meaning, or tell a restriction from a knob.
    when that is older than its own (section 4). A down-conversion that cannot
    express the config answers `406` with code `snapshot_format_inexpressible`.
 6. Serves it with `format` set, and with `Deprecation` and `Sunset` headers
-   when the format served is deprecated (section 5).
+   when the format served is deprecated (section 5). The `304` of step 4
+   carries the same headers, since the format is negotiated before it: a
+   gateway whose config does not change for weeks still learns its format is
+   going.
 
 Nothing else on `/internal/snapshot` answers `406`. The body follows the
 control plane's error envelope, with the explanation repeated in `problems`,
@@ -214,9 +217,11 @@ gateway that predates negotiation still logs why it was refused:
 ```
 
 The control plane logs a refusal at `warn` with the node id, its build header
-and both ranges, once per node and range in each process rather than once per
-poll, and records it as a fourth bounded `outcome`, `refused`, on
-`rolter_snapshot_build_ms`.
+and both ranges, once per node, range and code in each process rather than
+once per poll, and records it as a fourth bounded `outcome`, `refused`, on
+`rolter_snapshot_build_ms`. A `formats` that does not parse
+(`400 invalid_query`) is recorded as `refused` too: it is the negotiation
+turning the poll away, not a failure to build.
 
 **The gateway**, in `poll_once` (and, for the first two steps, in
 `fetch_log_destination`):
@@ -251,9 +256,12 @@ signal for that case.
 ### 4. Serving older formats: down-steps in the control plane
 
 The control plane carries a chain of **down-steps**, the mirror image of
-`config_migrate::MIGRATIONS`: `DownStep { from: k + 1, to: k, summary, .. }`,
-applied from `SNAPSHOT_FORMAT` down to the format being served. Each step does
-the first of these that is enough:
+`config_migrate::MIGRATIONS`: `DownStep { from: k + 1, to: k, summary, omit,
+rewrite }`, applied from `SNAPSHOT_FORMAT` down to the format being served.
+`omit` works on the typed config and runs before the sanitizer; `rewrite` works
+on the serialized config. `down_convert` runs every crossed step's `omit` and
+`down_rewrite` every crossed step's `rewrite`, since the sanitizer sits between
+the two. Each step does the first of these that is enough:
 
 1. **Rewrite** the serialized JSON losslessly: rename a field back, render a
    decimal as a number.
@@ -520,15 +528,24 @@ for a snapshot (see Context).
   `#[serde(default)]` fields, and a sample an older control plane misreads
   costs a dashboard tile, not a routing decision.
 
-## Implementation, if accepted
+## Implementation
 
 One PR, which makes its release N. It ships format 1 only, so no down-step
-exists yet, and test-only steps exercise the chain.
+exists yet, and test-only steps exercise the chain. Where the shipped code
+refines a point above, the section above says so: the `304` carrying the
+deprecation headers (section 3, step 6), `400 invalid_query` counting as
+`refused`, and the down-step's two halves (section 4). The control plane's
+helpers live in `crates/rolter-control/src/snapshot_negotiation.rs` rather than
+in `lib.rs`, and the route-limit advice in `upgrading.mdx` is rephrased as an
+instance of rule 3 of the procedure rather than removed: it is still true of a
+gateway from before #2936, which predates negotiation. The shape guard's
+representative config is `rolter.example.toml`, and the guard ignores `null`,
+since an unset `Option` says nothing about the type it carries.
 
 - `crates/rolter-core/src/snapshot_format.rs`, new and exported from
   `lib.rs`: `SNAPSHOT_FORMAT = 1`, `MIN_SERVED_FORMAT = 1`, `FormatRange` with
   parsing and display for `formats`, `negotiate`, the `DownStep` type with an
-  empty `DOWN_STEPS`, and `down_convert`. Unit tests for parsing; for
+  empty `DOWN_STEPS`, and `down_convert` with `down_rewrite`. Unit tests for parsing; for
   negotiation with an absent, overlapping, disjoint and malformed statement;
   and for chaining over a synthetic two-step chain that rewrites, omits and
   refuses.
@@ -567,6 +584,7 @@ exists yet, and test-only steps exercise the chain.
   that says to classify the change under section 2 and, for a bump, lists the
   constant, the down-step, the `DEPRECATIONS` entry and the fixture.
 
-Left out of that PR, each its own follow-up: the dashboard pill, the inventory
-column, fail-closed fallbacks for the snapshot's enums, a per-component image
-tag in the chart, and the cross-build e2e job.
+Left out of that PR, each its own follow-up: the dashboard pill (#3350), the
+inventory column (#3351), fail-closed fallbacks for the snapshot's enums
+(#3347), a per-component image tag in the chart (#3352), and the cross-build e2e
+job (#3353).

@@ -19,6 +19,13 @@
 //! which is indistinguishable from a wrong key (#933). That is a supported way
 //! to run, but it is stated rather than left to be inferred from a key that
 //! "does not work yet".
+//!
+//! Every poll states the snapshot formats this build reads (`formats=N`), and
+//! every reply's `format` is read before its config is decoded, so a control
+//! plane serving a shape this gateway does not know is a refusal with a code,
+//! one `error` line, the `rolter_snapshot_format_refused` gauge and, before a
+//! first snapshot, a not-ready `/readyz` rather than a serde error or a config
+//! applied in part (ADR-0038).
 
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
@@ -29,11 +36,29 @@ use reqwest::{Client, StatusCode};
 use serde::Deserialize;
 use tokio::sync::Notify;
 
+use rolter_core::snapshot_format::{FormatRange, FORMATS_PARAM, LEGACY_FORMAT};
 use rolter_core::GatewayConfig;
 
 use crate::state::AppState;
 
-/// A `{"version": N, "config": {...}}` document from the snapshot endpoint.
+/// What a snapshot reply says about its own format, read over the same bytes
+/// before the config is decoded so a mismatch is reported as one rather than as
+/// a serde error. Absent from every control plane that predates negotiation,
+/// which serves format 1.
+#[derive(Deserialize)]
+struct FormatHead {
+    #[serde(default)]
+    format: Option<u32>,
+}
+
+impl FormatHead {
+    fn format(&self) -> u32 {
+        self.format.unwrap_or(LEGACY_FORMAT)
+    }
+}
+
+/// A `{"format": F, "version": N, "config": {...}}` document from the snapshot
+/// endpoint.
 #[derive(Deserialize)]
 struct SnapshotResponse {
     version: u64,
@@ -65,7 +90,10 @@ pub async fn fetch_log_destination(
 ) -> Option<String> {
     let client = Client::builder().timeout(timeout).build().ok()?;
     // version=0 asks for the current snapshot rather than a 304
-    let mut request = client.get(snapshot_url).query(&[("version", "0")]);
+    let readable = FormatRange::readable().to_string();
+    let mut request = client
+        .get(snapshot_url)
+        .query(&[("version", "0"), (FORMATS_PARAM, readable.as_str())]);
     if let Some(token) = admin_token {
         request = request.bearer_auth(token);
     }
@@ -80,7 +108,27 @@ pub async fn fetch_log_destination(
             return None;
         }
     };
-    let body: SnapshotResponse = match resp.json().await {
+    let bytes = match resp.bytes().await {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            tracing::debug!(error = %err, "no log destination from the control plane");
+            return None;
+        }
+    };
+    // a format this build does not read is the poll loop's to report; here it
+    // only means there is no destination to take from it
+    let format = serde_json::from_slice::<FormatHead>(&bytes).map(|head| head.format());
+    if !format
+        .as_ref()
+        .is_ok_and(|format| FormatRange::readable().contains(*format))
+    {
+        tracing::debug!(
+            format = ?format.ok(),
+            "snapshot in a format this gateway does not read; no log destination taken from it"
+        );
+        return None;
+    }
+    let body: SnapshotResponse = match serde_json::from_slice(&bytes) {
         Ok(body) => body,
         Err(err) => {
             tracing::debug!(error = %err, "unparsable snapshot while reading log destination");
@@ -242,17 +290,37 @@ pub(crate) fn log_node_identity() {
 
 /// Fetch the snapshot once and apply it if newer. Returns `Ok(Some(version))`
 /// when a reload happened, `Ok(None)` on `304`/no-change, `Err` on transport
-/// or decode failure.
+/// or decode failure, or on a snapshot format this gateway does not read.
 async fn poll_once(
     client: &Client,
     state: &AppState,
     snapshot_url: &str,
     admin_token: Option<&str>,
 ) -> anyhow::Result<Option<u64>> {
+    poll_once_reading(
+        client,
+        state,
+        snapshot_url,
+        admin_token,
+        FormatRange::readable(),
+    )
+    .await
+}
+
+/// [`poll_once`] for a gateway that reads `readable` rather than this build's
+/// own format, so tests can stand in for a gateway of a later release.
+async fn poll_once_reading(
+    client: &Client,
+    state: &AppState,
+    snapshot_url: &str,
+    admin_token: Option<&str>,
+    readable: FormatRange,
+) -> anyhow::Result<Option<u64>> {
     let current = state.metrics.config_version.load(Relaxed);
-    let mut request = client
-        .get(snapshot_url)
-        .query(&[("version", current.to_string())]);
+    let mut request = client.get(snapshot_url).query(&[
+        ("version", current.to_string()),
+        (FORMATS_PARAM, readable.to_string()),
+    ]);
     if let Some(token) = admin_token {
         request = request.bearer_auth(token);
     }
@@ -267,17 +335,54 @@ async fn poll_once(
     // the control plane answers every poll with the node's requested state, so
     // a drain lands even when the config itself has not changed
     apply_node_state(state, resp.headers());
+    warn_format_deprecation(state, resp.headers(), readable);
 
     if resp.status() == StatusCode::NOT_MODIFIED {
+        // a 304 answers for the format this gateway stated
+        state.clear_snapshot_format_refusal();
         return Ok(None);
+    }
+    if resp.status() == StatusCode::NOT_ACCEPTABLE {
+        // nothing else on the snapshot endpoint answers 406
+        let status = resp.status();
+        let body = read_refusal(resp).await;
+        let refusal = FormatRefusal::from_body(&body, readable);
+        enter_format_refusal(state, &refusal, current);
+        anyhow::bail!(
+            "snapshot endpoint returned {status}{}",
+            refusal_detail(&body)
+        );
     }
     if !resp.status().is_success() {
         let status = resp.status();
-        let detail = refusal_detail(resp).await;
-        anyhow::bail!("snapshot endpoint returned {status}{detail}");
+        let body = read_refusal(resp).await;
+        anyhow::bail!(
+            "snapshot endpoint returned {status}{}",
+            refusal_detail(&body)
+        );
     }
 
-    let body: SnapshotResponse = resp.json().await?;
+    let bytes = resp.bytes().await?;
+    let format = serde_json::from_slice::<FormatHead>(&bytes)?.format();
+    if !readable.contains(format) {
+        // either the control plane predates negotiation and ignored the
+        // statement, or something served what was not asked for. Neither is
+        // applied: a shape this build does not know is the partial
+        // application negotiation exists to rule out
+        let refusal = FormatRefusal {
+            code: FORMAT_UNSUPPORTED,
+            served: Some(FormatRange::single(format)),
+            readable,
+        };
+        enter_format_refusal(state, &refusal, current);
+        anyhow::bail!(
+            "the control plane served snapshot format {format}; this gateway reads {}",
+            rolter_core::snapshot_format::describe(readable)
+        );
+    }
+    state.clear_snapshot_format_refusal();
+
+    let body: SnapshotResponse = serde_json::from_slice(&bytes)?;
     // guard against a stale/racy response older than what we already run
     if body.version <= current && current != 0 {
         return Ok(None);
@@ -287,7 +392,12 @@ async fn poll_once(
         anyhow::bail!("snapshot v{} failed validation: {problems:?}", body.version);
     }
     state.reload(&body.config, body.version);
-    tracing::info!(version = body.version, "applied new config snapshot");
+    state.record_snapshot_format(format);
+    tracing::info!(
+        version = body.version,
+        format,
+        "applied new config snapshot"
+    );
     // logged here rather than on every poll: this line is only reached when the
     // version actually moved, so a fleet polling every 5s does not repeat the
     // same complaint 17k times a day (#926)
@@ -308,15 +418,8 @@ async fn poll_once(
 /// unrelated endpoint from making every poll buffer an arbitrary body.
 const REFUSAL_BODY_LIMIT: usize = 8 * 1024;
 
-/// What a non-success snapshot answer says about itself, formatted to follow
-/// "snapshot endpoint returned <status>", or empty when it says nothing.
-///
-/// The control plane puts `error.message` and, when it knows which entry or
-/// setting held the snapshot back, `error.problems` in the body. Without them
-/// the log line reads like a bare 500 and an operator tailing a gateway cannot
-/// tell why a change never took effect. Only the log reads this: nothing from a
-/// refused response is ever applied.
-async fn refusal_detail(mut resp: reqwest::Response) -> String {
+/// A bounded prefix of a non-success answer, as JSON, or `Null` when it is not.
+async fn read_refusal(mut resp: reqwest::Response) -> serde_json::Value {
     let mut body: Vec<u8> = Vec::new();
     while body.len() < REFUSAL_BODY_LIMIT {
         match resp.chunk().await {
@@ -327,9 +430,18 @@ async fn refusal_detail(mut resp: reqwest::Response) -> String {
             _ => break,
         }
     }
-    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&body) else {
-        return String::new();
-    };
+    serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null)
+}
+
+/// What a non-success snapshot answer says about itself, formatted to follow
+/// "snapshot endpoint returned <status>", or empty when it says nothing.
+///
+/// The control plane puts `error.message` and, when it knows which entry or
+/// setting held the snapshot back, `error.problems` in the body. Without them
+/// the log line reads like a bare 500 and an operator tailing a gateway cannot
+/// tell why a change never took effect. Only the log reads this: nothing from a
+/// refused response is ever applied.
+fn refusal_detail(value: &serde_json::Value) -> String {
     let error = &value["error"];
     let mut detail = String::new();
     if let Some(message) = error["message"].as_str() {
@@ -345,6 +457,124 @@ async fn refusal_detail(mut resp: reqwest::Response) -> String {
         }
     }
     detail
+}
+
+/// The code of a control plane that serves no format this gateway reads.
+const FORMAT_UNSUPPORTED: &str = "snapshot_format_unsupported";
+/// The code of one whose config the format this gateway reads cannot express.
+const FORMAT_INEXPRESSIBLE: &str = "snapshot_format_inexpressible";
+
+/// A snapshot this gateway would not apply for its format.
+struct FormatRefusal {
+    code: &'static str,
+    /// what the control plane serves, when it said
+    served: Option<FormatRange>,
+    readable: FormatRange,
+}
+
+impl FormatRefusal {
+    /// Read a `406` body. A body that is not the control plane's shape is
+    /// still a format refusal, since nothing else answers `406` there.
+    fn from_body(body: &serde_json::Value, readable: FormatRange) -> Self {
+        let error = &body["error"];
+        let code = match error["code"].as_str() {
+            Some(FORMAT_INEXPRESSIBLE) => FORMAT_INEXPRESSIBLE,
+            _ => FORMAT_UNSUPPORTED,
+        };
+        let bound = |key: &str| {
+            error["served"][key]
+                .as_u64()
+                .and_then(|n| u32::try_from(n).ok())
+        };
+        let served = match (bound("min"), bound("max")) {
+            (Some(min), Some(max)) if min <= max => Some(FormatRange { min, max }),
+            _ => None,
+        };
+        Self {
+            code,
+            served,
+            readable,
+        }
+    }
+
+    /// The one-line account an operator acts on.
+    fn sentence(&self, version: u64) -> String {
+        use rolter_core::snapshot_format::describe;
+        let reads = describe(self.readable);
+        let what = match (self.code, self.served) {
+            (FORMAT_INEXPRESSIBLE, _) => format!(
+                "the control plane's config cannot be expressed in the snapshot {reads} this \
+                 gateway reads"
+            ),
+            (_, Some(served)) => format!(
+                "the control plane serves {} and this gateway reads {reads}",
+                describe(served)
+            ),
+            (_, None) => format!("the control plane serves no snapshot {reads}"),
+        };
+        let keeping = if version == 0 {
+            "Serving the bootstrap config, and not ready until a snapshot is applied".to_string()
+        } else {
+            format!("Keeping the config applied at version {version}")
+        };
+        let action = match (self.code, self.served) {
+            (FORMAT_INEXPRESSIBLE, _) => {
+                "Upgrade this gateway, or stop using the setting the control plane names"
+            }
+            (_, Some(served)) if self.readable.min > served.max => {
+                "Upgrade the control plane first, or roll this gateway back"
+            }
+            _ => "Upgrade this gateway, or roll the control plane back",
+        };
+        format!(
+            "snapshot format refused: {what} ({}). {keeping}. {action}.",
+            self.code
+        )
+    }
+}
+
+/// Enter the refused state: the gauge goes to 1 and, on the transition only,
+/// one `error` line says what happened and what to do. The per-poll `warn` of
+/// the failed poll still follows on every poll.
+fn enter_format_refusal(state: &AppState, refusal: &FormatRefusal, version: u64) {
+    if state.refuse_snapshot_format() {
+        tracing::error!(
+            code = refusal.code,
+            served = refusal.served.map(|r| r.to_string()).unwrap_or_default(),
+            readable = %refusal.readable,
+            version,
+            "{}",
+            refusal.sentence(version)
+        );
+    }
+}
+
+/// Warn once per process when the control plane marks the format it serves
+/// this gateway deprecated, naming the date after which it stops. Returns
+/// whether it warned.
+fn warn_format_deprecation(
+    state: &AppState,
+    headers: &reqwest::header::HeaderMap,
+    readable: FormatRange,
+) -> bool {
+    if headers.get("deprecation").is_none() {
+        return false;
+    }
+    if state.snapshot_format_deprecation_warned.swap(true, Relaxed) {
+        return false;
+    }
+    let sunset = headers
+        .get("sunset")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("an unannounced date");
+    tracing::warn!(
+        sunset,
+        readable = %readable,
+        "the control plane marks the snapshot {} this gateway reads deprecated; it may stop \
+         serving it after {sunset}. Upgrade this gateway before then",
+        rolter_core::snapshot_format::describe(readable)
+    );
+    true
 }
 
 /// Apply the operator-requested node state carried on the snapshot response.
@@ -683,6 +913,301 @@ mod tests {
         assert_eq!(
             poll_once(&client, &state, &url, None).await.unwrap(),
             Some(3)
+        );
+    }
+
+    /// A stub standing in for a control plane of another build. It records
+    /// the last `formats` it was sent, and answers with whatever `answer`
+    /// holds: a JSON body for a `200`, or a status with a body.
+    struct Stub {
+        url: String,
+        seen_formats: Arc<parking_lot::Mutex<Option<String>>>,
+        answer: Arc<parking_lot::Mutex<StubAnswer>>,
+    }
+
+    #[derive(Clone)]
+    enum StubAnswer {
+        Ok(serde_json::Value),
+        Refuse(u16, serde_json::Value),
+        Deprecated(serde_json::Value),
+    }
+
+    async fn stub(answer: StubAnswer) -> Stub {
+        use axum::extract::Query;
+        use axum::response::IntoResponse;
+        use axum::routing::get;
+        use axum::Router;
+        use std::collections::HashMap;
+
+        let seen_formats = Arc::new(parking_lot::Mutex::new(None));
+        let answer = Arc::new(parking_lot::Mutex::new(answer));
+        let (seen, current) = (Arc::clone(&seen_formats), Arc::clone(&answer));
+        let app = Router::new().route(
+            "/internal/snapshot",
+            get(move |Query(q): Query<HashMap<String, String>>| {
+                let (seen, current) = (Arc::clone(&seen), Arc::clone(&current));
+                async move {
+                    *seen.lock() = q.get("formats").cloned();
+                    let answer = current.lock().clone();
+                    match answer {
+                        StubAnswer::Ok(body) => axum::Json(body).into_response(),
+                        StubAnswer::Refuse(status, body) => (
+                            axum::http::StatusCode::from_u16(status).unwrap(),
+                            axum::Json(body),
+                        )
+                            .into_response(),
+                        StubAnswer::Deprecated(body) => (
+                            [
+                                ("deprecation", "@1799971200"),
+                                ("sunset", "Tue, 20 Apr 2027 00:00:00 GMT"),
+                            ],
+                            axum::Json(body),
+                        )
+                            .into_response(),
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        Stub {
+            url: format!("http://{addr}/internal/snapshot"),
+            seen_formats,
+            answer,
+        }
+    }
+
+    /// The envelope every control plane built before negotiation serves: no
+    /// `format`, and the `formats` statement ignored.
+    fn legacy_envelope(version: u64) -> serde_json::Value {
+        serde_json::json!({
+            "version": version,
+            "config": {"security": {"required_headers": {"x-mesh-id": "edge"}}}
+        })
+    }
+
+    fn unsupported_406() -> serde_json::Value {
+        serde_json::json!({"error": {
+            "code": "snapshot_format_unsupported",
+            "message": "the control plane serves snapshot formats 2-3; the gateway reads 1",
+            "problems": ["upgrade the gateway, or roll the control plane back"],
+            "served": {"min": 2, "max": 3},
+            "requested": {"min": 1, "max": 1},
+        }})
+    }
+
+    async fn ready(state: &AppState) -> (u16, String) {
+        use axum::response::IntoResponse;
+        let response = crate::handlers::readyz(axum::extract::State(state.clone()))
+            .await
+            .into_response();
+        let status = response.status().as_u16();
+        let body = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap();
+        (status, String::from_utf8_lossy(&body).into_owned())
+    }
+
+    fn holds_gate(state: &AppState) -> bool {
+        state
+            .snapshot
+            .load()
+            .security
+            .required_headers
+            .contains_key("x-mesh-id")
+    }
+
+    /// Newer gateway, control plane from before negotiation, gateway reads 1:
+    /// the absent `format` is 1, and the reply is applied.
+    #[tokio::test]
+    async fn a_pre_negotiation_control_plane_is_read_as_format_one() {
+        let stub = stub(StubAnswer::Ok(legacy_envelope(5))).await;
+        let state = AppState::new(&GatewayConfig::default());
+        let client = Client::new();
+        assert_eq!(
+            poll_once(&client, &state, &stub.url, None).await.unwrap(),
+            Some(5)
+        );
+        assert_eq!(
+            stub.seen_formats.lock().as_deref(),
+            Some(
+                rolter_core::snapshot_format::SNAPSHOT_FORMAT
+                    .to_string()
+                    .as_str()
+            ),
+            "the poll did not state its format"
+        );
+        assert!(holds_gate(&state));
+        assert_eq!(state.metrics.snapshot_format.load(Relaxed), 1);
+        assert_eq!(state.metrics.snapshot_format_refused.load(Relaxed), 0);
+        assert_eq!(ready(&state).await, (200, "ok".to_string()));
+    }
+
+    /// Newer gateway, control plane from before negotiation, gateway reads 2:
+    /// the absent `format` is 1, so the reply is refused, nothing is applied,
+    /// and a gateway that was never served is not ready.
+    #[tokio::test]
+    async fn a_gateway_that_reads_a_later_format_refuses_the_legacy_envelope() {
+        let stub = stub(StubAnswer::Ok(legacy_envelope(5))).await;
+        let state = AppState::new(&GatewayConfig::default());
+        let client = Client::new();
+        let err = poll_once_reading(&client, &state, &stub.url, None, FormatRange::single(2))
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("served snapshot format 1; this gateway reads format 2"),
+            "{err}"
+        );
+        assert_eq!(stub.seen_formats.lock().as_deref(), Some("2"));
+        assert!(!holds_gate(&state), "a refused snapshot was applied");
+        assert_eq!(state.metrics.config_reloads_total.load(Relaxed), 0);
+        assert_eq!(state.metrics.snapshot_format_refused.load(Relaxed), 1);
+        assert_eq!(state.metrics.snapshot_format.load(Relaxed), 0);
+        assert_eq!(
+            ready(&state).await,
+            (503, "snapshot_format_unsupported".to_string())
+        );
+    }
+
+    /// A control plane answering `406`: the config is unchanged and the gauge
+    /// set, and `/readyz` is `503` only for a gateway that has never applied a
+    /// snapshot. A compatible answer clears the gauge again.
+    #[tokio::test]
+    async fn a_406_keeps_the_config_and_is_unready_only_before_a_first_snapshot() {
+        let client = Client::new();
+
+        // a gateway that never received a snapshot
+        let stub = stub(StubAnswer::Refuse(406, unsupported_406())).await;
+        let fresh = AppState::new(&GatewayConfig::default());
+        let err = poll_once(&client, &fresh, &stub.url, None)
+            .await
+            .unwrap_err();
+        // the per-poll line carries the control plane's explanation
+        assert!(err.to_string().contains("406"), "{err}");
+        assert!(
+            err.to_string()
+                .contains("upgrade the gateway, or roll the control plane back"),
+            "{err}"
+        );
+        assert_eq!(fresh.metrics.snapshot_format_refused.load(Relaxed), 1);
+        assert_eq!(
+            ready(&fresh).await,
+            (503, "snapshot_format_unsupported".to_string())
+        );
+
+        // a running gateway: served once, then refused
+        *stub.answer.lock() = StubAnswer::Ok(legacy_envelope(5));
+        let running = AppState::new(&GatewayConfig::default());
+        assert_eq!(
+            poll_once(&client, &running, &stub.url, None).await.unwrap(),
+            Some(5)
+        );
+        *stub.answer.lock() = StubAnswer::Refuse(406, unsupported_406());
+        running.metrics.config_version.store(4, Relaxed);
+        assert!(poll_once(&client, &running, &stub.url, None).await.is_err());
+        assert!(holds_gate(&running), "the last config was dropped");
+        assert_eq!(running.metrics.config_reloads_total.load(Relaxed), 1);
+        assert_eq!(running.metrics.snapshot_format_refused.load(Relaxed), 1);
+        assert_eq!(ready(&running).await, (200, "ok".to_string()));
+
+        // and the fresh gateway, once served, is ready with the gauge cleared
+        *stub.answer.lock() = StubAnswer::Ok(legacy_envelope(6));
+        assert_eq!(
+            poll_once(&client, &fresh, &stub.url, None).await.unwrap(),
+            Some(6)
+        );
+        assert_eq!(fresh.metrics.snapshot_format_refused.load(Relaxed), 0);
+        assert_eq!(ready(&fresh).await, (200, "ok".to_string()));
+    }
+
+    /// The `error` line is said on the transition into the refused state, not
+    /// on every poll, and says what to do.
+    #[test]
+    fn the_refusal_is_reported_once_per_transition() {
+        let state = AppState::new(&GatewayConfig::default());
+        assert!(state.refuse_snapshot_format());
+        assert!(!state.refuse_snapshot_format());
+        state.clear_snapshot_format_refusal();
+        assert!(state.refuse_snapshot_format());
+
+        let refusal = FormatRefusal::from_body(&unsupported_406(), FormatRange::single(1));
+        assert_eq!(refusal.code, FORMAT_UNSUPPORTED);
+        assert_eq!(refusal.served, Some(FormatRange { min: 2, max: 3 }));
+        assert_eq!(
+            refusal.sentence(41),
+            "snapshot format refused: the control plane serves formats 2-3 and this gateway \
+             reads format 1 (snapshot_format_unsupported). Keeping the config applied at \
+             version 41. Upgrade this gateway, or roll the control plane back."
+        );
+        assert!(refusal
+            .sentence(0)
+            .contains("not ready until a snapshot is applied"));
+
+        let newer = FormatRefusal {
+            served: Some(FormatRange::single(1)),
+            ..FormatRefusal::from_body(&serde_json::Value::Null, FormatRange::single(2))
+        };
+        assert!(newer
+            .sentence(3)
+            .contains("Upgrade the control plane first"));
+        let inexpressible = FormatRefusal::from_body(
+            &serde_json::json!({"error": {"code": "snapshot_format_inexpressible"}}),
+            FormatRange::single(1),
+        );
+        assert_eq!(inexpressible.code, FORMAT_INEXPRESSIBLE);
+        assert!(inexpressible.sentence(3).contains("cannot be expressed"));
+    }
+
+    /// A deprecated format is served with `Deprecation` and `Sunset`, and the
+    /// gateway warns once across several polls.
+    #[tokio::test]
+    async fn a_deprecated_format_is_warned_about_once() {
+        let mut body = legacy_envelope(5);
+        body["format"] = serde_json::json!(1);
+        let stub = stub(StubAnswer::Deprecated(body)).await;
+        let state = AppState::new(&GatewayConfig::default());
+        let client = Client::new();
+        for _ in 0..3 {
+            poll_once(&client, &state, &stub.url, None).await.unwrap();
+        }
+        assert!(state.snapshot_format_deprecation_warned.load(Relaxed));
+        assert_eq!(state.metrics.snapshot_format.load(Relaxed), 1);
+
+        // the once is per process, not per poll
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert("deprecation", "@1799971200".parse().unwrap());
+        headers.insert("sunset", "Tue, 20 Apr 2027 00:00:00 GMT".parse().unwrap());
+        let fresh = AppState::new(&GatewayConfig::default());
+        let readable = FormatRange::single(1);
+        assert!(warn_format_deprecation(&fresh, &headers, readable));
+        assert!(!warn_format_deprecation(&fresh, &headers, readable));
+        assert!(!warn_format_deprecation(
+            &AppState::new(&GatewayConfig::default()),
+            &reqwest::header::HeaderMap::new(),
+            readable
+        ));
+    }
+
+    /// The early log-destination read states its format too, and takes
+    /// nothing from a snapshot in a format it does not read.
+    #[tokio::test]
+    async fn the_log_destination_is_not_taken_from_an_unreadable_format() {
+        let mut body = serde_json::json!({
+            "version": 7,
+            "config": {"logging": {"clickhouse_url": "http://clickhouse:8123"}}
+        });
+        let stub = stub(StubAnswer::Ok(body.clone())).await;
+        let found = fetch_log_destination(&stub.url, None, Duration::from_secs(2)).await;
+        assert_eq!(found.as_deref(), Some("http://clickhouse:8123"));
+        assert!(stub.seen_formats.lock().is_some());
+
+        body["format"] = serde_json::json!(rolter_core::snapshot_format::SNAPSHOT_FORMAT + 1);
+        *stub.answer.lock() = StubAnswer::Ok(body);
+        assert_eq!(
+            fetch_log_destination(&stub.url, None, Duration::from_secs(2)).await,
+            None
         );
     }
 

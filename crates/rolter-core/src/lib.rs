@@ -33,6 +33,7 @@ pub mod secret_env;
 #[cfg(feature = "shutdown")]
 pub mod shutdown;
 pub mod slug;
+pub mod snapshot_format;
 pub mod stability;
 pub mod telemetry;
 pub mod upstream;

@@ -1,0 +1,581 @@
+{
+  "format": 1,
+  "paths": {
+    "adaptive_routing": [
+      "object"
+    ],
+    "adaptive_routing.cost_weight": [
+      "number"
+    ],
+    "adaptive_routing.enabled": [
+      "boolean"
+    ],
+    "adaptive_routing.exploration_ratio": [
+      "number"
+    ],
+    "adaptive_routing.latency_weight": [
+      "number"
+    ],
+    "adaptive_routing.load_weight": [
+      "number"
+    ],
+    "adaptive_routing.min_samples": [
+      "number"
+    ],
+    "breaker": [
+      "object"
+    ],
+    "breaker.enabled": [
+      "boolean"
+    ],
+    "breaker.failure_threshold": [
+      "number"
+    ],
+    "breaker.open_secs": [
+      "number"
+    ],
+    "budgets": [
+      "array"
+    ],
+    "cache": [
+      "object"
+    ],
+    "cache.default_ttl_secs": [
+      "number"
+    ],
+    "cache.enabled": [
+      "boolean"
+    ],
+    "cache.max_entry_bytes": [
+      "number"
+    ],
+    "cache.namespace": [
+      "string"
+    ],
+    "client": [
+      "object"
+    ],
+    "client.forwarded_headers": [
+      "array"
+    ],
+    "client.injected_headers": [
+      "object"
+    ],
+    "client.request_id_header": [
+      "string"
+    ],
+    "compatibility": [
+      "object"
+    ],
+    "compatibility.anthropic_version": [
+      "string"
+    ],
+    "compatibility.default_max_tokens": [
+      "number"
+    ],
+    "cooldown": [
+      "object"
+    ],
+    "cooldown.base_secs": [
+      "number"
+    ],
+    "cooldown.max_secs": [
+      "number"
+    ],
+    "currency": [
+      "object"
+    ],
+    "currency.base": [
+      "string"
+    ],
+    "currency.rates": [
+      "object"
+    ],
+    "db_virtual_keys": [
+      "array"
+    ],
+    "egress": [
+      "object"
+    ],
+    "egress.allow_hosts": [
+      "array"
+    ],
+    "egress.block_link_local": [
+      "boolean"
+    ],
+    "egress.block_loopback": [
+      "boolean"
+    ],
+    "egress.block_private": [
+      "boolean"
+    ],
+    "feature_flags": [
+      "object"
+    ],
+    "feature_flags.active_health_checks": [
+      "boolean"
+    ],
+    "feature_flags.cache_aware_routing": [
+      "boolean"
+    ],
+    "feature_flags.circuit_breaker": [
+      "boolean"
+    ],
+    "feature_flags.complexity_routing": [
+      "boolean"
+    ],
+    "feature_flags.guardrails": [
+      "boolean"
+    ],
+    "feature_flags.response_cache": [
+      "boolean"
+    ],
+    "guardrail_webhook": [
+      "object"
+    ],
+    "guardrail_webhook.enabled": [
+      "boolean"
+    ],
+    "guardrail_webhook.failure_mode": [
+      "string"
+    ],
+    "guardrail_webhook.max_body_bytes": [
+      "number"
+    ],
+    "guardrail_webhook.max_retries": [
+      "number"
+    ],
+    "guardrail_webhook.stage": [
+      "string"
+    ],
+    "guardrail_webhook.timeout_ms": [
+      "number"
+    ],
+    "guardrail_webhook.url": [
+      "string"
+    ],
+    "guardrails": [
+      "object"
+    ],
+    "guardrails.enabled": [
+      "boolean"
+    ],
+    "guardrails.streaming_post_call": [
+      "string"
+    ],
+    "health": [
+      "object"
+    ],
+    "health.catalogue_interval_secs": [
+      "number"
+    ],
+    "health.consecutive_failure_threshold": [
+      "number"
+    ],
+    "health.enabled": [
+      "boolean"
+    ],
+    "health.interval_secs": [
+      "number"
+    ],
+    "health.path": [
+      "string"
+    ],
+    "health.probe_concurrency": [
+      "number"
+    ],
+    "health.recovery_success_threshold": [
+      "number"
+    ],
+    "health.status_page_interval_secs": [
+      "number"
+    ],
+    "health.timeout_secs": [
+      "number"
+    ],
+    "logging": [
+      "object"
+    ],
+    "logging.batch_max": [
+      "number"
+    ],
+    "logging.flush_ms": [
+      "number"
+    ],
+    "logging.payload_capture": [
+      "object"
+    ],
+    "logging.payload_capture.enabled": [
+      "boolean"
+    ],
+    "logging.payload_capture.max_bytes": [
+      "number"
+    ],
+    "logging.payload_capture.models": [
+      "array"
+    ],
+    "logging.payload_capture.redact_detectors": [
+      "array"
+    ],
+    "logging.payload_capture.redact_detectors[]": [
+      "string"
+    ],
+    "logging.payload_capture.redact_fields": [
+      "array"
+    ],
+    "logging.payload_capture.redact_fields[]": [
+      "string"
+    ],
+    "logging.payload_capture.redact_patterns": [
+      "array"
+    ],
+    "logging.payload_capture.virtual_key_ids": [
+      "array"
+    ],
+    "logging.queue_capacity": [
+      "number"
+    ],
+    "logging.sample_rate": [
+      "number"
+    ],
+    "logging.ui_events": [
+      "boolean"
+    ],
+    "mcp_oauth_sessions": [
+      "array"
+    ],
+    "mcp_servers": [
+      "array"
+    ],
+    "mcp_settings": [
+      "array"
+    ],
+    "mcp_tool_groups": [
+      "array"
+    ],
+    "metrics_scrape": [
+      "object"
+    ],
+    "metrics_scrape.enabled": [
+      "boolean"
+    ],
+    "metrics_scrape.interval_secs": [
+      "number"
+    ],
+    "metrics_scrape.path": [
+      "string"
+    ],
+    "metrics_scrape.timeout_secs": [
+      "number"
+    ],
+    "model_defaults": [
+      "object"
+    ],
+    "model_defaults.enabled": [
+      "boolean"
+    ],
+    "model_prices": [
+      "array"
+    ],
+    "models": [
+      "object"
+    ],
+    "models.default": [
+      "array"
+    ],
+    "models.readonly": [
+      "array"
+    ],
+    "pii_sanitizer": [
+      "object"
+    ],
+    "pii_sanitizer.direction": [
+      "string"
+    ],
+    "pii_sanitizer.enabled": [
+      "boolean"
+    ],
+    "pii_sanitizer.entities": [
+      "array"
+    ],
+    "pii_sanitizer.failure_mode": [
+      "string"
+    ],
+    "pii_sanitizer.max_body_bytes": [
+      "number"
+    ],
+    "pii_sanitizer.max_retries": [
+      "number"
+    ],
+    "pii_sanitizer.restoration": [
+      "string"
+    ],
+    "pii_sanitizer.restore_url": [
+      "string"
+    ],
+    "pii_sanitizer.streaming": [
+      "string"
+    ],
+    "pii_sanitizer.timeout_ms": [
+      "number"
+    ],
+    "pii_sanitizer.url": [
+      "string"
+    ],
+    "plugins": [
+      "object"
+    ],
+    "plugins.instances": [
+      "array"
+    ],
+    "prompt_templates": [
+      "object"
+    ],
+    "prompt_templates.enabled": [
+      "boolean"
+    ],
+    "provider_groups": [
+      "array"
+    ],
+    "providers": [
+      "array"
+    ],
+    "providers[]": [
+      "object"
+    ],
+    "providers[].allow_custom_api_base": [
+      "boolean"
+    ],
+    "providers[].also_track_via_llm_call": [
+      "boolean"
+    ],
+    "providers[].api_base": [
+      "string"
+    ],
+    "providers[].api_keys": [
+      "array"
+    ],
+    "providers[].api_keys[]": [
+      "object"
+    ],
+    "providers[].api_keys[].env": [
+      "string"
+    ],
+    "providers[].api_keys[].weight": [
+      "number"
+    ],
+    "providers[].egress_proxies": [
+      "array"
+    ],
+    "providers[].kind": [
+      "string"
+    ],
+    "providers[].model_role_profiles": [
+      "object"
+    ],
+    "providers[].name": [
+      "string"
+    ],
+    "queue": [
+      "object"
+    ],
+    "queue.backpressure": [
+      "string"
+    ],
+    "queue.block_timeout_ms": [
+      "number"
+    ],
+    "queue.capacity": [
+      "number"
+    ],
+    "queue.enabled": [
+      "boolean"
+    ],
+    "queue.workers": [
+      "number"
+    ],
+    "rate_limits": [
+      "array"
+    ],
+    "realtime": [
+      "object"
+    ],
+    "realtime.idle_timeout_secs": [
+      "number"
+    ],
+    "realtime.max_connections": [
+      "number"
+    ],
+    "realtime.max_session_secs": [
+      "number"
+    ],
+    "realtime.usage_flush_secs": [
+      "number"
+    ],
+    "responses": [
+      "object"
+    ],
+    "responses.registry_max_entries": [
+      "number"
+    ],
+    "responses.registry_ttl_secs": [
+      "number"
+    ],
+    "retry": [
+      "object"
+    ],
+    "retry.base_backoff_ms": [
+      "number"
+    ],
+    "retry.max_backoff_ms": [
+      "number"
+    ],
+    "retry.max_retries": [
+      "number"
+    ],
+    "routes": [
+      "array"
+    ],
+    "routes[]": [
+      "object"
+    ],
+    "routes[].advanced": [
+      "object"
+    ],
+    "routes[].advanced.capabilities": [
+      "array"
+    ],
+    "routes[].advanced.guardrails": [
+      "object"
+    ],
+    "routes[].advanced.headers": [
+      "object"
+    ],
+    "routes[].advanced.limits": [
+      "object"
+    ],
+    "routes[].advanced.locked_headers": [
+      "array"
+    ],
+    "routes[].advanced.visibility": [
+      "object"
+    ],
+    "routes[].advanced.visibility.allowed_key_ids": [
+      "array"
+    ],
+    "routes[].advanced.visibility.allowed_team_ids": [
+      "array"
+    ],
+    "routes[].advanced.visibility.allowed_user_ids": [
+      "array"
+    ],
+    "routes[].model": [
+      "string"
+    ],
+    "routes[].param_policy": [
+      "object"
+    ],
+    "routes[].param_policy.allow": [
+      "array"
+    ],
+    "routes[].param_policy.deny": [
+      "array"
+    ],
+    "routes[].param_policy.mode": [
+      "string"
+    ],
+    "routes[].params": [
+      "object"
+    ],
+    "routes[].strategy": [
+      "string"
+    ],
+    "routes[].targets": [
+      "array"
+    ],
+    "routes[].targets[]": [
+      "object"
+    ],
+    "routes[].targets[].model": [
+      "string"
+    ],
+    "routes[].targets[].provider": [
+      "string"
+    ],
+    "routes[].targets[].weight": [
+      "number"
+    ],
+    "routes[].variants": [
+      "array"
+    ],
+    "schema_version": [
+      "number"
+    ],
+    "security": [
+      "object"
+    ],
+    "server": [
+      "object"
+    ],
+    "server.host": [
+      "string"
+    ],
+    "server.max_body_bytes": [
+      "number"
+    ],
+    "server.metrics_path": [
+      "string"
+    ],
+    "server.port": [
+      "number"
+    ],
+    "timeouts": [
+      "object"
+    ],
+    "timeouts.connect_secs": [
+      "number"
+    ],
+    "timeouts.request_secs": [
+      "number"
+    ],
+    "tls": [
+      "object"
+    ],
+    "tls.ca_bundles": [
+      "array"
+    ],
+    "unpriced_policy": [
+      "string"
+    ],
+    "usage_recording": [
+      "object"
+    ],
+    "usage_recording.queue_capacity": [
+      "number"
+    ],
+    "usage_recording.workers": [
+      "number"
+    ],
+    "virtual_keys": [
+      "array"
+    ],
+    "virtual_keys[]": [
+      "object"
+    ],
+    "virtual_keys[].disabled": [
+      "boolean"
+    ],
+    "virtual_keys[].key": [
+      "string"
+    ],
+    "virtual_keys[].models": [
+      "array"
+    ],
+    "virtual_keys[].name": [
+      "string"
+    ],
+    "virtual_keys[].providers": [
+      "array"
+    ]
+  }
+}

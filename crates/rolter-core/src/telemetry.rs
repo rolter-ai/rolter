@@ -497,7 +497,8 @@ impl ControlHistograms {
     /// Record one completed snapshot build.
     ///
     /// `bytes` is the serialized payload every polling gateway transfers, and
-    /// `outcome` is a bounded label (`ok`, `not_modified`, `error`) — never the
+    /// `outcome` is a bounded label (`ok`, `not_modified`, `error`, and
+    /// `refused` for a poll the format negotiation turned away) — never the
     /// `config_version`, which is unbounded and would make a new time series on
     /// every config write.
     pub fn record_snapshot(&self, outcome: &'static str, duration_ms: u64, bytes: u64) {

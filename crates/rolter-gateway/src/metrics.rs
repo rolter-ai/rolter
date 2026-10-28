@@ -298,6 +298,12 @@ pub struct Metrics {
     pub config_reloads_total: AtomicU64,
     /// failed snapshot fetches/parses since start
     pub config_reload_failures_total: AtomicU64,
+    /// the `/internal/snapshot` format of the snapshot applied last, or `0`
+    /// while the gateway holds only its bootstrap file (ADR-0038)
+    pub snapshot_format: AtomicU64,
+    /// `1` while the control plane's last answer was a snapshot format this
+    /// gateway cannot read, `0` once a compatible answer arrives (ADR-0038)
+    pub snapshot_format_refused: AtomicU64,
     /// live per-(model, target) circuit-breaker entries after the last reload,
     /// so registry growth across config generations is observable (#1053)
     pub breaker_entries: AtomicU64,
@@ -658,6 +664,18 @@ impl Metrics {
                 name: "rolter_config_reload_failures_total",
                 help: "failed config snapshot fetches",
                 value: self.config_reload_failures_total.load(Relaxed),
+            },
+            Scalar {
+                kind: "gauge",
+                name: "rolter_snapshot_format",
+                help: "snapshot format of the config snapshot applied last; 0 while only the bootstrap file is held",
+                value: self.snapshot_format.load(Relaxed),
+            },
+            Scalar {
+                kind: "gauge",
+                name: "rolter_snapshot_format_refused",
+                help: "1 while the control plane serves no snapshot format this gateway reads",
+                value: self.snapshot_format_refused.load(Relaxed),
             },
             Scalar {
                 kind: "gauge",
