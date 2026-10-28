@@ -279,7 +279,8 @@ async fn discover_now(
     .await?;
     let user = match &principal {
         Principal::User(user) => Some(user.id),
-        Principal::Superadmin { .. } => None,
+        // neither holds a person's own grant to the server
+        Principal::Superadmin { .. } | Principal::Token(_) => None,
     };
     let server = discover(&state, id, user).await?;
     log_audit(
