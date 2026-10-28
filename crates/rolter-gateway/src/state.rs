@@ -295,6 +295,23 @@ pub struct Snapshot {
     pub plugins: Arc<rolter_core::PluginsConfig>,
 }
 
+/// The longest an upstream request may take to answer under `config`: the
+/// connect and request timeouts, with the longest route override of the
+/// latter. A half-open breaker's probe holds its slot at least this long
+/// (#3248). `0` when the request timeout is off, so nothing bounds it.
+fn probe_timeout_secs(config: &GatewayConfig) -> u64 {
+    if config.timeouts.request_secs == 0 {
+        return 0;
+    }
+    let request = config
+        .routes
+        .iter()
+        .filter_map(|route| route.advanced.limits.timeout_secs)
+        .map(u64::from)
+        .fold(config.timeouts.request_secs, u64::max);
+    config.timeouts.connect_secs.saturating_add(request)
+}
+
 /// Live per-target latency handle for the `fastest` strategy, backed by the
 /// shared in-flight tracker (which survives config reloads). `namespace` is
 /// the load-tracker key the route's guards record under: the public model for
@@ -1165,11 +1182,15 @@ impl AppState {
             // always a reconfigurable breaker (even when currently disabled) so a
             // config hot-reload can enable/disable and re-tune it in place without
             // discarding accumulated per-target state; see reload()
-            breaker: crate::breaker::Breaker::new(
-                config.breaker.enabled(),
-                config.breaker.failure_threshold,
-                config.breaker.open_secs,
-            ),
+            breaker: {
+                let breaker = crate::breaker::Breaker::new(
+                    config.breaker.enabled(),
+                    config.breaker.failure_threshold,
+                    config.breaker.open_secs,
+                );
+                breaker.set_probe_timeout(probe_timeout_secs(config));
+                breaker
+            },
             // an enabled snapshot only when scraping is on, else an inert one
             // that reports zero depth so it never perturbs the load view
             upstream_metrics: if config.metrics_scrape.enabled {
@@ -1214,6 +1235,7 @@ impl AppState {
             config.breaker.failure_threshold,
             config.breaker.open_secs,
         );
+        self.breaker.set_probe_timeout(probe_timeout_secs(config));
         // a reload is where models and targets get retired, and the gateway
         // applies one without restarting — so it is also where the breaker
         // sheds entries nothing routes to any more. Open and half-open targets

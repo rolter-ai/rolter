@@ -20,7 +20,7 @@ Each target has an independent circuit breaker that moves through three states:
   </Card>
 
   <Card title="Half-Open" icon="circle-half-stroke">
-    The open window expired. The next request is used as a probe, and it is the only one: other requests skip the target until the probe's result arrives. A successful response closes the breaker; another failure immediately re-opens it for another `open_secs`. A probe that never answers (the caller disconnected) gives up its slot after `open_secs` or 30 seconds, whichever is longer, and the next request probes instead.
+    The open window expired. The next request is used as a probe, and it is the only one: other requests skip the target until the probe's result arrives. A successful response closes the breaker; another failure immediately re-opens it for another `open_secs`. A probe that never answers (the caller disconnected) gives up its slot after the longest of `open_secs`, 30 seconds and the upstream request timeout (`[timeouts]`), and the next request probes instead; a probe that never reached the target, such as one a full provider queue turned away, gives it up at once. One exception: when every target of a route is skipped (a route with a single target, for example), Rolter still fails open and sends requests to the probing target rather than refusing them, so the one-probe rule protects a target only while it has siblings to take the traffic. Whether that should change is tracked in [#3389](https://github.com/rolter-ai/rolter/issues/3389).
   </Card>
 </CardGroup>
 

@@ -20,8 +20,12 @@
 //! back (the caller went away, the request was cancelled, or it ended on a path
 //! that records neither outcome) would otherwise wedge the target half-open with
 //! every request refused. Once the lease elapses the next `allows` admits a new
-//! probe in its place. The lease is the open window, floored at
-//! [`PROBE_LEASE_FLOOR`], so a slow probe is not raced by a second one.
+//! probe in its place. The lease is the longest of the open window,
+//! [`PROBE_LEASE_FLOOR`] and the upstream timeout the gateway gives a request
+//! ([`Breaker::set_probe_timeout`]), so a slow probe is not raced by a second
+//! one. A probe that ends on a path that says nothing about the target (the
+//! queue refused it, a key-level failure) gives its slot back at once with
+//! [`Breaker::release`].
 //!
 //! A derived `Default` registry is permanently inert (no backing store) and
 //! admits every target. A registry built with [`Breaker::new`] can be enabled,
@@ -126,6 +130,9 @@ struct Shared {
     enabled: AtomicBool,
     failure_threshold: AtomicU32,
     open_secs: AtomicU64,
+    /// the longest an upstream request may take to answer, which a probe's
+    /// lease is never shorter than; `0` when no timeout bounds it
+    probe_timeout_secs: AtomicU64,
 }
 
 /// Shared, cheaply-cloneable circuit-breaker registry. A `None` inner is a
@@ -149,6 +156,7 @@ impl Breaker {
                 enabled: AtomicBool::new(enabled),
                 failure_threshold: AtomicU32::new(failure_threshold.max(1)),
                 open_secs: AtomicU64::new(open_secs),
+                probe_timeout_secs: AtomicU64::new(0),
             })),
         }
     }
@@ -166,6 +174,16 @@ impl Breaker {
             .store(failure_threshold.max(1), Relaxed);
         inner.open_secs.store(open_secs, Relaxed);
         inner.enabled.store(enabled, Relaxed);
+    }
+
+    /// Set the longest an upstream request may take to answer, so a probe's
+    /// lease outlasts it: a probe reports back when its response headers
+    /// arrive, which for a non-streaming completion is when it finishes. `0`
+    /// means no timeout bounds a request, and the floor applies alone.
+    pub fn set_probe_timeout(&self, secs: u64) {
+        if let Some(inner) = &self.inner {
+            inner.probe_timeout_secs.store(secs, Relaxed);
+        }
     }
 
     /// Whether this registry is currently enforcing (enabled with a backing store).
@@ -208,9 +226,60 @@ impl Breaker {
             // still inside the open window, or the probe still holds the slot
             return false;
         }
-        let lease = Duration::from_secs(inner.open_secs.load(Relaxed)).max(PROBE_LEASE_FLOOR);
+        let lease = Duration::from_secs(
+            inner
+                .open_secs
+                .load(Relaxed)
+                .max(inner.probe_timeout_secs.load(Relaxed)),
+        )
+        .max(PROBE_LEASE_FLOOR);
         entry.phase = Phase::HalfOpen(now + lease);
         true
+    }
+
+    /// Whether `(model, idx)` would refuse traffic right now: an open breaker
+    /// inside its window, or a half-open one whose probe still holds the slot.
+    /// Read-only, like [`Breaker::open_mask`] for one target: it never moves a
+    /// target to half-open, so it takes no probe slot. A caller that only
+    /// orders candidates asks this, and asks [`Breaker::allows`] only of the
+    /// target it actually sends to.
+    pub fn refuses(&self, model: &str, idx: usize) -> bool {
+        let Some(inner) = self.active() else {
+            return false;
+        };
+        let map = inner.map.lock();
+        match map
+            .get(model)
+            .and_then(|m| m.get(idx))
+            .and_then(Option::as_ref)
+            .map(|entry| entry.phase)
+        {
+            Some(Phase::Open(until) | Phase::HalfOpen(until)) => Instant::now() < until,
+            _ => false,
+        }
+    }
+
+    /// Give back the probe slot `(model, idx)` holds without recording an
+    /// outcome, for a probe that ended on a path that says nothing about the
+    /// target: the caller left, the request was refused before it was sent,
+    /// the queue would not admit it. The target goes back to open with its
+    /// window already elapsed, so the next [`Breaker::allows`] admits a fresh
+    /// probe at once instead of after the lease, and no failure is counted.
+    /// A target that is closed, or open inside its window, is left alone.
+    pub fn release(&self, model: &str, idx: usize) {
+        let Some(inner) = self.active() else {
+            return;
+        };
+        let mut map = inner.map.lock();
+        if let Some(entry) = map
+            .get_mut(model)
+            .and_then(|m| m.get_mut(idx))
+            .and_then(Option::as_mut)
+        {
+            if matches!(entry.phase, Phase::HalfOpen(_)) {
+                entry.phase = Phase::Open(Instant::now());
+            }
+        }
     }
 
     /// Which of a model's first `n` targets would refuse traffic right now (an
@@ -670,6 +739,62 @@ mod tests {
                 "{held:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_released_probe_frees_the_slot_at_once_and_counts_no_failure() {
+        let b = Breaker::new(true, 3, 0);
+        for _ in 0..3 {
+            b.on_failure("m", 0);
+        }
+        let failures = b.snapshot()[0].consecutive_failures;
+        assert!(b.allows("m", 0), "the probe");
+        assert!(b.refuses("m", 0), "the probe holds the slot");
+        b.release("m", 0);
+        assert!(!b.refuses("m", 0), "released at once, not after the lease");
+        assert_eq!(b.snapshot()[0].consecutive_failures, failures);
+        assert!(b.allows("m", 0), "a fresh probe is admitted");
+        // releasing a closed or never-seen target changes nothing
+        b.release("other", 0);
+        assert!(b.on_success("m", 0));
+        b.release("m", 0);
+        assert!(b.allows("m", 0));
+        assert!(b.is_empty());
+    }
+
+    #[test]
+    fn refuses_is_read_only() {
+        let b = Breaker::new(true, 1, 0);
+        assert!(!b.refuses("m", 0), "a never-seen target");
+        assert!(b.on_failure("m", 0));
+        // the window has elapsed: not refusing, and asking takes no slot
+        for _ in 0..10 {
+            assert!(!b.refuses("m", 0));
+        }
+        assert!(b.allows("m", 0), "the probe is still there to take");
+        assert!(b.refuses("m", 0));
+        let open = Breaker::new(true, 1, 3600);
+        assert!(open.on_failure("m", 0));
+        assert!(open.refuses("m", 0));
+    }
+
+    #[test]
+    fn the_probe_lease_outlasts_the_request_timeout() {
+        let b = Breaker::new(true, 1, 0);
+        b.set_probe_timeout(300);
+        assert!(b.on_failure("m", 0));
+        let before = Instant::now();
+        assert!(b.allows("m", 0));
+        let inner = b.inner.as_ref().expect("a backing store");
+        let map = inner.map.lock();
+        let Some(Some(Entry {
+            phase: Phase::HalfOpen(lease),
+            ..
+        })) = map.get("m").and_then(|m| m.first())
+        else {
+            panic!("not half-open");
+        };
+        assert!(lease.saturating_duration_since(before) >= Duration::from_secs(300));
     }
 
     /// Move an open target's window into the past without waiting for it.

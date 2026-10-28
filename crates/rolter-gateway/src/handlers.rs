@@ -2712,6 +2712,8 @@ async fn proxy(
             let provider = match snap.providers.get(&target.provider) {
                 Some(provider) => provider,
                 None => {
+                    // nothing was sent, so the probe slot this target took goes back
+                    state.breaker.release(&model, idx);
                     last_error = Some("configured target provider not found".to_string());
                     break;
                 }
@@ -2868,6 +2870,7 @@ async fn proxy(
                                 });
                                 last_error = None;
                                 last_failure = Some(failure);
+                                state.breaker.release(&model, idx);
                                 continue;
                             }
                             _ => peeked.response,
@@ -2887,6 +2890,9 @@ async fn proxy(
                         }
                         // let the same target be re-picked with a fresh key
                         tried.pop();
+                        // a key-level failure says nothing about the target, so its probe
+                        // slot is given back rather than held for the lease
+                        state.breaker.release(&model, idx);
                         last_failure = Failure::from_status(status);
                         if attempt < max_retries {
                             // the caller will never see this failure, so record it against the
@@ -2987,6 +2993,8 @@ async fn proxy(
                     let message = err.to_string();
                     last_failure = Some(Failure::from_transport_error(&message));
                     if is_queue_admission_error(&message) {
+                        // the queue turned the request away before the target saw it
+                        state.breaker.release(&model, idx);
                         last_error = Some(message);
                         break;
                     }
@@ -3635,6 +3643,8 @@ async fn proxy_multipart(
         let provider = match snap.providers.get(&target.provider) {
             Some(provider) => provider,
             None => {
+                // nothing was sent, so the probe slot this target took goes back
+                state.breaker.release(&model, idx);
                 last_error = Some("configured target provider not found".to_string());
                 break;
             }
@@ -3703,6 +3713,7 @@ async fn proxy_multipart(
                             });
                             last_error = None;
                             last_failure = Some(failure);
+                            state.breaker.release(&model, idx);
                             continue;
                         }
                         _ => peeked.response,
@@ -3721,6 +3732,9 @@ async fn proxy_multipart(
                             .fetch_add(1, Relaxed);
                     }
                     tried.pop();
+                    // a key-level failure says nothing about the target, so its probe
+                    // slot is given back rather than held for the lease
+                    state.breaker.release(&model, idx);
                     last_failure = Failure::from_status(status);
                     if attempt < max_retries {
                         // the caller will never see this failure, so record it against the
@@ -3802,6 +3816,8 @@ async fn proxy_multipart(
                 let message = err.to_string();
                 last_failure = Some(Failure::from_transport_error(&message));
                 if is_queue_admission_error(&message) {
+                    // the queue turned the request away before the target saw it
+                    state.breaker.release(&model, idx);
                     last_error = Some(message);
                     break;
                 }
@@ -4243,9 +4259,11 @@ async fn forward_variants(
                             cd_enabled,
                             v.targets.len(),
                             v.targets.iter().map(|t| t.provider.as_str()),
-                        )
-                    })
-                    .contains(ti)
+                        ),
+                    ));
+                }
+                read.as_ref()
+                    .is_some_and(|(_, blocked)| blocked.contains(ti))
             };
             // prefer an untried, non-skipped candidate whose breaker admits it (the
             // read above leaves an elapsed open window to `allows`, which takes the
@@ -4279,6 +4297,8 @@ async fn forward_variants(
         let provider = match snap.providers.get(&target.provider) {
             Some(provider) => provider,
             None => {
+                // nothing was sent, so the probe slot this target took goes back
+                state.breaker.release(key, ti);
                 out.last_error = Some("configured target provider not found".to_string());
                 break;
             }
@@ -4373,6 +4393,7 @@ async fn forward_variants(
                             });
                             out.last_error = None;
                             last_failure = Some(failure);
+                            state.breaker.release(key, ti);
                             continue;
                         }
                         _ => peeked.response,
@@ -4391,6 +4412,9 @@ async fn forward_variants(
                             .fetch_add(1, Relaxed);
                     }
                     tried.pop();
+                    // a key-level failure says nothing about the target, so its probe
+                    // slot is given back rather than held for the lease
+                    state.breaker.release(key, ti);
                     last_failure = Failure::from_status(status);
                     if attempt < max_retries {
                         // the caller will never see this failure, so record it against the
@@ -4486,6 +4510,8 @@ async fn forward_variants(
                 let message = err.to_string();
                 last_failure = Some(Failure::from_transport_error(&message));
                 if is_queue_admission_error(&message) {
+                    // the queue turned the request away before the target saw it
+                    state.breaker.release(key, ti);
                     out.last_error = Some(message);
                     break;
                 }
@@ -4543,7 +4569,61 @@ pub(crate) fn pick_untried(
     key_meta: Option<&KeyMeta>,
     failure: Option<&Failure>,
 ) -> Option<usize> {
+    pick_untried_with(
+        entry, ctx, tried, loads, cooldowns, health, breaker, model, cd_enabled, key_meta, failure,
+        true,
+    )
+}
+
+/// [`pick_untried`] for a caller that orders candidates before sending to any
+/// of them, such as a realtime session building its dial list: the breaker is
+/// only read (`Breaker::refuses`), so no half-open probe slot is taken for a
+/// target the caller may never dial. The caller asks `Breaker::allows` of the
+/// one it dials (#3248).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn pick_untried_read_only(
+    entry: &crate::state::RouteEntry,
+    ctx: &RouteContext,
+    tried: &[usize],
+    loads: &[u64],
+    cooldowns: &crate::cooldowns::Cooldowns,
+    health: &crate::health::Health,
+    breaker: &crate::breaker::Breaker,
+    model: &str,
+    cd_enabled: bool,
+    key_meta: Option<&KeyMeta>,
+) -> Option<usize> {
+    pick_untried_with(
+        entry, ctx, tried, loads, cooldowns, health, breaker, model, cd_enabled, key_meta, None,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn pick_untried_with(
+    entry: &crate::state::RouteEntry,
+    ctx: &RouteContext,
+    tried: &[usize],
+    loads: &[u64],
+    cooldowns: &crate::cooldowns::Cooldowns,
+    health: &crate::health::Health,
+    breaker: &crate::breaker::Breaker,
+    model: &str,
+    cd_enabled: bool,
+    key_meta: Option<&KeyMeta>,
+    failure: Option<&Failure>,
+    take_probe: bool,
+) -> Option<usize> {
     let n = entry.route.targets.len();
+    // the breaker's admission: `allows` takes the half-open probe slot, so
+    // only a caller about to send asks it
+    let breaker_admits = |i: usize| {
+        if take_probe {
+            breaker.allows(model, i)
+        } else {
+            !breaker.refuses(model, i)
+        }
+    };
     // a target the key may use and, if it is a restricted fallback, one the
     // failure being walked away from lets it take over (#1584)
     let key_allows = |i: usize| admits(entry, i, key_meta, failure);
@@ -4555,7 +4635,7 @@ pub(crate) fn pick_untried(
         !key_allows(i)
             || (cd_enabled && cooldowns.is_parked(model, i))
             || !health.is_healthy(&entry.route.targets[i].provider)
-            || !breaker.allows(model, i)
+            || !breaker_admits(i)
     };
     // the same rules for every target at once, read from each registry in one
     // lock acquisition and only if something asks. a strategy that weighs
@@ -4598,7 +4678,7 @@ pub(crate) fn pick_untried(
     // not move an open breaker whose window has elapsed to half-open, so the
     // target chosen here asks `allows`, which does
     (0..n)
-        .find(|&i| usable(i) && breaker.allows(model, i))
+        .find(|&i| usable(i) && breaker_admits(i))
         .or_else(|| first_untried_allowed(entry, tried, key_meta, failure))
 }
 
