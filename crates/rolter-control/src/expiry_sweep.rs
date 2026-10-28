@@ -11,7 +11,7 @@ use std::future::Future;
 use chrono::{Duration, Utc};
 use rolter_core::Result;
 use rolter_store::postgres::repo::{
-    McpOAuthRepo, MfaRepo, SsoRepo, MCP_SWEEP_BATCH, SSO_SWEEP_BATCH,
+    InvitationRepo, McpOAuthRepo, MfaRepo, SsoRepo, MCP_SWEEP_BATCH, SSO_SWEEP_BATCH,
 };
 
 /// How often the background sweep runs.
@@ -56,12 +56,18 @@ pub(crate) async fn sweep_once(pool: &sqlx::PgPool) {
         mfa.sweep_expired_challenges(SSO_SWEEP_BATCH)
     })
     .await;
-    if states + codes + mcp_states + challenges > 0 {
+    let invitations = InvitationRepo(pool);
+    let sealed = drain("invitation sealed tokens", SSO_SWEEP_BATCH, || {
+        invitations.sweep_expired_sealed_tokens(SSO_SWEEP_BATCH)
+    })
+    .await;
+    if states + codes + mcp_states + challenges + sealed > 0 {
         tracing::debug!(
             states,
             codes,
             mcp_states,
             challenges,
+            sealed,
             "swept expired flow state"
         );
     }

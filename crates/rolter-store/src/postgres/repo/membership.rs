@@ -593,6 +593,29 @@ impl InvitationRepo<'_> {
         .map_err(store_err)
     }
 
+    /// Clear the sealed token of at most `limit` invitations past their expiry
+    /// and return how many were cleared (#3397). The link of an expired
+    /// invitation no longer works, so the KEK-sealed copy kept for a resend is
+    /// a credential with nothing left to open; accepting, revoking or replacing
+    /// an invitation clears it, and this covers the one that just ran out.
+    /// [`Self::sealed_token`] refuses an expired row itself, so one waiting for
+    /// the sweep is inert. Locked rows are skipped so concurrent replicas split
+    /// a backlog.
+    pub async fn sweep_expired_sealed_tokens(&self, limit: i64) -> Result<u64> {
+        let result = sqlx::query(
+            "update invitations set token_ciphertext = null, token_nonce = null \
+             where id in ( \
+                 select id from invitations where expires_at <= now() \
+                   and (token_ciphertext is not null or token_nonce is not null) \
+                 order by expires_at limit $1 for update skip locked)",
+        )
+        .bind(limit)
+        .execute(self.0)
+        .await
+        .map_err(store_err)?;
+        Ok(result.rows_affected())
+    }
+
     pub async fn get(&self, id: Uuid) -> Result<Invitation> {
         fetch_optional_or_not_found(
             sqlx::query_as(sqlx::AssertSqlSafe(format!(

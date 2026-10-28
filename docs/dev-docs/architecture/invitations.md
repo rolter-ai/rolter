@@ -217,7 +217,12 @@ fails an invitation.
   `create_invitation` also stores the token sealed (`token_ciphertext` and
   `token_nonce`, migration `0155`, listed in `SEALED_COLUMNS`); a resend opens
   it, keeps the expiry and records the outcome on the row. Accepting, revoking
-  or replacing an invitation clears the sealed copy. One without it (created
+  or replacing an invitation clears the sealed copy, and so does expiry: the
+  background `expiry_sweep` (every five minutes) calls
+  `InvitationRepo::sweep_expired_sealed_tokens` for each invitation past
+  `expires_at`, since an expired link opens nothing and the copy would otherwise
+  live as long as the row (#3397). `sealed_token` refuses an expired row itself,
+  so one waiting for the sweep is inert. One without it (created
   before `0155`, without a relay, or without a KEK) answers `409` and has to be
   revoked and sent again. It is guarded as creating the invitation is, at the
   invitation's own scope, and audits `invitation.resend` followed by the usual
