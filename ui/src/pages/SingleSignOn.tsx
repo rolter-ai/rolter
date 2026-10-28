@@ -23,7 +23,8 @@ import { LoadError } from "@/components/LoadError";
 import { ListSummary, PageBody, Pill, RowIconButton } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
 import { Combobox } from "@/components/ui/combobox";
-import { CopyableText, CopyableValue } from "@/components/ui/copyable-value";
+import { CopyableValue } from "@/components/ui/copyable-value";
+import { LabelledValue } from "@/components/ui/labelled-value";
 import { DeleteIconButton } from "@/components/ui/delete-icon-button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
@@ -64,49 +65,6 @@ import { useScreenReady } from "@/lib/ux-react";
 const PROVIDERS_KEY = "sso-providers";
 const POLICY_KEY = "org-auth-policy";
 const MAPPINGS_KEY = "sso-group-mappings";
-
-// a labelled line inside a provider card: mono value, optionally copyable. a
-// copyable address is `CopyableText` and wraps, because the end of it is what
-// tells the redirect uri from the login url. every other value is one truncated
-// line, so a long issuer or scope list does not stretch the card; `note` says
-// what the value is for
-function Detail({
-  label,
-  value,
-  copyLabel,
-  note,
-}: {
-  label: string;
-  value: string;
-  copyLabel?: string;
-  note?: string;
-}) {
-  return (
-    <div className="flex min-w-0 items-start gap-2">
-      <span className="w-[104px] flex-none text-2xs uppercase leading-4 tracking-[0.07em] text-[color:var(--text-subtle)]">
-        {label}
-      </span>
-      <div className="min-w-0 flex-1">
-        {copyLabel ? (
-          <CopyableText
-            variant="inline"
-            value={value}
-            copyLabel={copyLabel}
-            className="text-xs leading-4"
-          />
-        ) : (
-          <span
-            title={value}
-            className="block truncate font-mono text-xs leading-4 text-[color:var(--text-secondary)]"
-          >
-            {value}
-          </span>
-        )}
-        {note && <span className="mt-0.5 block text-xs text-muted-foreground">{note}</span>}
-      </div>
-    </div>
-  );
-}
 
 /**
  * A warning with a title and the lines that explain it: the screen's one
@@ -399,9 +357,9 @@ function SignInPolicyCard({
   const turnsSsoOff = locksOutSsoMembers(providers, policy, { allow_sso: sso });
   const gap = secretGap(providers);
 
-  // how many accounts the tightening would bind. Best-effort: a caller who may
-  // not read the org's memberships still gets the warning, just without a
-  // number in it — refusing to warn at all would be the worse trade
+  // who the tightening would bind and who of them has no factor yet, from the
+  // enrolment roster. Best-effort: a caller who may not read the roster still
+  // gets the warning, just without a number in it — refusing to warn at all would be the worse trade
   const roster = useQuery({
     queryKey: ["mfa-status", orgId],
     queryFn: () => fetchOrgMfaStatus(orgId),
@@ -810,9 +768,9 @@ function ProviderCard({
       </header>
 
       <div className="flex flex-col gap-1.5 border-t border-[color:var(--border-subtle)] px-4 py-3">
-        <Detail label={t("pages.sso.providers.issuer")} value={provider.issuer} />
-        <Detail label={t("pages.sso.providers.clientId")} value={provider.client_id} />
-        <Detail
+        <LabelledValue label={t("pages.sso.providers.issuer")} value={provider.issuer} />
+        <LabelledValue label={t("pages.sso.providers.clientId")} value={provider.client_id} />
+        <LabelledValue
           label={t("pages.sso.providers.clientSecret")}
           value={
             provider.has_client_secret
@@ -825,20 +783,20 @@ function ProviderCard({
             they used to be assembled from the browser's origin, which is wrong
             behind a proxy, and the only one shown was the login url, which is
             not what an identity provider asks for (#2083) */}
-        <Detail
+        <LabelledValue
           label={t("pages.sso.providers.redirectUri")}
           value={provider.redirect_uri}
           copyLabel={t("pages.sso.providers.copyRedirectUri")}
           note={t("pages.sso.providers.redirectUriNote")}
         />
-        <Detail
+        <LabelledValue
           label={t("pages.sso.providers.startUrl")}
           value={provider.login_url}
           copyLabel={t("pages.sso.providers.copyStartUrl")}
           note={t("pages.sso.providers.startUrlNote")}
         />
-        <Detail label={t("pages.sso.providers.groupClaim")} value={provider.group_claim} />
-        <Detail label={t("pages.sso.providers.scopes")} value={provider.scopes.join(" ")} />
+        <LabelledValue label={t("pages.sso.providers.groupClaim")} value={provider.group_claim} />
+        <LabelledValue label={t("pages.sso.providers.scopes")} value={provider.scopes.join(" ")} />
       </div>
 
       <ProviderMappings provider={provider} />

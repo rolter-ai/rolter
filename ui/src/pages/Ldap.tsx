@@ -16,6 +16,7 @@ import { DeleteIconButton } from "@/components/ui/delete-icon-button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import { LabelledValue } from "@/components/ui/labelled-value";
 import { CardGridSkeleton } from "@/components/LoadingState";
 import { Skeleton } from "@/components/ui/skeleton";
 import { SurfacePanel } from "@/components/ui/surface-panel";
@@ -46,23 +47,6 @@ const DEFAULT_FILTER = "(uid={login})";
 const DEFAULT_EMAIL_ATTR = "mail";
 const DEFAULT_NAME_ATTR = "cn";
 const DEFAULT_GROUP_ATTR = "memberOf";
-
-// a labelled line inside the directory card: one truncated mono value
-function Detail({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex min-w-0 items-start gap-2">
-      <span className="w-[104px] flex-none text-2xs uppercase leading-4 tracking-[0.07em] text-[color:var(--text-subtle)]">
-        {label}
-      </span>
-      <span
-        title={value}
-        className="block min-w-0 flex-1 truncate font-mono text-xs leading-4 text-[color:var(--text-secondary)]"
-      >
-        {value}
-      </span>
-    </div>
-  );
-}
 
 interface Draft {
   name: string;
@@ -204,8 +188,8 @@ function DirectorySheet({
   const dirty = editing
     ? (Object.keys(draft) as (keyof Draft)[]).some((k) => draft[k] !== initial[k])
     : (Object.keys(draft) as (keyof Draft)[]).some((k) => draft[k] !== EMPTY_DRAFT[k]);
-  const canSave =
-    !!draft.name.trim() && !!draft.url.trim() && !!draft.bindDn.trim() && !!draft.baseDn.trim();
+  // an empty bind DN is a valid directory: the search is anonymous
+  const canSave = !!draft.name.trim() && !!draft.url.trim() && !!draft.baseDn.trim();
   // the plain-ldap refusal is the server's, but the form can say it first
   const plainWithTls = draft.requireTls && draft.url.trim().toLowerCase().startsWith("ldap://");
 
@@ -453,9 +437,9 @@ function DirectoryCard({
       </header>
 
       <div className="flex flex-col gap-1.5 border-t border-[color:var(--border-subtle)] px-4 py-3">
-        <Detail label={t("pages.ldap.directory.url")} value={directory.url} />
-        <Detail label={t("pages.ldap.directory.bindDn")} value={directory.bind_dn} />
-        <Detail
+        <LabelledValue label={t("pages.ldap.directory.url")} value={directory.url} />
+        <LabelledValue label={t("pages.ldap.directory.bindDn")} value={directory.bind_dn} />
+        <LabelledValue
           label={t("pages.ldap.directory.bindPassword")}
           value={
             directory.has_bind_password
@@ -463,10 +447,10 @@ function DirectoryCard({
               : t("pages.ldap.directory.passwordMissing")
           }
         />
-        <Detail label={t("pages.ldap.directory.baseDn")} value={directory.base_dn} />
-        <Detail label={t("pages.ldap.directory.userFilter")} value={directory.user_filter} />
-        <Detail label={t("pages.ldap.directory.emailAttr")} value={directory.email_attr} />
-        <Detail label={t("pages.ldap.directory.groupAttr")} value={directory.group_attr} />
+        <LabelledValue label={t("pages.ldap.directory.baseDn")} value={directory.base_dn} />
+        <LabelledValue label={t("pages.ldap.directory.userFilter")} value={directory.user_filter} />
+        <LabelledValue label={t("pages.ldap.directory.emailAttr")} value={directory.email_attr} />
+        <LabelledValue label={t("pages.ldap.directory.groupAttr")} value={directory.group_attr} />
       </div>
 
       <DirectoryMappings directory={directory} />

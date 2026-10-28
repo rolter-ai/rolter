@@ -119,9 +119,6 @@ import {
 } from "@/lib/user-scope-filter";
 import { useScreenReady } from "@/lib/ux-react";
 
-// admin surface for the user/team lifecycle (ROL-223): invite people into the
-// current org, a team or a project and withdraw invitations still pending,
-// grant/revoke roles at org/team/project scope, and deactivate/delete accounts.
 const DEPLOYMENT_ROLE_KEY: Record<DeploymentRole, string> = {
   operator: "pages.users.deploymentRole.operator",
   security_auditor: "pages.users.deploymentRole.securityAuditor",
@@ -265,6 +262,10 @@ function SecondFactorCell({
   );
 }
 
+// admin surface for the user/team lifecycle (ROL-223): invite people into the
+// current org, a team or a project and withdraw invitations still pending,
+// grant/revoke roles at org/team/project scope, and deactivate/delete accounts.
+//
 // everything is scoped to the org selected in the sidebar ScopeSwitcher;
 // account edits (email/password/superadmin) require superadmin on the backend,
 // and an invite or a role grant takes admin at the scope it reaches. what

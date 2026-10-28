@@ -29,6 +29,7 @@ import {
   type FetchStub,
 } from "./story-harness";
 import type { ApiTokenRow, MintedApiToken } from "@/lib/api";
+import en from "@/lib/i18n/locales/en.json";
 
 const NOW = Date.now();
 const DAY = 86_400_000;
@@ -435,5 +436,29 @@ export const AllowedToAnAdmin: Story = {
     await expectAllowed(canvasElement, /Mint token/);
     await expectAllowed(canvasElement, "Rotate token ci-deploy");
     await expectAllowed(canvasElement, "Revoke token ci-deploy");
+  },
+};
+
+/** A plain-http dashboard has no clipboard: the failure stays on screen and the secret stays selectable. */
+export const AFailedCopyKeepsTheSecretAndSaysSo: Story = {
+  beforeEach: stubClipboard(() => Promise.reject(new Error("denied"))),
+  render: () => (
+    <Harness fetchStub={api()}>
+      <ApiTokens />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, /Mint token/);
+    await waitFor(() => expect(sheet()).toBeVisible());
+    const panel = within(sheet());
+    await userEvent.type(panel.getByLabelText("Name"), "ci-new");
+    await userEvent.click(panel.getByRole("button", { name: "Mint token" }));
+    const dialog = await within(document.body).findByRole("dialog", {
+      name: /Token ci-new is ready/,
+    });
+    await userEvent.click(await within(dialog).findByRole("button", { name: /^Copy token/ }));
+    await expect(await within(dialog).findByRole("alert")).toHaveTextContent(en.common.copyFailed);
+    await waitFor(() => expect(within(dialog).getByText(SECRET)).toBeVisible());
+    await expect(window.getSelection()?.toString()).toBe(SECRET);
   },
 };

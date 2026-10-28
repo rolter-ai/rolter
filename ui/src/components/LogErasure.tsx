@@ -56,8 +56,11 @@ const STATUS_HINT_KEY: Record<LogErasureStatus, string> = {
 export function ErasureStatus({
   row,
   detail = false,
+  pollMs,
 }: {
   row: LogErasureRow;
+  /** how often a pending record is asked again; a story shortens it */
+  pollMs?: number;
   /** also write the sentence under the badge, for a place with room for it */
   detail?: boolean;
 }) {
@@ -72,7 +75,7 @@ export function ErasureStatus({
     initialDataUpdatedAt: 0,
     enabled: !settled,
     retry: false,
-    refetchInterval: (query) => erasureRefetchInterval(query.state.data),
+    refetchInterval: (query) => erasureRefetchInterval(query.state.data, pollMs),
   });
   const current = record.data ?? row;
   const status = current.status;
@@ -139,7 +142,7 @@ export function ErasureStatus({
  * every gated control is. A row with no organization cannot be addressed by
  * request, since the id alone is not unique, so it says so.
  */
-export function ErasePayloadAction({ row }: { row: InvocationRow }) {
+export function ErasePayloadAction({ row, pollMs }: { row: InvocationRow; pollMs?: number }) {
   const { t } = useTranslation();
   const fmt = useFormat();
   const [open, setOpen] = React.useState(false);
@@ -161,7 +164,7 @@ export function ErasePayloadAction({ row }: { row: InvocationRow }) {
           kind: "request",
           request_id: row.request_id,
           org_id: row.org_id,
-          ts: erasureTimestamp(row.ts),
+          ts,
         },
         reason: reason.trim(),
         include_logs: false,
@@ -173,7 +176,11 @@ export function ErasePayloadAction({ row }: { row: InvocationRow }) {
     },
   });
 
-  const addressable = !!row.org_id;
+  // a request id is client-supplied and not unique, so an erasure that names no
+  // instant would delete every row of the organization that shares it: a row
+  // whose time does not parse is not offered
+  const ts = erasureTimestamp(row.ts);
+  const addressable = !!row.org_id && ts !== undefined;
   return (
     <div className="flex flex-col gap-2 border-t border-[color:var(--border-subtle)] pt-3">
       <GatedButton
@@ -181,7 +188,13 @@ export function ErasePayloadAction({ row }: { row: InvocationRow }) {
         control="log-erasure-payload"
         variant="outline"
         disabled={!addressable || erase.isPending}
-        title={addressable ? undefined : t("pages.logErasure.action.noOrg")}
+        title={
+          addressable
+            ? undefined
+            : row.org_id
+              ? t("pages.logErasure.action.noTime")
+              : t("pages.logErasure.action.noOrg")
+        }
         onClick={() => {
           erase.reset();
           setOpen(true);
@@ -190,7 +203,7 @@ export function ErasePayloadAction({ row }: { row: InvocationRow }) {
         <Eraser className="mr-2 h-4 w-4" aria-hidden />
         {t("pages.logErasure.action.erase")}
       </GatedButton>
-      {record && <ErasureStatus row={record} detail />}
+      {record && <ErasureStatus row={record} detail pollMs={pollMs} />}
 
       <ConfirmDialog
         name="log-erasure-payload"

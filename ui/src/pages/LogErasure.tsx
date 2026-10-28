@@ -48,6 +48,12 @@ const SCOPE_KEY: Record<LogErasureRow["scope_kind"], string> = {
   request: "pages.logErasure.scope.request",
 };
 
+const NOUN_KEY: Record<Scope, string> = {
+  virtual_key: "pages.logErasure.confirm.noun.virtual_key",
+  user: "pages.logErasure.confirm.noun.user",
+  org: "pages.logErasure.confirm.noun.org",
+};
+
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const GRID = `${primaryColumn(1)} 1.2fr 1.4fr 1fr 1.3fr`;
@@ -158,7 +164,12 @@ function EraseForm({ onErased }: { onErased: (row: LogErasureRow) => void }) {
           setConfirming(false);
           erase.reset();
         }}
-        title={t("pages.logErasure.confirm.title", { scope: t(SCOPE_KEY[scope]) })}
+        title={t(
+          includeLogs
+            ? "pages.logErasure.confirm.titleLogs"
+            : "pages.logErasure.confirm.titleBodies",
+          { noun: t(NOUN_KEY[scope]), id },
+        )}
         description={
           includeLogs
             ? t("pages.logErasure.confirm.bodyAll")
@@ -169,7 +180,6 @@ function EraseForm({ onErased }: { onErased: (row: LogErasureRow) => void }) {
         error={erase.error}
         onConfirm={() => erase.mutate()}
       >
-        <p className="font-mono text-xs text-muted-foreground">{id}</p>
         <p className="text-xs text-muted-foreground">{t("pages.logErasure.confirm.notInstant")}</p>
       </ConfirmDialog>
     </SettingsPanel>

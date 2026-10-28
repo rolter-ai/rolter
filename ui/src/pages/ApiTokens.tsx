@@ -157,6 +157,13 @@ function MintSheet({
     },
   });
 
+  // the secret has been handed to the reveal; it must not linger in the
+  // mutation's result once the sheet is gone
+  const { isSuccess: minted, reset: resetMint } = mint;
+  React.useEffect(() => {
+    if (!open && minted) resetMint();
+  }, [open, minted, resetMint]);
+
   const roleOptions: ComboboxOption[] = [
     ...MAPPABLE_ROLES.map((r) => ({
       value: `role:${r}`,
@@ -484,7 +491,12 @@ export default function ApiTokens() {
       <SecretRevealDialog
         name="api-token-revealed"
         open={!!minted}
-        onOpenChange={(open) => !open && setMinted(null)}
+        onOpenChange={(open) => {
+          if (open) return;
+          setMinted(null);
+          // the rotated secret is dropped from the mutation's result with the reveal
+          rotate.reset();
+        }}
         title={t(
           minted?.rotated
             ? "pages.apiTokens.revealed.rotatedTitle"

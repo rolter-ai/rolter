@@ -204,7 +204,11 @@ export const SubmitsAfterAConfirmationAndListsThePendingRecord: Story = {
     await userEvent.click(erase);
     submits.expectNotSent("POST", "/api/v1/log-erasures");
     const dialog = within(await confirmation());
-    await waitFor(() => expect(dialog.getByText(KEY_ID)).toBeVisible());
+    await waitFor(() =>
+      expect(
+        dialog.getByRole("heading", { name: `Erase the logs of virtual key ${KEY_ID}?` }),
+      ).toBeVisible(),
+    );
     await userEvent.click(dialog.getByRole("button", { name: "Erase" }));
 
     const body = await submits.expectSentBody<Record<string, unknown>>(
@@ -287,8 +291,8 @@ const logRow = (over: Partial<InvocationRow> = {}): InvocationRow =>
     ...over,
   }) as InvocationRow;
 
-function Action({ row = logRow() }: { row?: InvocationRow }) {
-  return <ErasePayloadAction row={row} />;
+function Action({ row = logRow(), pollMs }: { row?: InvocationRow; pollMs?: number }) {
+  return <ErasePayloadAction row={row} pollMs={pollMs} />;
 }
 
 const actionMeta = recording(
@@ -372,7 +376,7 @@ export const PendingBecomesCompleted: Story = {
     reads = 0;
     return (
       <Harness fetchStub={progressing} role="superadmin">
-        <Action />
+        <Action pollMs={300} />
       </Harness>
     );
   },
@@ -385,9 +389,7 @@ export const PendingBecomesCompleted: Story = {
     await waitFor(() =>
       expect(canvas.getByRole("status")).toHaveTextContent("1 of 2 deletions done"),
     );
-    await waitFor(() => expect(canvas.getByRole("status")).toHaveTextContent("Erased"), {
-      timeout: 12_000,
-    });
+    await waitFor(() => expect(canvas.getByRole("status")).toHaveTextContent("Erased"));
     await expect(canvas.queryByText(/Pending/)).toBeNull();
     await expect(canvas.getByText(/ClickHouse reports every deletion done/)).toBeVisible();
   },
@@ -451,6 +453,26 @@ export const ARowWithNoOrganizationCannotBeAddressed: Story = {
     await expect(button).toHaveAttribute(
       "title",
       expect.stringContaining("records no organization"),
+    );
+  },
+};
+
+/** A time that does not parse would erase every row sharing the id, so the action is not offered. */
+export const ARowWhoseTimeCannotBeReadCannotBeAddressed: Story = {
+  render: () => (
+    <Harness fetchStub={api()} role="superadmin">
+      <Action row={logRow({ ts: "yesterday" })} />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const button = await within(canvasElement).findByRole("button", {
+      name: "Erase captured payload",
+    });
+    // story-wait-allow: disabled by its own prop from the first paint
+    await expect(button).toBeDisabled();
+    await expect(button).toHaveAttribute(
+      "title",
+      expect.stringContaining("time could not be read"),
     );
   },
 };

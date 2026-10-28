@@ -225,8 +225,6 @@ export interface RequestOptions {
    * sends none, so a stale token cannot ride along
    */
   auth?: boolean;
-  /** signal a dead session on a 401 (default: whatever `auth` is) */
-  expireSession?: boolean;
   /** replace the error thrown for a failed response; return nothing to keep `err` */
   mapError?: (res: Response, err: ApiError) => Error | undefined;
 }
@@ -240,7 +238,7 @@ export async function requestResponse(
   url: string,
   options: RequestOptions = {},
 ): Promise<Response> {
-  const { method, body, auth = true, expireSession = auth, mapError } = options;
+  const { method, body, auth = true, mapError } = options;
   const headers = auth ? authHeaders() : {};
   const init: RequestInit =
     method === undefined
@@ -258,7 +256,8 @@ export async function requestResponse(
     const err = await apiError(res);
     const mapped = mapError?.(res, err);
     if (mapped) throw mapped;
-    if (expireSession) noteUnauthorized(url, "Authorization" in headers, err);
+    // a 401 made with a token signals a dead session, whichever route it came from
+    if (auth) noteUnauthorized(url, "Authorization" in headers, err);
     throw err;
   }
   return res;

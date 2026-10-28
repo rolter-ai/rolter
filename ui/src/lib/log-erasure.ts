@@ -2,7 +2,7 @@ import type { LogErasureRow } from "@/lib/api";
 
 // how often a pending erasure is asked how far ClickHouse has got. a mutation
 // rewrites parts in the background, which takes seconds to minutes
-const ERASURE_POLL_MS = 4_000;
+export const ERASURE_POLL_MS = 4_000;
 
 /**
  * react-query `refetchInterval` for one erasure record: ask again while it is
@@ -12,8 +12,9 @@ const ERASURE_POLL_MS = 4_000;
  */
 export function erasureRefetchInterval(
   record: Pick<LogErasureRow, "status"> | undefined,
+  pollMs: number = ERASURE_POLL_MS,
 ): number | false {
-  return record?.status === "pending" ? ERASURE_POLL_MS : false;
+  return record?.status === "pending" ? pollMs : false;
 }
 
 /**

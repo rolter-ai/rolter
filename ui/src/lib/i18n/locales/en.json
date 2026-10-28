@@ -4459,7 +4459,13 @@
       "reasonHint": "Stored and audited. Write the ticket or request reference, not the content.",
       "reasonPlaceholder": "erasure request DSR-1042",
       "confirm": {
-        "title": "Erase this {{scope}}'s logs?",
+        "titleLogs": "Erase the logs of {{noun}} {{id}}?",
+        "titleBodies": "Erase the captured bodies of {{noun}} {{id}}?",
+        "noun": {
+          "virtual_key": "virtual key",
+          "user": "user",
+          "org": "organization"
+        },
         "bodyAll": "The request logs and captured bodies are deleted for good. This cannot be undone.",
         "bodyBodies": "The captured prompt and response bodies are deleted for good; the request metadata stays. This cannot be undone.",
         "confirm": "Erase",
@@ -4495,6 +4501,7 @@
       "action": {
         "erase": "Erase captured payload",
         "noOrg": "This request records no organization, so it cannot be addressed by request. Erase by virtual key instead.",
+        "noTime": "This row's time could not be read, so the request cannot be told apart from others that reuse its id. Erase by virtual key instead.",
         "confirmTitle": "Erase the captured payload of {{id}}?",
         "confirmBody": "Deletes the request and response bodies captured for the call at {{time}}. The request's metadata stays. This cannot be undone.",
         "confirm": "Erase payload"
