@@ -365,9 +365,11 @@ export const LogDetailOfAnotherUsersCallOffersNoAction: Story = {
   ),
   play: async ({ canvasElement }) => {
     const body = await openDetail(canvasElement);
-    await expect(
-      await body.findByText("Only the key's owner can reconnect with more access."),
-    ).toBeVisible();
+    await waitFor(async () =>
+      expect(
+        await body.findByText("Only the key's owner can reconnect with more access."),
+      ).toBeVisible(),
+    );
     await expect(body.queryByRole("button", { name: /with more access/ })).toBeNull();
   },
 };
