@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import type { RbacResourceView, RbacRoleView } from "../src/lib/api";
+import type { DeploymentRole, RbacResourceView, RbacRoleView } from "../src/lib/api";
 
 /**
  * Where the capability matrix lives on each side (#1369).
@@ -29,6 +29,7 @@ const CHAIN_FIELDS: readonly string[] = ["org", "team", "project"];
  */
 export interface MatrixArtifact {
   roles: RbacRoleView[];
+  deployment_roles: DeploymentRole[];
   resources: RbacResourceView[];
   chain_at: Record<string, ChainField[]>;
 }
@@ -73,8 +74,12 @@ export function parseMatrix(text: string, path: string): MatrixArtifact {
     actions
       .filter(
         (a) =>
-          [a.minimum_role !== null, a.superadmin_only, a.authenticated_only].filter(Boolean)
-            .length !== 1,
+          [
+            a.minimum_role !== null,
+            a.superadmin_only,
+            a.authenticated_only,
+            (a.deployment_roles?.length ?? 0) > 0,
+          ].filter(Boolean).length !== 1 || (a.deployment_roles?.length ?? 0) > 1,
       )
       .map((a) => `${resource}:${a.action}`),
   );

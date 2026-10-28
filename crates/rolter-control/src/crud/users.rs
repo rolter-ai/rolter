@@ -19,7 +19,7 @@ use super::{
     ApiResult, Query, SafeJson,
 };
 use crate::rbac::{authorize, authorize_superadmin, Principal, ScopeChain, ScopeFilter};
-use crate::rbac_matrix::{cap, superadmin_cap};
+use crate::rbac_matrix::{cap, superadmin_cap, DeploymentRole};
 use crate::ControlState;
 
 pub(super) fn router() -> Router<ControlState> {
@@ -30,6 +30,10 @@ pub(super) fn router() -> Router<ControlState> {
         )
         .route("/api/v1/users", get(list_deployment_users))
         .route("/api/v1/users/{id}", put(update_user).delete(delete_user))
+        .route(
+            "/api/v1/users/{id}/deployment-role",
+            put(set_deployment_role),
+        )
 }
 
 // --- users + memberships (ROL-223) ---
@@ -404,6 +408,57 @@ async fn update_user(
     detail["password_changed"] = password_hash.is_some().into();
     detail["sessions_revoked"] = sessions_revoked.into();
     log_audit(&state, &principal, None, "user.update", "user", id, detail).await;
+    Ok(Json(user))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SetDeploymentRole {
+    /// `operator`, `security_auditor`, or `null` to clear the account's role
+    role: Option<String>,
+}
+
+/// Give an account a deployment role, or take it away (#1834). Superadmin only,
+/// and deliberately not a field of `PUT /api/v1/users/{id}`: neither deployment
+/// role can reach this, so an operator cannot widen their own reach or an
+/// auditor's. The role changes what the guard answers on the account's next
+/// request; a held session needs no revocation because nothing is cached.
+async fn set_deployment_role(
+    principal: Principal,
+    State(state): State<ControlState>,
+    Path(id): Path<Uuid>,
+    SafeJson(body): SafeJson<SetDeploymentRole>,
+) -> ApiResult<Json<User>> {
+    authorize_superadmin(&principal, superadmin_cap!("deployment_role", Update))?;
+    let role = match body.role.as_deref() {
+        Some(key) => Some(DeploymentRole::parse(key).ok_or_else(|| {
+            invalid_field(
+                "role",
+                "role must be one of operator, security_auditor, null",
+            )
+        })?),
+        None => None,
+    };
+    let before = UserRepo(pool(&state)).get(id).await?;
+    let user = UserRepo(pool(&state))
+        .set_deployment_role(id, role.map(DeploymentRole::key))
+        .await?;
+    // a deployment-wide grant is logged unscoped, like the account edit
+    let detail = serde_json::json!({
+        "email": user.email,
+        "from": before.deployment_role,
+        "to": user.deployment_role,
+    });
+    log_audit(
+        &state,
+        &principal,
+        None,
+        "user.deployment_role",
+        "user",
+        id,
+        detail,
+    )
+    .await;
     Ok(Json(user))
 }
 
