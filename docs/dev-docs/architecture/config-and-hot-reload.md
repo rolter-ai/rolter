@@ -135,6 +135,7 @@ entity alone:
 | `StreamingPostCall`, `StreamingStrategy` (semantic guards), `StreamingResponse` (PII) | `reject`                                                                                                                                                            |
 | `SanitizeDirection` / `RestorationPolicy`                                             | `both` / `never`                                                                                                                                                    |
 | `OverrideMode` / `BackpressurePolicy` / `RoleProfile`                                 | `deny` / `error` / `system_only`                                                                                                                                    |
+| `GuardProviderKind` (semantic guard providers, #3329)                                 | kept: the provider blocks its stage per request, whatever its `failure_mode` (ADR-0039); no known kind is a safe reading of it                                      |
 | `McpAuthKind` (#952)                                                                  | the server is refused, in the MCP proxy                                                                                                                             |
 | `FailureClass` (a route target's `takes_over`, #3390)                                 | kept in the set but matches no failure, so the target stays a fallback that is never dialled for it; dropping it would empty the set and put the target in the pool |
 

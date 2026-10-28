@@ -726,3 +726,81 @@ async fn an_unsaved_guardrail_provider_is_tried_with_a_sample_envelope() {
     .await;
     assert_eq!(out["truncated"], true, "{out}");
 }
+
+#[tokio::test]
+async fn a_local_provider_is_stored_validated_and_reaches_the_snapshot() {
+    skip_without_db!();
+    let db = fresh_db().await;
+    let app = rolter_control::test_app(db.pool().clone())
+        .await
+        .expect("build app");
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let url = format!("http://{addr}/api/v1/guardrails/providers");
+    let digest = "ab".repeat(32);
+    let local = json!({
+        "name": "injection", "enabled": true, "kind": "local", "url": "",
+        "model_path": "/etc/rolter/models/injection.json", "model_sha256": digest,
+        "stage": "pre_call", "timeout_ms": 50, "max_retries": 0,
+        "failure_mode": "fail_closed", "max_body_bytes": 65536, "auth_kind": "none"
+    });
+
+    // a local provider with a url, or without its pin, is refused by field
+    for (field, value) in [
+        ("url", json!("https://x.internal")),
+        ("model_sha256", json!(null)),
+    ] {
+        let mut bad = local.clone();
+        bad[field] = value;
+        let refused = client.post(&url).json(&bad).send().await.unwrap();
+        assert_eq!(refused.status(), 400, "{field}");
+        let body: Value = refused.json().await.unwrap();
+        assert_eq!(body["error"]["field"], field, "{body}");
+    }
+
+    let created = client.post(&url).json(&local).send().await.unwrap();
+    assert_eq!(created.status(), 201);
+    let created: Value = created.json().await.unwrap();
+    assert_eq!(created["kind"], "local");
+    assert_eq!(created["url"], "");
+    assert_eq!(created["model_sha256"], digest);
+
+    // a webhook saved beside it keeps working, and carries no model fields
+    let webhook = client
+        .post(&url)
+        .json(&json!({
+            "name": "toxicity", "enabled": true, "url": "https://tox.internal/check",
+            "stage": "post_call", "timeout_ms": 500, "max_retries": 0,
+            "failure_mode": "fail_open", "max_body_bytes": 65536, "auth_kind": "none"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(webhook.status(), 201);
+    let webhook: Value = webhook.json().await.unwrap();
+    assert_eq!(webhook["kind"], "webhook");
+    assert_eq!(webhook["model_path"], Value::Null);
+
+    let store = rolter_store::postgres::PostgresConfigStore::new(db.pool().clone());
+    let config = rolter_store::ConfigStore::load(&store).await.unwrap();
+    let loaded = config
+        .semantic_guards
+        .providers
+        .iter()
+        .find(|p| p.name == "injection")
+        .expect("the local provider is in the snapshot");
+    assert_eq!(loaded.kind, rolter_core::GuardProviderKind::Local);
+    assert_eq!(loaded.model_path, "/etc/rolter/models/injection.json");
+    assert_eq!(loaded.model_sha256, digest);
+    assert!(config.validate_snapshot().is_ok());
+
+    // the schema refuses what the API refuses, for rows written around it
+    let raw = sqlx::query(
+        "insert into guardrail_providers (name, kind, url, model_path, model_sha256) \
+         values ('raw', 'local', 'https://x.internal', '/m.json', $1)",
+    )
+    .bind(&digest)
+    .execute(db.pool())
+    .await;
+    assert!(raw.is_err(), "a local row with a url breaks the kind check");
+}

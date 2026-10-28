@@ -1961,7 +1961,7 @@ fn operations() -> Vec<Op> {
             Op::post(
                 "/api/v1/guardrails/providers",
                 "createGuardrailProvider",
-                "Register a guardrail provider",
+                "Register a guardrail provider: a webhook, or a local classifier the gateways run in process",
             ),
             Op::put(
                 "/api/v1/guardrails/providers/{id}",
@@ -4046,7 +4046,7 @@ fn routing_schemas(p: &Prim) -> Value {
             "properties": {
                 "id": uuid, "route_id": uuid,
                 "name": {"type": "string", "description": "the variant's name, unique in its route; request logs and metrics carry it"},
-                "weight": {"type": "integer", "minimum": 0, "description": "relative share of the requests that sample this variant as their primary. The API writes 1 or more; a 0 imported from rolter.toml is sampled as 1"},
+                "weight": {"type": "integer", "minimum": 0, "description": "relative share of the requests that sample this variant as their primary. The API writes 1 or more; a 0 imported from rolter.toml takes no first attempts while another variant has a positive weight"},
                 "position": {"type": "integer", "description": "the declared order, which is the fallback chain after the sampled primary"},
                 "params": {"type": "object", "description": "variant-scoped default inference params, layered over the route's"},
                 "targets": {

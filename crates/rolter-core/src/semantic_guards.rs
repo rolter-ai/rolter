@@ -1,9 +1,10 @@
 //! Scoped semantic guardrail policies over several providers (#459).
 //!
 //! A semantic guardrail provider is a self-hosted classifier spoken to over the
-//! vendor-neutral webhook contract in [`crate::guardrail_webhook`]: it judges a
-//! request body (`pre_call`) or a response body (`post_call`) by meaning and
-//! answers allow, block or transform, optionally with scored `categories`.
+//! vendor-neutral webhook contract in [`crate::guardrail_webhook`], or one the
+//! gateway runs in process (`kind = "local"`, #3329): it judges a request body
+//! (`pre_call`) or a response body (`post_call`) by meaning and answers allow,
+//! block or transform, optionally with scored `categories`.
 //!
 //! This module owns the policy model that decides which providers see a
 //! request and what a score means:
@@ -48,6 +49,8 @@ pub const MAX_THRESHOLDS: usize = 64;
 /// ignored, so a misbehaving provider cannot make the gateway walk an
 /// unbounded map.
 pub const MAX_SCORED_CATEGORIES: usize = 256;
+/// The most `local_concurrency` may be set to.
+pub const MAX_LOCAL_CONCURRENCY: usize = 4096;
 /// The metric label a scored category gets when the policy sets no threshold
 /// of its own for it, which keeps the label set bounded by configuration.
 pub const OTHER_CATEGORY: &str = "other";
@@ -63,6 +66,12 @@ pub struct SemanticGuardsConfig {
     /// scoped policies naming the providers that apply and their thresholds
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub policies: Vec<GuardrailPolicy>,
+    /// how many `local` provider calls one gateway runs at once, across every
+    /// local provider (#3329, ADR-0039); unset means the CPUs the process may
+    /// use. A call that waits longer than its provider's `timeout_ms` for a
+    /// slot is the overload case and follows the provider's `failure_mode`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_concurrency: Option<usize>,
 }
 
 /// What a policy is scoped to, from broadest to narrowest.
@@ -258,6 +267,14 @@ impl SemanticGuardsConfig {
     /// vec means the table is safe to load.
     pub fn validate(&self, legacy: &GuardrailWebhookConfig) -> Vec<String> {
         let mut problems = Vec::new();
+        if let Some(cap) = self.local_concurrency {
+            if cap == 0 || cap > MAX_LOCAL_CONCURRENCY {
+                problems.push(format!(
+                    "semantic_guards.local_concurrency must be between 1 and \
+                     {MAX_LOCAL_CONCURRENCY}"
+                ));
+            }
+        }
         let mut names: HashSet<&str> = HashSet::new();
         if legacy.enabled && !legacy.name.trim().is_empty() {
             names.insert(legacy.name.trim());
@@ -642,6 +659,7 @@ mod tests {
                 provider("toxicity", WebhookStage::PostCall),
                 provider("everywhere", WebhookStage::PreCall),
             ],
+            local_concurrency: None,
             policies: vec![
                 policy("all", PolicyScope::Deployment, None, &["injection"]),
                 policy(
@@ -760,6 +778,7 @@ mod tests {
                 provider("b", WebhookStage::PreCall),
             ],
             policies: Vec::new(),
+            local_concurrency: None,
         };
         let guards = CompiledSemanticGuards::from_config(&cfg, &legacy);
         let policy = guards.resolve(&PolicyRequest::default()).unwrap();
@@ -908,5 +927,36 @@ mod tests {
         assert_eq!(parsed.policies[0].streaming, StreamingStrategy::Buffer);
         assert_eq!(parsed.policies[0].on_violation, ViolationAction::Annotate);
         assert_eq!(parsed.policies[0].thresholds.get("*"), Some(&0.95));
+    }
+
+    #[test]
+    fn a_local_provider_and_the_concurrency_cap_round_trip_and_validate() {
+        let parsed: SemanticGuardsConfig = toml::from_str(&format!(
+            r#"
+            local_concurrency = 2
+
+            [[providers]]
+            name = "injection"
+            kind = "local"
+            model_path = "/models/injection.json"
+            model_sha256 = "{}"
+            enabled = true
+            failure_mode = "fail_closed"
+            "#,
+            "0f".repeat(32)
+        ))
+        .unwrap();
+        assert!(parsed.validate(&Default::default()).is_empty());
+        assert_eq!(parsed.local_concurrency, Some(2));
+        assert_eq!(
+            parsed.providers[0].kind,
+            crate::guardrail_webhook::GuardProviderKind::Local
+        );
+        let mut zero = parsed.clone();
+        zero.local_concurrency = Some(0);
+        assert!(zero
+            .validate(&Default::default())
+            .join("")
+            .contains("local_concurrency"));
     }
 }

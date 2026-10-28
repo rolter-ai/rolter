@@ -181,6 +181,10 @@ alter table model_prices validate constraint model_prices_input_per_mtok_rate;
 
 The four names are `model_prices_input_per_mtok_rate`, `model_prices_output_per_mtok_rate`, `model_prices_cached_input_per_mtok_rate` and `model_prices_cache_write_per_mtok_rate`. Validating is optional: an unvalidated check protects new writes just the same. It only changes what `convalidated` reports.
 
+## Zero weights
+
+A variant or API key weight of `0` used to be sampled as `1`. It now takes no first attempts while another weight in the same set is positive (a zero-weight variant is still tried as a fallback, and a zero-weight key is used when every other key is on a cooldown). If every weight in a set is `0`, the set is sampled equally, as before. Check a `rolter.toml` that uses `weight = 0` as a placeholder: traffic that a zero-weight entry used to take now goes to the others.
+
 ## Route advanced settings
 
 A route's `advanced` block used to store, validate and display several settings that the gateway never read, and the dashboard and these docs described them as working (#2924). This release applies the ones it can and removes the rest. Both halves change something for a route that already carries them, so look before you roll out.

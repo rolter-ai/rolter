@@ -39,7 +39,7 @@ pub fn document() -> Value {
                     "operationId": "createChatCompletion",
                     "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ChatCompletionRequest"}}}},
                     "responses": {
-                        "200": {"description": "chat completion or an SSE stream", "content": {"application/json": {"schema": {"type": "object"}}, "text/event-stream": {"schema": {"type": "string"}}}},
+                        "200": {"description": "chat completion, or a stream of `chat.completion.chunk` frames ending in `data: [DONE]`", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ChatCompletionResponse"}}, "text/event-stream": {"schema": {"$ref": "#/components/schemas/ChatCompletionChunk"}}}},
                         "400": error_response, "401": error_response, "429": error_response
                     }
                 }
@@ -48,16 +48,16 @@ pub fn document() -> Value {
                 "post": {
                     "summary": "OpenAI legacy text completions",
                     "operationId": "createCompletion",
-                    "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["model"], "properties": {"model": {"type": "string"}, "prompt": {"type": "string"}}}}}},
-                    "responses": {"200": {"description": "completion", "content": {"application/json": {"schema": {"type": "object"}}}}, "400": error_response}
+                    "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CompletionRequest"}}}},
+                    "responses": {"200": {"description": "completion", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CompletionResponse"}}}}, "400": error_response}
                 }
             },
             "/v1/responses": {
                 "post": {
                     "summary": "OpenAI Responses (provider-native passthrough; streaming supported)",
                     "operationId": "createResponse",
-                    "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["model"], "properties": {"model": {"type": "string"}, "input": {} , "stream": {"type": "boolean"}}}}}},
-                    "responses": {"200": {"description": "response or an SSE event stream", "content": {"application/json": {"schema": {"type": "object"}}, "text/event-stream": {"schema": {"type": "string"}}}}, "400": error_response, "401": error_response, "501": error_response}
+                    "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ResponsesRequest"}}}},
+                    "responses": {"200": {"description": "response, or a stream of `response.*` events", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ResponseObject"}}, "text/event-stream": {"schema": {"$ref": "#/components/schemas/ResponseStreamEvent"}}}}, "400": error_response, "401": error_response, "501": error_response}
                 }
             },
             "/v1/responses/{response_id}": {
@@ -65,13 +65,13 @@ pub fn document() -> Value {
                     "summary": "Retrieve a tenant-scoped OpenAI response",
                     "operationId": "retrieveResponse",
                     "parameters": [{"name":"response_id","in":"path","required":true,"schema":{"type":"string"}}],
-                    "responses": {"200":{"description":"response","content":{"application/json":{"schema":{"type":"object"}}}},"401":error_response,"404":error_response,"501":error_response}
+                    "responses": {"200":{"description":"response","content":{"application/json":{"schema":{"$ref": "#/components/schemas/ResponseObject"}}}},"401":error_response,"404":error_response,"501":error_response}
                 },
                 "delete": {
                     "summary": "Delete a tenant-scoped OpenAI response",
                     "operationId": "deleteResponse",
                     "parameters": [{"name":"response_id","in":"path","required":true,"schema":{"type":"string"}}],
-                    "responses": {"200":{"description":"deletion result","content":{"application/json":{"schema":{"type":"object"}}}},"401":error_response,"404":error_response,"501":error_response}
+                    "responses": {"200":{"description":"deletion result","content":{"application/json":{"schema":{"$ref": "#/components/schemas/ResponseDeletion"}}}},"401":error_response,"404":error_response,"501":error_response}
                 }
             },
             "/v1/responses/{response_id}/cancel": {
@@ -79,7 +79,7 @@ pub fn document() -> Value {
                     "summary": "Cancel a tenant-scoped OpenAI response",
                     "operationId": "cancelResponse",
                     "parameters": [{"name":"response_id","in":"path","required":true,"schema":{"type":"string"}}],
-                    "responses": {"200":{"description":"cancelled response","content":{"application/json":{"schema":{"type":"object"}}}},"401":error_response,"404":error_response,"501":error_response}
+                    "responses": {"200":{"description":"cancelled response","content":{"application/json":{"schema":{"$ref": "#/components/schemas/ResponseObject"}}}},"401":error_response,"404":error_response,"501":error_response}
                 }
             },
             "/v1/responses/{response_id}/input_items": {
@@ -87,54 +87,54 @@ pub fn document() -> Value {
                     "summary": "List input items for a tenant-scoped OpenAI response",
                     "operationId": "listResponseInputItems",
                     "parameters": [{"name":"response_id","in":"path","required":true,"schema":{"type":"string"}}],
-                    "responses": {"200":{"description":"input item list","content":{"application/json":{"schema":{"type":"object"}}}},"401":error_response,"404":error_response,"501":error_response}
+                    "responses": {"200":{"description":"input item list","content":{"application/json":{"schema":{"$ref": "#/components/schemas/ResponseInputItems"}}}},"401":error_response,"404":error_response,"501":error_response}
                 }
             },
             "/v1/messages": {
                 "post": {
                     "summary": "Anthropic Messages (streaming supported)",
                     "operationId": "createMessage",
-                    "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["model", "messages"], "properties": {"model": {"type": "string"}, "max_tokens": {"type": "integer"}, "messages": {"type": "array", "items": {"type": "object"}}}}}}},
-                    "responses": {"200": {"description": "message or an SSE stream", "content": {"application/json": {"schema": {"type": "object"}}, "text/event-stream": {"schema": {"type": "string"}}}}, "400": error_response}
+                    "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MessagesRequest"}}}},
+                    "responses": {"200": {"description": "message, or a stream of `message_*` and `content_block_*` events", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MessageResponse"}}, "text/event-stream": {"schema": {"$ref": "#/components/schemas/MessageStreamEvent"}}}}, "400": error_response}
                 }
             },
             "/v1/embeddings": {
                 "post": {
                     "summary": "OpenAI embeddings",
                     "operationId": "createEmbedding",
-                    "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["model", "input"], "properties": {"model": {"type": "string"}, "input": {"oneOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}]}}}}}},
-                    "responses": {"200": {"description": "embedding list", "content": {"application/json": {"schema": {"type": "object"}}}}, "400": error_response}
+                    "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/EmbeddingRequest"}}}},
+                    "responses": {"200": {"description": "embedding list", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/EmbeddingResponse"}}}}, "400": error_response}
                 }
             },
             "/v1/rerank": {
                 "post": {
                     "summary": "Cohere/Jina rerank",
                     "operationId": "createRerank",
-                    "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["model", "query", "documents"], "properties": {"model": {"type": "string"}, "query": {"type": "string"}, "documents": {"type": "array", "items": {"type": "string"}}, "top_n": {"type": "integer"}, "return_documents": {"type": "boolean"}}}}}},
-                    "responses": {"200": {"description": "ranked results", "content": {"application/json": {"schema": {"type": "object"}}}}, "400": error_response}
+                    "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RerankRequest"}}}},
+                    "responses": {"200": {"description": "ranked results", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RerankResponse"}}}}, "400": error_response}
                 }
             },
             "/v1/systemone": {
                 "post": {
                     "summary": "System One typed decisions (choice, score and yes/no questions)",
                     "operationId": "createDecision",
-                    "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["model", "state", "questions"], "properties": {"model": {"type": "string"}, "state": {"description": "the content the questions are about: a string, an object or an array"}, "questions": {"type": "object", "description": "questions keyed by ids the caller chooses; each has a `type` (`choice`, `score`, `noul`, or another the model supports), `instructions` and usually `criteria`", "additionalProperties": {"type": "object", "required": ["type"], "properties": {"type": {"type": "string"}, "instructions": {}, "criteria": {}}}}}}}}},
-                    "responses": {"200": {"description": "one typed answer per question id, plus usage", "content": {"application/json": {"schema": {"type": "object", "properties": {"model": {"type": "string"}, "answers": {"type": "object"}, "usage": {"type": "object", "properties": {"input_tokens": {"type": "integer"}, "output_tokens": {"type": "integer"}}}}}}}}, "400": error_response}
+                    "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SystemOneRequest"}}}},
+                    "responses": {"200": {"description": "one typed answer per question id, plus usage", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SystemOneResponse"}}}}, "400": error_response}
                 }
             },
             "/v1/images/generations": {
                 "post": {
                     "summary": "OpenAI image generation",
                     "operationId": "createImage",
-                    "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["model", "prompt"], "properties": {"model": {"type": "string"}, "prompt": {"type": "string"}, "n": {"type": "integer"}, "response_format": {"type": "string", "enum": ["url", "b64_json"]}}}}}},
-                    "responses": {"200": {"description": "image list", "content": {"application/json": {"schema": {"type": "object"}}}}, "400": error_response}
+                    "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ImageGenerationRequest"}}}},
+                    "responses": {"200": {"description": "image list", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ImageResponse"}}}}, "400": error_response}
                 }
             },
             "/v1/audio/speech": {
                 "post": {
                     "summary": "OpenAI text-to-speech (binary audio response)",
                     "operationId": "createSpeech",
-                    "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["model", "input"], "properties": {"model": {"type": "string"}, "input": {"type": "string"}, "voice": {"type": "string"}}}}}},
+                    "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SpeechRequest"}}}},
                     "responses": {"200": {"description": "audio bytes", "content": {"audio/*": {"schema": {"type": "string", "format": "binary"}}}}, "400": error_response}
                 }
             },
@@ -143,7 +143,7 @@ pub fn document() -> Value {
                     "summary": "OpenAI speech-to-text (multipart upload)",
                     "operationId": "createTranscription",
                     "requestBody": {"required": true, "content": {"multipart/form-data": {"schema": {"$ref": "#/components/schemas/AudioUpload"}}}},
-                    "responses": {"200": {"description": "transcript", "content": {"application/json": {"schema": {"type": "object"}}, "text/plain": {"schema": {"type": "string"}}}}, "400": error_response}
+                    "responses": {"200": {"description": "transcript", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/TranscriptionResponse"}}, "text/plain": {"schema": {"type": "string"}}}}, "400": error_response}
                 }
             },
             "/v1/audio/translations": {
@@ -151,14 +151,14 @@ pub fn document() -> Value {
                     "summary": "OpenAI audio translation to English (multipart upload)",
                     "operationId": "createTranslation",
                     "requestBody": {"required": true, "content": {"multipart/form-data": {"schema": {"$ref": "#/components/schemas/AudioUpload"}}}},
-                    "responses": {"200": {"description": "translation", "content": {"application/json": {"schema": {"type": "object"}}, "text/plain": {"schema": {"type": "string"}}}}, "400": error_response}
+                    "responses": {"200": {"description": "translation", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/TranscriptionResponse"}}, "text/plain": {"schema": {"type": "string"}}}}, "400": error_response}
                 }
             },
             "/v1/models": {
                 "get": {
                     "summary": "List the public model names this gateway serves",
                     "operationId": "listModels",
-                    "responses": {"200": {"description": "model list", "content": {"application/json": {"schema": {"type": "object"}}}}}
+                    "responses": {"200": {"description": "model list", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ModelList"}}}}}
                 }
             },
             "/v1/realtime": {
@@ -229,17 +229,6 @@ pub fn document() -> Value {
                 "apiKeyAuth": {"type": "apiKey", "in": "header", "name": "x-api-key", "description": "virtual key as `x-api-key: <key>`"}
             },
             "schemas": {
-                "ChatCompletionRequest": {
-                    "type": "object",
-                    "required": ["model", "messages"],
-                    "properties": {
-                        "model": {"type": "string", "description": "a public model name served by this gateway"},
-                        "messages": {"type": "array", "items": {"type": "object"}},
-                        "stream": {"type": "boolean", "default": false},
-                        "temperature": {"type": "number"},
-                        "max_tokens": {"type": "integer"}
-                    }
-                },
                 "AudioUpload": {
                     "type": "object",
                     "required": ["model", "file"],
@@ -266,6 +255,10 @@ pub fn document() -> Value {
             }
         }
     });
+    // request and response schemas, built apart for the same reason
+    if let Some(schemas) = doc["components"]["schemas"].as_object_mut() {
+        schemas.extend(crate::openapi_schemas::all());
+    }
     // routed and answered 501 (`unsupported_response_lifecycle`); built apart
     // because the literal above sits at `json!`'s recursion limit
     for (path, method, id, summary) in [
@@ -537,6 +530,106 @@ mod tests {
             doc["components"]["schemas"]["Error"]["x-rolter-spec-refs"],
             json!(["openai-errors"])
         );
+    }
+
+    // #3335: a request body and a 200 body of the model endpoints name a
+    // schema, every schema is open (bodies are forwarded) and carries the
+    // provenance of the record that owns it
+    #[test]
+    fn model_endpoint_bodies_reference_open_schemas_with_provenance() {
+        let doc = document();
+        let schemas = doc["components"]["schemas"].as_object().expect("schemas");
+        let mut referenced = std::collections::BTreeSet::new();
+        for (path, item) in doc["paths"].as_object().expect("paths") {
+            if path.starts_with("/mcp/") || path == "/healthz" || path == "/v1/realtime" {
+                continue;
+            }
+            for (method, operation) in item.as_object().expect("path item") {
+                if method == "parameters" {
+                    continue;
+                }
+                let request = operation["requestBody"]["content"].as_object();
+                let ok = operation["responses"]["200"]["content"].as_object();
+                for content in request.into_iter().chain(ok) {
+                    for (media, body) in content {
+                        if media.starts_with("audio/") || media == "text/plain" {
+                            continue;
+                        }
+                        let target = body["schema"]["$ref"].as_str().unwrap_or_else(|| {
+                            panic!("{method} {path} {media} has no named schema")
+                        });
+                        let name = target.trim_start_matches("#/components/schemas/");
+                        assert!(schemas.contains_key(name), "{target} is not defined");
+                        referenced.insert(name.to_string());
+                    }
+                }
+            }
+        }
+        for name in &referenced {
+            let schema = &schemas[name];
+            if name == "AudioUpload" {
+                continue;
+            }
+            assert_eq!(
+                schema["additionalProperties"], true,
+                "{name} must stay open"
+            );
+            assert!(
+                schema["x-rolter-spec-refs"].is_array(),
+                "{name} is not listed under a record's gateway_schemas"
+            );
+        }
+        // no schema is defined that nothing uses, apart from the ones those
+        // reference
+        for name in schemas.keys() {
+            assert!(
+                referenced.contains(name) || ["Error", "Usage"].contains(&name.as_str()),
+                "{name} is unreferenced"
+            );
+        }
+    }
+
+    // #3335: the stream schemas name the event families rolter emits or
+    // translates, and no event it never produces
+    #[test]
+    fn stream_schemas_name_only_the_event_families_rolter_produces() {
+        let doc = document();
+        let schemas = &doc["components"]["schemas"];
+        assert_eq!(
+            schemas["ChatCompletionChunk"]["properties"]["object"]["const"],
+            "chat.completion.chunk"
+        );
+        let anthropic: Vec<&str> = schemas["MessageStreamEvent"]["properties"]["type"]["enum"]
+            .as_array()
+            .expect("enum")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        assert_eq!(
+            anthropic,
+            [
+                "message_start",
+                "content_block_start",
+                "content_block_delta",
+                "content_block_stop",
+                "message_delta",
+                "message_stop",
+                "error",
+                "ping"
+            ]
+        );
+        let responses = schemas["ResponseStreamEvent"]["description"]
+            .as_str()
+            .expect("description");
+        for event in [
+            "response.created",
+            "response.output_text.delta",
+            "response.function_call_arguments.done",
+            "response.completed",
+        ] {
+            assert!(responses.contains(event), "{event}");
+        }
+        assert!(!responses.contains("response.reasoning"), "{responses}");
     }
 
     #[test]

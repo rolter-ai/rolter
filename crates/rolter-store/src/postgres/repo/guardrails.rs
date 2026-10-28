@@ -35,7 +35,12 @@ pub struct GuardrailRuleInput<'a> {
 pub struct GuardrailProviderInput<'a> {
     pub name: &'a str,
     pub enabled: bool,
+    /// `webhook` or `local` (#3329)
+    pub kind: &'a str,
     pub url: &'a str,
+    /// a local provider's weights file and its sha256; `None` for a webhook
+    pub model_path: Option<&'a str>,
+    pub model_sha256: Option<&'a str>,
     pub stage: &'a str,
     pub timeout_ms: i32,
     pub max_retries: i32,
@@ -82,8 +87,9 @@ fn policy_select(filter: &str) -> String {
 
 const GUARDRAIL_RULE_COLUMNS: &str = "id, name, enabled, source_type, builtin, pattern, stage, \
     action, replacement, include_system, position, created_at, updated_at";
-const GUARDRAIL_PROVIDER_COLUMNS: &str = "id, name, enabled, url, stage, timeout_ms, max_retries, \
-    failure_mode, max_body_bytes, auth_kind, auth_env, created_at, updated_at";
+pub(crate) const GUARDRAIL_PROVIDER_COLUMNS: &str = "id, name, enabled, kind, url, model_path, \
+    model_sha256, stage, timeout_ms, max_retries, failure_mode, max_body_bytes, auth_kind, \
+    auth_env, created_at, updated_at";
 
 impl GuardrailRepo<'_> {
     pub async fn list_rules(&self) -> Result<Vec<GuardrailRule>> {
@@ -194,8 +200,9 @@ impl GuardrailRepo<'_> {
         // touches another
         sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "insert into guardrail_providers (name, enabled, url, stage, timeout_ms, max_retries, \
-             failure_mode, max_body_bytes, auth_kind, auth_env) values \
-             ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) returning {GUARDRAIL_PROVIDER_COLUMNS}"
+             failure_mode, max_body_bytes, auth_kind, auth_env, kind, model_path, model_sha256) \
+             values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) \
+             returning {GUARDRAIL_PROVIDER_COLUMNS}"
         )))
         .bind(provider.name)
         .bind(provider.enabled)
@@ -207,6 +214,9 @@ impl GuardrailRepo<'_> {
         .bind(provider.max_body_bytes)
         .bind(provider.auth_kind)
         .bind(provider.auth_env)
+        .bind(provider.kind)
+        .bind(provider.model_path)
+        .bind(provider.model_sha256)
         .fetch_one(self.0)
         .await
         .map_err(store_err)
@@ -221,7 +231,8 @@ impl GuardrailRepo<'_> {
             sqlx::query_as(sqlx::AssertSqlSafe(format!(
                 "update guardrail_providers set name=$2, enabled=$3, url=$4, stage=$5, \
                  timeout_ms=$6, max_retries=$7, failure_mode=$8, max_body_bytes=$9, \
-                 auth_kind=$10, auth_env=$11, updated_at=now() where id=$1 \
+                 auth_kind=$10, auth_env=$11, kind=$12, model_path=$13, model_sha256=$14, \
+                 updated_at=now() where id=$1 \
                  returning {GUARDRAIL_PROVIDER_COLUMNS}"
             )))
             .bind(id)
@@ -234,7 +245,10 @@ impl GuardrailRepo<'_> {
             .bind(provider.failure_mode)
             .bind(provider.max_body_bytes)
             .bind(provider.auth_kind)
-            .bind(provider.auth_env),
+            .bind(provider.auth_env)
+            .bind(provider.kind)
+            .bind(provider.model_path)
+            .bind(provider.model_sha256),
             self.0,
             || format!("guardrail provider {id}"),
         )

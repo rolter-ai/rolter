@@ -401,6 +401,12 @@ async fn poll_once_reading(
     if let Err(problems) = body.config.validate_snapshot() {
         anyhow::bail!("snapshot v{} failed validation: {problems:?}", body.version);
     }
+    // model files are read here, on the blocking pool, so the reload below
+    // only installs what is already in memory (#3329)
+    state
+        .local_classifiers
+        .preload(&body.config.semantic_guards, &body.config.guardrail_webhook)
+        .await;
     state.reload(&body.config, body.version);
     state.record_snapshot_format(format);
     tracing::info!(

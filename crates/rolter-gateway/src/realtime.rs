@@ -269,6 +269,7 @@ pub async fn realtime(
         &query.model,
         &trace_id,
         &state.side_client,
+        &state.local_classifiers,
     );
     let plugin_calls = crate::realtime_metering::PluginCalls::default();
     let policy = policy.map(|policy| policy.recording_plugin_calls(plugin_calls.clone()));

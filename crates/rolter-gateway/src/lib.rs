@@ -43,6 +43,7 @@ mod handlers;
 pub mod health;
 mod health_events;
 mod load;
+mod local_classifier;
 mod logging;
 mod mcp_list_filter;
 mod mcp_log;
@@ -52,6 +53,7 @@ mod metrics;
 pub mod model_catalog;
 mod multipart;
 mod openapi;
+mod openapi_schemas;
 mod pii_sanitizer;
 mod pii_stream;
 #[cfg(test)]
