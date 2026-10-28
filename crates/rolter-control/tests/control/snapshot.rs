@@ -1363,25 +1363,27 @@ async fn a_file_route_naming_a_left_out_stored_provider_keeps_the_snapshot_serve
         .execute(&pool)
         .await
         .unwrap();
-    for (name, egress_proxies) in [
-        ("pooled", r#"["http://proxy.example.com:3128"]"#),
-        ("unreadable", r#"["http://proxy.example.com:3128", 7]"#),
-    ] {
-        sqlx::query(
-            "insert into providers (org_id, name, slug, kind, api_base, api_key_env,
-                                    egress_proxies)
-             values ($1, $2, $2, 'openai_compatible', 'https://llm.example.com/v1',
-                     'UPSTREAM_KEY', $3::jsonb)",
-        )
-        .bind(org_id)
-        .bind(name)
-        .bind(egress_proxies)
-        .execute(&pool)
-        .await
-        .unwrap();
-    }
+    // the healthy provider is the file's own: a deployment-wide route never
+    // reaches an org's stored provider (#1857), so only the left-out one is
+    // stored here
+    sqlx::query(
+        "insert into providers (org_id, name, slug, kind, api_base, api_key_env,
+                                egress_proxies)
+         values ($1, 'unreadable', 'unreadable', 'openai_compatible',
+                 'https://llm.example.com/v1', 'UPSTREAM_KEY', $2::jsonb)",
+    )
+    .bind(org_id)
+    .bind(r#"["http://proxy.example.com:3128", 7]"#)
+    .execute(&pool)
+    .await
+    .unwrap();
     let file_config = rolter_core::GatewayConfig::from_toml_str(
         r#"
+        [[providers]]
+        name = "pooled"
+        kind = "openai_compatible"
+        api_base = "https://llm.example.com/v1"
+
         [[routes]]
         model = "from-file"
         [[routes.targets]]
