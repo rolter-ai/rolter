@@ -133,10 +133,18 @@ The probe polls the gateway's `/readyz` through the control plane's `/gw/*` prox
 | --------------------------------------------------------- | ----------------------------------------------- |
 | `200` with the body `ok`                                  | healthy (green dot, breathing)                  |
 | `503` with the body `draining`                            | degraded: "gateway draining", amber             |
-| `503` with the body `snapshot_format_unsupported`         | unknown, grey, until the pill learns it (#3350) |
+| `503` with the body `snapshot_format_unsupported`         | down: "gateway cannot read config", red (#3350) |
+| `503` with the body `awaiting_snapshot`                   | down: "gateway has no config", red (#3350)      |
 | `502` with the proxy's own `{"error":{"message":…}}` body | down: "gateway unreachable", red                |
 | anything else, a network error, or no answer within 10 s  | unknown, grey                                   |
 | no answer yet                                             | checking, grey                                  |
+
+A gateway with no config refuses every key, so both `503` bodies that say so
+read as down; `gatewayHealthFrom` keeps the probe's answer as `refusal`, and the
+pill and the Dashboard's Gateways tile word it on its own rather than as
+"unreachable", which would send the operator to the network. The
+`snapshot_format_unsupported` tooltip points at the upgrade order
+(`/deployment/upgrading#upgrade-order`).
 
 A `200` that is not `ok` is an SPA fallback in front of the control plane, and
 a `502` that is not the proxy's JSON comes from an ingress that could not reach

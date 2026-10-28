@@ -858,7 +858,9 @@
           "healthy": "Ready",
           "degraded": "Draining",
           "down": "Unreachable",
-          "unknown": "Unknown"
+          "unknown": "Unknown",
+          "awaitingSnapshot": "No config",
+          "snapshotFormatUnsupported": "Refused config"
         }
       },
       "noAnalytics": {
@@ -5306,6 +5308,8 @@
       "degraded": "gateway draining",
       "down": "gateway unreachable",
       "unknown": "gateway status unknown",
+      "awaitingSnapshot": "gateway has no config",
+      "snapshotFormatUnsupported": "gateway cannot read config",
       "fleet": {
         "live_one": "{{count}} gateway live",
         "live_other": "{{count}} gateways live",
@@ -5321,6 +5325,8 @@
         "degraded": "The gateway is draining: it finishes the requests in flight and takes no new ones.",
         "down": "The control plane cannot reach the gateway at ROLTER_GATEWAY_URL.",
         "unknown": "The gateway could not be checked.",
+        "awaitingSnapshot": "The gateway has not received its first config snapshot from the control plane, so it refuses every key. Check that it can reach the control plane and that its admin token is accepted.",
+        "snapshotFormatUnsupported": "The gateway cannot read the snapshot format the control plane serves, so it has no config and refuses every key. Upgrade the control plane before the gateways: see Upgrading, Upgrade order (/deployment/upgrading#upgrade-order) in the docs.",
         "fleet": {
           "healthy_one": "The control plane counts {{count}} live gateway, and it runs the latest config.",
           "healthy_other": "The control plane counts {{count}} live gateways, and all of them run the latest config.",
