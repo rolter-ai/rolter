@@ -2,8 +2,9 @@
 //!
 //! Retention is a clock; this is a command. `POST /api/v1/log-erasures` names a
 //! subject — a virtual key, a user, an organization, or a single request — and
-//! deletes what ClickHouse holds about it: the `request_logs` rows and the raw
-//! bodies in `request_payloads`. Nothing else derives from those rows (there is
+//! deletes what ClickHouse holds about it: the `request_logs` rows, the raw
+//! bodies in `request_payloads` and the MCP tool calls in `mcp_tool_call_logs`
+//! (#3278). Nothing else derives from those rows (there is
 //! no rollup or materialized view over them), so deleting them is deleting
 //! everything the control plane can reconstitute them from.
 //!
@@ -92,6 +93,10 @@ fn yes() -> bool {
 struct Predicates {
     logs: String,
     payloads: String,
+    /// the same subject in `mcp_tool_call_logs`, which carries `org_id`,
+    /// `virtual_key_id`, `user_id` and `request_id` itself. Its `user_id` is the
+    /// key's owner, so a user scope also matches the keys that user created
+    mcp: String,
     /// the payload column that is empty on rows written before it existed, and
     /// so cannot be matched by `payloads`; `None` for a request scope
     legacy_column: Option<&'static str>,
@@ -124,15 +129,17 @@ fn predicates(scope: &ScopeBody, user_keys: &[Uuid]) -> Predicates {
             let p = format!("virtual_key_id = {}", quoted(&id.to_string()));
             Predicates {
                 logs: p.clone(),
-                payloads: p,
+                payloads: p.clone(),
+                mcp: p,
                 legacy_column: Some("virtual_key_id"),
             }
         }
-        ScopeBody::User { .. } => {
+        ScopeBody::User { id } => {
             let p = format!("virtual_key_id in ({})", key_list(user_keys));
             Predicates {
                 logs: p.clone(),
-                payloads: p,
+                payloads: p.clone(),
+                mcp: format!("user_id = {} or {p}", quoted(&id.to_string())),
                 legacy_column: Some("virtual_key_id"),
             }
         }
@@ -140,7 +147,8 @@ fn predicates(scope: &ScopeBody, user_keys: &[Uuid]) -> Predicates {
             let p = format!("org_id = {}", quoted(&id.to_string()));
             Predicates {
                 logs: p.clone(),
-                payloads: p,
+                payloads: p.clone(),
+                mcp: p,
                 legacy_column: Some("org_id"),
             }
         }
@@ -162,7 +170,8 @@ fn predicates(scope: &ScopeBody, user_keys: &[Uuid]) -> Predicates {
             }
             Predicates {
                 logs: p.clone(),
-                payloads: p,
+                payloads: p.clone(),
+                mcp: p,
                 legacy_column: None,
             }
         }
@@ -200,6 +209,18 @@ fn statements(
         out.push(format!(
             "alter table request_logs delete where ({}) and {marker} != ''",
             predicates.logs
+        ));
+        out.push(format!(
+            "alter table mcp_tool_call_logs delete where ({}) and {marker} != ''",
+            predicates.mcp
+        ));
+    } else {
+        // the captured arguments and result sit in the same row as the call's
+        // metadata, so keeping the metadata means blanking those two columns
+        out.push(format!(
+            "alter table mcp_tool_call_logs update arguments = '', result = '' \
+             where ({}) and {marker} != ''",
+            predicates.mcp
         ));
     }
     out
@@ -475,7 +496,7 @@ async fn audit_completion(state: &ControlState, record: &LogErasure) {
 fn progress_sql(marker: Uuid) -> String {
     format!(
         "select is_done, latest_fail_reason from system.mutations \
-         where database = currentDatabase() and table in ('request_logs', 'request_payloads') \
+         where database = currentDatabase() and table in ('request_logs', 'request_payloads', 'mcp_tool_call_logs') \
            and position(command, {}) > 0 format JSON",
         quoted(&marker.to_string())
     )
@@ -541,9 +562,10 @@ mod tests {
         let scope = ScopeBody::VirtualKey { id: uuid(7) };
         let p = predicates(&scope, &[]);
         let sql = statements(&p, uuid(9), true, &[]);
-        assert_eq!(sql.len(), 2);
+        assert_eq!(sql.len(), 3);
         assert!(sql[0].starts_with("alter table request_payloads delete where"));
         assert!(sql[1].starts_with("alter table request_logs delete where"));
+        assert!(sql[2].starts_with("alter table mcp_tool_call_logs delete where"));
         for statement in &sql {
             assert!(statement.contains(&format!("'{}'", uuid(7))));
             assert!(statement.contains(&format!("and '{}' != ''", uuid(9))));
@@ -554,15 +576,68 @@ mod tests {
     fn payloads_only_leaves_the_log_rows_alone() {
         let p = predicates(&ScopeBody::Org { id: uuid(1) }, &[]);
         let sql = statements(&p, uuid(2), false, &[]);
-        assert_eq!(sql.len(), 1);
+        assert_eq!(sql.len(), 2);
         assert!(sql[0].contains("request_payloads"));
+        assert!(!sql
+            .iter()
+            .any(|s| s.starts_with("alter table request_logs")));
+    }
+
+    #[test]
+    fn payloads_only_blanks_the_mcp_bodies_and_keeps_their_rows() {
+        let p = predicates(&ScopeBody::Org { id: uuid(1) }, &[]);
+        let sql = statements(&p, uuid(2), false, &[]);
+        assert_eq!(
+            sql[1],
+            format!(
+                "alter table mcp_tool_call_logs update arguments = '', result = '' \
+                 where (org_id = '{}') and '{}' != ''",
+                uuid(1),
+                uuid(2)
+            )
+        );
+    }
+
+    #[test]
+    fn each_scope_reaches_the_mcp_rows_through_the_columns_that_table_carries() {
+        assert_eq!(
+            predicates(&ScopeBody::VirtualKey { id: uuid(7) }, &[]).mcp,
+            format!("virtual_key_id = '{}'", uuid(7))
+        );
+        assert_eq!(
+            predicates(&ScopeBody::Org { id: uuid(7) }, &[]).mcp,
+            format!("org_id = '{}'", uuid(7))
+        );
+        // a key's owner is the MCP row's user_id, which may not be its creator
+        assert_eq!(
+            predicates(&ScopeBody::User { id: uuid(5) }, &[uuid(1)]).mcp,
+            format!(
+                "user_id = '{}' or virtual_key_id in ('{}')",
+                uuid(5),
+                uuid(1)
+            )
+        );
+        let request = predicates(
+            &ScopeBody::Request {
+                request_id: "r".into(),
+                org_id: uuid(3),
+                ts: None,
+            },
+            &[],
+        );
+        assert_eq!(request.mcp, request.logs);
+    }
+
+    #[test]
+    fn the_mcp_mutation_is_found_again_by_its_marker() {
+        assert!(progress_sql(uuid(4)).contains("'mcp_tool_call_logs'"));
     }
 
     #[test]
     fn rows_older_than_the_payload_column_are_deleted_by_log_id() {
         let p = predicates(&ScopeBody::VirtualKey { id: uuid(1) }, &[]);
         let sql = statements(&p, uuid(2), true, &["a'b".to_string()]);
-        assert_eq!(sql.len(), 3);
+        assert_eq!(sql.len(), 4);
         assert!(sql[0].contains("log_id in ('a\\'b')"));
         assert!(legacy_lookup_sql(&p, "virtual_key_id").contains("virtual_key_id = ''"));
     }

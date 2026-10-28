@@ -27,7 +27,7 @@ async fn clickhouse(stub: Stub) -> String {
                 let row = json!({"is_done": done, "latest_fail_reason": ""});
                 return (
                     axum::http::StatusCode::OK,
-                    axum::Json(json!({"data": [row, row]})),
+                    axum::Json(json!({"data": [row, row, row]})),
                 )
                     .into_response_parts();
             }
@@ -99,7 +99,7 @@ async fn an_erasure_is_pending_until_clickhouse_reports_every_mutation_done() {
     let created: Value = created.json().await.unwrap();
     let id = created["id"].as_str().unwrap().to_string();
     assert_eq!(created["status"], "pending");
-    assert_eq!(created["statements"], 2);
+    assert_eq!(created["statements"], 3);
 
     {
         let seen = stub.seen.lock().await;
@@ -107,10 +107,12 @@ async fn an_erasure_is_pending_until_clickhouse_reports_every_mutation_done() {
             .iter()
             .filter(|s| s.starts_with("alter table"))
             .collect();
-        assert_eq!(ddl.len(), 2, "{seen:?}");
+        assert_eq!(ddl.len(), 3, "{seen:?}");
         // payloads first, so the rows that point at the logs go before them
         assert!(ddl[0].starts_with("alter table request_payloads delete"));
         assert!(ddl[1].starts_with("alter table request_logs delete"));
+        // the MCP tool-call log is part of the scope (#3278)
+        assert!(ddl[2].starts_with("alter table mcp_tool_call_logs delete"));
         for statement in ddl {
             assert!(statement.contains(&key.to_string()));
             assert!(statement.contains(&format!("'{id}' != ''")));
