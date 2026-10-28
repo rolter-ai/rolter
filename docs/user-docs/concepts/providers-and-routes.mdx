@@ -297,7 +297,7 @@ Variants let you run **A/B tests**, **canary deployments**, and **per-key traffi
     Within a variant, the route's `strategy` picks the leading target. If the primary variant fails, Rolter tries the remaining variants in declared order until one succeeds.
   </Step>
   <Step title="Attribution">
-    The chosen variant name is written to the `variant` column in request logs for analysis. The route sheet's **Variants** section shows each saved variant's observed share of that traffic beside its configured split, with requests, errors and p50/p95 latency, over a window you pick (7 days by default); the same numbers come from `GET /api/v1/analytics/by-variant?model=<route>`. A deployment without ClickHouse sees a note instead.
+    The chosen variant name is written to the `variant` column in request logs for analysis. On **Routing Rules**, a route with variants lists them on its card in fallback order with the share each weight gives, and says that its own targets are not used while the variants exist. The route sheet's **Variants** section shows each saved variant's observed share of that traffic beside its configured split, with requests, errors and p50/p95 latency, over a window you pick (7 days by default); the same numbers come from `GET /api/v1/analytics/by-variant?model=<route>`. A deployment without ClickHouse sees a note instead.
   </Step>
 </Steps>
 

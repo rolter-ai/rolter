@@ -181,7 +181,13 @@ const node = (id: string, over: Partial<ClusterNodeRow> = {}): ClusterNodeRow =>
   ...over,
 });
 
-const answer = (routes: RouteRow[], status = 200, labels: LabelRow[] = []): FetchStub =>
+const answer = (
+  routes: RouteRow[],
+  status = 200,
+  labels: LabelRow[] = [],
+  // the variants each route embeds when the list asks for them (#3343)
+  variants: Record<string, RouteVariantRow[]> = {},
+): FetchStub =>
   scoped(async (input) => {
     const url = String(input);
     if (url.includes("/providers")) return json(PROVIDERS);
@@ -202,7 +208,13 @@ const answer = (routes: RouteRow[], status = 200, labels: LabelRow[] = []): Fetc
     // the route list embeds each route's targets when it is asked to, which
     // is how the screen reads them (#3031)
     if (status === 200 && url.includes("include=targets")) {
-      return json(routes.map((r) => ({ ...r, targets: TARGETS[r.id] ?? [] })));
+      return json(
+        routes.map((r) => ({
+          ...r,
+          targets: TARGETS[r.id] ?? [],
+          ...(url.includes("variants") ? { variants: variants[r.id] ?? [] } : {}),
+        })),
+      );
     }
     return json(status === 200 ? routes : { error: { message: "forbidden" } }, status);
   });
@@ -1291,6 +1303,58 @@ export const EditsAVariantSplit: Story = {
     await expect(
       splits.calls.filter((c) => c.method === "PUT" && /\/routes\/route-1$/.test(c.url)),
     ).toHaveLength(0);
+  },
+};
+
+/**
+ * A route that routes through variants shows them on its card, in fallback
+ * order with the split their weights give, and sets its own targets aside
+ * (#3343); a route with targets only is drawn as it always was, beside it.
+ */
+const variantRoutes = recording(
+  answer(ROUTES, 200, [], {
+    "route-1": [
+      variantRow(
+        "canary",
+        1,
+        [{ provider_id: "prov-2", upstream_model: "gpt-4o-next", weight: 1 }],
+        1,
+      ),
+      variantRow("stable", 9, [{ provider_id: "prov-1", upstream_model: "gpt-4o", weight: 1 }], 0),
+    ],
+    // route-2 has no targets of its own, and routes only through variants
+    "route-2": [variantRow("only", 1, [{ provider_id: "prov-1", weight: 1 }], 0)],
+  }),
+);
+export const CardsShowTheVariantsTheyRouteThrough: Story = {
+  render: () => (
+    <Harness fetchStub={variantRoutes.stub}>
+      <RoutingRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("gpt-4o", ROUTE_NAME)).toBeInTheDocument();
+    const list = within(
+      await canvas.findByRole("list", { name: "Variants of gpt-4o, in fallback order" }),
+    );
+    // declared order is the fallback order, whatever the order the API listed them in
+    const names = list.getAllByRole("listitem").map((li) => li.textContent);
+    await expect(names[0]).toContain("stable");
+    await expect(names[0]).toContain("90%");
+    await expect(names[0]).toContain("openai-prod → gpt-4o");
+    await expect(names[1]).toContain("canary");
+    await expect(names[1]).toContain("10%");
+    await expect(canvas.getByText(/its own 2 targets are not used/)).toBeVisible();
+    // the unused target split is not drawn as if the gateway applied it
+    await expect(canvas.queryByRole("list", { name: "Targets of gpt-4o" })).toBeNull();
+    await expect(canvas.getByText("2 variants")).toBeVisible();
+    await expect(canvas.queryByText("2 targets")).toBeNull();
+    // a variants-only route never reads as having no targets
+    await expect(canvas.queryByText("No targets yet.")).toBeNull();
+    await expect(canvas.queryByText("0 targets")).toBeNull();
+    await expect(canvas.getByText("1 variant")).toBeVisible();
+    await variantRoutes.expectSent("GET", "include=targets,variants");
   },
 };
 
