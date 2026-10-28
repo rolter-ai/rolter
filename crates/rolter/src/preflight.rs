@@ -660,15 +660,33 @@ fn mixed_decision_route_findings(config: &rolter_core::GatewayConfig) -> Vec<Fin
         .collect()
 }
 
-/// Every route whose `takes_over` sets the gateway would refuse at startup,
-/// above all one whose every target is restricted and so could never dial
-/// anything (#1584).
-fn takes_over_findings(config: &rolter_core::GatewayConfig) -> Vec<Finding> {
-    config
+/// Every problem the gateway's own validation finds in the file (#3320).
+///
+/// `GatewayConfig::load` parses the file and checks only its CA bundles; the
+/// gateway then runs the strict [`rolter_core::GatewayConfig::validate`] at
+/// startup, and every route, provider, budget or cache setting it names fails
+/// to serve. Running it here is what makes a file that passes `rolter check`
+/// one the gateway accepts. A route header problem is left out: the finding
+/// above already reports it, by the route's name.
+fn validation_findings(config: &rolter_core::GatewayConfig) -> Vec<Finding> {
+    let Err(problems) = config.validate() else {
+        return Vec::new();
+    };
+    let reported: std::collections::HashSet<String> = config
         .routes
         .iter()
-        .flat_map(|route| route.takes_over_problems())
-        .map(|detail| Finding::error("route fallback targets cannot be served", detail))
+        .flat_map(|route| {
+            route
+                .advanced
+                .header_problems()
+                .into_iter()
+                .map(move |problem| format!("route '{}': {problem}", route.model))
+        })
+        .collect();
+    problems
+        .into_iter()
+        .filter(|problem| !reported.contains(problem))
+        .map(|detail| Finding::error("config fails the gateway's validation", detail))
         .collect()
 }
 
@@ -776,7 +794,7 @@ pub async fn run(args: CheckArgs) -> anyhow::Result<()> {
                 findings.extend(example_key_findings(&config));
                 findings.extend(project_scoped_findings(&config));
                 findings.extend(mixed_decision_route_findings(&config));
-                findings.extend(takes_over_findings(&config));
+                findings.extend(validation_findings(&config));
             }
             Err(error) => findings.push(Finding::error(
                 format!("config file {path} is not usable"),
@@ -817,11 +835,81 @@ takes_over = ["refusal"]
 "#,
         )
         .expect("parses");
-        let findings = takes_over_findings(&config);
+        let findings = validation_findings(&config);
         assert_eq!(findings.len(), 1);
         let (text, failed) = report(&findings, false);
         assert!(failed, "{text}");
         assert!(text.contains("all_targets_restricted"), "{text}");
+    }
+
+    /// #3320: a file that parses but that the gateway's validation refuses
+    /// fails `rolter check`, one error finding per problem.
+    #[test]
+    fn a_file_that_parses_but_fails_validation_is_an_error() {
+        let config = rolter_core::GatewayConfig::from_toml_str(
+            r#"
+[[providers]]
+name = "openai"
+kind = "openai"
+api_base = "https://api.openai.com"
+
+[[routes]]
+model = "chat"
+[[routes.targets]]
+provider = "missing"
+
+[[routes]]
+model = "chat"
+[[routes.targets]]
+provider = "openai"
+weight = 0
+"#,
+        )
+        .expect("parses");
+        let findings = validation_findings(&config);
+        let (text, failed) = report(&findings, false);
+        assert!(failed, "{text}");
+        for problem in [
+            "targets unknown provider 'missing'",
+            "duplicate route model 'chat'",
+            "weight",
+        ] {
+            assert!(text.contains(problem), "{problem} missing from {text}");
+        }
+        assert!(findings.len() >= 3, "one finding per problem: {findings:?}");
+    }
+
+    /// A valid file adds no finding, and a route header problem is reported
+    /// once, by its own finding, not again as a validation problem.
+    #[test]
+    fn validation_adds_nothing_to_a_valid_file_or_a_header_problem() {
+        let valid = rolter_core::GatewayConfig::from_toml_str(
+            r#"
+[[providers]]
+name = "openai"
+kind = "openai"
+api_base = "https://api.openai.com"
+
+[[routes]]
+model = "chat"
+[[routes.targets]]
+provider = "openai"
+"#,
+        )
+        .expect("parses");
+        assert!(validation_findings(&valid).is_empty());
+
+        let mut header = valid.clone();
+        header.routes[0]
+            .advanced
+            .headers
+            .insert("authorization".into(), "Bearer x".into());
+        assert_eq!(route_header_findings(&header).len(), 1);
+        assert!(
+            validation_findings(&header).is_empty(),
+            "{:?}",
+            validation_findings(&header)
+        );
     }
 
     #[derive(Default)]

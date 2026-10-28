@@ -47,7 +47,9 @@ warn   unrecognised config key providers[0].api_key_evn
 
 Either way you get the full path to every unrecognised key, including keys nested inside tables and inside arrays of tables, plus the nearest real key when one is close enough to be a likely typo.
 
-These are always warnings. The file is valid, the gateway starts, and an import still runs — an unknown key never stops a process. The one exception is deliberate: `--strict` turns them into a non-zero exit, which is what you want in CI when a config change is under review.
+`rolter check --config` also runs the validation the gateway runs at startup, and reports each problem it finds as an error: a route on an unknown provider, a duplicate route model, a target with weight `0`, a budget limit that is not positive, a route whose every target is a [fallback target](/reliability/fallback-targets), and every other setting the gateway would refuse to serve. A file that passes `rolter check` is one the gateway accepts.
+
+Unknown keys are always warnings. The file is valid, the gateway starts, and an import still runs — an unknown key never stops a process. The one exception is deliberate: `--strict` turns them into a non-zero exit, which is what you want in CI when a config change is under review.
 
 ```bash
 rolter check --config rolter.toml --strict
