@@ -8,6 +8,16 @@ starting either the collector or the query service. The migrator first runs
 OTLP. A fresh volume therefore does not rely on a collector crash and restart
 to wait for missing databases or tables. The same ordering applies to `just dogfood`.
 
+The overlay deliberately does not enable Foundry's `signozspanmapper` or
+`signozllmpricing` processors: Rolter emits canonical `gen_ai.*` attributes,
+and request-log costs use the deployment's configured prices rather than a
+second catalogue of model-pattern rules in the collector. It also omits the
+`histogramQuantile` executable ClickHouse function; the bundled dogfood boards
+compute quantiles in SQL and need no startup binary download. SigNoz features
+that require that function or collector-generated `signoz.gen_ai.usage.*.cost`
+attributes are not provided by this overlay. Those are explicit differences
+from Foundry, not claims of feature parity (#2929).
+
 `docker/docker-compose.yml` brings up Postgres, Redis, ClickHouse, and the rolter `gateway` + `control` services. It is the **local stack**, open on purpose: no admin token (`ROLTER_ALLOW_OPEN_MODE=1` acknowledges the `0.0.0.0` bind), the example `rolter`/`rolter` Postgres login, no Redis password, a passwordless ClickHouse user, every port published on every interface.
 
 ```bash

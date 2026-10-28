@@ -51,10 +51,19 @@
 # in favour of the Foundry CLI (`curl -fsSL https://signoz.io/foundry.sh | bash`),
 # which generates compose with `foundryctl forge`. This file is a pinned,
 # de-collided equivalent so the overlay stays a plain `docker compose` command.
-# `signoz/cluster.xml` and `signoz/otel-collector-config.yaml` are still the
-# v0.129.0 vendoring and ran unchanged against this set. Foundry v0.3.0 generates
-# a collector config with two more traces processors, `signozspanmapper` and
-# `signozllmpricing`, that this overlay does not run.
+# `signoz/cluster.xml` and `signoz/otel-collector-config.yaml` retain the
+# v0.129.0 base. the differences from Foundry v0.3.0 are deliberate (#2929):
+# - no signozspanmapper: rolter already emits canonical gen_ai.* attributes;
+#   this local overlay does not normalize third-party instrumentation
+# - no signozllmpricing: its model-pattern price rules are not rolter's stored
+#   prices, aliases or cache accounting. inferred catalogue costs must not look
+#   like the request log's authoritative configured cost
+# - no histogramQuantile executable UDF: the dogfood boards use plain SQL, and
+#   starting a local overlay must not download and execute a binary. SigNoz UI
+#   features that require that UDF are not supported by this overlay
+# do not add empty processors or an unmounted function definition as if they
+# enabled those features; a future adoption needs pinned, offline-ready assets
+# and end-to-end dashboard/cost assertions
 #
 # Collisions with rolter's own services are handled deliberately:
 #   - every service is named `signoz-*`, so SigNoz's ClickHouse does not clash

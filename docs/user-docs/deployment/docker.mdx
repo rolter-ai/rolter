@@ -280,6 +280,14 @@ before the collector and SigNoz query service start. This can take a few minutes
 on a fresh volume; the collector does not need to crash and restart to wait for
 its databases and tables. `just dogfood` uses the same ordering.
 
+This local overlay does not run SigNoz's `signozspanmapper` or `signozllmpricing`
+processors. Rolter sends canonical `gen_ai.*` attributes, and its request logs
+remain the source of costs computed from your configured prices. SigNoz views
+that need collector-generated `signoz.gen_ai.usage.*.cost` attributes will not
+have them. The overlay also omits the `histogramQuantile` executable function:
+the bundled dogfood boards use SQL quantiles, and startup downloads no function
+binary. Other SigNoz views that require that function are unsupported here.
+
 ## ClickHouse on a small host
 
 ClickHouse's default server config writes its own diagnostics into `system.text_log`, `metric_log`, `asynchronous_metric_log`, `trace_log` and the rest of the `system.*_log` family, with an insert every few seconds into each. On a small host with a slow disk (a Raspberry Pi on an SD card was the measured case) the merges those inserts cause never catch up, and an idle ClickHouse measured at 190% to 320% CPU there. Rolter reads none of those tables, so `docker/clickhouse/system-logs.xml` switches them off for the local stack and, because the team stack layers over it, the team stack too. The SigNoz overlay's own ClickHouse (`signoz-clickhouse`) mounts the same file, since SigNoz reads none of them either. `system.query_log` stays on. Nothing in the file needs editing.
