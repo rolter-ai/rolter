@@ -1005,6 +1005,8 @@ async fn import_route_variants(
                 provider_id,
                 upstream_model: target.model.clone(),
                 weight: i32::try_from(target.weight)?,
+                // desired state like the weight (#3373)
+                takes_over: target.takes_over.iter().map(|c| c.to_string()).collect(),
             });
         }
         specs.push(RouteVariantSpec {
@@ -3074,6 +3076,120 @@ weight = 1
             "re-importing the export rewrote the variants"
         );
         assert_eq!(after.len(), 3);
+    }
+
+    /// #3373: a variant target's `takes_over` is stored by the import,
+    /// reaches the snapshot, is written by the export, and re-importing that
+    /// export writes nothing. A classic target's survives the export too.
+    #[tokio::test]
+    async fn variant_takes_over_round_trips_through_import_and_export() {
+        let Some(db) = scratch_db().await else {
+            return;
+        };
+        let pool = db.pool().clone();
+        let (org_id, project_id) = bootstrap_org(&pool).await;
+        let dir = tempdir("variants-takes-over");
+        let path = dir.join("rolter.toml");
+        std::fs::write(
+            &path,
+            r#"
+[[providers]]
+name = "primary"
+kind = "openai"
+api_base = "https://api.openai.com"
+
+[[providers]]
+name = "burst"
+kind = "openai_compatible"
+api_base = "http://vllm:8000"
+
+[[routes]]
+model = "pooled"
+[[routes.targets]]
+provider = "primary"
+[[routes.targets]]
+provider = "burst"
+takes_over = ["timeout"]
+
+[[routes]]
+model = "split"
+[[routes.variants]]
+name = "stable"
+[[routes.variants.targets]]
+provider = "primary"
+[[routes.variants.targets]]
+provider = "burst"
+takes_over = ["throttled", "refusal:violence"]
+"#,
+        )
+        .unwrap();
+        import_bootstrap_toml(&pool, org_id, project_id, &path)
+            .await
+            .unwrap();
+        let route = RouteRepo(&pool)
+            .list(project_id)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|r| r.model == "split")
+            .unwrap();
+        let stored = rolter_store::postgres::repo::RouteVariantRepo(&pool)
+            .list(route.id)
+            .await
+            .unwrap();
+        assert_eq!(
+            stored[0].targets[1].takes_over,
+            ["throttled", "refusal:violence"]
+        );
+        assert!(stored[0].targets[0].takes_over.is_empty());
+
+        use rolter_store::ConfigStore;
+        let store = rolter_store::PostgresConfigStore::with_kek(pool.clone(), None);
+        let served = store.load().await.unwrap();
+        let split = served.routes.iter().find(|r| r.model == "split").unwrap();
+        assert_eq!(split.variants[0].targets[1].takes_over.len(), 2);
+
+        let exported = crate::config_export::export_document(&pool, &served)
+            .await
+            .unwrap();
+        assert!(
+            exported.contains(r#"takes_over = ["throttled", "refusal:violence"]"#),
+            "{exported}"
+        );
+        assert!(
+            exported.contains(r#"takes_over = ["timeout"]"#),
+            "{exported}"
+        );
+
+        std::fs::write(&path, &exported).unwrap();
+        import_bootstrap_toml(&pool, org_id, project_id, &path)
+            .await
+            .unwrap();
+        let again = rolter_store::postgres::repo::RouteVariantRepo(&pool)
+            .list(route.id)
+            .await
+            .unwrap();
+        assert_eq!(
+            again.iter().map(|v| v.id).collect::<Vec<_>>(),
+            stored.iter().map(|v| v.id).collect::<Vec<_>>(),
+            "re-importing the export rewrote the variants"
+        );
+        let pooled = RouteRepo(&pool)
+            .list(project_id)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|r| r.model == "pooled")
+            .unwrap();
+        let targets = rolter_store::postgres::repo::RouteTargetRepo(&pool)
+            .list(pooled.id)
+            .await
+            .unwrap();
+        assert_eq!(targets.len(), 2);
+        assert!(
+            targets.iter().any(|t| t.takes_over == ["timeout"]),
+            "{targets:?}"
+        );
     }
 
     /// A scratch directory for the bootstrap toml a test writes.

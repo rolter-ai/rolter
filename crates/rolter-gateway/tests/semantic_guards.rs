@@ -55,6 +55,15 @@ fn prompt_of(body: &Value) -> String {
     }
 }
 
+/// The value of one text field of a multipart body.
+fn form_field(body: &str, name: &str) -> String {
+    let marker = format!("name=\"{name}\"\r\n\r\n");
+    body.split_once(&marker)
+        .and_then(|(_, rest)| rest.split_once("\r\n"))
+        .map(|(value, _)| value.to_string())
+        .unwrap_or_default()
+}
+
 fn sse(events: Vec<String>) -> Response {
     Response::builder()
         .header(header::CONTENT_TYPE, "text/event-stream")
@@ -128,6 +137,36 @@ impl Upstream {
                         }
                     }),
                 ),
+        )
+        .await
+    }
+
+    /// An upstream for `/v1/audio/transcriptions` and `/v1/audio/translations`
+    /// that "transcribes" the request's `prompt` field, as plain text when the
+    /// caller asked for `response_format=text` and as `verbose_json` otherwise.
+    async fn serve_audio(&self) -> SocketAddr {
+        let transcribe = |upstream: Upstream| {
+            post(move |body: String| {
+                let upstream = upstream.clone();
+                async move {
+                    upstream.calls.fetch_add(1, SeqCst);
+                    let transcript = form_field(&body, "prompt");
+                    if form_field(&body, "response_format") == "text" {
+                        return ([(header::CONTENT_TYPE, "text/plain")], transcript)
+                            .into_response();
+                    }
+                    Json(json!({
+                        "task": "transcribe", "duration": 60.0, "text": transcript,
+                        "segments": [{"id": 0, "start": 0.0, "end": 60.0, "text": transcript}]
+                    }))
+                    .into_response()
+                }
+            })
+        };
+        serve(
+            Router::new()
+                .route("/v1/audio/transcriptions", transcribe(self.clone()))
+                .route("/v1/audio/translations", transcribe(self.clone())),
         )
         .await
     }
@@ -527,4 +566,273 @@ async fn the_most_specific_policy_replaces_the_broader_one() {
     config.semantic_guards.policies.pop();
     let org = send(&config, Dialect::OpenAi, "an attack", false, Some(KEY)).await;
     assert_eq!(org.status, 400, "{}", org.body);
+}
+
+/// A transcription of `spoken` to `path`, as `response_format` (#3331).
+async fn transcribe(config: &GatewayConfig, path: &str, spoken: &str, format: &str) -> Run {
+    let state = rolter_gateway::AppState::with_logging(config, None);
+    let gw = serve(rolter_gateway::build_router(
+        state,
+        "/metrics",
+        32 * 1024 * 1024,
+    ))
+    .await;
+    let boundary = "GUARDBOUND";
+    let body = format!(
+        "--{b}\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\ntest-model\r\n\
+         --{b}\r\nContent-Disposition: form-data; name=\"prompt\"\r\n\r\n{spoken}\r\n\
+         --{b}\r\nContent-Disposition: form-data; name=\"response_format\"\r\n\r\n{format}\r\n\
+         --{b}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.wav\"\r\n\
+         Content-Type: audio/wav\r\n\r\nRIFFxxxxWAVE\r\n--{b}--\r\n",
+        b = boundary
+    );
+    let response = reqwest::Client::new()
+        .post(format!("http://{gw}{path}"))
+        .header(
+            header::CONTENT_TYPE,
+            format!("multipart/form-data; boundary={boundary}"),
+        )
+        .body(body)
+        .send()
+        .await
+        .unwrap();
+    Run {
+        status: response.status().as_u16(),
+        body: response.text().await.unwrap(),
+    }
+}
+
+#[tokio::test]
+async fn a_transcript_is_judged_by_the_response_stage_in_every_format() {
+    let upstream = Upstream::default();
+    let up = upstream.serve_audio().await;
+    let envelopes = Arc::default();
+    let url = provider(Arc::clone(&envelopes)).await;
+    let mut config = config(up, ProviderKind::OpenaiCompatible);
+    config.semantic_guards.providers = vec![guard(
+        "tox",
+        &url,
+        WebhookStage::PostCall,
+        FailureMode::FailOpen,
+    )];
+    config.semantic_guards.policies = vec![policy("all", PolicyScope::Deployment, None, &["tox"])];
+
+    for path in ["/v1/audio/transcriptions", "/v1/audio/translations"] {
+        for format in ["verbose_json", "text"] {
+            let withheld = transcribe(&config, path, "something violent", format).await;
+            assert_eq!(withheld.status, 403, "{path} {format} {}", withheld.body);
+            assert_eq!(withheld.code(), "guardrail_blocked");
+            assert!(
+                !withheld.body.contains("something violent"),
+                "the transcript must not leak: {}",
+                withheld.body
+            );
+
+            let delivered = transcribe(&config, path, "a calm answer", format).await;
+            assert_eq!(delivered.status, 200, "{path} {format} {}", delivered.body);
+            if format == "text" {
+                // still the plain text the caller asked for
+                assert_eq!(delivered.body, "a calm answer");
+                let shown = envelopes.lock().last().cloned().unwrap();
+                assert_eq!(shown["content"], json!({"text": "a calm answer"}));
+            } else {
+                let body: Value = serde_json::from_str(&delivered.body).unwrap();
+                assert_eq!(body["text"], "a calm answer");
+                assert_eq!(body["duration"], 60.0);
+            }
+        }
+    }
+    let seen = envelopes.lock().clone();
+    assert!(
+        seen.iter()
+            .all(|e| e["policy"] == "all" && e["direction"] == "response"),
+        "only the response stage judges a transcript: {seen:?}"
+    );
+}
+
+#[tokio::test]
+async fn the_built_in_output_rules_mask_and_withhold_a_transcript() {
+    use rolter_core::{BuiltinRule, GuardAction, GuardStage, GuardrailRule, GuardrailsConfig};
+    let upstream = Upstream::default();
+    let up = upstream.serve_audio().await;
+    let rule = |name: &str, builtin, action| GuardrailRule {
+        name: name.to_string(),
+        builtin: Some(builtin),
+        pattern: None,
+        stage: GuardStage::PostCall,
+        action,
+        replacement: None,
+        include_system: false,
+    };
+    let mut config = config(up, ProviderKind::OpenaiCompatible);
+    config.guardrails = GuardrailsConfig {
+        enabled: true,
+        rules: vec![
+            rule("email", BuiltinRule::Email, GuardAction::Redact),
+            rule("card", BuiltinRule::PaymentCard, GuardAction::Block),
+        ],
+        ..Default::default()
+    };
+    let path = "/v1/audio/transcriptions";
+
+    let masked = transcribe(&config, path, "write to ops@corp.com", "text").await;
+    assert_eq!(masked.status, 200, "{}", masked.body);
+    assert_eq!(masked.body, "write to [REDACTED:EMAIL]");
+
+    let masked = transcribe(&config, path, "write to ops@corp.com", "verbose_json").await;
+    assert_eq!(masked.status, 200, "{}", masked.body);
+    assert!(!masked.body.contains("ops@corp.com"), "{}", masked.body);
+
+    let withheld = transcribe(&config, path, "card 4111 1111 1111 1111", "text").await;
+    assert_eq!(withheld.status, 403, "{}", withheld.body);
+    assert_eq!(withheld.code(), "guardrail_blocked");
+    assert!(!withheld.body.contains("4111"), "{}", withheld.body);
+}
+
+/// The request-log rows a gateway sends to a stand-in ClickHouse.
+#[derive(Clone, Default)]
+struct Rows(Arc<Mutex<Vec<Value>>>);
+
+impl Rows {
+    async fn serve(&self) -> SocketAddr {
+        let rows = self.clone();
+        serve(Router::new().route(
+            "/",
+            post(
+                move |axum::extract::RawQuery(query): axum::extract::RawQuery, body: String| {
+                    let rows = rows.clone();
+                    async move {
+                        if query.unwrap_or_default().contains("request_logs") {
+                            for line in body.lines().filter(|line| !line.trim().is_empty()) {
+                                if let Ok(row) = serde_json::from_str::<Value>(line) {
+                                    rows.0.lock().push(row);
+                                }
+                            }
+                        }
+                        "ok"
+                    }
+                },
+            ),
+        ))
+        .await
+    }
+
+    async fn only_row(&self) -> Value {
+        for _ in 0..200 {
+            if !self.0.lock().is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let rows = self.0.lock().clone();
+        assert_eq!(rows.len(), 1, "expected one row, saw {rows:?}");
+        rows[0].clone()
+    }
+}
+
+/// The response stage's non-blocking outcomes reach the row as the request
+/// stage's do (#3330).
+#[tokio::test]
+async fn a_response_stage_flag_is_recorded_on_the_delivered_row() {
+    for dialect in [Dialect::OpenAi, Dialect::Anthropic] {
+        let upstream = Upstream::default();
+        let up = upstream.serve().await;
+        let url = provider(Arc::default()).await;
+        let rows = Rows::default();
+        let clickhouse = rows.serve().await;
+        let mut config = config(up, dialect.kind());
+        config.logging.clickhouse_url = Some(format!("http://{clickhouse}"));
+        config.logging.flush_ms = 20;
+        config.logging.batch_max = 1;
+        config.semantic_guards.providers = vec![guard(
+            "tox",
+            &url,
+            WebhookStage::PostCall,
+            FailureMode::FailOpen,
+        )];
+        let mut annotating = policy("watch", PolicyScope::Deployment, None, &["tox"]);
+        annotating.on_violation = ViolationAction::Annotate;
+        config.semantic_guards.policies = vec![annotating];
+
+        let delivered = send(&config, dialect, "something violent", false, None).await;
+        assert_eq!(delivered.status, 200, "{dialect:?} {}", delivered.body);
+        let row = rows.only_row().await;
+        assert_eq!(row["withheld"], 0, "{row}");
+        let events = row["guardrail_events"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            events.contains(&json!("policy_flagged:watch")),
+            "{dialect:?}: {row}"
+        );
+        assert!(!row.to_string().contains("violent"), "{row}");
+    }
+}
+
+/// A fail-open provider that gives no verdict on a response is on the row too.
+#[tokio::test]
+async fn a_response_stage_provider_error_is_recorded() {
+    let upstream = Upstream::default();
+    let up = upstream.serve().await;
+    let rows = Rows::default();
+    let clickhouse = rows.serve().await;
+    let mut config = config(up, ProviderKind::OpenaiCompatible);
+    config.logging.clickhouse_url = Some(format!("http://{clickhouse}"));
+    config.logging.flush_ms = 20;
+    config.logging.batch_max = 1;
+    // TEST-NET-1: nothing answers there
+    config.semantic_guards.providers = vec![GuardrailWebhookConfig {
+        timeout_ms: 150,
+        ..guard(
+            "down",
+            "http://192.0.2.1:1/check",
+            WebhookStage::PostCall,
+            FailureMode::FailOpen,
+        )
+    }];
+    let delivered = send(&config, Dialect::OpenAi, "hello", false, None).await;
+    assert_eq!(delivered.status, 200, "{}", delivered.body);
+    let row = rows.only_row().await;
+    assert_eq!(
+        row["guardrail_events"],
+        json!(["provider_error:down"]),
+        "{row}"
+    );
+}
+
+/// A policy that flags both the request and the response leaves one
+/// `policy_flagged:<policy>` on the row, since the rollups count a request
+/// once per entry (#3330).
+#[tokio::test]
+async fn a_policy_flagged_on_both_stages_is_recorded_once() {
+    let upstream = Upstream::default();
+    let up = upstream.serve().await;
+    let url = provider(Arc::default()).await;
+    let rows = Rows::default();
+    let clickhouse = rows.serve().await;
+    let mut config = config(up, ProviderKind::OpenaiCompatible);
+    config.logging.clickhouse_url = Some(format!("http://{clickhouse}"));
+    config.logging.flush_ms = 20;
+    config.logging.batch_max = 1;
+    config.semantic_guards.providers = vec![
+        guard("in", &url, WebhookStage::PreCall, FailureMode::FailOpen),
+        guard("out", &url, WebhookStage::PostCall, FailureMode::FailOpen),
+    ];
+    let mut annotating = policy("watch", PolicyScope::Deployment, None, &["in", "out"]);
+    annotating.on_violation = ViolationAction::Annotate;
+    config.semantic_guards.policies = vec![annotating];
+
+    let delivered = send(&config, Dialect::OpenAi, "something violent", false, None).await;
+    assert_eq!(delivered.status, 200, "{}", delivered.body);
+    let row = rows.only_row().await;
+    let flagged = row["guardrail_events"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .filter(|event| *event == "policy_flagged:watch")
+        .count();
+    assert_eq!(flagged, 1, "{row}");
 }

@@ -401,6 +401,7 @@ mod tests {
         ("/api/v1/analytics/summary", None),
         ("/api/v1/analytics/timeseries", None),
         ("/api/v1/analytics/by-model", None),
+        ("/api/v1/analytics/by-variant", None),
         ("/api/v1/analytics/by-attribution", None),
         ("/api/v1/analytics/by-attribution/export", None),
         ("/api/v1/analytics/timeseries/export", None),

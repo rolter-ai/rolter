@@ -2491,6 +2491,7 @@ async fn proxy(
                     semantic: semantic_leg,
                     plugins: post_response_plugins.as_ref(),
                     pii: pii_leg.as_ref(),
+                    transcript: false,
                 },
                 pii_stream.take(),
             )
@@ -2561,6 +2562,7 @@ async fn proxy(
                             semantic: semantic_leg,
                             plugins: post_response_plugins.as_ref(),
                             pii: pii_leg.as_ref(),
+                            transcript: false,
                         },
                         pii_stream.take(),
                     )
@@ -3230,12 +3232,13 @@ async fn proxy(
                                 semantic: semantic_leg,
                                 plugins: post_response_plugins.as_ref(),
                                 pii: pii_leg.as_ref(),
+                                transcript: false,
                             };
                             let status_code =
                                 StatusCode::from_u16(status).unwrap_or(StatusCode::OK);
-                            let mut post_events = Vec::new();
+                            let mut post_events = PolicyEvents::default();
                             let applied = policy.apply(status_code, &mut post_events, bytes).await;
-                            log.plugin_events.extend(post_events);
+                            post_events.record(&mut log);
                             let (bytes, pre_restore) = match applied {
                                 Delivery::Send { body, pre_restore } => (body, pre_restore),
                                 // the upstream call happened and is billed on
@@ -3298,6 +3301,7 @@ async fn proxy(
                 pii_leg.as_ref(),
                 semantic_leg,
                 pii_stream.take(),
+                false,
             )
             .await
         }
@@ -3548,6 +3552,82 @@ async fn proxy_multipart(
     if let Some(refused) = unpriced_admission(&state, &snap, &scope, &model, price.is_some()) {
         return refuse.log(refused);
     }
+
+    // the response stage of the guardrails, on the transcript (#3331). the
+    // request is audio, which no request-stage rule, provider, plugin or
+    // sanitizer reads, so those do not run; the answer is text, small and never
+    // a stream, so everything that judges a chat completion judges it, in the
+    // same order: the built-in post_call rules, the semantic policy's
+    // post_call providers, the post_response plugins, then the sanitizer's
+    // response leg. no placeholder went upstream, so nothing is restored
+    let output_guard = crate::guardrails::OutputGuard::resolve(
+        &snap.guardrails,
+        &entry.guardrails,
+        &state.metrics,
+        path,
+    );
+    let semantic_guard = snap
+        .semantic_guards
+        .resolve(&crate::semantic_guards::policy_request(
+            &scope,
+            &entry.route.model,
+        ))
+        .filter(|policy| policy.runs_at(rolter_core::WebhookStage::PostCall))
+        .map(|policy| crate::semantic_guards::SemanticGuard {
+            guards: &snap.semantic_guards,
+            policy,
+            metrics: &state.metrics,
+            egress: &state.side_client,
+            model: model.clone(),
+            route: entry.route.model.clone(),
+            trace_id: trace_id.to_string(),
+            tenant: plugin_tenant(&scope),
+        });
+    let semantic_leg = semantic_guard.as_ref().map(|guard| SemanticLeg {
+        guard,
+        stream: false,
+    });
+    let post_response_plugin_list = snap.plugins.for_stage(
+        rolter_core::PluginStage::PostResponse,
+        &scope.org,
+        (!scope.project.is_empty()).then_some(scope.project.as_str()),
+    );
+    let post_response_plugins = (!post_response_plugin_list.is_empty()).then(|| {
+        crate::plugin_dispatch::PostResponsePlugins {
+            plugins: post_response_plugin_list,
+            metrics: &state.metrics,
+            egress: &state.side_client,
+            model: model.clone(),
+            route: entry.route.model.clone(),
+            trace_id: trace_id.clone(),
+            tenant: plugin_tenant(&scope),
+        }
+    });
+    // the log row takes these before the response leg runs
+    let pii_model = model.clone();
+    let pii_trace_id = trace_id.clone();
+    let pii_scope = rolter_core::TokenScope {
+        org: scope.org.clone(),
+        team: scope.team.clone(),
+        project: scope.project.clone(),
+        route: entry.route.model.clone(),
+    };
+    let pii_leg = snap
+        .pii_sanitizer
+        .sanitizes_response()
+        .then(|| PiiResponseLeg {
+            state: &state,
+            config: &snap.pii_sanitizer,
+            model: &pii_model,
+            route: &entry.route.model,
+            trace_id: &pii_trace_id,
+            tenant: plugin_tenant(&scope),
+            scope: &pii_scope,
+            ticket: None,
+            will_restore: false,
+            capture: payload_capture_enabled(&snap.logging.payload_capture, &model, &scope.key),
+        });
+
     let recorder = SpendRecorder::new(state.budgets.clone(), snap.budgets.clone(), scope);
 
     let token_ids = parse_vllm_token_ids(&headers);
@@ -3915,12 +3995,13 @@ async fn proxy_multipart(
                 token_recorder,
                 inflight_guard,
                 None,
+                output_guard.as_ref(),
                 None,
+                post_response_plugins,
+                pii_leg.as_ref(),
+                semantic_leg,
                 None,
-                None,
-                None,
-                None,
-                None,
+                true,
             )
             .await
         }
@@ -4590,11 +4671,12 @@ pub(crate) fn pick_untried(
     )
 }
 
-/// [`pick_untried`] for a caller that orders candidates before sending to any
-/// of them, such as a realtime session building its dial list: the breaker is
+/// [`pick_untried`] for a caller that picks a candidate before deciding to send
+/// to it, such as a realtime session walking its dial list: the breaker is
 /// only read (`Breaker::refuses`), so no half-open probe slot is taken for a
 /// target the caller may never dial. The caller asks `Breaker::allows` of the
-/// one it dials (#3248).
+/// one it dials (#3248). `failure` is how the previous dial failed, as for
+/// [`pick_untried`] (#3322).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn pick_untried_read_only(
     entry: &crate::state::RouteEntry,
@@ -4607,9 +4689,10 @@ pub(crate) fn pick_untried_read_only(
     model: &str,
     cd_enabled: bool,
     key_meta: Option<&KeyMeta>,
+    failure: Option<&Failure>,
 ) -> Option<usize> {
     pick_untried_with(
-        entry, ctx, tried, loads, cooldowns, health, breaker, model, cd_enabled, key_meta, None,
+        entry, ctx, tried, loads, cooldowns, health, breaker, model, cd_enabled, key_meta, failure,
         false,
     )
 }
@@ -4884,6 +4967,7 @@ async fn stream_response(
     pii: Option<&PiiResponseLeg<'_>>,
     semantic: Option<SemanticLeg<'_, '_>>,
     pii_stream: Option<crate::pii_stream::StreamRestore>,
+    transcript: bool,
 ) -> Response {
     let status =
         StatusCode::from_u16(response.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
@@ -4969,11 +5053,15 @@ async fn stream_response(
                     semantic,
                     plugins: post_response_plugins.as_ref(),
                     pii,
+                    transcript,
                 };
-                let mut post_events = Vec::new();
-                let applied = policy.apply(status, &mut post_events, bytes).await;
                 let mut log = log;
-                log.plugin_events.extend(post_events);
+                // read before the policy too: a transcript's audio duration is
+                // billed whether it is rewritten, withheld or delivered (#3331)
+                log.billed_units = log.unit_basis.units(&bytes);
+                let mut post_events = PolicyEvents::default();
+                let applied = policy.apply(status, &mut post_events, bytes).await;
+                post_events.record(&mut log);
                 let (bytes, pre_restore) = match applied {
                     Delivery::Send { body, pre_restore } => (body, pre_restore),
                     Delivery::Refuse { response, reason } => {
@@ -5676,7 +5764,7 @@ async fn cached_response(
     pii_stream: Option<crate::pii_stream::StreamRestore>,
 ) -> Response {
     let status = StatusCode::from_u16(hit.status).unwrap_or(StatusCode::OK);
-    let mut post_events = Vec::new();
+    let mut post_events = PolicyEvents::default();
     let applied = policy
         .apply(status, &mut post_events, Bytes::from(hit.body))
         .await;
@@ -5685,7 +5773,7 @@ async fn cached_response(
         Delivery::Send { body, .. } => (body, None),
         Delivery::Refuse { response, reason } => (Bytes::new(), Some((response, reason))),
     };
-    let log = RequestLog {
+    let mut log = RequestLog {
         status: hit.status,
         cache_hit: 1,
         // the answer was produced by a request translated this way, so a hit
@@ -5693,20 +5781,19 @@ async fn cached_response(
         param_adjustments: rolter_proxy::ParamAdjustments::from_log_entries(
             hit.param_adjustments.iter().map(String::as_str),
         ),
-        plugin_events: ctx
-            .plugin_events
-            .iter()
-            .cloned()
-            .chain(post_events)
-            .collect(),
         ..ctx.into_log()
     };
+    post_events.record(&mut log);
     // a withheld hit still gets its row, so a refusal is visible, but with zero
     // tokens and cost: nothing was generated upstream for this request (#1478)
     if let Some((refusal, reason)) = withheld {
         sink.metrics()
             .withheld_responses_total
             .fetch_add(1, Relaxed);
+        // as `UsageLoggingStream::withhold` records a live refusal
+        if let Some(rule) = reason.strip_prefix(crate::logging::GUARDRAIL_WITHHELD_PREFIX) {
+            log.guardrail_events.push(format!("blocked:{rule}"));
+        }
         sink.log(RequestLog {
             status: refusal.status().as_u16(),
             withheld: 1,
@@ -5759,20 +5846,56 @@ struct DeliveryPolicy<'p, 'a> {
     semantic: Option<SemanticLeg<'p, 'a>>,
     plugins: Option<&'p crate::plugin_dispatch::PostResponsePlugins<'a>>,
     pii: Option<&'p PiiResponseLeg<'a>>,
+    /// the body is an audio transcription or translation, which may come back
+    /// as plain text or subtitles rather than JSON (#3331)
+    transcript: bool,
 }
 
 impl DeliveryPolicy<'_, '_> {
     /// Finalise a buffered body with `status`. Only a successful body is
     /// examined; an error body passes through untouched.
-    async fn apply(&self, status: StatusCode, events: &mut Vec<String>, bytes: Bytes) -> Delivery {
+    async fn apply(&self, status: StatusCode, events: &mut PolicyEvents, bytes: Bytes) -> Delivery {
         if !status.is_success() {
             return Delivery::Send {
                 body: bytes,
                 pre_restore: None,
             };
         }
+        // a transcript answered as `text`, `srt` or `vtt` is no JSON object, so
+        // every leg below is shown it as `{"text": …}` and the body delivered is
+        // its text again. one that is not even UTF-8 is nothing a leg could
+        // judge, and is withheld rather than delivered unchecked (#3331)
+        let (bytes, plain_text) = if self.transcript
+            && serde_json::from_slice::<serde_json::Map<String, Value>>(&bytes).is_err()
+        {
+            match std::str::from_utf8(&bytes) {
+                Ok(text) => (
+                    Bytes::from(serde_json::json!({ "text": text }).to_string()),
+                    true,
+                ),
+                Err(_) => {
+                    return Delivery::Refuse {
+                        response: guardrail_output_blocked("unreadable_transcript"),
+                        reason: guardrail_withheld_reason("unreadable_transcript"),
+                    }
+                }
+            }
+        } else {
+            (bytes, false)
+        };
+        match self.finalise(events, bytes).await {
+            Delivery::Send { body, pre_restore } if plain_text => Delivery::Send {
+                body: transcript_text(body),
+                pre_restore: pre_restore.map(transcript_text),
+            },
+            delivery => delivery,
+        }
+    }
+
+    /// Run every leg over a successful body, in order.
+    async fn finalise(&self, events: &mut PolicyEvents, bytes: Bytes) -> Delivery {
         let bytes = match self.output {
-            Some(guard) => match guard.apply(&bytes) {
+            Some(guard) => match guard.apply(&bytes, &mut events.guardrail) {
                 crate::guardrails::OutputDecision::Unchanged => bytes,
                 crate::guardrails::OutputDecision::Masked(masked) => masked,
                 crate::guardrails::OutputDecision::Blocked(rule) => {
@@ -5788,7 +5911,7 @@ impl DeliveryPolicy<'_, '_> {
         // the built-in rules masked it and before a plugin or the sanitizer
         // rewrites it (#459)
         let bytes = match self.semantic {
-            Some(leg) => match leg.apply(bytes).await {
+            Some(leg) => match leg.apply(bytes, &mut events.guardrail).await {
                 Ok(bytes) => bytes,
                 Err(refusal) => return *refusal,
             },
@@ -5796,7 +5919,9 @@ impl DeliveryPolicy<'_, '_> {
         };
         let bytes = match self.plugins {
             Some(ctx) => {
-                match crate::plugin_dispatch::apply_post_response(ctx, events, &bytes).await {
+                match crate::plugin_dispatch::apply_post_response(ctx, &mut events.plugin, &bytes)
+                    .await
+                {
                     crate::plugin_dispatch::PostResponseOutcome::Bytes(bytes) => Bytes::from(bytes),
                     crate::plugin_dispatch::PostResponseOutcome::Block(reason) => {
                         let reason =
@@ -5830,6 +5955,19 @@ impl DeliveryPolicy<'_, '_> {
     }
 }
 
+/// The text of a plain-text transcript [`DeliveryPolicy::apply`] wrapped as
+/// `{"text": …}`. A leg that replaced the object with one carrying no `text`
+/// string leaves it as the JSON it made.
+fn transcript_text(body: Bytes) -> Bytes {
+    match serde_json::from_slice::<Value>(&body) {
+        Ok(Value::Object(mut object)) => match object.remove("text") {
+            Some(Value::String(text)) => Bytes::from(text),
+            _ => body,
+        },
+        _ => body,
+    }
+}
+
 /// A semantic guardrail policy's `post_call` providers, and whether the body
 /// they judge is a buffered stream (ADR-0037).
 #[derive(Clone, Copy)]
@@ -5842,10 +5980,11 @@ impl SemanticLeg<'_, '_> {
     /// Judge a successful body. A stream is shown to the providers as its
     /// assembled text; any other body as its JSON, or as `{"text": …}` when it
     /// is UTF-8 but not JSON. A binary body (audio, an image) is no text a
-    /// classifier can judge and passes. Response-stage events are counted in
-    /// the metrics; the log row records a refusal through its reason. The
-    /// refusal is boxed: it is the rare arm, and `Delivery` is large.
-    async fn apply(&self, bytes: Bytes) -> Result<Bytes, Box<Delivery>> {
+    /// classifier can judge and passes. Every provider's outcome is appended to
+    /// `events` for the log row, as on the request stage (#3330); a refusal is
+    /// also recorded through its withheld reason. The refusal is boxed: it is
+    /// the rare arm, and `Delivery` is large.
+    async fn apply(&self, bytes: Bytes, events: &mut Vec<String>) -> Result<Bytes, Box<Delivery>> {
         let content = if self.stream {
             crate::semantic_guards::stream_content(&bytes)
         } else if let Ok(value) = serde_json::from_slice::<Value>(&bytes) {
@@ -5855,14 +5994,13 @@ impl SemanticLeg<'_, '_> {
         } else {
             return Ok(bytes);
         };
-        let mut events = Vec::new();
         match self
             .guard
             .check(
                 rolter_core::WebhookStage::PostCall,
                 &content,
                 self.stream,
-                &mut events,
+                events,
             )
             .await
         {
@@ -5917,6 +6055,36 @@ enum Delivery {
         response: Response,
         reason: String,
     },
+}
+
+/// What the post-response policy did to one body, kept apart by the column
+/// each lands in: the output rules' and semantic providers' outcomes in
+/// `guardrail_events`, the `post_response` plugins' in `plugin_events`
+/// (#3330).
+#[derive(Default)]
+struct PolicyEvents {
+    guardrail: Vec<String>,
+    plugin: Vec<String>,
+}
+
+impl PolicyEvents {
+    /// Append the outcomes to the row the request leaves, each once: the
+    /// request stage may already have recorded the same entry (a policy that
+    /// flags both the request and the response), and the rollups count a
+    /// request once per entry, so a repeat would count it twice.
+    fn record(self, log: &mut RequestLog) {
+        append_new(&mut log.guardrail_events, self.guardrail);
+        append_new(&mut log.plugin_events, self.plugin);
+    }
+}
+
+/// Append each of `entries` that `into` does not hold yet.
+fn append_new(into: &mut Vec<String>, entries: Vec<String>) {
+    for entry in entries {
+        if !into.contains(&entry) {
+            into.push(entry);
+        }
+    }
 }
 
 /// The reply when a post-call rule refuses to deliver a completion.

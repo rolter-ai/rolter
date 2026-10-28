@@ -153,7 +153,7 @@ Full-featured hostable web control panel, not a read-only dashboard.
 - [x] Config schema validation + helpful startup errors (`GatewayConfig::validate`, plus `rolter check` for pre-boot validation)
 - [ ] Secret backends (Vault/cloud KMS) behind the encryption trait (#294)
 - [x] Guardrails (PII/content/prompt-injection) hooks (`crates/rolter-core/src/guardrails.rs`, `rolter-gateway/src/guardrails.rs`, guardrail screens in the dashboard)
-- [x] Scoped semantic guard policies over several providers, with thresholds and a streaming strategy (#459, ADR-0037); follow-ups: in-process classifier (#3329), response-stage log events (#3330), audio endpoints (#3331)
+- [x] Scoped semantic guard policies over several providers, with thresholds and a streaming strategy (#459, ADR-0037), response-stage events on the request log (#3330) and the audio endpoints (#3331); follow-up: in-process classifier (#3329)
 - [ ] A/B traffic mirroring (#296)
 
 ## MCP gateway

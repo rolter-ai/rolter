@@ -3171,6 +3171,77 @@ async fn realtime_websocket_fails_over_during_connection_establishment() {
     );
 }
 
+/// An upstream that answers every realtime handshake with `status`.
+async fn serve_realtime_refusal(status: u16) -> SocketAddr {
+    serve(Router::new().route(
+        "/v1/realtime",
+        get(move || async move {
+            axum::http::StatusCode::from_u16(status)
+                .unwrap()
+                .into_response()
+        }),
+    ))
+    .await
+}
+
+/// #3322: a throttled primary hands the session to the fallback that takes
+/// throttling over, on a classic pool and on a variant alike; an answer the
+/// fallback does not take over never reaches it.
+#[tokio::test]
+async fn realtime_websocket_reaches_a_restricted_fallback_only_for_its_failure() {
+    for variants in [false, true] {
+        for (primary_status, reaches_burst) in [(429, true), (503, false), (401, false)] {
+            let primary = serve_realtime_refusal(primary_status).await;
+            let (burst, mut captured_rx) = serve_realtime_echo().await;
+            let mut config = config_for(
+                "realtime-burst",
+                vec![("primary", primary), ("burst", burst)],
+            );
+            let throttled = vec!["throttled".parse().unwrap()];
+            let route = &mut config.routes[0];
+            route.targets[1].takes_over = throttled;
+            if variants {
+                route.variants = vec![rolter_core::Variant {
+                    name: "only".into(),
+                    weight: 1,
+                    targets: std::mem::take(&mut route.targets),
+                    params: Default::default(),
+                }];
+            }
+            let gw = serve_gateway(&config).await;
+            let dial = tokio_tungstenite::connect_async(realtime_client_request(
+                gw,
+                "realtime-burst",
+                None,
+                None,
+            ))
+            .await;
+            let case = format!("variants={variants} primary={primary_status}");
+            if reaches_burst {
+                let (mut socket, _) = dial.unwrap_or_else(|e| panic!("{case}: {e}"));
+                socket
+                    .send(WebSocketMessage::Text("ping".into()))
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    socket.next().await.unwrap().unwrap().into_text().unwrap(),
+                    "ping",
+                    "{case}"
+                );
+                socket.close(None).await.unwrap();
+                assert!(captured_rx.recv().await.is_some(), "{case}");
+            } else {
+                let error = dial.err().unwrap_or_else(|| panic!("{case}: connected"));
+                assert_eq!(websocket_handshake_status(error), 502, "{case}");
+                assert!(
+                    captured_rx.try_recv().is_err(),
+                    "{case}: the restricted fallback was dialled"
+                );
+            }
+        }
+    }
+}
+
 #[tokio::test]
 async fn realtime_websocket_enforces_concurrent_session_limit() {
     let (upstream_addr, mut captured_rx) = serve_realtime_echo().await;

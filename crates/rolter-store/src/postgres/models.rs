@@ -317,6 +317,10 @@ pub struct RouteVariantTarget {
     pub upstream_model: Option<String>,
     pub weight: i32,
     pub position: i32,
+    /// failure class tokens this target takes over (#3373), as
+    /// [`RouteTarget::takes_over`]; empty for an ordinary member of the variant
+    #[serde(default)]
+    pub takes_over: Vec<String>,
 }
 
 /// A provider group: a fleet of providers addressable as `group-slug/model`

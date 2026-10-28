@@ -312,7 +312,9 @@ function useLogFilters() {
      * Replace every filter a saved view holds with the view's own, and leave
      * the rest of the address alone. A filter the view does not name is
      * cleared: applying it must give the view, not the view plus what was
-     * already picked. A lookup would mask the filters, so it goes too.
+     * already picked, and that includes the Cost checks (unpriced, withheld,
+     * unknown usage), which a view does not hold (#3346). A lookup would mask
+     * the filters, so it goes too.
      */
     applyView: (view: SavedViewFilters) =>
       update({
@@ -322,6 +324,9 @@ function useLogFilters() {
         key: view.key ?? "",
         business_unit: (view.business_unit ?? []).join(","),
         customer: (view.customer ?? []).join(","),
+        unpriced: "",
+        withheld: "",
+        usage_unknown: "",
         request_id: "",
         trace_id: "",
       }),
@@ -754,6 +759,14 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
         <DetailRow label={t("pages.logs.detail.variant")} mono>
           {selected.variant || <Absent />}
         </DetailRow>
+        {/* why a fallback target answered: the failure class the request
+            was walked away from. a request the first dial answered says
+            nothing here (#1584, #3319) */}
+        {selected.fallback_reason && (
+          <DetailRow label={t("pages.logs.detail.fallbackReason")} mono>
+            {selected.fallback_reason}
+          </DetailRow>
+        )}
         {/* what dialect translation did to the caller's parameters (#3323):
             only a translated request that lost or changed one has the row */}
         {(selected.param_adjustments?.length ?? 0) > 0 && (

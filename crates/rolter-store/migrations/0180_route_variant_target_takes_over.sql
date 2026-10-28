@@ -1,0 +1,11 @@
+-- the failures a route variant's target is a fallback for (#3373), as
+-- `route_targets.takes_over` (0129) is for the classic pool. a target with a
+-- non-empty set is never dialled first and is tried only after another
+-- target failed with one of these classes; the empty default keeps every
+-- existing variant target an ordinary member. each entry is a class token
+-- (`throttled`, `timeout`, `transport`, `server_error`, `refusal` or
+-- `refusal:<category>`), validated by the control plane before it is stored.
+-- route_variant_targets already carries the statement-level
+-- bump_config_version() trigger (0139), which fires on an update of any
+-- column, so a change reaches the snapshot without a new one
+alter table route_variant_targets add column if not exists takes_over text[] not null default '{}';

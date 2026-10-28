@@ -73,6 +73,7 @@ export {
   fetchAnalyticsSummary,
   fetchAnalyticsTimeseries,
   fetchAnalyticsByModel,
+  fetchAnalyticsByVariant,
   fetchAttributionSpend,
   fetchGuardrailOutcomes,
   fetchPluginOutcomes,
@@ -84,6 +85,7 @@ export type {
   AnalyticsSummary,
   AnalyticsTimeseriesPoint,
   AnalyticsByModelRow,
+  AnalyticsByVariantRow,
   AttributionDimension,
   AttributionSpendRow,
   GuardrailAction,
@@ -94,6 +96,17 @@ export type {
   ParamAdjustmentRow,
   ParamAdjustments,
 } from "./analytics";
+export { fetchSavings } from "./savings";
+export type {
+  MoneyRange,
+  SavingsCandidate,
+  SavingsOption,
+  SavingsQuery,
+  SavingsReport,
+  SavingsSlice,
+  SavingsSpend,
+  SavingsSpendRow,
+} from "./savings";
 export { fetchAuditLogPage, fetchDeploymentAuditLogPage, fetchAuditLogExport } from "./audit";
 export type { AuditLogEntry, AuditLogPage, AuditLogQuery, AuditLogExportFile } from "./audit";
 export {

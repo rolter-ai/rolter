@@ -292,6 +292,12 @@
                 "provider": "vllm-1",
                 "model": "m",
                 "weight": 1
+              },
+              {
+                "provider": "vllm-1",
+                "model": "m-burst",
+                "weight": 1,
+                "takes_over": ["timeout"]
               }
             ],
             "params": {
