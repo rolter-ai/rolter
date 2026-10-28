@@ -3044,7 +3044,7 @@ weight = 1
             "the canary's only provider is left out, so it is not served"
         );
 
-        let exported = crate::config_export::export_document(&pool, &served)
+        let exported = crate::config_export::export_document(&pool, &served, &Default::default())
             .await
             .unwrap();
         assert!(
@@ -3153,7 +3153,7 @@ takes_over = ["throttled", "refusal:violence"]
         let split = served.routes.iter().find(|r| r.model == "split").unwrap();
         assert_eq!(split.variants[0].targets[1].takes_over.len(), 2);
 
-        let exported = crate::config_export::export_document(&pool, &served)
+        let exported = crate::config_export::export_document(&pool, &served, &Default::default())
             .await
             .unwrap();
         assert!(

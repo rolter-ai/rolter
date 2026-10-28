@@ -44,6 +44,20 @@ The migration chain selects steps with `MIGRATIONS.iter().filter(|m| m.from >= f
 
 Emitting both tiers is also what keeps the export lossless. The flat array _is_ the readonly tier — it cannot express `providers.default` at all — so exporting a deployment with seeded defaults used to drop them silently. `the_default_tier_round_trips` covers that direction.
 
+## One organization per file (#3440)
+
+Names are per org (#1857, ADR-0039) and the file format carries no org, so two
+orgs that share a route or provider name cannot be one valid file. The decision
+was one org per file rather than an `org` key on every row, which would need an
+importer spanning orgs that nothing asks for. `ExportOptions::org` (`rolter
+config export --org <slug>`, `?org=<slug>`) runs `scope_to_org` over the loaded
+config before the clash check: providers, groups and routes owned by that org
+or by none, the org's prompt templates (the `{org_id}:` half of their ids) and
+the caps `ScopeRefs::in_org` places under its slug. Prices, currency and
+logging are deployment-wide and stay. The clash check then runs on what is
+left, so an unscoped export of such a deployment still refuses and names the
+option. Test: `config_export::tests::round_trip::two_orgs_sharing_names_export_one_file_each`.
+
 ## Budgets and rate limits (#1312)
 
 `BudgetConfig::id` is a database id, which the one identity rule of the format

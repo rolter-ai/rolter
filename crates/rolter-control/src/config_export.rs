@@ -43,7 +43,7 @@ use rolter_core::{
 use serde::Serialize;
 
 #[cfg(feature = "postgres")]
-use axum::extract::State;
+use axum::extract::{Query, State};
 #[cfg(feature = "postgres")]
 use axum::response::{IntoResponse, Response};
 #[cfg(feature = "postgres")]
@@ -153,6 +153,32 @@ impl ScopeRefs {
 
     fn get(&self, scope: rolter_core::BudgetScope, id: &str) -> Option<&str> {
         self.names.get(&(scope, id.to_string())).map(String::as_str)
+    }
+
+    /// Whether a cap belongs in the export of the org with slug `org` (#3440).
+    ///
+    /// A cap is the org's when its scope's portable name starts with the org's
+    /// slug, or, for a person, when its `within` does. A person's cap with no
+    /// `within` is the deployment's and goes into every org's file. A cap whose
+    /// owner cannot be told (a virtual key, a scope with no portable name) stays
+    /// in, where the trailing comment counts it as the unscoped export does.
+    #[cfg(any(feature = "postgres", test))]
+    fn in_org(
+        &self,
+        org: &str,
+        scope: rolter_core::BudgetScope,
+        id: &str,
+        within: Option<&rolter_core::ScopeWithin>,
+    ) -> bool {
+        use rolter_core::{BudgetScope, ScopeWithin};
+        let owned = |name: &str| name.split('/').next() == Some(org);
+        if scope == BudgetScope::User {
+            return match self.within(within) {
+                Some(Some(ScopeWithin::Org(name) | ScopeWithin::Project(name))) => owned(&name),
+                _ => true,
+            };
+        }
+        self.get(scope, id).is_none_or(owned)
     }
 
     /// A cap's `within`, as the slug path the importer resolves (#3311): `None`
@@ -748,6 +774,17 @@ pub async fn load_scope_refs(pool: &sqlx::PgPool) -> rolter_core::Result<ScopeRe
     Ok(refs)
 }
 
+/// What an export covers. The default is the whole deployment.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct ExportOptions {
+    /// Export this organization's rows only (#3440), by slug. Names are per org
+    /// (#1857) and a file carries none, so a deployment whose orgs share a
+    /// route or provider name is exported one org per file. Rows owned by no
+    /// org (those of the gateway's own config file) are written as they are in
+    /// the unscoped export.
+    pub org: Option<String>,
+}
+
 /// The deployment's configuration as an importable document, caps included.
 /// The one call both the endpoint and `rolter config export` make, so they
 /// cannot drift.
@@ -755,19 +792,67 @@ pub async fn load_scope_refs(pool: &sqlx::PgPool) -> rolter_core::Result<ScopeRe
 pub async fn export_document(
     pool: &sqlx::PgPool,
     config: &GatewayConfig,
+    options: &ExportOptions,
 ) -> rolter_core::Result<String> {
-    let clashes = clashing_names(config);
+    use rolter_store::postgres::store_err;
+
+    let mut config = config.clone();
+    let refs = load_scope_refs(pool).await?;
+    if let Some(slug) = &options.org {
+        let org_id: Option<uuid::Uuid> = sqlx::query_scalar("select id from orgs where slug = $1")
+            .bind(slug)
+            .fetch_optional(pool)
+            .await
+            .map_err(store_err)?;
+        let org_id = org_id.ok_or_else(|| {
+            rolter_core::Error::Config(format!("no organization has the slug '{slug}'"))
+        })?;
+        scope_to_org(&mut config, slug, &org_id.to_string(), &refs);
+    }
+    let clashes = clashing_names(&config);
     if !clashes.is_empty() {
+        let hint = match &options.org {
+            Some(slug) => format!(
+                "organization '{slug}' shares {} with a row owned by no organization",
+                clashes.join(", ")
+            ),
+            None => format!(
+                "two or more organizations use the same {}, and a file carries no \
+                 organization, so it would not load; export one organization at a time with \
+                 `--org <slug>` (`?org=<slug>` on the endpoint)",
+                clashes.join(", ")
+            ),
+        };
         return Err(rolter_core::Error::Config(format!(
-            "this deployment cannot be exported as one file yet: two or more organizations \
-             use the same {}, and a file carries no organization, so it would not load \
-             (#3440)",
-            clashes.join(", ")
+            "this deployment cannot be exported as one file: {hint} (#3440)"
         )));
     }
-    let mut config = config.clone();
     with_stored_variants(pool, &mut config).await?;
-    Ok(render_with(&config, &load_scope_refs(pool).await?))
+    Ok(render_with(&config, &refs))
+}
+
+/// Leave in `config` what belongs in the file of the org `slug` (#3440): its
+/// providers, groups, routes, prompt templates and caps, plus the rows no org
+/// owns. Prices, currency and logging are deployment-wide and stay.
+#[cfg(any(feature = "postgres", test))]
+fn scope_to_org(config: &mut GatewayConfig, slug: &str, org_id: &str, refs: &ScopeRefs) {
+    let owned = |tenancy: &Option<rolter_core::Tenancy>| {
+        tenancy.as_ref().is_none_or(|owner| owner.org_id == org_id)
+    };
+    config.providers.retain(|p| owned(&p.tenancy));
+    config.provider_groups.retain(|g| owned(&g.tenancy));
+    config.routes.retain(|r| owned(&r.tenancy));
+    // a stored template's id is `{org_id}:{slug}`; one from a file has no org
+    config.prompt_templates.templates.retain(|t| {
+        t.id.rsplit_once(':')
+            .is_none_or(|(owner, _)| owner == org_id)
+    });
+    config
+        .budgets
+        .retain(|b| refs.in_org(slug, b.scope, &b.id, b.within.as_ref()));
+    config
+        .rate_limits
+        .retain(|l| refs.in_org(slug, l.scope, &l.id, l.within.as_ref()));
 }
 
 /// The names two rows share in `config`, which a flat file cannot carry.
@@ -897,7 +982,16 @@ pub(crate) fn router() -> Router<ControlState> {
     Router::new().route("/api/v1/config/export", get(export_config))
 }
 
-/// The whole deployment's configuration as an importable `rolter.toml`.
+/// Query of `GET /api/v1/config/export`.
+#[cfg(feature = "postgres")]
+#[derive(serde::Deserialize)]
+struct ExportQuery {
+    /// export this organization's rows only, by slug (#3440)
+    org: Option<String>,
+}
+
+/// The whole deployment's configuration as an importable `rolter.toml`, or one
+/// organization's with `?org=<slug>`.
 ///
 /// Superadmin-only and whole-deployment: the document spans every org's
 /// providers and groups, so there is no tenancy scope narrow enough to
@@ -907,10 +1001,12 @@ pub(crate) fn router() -> Router<ControlState> {
 async fn export_config(
     principal: Principal,
     State(state): State<ControlState>,
+    Query(query): Query<ExportQuery>,
 ) -> ApiResult<Response> {
     authorize_superadmin(&principal, superadmin_cap!("config_export", Read))?;
     let config = state.store.load().await?;
-    let document = export_document(crate::crud::pool(&state), &config).await?;
+    let options = ExportOptions { org: query.org };
+    let document = export_document(crate::crud::pool(&state), &config, &options).await?;
     Ok((
         [
             (
@@ -1707,9 +1803,10 @@ period = "monthly"
             .unwrap();
 
             let store = PostgresConfigStore::with_kek(pool.clone(), Some(kek));
-            let first = super::export_document(&pool, &store.load().await.unwrap())
-                .await
-                .unwrap();
+            let first =
+                super::export_document(&pool, &store.load().await.unwrap(), &Default::default())
+                    .await
+                    .unwrap();
 
             // the decrypted key is in the loaded config; it must not be in the
             // document built from it
@@ -1777,9 +1874,10 @@ period = "monthly"
             crate::seed::import_bootstrap_toml(&pool, org_id, project_id, &path)
                 .await
                 .unwrap();
-            let second = super::export_document(&pool, &store.load().await.unwrap())
-                .await
-                .unwrap();
+            let second =
+                super::export_document(&pool, &store.load().await.unwrap(), &Default::default())
+                    .await
+                    .unwrap();
 
             assert_eq!(
                 first, second,
@@ -1796,16 +1894,18 @@ period = "monthly"
                 .execute(&pool)
                 .await
                 .unwrap();
-            let wiped = super::export_document(&pool, &store.load().await.unwrap())
-                .await
-                .unwrap();
+            let wiped =
+                super::export_document(&pool, &store.load().await.unwrap(), &Default::default())
+                    .await
+                    .unwrap();
             assert!(!wiped.contains("[[budgets]]"), "the wipe left a budget");
             crate::seed::import_bootstrap_toml(&pool, org_id, project_id, &path)
                 .await
                 .unwrap();
-            let third = super::export_document(&pool, &store.load().await.unwrap())
-                .await
-                .unwrap();
+            let third =
+                super::export_document(&pool, &store.load().await.unwrap(), &Default::default())
+                    .await
+                    .unwrap();
             assert_eq!(first, third, "export, wipe, import changed the caps");
             // a second import of the same file writes nothing: the person's
             // three caps are still three rows
@@ -1820,6 +1920,105 @@ period = "monthly"
             // a database id never stands in for a name
             let org_uuid = org_id.to_string();
             assert!(!third.contains(&org_uuid), "{third}");
+        }
+
+        /// Two orgs each with an `openai` provider and a `gpt-4o` route (#3440):
+        /// the unscoped export refuses and names the option, and each org's own
+        /// export is a file that imports back into it unchanged.
+        #[tokio::test]
+        async fn two_orgs_sharing_names_export_one_file_each() {
+            use super::ExportOptions;
+
+            let Some(db) = scratch_db().await else {
+                return;
+            };
+            let pool = db.pool().clone();
+            let dir = tempdir("per-org");
+            let store = PostgresConfigStore::new(pool.clone());
+            let mut orgs = Vec::new();
+            for slug in ["org-a", "org-b"] {
+                let (org_id, project_id) = bootstrap_named_org(&pool, slug).await;
+                let path = dir.join(format!("{slug}.toml"));
+                std::fs::write(
+                    &path,
+                    format!(
+                        r#"
+[[providers]]
+name = "openai"
+slug = "openai"
+kind = "openai"
+api_base = "https://{slug}.example.com"
+api_key_env = "OPENAI_API_KEY"
+
+[[routes]]
+model = "gpt-4o"
+[[routes.targets]]
+provider = "openai"
+model = "gpt-4o"
+"#
+                    ),
+                )
+                .unwrap();
+                crate::seed::import_bootstrap_toml(&pool, org_id, project_id, &path)
+                    .await
+                    .unwrap();
+                orgs.push((slug, org_id, project_id));
+            }
+
+            let served = store.load().await.unwrap();
+            let refused = super::export_document(&pool, &served, &ExportOptions::default())
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(refused.contains("route 'gpt-4o'"), "{refused}");
+            assert!(
+                refused.contains("--org <slug>"),
+                "the error names no option: {refused}"
+            );
+
+            for (slug, org_id, project_id) in &orgs {
+                let options = ExportOptions {
+                    org: Some(slug.to_string()),
+                };
+                let first = super::export_document(&pool, &served, &options)
+                    .await
+                    .unwrap();
+                assert!(
+                    first.contains(&format!("https://{slug}.example.com")),
+                    "{first}"
+                );
+                for (other, ..) in orgs.iter().filter(|(other, ..)| other != slug) {
+                    assert!(
+                        !first.contains(&format!("https://{other}.example.com")),
+                        "the {slug} export carries {other}'s provider:\n{first}"
+                    );
+                }
+
+                // the file loads on its own, and imports back into the org
+                let path = dir.join(format!("{slug}-export.toml"));
+                std::fs::write(&path, &first).unwrap();
+                rolter_core::GatewayConfig::from_toml_str(&first)
+                    .unwrap()
+                    .validate()
+                    .unwrap();
+                crate::seed::import_bootstrap_toml(&pool, *org_id, *project_id, &path)
+                    .await
+                    .unwrap();
+                let served = store.load().await.unwrap();
+                let second = super::export_document(&pool, &served, &options)
+                    .await
+                    .unwrap();
+                assert_eq!(first, second, "re-importing the {slug} export changed it");
+            }
+
+            let unknown = ExportOptions {
+                org: Some("nobody".to_string()),
+            };
+            let err = super::export_document(&pool, &served, &unknown)
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("'nobody'"), "{err}");
         }
 
         /// A cap whose scope does not resolve is left alone rather than
@@ -2000,13 +2199,17 @@ rpm = 10
         }
 
         async fn bootstrap_org(pool: &sqlx::PgPool) -> (Uuid, Uuid) {
+            bootstrap_named_org(pool, "acme").await
+        }
+
+        async fn bootstrap_named_org(pool: &sqlx::PgPool, slug: &str) -> (Uuid, Uuid) {
             use rolter_store::postgres::repo::{ProjectRepo, TeamRepo};
-            let org_id: Uuid = sqlx::query_scalar(
-                "insert into orgs (name, slug) values ('acme', 'acme') returning id",
-            )
-            .fetch_one(pool)
-            .await
-            .unwrap();
+            let org_id: Uuid =
+                sqlx::query_scalar("insert into orgs (name, slug) values ($1, $1) returning id")
+                    .bind(slug)
+                    .fetch_one(pool)
+                    .await
+                    .unwrap();
             let team = TeamRepo(pool).create(org_id, "default").await.unwrap();
             let project = ProjectRepo(pool).create(team.id, "default").await.unwrap();
             (org_id, project.id)

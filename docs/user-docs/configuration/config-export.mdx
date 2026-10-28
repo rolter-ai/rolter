@@ -108,7 +108,16 @@ An export that carried rows the importer ignores would promise more than a re-im
 
 ### Two organizations sharing a name
 
-Two organizations can each have a `gpt-4o` route or an `openai` provider, but the exported file carries no organization, so it could not hold both. While two organizations (or an organization and a readonly row) share a route name, a provider name or a provider or group slug, the export refuses with `400` (`rolter config export` exits with an error) and names each shared name, rather than writing a file that would not load. Rename one of them to export, until per-organization exports land ([#3440](https://github.com/rolter-ai/rolter/issues/3440)).
+Two organizations can each have a `gpt-4o` route or an `openai` provider, but the exported file carries no organization, so it could not hold both. Rolter exports **one organization per file**: a file carrying an `org` key on every row would need an importer that spans organizations, and `rolter-seed --import` loads a file into the one organization it is pointed at.
+
+```bash
+rolter config export --org acme --output acme.toml
+rolter seed --org-slug acme --import acme.toml
+```
+
+`--org <slug>` (`?org=<slug>` on the endpoint) writes that organization's providers, groups, routes, prompt templates and caps, and nothing of any other organization. Rows owned by no organization (those of the gateway's own config file) and the deployment-wide sections (model prices, currency, logging) are written as the whole-deployment export writes them. Importing the file into the same organization and exporting again gives the same bytes. A slug no organization has is a `400`.
+
+Without the option the export keeps refusing while two organizations (or an organization and a readonly row) share a route name, a provider name or a provider or group slug. It answers `400` (`rolter config export` exits with an error), names each shared name and names the option, rather than writing a file that would not load.
 
 ### Credentials never leave
 
@@ -176,6 +185,7 @@ The control plane serves the same document over HTTP:
 
 ```http
 GET /api/v1/config/export
+GET /api/v1/config/export?org=acme
 ```
 
 ```bash
