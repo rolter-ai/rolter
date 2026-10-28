@@ -72,6 +72,7 @@ import {
   deleteMembership,
   deleteUser,
   fetchMemberships,
+  fetchOrgMfaStatus,
   fetchUsers,
   inviteUser,
   issuePasswordReset,
@@ -82,6 +83,7 @@ import {
   updateUser,
   type Invitation,
   type MembershipRow,
+  type OrgMemberMfa,
   type Role,
   type UserRow,
 } from "@/lib/api";
@@ -117,6 +119,45 @@ import { useScreenReady } from "@/lib/ux-react";
 // admin surface for the user/team lifecycle (ROL-223): invite people into the
 // current org, a team or a project and withdraw invitations still pending,
 // grant/revoke roles at org/team/project scope, and deactivate/delete accounts.
+/**
+ * The Second factor cell (#3264): armed or not set up, from the org's
+ * enrolment roster. While the roster loads it is a skeleton and when it failed
+ * (the `LoadError` above says so) a dash; an account the roster does not list
+ * (deactivated, or holding no grant in the org) is "Not listed" rather than
+ * wrongly "Not set up".
+ */
+function SecondFactorCell({
+  read,
+  row,
+}: {
+  read: { isPending: boolean; isError: boolean };
+  row: OrgMemberMfa | undefined;
+}) {
+  const { t } = useTranslation();
+  if (read.isPending) return <Skeleton width={64} height={20} radius={6} />;
+  if (read.isError) return <span className="text-xs text-muted-foreground">—</span>;
+  if (!row) {
+    return (
+      <Badge tone="neutral" title={t("pages.users.factorNotListedHint")}>
+        {t("pages.users.factorNotListed")}
+      </Badge>
+    );
+  }
+  return row.enabled ? (
+    <Badge
+      dot
+      tone="success"
+      title={t("pages.users.factorArmedHint", { count: row.recovery_codes_remaining })}
+    >
+      {t("pages.users.factorArmed")}
+    </Badge>
+  ) : (
+    <Badge tone="warning" title={t("pages.users.factorNoneHint")}>
+      {t("pages.users.factorNone")}
+    </Badge>
+  );
+}
+
 // everything is scoped to the org selected in the sidebar ScopeSwitcher;
 // account edits (email/password/superadmin) require superadmin on the backend,
 // and an invite or a role grant takes admin at the scope it reaches. what
@@ -158,6 +199,26 @@ export default function Users() {
     queryFn: () => fetchMemberships(orgId as string),
     enabled: !!orgId,
   });
+
+  // who has an armed second factor (#3264), read with the same gate as the
+  // endpoint (`org_auth_policy:read`). a "no" omits the column rather than
+  // showing it refused on every row, and an answer still in flight holds it
+  // back so it is not shown and then retracted; outside a provider (a story, a
+  // test) no answer is coming, so there is nothing to wait for
+  const can = useCan();
+  const capabilities = useCapabilities();
+  const awaitingGate = capabilities !== null && !capabilities.resolved;
+  const factorReadable = !!orgId && !awaitingGate && can("org_auth_policy", "read") !== false;
+  const factors = useQuery({
+    queryKey: ["mfa-status", orgId],
+    queryFn: () => fetchOrgMfaStatus(orgId as string),
+    enabled: factorReadable,
+    retry: false,
+  });
+  const factorByUser = React.useMemo(
+    () => new Map((factors.data ?? []).map((row) => [row.user_id, row])),
+    [factors.data],
+  );
 
   // every team and project in the org by name, so a grant reads as the scope
   // it is and never as the head of a uuid (#2053)
@@ -292,7 +353,9 @@ export default function Users() {
 
   // the roles column holds one line per grant, each with its own two controls,
   // so it takes the widest share and the table a floor that fits a grant line
-  const GRID = `${primaryColumn(1.5)} 2.2fr 1.6fr 110px 0.9fr 110px`;
+  const GRID = factorReadable
+    ? `${primaryColumn(1.5)} 2.2fr 1.6fr 110px 120px 0.9fr 110px`
+    : `${primaryColumn(1.5)} 2.2fr 1.6fr 110px 0.9fr 110px`;
 
   return (
     <PageBody>
@@ -345,6 +408,15 @@ export default function Users() {
           description={scopeMessage ?? t("pages.users.noOrgBody")}
         />
       )}
+      {factors.error && (
+        // load-error-allow: the roster only adds a column to the users list, whose own read pairs as users
+        <LoadError
+          error={factors.error}
+          resource={t("errors.resources.mfaStatus")}
+          onRetry={() => factors.refetch()}
+          target="users-mfa"
+        />
+      )}
       {!!(users.error || memberships.error || (scopeFilter && orgScope.error)) && (
         <LoadError
           error={users.error ?? memberships.error ?? orgScope.error}
@@ -357,12 +429,13 @@ export default function Users() {
         />
       )}
 
-      <ListTable label={t("screens.gov-users.title")} minWidth={1180}>
+      <ListTable label={t("screens.gov-users.title")} minWidth={factorReadable ? 1300 : 1180}>
         <ListHeader grid={GRID}>
           <ListHeaderCell>{t("pages.users.colUser")}</ListHeaderCell>
           <ListHeaderCell>{t("pages.users.colRoles")}</ListHeaderCell>
           <ListHeaderCell>{t("pages.users.colProfiles")}</ListHeaderCell>
           <ListHeaderCell>{t("pages.users.colStatus")}</ListHeaderCell>
+          {factorReadable && <ListHeaderCell>{t("pages.users.colSecondFactor")}</ListHeaderCell>}
           <ListHeaderCell>{t("pages.users.colCreated")}</ListHeaderCell>
           <ListActionsHeader />
         </ListHeader>
@@ -443,6 +516,11 @@ export default function Users() {
                     : t("pages.users.rowStatusDeactivated")}
                 </Badge>
               </ListCell>
+              {factorReadable && (
+                <ListCell>
+                  <SecondFactorCell read={factors} row={factorByUser.get(user.id)} />
+                </ListCell>
+              )}
               <ListCell className="font-mono text-xs text-muted-foreground">
                 {fmt.date(user.created_at ?? "")}
               </ListCell>

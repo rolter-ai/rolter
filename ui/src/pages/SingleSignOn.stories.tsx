@@ -33,13 +33,7 @@ import {
   type FetchStub,
   type Recorder,
 } from "./story-harness";
-import type {
-  MembershipRow,
-  OrgAuthPolicy,
-  PublicUrl,
-  SsoGroupMappingRow,
-  SsoProviderRow,
-} from "@/lib/api";
+import type { OrgAuthPolicy, PublicUrl, SsoGroupMappingRow, SsoProviderRow } from "@/lib/api";
 import en from "@/lib/i18n/locales/en.json";
 import ru from "@/lib/i18n/locales/ru.json";
 import { atMobile, expectNoHorizontalOverflow } from "@/lib/story-viewport";
@@ -154,6 +148,7 @@ function api({
   providers = () => PROVIDERS as unknown,
   policy = () => POLICY as unknown,
   memberships = () => [] as unknown,
+  mfaStatus = () => json([]),
   publicUrl = () => json(PUBLIC_URL),
   status = 200,
   putPolicy,
@@ -163,6 +158,9 @@ function api({
   /** answers the org's membership rows, one per grant, which the second-factor
    * confirmation counts */
   memberships?: () => unknown;
+  /** answers `GET /api/v1/orgs/{id}/mfa-status`, the enrolment roster the
+   * second-factor confirmation counts (#3264) */
+  mfaStatus?: () => Response;
   /** answers `GET /api/v1/public-url`, which every signed-in caller may read,
    * so it keeps its own status rather than following `status` */
   publicUrl?: () => Response;
@@ -176,6 +174,7 @@ function api({
     const url = String(input);
     const method = (init?.method ?? "GET").toUpperCase();
     if (url.includes("/api/v1/public-url")) return publicUrl();
+    if (url.includes("/mfa-status")) return mfaStatus();
     if (url.includes("/memberships")) return json(memberships(), status);
     if (url.includes("/group-mappings")) {
       if (method === "POST") return json(MAPPINGS["sso-1"][0], 201);
@@ -1888,39 +1887,48 @@ export const MfaConfirmHasNoLinkWithoutADocsHost: Story = {
   },
 };
 
-/** One grant of `role` to `user`, at the org or at a team inside it. */
-const grant = (
-  id: string,
-  user: string,
-  role: string,
-  at: Pick<MembershipRow, "org_id" | "team_id">,
-): MembershipRow => ({
-  id,
-  user_id: user,
-  org_id: null,
-  team_id: null,
-  project_id: null,
-  role,
-  created_at: NOW,
-  ...at,
-});
-
-// the org's memberships are one row per grant anywhere in its tree: ada holds
-// a role on the org and another on a team, grace holds one. three rows, two people
-const GRANTS: MembershipRow[] = [
-  grant("m-1", "user-ada", "admin", { org_id: ORG.id }),
-  grant("m-2", "user-ada", "member", { team_id: TEAM.id }),
-  grant("m-3", "user-grace", "member", { org_id: ORG.id }),
+// the enrolment roster has one row per active member however many grants they
+// hold: ada is a superadmin with a factor, root a superadmin without one, bob
+// and eve ordinary members, only eve with a factor
+const ROSTER = [
+  {
+    user_id: "u-ada",
+    email: "ada@acme.example",
+    is_superadmin: true,
+    enabled: true,
+    recovery_codes_remaining: 8,
+  },
+  {
+    user_id: "u-root",
+    email: "root@acme.example",
+    is_superadmin: true,
+    enabled: false,
+    recovery_codes_remaining: 0,
+  },
+  {
+    user_id: "u-bob",
+    email: "bob@acme.example",
+    is_superadmin: false,
+    enabled: false,
+    recovery_codes_remaining: 0,
+  },
+  {
+    user_id: "u-eve",
+    email: "eve@acme.example",
+    is_superadmin: false,
+    enabled: true,
+    recovery_codes_remaining: 10,
+  },
 ];
 
 /**
- * "This organization has N members" counts people, not grants. A person with a
- * role on the org and another on a team is two rows and one member, and the
- * number sits in the dialog an admin reads before requiring a second factor.
+ * The confirmation says how many of the members the policy binds have no
+ * second factor (#3264), not the member total: with "Required for everyone"
+ * that is every roster row.
  */
-export const TheSecondFactorConfirmationCountsEachPersonOnce: Story = {
+export const TheSecondFactorConfirmationCountsWhoHasNoFactor: Story = {
   render: () => (
-    <Harness fetchStub={api({ providers: () => [provider()], memberships: () => GRANTS })}>
+    <Harness fetchStub={api({ providers: () => [provider()], mfaStatus: () => json(ROSTER) })}>
       <SingleSignOn />
     </Harness>
   ),
@@ -1930,9 +1938,53 @@ export const TheSecondFactorConfirmationCountsEachPersonOnce: Story = {
     await userEvent.click(canvas.getByRole("button", { name: "Save policy" }));
 
     const dialog = await confirmation();
-    // the count is its own request, so it settles after the dialog is up
-    await waitFor(() => expect(dialog).toHaveTextContent("This organization has 2 members."));
-    await expect(dialog).not.toHaveTextContent("3 members");
+    // the roster is its own request, so it settles after the dialog is up
+    await waitFor(() => expect(dialog).toHaveTextContent("2 of 4 members have no second factor."));
+  },
+};
+
+/** `required_superadmin` binds superadmin accounts only, so only those rows count. */
+export const TheSuperadminPolicyCountsOnlySuperadmins: Story = {
+  render: () => (
+    <Harness fetchStub={api({ providers: () => [provider()], mfaStatus: () => json(ROSTER) })}>
+      <SingleSignOn />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await pickOption(await canvas.findByLabelText("Second factor"), "Required for superadmins");
+    await userEvent.click(canvas.getByRole("button", { name: "Save policy" }));
+
+    const dialog = await confirmation();
+    await waitFor(() =>
+      expect(dialog).toHaveTextContent("1 of 2 superadmins have no second factor."),
+    );
+    await expect(dialog).not.toHaveTextContent("of 4");
+  },
+};
+
+/** A caller who cannot read the roster still gets the warning, without a number. */
+export const TheConfirmationStandsWithoutTheRoster: Story = {
+  render: () => (
+    <Harness
+      fetchStub={api({
+        providers: () => [provider()],
+        mfaStatus: () => json({ error: { message: "requires the admin role" } }, 403),
+      })}
+    >
+      <SingleSignOn />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await pickOption(await canvas.findByLabelText("Second factor"), "Required for everyone");
+    await userEvent.click(canvas.getByRole("button", { name: "Save policy" }));
+
+    const dialog = await confirmation();
+    await expect(dialog).toHaveTextContent(
+      "Members who have not set up an authenticator app are asked to set one up",
+    );
+    await expect(dialog).not.toHaveTextContent("no second factor");
   },
 };
 

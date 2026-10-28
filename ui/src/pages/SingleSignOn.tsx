@@ -38,7 +38,7 @@ import {
   deleteSsoGroupMapping,
   deleteSsoProvider,
   fetchAuthPolicy,
-  fetchMemberships,
+  fetchOrgMfaStatus,
   fetchSsoGroupMappings,
   ApiError,
   fetchSsoProviders,
@@ -51,15 +51,10 @@ import {
   type SsoProviderRow,
 } from "@/lib/api";
 import { errorText } from "@/lib/error-copy";
+import { mfaGap } from "@/lib/mfa-gap";
 import { useFormat } from "@/lib/i18n/format";
 import { useScope } from "@/lib/scope";
-import {
-  distinctPeople,
-  locksOutMembers,
-  locksOutSsoMembers,
-  secretGap,
-  type SecretGap,
-} from "@/lib/sso-lockout";
+import { locksOutMembers, locksOutSsoMembers, secretGap, type SecretGap } from "@/lib/sso-lockout";
 import { SSO_SLUG_MAX, ssoSlugProblem, suggestSsoSlug } from "@/lib/sso-slug";
 import { roleLabel } from "@/lib/roles";
 import { useToast } from "@/lib/toast";
@@ -407,12 +402,13 @@ function SignInPolicyCard({
   // how many accounts the tightening would bind. Best-effort: a caller who may
   // not read the org's memberships still gets the warning, just without a
   // number in it — refusing to warn at all would be the worse trade
-  const members = useQuery({
-    queryKey: ["memberships", orgId],
-    queryFn: () => fetchMemberships(orgId),
+  const roster = useQuery({
+    queryKey: ["mfa-status", orgId],
+    queryFn: () => fetchOrgMfaStatus(orgId),
     enabled: tightens,
     retry: false,
   });
+  const gapNow = roster.data && mfaGap(roster.data, mfa);
 
   const save = useMutation({
     mutationFn: () =>
@@ -603,12 +599,15 @@ function SignInPolicyCard({
         onOpenChange={(open) => !open && setConfirming(null)}
         title={t("pages.sso.policy.mfaConfirm.title")}
         description={
-          members.data
-            ? t("pages.sso.policy.mfaConfirm.bodyWithCount", {
-                // a person with a role on the org and another on a team is two
-                // rows, and one member
-                count: distinctPeople(members.data),
-              })
+          gapNow
+            ? t(
+                mfa === "required_superadmin"
+                  ? "pages.sso.policy.mfaConfirm.gapSuperadmin"
+                  : "pages.sso.policy.mfaConfirm.gap",
+                // the people the policy binds, one row each however many grants
+                // they hold; the sentence names how many of them have no factor
+                { count: gapNow.total, missing: gapNow.missing },
+              )
             : t("pages.sso.policy.mfaConfirm.body")
         }
         confirmLabel={t("pages.sso.policy.mfaConfirm.confirm")}

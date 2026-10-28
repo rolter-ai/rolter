@@ -366,8 +366,9 @@ export {
   confirmMfaEnrolment,
   regenerateRecoveryCodes,
   disableMfa,
+  fetchOrgMfaStatus,
 } from "./mfa";
-export type { MfaPolicy, MfaStatus, MfaEnrolment, RecoveryCodes } from "./mfa";
+export type { MfaPolicy, MfaStatus, MfaEnrolment, RecoveryCodes, OrgMemberMfa } from "./mfa";
 export { fetchPlugins, createPlugin, updatePlugin, deletePlugin } from "./plugins";
 export type { PluginInstanceRow, PluginInstanceInput } from "./plugins";
 export {

@@ -1058,6 +1058,116 @@ export const RefusedToAViewer: Story = {
   },
 };
 
+// the org's enrolment roster (#3264): ada has an armed factor, grace has none,
+// and the deactivated account is not an active member, so it is not listed
+const FACTOR_ROSTER = [
+  {
+    user_id: "user-1",
+    email: "ada@example.com",
+    is_superadmin: true,
+    enabled: true,
+    recovery_codes_remaining: 8,
+  },
+  {
+    user_id: "user-2",
+    email: "grace@example.com",
+    is_superadmin: false,
+    enabled: false,
+    recovery_codes_remaining: 0,
+  },
+];
+
+const withRoster = (answer: () => Response | Promise<Response>): FetchStub => {
+  const inner = directory();
+  return scoped(async (input, init) =>
+    String(input).includes("/mfa-status") ? answer() : inner(input, init),
+  );
+};
+
+const factorRow = async (canvasElement: HTMLElement, email: string): Promise<HTMLElement> => {
+  const row = (await within(canvasElement).findByText(email)).closest('[role="row"]');
+  if (!row) throw new Error(`${email} is not rendered as a row`);
+  return row as HTMLElement;
+};
+
+/** Armed or not set up, found by the column's name and read per row. */
+export const ShowsWhoHasASecondFactor: Story = {
+  render: () => (
+    <Harness fetchStub={withRoster(() => json(FACTOR_ROSTER))} role="admin">
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByRole("columnheader", { name: "Second factor" })).toBeVisible();
+    await waitFor(() =>
+      expect(
+        within(canvasElement.querySelector('[role="table"]') as HTMLElement).getAllByText("Armed"),
+      ).toHaveLength(1),
+    );
+    await expect(
+      within(await factorRow(canvasElement, "ada@example.com")).getByText("Armed"),
+    ).toBeVisible();
+    await expect(
+      within(await factorRow(canvasElement, "grace@example.com")).getByText("Not set up"),
+    ).toBeVisible();
+    // an account the roster does not list is not claimed to lack a factor
+    await expect(
+      within(await factorRow(canvasElement, "former@example.com")).getByText("Not listed"),
+    ).toBeVisible();
+  },
+};
+
+export const SecondFactorStillLoading: Story = {
+  render: () => (
+    <Harness fetchStub={withRoster(() => new Promise<Response>(() => {}))} role="admin">
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expect(
+      await within(canvasElement).findByRole("columnheader", { name: "Second factor" }),
+    ).toBeVisible();
+    const row = await factorRow(canvasElement, "ada@example.com");
+    // no verdict is drawn for a roster that has not arrived
+    await expect(within(row).queryByText("Armed")).toBeNull();
+    await expect(within(row).queryByText("Not set up")).toBeNull();
+  },
+};
+
+export const SecondFactorFailedToLoad: Story = {
+  render: () => (
+    <Harness
+      fetchStub={withRoster(() => json({ error: { message: "roster store is down" } }, 500))}
+      role="admin"
+    >
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectLoadError(canvasElement, /roster store is down/);
+    const row = await factorRow(canvasElement, "ada@example.com");
+    // a failed roster is not read as "nobody has a factor"
+    await expect(within(row).queryByText("Not set up")).toBeNull();
+  },
+};
+
+/** Below admin the endpoint is refused, so the column is not drawn at all. */
+export const SecondFactorHiddenBelowAdmin: Story = {
+  render: () => (
+    <Harness fetchStub={withRoster(() => json(FACTOR_ROSTER))} role="member">
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expect(await within(canvasElement).findByText("ada@example.com")).toBeVisible();
+    await expectGateAnswered();
+    await expect(
+      within(canvasElement).queryByRole("columnheader", { name: "Second factor" }),
+    ).toBeNull();
+  },
+};
+
 export const EditRefusedToAnAdmin: Story = {
   render: () => (
     <Harness fetchStub={loaded} role="admin">
