@@ -4980,14 +4980,14 @@ mod tests {
         assert!(!owned.holds_address_of("other/qwen3"));
     }
 
-    /// The startup seeders write into the default org and used to look for a
-    /// collision only there, so a default whose name another org already held
-    /// became a second row, and a duplicate route or provider name makes
-    /// `/internal/snapshot` refuse for every org (#1845). They skip every such
-    /// default now, the free ones still land, and the snapshot still builds.
+    /// The startup seeders write into the default org. Names are per org
+    /// (#1857), so a default whose name or slug another org already holds is
+    /// seeded all the same; one the default org itself already answers, or a
+    /// route on another org's `slug/model` address, is skipped. Both orgs' rows
+    /// reach the snapshot, and it still builds.
     #[cfg(feature = "postgres")]
     #[tokio::test]
-    async fn default_seeds_skip_what_another_org_already_holds() {
+    async fn default_seeds_skip_only_what_the_default_org_already_holds() {
         use rolter_core::{GroupMember, ModelRoute, ProviderConfig, ProviderGroupConfig};
         use rolter_store::postgres::{test_database, test_schema::TestSchema};
 
@@ -5080,14 +5080,15 @@ mod tests {
         };
         let mut config = GatewayConfig {
             provider_defaults: vec![
-                // another org's provider name
+                // another org's provider name: seeded
                 provider("openai", None),
-                // another org's group slug, under a free name
+                // another org's group slug, under a free name: seeded
                 provider("fresh", Some("pool")),
                 provider("seeded", None),
             ],
             provider_group_defaults: vec![
-                // another org's provider slug, and another org's group slug
+                // another org's provider slug: seeded; a slug `fresh` now holds
+                // in the default org: skipped
                 group("edge"),
                 group("pool"),
                 group("seeded-pool"),
@@ -5095,7 +5096,8 @@ mod tests {
             ..Default::default()
         };
         config.models.defaults = vec![
-            // another org's route name, and another org's provider address
+            // another org's route name: seeded; another org's provider address:
+            // skipped
             route("gpt-4o"),
             route("edge/gpt-4o"),
             route("mine"),
@@ -5116,24 +5118,28 @@ mod tests {
             }
         };
         assert_eq!(
-            names("select name from providers where org_id = $1", default_org).await,
-            ["seeded"]
-        );
-        assert_eq!(
             names(
-                "select slug from provider_groups where org_id = $1",
+                "select name from providers where org_id = $1 order by name",
                 default_org
             )
             .await,
-            ["seeded-pool"]
+            ["fresh", "openai", "seeded"]
         );
         assert_eq!(
             names(
-                "select model from routes where project_id = $1",
+                "select slug from provider_groups where org_id = $1 order by slug",
+                default_org
+            )
+            .await,
+            ["edge", "seeded-pool"]
+        );
+        assert_eq!(
+            names(
+                "select model from routes where project_id = $1 order by model",
                 default_project
             )
             .await,
-            ["mine"]
+            ["gpt-4o", "mine"]
         );
 
         // a second start changes nothing, and the fleet's snapshot still builds
@@ -5144,11 +5150,12 @@ mod tests {
             .load()
             .await
             .unwrap();
-        for model in ["gpt-4o", "edge/gpt-4o", "mine"] {
+        for (model, held) in [("gpt-4o", 2), ("edge/gpt-4o", 0), ("mine", 1)] {
             let holders = snapshot.routes.iter().filter(|r| r.model == model).count();
-            assert!(holders <= 1, "{model} is held {holders} times");
+            assert_eq!(holders, held, "{model}");
         }
-        assert_eq!(snapshot.providers.len(), 3, "{:?}", snapshot.providers);
+        // two orgs' `openai`, plus `edge`, `fresh` and `seeded`
+        assert_eq!(snapshot.providers.len(), 5, "{:?}", snapshot.providers);
         snapshot.sanitize_for_snapshot();
         if let Err(problems) = snapshot.validate() {
             panic!("the snapshot no longer builds: {problems:?}");
