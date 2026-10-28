@@ -33,7 +33,7 @@ export interface ScatterPlotProps extends React.HTMLAttributes<HTMLDivElement> {
   label?: string;
 }
 
-// the shared categorical sequence (#1245), the same one the donut groups by
+// the shared categorical sequence (#1245), the same one the by-model table walks
 const PALETTE = [
   "var(--chart-1)",
   "var(--chart-2)",

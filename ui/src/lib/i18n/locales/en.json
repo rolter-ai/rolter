@@ -6403,12 +6403,6 @@
       "skills_repository": "A skill resolves only through the control-plane API; the gateway serves no skill surface, so how a client addresses and fetches one is not settled"
     }
   },
-  "charts": {
-    "donut": {
-      "other_one": "Other ({{value}})",
-      "other_other": "Other ({{value}})"
-    }
-  },
   "guardrailPanel": {
     "enforced": "enforced",
     "paused": "paused"
