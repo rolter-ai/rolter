@@ -1213,6 +1213,46 @@ impl AppState {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
+    /// Record the snapshot format of the snapshot just applied, which also
+    /// ends any format refusal (ADR-0038).
+    pub fn record_snapshot_format(&self, format: u32) {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.metrics
+            .snapshot_format
+            .store(u64::from(format), Relaxed);
+        self.metrics.snapshot_format_refused.store(0, Relaxed);
+    }
+
+    /// The control plane answered in a snapshot format this gateway reads,
+    /// so any earlier refusal is over.
+    pub fn clear_snapshot_format_refusal(&self) {
+        self.metrics
+            .snapshot_format_refused
+            .store(0, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The control plane serves no snapshot format this gateway reads. Returns
+    /// whether this is a transition into that state, which is when the
+    /// watcher says so at `error`.
+    pub fn refuse_snapshot_format(&self) -> bool {
+        self.metrics
+            .snapshot_format_refused
+            .swap(1, std::sync::atomic::Ordering::Relaxed)
+            == 0
+    }
+
+    /// Whether `/readyz` should hold this gateway out of service for its
+    /// snapshot format: it has never applied a snapshot, and the control
+    /// plane's last answer was one it cannot read. A gateway that holds a
+    /// snapshot stays ready on its last config, since flipping it would turn
+    /// one out-of-order control-plane upgrade into an outage of every gateway
+    /// at once (ADR-0038 section 3).
+    pub fn unready_for_snapshot_format(&self) -> bool {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.metrics.snapshot_format_refused.load(Relaxed) == 1
+            && self.metrics.snapshot_format.load(Relaxed) == 0
+    }
+
     /// Close every live `/v1/realtime` session and wait, at most `grace`, for
     /// each one's meter to run its last flush. Returns whether every session
     /// finished inside `grace`.

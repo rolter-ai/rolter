@@ -38,10 +38,19 @@ pub async fn healthz() -> &'static str {
 
 /// Readiness probe. Reports `503` once the control plane has marked this node
 /// as draining, so a load balancer stops routing to it while in-flight
-/// requests finish (#543).
+/// requests finish (#543), and `503 snapshot_format_unsupported` while a
+/// gateway that has never applied a snapshot is refused one for its format,
+/// which is what holds a rollout whose new gateways lead the control plane
+/// (ADR-0038).
 pub async fn readyz(State(state): State<AppState>) -> impl IntoResponse {
     if state.draining.load(std::sync::atomic::Ordering::Relaxed) {
         return (StatusCode::SERVICE_UNAVAILABLE, "draining");
+    }
+    if state.unready_for_snapshot_format() {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "snapshot_format_unsupported",
+        );
     }
     (StatusCode::OK, "ok")
 }
