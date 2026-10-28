@@ -52,6 +52,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use anyhow::Context as _;
 use argon2::password_hash::PasswordHasher;
 use argon2::Argon2;
 use rolter_core::{
@@ -81,8 +82,17 @@ pub struct SeedArgs {
     /// admin user email; combined with --admin-password to create an admin user
     #[arg(long)]
     pub admin_email: Option<String>,
-    #[arg(long)]
+    /// admin password. Visible to every user of the host through `ps` while the
+    /// command runs and kept in shell history: prefer --admin-password-stdin or
+    /// --admin-password-file
+    #[arg(long, conflicts_with_all = ["admin_password_stdin", "admin_password_file"])]
     pub admin_password: Option<String>,
+    /// read the admin password from standard input (one line)
+    #[arg(long, conflicts_with = "admin_password_file")]
+    pub admin_password_stdin: bool,
+    /// read the admin password from a file (first line)
+    #[arg(long, value_name = "PATH")]
+    pub admin_password_file: Option<PathBuf>,
     /// bootstrap rolter.toml to import providers/routes from. The file is the
     /// desired state: re-importing an edited file updates the rows it already
     /// created. Never overwrites a credential sealed through the dashboard,
@@ -94,6 +104,7 @@ pub struct SeedArgs {
 /// Connect, migrate and [`seed`] from command-line arguments, then print which
 /// org was seeded. Shared by `rolter seed` and `rolter-seed`.
 pub async fn run(args: SeedArgs) -> anyhow::Result<()> {
+    let admin_password = resolve_admin_password(&args, &mut std::io::stdin().lock())?;
     let pool = rolter_store::postgres::connect(&args.database_url).await?;
     rolter_store::postgres::run_migrations(&pool).await?;
 
@@ -103,7 +114,7 @@ pub async fn run(args: SeedArgs) -> anyhow::Result<()> {
             org: args.org,
             org_slug: args.org_slug,
             admin_email: args.admin_email,
-            admin_password: args.admin_password,
+            admin_password,
             import: args.import,
         },
     )
@@ -114,6 +125,33 @@ pub async fn run(args: SeedArgs) -> anyhow::Result<()> {
         summary.org_name, summary.org_slug
     );
     Ok(())
+}
+
+/// The admin password from whichever source the arguments name: the flag
+/// itself, a file, or `stdin`. A password is the first line of its source, so a
+/// trailing newline is not part of it, and an empty one is refused rather than
+/// seeded.
+fn resolve_admin_password(
+    args: &SeedArgs,
+    stdin: &mut impl std::io::BufRead,
+) -> anyhow::Result<Option<String>> {
+    let raw = if args.admin_password_stdin {
+        let mut line = String::new();
+        stdin
+            .read_line(&mut line)
+            .context("failed to read the admin password from stdin")?;
+        line
+    } else if let Some(path) = &args.admin_password_file {
+        let text = std::fs::read_to_string(path).with_context(|| {
+            format!("failed to read the admin password file {}", path.display())
+        })?;
+        text.lines().next().unwrap_or_default().to_string()
+    } else {
+        return Ok(args.admin_password.clone());
+    };
+    let password = raw.trim_end_matches(['\r', '\n']).to_string();
+    anyhow::ensure!(!password.is_empty(), "the admin password source is empty");
+    Ok(Some(password))
 }
 
 /// Options controlling what [`seed`] creates. `org` defaults to `default` when
@@ -1507,6 +1545,61 @@ async fn import_prompt_template(
 
 #[cfg(test)]
 mod tests {
+    use super::resolve_admin_password;
+    use super::SeedArgs;
+    use clap::Parser;
+    use std::io::Cursor;
+
+    #[derive(Parser)]
+    struct Cli {
+        #[command(flatten)]
+        seed: SeedArgs,
+    }
+
+    fn parse(extra: &[&str]) -> Result<SeedArgs, clap::Error> {
+        let mut argv = vec!["seed", "--database-url", "postgres://u@h/db"];
+        argv.extend_from_slice(extra);
+        Cli::try_parse_from(argv).map(|cli| cli.seed)
+    }
+
+    #[test]
+    fn the_admin_password_comes_from_the_flag_stdin_or_a_file() {
+        let args = parse(&["--admin-password", "from-flag"]).unwrap();
+        let got = resolve_admin_password(&args, &mut Cursor::new(Vec::new())).unwrap();
+        assert_eq!(got.as_deref(), Some("from-flag"));
+
+        let args = parse(&["--admin-password-stdin"]).unwrap();
+        let got = resolve_admin_password(&args, &mut Cursor::new(b"from-stdin\r\nrest".to_vec()))
+            .unwrap();
+        assert_eq!(got.as_deref(), Some("from-stdin"));
+
+        let path = std::env::temp_dir().join(format!("rolter-seed-pw-{}", std::process::id()));
+        std::fs::write(&path, "from-file\n").unwrap();
+        let args = parse(&["--admin-password-file", path.to_str().unwrap()]).unwrap();
+        let got = resolve_admin_password(&args, &mut Cursor::new(Vec::new())).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(got.as_deref(), Some("from-file"));
+
+        let args = parse(&[]).unwrap();
+        let got = resolve_admin_password(&args, &mut Cursor::new(Vec::new())).unwrap();
+        assert_eq!(got, None);
+    }
+
+    #[test]
+    fn an_empty_or_missing_password_source_is_refused() {
+        let args = parse(&["--admin-password-stdin"]).unwrap();
+        assert!(resolve_admin_password(&args, &mut Cursor::new(b"\n".to_vec())).is_err());
+        let args = parse(&["--admin-password-file", "/nonexistent/rolter-pw"]).unwrap();
+        assert!(resolve_admin_password(&args, &mut Cursor::new(Vec::new())).is_err());
+    }
+
+    #[test]
+    fn the_password_sources_exclude_one_another() {
+        assert!(parse(&["--admin-password", "x", "--admin-password-stdin"]).is_err());
+        assert!(parse(&["--admin-password", "x", "--admin-password-file", "f"]).is_err());
+        assert!(parse(&["--admin-password-stdin", "--admin-password-file", "f"]).is_err());
+    }
+
     use super::{
         declares_payload_capture, declares_ui_events, import_bootstrap_toml,
         import_prompt_template, lint_import_file, slugify,
