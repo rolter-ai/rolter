@@ -14,6 +14,7 @@ import {
   AnalyticsUnavailableError,
   ApiError,
   isEndpointNotMounted,
+  isAdminTokenRequired,
   isOpenModeNoSession,
 } from "@/lib/api";
 
@@ -29,6 +30,13 @@ export type LoadErrorKind =
    * `ROLTER_ADMIN_TOKEN` is
    */
   | "openMode"
+  /**
+   * the control plane runs without a database and has no sessions, so the
+   * admin token is the only credential this endpoint accepts, and none was
+   * sent or the one sent is wrong (#1909). Looks like a 401 and is not one:
+   * "sign in again" would offer the same prompt that produced it
+   */
+  | "adminToken"
   /**
    * the control plane runs without a database, so this endpoint is not
    * mounted at all (#1204). Neither signing in nor retrying can help;
@@ -57,6 +65,7 @@ export type LoadErrorKind =
  */
 export function classifyLoadError(error: unknown): LoadErrorKind {
   if (isOpenModeNoSession(error)) return "openMode";
+  if (isAdminTokenRequired(error)) return "adminToken";
   if (isEndpointNotMounted(error)) return "noStore";
   // "this deployment has no analytics store" is not a load failure, and a
   // screen that reads analytics states it with `AnalyticsUnavailable` before it

@@ -776,7 +776,19 @@ Not a `rolter.toml` table. Virtual keys created on the dashboard or through the 
 
 ### \[\[mcp_servers\]\]
 
-Not a `rolter.toml` table. MCP servers belong to an organization and are registered on the dashboard or through the management API; the control plane unseals their credentials and ships them in the snapshot. Each entry carries `id`, `org_id`, `slug`, `url`, `transport`, `required_scopes`, `auth_kind`, `auth_header_name`, `credential`, `connect_timeout_ms`, `request_timeout_ms` and `max_retries`. With a database, the snapshot carries the control plane's own rows and replaces whatever a bootstrap file holds for this table. See [MCP credentials and transport settings](/configuration/mcp-servers) for what each field means.
+Not a `rolter.toml` table. MCP servers belong to an organization and are registered on the dashboard or through the management API; the control plane unseals their credentials and ships them in the snapshot. Each entry carries `id`, `org_id`, `slug`, `url`, `transport`, `required_scopes`, `auth_kind`, `auth_header_name`, `credential`, `connect_timeout_ms`, `request_timeout_ms`, `max_retries` and `tools`. With a database, the snapshot carries the control plane's own rows and replaces whatever a bootstrap file holds for this table. See [MCP credentials and transport settings](/configuration/mcp-servers) for what each field means.
+
+---
+
+### \[\[mcp_tool_groups\]\]
+
+Not a `rolter.toml` table. Each entry is an enabled MCP tool group, which the control plane adds to the snapshot and the MCP proxy enforces: a server that at least one group names serves only the tools those groups list. Entries carry `id`, `org_id`, `slug` and `tools`, a list of `server_id` and `tool` pairs. Groups are managed on the dashboard or through the management API; see [MCP](/api/mcp#manage-the-registry).
+
+---
+
+### \[\[mcp_settings\]\]
+
+Not a `rolter.toml` table. Each entry is one organization's saved MCP settings, which the MCP proxy applies per request: `org_id`, `connect_timeout_ms`, `request_timeout_ms`, `max_retries`, `fail_open` and `allow_unlisted_tools`. An organization that never saved any has no entry and keeps the deployment defaults. They are managed on the dashboard or through the management API; see [MCP](/api/mcp#manage-the-registry).
 
 ---
 
@@ -2065,5 +2077,5 @@ Not a `rolter.toml` table. It holds the enabled webhook plugin instances that th
 ---
 
 <Note>
-  The repository ships a fully annotated `rolter.example.toml` that shows every table a `rolter.toml` can set, with inline comments explaining each field; most blocks are commented out with their defaults. Copy it to `rolter.toml` to get started, then remove or uncomment the sections you need. It leaves out the tables the control plane owns and a file does not set: `feature_flags`, `db_virtual_keys`, `mcp_servers`, `mcp_oauth_sessions` and `plugins`.
+  The repository ships a fully annotated `rolter.example.toml` that shows every table a `rolter.toml` can set, with inline comments explaining each field; most blocks are commented out with their defaults. Copy it to `rolter.toml` to get started, then remove or uncomment the sections you need. It leaves out the tables the control plane owns and a file does not set: `feature_flags`, `db_virtual_keys`, `mcp_servers`, `mcp_oauth_sessions`, `mcp_tool_groups`, `mcp_settings` and `plugins`.
 </Note>

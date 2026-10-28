@@ -12,6 +12,11 @@
     "noMethod": "No login method is enabled for this deployment.",
     "selfHosted": "Self-hosted · sessions are local to this deployment.",
     "sessionExpired": "Your session expired — sign in again.",
+    "adminToken": {
+      "label": "Admin token",
+      "hint": "This control plane runs without a database, so it has no accounts. Enter the ROLTER_ADMIN_TOKEN it was started with.",
+      "submit": "Use token"
+    },
     "sso": {
       "exchangeExpired": "That sign-in expired before it finished. Try signing in again.",
       "errors": {
@@ -21,6 +26,7 @@
         "unknown_provider": "That single sign-on option is no longer available. Pick another way to sign in, or contact your administrator.",
         "no_mapped_group": "Your account is not in any group that grants access here. Ask an administrator to add you to one.",
         "account_deactivated": "This account has been deactivated. Contact your administrator.",
+        "account_outside_org": "This account cannot sign in through this organization's single sign-on. Sign in with your password, or with your own organization's provider.",
         "idp_verification_failed": "Your identity provider could not be reached or its response could not be verified. Try again in a moment.",
         "not_configured": "This deployment cannot finish a single sign-on yet. An administrator needs to finish setting it up.",
         "internal_error": "Single sign-on failed on our side. Try again, or contact your administrator."
@@ -196,6 +202,11 @@
     "load": {
       "retry": "Try again",
       "signIn": "Sign in again",
+      "adminTokenAction": "Enter the admin token",
+      "adminToken": {
+        "title": "{{resource}} needs the admin token",
+        "body": "This control plane runs without a database, so it has no sessions and the admin token is the only credential it accepts here. None was sent, or the one sent is wrong. Signing in with an email will not fix this: enter ROLTER_ADMIN_TOKEN on the sign-in screen."
+      },
       "unauthenticated": {
         "title": "Sign in to see {{resource}}",
         "body": "Your session is missing or has expired, so the control plane refused the request. This is not a problem with the data."
@@ -315,6 +326,7 @@
       "yourProfile": "your profile",
       "auditLogExport": "the audit log export",
       "unpricedModels": "unpriced models",
+      "mcpServerTools": "tools of the MCP server",
       "guardrailPolicies": "guardrail policies",
       "yourBudget": "your budget"
     },
@@ -2080,6 +2092,132 @@
         "deleteTitle": "Delete server {{name}}?",
         "deleteBody": "Deleting this server also removes every OAuth grant and token session attached to it. This cannot be undone.",
         "deleteConfirm": "Delete server"
+      },
+      "discovery": {
+        "discover": "Discover now",
+        "discovering": "Discovering…",
+        "discoverAria": "Discover tools of server {{name}}",
+        "running": "Discovering tools…",
+        "pending": "Not discovered yet. The tools shown are the catalog's list, not the server's.",
+        "pendingWhy": "Not discovered yet: {{reason}}.",
+        "declaresNone": "Declares no tools. Last discovered {{when}}.",
+        "discovered": "Last discovered {{when}}.",
+        "failed": "Last discovery failed: {{reason}}.",
+        "lastSuccess": "Last succeeded {{when}}.",
+        "failedToast": "Could not discover tools of {{name}}",
+        "staleTitle": "Not returned by the last discovery; kept so tool groups naming it keep working.",
+        "staleHint_one": "{{count}} tool was not returned by the last discovery. It is kept so tool groups naming it keep working.",
+        "staleHint_other": "{{count}} tools were not returned by the last discovery. They are kept so tool groups naming them keep working.",
+        "reasons": {
+          "unreachable": "the server could not be reached",
+          "auth_rejected": "the server rejected the credential",
+          "handshake_failed": "the server did not complete the MCP handshake",
+          "egress_denied": "the egress policy blocks this address",
+          "needs_session": "waiting for a user to connect",
+          "credential_unavailable": "the stored credential could not be read",
+          "unknown": "unknown reason"
+        }
+      },
+      "probe": {
+        "statuses": {
+          "unchecked": "Not checked yet",
+          "reachable": "Reachable",
+          "unreachable": "Unreachable",
+          "handshake_failed": "Handshake failed",
+          "auth_rejected": "Auth rejected",
+          "egress_denied": "Blocked by egress policy",
+          "needs_session": "Needs a session",
+          "credential_unavailable": "Credential unavailable",
+          "success": "Succeeded",
+          "tool_errored": "Tool reported an error",
+          "unknown": "Unknown state"
+        },
+        "explain": {
+          "reachable": "The server answered and completed the MCP handshake.",
+          "unreachable": "Nothing answered at this address.",
+          "handshake_failed": "Something answered, but not as an MCP server.",
+          "auth_rejected": "The server rejected the credential (401 or 403).",
+          "egress_denied": "The egress policy refused this address, so rolter did not connect.",
+          "needs_session": "This server uses OAuth and you have no live session. Connect first, then try again.",
+          "credential_unavailable": "The control plane could not read the stored credential.",
+          "success": "The tool ran and returned a result.",
+          "tool_errored": "The server answered and the tool reported an error. The connection itself is fine.",
+          "unknown": "The control plane answered with a state this dashboard does not know."
+        },
+        "health": {
+          "unchecked": "No handshake has been attempted yet.",
+          "contact": "Last contact {{when}}",
+          "protocol": "Protocol {{version}}",
+          "serverName": "Server {{name}}",
+          "failedAt": "Failed {{when}}",
+          "lastFailure": "Last failure: {{reason}}, {{when}}",
+          "aria": "Connection status of {{name}}"
+        },
+        "yes": "Yes",
+        "no": "No"
+      },
+      "test": {
+        "action": "Test connection",
+        "running": "Testing…",
+        "aria": "Test the connection of server {{name}}",
+        "failedToast": "Could not test the connection of {{name}}",
+        "title": "Connection test of {{name}}",
+        "status": "Status",
+        "reachable": "Reachable",
+        "handshake": "MCP handshake",
+        "handshakeDone": "Completed",
+        "handshakeNot": "Not completed",
+        "protocol": "Protocol version",
+        "serverName": "Server name",
+        "serverVersion": "Server version",
+        "latency": "Latency",
+        "checkedAt": "Checked",
+        "message": "Message",
+        "none": "—"
+      },
+      "tools": {
+        "open": "Tools & try it",
+        "openAria": "Browse the tools of server {{name}} and try them",
+        "title": "Tools of {{name}}",
+        "stale": "Not returned by the last discovery",
+        "noDescription": "No description.",
+        "schema": "Input schema",
+        "schemaAria": "Input schema of {{tool}}",
+        "declaresNoneTitle": "{{name}} declares no tools",
+        "declaresNoneBody": "The server answered the tools list with an empty manifest.",
+        "notDiscoveredTitle": "Tools not discovered yet",
+        "notDiscoveredBody": "Use Discover now on the server card to ask it for its tools.",
+        "failedTitle": "Discovery failed",
+        "failedBody": "The server has not returned a tool list: {{reason}}.",
+        "list": "Tools"
+      },
+      "try": {
+        "title": "Try a tool",
+        "warning": "Running a tool calls the real server and can change data there. Each run is written to the audit log.",
+        "tool": "Tool",
+        "toolPlaceholder": "Pick a tool",
+        "toolEmpty": "This server has no tools to run.",
+        "arguments": "Arguments (JSON object)",
+        "argumentsHint": "Edit the arguments as a JSON object. Leave it blank for none.",
+        "invalidJson": "Not valid JSON: {{detail}}",
+        "notObject": "Arguments must be a JSON object, not an array or a single value.",
+        "run": "Run tool",
+        "running": "Running…",
+        "runAria": "Run the selected tool on server {{name}}",
+        "failed": "Could not run the tool",
+        "result": "Result",
+        "outcome": "Outcome",
+        "latency": "Latency",
+        "message": "Message",
+        "request": "Request",
+        "response": "Response",
+        "noRequest": "No request was recorded.",
+        "noResponse": "No response was recorded.",
+        "truncated": "The response was too large to keep in full; the first part is shown ({{size}} B)."
+      },
+      "logs": {
+        "link": "View logs",
+        "aria": "View the MCP call logs of server {{name}}"
       }
     },
     "mcpOAuth": {
@@ -3418,7 +3556,7 @@
       "emptyTitle": "No MCP tool calls yet",
       "emptyBody": "Every tool call the gateway proxies to an MCP server lands here, with its arguments and result redacted to policy. You see the calls of the organizations, teams and projects you hold a role in, plus every call made through your own MCP sign-ins.",
       "noMatchTitle": "No calls match these filters",
-      "noMatchBody": "Nothing in this window matched the status and transport you selected.",
+      "noMatchBody": "Nothing in this window matched the filters you selected.",
       "statusFilterAria": "Filter by status",
       "transportFilterAria": "Filter by transport",
       "calls": "Calls",
@@ -3456,7 +3594,11 @@
         "timeout": "Timed out",
         "auth_denied": "Auth denied",
         "transport_error": "Transport error"
-      }
+      },
+      "serverFilterAria": "Filter by server",
+      "toolFilterAria": "Filter by tool",
+      "allServers": "all servers",
+      "allTools": "all tools"
     },
     "providerGroups": {
       "emptyTitle": "No provider groups yet",
@@ -3612,6 +3754,9 @@
       "linkBody": "Shown once and not recoverable after you close this dialog.",
       "linkSendTo": "Send this link to <0>{{email}}</0>. It works once and expires in seven days.",
       "linkGrants": "Accepting it grants {{role}} on {{scope}}.",
+      "linkMailSent": "We also emailed this link to {{email}}.",
+      "linkMailFailed": "We could not email it: {{reason}}. Send the link yourself.",
+      "linkMailNotConfigured": "Nothing was emailed: this control plane has no mail relay configured (ROLTER_SMTP_URL). Send the link yourself.",
       "copyLink": "Copy link",
       "done": "Done",
       "inviteTitle": "Invite user",
@@ -3676,6 +3821,8 @@
         "title": "Pending invitations",
         "summary_one": "{{count}} not accepted yet · a link works once and expires after seven days",
         "summary_other": "{{count}} not accepted yet · a link works once and expires after seven days",
+        "mailSent": "Emailed",
+        "mailFailed": "Not emailed",
         "colInvitee": "Invitee",
         "colRole": "Role",
         "colScope": "Scope",
@@ -3830,19 +3977,19 @@
       "noOrgBody": "MCP defaults are organization scoped.",
       "savedToast": "MCP settings saved",
       "saveFailed": "Could not save the MCP settings",
-      "lead": "These values are stored, but the MCP proxy does not apply them yet, and registering a server still starts it on streamable HTTP. Runtime authorization comes from server scopes and each user’s OAuth session.",
+      "lead": "These defaults apply to every server in the organization that has no override of its own: the proxy uses them for timeouts and retries, for tools a server did not declare, and for requests it cannot read. A new server that names no transport starts on the default transport below. Authorization still comes from server scopes and each user’s OAuth session.",
       "transportDefaults": "Transport defaults",
       "failureMode": "Default failure policy",
-      "failureModeHint": "Stored as the intended policy for clients that consume MCP settings.",
+      "failureModeHint": "What the proxy does with a request it cannot inspect for tool policy: fail closed refuses it, fail open forwards it. A call that names a refused tool is always refused.",
       "failClosed": "Fail closed",
       "failOpen": "Fail open",
       "allowUnlisted": "Allow unlisted tools",
-      "allowUnlistedHint": "Permit clients to request tools not declared in the registry manifest.",
+      "allowUnlistedHint": "Permit calls to tools the server’s manifest does not declare. Off, the proxy refuses them. On until you save it off.",
       "requestControls": "Request controls",
       "connectTimeout": "Connect timeout (ms)",
       "requestTimeout": "Request timeout (ms)",
       "maxRetries": "Maximum retries",
-      "persistNote": "These values are persisted for MCP-aware clients. The current HTTP proxy continues to use deployment-level transport timeouts.",
+      "persistNote": "A server’s own overrides win over these values, and these win over the deployment-level timeouts.",
       "save": "Save MCP settings"
     },
     "logsSettings": {
@@ -5509,8 +5656,6 @@
   "stability": {
     "notes": {
       "labels": "Labels are display and filter only: no route can select its targets by label yet, and making them selectable turns them into configuration the data plane consumes",
-      "mcp_settings": "Organization MCP defaults for transport, timeout intent, retries and undeclared tools are stored but not yet read by the proxy. A per-server override is read; a server without one falls back to the deployment-level transport timeouts rather than to these",
-      "mcp_tool_groups": "Tool-group manifests are stored and published to MCP-aware clients, but the proxy does not enforce group membership as an access boundary",
       "realtime": "Guardrails, the guardrail webhook and pre_upstream plugins run on /v1/realtime text events and function-call arguments, but the PII sanitizer and pre_route / post_response plugins do not; a fail_closed PII sanitizer refuses the session, a fail_open one admits it unsanitized",
       "skills_repository": "A skill resolves only through the control-plane API; the gateway serves no skill surface, so how a client addresses and fetches one is not settled"
     }

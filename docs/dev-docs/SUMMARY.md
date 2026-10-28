@@ -21,7 +21,7 @@
 - [SCIM provisioning](architecture/scim-provisioning.md)
 - [Security](architecture/security.md)
 - [Semantic guard policies](architecture/semantic-guards.md)
-- [LDAP authentication (not shipped)](architecture/ldap.md)
+- [LDAP authentication](architecture/ldap.md)
 - [Health & readiness](architecture/health-and-readiness.md)
 - [Observability](architecture/observability.md)
 - [Client disconnects](architecture/client-disconnects.md)

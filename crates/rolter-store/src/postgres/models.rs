@@ -592,6 +592,49 @@ pub struct SsoGroupMapping {
     pub created_at: DateTime<Utc>,
 }
 
+/// an LDAP directory registered for one org (#1826).
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct LdapDirectory {
+    pub id: Uuid,
+    pub org_id: Uuid,
+    pub name: String,
+    pub url: String,
+    pub bind_dn: String,
+    /// sealed service-account password. read only by the directory bind,
+    /// through [`super::repo::LdapRepo::bind_password`]; what is serialized in
+    /// its place is the derived boolean `has_bind_password`, so an operator can
+    /// see that one is stored without anything being able to see it
+    #[serde(rename = "has_bind_password", serialize_with = "is_present")]
+    #[serde(skip_deserializing)]
+    pub bind_secret_ciphertext: Option<Vec<u8>>,
+    #[serde(skip)]
+    pub bind_secret_nonce: Option<Vec<u8>>,
+    pub base_dn: String,
+    pub user_filter: String,
+    pub email_attr: String,
+    pub display_name_attr: String,
+    pub group_attr: String,
+    pub require_tls: bool,
+    /// role granted when no group mapping matches; `None` denies login to a
+    /// user the directory has not put in a mapped group
+    pub default_role: Option<String>,
+    pub enabled: bool,
+    pub created_at: DateTime<Utc>,
+}
+
+/// a directory group granting a role at a scope
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct LdapGroupMapping {
+    pub id: Uuid,
+    pub directory_id: Uuid,
+    pub group_name: String,
+    pub org_id: Option<Uuid>,
+    pub team_id: Option<Uuid>,
+    pub project_id: Option<Uuid>,
+    pub role: String,
+    pub created_at: DateTime<Utc>,
+}
+
 /// one in-flight authorization-code login
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct SsoLoginState {
@@ -736,6 +779,30 @@ pub struct McpServer {
     /// row of the RFC 9207 §2.4 table a missing `iss` is judged by
     pub oauth_discovered_iss_supported: bool,
     pub oauth_discovered_at: Option<DateTime<Utc>>,
+    /// tools in `tools` that the last successful `tools/list` no longer
+    /// returned. Kept rather than pruned so a tool group that names one still
+    /// validates, and flagged so a card can say it may be gone (#1283)
+    pub tools_stale: Vec<String>,
+    /// `pending` (never asked), `discovered` (the server answered, possibly
+    /// with no tools) or `failed` (the last attempt got no answer)
+    pub tools_discovery_status: String,
+    /// a bounded category for a failed attempt, never the upstream's text
+    pub tools_discovery_error: Option<String>,
+    /// when `tools/list` last succeeded
+    pub tools_discovered_at: Option<DateTime<Utc>>,
+    /// when discovery last ran, whether or not it succeeded
+    pub tools_discovery_attempted_at: Option<DateTime<Utc>>,
+    /// when the control plane last got an MCP handshake out of the server, by
+    /// a status probe or a discovery (#951)
+    pub last_contact_at: Option<DateTime<Utc>>,
+    /// what that handshake negotiated and who answered it
+    pub last_protocol_version: Option<String>,
+    pub last_server_name: Option<String>,
+    /// the reason of the last failed contact (`unreachable`, `handshake_failed`,
+    /// `auth_rejected`, `egress_denied`) and when it happened. Kept after a
+    /// later success, so a status can say when it last broke
+    pub last_error_kind: Option<String>,
+    pub last_error_at: Option<DateTime<Utc>>,
 }
 
 /// One in-flight authorization-code consent, opened by the callback. The PKCE
@@ -1009,6 +1076,13 @@ pub struct Invitation {
     pub accepted_at: Option<DateTime<Utc>>,
     pub revoked_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
+    /// how emailing the link went (#1828): `not_configured` (no mail transport
+    /// when it was created), `sent` or `failed`. The link is returned to the
+    /// admin whichever it is
+    pub mail_status: String,
+    pub mail_attempted_at: Option<DateTime<Utc>>,
+    /// why a `failed` send failed, in words safe to show an admin
+    pub mail_error: Option<String>,
 }
 
 /// a one-time password reset an administrator issued for an account (#2240)
@@ -1054,6 +1128,23 @@ pub struct MfaPolicyBinding {
     pub org_id: Uuid,
     /// the org's grace window; `None` once the policy is in force
     pub enforce_after: Option<DateTime<Utc>>,
+}
+
+/// One org member's second-factor state, for an admin deciding what a
+/// `required_*` policy would lock out (#1590). No secret and no hash: only
+/// whether a factor is armed and how many recovery codes are left.
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct OrgMemberMfa {
+    pub user_id: Uuid,
+    pub email: String,
+    /// the account is a deployment superadmin, which is who `required_superadmin`
+    /// binds
+    pub is_superadmin: bool,
+    /// an armed (confirmed) factor, which is what a `required_*` policy asks
+    /// for; a half-finished enrolment is not one
+    pub enabled: bool,
+    /// unspent recovery codes; always `0` without an armed factor
+    pub recovery_codes_remaining: i64,
 }
 
 /// What the dashboard and the login exchange may know about a user's second

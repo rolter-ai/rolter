@@ -482,6 +482,8 @@ fn tables() -> Vec<Table> {
         Table::repeated("db_virtual_keys").owned("/concepts/virtual-keys"),
         Table::repeated("mcp_servers").owned("/configuration/mcp-servers"),
         Table::repeated("mcp_oauth_sessions").owned("/security/mcp-oauth"),
+        Table::repeated("mcp_tool_groups").owned("/api/mcp"),
+        Table::repeated("mcp_settings").owned("/api/mcp"),
         Table::repeated("model_prices"),
         Table::single("currency"),
         Table::repeated("budgets"),

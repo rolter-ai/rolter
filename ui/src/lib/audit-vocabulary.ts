@@ -25,6 +25,8 @@ export type AuditGroup = (typeof AUDIT_GROUPS)[number];
 const GROUP_OF_FAMILY: Record<string, AuditGroup> = {
   sso_provider: "identity",
   sso_group_mapping: "identity",
+  ldap_directory: "identity",
+  ldap_group_mapping: "identity",
   scim: "identity",
   scim_token: "identity",
   scim_group_mapping: "identity",
