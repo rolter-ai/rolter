@@ -37,7 +37,7 @@ Neither role reads tenant request logs or captured payloads, mints or reads a cr
 
 An operator who can change **Connectors** can point telemetry export at an endpoint of their choosing, so treat the role as trusted with the telemetry that connectors carry.
 
-Give or clear a role with `PUT /api/v1/users/{id}/deployment-role`, as a superadmin or with the admin token:
+In the dashboard, **Governance › Users** shows each account's deployment role beside its name, and a superadmin sets or clears it with the **Set the deployment role** button on the account's row. Through the API, give or clear a role with `PUT /api/v1/users/{id}/deployment-role`, as a superadmin or with the admin token:
 
 ```bash
 curl -s -X PUT https://control.example.com/api/v1/users/$USER_ID/deployment-role \

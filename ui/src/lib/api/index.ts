@@ -682,6 +682,7 @@ export {
   MEMBERSHIP_SCOPE_TYPES,
   fetchUsers,
   fetchDeploymentUsers,
+  setDeploymentRole,
   inviteUser,
   updateUser,
   deleteUser,

@@ -8,6 +8,7 @@ import {
   KeyRound,
   Pencil,
   Plus,
+  ShieldCheck,
   Trash2,
   UserCheck,
   UsersRound,
@@ -73,6 +74,8 @@ import {
   deleteUser,
   fetchMemberships,
   fetchOrgMfaStatus,
+  setDeploymentRole,
+  type DeploymentRole,
   fetchUsers,
   inviteUser,
   issuePasswordReset,
@@ -119,6 +122,110 @@ import { useScreenReady } from "@/lib/ux-react";
 // admin surface for the user/team lifecycle (ROL-223): invite people into the
 // current org, a team or a project and withdraw invitations still pending,
 // grant/revoke roles at org/team/project scope, and deactivate/delete accounts.
+const DEPLOYMENT_ROLE_KEY: Record<DeploymentRole, string> = {
+  operator: "pages.users.deploymentRole.operator",
+  security_auditor: "pages.users.deploymentRole.securityAuditor",
+};
+
+const NO_DEPLOYMENT_ROLE = "none";
+
+/**
+ * Give an account a deployment role, or clear it (#3290). Superadmin only
+ * (`deployment_role:update`): neither role can grant itself or the other. The
+ * change reaches the account's next request, with no session to revoke.
+ */
+function DeploymentRoleSheet({
+  target,
+  onClose,
+  onDone,
+}: {
+  target: UserRow | null;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const { t } = useTranslation();
+  const toast = useToast();
+  const held = target?.deployment_role ?? NO_DEPLOYMENT_ROLE;
+  const [role, setRole] = React.useState<string>(held);
+  React.useEffect(() => setRole(held), [held, target?.id]);
+
+  const save = useMutation({
+    mutationFn: () =>
+      setDeploymentRole(
+        (target as UserRow).id,
+        role === NO_DEPLOYMENT_ROLE ? null : (role as DeploymentRole),
+      ),
+    onSuccess: (user) => {
+      onDone();
+      toast.push({
+        tone: "success",
+        title: user.deployment_role
+          ? t("pages.users.deploymentRole.toastSet", {
+              email: user.email,
+              role: t(DEPLOYMENT_ROLE_KEY[user.deployment_role]),
+            })
+          : t("pages.users.deploymentRole.toastCleared", { email: user.email }),
+      });
+      onClose();
+    },
+    onError: (error) => {
+      toast.push({
+        tone: "error",
+        title: t("toast.saveFailed", { what: target?.email ?? "" }),
+        detail: errorText(error, t),
+      });
+    },
+  });
+
+  return (
+    <EditorSheet
+      name="user-deployment-role"
+      open={!!target}
+      onOpenChange={(open) => {
+        if (open) return;
+        save.reset();
+        onClose();
+      }}
+      title={t("pages.users.deploymentRole.title")}
+      subtitle={t("pages.users.deploymentRole.subtitle", { email: target?.email ?? "" })}
+      dirty={role !== held}
+      errorMessage={save.isError ? errorText(save.error, t) : undefined}
+      saveLabel={t("common.save")}
+      canSave={role !== held}
+      saving={save.isPending}
+      onSubmit={() => save.mutate()}
+    >
+      <Field
+        label={t("pages.users.deploymentRole.label")}
+        hint={t("pages.users.deploymentRole.hint")}
+      >
+        <Combobox
+          value={role}
+          onChange={setRole}
+          options={[
+            {
+              value: NO_DEPLOYMENT_ROLE,
+              label: t("pages.users.deploymentRole.none"),
+              description: t("pages.users.deploymentRole.noneBody"),
+            },
+            {
+              value: "operator",
+              label: t("pages.users.deploymentRole.operator"),
+              description: t("pages.users.deploymentRole.operatorBody"),
+            },
+            {
+              value: "security_auditor",
+              label: t("pages.users.deploymentRole.securityAuditor"),
+              description: t("pages.users.deploymentRole.securityAuditorBody"),
+            },
+          ]}
+        />
+      </Field>
+      <p className="text-sm text-muted-foreground">{t("pages.users.deploymentRole.scopeNote")}</p>
+    </EditorSheet>
+  );
+}
+
 /**
  * The Second factor cell (#3264): armed or not set up, from the org's
  * enrolment roster. While the roster loads it is a skeleton and when it failed
@@ -232,6 +339,7 @@ export default function Users() {
 
   const [inviteOpen, setInviteOpen] = React.useState(false);
   const [editUser, setEditUser] = React.useState<UserRow | null>(null);
+  const [deploymentRoleUser, setDeploymentRoleUser] = React.useState<UserRow | null>(null);
   const [roleUser, setRoleUser] = React.useState<UserRow | null>(null);
   const [profileUser, setProfileUser] = React.useState<UserRow | null>(null);
   const [unassignProfile, setUnassignProfile] = React.useState<UnassignTarget | null>(null);
@@ -475,6 +583,17 @@ export default function Users() {
                         {t("pages.users.superBadge")}
                       </Badge>
                     )}
+                    {/* the deployment role (#3290): shown to anyone who can read
+                        the account, changed by a superadmin alone */}
+                    {user.deployment_role && (
+                      <Badge
+                        tone="neutral"
+                        className="flex-none"
+                        title={t("pages.users.deploymentRole.badgeHint")}
+                      >
+                        {t(DEPLOYMENT_ROLE_KEY[user.deployment_role])}
+                      </Badge>
+                    )}
                   </div>
                   {user.display_name && (
                     <p className="truncate font-mono text-xs text-muted-foreground">{user.email}</p>
@@ -556,6 +675,15 @@ export default function Users() {
                     <KeyRound className="h-3.5 w-3.5" />
                   </RowIconButton>
                 )}
+                <RowIconButton
+                  gate="deployment_role:update"
+                  control="user-deployment-role"
+                  title={t("pages.users.deploymentRole.set", { email: user.email })}
+                  aria-label={t("pages.users.deploymentRole.set", { email: user.email })}
+                  onClick={() => setDeploymentRoleUser(user)}
+                >
+                  <ShieldCheck className="h-3.5 w-3.5" />
+                </RowIconButton>
                 <RowIconButton
                   gate="user:update"
                   control="user-deactivate"
@@ -643,6 +771,11 @@ export default function Users() {
         onClose={() => setEditUser(null)}
         onDone={invalidate}
         onDelete={setDeleteTarget}
+      />
+      <DeploymentRoleSheet
+        target={deploymentRoleUser}
+        onClose={() => setDeploymentRoleUser(null)}
+        onDone={invalidate}
       />
       {profileUser && orgId && (
         <AssignSubjectProfileSheet
