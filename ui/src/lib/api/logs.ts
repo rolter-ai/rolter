@@ -85,6 +85,11 @@ export interface InvocationRow {
   /// `error:<slug>:<kind>` entries (#2243); absent from a control plane that
   /// predates it, empty for a request no plugin touched
   plugin_events?: string[];
+  /// the request parameters dialect translation did not forward as sent, as
+  /// `<disposition>:<param>` entries (`dropped:top_k`, #1586, #3323); absent
+  /// from a control plane that predates it, empty when every parameter went
+  /// through
+  param_adjustments?: string[];
   /// what happened to the request, by the name the gateway recorded (#3307):
   /// `served`, `upstream_error`, `withheld`, `cancelled` or a `refused_*`
   /// reason; `unknown` on a row older than the column, and absent from a

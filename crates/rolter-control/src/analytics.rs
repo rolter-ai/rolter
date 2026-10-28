@@ -498,6 +498,10 @@ pub fn router() -> Router<crate::ControlState> {
         .route("/api/v1/analytics/invocations", get(invocations))
         .route("/api/v1/analytics/guardrails", get(guardrails))
         .route("/api/v1/analytics/plugins", get(plugins))
+        .route(
+            "/api/v1/analytics/param-adjustments",
+            get(param_adjustments),
+        )
 }
 
 /// Map a cost-attribution dimension name to its whitelisted column. Anything
@@ -917,6 +921,56 @@ async fn plugins(
     events_rollup(access, state, q, "plugin_events", plugins_sql()).await
 }
 
+/// Which request parameters dialect translation did not forward as sent, per
+/// route and provider, in the window (#3323): one row per `route` (the public
+/// model), `provider`, `disposition` (`dropped`, `clamped` or `translated`)
+/// and `param`, with the `requests` that had it and the `route_requests` the
+/// route sent that provider in all, so `share` is the part of the traffic it
+/// touched. This is what lets an operator see "this route silently drops
+/// `top_k` on 40% of its traffic" instead of each caller finding out alone.
+/// Counts are scaled by the sampling weight like every other count here. A
+/// table without `clickhouse/022_param_adjustments.sql` answers
+/// `recorded: false` with no rows.
+async fn param_adjustments(
+    access: AnalyticsAccess,
+    state: State<crate::ControlState>,
+    q: Query<WindowQuery>,
+) -> Response {
+    events_rollup(
+        access,
+        state,
+        q,
+        "param_adjustments",
+        param_adjustments_sql(),
+    )
+    .await
+}
+
+/// The rollup behind [`param_adjustments`]. One scan: each `(route, provider)`
+/// group sums its weight and, with `sumMap`, the weight of every
+/// `<disposition>:<param>` entry its rows carry, which the outer query unfolds
+/// into a row per entry. The gateway records a parameter once per request, so
+/// an entry's weight is the requests it touched. The disposition never holds a
+/// `:`, so the first one splits the entry.
+fn param_adjustments_sql() -> String {
+    format!(
+        "select route, provider, \
+            substring(event, 1, position(event, ':') - 1) as disposition, \
+            substring(event, position(event, ':') + 1) as param, \
+            round(weight) as requests, \
+            round(total) as route_requests, \
+            round(weight / total, 4) as share \
+         from (\
+            select model as route, provider, sum(sample_weight) as total, \
+                sumMap(param_adjustments, arrayMap(entry -> sample_weight, param_adjustments)) as adjusted \
+            from request_logs where {WHERE_WINDOW} and {ROW_VISIBLE} \
+            group by route, provider) \
+         array join adjusted.1 as event, adjusted.2 as weight \
+         where position(event, ':') > 0 \
+         order by requests desc, route, provider, disposition, param format JSON"
+    )
+}
+
 /// Run an event-array rollup over `column`, answering `recorded: false` while
 /// the table lacks the column.
 async fn events_rollup(
@@ -1141,6 +1195,7 @@ fn invocations_sql(status_expr: &str, columns: &Columns) -> String {
     let lifecycle_operation = columns.select("lifecycle_operation");
     let guardrail_events = columns.select("guardrail_events");
     let plugin_events = columns.select("plugin_events");
+    let param_adjustments = columns.select("param_adjustments");
     // the filter reads the column, which an older table lacks: it then matches
     // nothing, which is true, since no event was ever recorded there
     let guardrail_filter = columns.expr("guardrail_events");
@@ -1161,7 +1216,7 @@ fn invocations_sql(status_expr: &str, columns: &Columns) -> String {
                 model, provider, target, variant, status, stream, cache_hit, cache_read_tokens, cache_write_tokens, \
                 {cache_write_1h_tokens}, \
                 prompt_tokens, completion_tokens, total_tokens, cost_usd, unpriced, withheld, usage_unknown, latency_ms, ttft_ms, error, \
-                {upstream_status}, {attempts}, {lifecycle_operation}, {guardrail_events}, {plugin_events}, \
+                {upstream_status}, {attempts}, {lifecycle_operation}, {guardrail_events}, {plugin_events}, {param_adjustments}, \
                 {outcome}, {has_tools}, {has_image_input}, {has_audio_input}, {has_response_schema}, {turns}, \
                 if({PAYLOAD_VISIBLE}, payload.request_payload, '') as request_payload, \
                 if({PAYLOAD_VISIBLE}, payload.response_payload, '') as response_payload, \
@@ -1712,8 +1767,28 @@ mod tests {
                 "from {table} where {{WHERE_WINDOW}} and {{ROW_VISIBLE}}"
             ))
             .count();
-        assert_eq!(rollups, 4, "summary, timeseries, by-model, by-attribution");
+        assert_eq!(
+            rollups, 5,
+            "summary, timeseries, by-model, by-attribution, param-adjustments"
+        );
         assert_eq!(filtered, rollups);
+    }
+
+    #[test]
+    fn the_param_adjustment_rollup_is_scoped_and_weighted() {
+        let sql = param_adjustments_sql();
+        assert!(
+            sql.contains(&format!("where {WHERE_WINDOW} and {ROW_VISIBLE}")),
+            "{sql}"
+        );
+        assert!(sql.contains("sum(sample_weight) as total"), "{sql}");
+        assert!(
+            sql.contains("arrayMap(entry -> sample_weight, param_adjustments)"),
+            "{sql}"
+        );
+        assert!(sql.contains("group by route, provider"), "{sql}");
+        assert!(sql.contains("as share"), "{sql}");
+        assert!(!sql.contains("count()"), "an unweighted count: {sql}");
     }
 
     #[test]
@@ -2629,6 +2704,51 @@ mod optional_column_tests {
         let (status, body) = rollup(&app).await;
 
         // not a 502: the file is not a condition of upgrading the control plane
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["recorded"], false, "{body}");
+        assert_eq!(body["data"], json!([]), "{body}");
+    }
+
+    async fn adjustment_rollup(app: &Router) -> (StatusCode, Value) {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/analytics/param-adjustments")
+                    .body(Body::empty())
+                    .expect("a valid request"),
+            )
+            .await
+            .expect("the router answers");
+        let status = response.status();
+        let body = to_bytes(response.into_body(), 1 << 20)
+            .await
+            .expect("a readable body");
+        (status, serde_json::from_slice(&body).unwrap_or(Value::Null))
+    }
+
+    #[tokio::test]
+    async fn the_param_adjustment_rollup_reads_the_column_when_the_table_has_it() {
+        let mut columns = REQUIRED.to_vec();
+        columns.extend(every_optional());
+        let stub = Stub::start(&columns).await;
+        let app = app_over(ClickHouseClient::new(&stub.url));
+
+        let (status, body) = adjustment_rollup(&app).await;
+
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["recorded"], true, "{body}");
+        let sql = stub.list_sql();
+        assert!(sql.contains("sumMap(param_adjustments"), "{sql}");
+        assert!(sql.contains(&format!("and {ROW_VISIBLE}")), "{sql}");
+    }
+
+    #[tokio::test]
+    async fn the_param_adjustment_rollup_says_so_when_the_table_does_not_record_them() {
+        let stub = Stub::start(REQUIRED).await;
+        let app = app_over(ClickHouseClient::new(&stub.url));
+
+        let (status, body) = adjustment_rollup(&app).await;
+
         assert_eq!(status, StatusCode::OK, "{body}");
         assert_eq!(body["recorded"], false, "{body}");
         assert_eq!(body["data"], json!([]), "{body}");

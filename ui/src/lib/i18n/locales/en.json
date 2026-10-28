@@ -328,7 +328,8 @@
       "mcpServerTools": "tools of the MCP server",
       "priceCatalogue": "price catalogue",
       "yourBudget": "your budget",
-      "routeVariants": "route variants"
+      "routeVariants": "route variants",
+      "paramAdjustments": "parameter adjustments"
     },
     "requestFailed": "request failed: {{status}}",
     "gateway": {
@@ -3672,7 +3673,9 @@
             "compact": "Compact",
             "input_tokens": "Count input tokens"
           }
-        }
+        },
+        "paramAdjustments": "Parameters not sent as given",
+        "paramAdjustment": "{{param}}: {{disposition}}"
       },
       "payloadWithheld": "A body was captured for this request, but it is hidden for your role: on this project, request and response bodies are shown to its members and admins. A project admin can let viewers read them too, in the project's settings.",
       "feed": {
@@ -4469,7 +4472,25 @@
         "anthropicVersion": "Anthropic version must be a dated release like 2023-06-01.",
         "defaultMaxTokens": "Default max tokens must be a whole number between 1 and 1000000."
       },
-      "restart": "Restart"
+      "restart": "Restart",
+      "adjustments": {
+        "title": "Parameters not forwarded as sent",
+        "desc": "Over the last 7 days, the request parameters each route's translation dropped, clamped or approximated for an upstream that speaks another dialect, and the share of that route's traffic to the provider it touched.",
+        "colRoute": "Route",
+        "colProvider": "Provider",
+        "colParam": "Parameter",
+        "colDisposition": "What happened",
+        "colShare": "Share of traffic",
+        "share": "{{share}} ({{requests}} of {{total}})",
+        "emptyTitle": "Every parameter went through",
+        "emptyBody": "No request in the last 7 days had a parameter dropped, clamped or approximated by translation.",
+        "notRecordedTitle": "Parameter adjustments are not recorded",
+        "notRecordedBody": "The request log has no column for them yet. Apply <0>clickhouse/022_param_adjustments.sql</0> to keep them.",
+        "noAnalytics": {
+          "title": "Parameter adjustments need the analytics store",
+          "body": "They are read from the request log, which this deployment does not keep. Set <0>CLICKHOUSE_URL</0> and this panel lists, per route, the parameters translation did not forward as sent."
+        }
+      }
     },
     "featureFlags": {
       "confirm": {
@@ -5585,7 +5606,12 @@
     "unpricedHint": "No price is configured for this model, so this request was recorded as unpriced rather than as free.",
     "withheld": "withheld",
     "withheldHint": "The provider answered and billed for this response, but an output guardrail or plugin refused to deliver it: the caller received a 403. The cost is real; the policy that refused is named in the error.",
-    "usageUnknownHint": "The upstream answered but reported no usage, so the tokens and cost are unknown, not zero."
+    "usageUnknownHint": "The upstream answered but reported no usage, so the tokens and cost are unknown, not zero.",
+    "paramAdjustments": {
+      "dropped": "dropped",
+      "clamped": "clamped",
+      "translated": "approximated"
+    }
   },
   "savedViews": {
     "open": "Saved views",

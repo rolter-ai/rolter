@@ -44,6 +44,7 @@ import {
 } from "@/lib/api";
 import type { CodeLanguage } from "@/lib/code";
 import { useCan } from "@/lib/can";
+import { dispositionLabel, parseAdjustment } from "@/lib/param-adjustments";
 import { useCurrencyCode } from "@/lib/currency";
 import { useFormat } from "@/lib/i18n/format";
 import { parseLogLookup, type LogLookup } from "@/lib/log-lookup";
@@ -750,6 +751,25 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
         <DetailRow label={t("pages.logs.detail.variant")} mono>
           {selected.variant || <Absent />}
         </DetailRow>
+        {/* what dialect translation did to the caller's parameters (#3323):
+            only a translated request that lost or changed one has the row */}
+        {(selected.param_adjustments?.length ?? 0) > 0 && (
+          <DetailRow label={t("pages.logs.detail.paramAdjustments")}>
+            <ul className="flex flex-col gap-1">
+              {selected.param_adjustments?.map((entry) => {
+                const { disposition, param } = parseAdjustment(entry);
+                return (
+                  <li key={entry}>
+                    {t("pages.logs.detail.paramAdjustment", {
+                      param,
+                      disposition: dispositionLabel(t, disposition),
+                    })}
+                  </li>
+                );
+              })}
+            </ul>
+          </DetailRow>
+        )}
         {/* rolter's own response cache: a hit never reached the upstream. the
             provider's prompt cache is a token count, under usage */}
         <DetailRow label={t("pages.logs.detail.responseCache")}>

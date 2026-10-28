@@ -72,6 +72,7 @@ export {
   fetchAttributionSpend,
   fetchGuardrailOutcomes,
   fetchPluginOutcomes,
+  fetchParamAdjustments,
 } from "./analytics";
 export type {
   AnalyticsWindow,
@@ -86,6 +87,8 @@ export type {
   GuardrailOutcomes,
   PluginOutcomeRow,
   PluginOutcomes,
+  ParamAdjustmentRow,
+  ParamAdjustments,
 } from "./analytics";
 export { fetchAuditLogPage, fetchDeploymentAuditLogPage, fetchAuditLogExport } from "./audit";
 export type { AuditLogEntry, AuditLogPage, AuditLogQuery, AuditLogExportFile } from "./audit";

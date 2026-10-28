@@ -1281,6 +1281,35 @@ export const FiltersByOutcome: Story = {
   },
 };
 
+/**
+ * #3323: a translated request that lost or changed a parameter says which in
+ * the drawer, in words; a row whose parameters all went through has no row.
+ */
+export const TheDrawerListsTheParameterAdjustments: Story = {
+  render: () => (
+    <Harness
+      fetchStub={withLogs([
+        row({
+          request_id: "req-adjusted",
+          model: "claude-sonnet",
+          param_adjustments: ["dropped:presence_penalty", "clamped:temperature"],
+        }),
+        row({ request_id: "req-plain", model: "gpt-4o" }),
+      ])}
+    >
+      <Logs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const details = within(await openDetails(canvasElement, "claude-sonnet"));
+    await expect(details.getByText("Parameters not sent as given")).toBeVisible();
+    await expect(details.getByText("presence_penalty: dropped")).toBeVisible();
+    await expect(details.getByText("temperature: clamped")).toBeVisible();
+    const plain = within(await openDetails(canvasElement, "gpt-4o"));
+    await expect(plain.queryByText("Parameters not sent as given")).toBeNull();
+  },
+};
+
 const byModel = recording(serverFiltered(MIXED));
 
 /**

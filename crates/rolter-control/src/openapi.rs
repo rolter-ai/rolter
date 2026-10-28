@@ -2283,7 +2283,10 @@ fn operations() -> Vec<Op> {
                  row written before the gateway recorded one or on a table without the column. \
                  `has_tools`, `has_image_input`, `has_audio_input`, `has_response_schema` (each `0` or \
                  `1`) and `turns` (`clickhouse/031`) say what the request asked the model to do beyond \
-                 its tokens, `0` on an older row or a table without the columns",
+                 its tokens, `0` on an older row or a table without the columns. \
+                 `param_adjustments` (an array of `<disposition>:<param>` strings, `clickhouse/022`) \
+                 lists the request parameters dialect translation dropped, clamped or translated, \
+                 empty when every parameter went through",
             )
             .clickhouse_read()
             .query(INVOCATIONS_QUERY),
@@ -2311,6 +2314,18 @@ fn operations() -> Vec<Op> {
                  `status_<code>` or `body`) name the newest failure and are `null` and empty when `errors` is \
                  `0`. `recorded` is `false` when the ClickHouse table lacks \
                  `clickhouse/019_plugin_events.sql`, in which case `data` is empty",
+            )
+            .clickhouse_read()
+            .query(WINDOW_QUERY),
+            Op::get(
+                "/api/v1/analytics/param-adjustments",
+                "getAnalyticsParamAdjustments",
+                "Which request parameters dialect translation did not forward as sent, per route \
+                 and provider, in the window: one row per `route` (the public model), `provider`, \
+                 `disposition` (`dropped`, `clamped` or `translated`) and `param`, with the \
+                 `requests` that had it, the `route_requests` that route sent that provider in all \
+                 and their ratio as `share`. `recorded` is `false` when the ClickHouse table lacks \
+                 `clickhouse/022_param_adjustments.sql`, in which case `data` is empty",
             )
             .clickhouse_read()
             .query(WINDOW_QUERY),

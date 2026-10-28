@@ -77,6 +77,12 @@ pub(crate) const OPTIONAL_COLUMNS: &[OptionalColumn] = &[
         name: "plugin_events",
         default: "emptyArrayString()",
     },
+    // 022_param_adjustments.sql: what translation did to the request's
+    // parameters (#1586), read by the invocation list and its rollup (#3323)
+    OptionalColumn {
+        name: "param_adjustments",
+        default: "emptyArrayString()",
+    },
     // 030_request_outcome.sql: the column's own default, which every row
     // written before it reads as
     OptionalColumn {
@@ -340,6 +346,7 @@ mod tests {
             "lifecycle_operation",
             "guardrail_events",
             "plugin_events",
+            "param_adjustments",
             "outcome",
             "has_tools",
             "has_image_input",
