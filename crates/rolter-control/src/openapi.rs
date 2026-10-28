@@ -2699,6 +2699,24 @@ fn operations() -> Vec<Op> {
                 "Revoke an invitation",
             )
             .ok(Payload::Ref("Invitation")),
+            Op::post(
+                "/api/v1/invitations/{id}/resend",
+                "resendInvitation",
+                "Email a pending invitation's link again (at most once a minute; `429` with `Retry-After` otherwise)",
+            )
+            .body(Payload::Empty)
+            .ok(Payload::Ref("Invitation"))
+            .conflict(
+                "the invitation is not pending, has expired, has no kept link, or mail is not configured",
+            ),
+            Op::post(
+                "/api/v1/orgs/{org_id}/invitations/mail-check",
+                "checkInvitationMailRelay",
+                "Check the mail relay without sending an invitation",
+            )
+            .body(Payload::Empty)
+            .ok(Payload::Open)
+            .conflict("mail is not configured on this control plane"),
             Op::get(
                 "/api/v1/invitations/accept/{token}",
                 "previewInvitation",

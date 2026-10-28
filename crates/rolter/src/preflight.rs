@@ -382,6 +382,34 @@ async fn check_reachability(env: &dyn Env, out: &mut Vec<Finding>) {
     }
 }
 
+/// The finding for a relay check that failed (#3304): a warning, since mail is
+/// optional and a failing relay only costs the convenience of emailed links.
+/// The stage and a fixed sentence; never the relay's address or credential.
+#[cfg(feature = "postgres")]
+fn mail_relay_finding(failure: &rolter_control::mail::RelayFailure) -> Finding {
+    Finding::warn(
+        format!("the mail relay failed its {} check", failure.stage.as_str()),
+        format!(
+            "{} (ROLTER_SMTP_URL). Invitations are still created and their links returned; \
+             they are just not emailed until this is fixed.",
+            failure.reason
+        ),
+    )
+}
+
+/// Connect, set up TLS and authenticate against the configured mail relay,
+/// without sending a message (#3304). Behind `--connect` because it opens a
+/// socket, and behind the `postgres` feature because the mailer is part of the
+/// control plane's database-backed build. The relay is held to the egress policy
+/// of the file given with `--config`, the one the control plane runs with, so an
+/// address the operator allowed is not reported as denied.
+#[cfg(feature = "postgres")]
+async fn check_mail_relay(egress: &rolter_core::EgressPolicy, out: &mut Vec<Finding>) {
+    if let Some(Err(failure)) = rolter_control::mail::check_env_relay(egress).await {
+        out.push(mail_relay_finding(&failure));
+    }
+}
+
 /// Does the KEK in the environment open the secrets this store already holds?
 /// (#923)
 ///
@@ -775,6 +803,13 @@ pub async fn run(args: CheckArgs) -> anyhow::Result<()> {
         #[cfg(feature = "postgres")]
         if args.role == Role::Control {
             check_kek_opens_the_store(&ProcessEnv, &mut findings).await;
+            let egress = args
+                .config
+                .as_deref()
+                .and_then(|path| rolter_core::GatewayConfig::load(std::path::Path::new(path)).ok())
+                .map(|config| config.egress)
+                .unwrap_or_default();
+            check_mail_relay(&egress, &mut findings).await;
         }
     }
 
@@ -1342,6 +1377,20 @@ provider = "openai"
             .expect("missing redis not reported");
         // a single-replica deployment is legitimately fine without redis
         assert!(!redis.fatal);
+    }
+
+    #[cfg(feature = "postgres")]
+    #[test]
+    fn a_failing_mail_relay_is_a_warning_that_names_the_stage_only() {
+        use rolter_control::mail::{RelayFailure, RelayStage};
+        let failure = RelayFailure {
+            stage: RelayStage::Auth,
+            reason: "the mail server refused the credential in the relay url".to_string(),
+        };
+        let finding = mail_relay_finding(&failure);
+        assert!(!finding.fatal, "mail is optional");
+        assert_eq!(finding.title, "the mail relay failed its auth check");
+        assert!(finding.detail.contains("refused the credential"));
     }
 
     #[cfg(feature = "postgres")]

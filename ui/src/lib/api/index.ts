@@ -241,6 +241,7 @@ export type { HealthGrain, UptimeRow, MttrRow, TimelineRow } from "./health";
 export {
   listInvitations,
   createInvitation,
+  resendInvitation,
   revokeInvitation,
   isInvitationSignInRequired,
   previewInvitation,

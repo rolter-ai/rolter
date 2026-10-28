@@ -926,7 +926,7 @@ Spend caps block requests with HTTP `402` once a scope's cumulative cost reaches
 </ParamField>
 
 <ParamField path="id" type="string" required>
-  The UUID of the scoped entity.
+  The UUID of the scoped entity. In a file that `rolter-seed --import` reads, the entity's portable name instead: an org slug, `org/team`, `org/team/project`, or, for a `user` budget, the account's email ([Config export](/configuration/config-export#budgets-and-rate-limits)).
 </ParamField>
 
 <ParamField path="limit_usd" type="float" required>
@@ -942,7 +942,7 @@ Spend caps block requests with HTTP `402` once a scope's cumulative cost reaches
 </ParamField>
 
 <ParamField path="within" type="table">
-  Narrows a `user` budget to the keys the person minted in one org, `{ org = "org-uuid" }`, or one project, `{ project = "project-uuid" }`. Omit it to count all of their keys. Has no meaning on any other scope.
+  Narrows a `user` budget to the keys the person minted in one org, `{ org = "org-uuid" }`, or one project, `{ project = "project-uuid" }`; in an import file the same places by slug path, `{ org = "acme" }` or `{ project = "acme/team/project" }`. Omit it to count all of their keys. Has no meaning on any other scope, and an import refuses it there.
 </ParamField>
 
 ```toml
@@ -984,7 +984,7 @@ Throughput caps reject excess requests with HTTP `429` and a `Retry-After` heade
 </ParamField>
 
 <ParamField path="id" type="string" required>
-  The UUID of the scoped entity.
+  The UUID of the scoped entity. In a file that `rolter-seed --import` reads, the entity's portable name instead: an org slug, `org/team`, `org/team/project`, or, for a `user` limit, the account's email ([Config export](/configuration/config-export#budgets-and-rate-limits)).
 </ParamField>
 
 <ParamField path="rpm" type="u32">
@@ -996,7 +996,7 @@ Throughput caps reject excess requests with HTTP `429` and a `Retry-After` heade
 </ParamField>
 
 <ParamField path="within" type="table">
-  Narrows a `user` limit to the keys the person minted in one org, `{ org = "org-uuid" }`, or one project, `{ project = "project-uuid" }`. Omit it to count all of their keys. Has no meaning on any other scope.
+  Narrows a `user` limit to the keys the person minted in one org, `{ org = "org-uuid" }`, or one project, `{ project = "project-uuid" }`; in an import file the same places by slug path, `{ org = "acme" }` or `{ project = "acme/team/project" }`. Omit it to count all of their keys. Has no meaning on any other scope, and an import refuses it there.
 </ParamField>
 
 ```toml
