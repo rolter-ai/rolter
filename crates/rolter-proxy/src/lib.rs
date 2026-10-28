@@ -13,12 +13,14 @@
 //! rolter's HTTP surfaces instead — see
 //! [ADR-0032](https://github.com/rolter-ai/rolter/blob/master/docs/dev-docs/adr/2026-09-09-one-point-oh-compatibility-guarantees.md).
 
+pub mod adjustments;
 pub mod egress_resolver;
 mod infinity;
 pub mod pool;
 pub mod route;
 mod translation;
 
+pub use adjustments::{Disposition, ParamAdjustment, ParamAdjustments, PARAM_ADJUSTMENTS_HEADER};
 pub use route::{RouteHeaders, RouteOverrides};
 pub use translation::{
     anthropic_cache_written_tokens, cache_written_one_hour_tokens, cache_written_prompt_tokens,
@@ -358,6 +360,10 @@ impl Forwarder {
     /// [`Self::forward_json`] under the settings of the route the request
     /// resolved to: its own bound on the wait for response headers, and its
     /// static headers (#2924).
+    ///
+    /// When dialect translation did not forward every caller parameter as
+    /// sent, the returned response carries a [`ParamAdjustments`] in its
+    /// extensions (#1586); it carries none otherwise.
     #[allow(clippy::too_many_arguments)]
     pub async fn forward_json_with(
         &self,
@@ -407,7 +413,7 @@ impl Forwarder {
         // rewritten between the OpenAI and Anthropic shapes is real time spent
         // in the gateway rather than at the provider (#805)
         let translate_stage = rolter_core::stage_span!("translate.request");
-        let body = translation.translate_request_with(body, &compatibility)?;
+        let (body, adjustments) = translation.translate_request_reporting(body, &compatibility)?;
         let body = translation.apply_model_defaults(body, &self.model_defaults.load());
         let body = translation::normalize_prompt_cache_control(body, provider.kind)?;
         drop(translate_stage);
@@ -444,6 +450,15 @@ impl Forwarder {
             req.body(body.clone())
         })
         .await
+        .map(|mut response| {
+            // what translation did to the caller's parameters travels with the
+            // answer it shaped, read by the gateway before the first byte
+            // (#1586). nothing is inserted when nothing was adjusted
+            if !adjustments.is_empty() {
+                response.extensions_mut().insert(adjustments);
+            }
+            response
+        })
     }
 
     /// Forward a raw request body verbatim under an explicit `content_type`.
