@@ -1,7 +1,5 @@
 //! Persistent WebSocket relay for OpenAI-compatible Realtime sessions.
 //!
-//! spec-ref: openai-realtime, websocket
-//!
 //! A Realtime connection is intentionally selected once, before the downstream
 //! HTTP upgrade is accepted. The selected provider/key is then pinned for the
 //! lifetime of the socket: reconnecting is a client operation, never an
@@ -18,6 +16,7 @@
 //! task instead, and a shutting-down gateway closes each session and waits for
 //! its meter's last flush before the process exits.
 
+// spec-ref: openai-realtime, websocket
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::sync::Arc;
 use std::time::Duration;

@@ -1,11 +1,10 @@
 //! Authenticated MCP HTTP proxying.
 //!
-//! spec-ref: mcp-transport
-//!
 //! A virtual key authenticates the workload, while its database owner selects
 //! the user's OAuth session. Server, owner and scope checks all happen before
 //! any downstream connection is attempted.
 
+// spec-ref: mcp-transport
 use axum::body::Body;
 use axum::extract::{OriginalUri, Path, State};
 use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};

@@ -1,7 +1,5 @@
 //! SCIM 2.0 Users provisioning (#540).
 //!
-//! spec-ref: scim
-//!
 //! An IdP authenticates with an org-scoped bearer token minted through the
 //! admin API, and drives `/scim/v2/Users` to create, update, deactivate and
 //! reconcile accounts. Three properties shape the implementation:
@@ -20,6 +18,7 @@
 //! [`crate::scim_groups`]; this module is the Users half plus the token
 //! lifecycle the provisioning screen needs.
 
+// spec-ref: scim
 use axum::extract::{FromRequestParts, Path, Query, State};
 use axum::http::request::Parts;
 use axum::http::StatusCode;

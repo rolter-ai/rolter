@@ -1,7 +1,5 @@
 //! Request and response translation for a michaelfeil/infinity rerank.
 //!
-//! spec-ref: infinity, rerank
-//!
 //! Infinity's embeddings endpoint is OpenAI's own shape (`OpenAIEmbeddingResult`
 //! in `infinity_emb/fastapi_schemas/pymodels.py`: `object: "list"`, `data[]` of
 //! `{object, embedding, index}`, `model`, `usage.{prompt_tokens,total_tokens}`),
@@ -27,6 +25,7 @@
 //! reads. Fields Infinity does not know, such as Cohere's `max_tokens_per_doc`,
 //! are ignored by its pydantic models rather than refused, so they are left in.
 
+// spec-ref: infinity, rerank
 use rolter_core::{Error, Result};
 use serde_json::{json, Value};
 

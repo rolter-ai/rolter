@@ -1,7 +1,5 @@
 //! OIDC single sign-on (#240).
 //!
-//! spec-ref: oidc-core, oidc-discovery, pkce
-//!
 //! An org registers an identity provider; a user hits `/auth/sso/{slug}/start`,
 //! is bounced through the provider's authorization-code flow with PKCE, and
 //! comes back with an id token that rolter verifies against the provider's
@@ -30,6 +28,7 @@
 //!   they control at another org's member, or at the break-glass account, and
 //!   be handed a session carrying grants their org never gave.
 
+// spec-ref: oidc-core, oidc-discovery, pkce
 use std::collections::HashSet;
 use std::sync::Arc;
 

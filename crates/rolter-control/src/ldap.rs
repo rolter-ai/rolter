@@ -1,7 +1,5 @@
 //! LDAP bind + group mapping (#241, wired to sign-in by #1826).
 //!
-//! spec-ref: ldap
-//!
 //! This is the directory half of LDAP sign-in: it authenticates a login against
 //! a directory and reports the entry it found. The control-plane half that
 //! stores a directory per org, reaches this provider from
@@ -37,6 +35,7 @@
 //! [`IdentityError::NotVerified`]. A directory that enumerates its users
 //! through rolter's error messages would be worse than no LDAP at all.
 
+// spec-ref: ldap
 use async_trait::async_trait;
 
 use rolter_auth::{Credential, Identity, IdentityError, IdentityProvider};

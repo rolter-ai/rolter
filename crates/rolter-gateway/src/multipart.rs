@@ -1,13 +1,12 @@
 //! Minimal `multipart/form-data` helpers for the audio endpoints.
 //!
-//! spec-ref: multipart-form-data
-//!
 //! The gateway forwards multipart uploads (`/v1/audio/transcriptions`,
 //! `/v1/audio/translations`) verbatim; it only needs to peek at the `model`
 //! form field for auth, routing, budgets and rate limits. Rather than pull in a
 //! full multipart crate we extract a single named text field with a small,
 //! allocation-light scan over the already-buffered body.
 
+// spec-ref: multipart-form-data
 /// Pull the `boundary=...` token out of a `multipart/form-data` content-type
 /// header. Handles quoted and unquoted boundaries and ignores parameter order.
 pub fn boundary(content_type: &str) -> Option<String> {

@@ -1,8 +1,6 @@
 //! Token acquisition for MCP OAuth: authorization code, refresh, and
 //! on-behalf-of exchange (#707).
 //!
-//! spec-ref: mcp-authorization, oauth2, pkce, oauth2-token-exchange
-//!
 //! [`crate::mcp_oauth`] owns the *shelf* — servers, consent grants, sealed
 //! sessions, listing and revocation. Until now nothing filled it: a grant row
 //! could only be written directly. This module is the lifecycle that mints and
@@ -38,6 +36,7 @@
 //! does not match the server it claims to be about, or an `iss` that does not
 //! match what was recorded ends the flow rather than warning and continuing.
 
+// spec-ref: mcp-authorization, oauth2, pkce, oauth2-token-exchange
 use std::collections::HashSet;
 
 use axum::extract::{Path, Query, State};

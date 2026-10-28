@@ -1,7 +1,5 @@
 //! Direct ClickHouse writer for the `mcp_tool_call_logs` table (#2395).
 //!
-//! spec-ref: json-rpc
-//!
 //! The MCP proxy forwards JSON-RPC to a downstream server and used to write
 //! nothing about it, so Observability → MCP Logs was empty on a real
 //! deployment: the control plane's ingest route had no caller. A proxied
@@ -17,6 +15,7 @@
 //! come from the helpers in `rolter_core::mcp_log`, which the control plane's
 //! ingest route applies too.
 
+// spec-ref: json-rpc
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
 use std::task::{Context, Poll};

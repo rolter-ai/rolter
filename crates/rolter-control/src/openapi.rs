@@ -1,7 +1,5 @@
 //! A served OpenAPI 3.1 description of the control-plane management API.
 //!
-//! spec-ref: openapi
-//!
 //! Hand-authored in the same style as `rolter-gateway`'s `openapi` module
 //! (ADR-0030) rather than macro-derived, so the two documents stay
 //! dependency-free and describe the wire contract instead of rolter's internal
@@ -28,6 +26,7 @@
 //! open objects: imprecise, but present, so a generated SDK has the call even
 //! where it cannot yet have the struct.
 
+// spec-ref: openapi
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;

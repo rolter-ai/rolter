@@ -1,7 +1,5 @@
 //! OpenTelemetry GenAI semantic conventions (#808).
 //!
-//! spec-ref: otel-genai-semconv
-//!
 //! Before this, the gateway emitted two `gen_ai.*` attributes — one of them the
 //! deprecated `gen_ai.system` — and **neither** of the two the spec marks
 //! *Required*. Because both required attributes were missing or misnamed, no
@@ -41,6 +39,8 @@
 //! response bodies. Payload capture is a separate, explicitly configured
 //! feature that writes to ClickHouse, not something telemetry acquires by the
 //! back door.
+
+// spec-ref: otel-genai-semconv
 
 // several of these keys are also spelled out as literals at the `tracing` span
 // macro call site, because `tracing` requires span field names to be literals

@@ -3,8 +3,6 @@
 //! under `provider-slug/model` — not only the ones a configured route target
 //! happens to name (#1647).
 //!
-//! spec-ref: openai-models
-//!
 //! The models were always routable: `Snapshot::resolve_pinned` turns any
 //! `provider-slug/model` into a pinned single-target route, so a caller who
 //! already knew the name got a `200`. Only the listing was narrower than the
@@ -18,6 +16,7 @@
 //! or not they are (#1729). The refresher is what lets a deployment that never
 //! enabled `[health]` list a complete fleet.
 
+// spec-ref: openai-models
 use parking_lot::Mutex;
 use rolter_core::probe::{probe_expectation, ProbeExpectation};
 use std::collections::{HashMap, HashSet};

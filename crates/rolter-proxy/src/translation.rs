@@ -1,11 +1,10 @@
 //! Wire-protocol translation between client and upstream API dialects.
 //!
-//! spec-ref: translation-openai-anthropic, translation-responses, translation-gemini
-//!
 //! A [`TranslationPlan`] is resolved independently from provider identity. New
 //! dialects add a protocol mapping and a pair implementation here; forwarding,
 //! retries, caching and response accounting do not need provider-specific code.
 
+// spec-ref: translation-openai-anthropic, translation-responses, translation-gemini
 use std::collections::{HashMap, VecDeque};
 use std::pin::Pin;
 use std::task::{Context, Poll};

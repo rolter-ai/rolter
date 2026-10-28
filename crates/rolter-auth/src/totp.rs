@@ -1,8 +1,6 @@
 //! RFC 6238 time-based one-time passwords, and the base32 alphabet the
 //! `otpauth://` URI carries the shared secret in (#1078).
 //!
-//! spec-ref: totp
-//!
 //! ## Why SHA-1
 //!
 //! RFC 6238 permits SHA-1, SHA-256 and SHA-512, and SHA-1 is the weakest of
@@ -23,6 +21,7 @@
 //! reports *which* step a presented code matched, so the caller can compare it
 //! against the last one it accepted.
 
+// spec-ref: totp
 use hmac::{Hmac, KeyInit, Mac};
 use sha1::Sha1;
 

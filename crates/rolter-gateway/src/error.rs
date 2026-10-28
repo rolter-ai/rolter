@@ -2,8 +2,6 @@
 //! request path is shaped like the OpenAI/Anthropic error envelope so existing
 //! client SDKs surface a useful `type`/`code`/`param` instead of an opaque blob:
 //!
-//! spec-ref: openai-errors
-//!
 //! ```json
 //! { "error": { "message": "...", "type": "invalid_request_error",
 //!              "param": "model", "code": "model_not_found" } }
@@ -12,6 +10,7 @@
 //! `type` is inferred from the HTTP status via [`openai_error_type`] so callers
 //! cannot forget it; `code` and `param` are optional refinements.
 
+// spec-ref: openai-errors
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;

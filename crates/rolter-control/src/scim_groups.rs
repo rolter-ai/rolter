@@ -1,7 +1,5 @@
 //! SCIM 2.0 Groups provisioning and group→team mapping (#540).
 //!
-//! spec-ref: scim
-//!
 //! The Users slice ([`crate::scim`]) answers *who exists*. This one answers
 //! *what they may do*: an IdP drives `/scim/v2/Groups` with the same org-scoped
 //! provisioning token, and an operator writes org-scoped mappings that turn a
@@ -29,6 +27,7 @@
 //!   cannot be used to reach across tenants or to smuggle in an account the
 //!   Users surface never created.
 
+// spec-ref: scim
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
