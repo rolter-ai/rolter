@@ -23,6 +23,12 @@
 //! * **No implicit access.** A user in no mapped group gets the provider's
 //!   `default_role`; when that is unset they are refused rather than silently
 //!   admitted with an empty membership set.
+//! * **No adoption across orgs.** A provider is registered by an org's admins,
+//!   who decide every email it asserts, so it signs in as an existing account
+//!   only when every role that account holds is inside the provider's own org,
+//!   and never as a superadmin. Otherwise an org admin could point a provider
+//!   they control at another org's member, or at the break-glass account, and
+//!   be handed a session carrying grants their org never gave.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -591,6 +597,9 @@ enum SsoFailure {
     NoMappedGroup,
     /// the account is deactivated
     AccountDeactivated,
+    /// the email belongs to an account this provider may not sign in as: a
+    /// superadmin, or one holding a role outside the provider's org
+    AccountOutsideOrg,
     /// the provider could not be reached, or its token or id token did not
     /// verify
     IdpVerificationFailed,
@@ -610,6 +619,7 @@ impl SsoFailure {
             Self::UnknownProvider => "unknown_provider",
             Self::NoMappedGroup => "no_mapped_group",
             Self::AccountDeactivated => "account_deactivated",
+            Self::AccountOutsideOrg => "account_outside_org",
             Self::IdpVerificationFailed => "idp_verification_failed",
             Self::NotConfigured => "not_configured",
             Self::InternalError => "internal_error",
@@ -965,13 +975,21 @@ async fn complete_login(
         .find_by_email(&email)
         .await
         .map_err(failed(InternalError, named))?;
+    if let Some(user) = &known {
+        if !adoptable(pool_ref, &provider, user)
+            .await
+            .map_err(failed(InternalError, named))?
+        {
+            return Err(failed(AccountOutsideOrg, named)(ApiError::Forbidden));
+        }
+    }
     if matched.is_empty() && provider.default_role.is_none() {
         // the IdP authenticated them but no group grants anything. if they held
         // sso-granted roles from an earlier login, this is exactly the moment
         // to take those away: being dropped from every mapped group is how an
         // operator deprovisions through the IdP
         if let Some(user) = &known {
-            reconcile_grants(state, provider.org_id, &[], user.id)
+            reconcile_grants(state, provider.org_id, &[], user.id, "sso")
                 .await
                 .map_err(failed(InternalError, named))?;
         }
@@ -1013,6 +1031,39 @@ async fn complete_login(
         subject: identity.subject,
         granted,
     })
+}
+
+/// Whether `provider` may sign in as the existing account `user`: never a
+/// superadmin, and only an account whose every role sits inside the provider's
+/// org. Whoever registers a provider chooses the emails it asserts, so anything
+/// wider would let one org's admins sign in as another org's members.
+async fn adoptable(
+    pool: &sqlx::PgPool,
+    provider: &SsoProvider,
+    user: &User,
+) -> rolter_core::Result<bool> {
+    if user.is_superadmin {
+        tracing::warn!(
+            provider_id = %provider.id,
+            user_id = %user.id,
+            "sso sign-in refused: the email belongs to a superadmin, who signs in locally"
+        );
+        return Ok(false);
+    }
+    let outside = MembershipRepo(pool)
+        .ancestors_for_user(user.id)
+        .await?
+        .into_iter()
+        .any(|(_, org, _)| org != Some(provider.org_id));
+    if outside {
+        tracing::warn!(
+            provider_id = %provider.id,
+            user_id = %user.id,
+            "sso sign-in refused: the email belongs to an account with roles outside \
+             this provider's org"
+        );
+    }
+    Ok(!outside)
 }
 
 /// Exchange the authorization code for tokens.
@@ -1119,7 +1170,7 @@ fn normalize_group(group: &str) -> String {
 
 /// One membership a login should produce: `(org, team, project, role)`, with
 /// the same "most specific non-null id" convention as `memberships`.
-type ScopedGrant = (Option<Uuid>, Option<Uuid>, Option<Uuid>, String);
+pub(crate) type ScopedGrant = (Option<Uuid>, Option<Uuid>, Option<Uuid>, String);
 
 /// Reconcile the memberships this login implies: the matched mappings, or the
 /// provider's default role when nothing matched.
@@ -1146,16 +1197,18 @@ async fn apply_mappings(
             wanted.push((Some(provider.org_id), None, None, role.clone()));
         }
     }
-    reconcile_grants(state, provider.org_id, &wanted, user_id).await
+    reconcile_grants(state, provider.org_id, &wanted, user_id, "sso").await
 }
 
-/// Make the user's `sso`-sourced memberships inside `org_id` be exactly
-/// `wanted`, leaving `manual` rows alone, and return the roles now in force.
-async fn reconcile_grants(
+/// Make the user's memberships of `source` (`sso`, or `ldap` for a directory
+/// sign-in) inside `org_id` be exactly `wanted`, leaving every other source
+/// alone, and return the roles now in force.
+pub(crate) async fn reconcile_grants(
     state: &ControlState,
     org_id: Uuid,
     wanted: &[ScopedGrant],
     user_id: Uuid,
+    source: &str,
 ) -> ApiResult<Vec<String>> {
     let repo = MembershipRepo(pool(state));
     // scoped to the provider's org tree: another org's sso grants belong to
@@ -1169,7 +1222,7 @@ async fn reconcile_grants(
     let mut granted = Vec::new();
     for stale in existing
         .iter()
-        .filter(|m| m.source == "sso")
+        .filter(|m| m.source == source)
         .filter(|m| !wanted.iter().any(|w| grant_matches(m, w)))
     {
         // the org's last admin grant outlives the group change rather than
@@ -1184,7 +1237,7 @@ async fn reconcile_grants(
         if existing.iter().any(|m| grant_matches(m, want)) {
             continue;
         }
-        repo.create_with_source(user_id, want.0, want.1, want.2, &want.3, "sso")
+        repo.create_with_source(user_id, want.0, want.1, want.2, &want.3, source)
             .await?;
     }
     Ok(granted)
@@ -1934,6 +1987,7 @@ mod tests {
             UnknownProvider,
             NoMappedGroup,
             AccountDeactivated,
+            AccountOutsideOrg,
             IdpVerificationFailed,
             NotConfigured,
             InternalError,
@@ -1948,6 +2002,7 @@ mod tests {
                 "unknown_provider",
                 "no_mapped_group",
                 "account_deactivated",
+                "account_outside_org",
                 "idp_verification_failed",
                 "not_configured",
                 "internal_error",

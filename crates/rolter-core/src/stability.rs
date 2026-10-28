@@ -110,24 +110,6 @@ pub const SUBSYSTEMS: &[SubsystemStability] = &[
         nav_keys: &[],
     },
     SubsystemStability {
-        id: "mcp_settings",
-        stability: Stability::Experimental,
-        note: "organization MCP defaults for transport, timeout intent, retries \
-               and undeclared tools are stored but not yet read by the proxy. \
-               a per-server override is read (#952); a server without one \
-               falls back to the deployment-level transport timeouts rather \
-               than to these",
-        nav_keys: &["mcp-settings"],
-    },
-    SubsystemStability {
-        id: "mcp_tool_groups",
-        stability: Stability::Experimental,
-        note: "tool-group manifests are stored and published to MCP-aware \
-               clients, but the proxy does not enforce group membership as an \
-               access boundary",
-        nav_keys: &["tool-groups"],
-    },
-    SubsystemStability {
         id: "realtime",
         stability: Stability::Experimental,
         note: "guardrails, the guardrail webhook and pre_upstream plugins run \

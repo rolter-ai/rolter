@@ -1,5 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react";
 import * as React from "react";
+import { useLocation } from "react-router";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 
 import McpLogs from "./McpLogs";
@@ -11,6 +12,7 @@ import {
   expectSkeleton,
   Harness,
   json,
+  openOptions,
   pending,
   recording,
   routes,
@@ -704,5 +706,135 @@ export const NoAnalyticsStoreIsNotAnErrorState: Story = {
     );
     await expectUxEvent("time_to_interactive");
     expectNoUxEvent("error_state");
+  },
+};
+
+// ---------------------------------------------------------------------------
+// the server and tool filters live in the address (#951)
+
+// stands in for the address bar: the filters are read from it and written to it
+function Where() {
+  return <output data-testid="where">{useLocation().search}</output>;
+}
+
+const REGISTRY = [
+  { slug: "github", tools: ["search_issues", "create_issue"] },
+  { slug: "sentry", tools: ["list_issues"] },
+];
+// answers by the filters it was asked for, so a story proves they were sent
+const byFilters = scoped(async (input) => {
+  const url = new URL(String(input), "http://localhost");
+  if (url.pathname.endsWith("/mcp/logs/summary")) return json({ data: [SUMMARY] });
+  if (url.pathname.endsWith("/mcp-servers")) return json(REGISTRY);
+  const server = url.searchParams.get("server");
+  const tool = url.searchParams.get("tool");
+  const rows = [call(), call(TIMED_OUT)].filter(
+    (row) => (!server || row.server === server) && (!tool || row.tool === tool),
+  );
+  return json({ data: rows, next_cursor: null });
+});
+
+// the catalog's "View logs" link lands here: the filters are applied before anyone touches a control
+const linked = recording(byFilters);
+export const FiltersComeFromTheAddress: Story = {
+  render: () => (
+    <Harness fetchStub={linked.stub} route="/mcp-logs?server=github&tool=create_issue">
+      <McpLogs />
+      <Where />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByRole("combobox", { name: "Filter by server" })).toHaveValue(
+      "github",
+    );
+    await expect(canvas.getByRole("combobox", { name: "Filter by tool" })).toHaveValue(
+      "create_issue",
+    );
+    await waitFor(() =>
+      expect(
+        linked.calls.some(
+          (c) =>
+            c.url.includes("/mcp/logs?") &&
+            c.url.includes("server=github") &&
+            c.url.includes("tool=create_issue"),
+        ),
+      ).toBe(true),
+    );
+    // only the filtered call is listed
+    await waitFor(() => expect(canvas.getAllByText("create_issue").length).toBeGreaterThan(0));
+    await expect(canvas.queryByText("search_issues")).not.toBeInTheDocument();
+  },
+};
+
+export const PickingAServerWritesTheAddress: Story = {
+  render: () => (
+    <Harness fetchStub={byFilters} route="/mcp-logs?status=ignored">
+      <McpLogs />
+      <Where />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const server = await canvas.findByRole("combobox", { name: "Filter by server" });
+    await userEvent.click(server);
+    await userEvent.click(await within(document.body).findByRole("option", { name: "sentry" }));
+    await waitFor(() =>
+      expect(canvas.getByTestId("where")).toHaveTextContent("status=ignored&server=sentry"),
+    );
+    // the tool suggestions follow the server: sentry has one, github's are not offered
+    const listbox = await openOptions(canvas.getByRole("combobox", { name: "Filter by tool" }));
+    await expect(within(listbox).getByRole("option", { name: "list_issues" })).toBeVisible();
+    await expect(within(listbox).queryByRole("option", { name: "create_issue" })).toBeNull();
+    await userEvent.click(within(listbox).getByRole("option", { name: "list_issues" }));
+    await waitFor(() => expect(canvas.getByTestId("where")).toHaveTextContent("tool=list_issues"));
+  },
+};
+
+export const ClearingTheFiltersLeavesTheAddressBare: Story = {
+  render: () => (
+    <Harness fetchStub={byFilters} route="/mcp-logs?server=ghost&tool=nothing">
+      <McpLogs />
+      <Where />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    // a filter from the address narrows to nothing: a filter answer, not "no calls yet"
+    await expectEmptyState(canvasElement, /No calls match these filters/);
+    await expect(canvas.getByText(/matched the filters you selected/)).toBeVisible();
+    await userEvent.click(canvas.getByRole("button", { name: en.common.clearFilters }));
+    await waitFor(() => expect(canvas.getByTestId("where")).toBeEmptyDOMElement());
+    await waitFor(() => expect(canvas.getAllByText("search_issues").length).toBeGreaterThan(0));
+  },
+};
+
+// the tool filter counts as a filter on its own
+export const AToolAloneIsAFilter: Story = {
+  render: () => (
+    <Harness fetchStub={byFilters} route="/mcp-logs?tool=nothing">
+      <McpLogs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectEmptyState(canvasElement, /No calls match these filters/);
+  },
+};
+
+export const ServerFilterInRussian: Story = {
+  globals: { locale: "ru" },
+  render: () => (
+    <Harness fetchStub={byFilters} route="/mcp-logs?server=github">
+      <McpLogs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(
+      await canvas.findByRole("combobox", { name: ru.pages.mcpLogs.serverFilterAria }),
+    ).toHaveValue("github");
+    await expect(
+      canvas.getByRole("combobox", { name: ru.pages.mcpLogs.toolFilterAria }),
+    ).toBeVisible();
   },
 };

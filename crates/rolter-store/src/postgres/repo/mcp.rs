@@ -27,6 +27,9 @@ const MCP_SERVER_COLUMNS: &str = "id, org_id, name, slug, url, transport, descri
      auth_kind, auth_header_name, connect_timeout_ms, request_timeout_ms, max_retries, \
      oauth_issuer, oauth_discovery, oauth_discovered_issuer, oauth_discovered_authorize_url, \
      oauth_discovered_token_url, oauth_discovered_iss_supported, oauth_discovered_at, \
+     tools_stale, tools_discovery_status, tools_discovery_error, tools_discovered_at, \
+     tools_discovery_attempted_at, last_contact_at, last_protocol_version, last_server_name, \
+     last_error_kind, last_error_at, \
      (client_secret_ciphertext is not null) as has_client_secret, \
      (credential_ciphertext is not null) as has_credential";
 
@@ -62,6 +65,27 @@ pub struct McpServerUpdate<'a> {
     pub connect_timeout_ms: Option<i32>,
     pub request_timeout_ms: Option<i32>,
     pub max_retries: Option<i32>,
+}
+
+/// One conversation with a server, as recorded on its row (#951).
+#[derive(Debug, Clone, Copy)]
+pub enum McpContact<'a> {
+    /// the `initialize` handshake completed
+    Reached {
+        protocol_version: &'a str,
+        server_name: Option<&'a str>,
+    },
+    /// it did not; `kind` is one of the values the column's check allows
+    Failed { kind: &'a str },
+}
+
+/// What a successful `tools/list` call leaves on the row (#1283).
+#[derive(Debug, Clone, Copy)]
+pub struct McpToolDiscovery<'a> {
+    pub tools: &'a [String],
+    pub stale: &'a [String],
+    /// a JSON array of `{name, description, input_schema}` objects
+    pub schemas: &'a serde_json::Value,
 }
 
 /// How rolter authenticates to a server, as an operator is setting it.
@@ -234,6 +258,8 @@ impl McpServerRepo<'_> {
                 "update mcp_servers set name = $2, url = $3, transport = $4, description = $5, \
                  enabled = $6, tools = $7, required_scopes = $8, connect_timeout_ms = $9, \
                  request_timeout_ms = $10, max_retries = $11, \
+                 tools_stale = coalesce((select array_agg(t) from unnest(tools_stale) t \
+                     where t = any($7)), '{{}}'), \
                  {CLEAR_DISCOVERY_ON_URL_CHANGE} \
                  where id = $1 returning {MCP_SERVER_COLUMNS}"
             )))
@@ -252,6 +278,94 @@ impl McpServerRepo<'_> {
             || format!("mcp server {id}"),
         )
         .await
+    }
+
+    /// The descriptions and input schemas the last discovery saw, as the JSON
+    /// array it stored. Served by its own endpoint so a server listing does
+    /// not carry every tool's schema.
+    pub async fn tool_schemas(&self, id: Uuid) -> Result<serde_json::Value> {
+        let row: Option<(serde_json::Value,)> =
+            sqlx::query_as("select tool_schemas from mcp_servers where id = $1")
+                .bind(id)
+                .fetch_optional(self.0)
+                .await
+                .map_err(store_err)?;
+        row.map(|(schemas,)| schemas)
+            .ok_or_else(|| Error::NotFound(format!("mcp server {id}")))
+    }
+
+    /// Store what a `tools/list` call returned (#1283). `tools` is the
+    /// reconciled manifest and `stale` the names in it the server no longer
+    /// returns; both are computed by the caller so the policy lives in one
+    /// tested function rather than in a SQL expression.
+    pub async fn record_tool_discovery(
+        &self,
+        id: Uuid,
+        discovery: McpToolDiscovery<'_>,
+    ) -> Result<McpServer> {
+        fetch_optional_or_not_found(
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "update mcp_servers set tools = $2, tools_stale = $3, tool_schemas = $4, \
+                 tools_discovery_status = 'discovered', tools_discovery_error = null, \
+                 tools_discovered_at = now(), tools_discovery_attempted_at = now() \
+                 where id = $1 returning {MCP_SERVER_COLUMNS}"
+            )))
+            .bind(id)
+            .bind(discovery.tools)
+            .bind(discovery.stale)
+            .bind(discovery.schemas),
+            self.0,
+            || format!("mcp server {id}"),
+        )
+        .await
+    }
+
+    /// Note that discovery ran and got no answer. The manifest, the stale
+    /// flags and `tools_discovered_at` are left exactly as they were: a server
+    /// being down must neither empty its tools nor look freshly discovered.
+    /// A server that was never discovered stays `pending` rather than
+    /// becoming `failed`, so a card keeps saying it is the catalog's list.
+    pub async fn record_tool_discovery_failure(&self, id: Uuid, error: &str) -> Result<McpServer> {
+        fetch_optional_or_not_found(
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "update mcp_servers set tools_discovery_error = $2, \
+                 tools_discovery_attempted_at = now(), \
+                 tools_discovery_status = case when tools_discovered_at is null \
+                     then 'pending' else 'failed' end \
+                 where id = $1 returning {MCP_SERVER_COLUMNS}"
+            )))
+            .bind(id)
+            .bind(error),
+            self.0,
+            || format!("mcp server {id}"),
+        )
+        .await
+    }
+
+    /// Note what a conversation with the server came to (#951). A failure
+    /// leaves the last success alone and a success leaves the last failure
+    /// alone, so the row can say both "reached it at" and "it last broke at".
+    pub async fn record_contact(&self, id: Uuid, contact: McpContact<'_>) -> Result<()> {
+        let query = match contact {
+            McpContact::Reached {
+                protocol_version,
+                server_name,
+            } => sqlx::query(
+                "update mcp_servers set last_contact_at = now(), last_protocol_version = $2, \
+                 last_server_name = $3 where id = $1",
+            )
+            .bind(id)
+            .bind(protocol_version)
+            .bind(server_name),
+            McpContact::Failed { kind } => sqlx::query(
+                "update mcp_servers set last_error_kind = $2, last_error_at = now() \
+                 where id = $1",
+            )
+            .bind(id)
+            .bind(kind),
+        };
+        query.execute(self.0).await.map_err(store_err)?;
+        Ok(())
     }
 
     /// Set how rolter authenticates to this server, sealing the credential
@@ -611,7 +725,9 @@ impl McpGatewaySettingsRepo<'_> {
                 request_timeout_ms: 30_000,
                 max_retries: 1,
                 default_failure_mode: "fail_closed".to_string(),
-                allow_unlisted_tools: false,
+                // what the proxy does for an org with no row (`mcp_policy`):
+                // unlisted tools pass until the org saves settings refusing them
+                allow_unlisted_tools: true,
                 updated_at: Utc::now(),
             })
         })

@@ -46,7 +46,7 @@ rejections while P5 runs.
 
 | #    | step                                               | where | expect                                                               | status                                               |
 | ---- | -------------------------------------------------- | ----- | -------------------------------------------------------------------- | ---------------------------------------------------- |
-| P4.1 | a pipeline mints keys and routes for new customers | —     | a control-plane token scoped to one project, audited as the pipeline | gap — #1836 (only the superadmin admin token exists) |
+| P4.1 | a pipeline mints keys and routes for new customers | —     | a control-plane token scoped to one project, audited as the pipeline | works — #1836 (project-scoped, audited as the token) |
 
 ## P5 — live with limits and failures
 
