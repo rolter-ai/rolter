@@ -879,7 +879,7 @@ disabled = false # revoke without deleting
 # these
 # [semantic_guards]
 # local_concurrency = 4           # local classifier calls one gateway runs at
-#                                 # once; unset = its CPUs (#3329)
+#                                 # once; unset = half its CPUs (#3329)
 # [[semantic_guards.providers]]   # the same keys as [guardrail_webhook]
 # name = "toxicity"               # required, unique; policies list it by name
 # enabled = true

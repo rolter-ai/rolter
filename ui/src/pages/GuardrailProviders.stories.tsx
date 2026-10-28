@@ -1547,7 +1547,7 @@ const LOCAL_CLASSIFIER: GuardrailProviderRow = {
   name: "Local toxicity model",
   kind: "local",
   url: "",
-  model_path: "/var/lib/rolter/models/toxicity.onnx",
+  model_path: "/etc/rolter/models/toxicity.json",
   model_sha256: LOCAL_SHA,
   failure_mode: "fail_closed",
   max_retries: 0,
@@ -1559,7 +1559,7 @@ export const ListsALocalClassifier: Story = {
   play: async ({ canvasElement }) => {
     await within(canvasElement).findByRole("heading", { name: "Local toxicity model" });
     const local = card(canvasElement, "Local toxicity model");
-    await expect(local.getByText("/var/lib/rolter/models/toxicity.onnx")).toBeVisible();
+    await expect(local.getByText("/etc/rolter/models/toxicity.json")).toBeVisible();
     await expect(local.getByText("Local classifier")).toBeVisible();
     await expect(local.getByText("2,500 ms timeout · 32 KiB cap")).toBeVisible();
     await expect(card(canvasElement, "Production LLM Guard").getByText("Webhook")).toBeVisible();
@@ -1598,7 +1598,7 @@ export const RegistersALocalClassifier: Story = {
     await userEvent.click(path);
     await userEvent.tab();
     await expect(path).toHaveAttribute("aria-invalid", "true");
-    await userEvent.type(path, "/var/lib/rolter/models/toxicity.onnx");
+    await userEvent.type(path, "/etc/rolter/models/toxicity.json");
     await userEvent.type(sha, "abc123");
     await userEvent.tab();
     await expect(sha).toHaveAttribute("aria-invalid", "true");
@@ -1615,7 +1615,7 @@ export const RegistersALocalClassifier: Story = {
       auth_kind: "none",
       auth_env: null,
       max_retries: 0,
-      model_path: "/var/lib/rolter/models/toxicity.onnx",
+      model_path: "/etc/rolter/models/toxicity.json",
       model_sha256: LOCAL_SHA,
     });
     await expectSheetClosed();
@@ -1634,7 +1634,7 @@ export const EditsALocalClassifier: Story = {
     const dialog = within(await within(document.body).findByRole("dialog"));
     await expect(await dialog.findByRole("radio", { name: "Local classifier" })).toBeChecked();
     await expect(dialog.getByLabelText("Model path")).toHaveValue(
-      "/var/lib/rolter/models/toxicity.onnx",
+      "/etc/rolter/models/toxicity.json",
     );
     await expect(dialog.getByLabelText("Model SHA-256")).toHaveValue(LOCAL_SHA);
   },

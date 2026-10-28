@@ -65,12 +65,12 @@ pub const MAX_WEIGHTS: usize = 1 << 22;
 pub const MAX_NGRAMS: usize = 3;
 
 /// Object keys whose string values are structure, not content: model and role
-/// names, ids, enum-like fields and inline binary data. Everything else a
-/// request or response carries as a string is text the classifier reads.
+/// names, ids, enum-like fields and image urls. Everything else a request or
+/// response carries as a string is text the classifier reads, `data` included
+/// unless it is inline binary (see [`is_binary_data`]).
 const STRUCTURAL_KEYS: &[&str] = &[
     "call_id",
     "created",
-    "data",
     "detail",
     "encrypted_content",
     "finish_reason",
@@ -195,11 +195,12 @@ impl LinearModel {
                     "category names must be 1 to {MAX_CATEGORY_LEN} bytes with no surrounding spaces"
                 )));
             }
-            if !category.bias.is_finite() {
+            // checked as stored: a finite f64 can still overflow f32
+            if !(category.bias as f32).is_finite() {
                 return Err(malformed(format!("the bias of '{name}' is not finite")));
             }
             for (bucket, weight) in category.weights {
-                if bucket >= file.buckets || !weight.is_finite() {
+                if bucket >= file.buckets || !(weight as f32).is_finite() {
                     return Err(malformed(format!(
                         "a weight of '{name}' names bucket {bucket} or is not finite"
                     )));
@@ -220,6 +221,13 @@ impl LinearModel {
 
     /// Read `path`, check it against `sha256` and parse it.
     pub fn load(path: &str, sha256: &str) -> Result<Self, ModelError> {
+        // a FIFO or a device would block the read for as long as nothing
+        // writes to it, and the loader with it
+        if !std::fs::metadata(path)?.is_file() {
+            return Err(ModelError::Malformed(
+                "the path is not a regular file".into(),
+            ));
+        }
         let file = std::fs::File::open(path)?;
         if file.metadata()?.len() > MAX_MODEL_FILE_BYTES {
             return Err(ModelError::TooLarge);
@@ -245,27 +253,31 @@ impl LinearModel {
     /// Score `text`: every category's probability, in `[0, 1]`.
     pub fn score(&self, text: &str) -> BTreeMap<String, f64> {
         let count = self.names.len();
-        let mut sums: Vec<f32> = self.biases.clone();
+        // summed in f64: every weight is a finite f32, and no number of them
+        // can overflow an f64, so a sum is never infinite or NaN
+        let mut sums: Vec<f64> = self.biases.iter().copied().map(f64::from).collect();
         for bucket in features(text, self.ngrams, self.buckets) {
             let row = &self.weights[bucket * count..(bucket + 1) * count];
             for (sum, weight) in sums.iter_mut().zip(row) {
-                *sum += weight;
+                *sum += f64::from(*weight);
             }
         }
         self.names
             .iter()
             .zip(sums)
-            .map(|(name, sum)| (name.clone(), sigmoid(f64::from(sum))))
+            .map(|(name, sum)| (name.clone(), sigmoid(sum)))
             .collect()
     }
 }
 
 fn sigmoid(x: f64) -> f64 {
     let score = 1.0 / (1.0 + (-x).exp());
-    if score.is_finite() {
-        score.clamp(0.0, 1.0)
+    if score.is_nan() {
+        // unreachable with finite weights; if it ever happens, the score
+        // violates every threshold rather than passing every one
+        1.0
     } else {
-        0.0
+        score.clamp(0.0, 1.0)
     }
 }
 
@@ -349,22 +361,54 @@ fn collect_text(value: &Value, text: &mut String, max_bytes: usize) {
             }
         }
         Value::Object(fields) => {
+            let binary = is_binary_data(fields);
             for (key, item) in fields {
-                if !STRUCTURAL_KEYS.contains(&key.as_str()) {
-                    collect_text(item, text, max_bytes);
+                if STRUCTURAL_KEYS.contains(&key.as_str()) || (binary && key == "data") {
+                    continue;
                 }
+                collect_text(item, text, max_bytes);
             }
         }
         _ => {}
     }
 }
 
+/// Whether an object's `data` is inline binary: an Anthropic source of
+/// `"type": "base64"`, or OpenAI's `input_audio` (`data` beside `format`). An
+/// Anthropic plain-text document (`"type": "text"`) keeps its `data`, which is
+/// the document's text.
+fn is_binary_data(fields: &serde_json::Map<String, Value>) -> bool {
+    fields.get("type").and_then(Value::as_str) == Some("base64") || fields.contains_key("format")
+}
+
 /// What one configuration apply produced: the models by digest and the
 /// gateway's concurrency cap.
 struct Registry {
     models: HashMap<String, Arc<LinearModel>>,
+    /// the models of the apply before this one, kept until the next: a
+    /// request still on the previous snapshot may name one this apply dropped
+    previous: HashMap<String, Arc<LinearModel>>,
     permits: Arc<Semaphore>,
     cap: usize,
+}
+
+/// One local provider's model, as a configuration names it.
+struct Wanted {
+    provider: String,
+    path: String,
+    digest: String,
+}
+
+fn wanted(semantic_guards: &SemanticGuardsConfig, legacy: &GuardrailWebhookConfig) -> Vec<Wanted> {
+    std::iter::once(legacy)
+        .chain(&semantic_guards.providers)
+        .filter(|p| p.enabled && p.kind == GuardProviderKind::Local)
+        .map(|p| Wanted {
+            provider: p.name.trim().to_string(),
+            path: p.model_path.trim().to_string(),
+            digest: p.model_sha256.trim().to_ascii_lowercase(),
+        })
+        .collect()
 }
 
 /// The gateway's local classifiers. Cheap to clone; every clone shares the
@@ -372,6 +416,9 @@ struct Registry {
 #[derive(Clone)]
 pub struct LocalClassifiers {
     registry: Arc<ArcSwap<Registry>>,
+    /// models read by [`preload`](Self::preload) for the next
+    /// [`apply`](Self::apply)
+    staged: Arc<parking_lot::Mutex<HashMap<String, Arc<LinearModel>>>>,
 }
 
 impl Default for LocalClassifiers {
@@ -380,62 +427,105 @@ impl Default for LocalClassifiers {
         Self {
             registry: Arc::new(ArcSwap::from_pointee(Registry {
                 models: HashMap::new(),
+                previous: HashMap::new(),
                 permits: Arc::new(Semaphore::new(cap)),
                 cap,
             })),
+            staged: Default::default(),
         }
     }
 }
 
+/// Half the CPUs the process may use, at least one: inference shares Tokio's
+/// blocking pool, and the request path needs CPU of its own.
 fn default_cap() -> usize {
     std::thread::available_parallelism()
-        .map(std::num::NonZeroUsize::get)
+        .map(|cpus| cpus.get() / 2)
         .unwrap_or(1)
+        .max(1)
 }
 
 impl LocalClassifiers {
-    /// Load the models the enabled local providers of `semantic_guards` and
-    /// `legacy` name, reusing the ones already loaded under the same digest,
-    /// and size the concurrency cap. A model that cannot be loaded is logged
-    /// and left out, so its provider resolves through its failure mode until
-    /// a later apply loads it.
+    /// Load and install in one step, reading files on the calling thread. For
+    /// startup, before the gateway serves; a reload goes through
+    /// [`preload`](Self::preload) and [`apply`](Self::apply) instead.
     pub fn configure(
         &self,
         semantic_guards: &SemanticGuardsConfig,
         legacy: &GuardrailWebhookConfig,
     ) {
-        let current = self.registry.load();
-        let mut models = HashMap::new();
-        let locals = std::iter::once(legacy)
-            .chain(&semantic_guards.providers)
-            .filter(|p| p.enabled && p.kind == GuardProviderKind::Local);
-        for provider in locals {
-            let digest = provider.model_sha256.trim().to_ascii_lowercase();
-            if models.contains_key(&digest) {
+        self.load_missing(&wanted(semantic_guards, legacy));
+        self.apply(semantic_guards, legacy);
+    }
+
+    /// Read the models `semantic_guards` and `legacy` name that are not
+    /// loaded yet, on the blocking pool, so a reload never reads a file on a
+    /// request worker. A model that cannot be loaded is logged and left out.
+    pub async fn preload(
+        &self,
+        semantic_guards: &SemanticGuardsConfig,
+        legacy: &GuardrailWebhookConfig,
+    ) {
+        let wanted = wanted(semantic_guards, legacy);
+        if wanted.is_empty() {
+            return;
+        }
+        let this = self.clone();
+        if let Err(error) = tokio::task::spawn_blocking(move || this.load_missing(&wanted)).await {
+            tracing::error!(%error, "loading local guardrail models failed");
+        }
+    }
+
+    fn loaded(&self, digest: &str) -> Option<Arc<LinearModel>> {
+        let registry = self.registry.load();
+        registry
+            .models
+            .get(digest)
+            .or_else(|| registry.previous.get(digest))
+            .cloned()
+            .or_else(|| self.staged.lock().get(digest).cloned())
+    }
+
+    fn load_missing(&self, wanted: &[Wanted]) {
+        for want in wanted {
+            if self.loaded(&want.digest).is_some() {
                 continue;
             }
-            if let Some(model) = current.models.get(&digest) {
-                models.insert(digest, model.clone());
-                continue;
-            }
-            match LinearModel::load(provider.model_path.trim(), &digest) {
+            match LinearModel::load(&want.path, &want.digest) {
                 Ok(model) => {
                     tracing::info!(
-                        provider = provider.name.trim(),
-                        path = provider.model_path.trim(),
+                        provider = want.provider,
+                        path = want.path,
                         categories = model.names.len(),
                         "local guardrail model loaded"
                     );
-                    models.insert(digest, Arc::new(model));
+                    self.staged
+                        .lock()
+                        .insert(want.digest.clone(), Arc::new(model));
                 }
                 Err(error) => tracing::error!(
-                    provider = provider.name.trim(),
-                    path = provider.model_path.trim(),
+                    provider = want.provider,
+                    path = want.path,
                     %error,
                     "local guardrail model not loaded; the provider follows its failure_mode"
                 ),
             }
         }
+    }
+
+    /// Install the models `semantic_guards` and `legacy` name from those
+    /// already loaded, and size the concurrency cap. Reads no file: a model
+    /// [`preload`](Self::preload) could not load is simply absent, so its
+    /// provider resolves through its failure mode until a later apply.
+    pub fn apply(&self, semantic_guards: &SemanticGuardsConfig, legacy: &GuardrailWebhookConfig) {
+        let current = self.registry.load_full();
+        let mut models = HashMap::new();
+        for want in wanted(semantic_guards, legacy) {
+            if let Some(model) = self.loaded(&want.digest) {
+                models.insert(want.digest, model);
+            }
+        }
+        self.staged.lock().clear();
         let cap = semantic_guards
             .local_concurrency
             .filter(|&cap| cap > 0)
@@ -449,6 +539,7 @@ impl LocalClassifiers {
         };
         self.registry.store(Arc::new(Registry {
             models,
+            previous: current.models.clone(),
             permits,
             cap,
         }));
@@ -471,6 +562,7 @@ impl LocalClassifiers {
         let model = registry
             .models
             .get(digest.as_ref())
+            .or_else(|| registry.previous.get(digest.as_ref()))
             .cloned()
             .ok_or(CallFailure::Model)?;
         let budget = Duration::from_millis(provider.timeout_ms);
@@ -805,5 +897,65 @@ pub(crate) mod tests {
             .classify(&provider, &json!("jailbreak"))
             .await
             .is_ok());
+    }
+
+    fn guards_with(provider: Option<&GuardrailWebhookConfig>) -> SemanticGuardsConfig {
+        SemanticGuardsConfig {
+            providers: provider.into_iter().cloned().collect(),
+            ..SemanticGuardsConfig::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_reload_reads_files_only_in_preload_and_apply_installs() {
+        let provider = local_provider(&fixture_sha256(), 2_000);
+        let legacy = GuardrailWebhookConfig::default();
+        let classifiers = LocalClassifiers::default();
+        // apply alone reads nothing: the model is absent until it is preloaded
+        classifiers.apply(&guards_with(Some(&provider)), &legacy);
+        assert_eq!(
+            classifiers.classify(&provider, &json!("x")).await,
+            Err(CallFailure::Model)
+        );
+        classifiers
+            .preload(&guards_with(Some(&provider)), &legacy)
+            .await;
+        classifiers.apply(&guards_with(Some(&provider)), &legacy);
+        assert!(classifiers.classify(&provider, &json!("x")).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_dropped_model_serves_the_previous_snapshot_for_one_more_apply() {
+        let provider = local_provider(&fixture_sha256(), 2_000);
+        let legacy = GuardrailWebhookConfig::default();
+        let classifiers = configured(&provider, None);
+        // the provider is removed; a request still on the old snapshot names it
+        classifiers.apply(&guards_with(None), &legacy);
+        assert!(classifiers.classify(&provider, &json!("x")).await.is_ok());
+        classifiers.apply(&guards_with(None), &legacy);
+        assert_eq!(
+            classifiers.classify(&provider, &json!("x")).await,
+            Err(CallFailure::Model)
+        );
+    }
+
+    #[test]
+    fn only_a_regular_file_is_read() {
+        let directory = env!("CARGO_MANIFEST_DIR");
+        let error = LinearModel::load(directory, &fixture_sha256()).unwrap_err();
+        assert!(error.to_string().contains("not a regular file"), "{error}");
+    }
+
+    #[test]
+    fn a_weight_that_overflows_f32_is_refused() {
+        for edit in [
+            json!({"bias": 1e300, "weights": []}),
+            json!({"bias": 0.0, "weights": [[1, 1e300]]}),
+        ] {
+            let mut model = fixture_json();
+            model["categories"]["toxicity"] = edit;
+            let error = LinearModel::from_bytes(model.to_string().as_bytes()).unwrap_err();
+            assert!(error.to_string().contains("finite"), "{error}");
+        }
     }
 }

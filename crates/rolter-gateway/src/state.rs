@@ -1274,10 +1274,11 @@ impl AppState {
         crate::example_key::warn_if_exposed(config, self.exposed_bind);
         self.cache_telemetry.configure(&config.providers);
         self.health_events.set_provider_orgs(&config.providers);
-        // loaded before the snapshot that names them is published, so a new
-        // local provider never meets a registry that lacks its model
+        // installed before the snapshot that names them is published, so a
+        // new local provider never meets a registry that lacks its model. no
+        // file is read here: the watcher preloads on the blocking pool first
         self.local_classifiers
-            .configure(&config.semantic_guards, &config.guardrail_webhook);
+            .apply(&config.semantic_guards, &config.guardrail_webhook);
         self.snapshot.store(Arc::new(Snapshot::build_with_telemetry(
             config,
             &self.loads,

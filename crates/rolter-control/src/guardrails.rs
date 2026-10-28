@@ -366,6 +366,12 @@ fn validate_local_fields(body: &ProviderBody) -> ApiResult<()> {
             "url must be empty for a local provider",
         ));
     }
+    if body.max_retries != 0 {
+        return Err(invalid_field(
+            "max_retries",
+            "a local model gives the same answer twice; max_retries must be 0",
+        ));
+    }
     if body.auth_kind != "none" || body.auth_env.is_some() {
         return Err(invalid_field(
             "auth_kind",
@@ -1050,6 +1056,9 @@ mod tests {
         with_auth.auth_kind = "bearer".into();
         with_auth.auth_env = Some("TOKEN".into());
         assert!(refused_field(&with_auth).contains("auth_kind"));
+        let mut retried = local_body();
+        retried.max_retries = 2;
+        assert!(refused_field(&retried).contains("max_retries"));
         let mut unknown = local_body();
         unknown.kind = "gpu".into();
         assert!(refused_field(&unknown).contains("kind"));

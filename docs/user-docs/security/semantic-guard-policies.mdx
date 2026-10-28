@@ -92,7 +92,7 @@ A provider with `kind = "local"` is a classifier the gateway runs in its own pro
   [#3443](https://github.com/rolter-ai/rolter/issues/3443).
 </Warning>
 
-**What it reads.** Every string in the body the stage judges, one per line, except structural fields such as `model`, `role`, `type`, `id`, `finish_reason`, `url` and inline `data`, cut to the provider's `max_body_bytes`. On a buffered stream that is the assembled text.
+**What it reads.** Every string in the body the stage judges, one per line, except structural fields such as `model`, `role`, `type`, `id`, `finish_reason` and `url`, and inline binary `data` (a base64 image or audio; an Anthropic plain-text document's `data` is read). On a buffered stream that is the assembled text. The text is cut to the provider's `max_body_bytes` **from the start**, so in a chat longer than that the latest turns, which are usually the ones that matter, are not read: keep `max_body_bytes` above the conversations you expect, or judge long ones with a webhook.
 
 **The model file.** A JSON file in the `rolter-linear/1` format:
 
@@ -108,7 +108,7 @@ A provider with `kind = "local"` is a classifier the gateway runs in its own pro
 }
 ```
 
-The text is lowercased and split into words on every character that is not a letter or a digit. Every run of 1 to `ngrams` consecutive words, joined by one space, is hashed with 64-bit FNV-1a modulo `buckets`; a bucket is present or not, however often it occurs. A category's score is `1 / (1 + e^-(bias + the sum of its weights over the present buckets))`. Limits: at most 64 MiB on disk, `buckets` up to 1 048 576, `ngrams` 1 to 3, 1 to 32 categories, and `buckets × categories` at most 4 194 304, so a model holds at most 16 MiB of weights in memory. Each distinct model is loaded once per gateway, however many providers use it.
+The text is lowercased and split into words on every character that is not a letter or a digit. Every run of 1 to `ngrams` consecutive words, joined by one space, is hashed with 64-bit FNV-1a modulo `buckets`; a bucket is present or not, however often it occurs. A category's score is `1 / (1 + e^-(bias + the sum of its weights over the present buckets))`. Limits: at most 64 MiB on disk, `buckets` up to 1 048 576, `ngrams` 1 to 3, 1 to 32 categories, and `buckets × categories` at most 4 194 304, so a model holds at most 16 MiB of weights in memory. Each distinct model (by digest) is loaded once per gateway, however many providers use it. Parsing a file takes about three times its size in memory while it runs, so a 64 MiB file peaks near 190 MiB during a reload.
 
 **Training one.** Any logistic regression over the same features produces a model. With scikit-learn, from a list of `(text, {category: 0 or 1})` examples:
 
@@ -170,9 +170,9 @@ timeout_ms = 50
 failure_mode = "fail_closed"
 ```
 
-The pin is required. A file whose digest differs is not loaded, so replacing a model is a configuration change, recorded like one, rather than a file silently swapped under a running policy. The gateway loads models when it applies a configuration — at start and on every reload — and keeps a loaded model while its pin is unchanged. A model that fails to load is logged (`local guardrail model not loaded`, with the reason) and its provider follows its `failure_mode` until a later configuration change loads it.
+The pin is required. A file whose digest differs is not loaded, so replacing a model is a configuration change, recorded like one, rather than a file silently swapped under a running policy. The gateway loads models when it applies a configuration — at start and on every reload, reading the file off the request path — and keeps a loaded model while its pin is unchanged. Only a regular file is read. A model that fails to load is logged (`local guardrail model not loaded`, with the reason) and its provider follows its `failure_mode` until a later configuration change loads it.
 
-**CPU.** Inference runs off the request workers, behind one limit per gateway shared by every local provider: `[semantic_guards] local_concurrency`, by default the number of CPUs the process may use. A call waits for a slot at most its provider's `timeout_ms`, which also bounds the inference; a call that gets no slot is `overloaded` and follows the provider's `failure_mode`, exactly like a webhook that answered `503`. A typical 64 KiB body takes well under a millisecond, so `timeout_ms` of a few tens of milliseconds is plenty. The limit is per gateway replica.
+**CPU.** Inference runs off the request workers, behind one limit per gateway shared by every local provider: `[semantic_guards] local_concurrency`, by default half the CPUs the process may use (at least one). A gateway fed by a control plane takes it from the control plane's own config file, since the dashboard does not set it. A call waits for a slot at most its provider's `timeout_ms`, which also bounds the inference; a call that gets no slot is `overloaded` and follows the provider's `failure_mode`, exactly like a webhook that answered `503`. A typical 64 KiB body takes well under a millisecond, so `timeout_ms` of a few tens of milliseconds is plenty. The limit is per gateway replica.
 
 **On the dashboard**, choose **Local classifier** as the provider's kind and enter the path and digest. The control plane never opens the file, so the provider test is for webhooks only.
 

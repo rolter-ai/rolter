@@ -1836,7 +1836,7 @@ Several guardrail providers side by side, and the scoped policies that pick whic
 </ParamField>
 
 <ParamField path="local_concurrency" type="integer">
-  How many [local classifier](/security/semantic-guard-policies#local-classifier) calls one gateway runs at once, across all its `local` providers, from 1 to 4096. Unset, it is the number of CPUs the gateway process may use. A call that waits longer than its provider's `timeout_ms` for a slot follows that provider's `failure_mode`, counted as `overloaded`.
+  How many [local classifier](/security/semantic-guard-policies#local-classifier) calls one gateway runs at once, across all its `local` providers, from 1 to 4096. Unset, it is half the CPUs the gateway process may use, at least one. Under a control plane the gateways take it from the control plane's file. A call that waits longer than its provider's `timeout_ms` for a slot follows that provider's `failure_mode`, counted as `overloaded`.
 </ParamField>
 
 <ParamField path="policies" type="array of tables">

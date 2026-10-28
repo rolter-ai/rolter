@@ -958,3 +958,33 @@ async fn a_local_provider_whose_model_does_not_load_follows_its_failure_mode() {
         }
     }
 }
+
+/// A provider kind from a newer release reaches this gateway as `Unknown`
+/// (#3347): the snapshot still validates and applies, and the provider blocks
+/// its stage whatever its `failure_mode` (ADR-0039).
+#[tokio::test]
+async fn a_provider_of_a_kind_from_a_newer_release_applies_and_blocks() {
+    let upstream = Upstream::default();
+    let up = upstream.serve().await;
+    let mut config = config(up, ProviderKind::OpenaiCompatible);
+    config.semantic_guards.providers = vec![serde_json::from_value(json!({
+        "enabled": true, "name": "future", "kind": "onnx",
+        "model_path": "/models/injection.onnx", "failure_mode": "fail_open"
+    }))
+    .expect("an unknown kind decodes")];
+    config.semantic_guards.policies =
+        vec![policy("all", PolicyScope::Deployment, None, &["future"])];
+    // what the watcher does with a snapshot before it applies one
+    let unknown = config.fail_closed_unknown_values().join("\n");
+    assert!(unknown.contains("'future' kind"), "{unknown}");
+    assert_eq!(config.validate_snapshot(), Ok(()));
+
+    let run = send(&config, Dialect::OpenAi, "hello", false, None).await;
+    assert_eq!(run.status, 400, "{}", run.body);
+    assert!(
+        run.body.contains("unavailable (unsupported)"),
+        "{}",
+        run.body
+    );
+    assert_eq!(upstream.calls.load(SeqCst), 0);
+}

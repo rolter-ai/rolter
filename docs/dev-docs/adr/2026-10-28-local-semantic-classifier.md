@@ -1,6 +1,6 @@
 # An in-process local classifier for semantic guard policies
 
-**Status:** Proposed · **Date:** 28 Oct 2026 · **Issues:** [#3329](https://github.com/rolter-ai/rolter/issues/3329), [#459](https://github.com/rolter-ai/rolter/issues/459)
+**Status:** Accepted · **Date:** 28 Oct 2026 · **Issues:** [#3329](https://github.com/rolter-ai/rolter/issues/3329), [#459](https://github.com/rolter-ai/rolter/issues/459)
 
 ## Context
 
@@ -92,15 +92,15 @@ structural fields (`model`, `role`, `type`, `id` and the like), bounded to
 
 **Budgets.**
 
-| Budget             | Limit                                                                                                      |
-| ------------------ | ---------------------------------------------------------------------------------------------------------- |
-| model file         | at most 64 MiB on disk                                                                                     |
-| model in memory    | `buckets × categories` dense `f32` weights, at most 2²² of them (16 MiB); `buckets` ≤ 2²⁰, ≤ 32 categories |
-| `ngrams`           | 1 to 3                                                                                                     |
-| text per call      | the provider's `max_body_bytes` (64 KiB by default)                                                        |
-| latency per call   | well under a millisecond at the default 64 KiB; the provider's `timeout_ms` bounds it, queueing included   |
-| per request        | one call per local provider per stage, as for a webhook                                                    |
-| memory per gateway | the sum of the distinct models loaded (one copy per `(path, sha256)`, however many providers share it)     |
+| Budget             | Limit                                                                                                                                                                                                                |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| model file         | at most 64 MiB on disk                                                                                                                                                                                               |
+| model in memory    | `buckets × categories` dense `f32` weights, at most 2²² of them (16 MiB); `buckets` ≤ 2²⁰, ≤ 32 categories                                                                                                           |
+| `ngrams`           | 1 to 3                                                                                                                                                                                                               |
+| text per call      | the provider's `max_body_bytes` (64 KiB by default)                                                                                                                                                                  |
+| latency per call   | well under a millisecond at the default 64 KiB; the provider's `timeout_ms` bounds it, queueing included                                                                                                             |
+| per request        | one call per local provider per stage, as for a webhook                                                                                                                                                              |
+| memory per gateway | the sum of the distinct models loaded (one copy per `sha256`, however many providers or paths share it), plus the previous apply's until the next; parsing a file peaks at roughly three times its size, transiently |
 
 **Model shipping.** `model_path` is a path on the gateway's file system and
 `model_sha256` its required SHA-256 pin. The gateway never downloads a model.
@@ -109,14 +109,19 @@ reload), keeps a loaded model across reloads while its path and pin are
 unchanged, and refuses a file whose digest does not match the pin. Requiring
 the pin means a swapped file on a shared volume cannot silently change what a
 policy blocks: replacing a model is a configuration change, recorded like one.
-A model that cannot be loaded (missing, over the size cap, wrong digest,
-malformed) is logged once per apply and its provider produces no verdict, so it
+Files are read on the blocking pool before a reload is applied, never on a
+request worker, and only regular files are opened. The models of the previous
+apply stay reachable until the next one, so a request still on the previous
+snapshot keeps its model. A model that cannot be loaded (missing, not a regular
+file, over the size cap, wrong digest, malformed) is logged once per apply and its provider produces no verdict, so it
 resolves through its `failure_mode` like an unreachable webhook.
 
 **CPU bound.** Inference runs on Tokio's blocking pool, never on a request
 worker, behind one semaphore per gateway shared by every local provider.
-`[semantic_guards] local_concurrency` sets its size; unset (or 0) it is the
-number of CPUs the process may use. A call waits for a permit at most its
+`[semantic_guards] local_concurrency` sets its size; unset, it is half the
+CPUs the process may use (at least one), since the blocking pool also serves
+the rest of the gateway. Under a control plane the value comes from the
+control plane's own config file, through the snapshot. A call waits for a permit at most its
 provider's `timeout_ms`; a call that gets none is the **overload** case and
 resolves through the provider's `failure_mode`, exactly like a webhook that
 answered `429`/`503`. A call whose inference outlives the rest of `timeout_ms`

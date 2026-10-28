@@ -62,6 +62,7 @@ import { errorText } from "@/lib/error-copy";
 import { useFormat } from "@/lib/i18n/format";
 import { useToast } from "@/lib/toast";
 import { useScreenReady } from "@/lib/ux-react";
+import { cn } from "@/lib/utils";
 
 // the shape of an evaluation URL, shown as a placeholder and never as a value:
 // a prefilled host saves as the endpoint when nobody edits it, and a
@@ -880,7 +881,7 @@ function ProviderDialog({
             {t("pages.guardrailProviders.failOpenWarning")}
           </p>
         )}
-        <div className={`grid grid-cols-1 gap-3 ${local ? "sm:grid-cols-2" : "sm:grid-cols-3"}`}>
+        <div className={cn("grid grid-cols-1 gap-3", local ? "sm:grid-cols-2" : "sm:grid-cols-3")}>
           <Field
             label={t("pages.guardrailProviders.fieldTimeout")}
             htmlFor="provider-timeout"
