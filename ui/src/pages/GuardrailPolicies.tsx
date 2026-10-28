@@ -703,4 +703,8 @@ function PolicySheet({
 
 // deployment-scoped settings: superadmin-only in the capability table, so a
 // lesser caller sees the refusal instead of a screen that loads and then 403s
-export default superadminOnly(GuardrailPoliciesScreen, "errors.resources.guardrailPolicies");
+export default superadminOnly(
+  GuardrailPoliciesScreen,
+  "errors.resources.guardrailPolicies",
+  "guardrail_policy:read",
+);

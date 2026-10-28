@@ -888,10 +888,11 @@ const CAPABILITIES: &[Capability] = &[
     },
     Capability {
         // a policy can be scoped to one org, project, route or key, but it is
-        // still the deployment's enforcement and only a superadmin sets it
+        // still the deployment's enforcement: only a superadmin sets it, and the
+        // security auditor reads it with the other guardrail settings
         resource: "guardrail_policy",
         scope: "deployment",
-        read: SUPER,
+        read: AUDITOR,
         create: SUPER,
         update: SUPER,
         delete: SUPER,
