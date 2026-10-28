@@ -106,3 +106,7 @@ With a [`sample_rate`](/observability/log-settings#sampling) below `1` the gatew
 ```
 
 `calls` is every consultation, and `blocked`, `transformed`, `annotated` and `errors` are the parts of it that ended that way; the rest were allowed. A call that got no verdict is an `errors` one, so a fail-closed plugin that refused traffic because its endpoint was down counts there and not under `blocked`. `last_error_kind` is `refused`, `timeout`, `connect`, `status_<code>` or `body`; `last_error_at` and `last_error_kind` are `null` and empty while `errors` is `0`. Counts are scaled by the log's sampling weight and limited to the request log you can read, like every other count here. `recorded` is `false`, with `data` empty, when the ClickHouse table lacks `clickhouse/019_plugin_events.sql`. Each row of `GET /api/v1/analytics/invocations` carries `plugin_events`, the entries behind the counts.
+
+## The savings advisor
+
+`GET /api/v1/analytics/savings` re-prices the same rows at the cheaper models already configured in each route's pool, and says where the window's spend went. It takes the window plus `org`, `project`, `route` and `key`, answers one object rather than `{"data": [...]}`, and is gated by the `savings` capability. It re-prices and never evaluates quality; see [Savings advisor](/observability/savings-advisor) for how to read it and what it does not claim.
