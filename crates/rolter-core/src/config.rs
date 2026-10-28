@@ -76,6 +76,14 @@ pub struct GatewayConfig {
     /// protected internal snapshot channel and are never exposed publicly.
     #[serde(default)]
     pub mcp_oauth_sessions: Vec<McpOAuthSessionConfig>,
+    /// enabled MCP tool groups. The proxy treats them as an access boundary:
+    /// a server named by any of them only serves the tools they list (#1403)
+    #[serde(default)]
+    pub mcp_tool_groups: Vec<McpToolGroupConfig>,
+    /// organization MCP settings the proxy applies per request (#1404). An
+    /// organization with no entry has never saved any and gets the defaults
+    #[serde(default)]
+    pub mcp_settings: Vec<McpOrgSettingsConfig>,
     #[serde(default)]
     pub model_prices: Vec<ModelPriceConfig>,
     /// settlement currency and rate table. Budgets and accumulated spend are
@@ -2139,6 +2147,10 @@ pub struct McpServerConfig {
     pub request_timeout_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_retries: Option<u32>,
+    /// the tools the server's manifest declares, discovered or typed. Empty
+    /// means it declares none, which leaves nothing to check a call against
+    #[serde(default)]
+    pub tools: Vec<String>,
 }
 
 impl std::fmt::Debug for McpServerConfig {
@@ -2160,8 +2172,56 @@ impl std::fmt::Debug for McpServerConfig {
             .field("connect_timeout_ms", &self.connect_timeout_ms)
             .field("request_timeout_ms", &self.request_timeout_ms)
             .field("max_retries", &self.max_retries)
+            .field("tools", &self.tools.len())
             .finish()
     }
+}
+
+/// An organization's MCP settings as the proxy applies them (#1404).
+///
+/// Precedence for the three transport values, highest first: the server's own
+/// override (`McpServerConfig::connect_timeout_ms` and its siblings), then
+/// these, then the deployment-level `[timeouts]` default. `default_transport`
+/// is not here: a server row always names its transport, so the org default is
+/// what the control plane gives a server registered without one.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct McpOrgSettingsConfig {
+    pub org_id: String,
+    pub connect_timeout_ms: u64,
+    pub request_timeout_ms: u64,
+    /// times a call is repeated after a connection that was never made; a
+    /// call that reached the server is never repeated
+    pub max_retries: u32,
+    /// what to do when a request cannot be inspected for tool policy: `true`
+    /// forwards it unchecked, `false` (the default) refuses it
+    #[serde(default)]
+    pub fail_open: bool,
+    /// whether a call may name a tool the server's manifest does not declare
+    #[serde(default)]
+    pub allow_unlisted_tools: bool,
+}
+
+/// One tool of one server, as a tool group names it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+pub struct McpToolRefConfig {
+    pub server_id: String,
+    pub tool: String,
+}
+
+/// An enabled, organization-owned bundle of MCP tools (#1403).
+///
+/// Only enabled groups reach the snapshot. A server that at least one of them
+/// names is *governed*: the proxy forwards a `tools/call` for it only when the
+/// tool is in the union of the groups that name it, and refuses the rest. A
+/// server no group names is not governed by this and falls back to its declared
+/// manifest.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct McpToolGroupConfig {
+    pub id: String,
+    pub org_id: String,
+    pub slug: String,
+    #[serde(default)]
+    pub tools: Vec<McpToolRefConfig>,
 }
 
 /// A live OAuth session the gateway may spend for one user and MCP server.

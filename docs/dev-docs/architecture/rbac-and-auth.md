@@ -641,8 +641,7 @@ an account with such a row is `display_name_managed` and the route answers
 first sign-in of an account with no name writes it through
 `UserRepo::default_display_name` (`where display_name is null`, so it never
 replaces a name), and the account stays unmanaged and edits it freely. LDAP's
-name attribute is read into `Identity` but the LDAP provider is not yet wired
-into a sign-in route, so nothing persists it today. The audit row
+name attribute is persisted the same way on a directory user's first sign-in. The audit row
 `user.profile.update` carries `{"fields": [...]}` and never the bio.
 
 A handler that starts from the session (`CurrentUser`) and then authorizes
@@ -777,10 +776,9 @@ group → role reconciliation, audit logging) is unchanged.
 
 ## Roadmap
 
-- **LDAP** — bind + group mapping for enterprise directories. The provider
-  implements `IdentityProvider` (#241) but no configuration, route or screen
-  reaches it, so LDAP sign-in is not shipped; wiring it is #1826. See
-  [LDAP authentication](ldap.md).
+- **LDAP** — shipped (#241, #1826): a directory per org, configured through the
+  API, reached from the password login. A dashboard screen next to Single
+  Sign-On is still to come. See [LDAP authentication](ldap.md).
 - **JWT** service auth and short-lived tokens.
 - **Audit log** surfaced in the UI.
 - Optional **constant-time map** / pepper for virtual-key lookup hardening.

@@ -187,11 +187,40 @@ each time. A deployment can run invitations only, SSO only, or both at once.
 | ----------------------- | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `ROLTER_PUBLIC_URL`     | env   | the `accept_url` is built from it; set it correctly behind a proxy or the link you hand out points at localhost. Read once at startup, so a change needs a restart |
 | `ROLTER_SESSION_PEPPER` | env   | peppers the stored token digest, same as session tokens                                                                                                            |
+| `ROLTER_SMTP_URL`       | env   | the mail relay (`smtp://` or `smtps://`, credentials in the URL). Optional; unset means invitations are not emailed                                                |
+| `ROLTER_SMTP_FROM`      | env   | the sender mailbox. Required with `ROLTER_SMTP_URL`; without it mail stays off and the control plane logs why                                                      |
 
-rolter does not send the email itself: it returns the link and lets the operator
-deliver it however their organization already delivers things. That keeps the
-control plane free of an SMTP dependency, which matters for
-[air-gapped](../deployment/air-gapped.md) deployments.
+## Email delivery
+
+With `ROLTER_SMTP_URL` set, `create_invitation` also sends the link to the
+invitee (#1828, `crates/rolter-control/src/mail.rs`). The link is **still
+returned** to the admin, so the email is a convenience over the fallback and not
+a replacement for it: a relay that is down, or a typo in the address, never
+fails an invitation.
+
+- The outcome is kept on the row: `mail_status` is `not_configured` (no
+  transport when it was created, and every invitation that predates
+  migration `0105`), `sent` or `failed`, with `mail_attempted_at` and, for a
+  failure, a `mail_error` written to be safe to show an admin ("the mail server
+  rejected the message"). The relay's own reply is never stored: it often names
+  the recipient.
+- Each delivery is audited as `invitation.mail_sent` or `invitation.mail_failed`
+  on the invitation. Neither the address nor the link is in the audit detail or
+  in any log line, and neither is the SMTP URL, which can carry a password.
+- The send is awaited, bounded by a 15 second timeout, so the response says what
+  happened. `Mailer` (`mail.rs`) is the seam the integration suite installs to
+  record messages and to fail on demand.
+- The relay address is checked against the egress policy at startup
+  (`EgressPolicy::url_deny_reason`), and certificates are verified through the
+  platform trust store like the upstream client, on the same aws-lc-rs rustls
+  provider as everything else. A configuration that does not work is logged once
+  and turns mail off, not the control plane.
+- The message is plain text: who it is from, the role, the link and when it
+  expires. The organization name has its control characters removed before it
+  reaches the subject.
+
+Without a transport the behaviour is what it always was, and the dashboard says
+so next to the row. An air-gapped deployment configures nothing.
 
 ## Related
 
