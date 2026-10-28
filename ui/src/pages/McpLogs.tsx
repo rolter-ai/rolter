@@ -19,6 +19,7 @@ import {
   Pill,
 } from "@/components/screen";
 import type { BadgeTone } from "@/components/ui/badge";
+import { LogStepUp } from "@/components/McpStepUp";
 import { Button } from "@/components/ui/button";
 import { CodeBlock } from "@/components/ui/code-block";
 import { Combobox } from "@/components/ui/combobox";
@@ -532,6 +533,7 @@ function DetailDrawer({ eventId, onClose }: { eventId: string; onClose: () => vo
             />
           </div>
           {d.error && <p className="text-xs text-[color:var(--status-danger-text)]">{d.error}</p>}
+          <LogStepUp detail={d} />
           {Number(d.payload_withheld ?? 0) === 1 && !d.arguments && !d.result && (
             // the server blanked the bodies for this caller's role and says so;
             // that is certain, unlike an empty body, so it is stated plainly

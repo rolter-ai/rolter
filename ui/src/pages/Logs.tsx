@@ -20,6 +20,7 @@ import { AnalyticsUnavailable } from "@/components/AnalyticsUnavailable";
 import { FilterCheckList, FilterPanel, FilterSection } from "@/components/ui/filter-panel";
 import { RowFilterSections, useRowFilterData } from "@/components/RowFilters";
 import { LoadError } from "@/components/LoadError";
+import { ErasePayloadAction } from "@/components/LogErasure";
 import { SampledLogNotice } from "@/components/SampledLogNotice";
 import { SavedViews } from "@/components/SavedViews";
 import { ListSkeleton } from "@/components/LoadingState";
@@ -825,6 +826,7 @@ export default function Logs({ pollMs = POLL_MS }: { pollMs?: number }) {
         </DetailRow>
       </DetailSection>
       <Payloads row={selected} />
+      <ErasePayloadAction row={selected} />
     </div>
   );
 

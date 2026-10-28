@@ -10,7 +10,7 @@ Rolter can check a sign-in against your LDAP or Active Directory server. A direc
   LDAP is compiled into Rolter behind the `ldap` cargo feature. A build without it refuses to store a directory, with an error that says so. Build with `--features postgres,ldap` (for the container image, `--build-arg CARGO_FEATURES=postgres,ldap`).
 </Info>
 
-There is no dashboard screen for it yet: a directory is registered through the [control-plane API](/api/control-plane-openapi), and everything below uses it. Every call needs the **admin** role on the org (see [RBAC](/security/rbac)) or the deployment admin token.
+Everything below is done on **Governance › LDAP** in the dashboard, or through the [control-plane API](/api/control-plane-openapi), which the `curl` examples use. Both need the **admin** role on the org (see [RBAC](/security/rbac)); the API also accepts the deployment admin token. The dashboard screen registers, edits, takes in and out of service and deletes the org's directory, rotates or removes its bind password, and maps its groups to roles. A grant an LDAP sign-in wrote is marked **from LDAP** on the Users screen.
 
 ## How a sign-in works
 

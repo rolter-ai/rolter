@@ -1058,6 +1058,281 @@ export const RefusedToAViewer: Story = {
   },
 };
 
+// the org's enrolment roster (#3264): ada has an armed factor, grace has none,
+// and the deactivated account is not an active member, so it is not listed
+const FACTOR_ROSTER = [
+  {
+    user_id: "user-1",
+    email: "ada@example.com",
+    is_superadmin: true,
+    enabled: true,
+    recovery_codes_remaining: 8,
+  },
+  {
+    user_id: "user-2",
+    email: "grace@example.com",
+    is_superadmin: false,
+    enabled: false,
+    recovery_codes_remaining: 0,
+  },
+];
+
+const withRoster = (answer: () => Response | Promise<Response>): FetchStub => {
+  const inner = directory();
+  return scoped(async (input, init) =>
+    String(input).includes("/mfa-status") ? answer() : inner(input, init),
+  );
+};
+
+const factorRow = async (canvasElement: HTMLElement, email: string): Promise<HTMLElement> => {
+  const row = (await within(canvasElement).findByText(email)).closest('[role="row"]');
+  if (!row) throw new Error(`${email} is not rendered as a row`);
+  return row as HTMLElement;
+};
+
+/** Armed or not set up, found by the column's name and read per row. */
+export const ShowsWhoHasASecondFactor: Story = {
+  render: () => (
+    <Harness fetchStub={withRoster(() => json(FACTOR_ROSTER))} role="admin">
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByRole("columnheader", { name: "Second factor" })).toBeVisible();
+    await waitFor(() =>
+      expect(
+        within(canvasElement.querySelector('[role="table"]') as HTMLElement).getAllByText("Armed"),
+      ).toHaveLength(1),
+    );
+    await expect(
+      within(await factorRow(canvasElement, "ada@example.com")).getByText("Armed"),
+    ).toBeVisible();
+    await expect(
+      within(await factorRow(canvasElement, "grace@example.com")).getByText("Not set up"),
+    ).toBeVisible();
+    // an account the roster does not list is not claimed to lack a factor
+    await expect(
+      within(await factorRow(canvasElement, "former@example.com")).getByText("Not listed"),
+    ).toBeVisible();
+  },
+};
+
+export const SecondFactorStillLoading: Story = {
+  render: () => (
+    <Harness fetchStub={withRoster(() => new Promise<Response>(() => {}))} role="admin">
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expect(
+      await within(canvasElement).findByRole("columnheader", { name: "Second factor" }),
+    ).toBeVisible();
+    const row = await factorRow(canvasElement, "ada@example.com");
+    // no verdict is drawn for a roster that has not arrived
+    await expect(within(row).queryByText("Armed")).toBeNull();
+    await expect(within(row).queryByText("Not set up")).toBeNull();
+  },
+};
+
+export const SecondFactorFailedToLoad: Story = {
+  render: () => (
+    <Harness
+      fetchStub={withRoster(() => json({ error: { message: "roster store is down" } }, 500))}
+      role="admin"
+    >
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectLoadError(canvasElement, /roster store is down/);
+    const row = await factorRow(canvasElement, "ada@example.com");
+    // a failed roster is not read as "nobody has a factor"
+    await expect(within(row).queryByText("Not set up")).toBeNull();
+  },
+};
+
+/** Below admin the endpoint is refused, so the column is not drawn at all. */
+export const SecondFactorHiddenBelowAdmin: Story = {
+  render: () => (
+    <Harness fetchStub={withRoster(() => json(FACTOR_ROSTER))} role="member">
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expect(await within(canvasElement).findByText("ada@example.com")).toBeVisible();
+    await expectGateAnswered();
+    await expect(
+      within(canvasElement).queryByRole("columnheader", { name: "Second factor" }),
+    ).toBeNull();
+  },
+};
+
+// deployment roles (#3290): the list shows each account's role and a superadmin
+// sets or clears it with its own endpoint, never as a field of the account edit
+const withDeploymentRole = (record?: Recorder): FetchStub => {
+  const inner = directory();
+  const base: FetchStub = scoped(async (input, init) => {
+    const url = String(input);
+    const method = (init?.method ?? "GET").toUpperCase();
+    if (method === "PUT" && url.includes("/deployment-role")) {
+      const { role } = JSON.parse(String(init?.body)) as { role: string | null };
+      return json({ ...USERS[1], deployment_role: role });
+    }
+    if (method === "GET" && url.includes("/users") && !url.includes("/memberships")) {
+      const res = await inner(input, init);
+      const rows = (await res.json()) as UserRow[];
+      return json(
+        rows.map((u) => (u.id === "user-2" ? { ...u, deployment_role: "security_auditor" } : u)),
+      );
+    }
+    return inner(input, init);
+  });
+  return record ? record.stub : base;
+};
+
+export const ShowsTheDeploymentRole: Story = {
+  render: () => (
+    <Harness fetchStub={withDeploymentRole()} role="superadmin">
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const row = await factorRow(canvasElement, "grace@example.com");
+    await expect(within(row).getByText("Security auditor")).toBeVisible();
+    // an account without one carries no badge
+    const ada = await factorRow(canvasElement, "ada@example.com");
+    await expect(within(ada).queryByText("Security auditor")).toBeNull();
+    await expect(within(ada).queryByText("Operator")).toBeNull();
+  },
+};
+
+const setsDeploymentRole = recording(
+  scoped(async (input, init) => withDeploymentRole()(input, init)),
+);
+
+export const SetsADeploymentRole: Story = {
+  render: () => (
+    <Harness fetchStub={setsDeploymentRole.stub} role="superadmin">
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await userEvent.click(
+      await within(canvasElement).findByRole("button", {
+        name: "Set the deployment role of ada@example.com",
+      }),
+    );
+    await waitFor(() => expect(sheet()).toBeVisible());
+    const panel = within(sheet());
+    await pickOption(panel.getByLabelText("Deployment role"), /^Operator/);
+    await userEvent.click(panel.getByRole("button", { name: "Save" }));
+    const body = await setsDeploymentRole.expectSentBody<{ role: string | null }>(
+      "PUT",
+      "/api/v1/users/user-1/deployment-role",
+    );
+    await expect(body.role).toBe("operator");
+  },
+};
+
+export const ClearsADeploymentRole: Story = {
+  render: () => (
+    <Harness fetchStub={setsDeploymentRole.stub} role="superadmin">
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await userEvent.click(
+      await within(canvasElement).findByRole("button", {
+        name: "Set the deployment role of grace@example.com",
+      }),
+    );
+    await waitFor(() => expect(sheet()).toBeVisible());
+    const panel = within(sheet());
+    // opens on the role the account holds, and nothing to save until it moves
+    await expect(panel.getByLabelText("Deployment role")).toHaveValue("Security auditor");
+    await expect(panel.getByRole("button", { name: "Save" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
+    await pickOption(panel.getByLabelText("Deployment role"), /^None/);
+    await userEvent.click(panel.getByRole("button", { name: "Save" }));
+    await waitFor(() => {
+      const sent = setsDeploymentRole.calls.filter(
+        (c) => c.method === "PUT" && c.url.includes("/users/user-2/deployment-role"),
+      );
+      expect(sent.map((c) => JSON.parse(c.body ?? "{}").role)).toContain(null);
+    });
+  },
+};
+
+export const DeploymentRoleRefusedToAnAdmin: Story = {
+  render: () => (
+    <Harness fetchStub={withDeploymentRole()} role="admin">
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectRefused(
+      canvasElement,
+      "Set the deployment role of ada@example.com",
+      NEEDS_SUPERADMIN,
+    );
+  },
+};
+
+export const DeploymentRoleAllowedToASuperadmin: Story = {
+  render: () => (
+    <Harness fetchStub={withDeploymentRole()} role="superadmin">
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await expectAllowed(canvasElement, "Set the deployment role of ada@example.com");
+  },
+};
+
+export const DeploymentRoleRefusedByTheServer: Story = {
+  render: () => (
+    <Harness
+      fetchStub={scoped(async (input, init) =>
+        (init?.method ?? "GET").toUpperCase() === "PUT" &&
+        String(input).includes("/deployment-role")
+          ? json(
+              {
+                error: {
+                  message: "role must be one of operator, security_auditor, null",
+                  code: "invalid_field",
+                  field: "role",
+                },
+              },
+              400,
+            )
+          : directory()(input, init),
+      )}
+      role="superadmin"
+    >
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await userEvent.click(
+      await within(canvasElement).findByRole("button", {
+        name: "Set the deployment role of ada@example.com",
+      }),
+    );
+    await waitFor(() => expect(sheet()).toBeVisible());
+    const panel = within(sheet());
+    await pickOption(panel.getByLabelText("Deployment role"), /^Operator/);
+    await userEvent.click(panel.getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(
+        panel.getAllByRole("alert").some((a) => /role must be one of/.test(a.textContent ?? "")),
+      ).toBe(true),
+    );
+  },
+};
+
 export const EditRefusedToAnAdmin: Story = {
   render: () => (
     <Harness fetchStub={loaded} role="admin">
@@ -1210,6 +1485,43 @@ export const RevokeIsConfirmedThenLands: Story = {
     const submit = await expectUxEvent("form_submit", "user-role-revoke");
     await expect(submit.outcome).toBe("ok");
     await expectUxEvent("save_confirmed", "user-role-revoke");
+  },
+};
+
+/**
+ * A grant an LDAP sign-in wrote is marked like a single sign-on or SCIM one
+ * (#3261), and revoking or changing it says the directory's group mapping will
+ * grant it again.
+ */
+const viaLdap = (): FetchStub => {
+  const inner = directory();
+  return scoped(async (input, init) => {
+    const res = await inner(input, init);
+    const method = (init?.method ?? "GET").toUpperCase();
+    if (method !== "GET" || !String(input).includes("/memberships")) return res;
+    const rows = (await res.json()) as MembershipRow[];
+    return json(rows.map((g) => (g.id === "m-2" ? { ...g, source: "ldap" } : g)));
+  });
+};
+
+export const LdapGrantsAreMarkedAndExplained: Story = {
+  render: () => (
+    <Harness fetchStub={viaLdap()}>
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("from LDAP")).toBeVisible();
+    await userEvent.click(canvas.getByRole("button", { name: CHANGE_GRACE }));
+    await expect(
+      await within(document.body).findByText(/came from an LDAP group mapping/),
+    ).toBeVisible();
+    await cancelConfirmation();
+    await userEvent.click(canvas.getByRole("button", { name: REVOKE_GRACE }));
+    await expect(
+      await within(document.body).findByText(/The role came from an LDAP group mapping/),
+    ).toBeVisible();
   },
 };
 
