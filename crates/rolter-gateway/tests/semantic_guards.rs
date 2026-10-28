@@ -151,6 +151,25 @@ impl Upstream {
                 async move {
                     upstream.calls.fetch_add(1, SeqCst);
                     let transcript = form_field(&body, "prompt");
+                    // `stream=true` answers as gpt-4o-transcribe does: the text
+                    // in two deltas, then the whole of it once more (#3432)
+                    if form_field(&body, "stream") == "true" {
+                        let (head, tail) = transcript.split_at(transcript.len() / 2);
+                        return sse(vec![
+                            format!(
+                                "data: {}\n\n",
+                                json!({"type": "transcript.text.delta", "delta": head})
+                            ),
+                            format!(
+                                "data: {}\n\n",
+                                json!({"type": "transcript.text.delta", "delta": tail})
+                            ),
+                            format!(
+                                "data: {}\n\n",
+                                json!({"type": "transcript.text.done", "text": transcript})
+                            ),
+                        ]);
+                    }
                     if form_field(&body, "response_format") == "text" {
                         return ([(header::CONTENT_TYPE, "text/plain")], transcript)
                             .into_response();
@@ -570,6 +589,16 @@ async fn the_most_specific_policy_replaces_the_broader_one() {
 
 /// A transcription of `spoken` to `path`, as `response_format` (#3331).
 async fn transcribe(config: &GatewayConfig, path: &str, spoken: &str, format: &str) -> Run {
+    transcribe_with(config, path, spoken, &[("response_format", format)]).await
+}
+
+/// A transcription of `spoken` to `path` with `fields` as extra form fields.
+async fn transcribe_with(
+    config: &GatewayConfig,
+    path: &str,
+    spoken: &str,
+    fields: &[(&str, &str)],
+) -> Run {
     let state = rolter_gateway::AppState::with_logging(config, None);
     let gw = serve(rolter_gateway::build_router(
         state,
@@ -578,10 +607,18 @@ async fn transcribe(config: &GatewayConfig, path: &str, spoken: &str, format: &s
     ))
     .await;
     let boundary = "GUARDBOUND";
+    let extra: String = fields
+        .iter()
+        .map(|(name, value)| {
+            format!(
+                "--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n"
+            )
+        })
+        .collect();
     let body = format!(
         "--{b}\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\ntest-model\r\n\
          --{b}\r\nContent-Disposition: form-data; name=\"prompt\"\r\n\r\n{spoken}\r\n\
-         --{b}\r\nContent-Disposition: form-data; name=\"response_format\"\r\n\r\n{format}\r\n\
+         {extra}\
          --{b}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.wav\"\r\n\
          Content-Type: audio/wav\r\n\r\nRIFFxxxxWAVE\r\n--{b}--\r\n",
         b = boundary
@@ -648,6 +685,110 @@ async fn a_transcript_is_judged_by_the_response_stage_in_every_format() {
             .all(|e| e["policy"] == "all" && e["direction"] == "response"),
         "only the response stage judges a transcript: {seen:?}"
     );
+}
+
+/// A streamed transcription with no response stage streams as it came (#3432).
+#[tokio::test]
+async fn a_streamed_transcription_streams_through() {
+    let upstream = Upstream::default();
+    let up = upstream.serve_audio().await;
+    let config = config(up, ProviderKind::OpenaiCompatible);
+    let streamed = transcribe_with(
+        &config,
+        "/v1/audio/transcriptions",
+        "a calm answer",
+        &[("stream", "true")],
+    )
+    .await;
+    assert_eq!(streamed.status, 200, "{}", streamed.body);
+    assert!(
+        streamed.body.contains("data:") && streamed.body.contains("transcript.text.delta"),
+        "{}",
+        streamed.body
+    );
+}
+
+/// A streamed transcription on a route whose policy checks responses gets the
+/// policy's `streaming` setting, as a streamed chat completion does (#3432):
+/// `reject` refuses before dialling, `buffer` judges the joined transcript
+/// text, then replays the stream or withholds it.
+#[tokio::test]
+async fn a_streamed_transcription_follows_the_policy_streaming_setting() {
+    let upstream = Upstream::default();
+    let up = upstream.serve_audio().await;
+    let envelopes = Arc::default();
+    let url = provider(Arc::clone(&envelopes)).await;
+    let mut config = config(up, ProviderKind::OpenaiCompatible);
+    config.semantic_guards.providers = vec![guard(
+        "tox",
+        &url,
+        WebhookStage::PostCall,
+        FailureMode::FailOpen,
+    )];
+    config.semantic_guards.policies = vec![policy("all", PolicyScope::Deployment, None, &["tox"])];
+    let path = "/v1/audio/transcriptions";
+    let stream = [("stream", "true")];
+
+    let refused = transcribe_with(&config, path, "a calm answer", &stream).await;
+    assert_eq!(refused.status, 400, "{}", refused.body);
+    assert_eq!(refused.code(), "guardrail_streaming_unsupported");
+    assert_eq!(upstream.calls.load(SeqCst), 0, "refused before dialling");
+
+    config.semantic_guards.policies[0].streaming = StreamingStrategy::Buffer;
+    let replayed = transcribe_with(&config, path, "a calm answer", &stream).await;
+    assert_eq!(replayed.status, 200, "{}", replayed.body);
+    assert!(
+        replayed.body.contains("transcript.text.delta"),
+        "still an event stream: {}",
+        replayed.body
+    );
+    // the joined transcript, not the frames it arrived in
+    let shown = envelopes.lock().last().cloned().unwrap();
+    assert_eq!(shown["streamed"], true, "{shown}");
+    assert_eq!(shown["content"]["text"], "a calm answer", "{shown}");
+
+    let withheld = transcribe_with(&config, path, "something violent", &stream).await;
+    assert_eq!(withheld.status, 403, "{}", withheld.body);
+    assert_eq!(withheld.code(), "guardrail_blocked");
+    assert!(
+        !withheld.body.contains("violent"),
+        "the transcript must not leak: {}",
+        withheld.body
+    );
+}
+
+/// The built-in output rules cannot mask a stream, so a streamed transcription
+/// on a route that has them is refused under the default
+/// `streaming_post_call = "reject"`, as a streamed chat completion is (#3432).
+#[tokio::test]
+async fn a_streamed_transcription_under_output_rules_is_refused() {
+    use rolter_core::{BuiltinRule, GuardAction, GuardStage, GuardrailRule, GuardrailsConfig};
+    let upstream = Upstream::default();
+    let up = upstream.serve_audio().await;
+    let mut config = config(up, ProviderKind::OpenaiCompatible);
+    config.guardrails = GuardrailsConfig {
+        enabled: true,
+        rules: vec![GuardrailRule {
+            name: "card".to_string(),
+            builtin: Some(BuiltinRule::PaymentCard),
+            pattern: None,
+            stage: GuardStage::PostCall,
+            action: GuardAction::Block,
+            replacement: None,
+            include_system: false,
+        }],
+        ..Default::default()
+    };
+    let refused = transcribe_with(
+        &config,
+        "/v1/audio/transcriptions",
+        "a calm answer",
+        &[("stream", "true")],
+    )
+    .await;
+    assert_eq!(refused.status, 400, "{}", refused.body);
+    assert_eq!(refused.code(), "guardrail_streaming_unsupported");
+    assert_eq!(upstream.calls.load(SeqCst), 0);
 }
 
 #[tokio::test]

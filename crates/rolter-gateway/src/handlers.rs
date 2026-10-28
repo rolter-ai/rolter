@@ -2195,20 +2195,7 @@ async fn proxy(
         && stream
         && snap.guardrails.streaming_post_call() == rolter_core::StreamingPostCall::Reject
     {
-        state
-            .metrics
-            .guardrail_stream_rejections_total
-            .fetch_add(1, Relaxed);
-        return refuse.log(
-            crate::error::ApiError::new(
-                StatusCode::BAD_REQUEST,
-                "this model applies output guardrails, which cannot be enforced on a streamed \
-                 response; retry without \"stream\": true",
-            )
-            .with_code("guardrail_streaming_unsupported")
-            .with_param("stream")
-            .into_response(),
-        );
+        return refuse.log(output_rules_stream_refusal(&state));
     }
     // a stream that got here is one the operator opted out of masking for
     let output_guard = if stream { None } else { output_guard };
@@ -2221,26 +2208,8 @@ async fn proxy(
         .as_ref()
         .filter(|guard| guard.runs_at(rolter_core::WebhookStage::PostCall))
         .map(|guard| SemanticLeg { guard, stream });
-    if let Some(leg) = semantic_leg.filter(|leg| {
-        leg.stream && leg.guard.policy.streaming == rolter_core::StreamingStrategy::Reject
-    }) {
-        state
-            .metrics
-            .guardrail_stream_rejections_total
-            .fetch_add(1, Relaxed);
-        return refuse.log(
-            crate::error::ApiError::new(
-                StatusCode::BAD_REQUEST,
-                format!(
-                    "the guardrail policy '{}' checks responses, which cannot be applied to a \
-                     streamed response; retry without \"stream\": true",
-                    leg.guard.policy.label()
-                ),
-            )
-            .with_code("guardrail_streaming_unsupported")
-            .with_param("stream")
-            .into_response(),
-        );
+    if let Some(leg) = semantic_leg.filter(|leg| leg.rejects_stream()) {
+        return refuse.log(policy_stream_refusal(&state, leg.guard));
     }
 
     // the sanitizer's buffered response leg needs the whole body for the same
@@ -2256,20 +2225,7 @@ async fn proxy(
         None
     };
     if pii_stream_mode == Some(rolter_core::StreamingResponse::Reject) {
-        state
-            .metrics
-            .pii_stream_rejections_total
-            .fetch_add(1, Relaxed);
-        return refuse.log(
-            crate::error::ApiError::new(
-                StatusCode::BAD_REQUEST,
-                "this deployment sanitizes or restores response content, which cannot be applied \
-                 to a streamed response; retry without \"stream\": true",
-            )
-            .with_code("pii_streaming_unsupported")
-            .with_param("stream")
-            .into_response(),
-        );
+        return refuse.log(pii_stream_refusal(&state));
     }
     // a stream that got here is one the operator opted out of the response leg
     // for, or one restored below; the request leg still ran, so PII still did
@@ -2337,28 +2293,8 @@ async fn proxy(
     // plugin has already chosen delivery without its verdict, which is all a
     // stream would get, so it keeps streaming (#1776)
     if stream {
-        if let Some(plugin) = post_response_plugin_list
-            .iter()
-            .find(|plugin| plugin.failure_mode == rolter_core::FailureMode::FailClosed)
-        {
-            state
-                .metrics
-                .plugin_stream_rejections_total
-                .fetch_add(1, Relaxed);
-            return refuse.log(
-                crate::error::ApiError::new(
-                    StatusCode::BAD_REQUEST,
-                    format!(
-                        "the fail-closed post_response plugin '{}' must approve every response, \
-                         which cannot be done for a streamed response; retry without \
-                         \"stream\": true",
-                        plugin.slug
-                    ),
-                )
-                .with_code("plugin_streaming_unsupported")
-                .with_param("stream")
-                .into_response(),
-            );
+        if let Some(refusal) = plugin_stream_refusal(&state, &post_response_plugin_list) {
+            return refuse.log(refusal);
         }
     }
     let post_response_plugins = (!stream && !post_response_plugin_list.is_empty()).then(|| {
@@ -3464,6 +3400,11 @@ async fn proxy_multipart(
         }
     };
     let response_format = crate::multipart::text_field(&body, &boundary, "response_format");
+    // `gpt-4o-transcribe` and `gpt-4o-mini-transcribe` answer `stream=true`
+    // with `transcript.text.*` events; the response stage treats such a
+    // request as the chat path treats `"stream": true` (#3432)
+    let stream = crate::multipart::text_field(&body, &boundary, "stream")
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("true"));
 
     let snap = state.snapshot.load();
 
@@ -3577,17 +3518,27 @@ async fn proxy_multipart(
 
     // the response stage of the guardrails, on the transcript (#3331). the
     // request is audio, which no request-stage rule, provider, plugin or
-    // sanitizer reads, so those do not run; the answer is text, small and never
-    // a stream, so everything that judges a chat completion judges it, in the
-    // same order: the built-in post_call rules, the semantic policy's
-    // post_call providers, the post_response plugins, then the sanitizer's
-    // response leg. no placeholder went upstream, so nothing is restored
+    // sanitizer reads, so those do not run; the answer is text, so everything
+    // that judges a chat completion judges it, in the same order: the
+    // built-in post_call rules, the semantic policy's post_call providers, the
+    // post_response plugins, then the sanitizer's response leg. no
+    // placeholder went upstream, so nothing is restored. a streamed
+    // transcription gets what a streamed chat completion gets, refused before
+    // the upstream call or served as the chat path serves it (#3432)
     let output_guard = crate::guardrails::OutputGuard::resolve(
         &snap.guardrails,
         &entry.guardrails,
         &state.metrics,
         path,
     );
+    if output_guard.is_some()
+        && stream
+        && snap.guardrails.streaming_post_call() == rolter_core::StreamingPostCall::Reject
+    {
+        return refuse.log(output_rules_stream_refusal(&state));
+    }
+    // a stream that got here is one the operator opted out of masking for
+    let output_guard = if stream { None } else { output_guard };
     let semantic_guard = snap
         .semantic_guards
         .resolve(&crate::semantic_guards::policy_request(
@@ -3606,16 +3557,25 @@ async fn proxy_multipart(
             trace_id: trace_id.to_string(),
             tenant: plugin_tenant(&scope),
         });
-    let semantic_leg = semantic_guard.as_ref().map(|guard| SemanticLeg {
-        guard,
-        stream: false,
-    });
+    let semantic_leg = semantic_guard
+        .as_ref()
+        .map(|guard| SemanticLeg { guard, stream });
+    // `reject` refuses before dialling; `buffer` holds the stream up to the
+    // cap, judges its transcript text and replays it (`stream_response`)
+    if let Some(leg) = semantic_leg.filter(|leg| leg.rejects_stream()) {
+        return refuse.log(policy_stream_refusal(&state, leg.guard));
+    }
     let post_response_plugin_list = snap.plugins.for_stage(
         rolter_core::PluginStage::PostResponse,
         &scope.org,
         (!scope.project.is_empty()).then_some(scope.project.as_str()),
     );
-    let post_response_plugins = (!post_response_plugin_list.is_empty()).then(|| {
+    if stream {
+        if let Some(refusal) = plugin_stream_refusal(&state, &post_response_plugin_list) {
+            return refuse.log(refusal);
+        }
+    }
+    let post_response_plugins = (!stream && !post_response_plugin_list.is_empty()).then(|| {
         crate::plugin_dispatch::PostResponsePlugins {
             plugins: post_response_plugin_list,
             metrics: &state.metrics,
@@ -3635,21 +3595,25 @@ async fn proxy_multipart(
         project: scope.project.clone(),
         route: entry.route.model.clone(),
     };
-    let pii_leg = snap
-        .pii_sanitizer
-        .sanitizes_response()
-        .then(|| PiiResponseLeg {
-            state: &state,
-            config: &snap.pii_sanitizer,
-            model: &pii_model,
-            route: &entry.route.model,
-            trace_id: &pii_trace_id,
-            tenant: plugin_tenant(&scope),
-            scope: &pii_scope,
-            ticket: None,
-            will_restore: false,
-            capture: payload_capture_enabled(&snap.logging.payload_capture, &model, &scope.key),
-        });
+    let pii_sanitizes = snap.pii_sanitizer.sanitizes_response();
+    if stream
+        && pii_sanitizes
+        && snap.pii_sanitizer.stream_handling(false) == Some(rolter_core::StreamingResponse::Reject)
+    {
+        return refuse.log(pii_stream_refusal(&state));
+    }
+    let pii_leg = (pii_sanitizes && !stream).then(|| PiiResponseLeg {
+        state: &state,
+        config: &snap.pii_sanitizer,
+        model: &pii_model,
+        route: &entry.route.model,
+        trace_id: &pii_trace_id,
+        tenant: plugin_tenant(&scope),
+        scope: &pii_scope,
+        ticket: None,
+        will_restore: false,
+        capture: payload_capture_enabled(&snap.logging.payload_capture, &model, &scope.key),
+    });
 
     let recorder = SpendRecorder::new(state.budgets.clone(), snap.budgets.clone(), scope);
 
@@ -3918,8 +3882,14 @@ async fn proxy_multipart(
                 }
                 guard.hold_route_permit(route_permit.take());
                 inflight_guard = Some(guard);
-                // transcription responses are JSON (or text), never SSE
-                outcome = Some((response, status, false));
+                // a transcription is JSON or text, or SSE for `stream=true`
+                // on the models that stream (#3432)
+                let sse = response
+                    .headers()
+                    .get(reqwest::header::CONTENT_TYPE)
+                    .and_then(|v| v.to_str().ok())
+                    .is_some_and(|ct| ct.contains("event-stream"));
+                outcome = Some((response, status, sse));
                 break;
             }
             Err(err) => {
@@ -3971,7 +3941,15 @@ async fn proxy_multipart(
     // own row, so the guard must not add a phantom disconnect on top
     cancel.disarm();
     match outcome {
-        Some((response, status, is_sse)) => {
+        Some((response, status, sse)) => {
+            // an event stream the request did not announce reaches legs that
+            // judge a whole body; it is buffered and judged as that body, as
+            // before #3432, rather than relayed past them unjudged
+            let is_sse = sse
+                && (stream
+                    || (output_guard.is_none()
+                        && post_response_plugins.is_none()
+                        && pii_leg.is_none()));
             let log = RequestLog {
                 ts: crate::logging::started_at(started),
                 seq: crate::logging::start_seq(started),
@@ -3994,7 +3972,7 @@ async fn proxy_multipart(
                 upstream_status: status,
                 attempts,
                 fallback_reason,
-                stream: 0,
+                stream: u8::from(stream),
                 unit_basis: crate::unit_billing::UnitBasis::for_multipart(path),
                 capture_payloads,
                 payload_max_bytes: snap.logging.payload_capture.max_bytes,
@@ -4097,7 +4075,7 @@ async fn proxy_multipart(
                 upstream_status,
                 attempts,
                 fallback_reason,
-                stream: 0,
+                stream: u8::from(stream),
                 latency_ms: started.elapsed().as_millis() as u32,
                 error,
                 sample_rate: snap.logging.sample_rate,
@@ -5101,7 +5079,9 @@ async fn stream_response(
                     semantic,
                     plugins: post_response_plugins.as_ref(),
                     pii,
-                    transcript,
+                    // a streamed transcript is judged from its events, not
+                    // wrapped whole as plain text (#3432)
+                    transcript: transcript && !is_sse,
                 };
                 let mut log = log;
                 // read before the policy too: a transcript's audio duration is
@@ -6016,6 +5996,94 @@ fn transcript_text(body: Bytes) -> Bytes {
     }
 }
 
+/// The `400` for a streamed request on a route whose built-in output rules
+/// cannot see a stream, under `streaming_post_call = "reject"` (#591). Shared
+/// by the chat and multipart paths (#3432).
+fn output_rules_stream_refusal(state: &AppState) -> Response {
+    state
+        .metrics
+        .guardrail_stream_rejections_total
+        .fetch_add(1, Relaxed);
+    crate::error::ApiError::new(
+        StatusCode::BAD_REQUEST,
+        "this model applies output guardrails, which cannot be enforced on a streamed \
+         response; retry without \"stream\": true",
+    )
+    .with_code("guardrail_streaming_unsupported")
+    .with_param("stream")
+    .into_response()
+}
+
+/// The `400` for a streamed request whose semantic guardrail policy checks
+/// responses under `streaming = "reject"` (ADR-0037).
+fn policy_stream_refusal(
+    state: &AppState,
+    guard: &crate::semantic_guards::SemanticGuard<'_>,
+) -> Response {
+    state
+        .metrics
+        .guardrail_stream_rejections_total
+        .fetch_add(1, Relaxed);
+    crate::error::ApiError::new(
+        StatusCode::BAD_REQUEST,
+        format!(
+            "the guardrail policy '{}' checks responses, which cannot be applied to a streamed \
+             response; retry without \"stream\": true",
+            guard.policy.label()
+        ),
+    )
+    .with_code("guardrail_streaming_unsupported")
+    .with_param("stream")
+    .into_response()
+}
+
+/// The `400` for a streamed request on a deployment whose PII sanitizer
+/// answers a stream with [`rolter_core::StreamingResponse::Reject`] (#911).
+fn pii_stream_refusal(state: &AppState) -> Response {
+    state
+        .metrics
+        .pii_stream_rejections_total
+        .fetch_add(1, Relaxed);
+    crate::error::ApiError::new(
+        StatusCode::BAD_REQUEST,
+        "this deployment sanitizes or restores response content, which cannot be applied to a \
+         streamed response; retry without \"stream\": true",
+    )
+    .with_code("pii_streaming_unsupported")
+    .with_param("stream")
+    .into_response()
+}
+
+/// The `400` for a streamed request when a fail-closed `post_response` plugin
+/// must approve every response, which it cannot do for a stream (#1776).
+/// `None` when every plugin is fail-open: those already chose delivery without
+/// their verdict, which is all a stream would get.
+fn plugin_stream_refusal(
+    state: &AppState,
+    plugins: &[&rolter_core::PluginInstanceConfig],
+) -> Option<Response> {
+    let plugin = plugins
+        .iter()
+        .find(|plugin| plugin.failure_mode == rolter_core::FailureMode::FailClosed)?;
+    state
+        .metrics
+        .plugin_stream_rejections_total
+        .fetch_add(1, Relaxed);
+    Some(
+        crate::error::ApiError::new(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "the fail-closed post_response plugin '{}' must approve every response, which \
+                 cannot be done for a streamed response; retry without \"stream\": true",
+                plugin.slug
+            ),
+        )
+        .with_code("plugin_streaming_unsupported")
+        .with_param("stream")
+        .into_response(),
+    )
+}
+
 /// A semantic guardrail policy's `post_call` providers, and whether the body
 /// they judge is a buffered stream (ADR-0037).
 #[derive(Clone, Copy)]
@@ -6025,6 +6093,12 @@ struct SemanticLeg<'p, 'a> {
 }
 
 impl SemanticLeg<'_, '_> {
+    /// Whether this leg refuses a streamed request before the upstream call:
+    /// the policy chose `streaming = "reject"` (ADR-0037).
+    fn rejects_stream(&self) -> bool {
+        self.stream && self.guard.policy.streaming == rolter_core::StreamingStrategy::Reject
+    }
+
     /// Judge a successful body. A stream is shown to the providers as its
     /// assembled text; any other body as its JSON, or as `{"text": …}` when it
     /// is UTF-8 but not JSON. A binary body (audio, an image) is no text a

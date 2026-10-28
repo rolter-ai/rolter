@@ -323,11 +323,17 @@ fn unavailable(label: &str, failure: CallFailure) -> Verdict {
 /// The text a buffered stream delivers, assembled from its events for a
 /// `post_call` provider: OpenAI chat (`choices[].delta.content`, tool-call
 /// arguments, legacy `choices[].text`), Anthropic (`delta.text`,
-/// `delta.partial_json`) and the Responses API (`*.delta` text and argument
-/// events). Reasoning deltas are left out: they are not part of the answer the
-/// caller is shown.
+/// `delta.partial_json`), the Responses API (`*.delta` text and argument
+/// events) and a streamed transcription (`transcript.text.delta`, #3432).
+/// Reasoning deltas are left out: they are not part of the answer the caller
+/// is shown.
+///
+/// A transcription's `transcript.text.done` event carries the whole text again,
+/// so when one arrives its text is the answer rather than a second copy
+/// appended to the deltas.
 pub fn stream_text(body: &[u8]) -> String {
     let mut text = String::new();
+    let mut transcript_done: Option<String> = None;
     let source = String::from_utf8_lossy(body);
     for line in source.lines() {
         let Some(data) = line.strip_prefix("data:") else {
@@ -340,9 +346,17 @@ pub fn stream_text(body: &[u8]) -> String {
         let Ok(event) = serde_json::from_str::<Value>(data) else {
             continue;
         };
+        if event.get("type").and_then(Value::as_str) == Some("transcript.text.done") {
+            if let Some(done) = event.get("text").and_then(Value::as_str) {
+                transcript_done
+                    .get_or_insert_with(String::new)
+                    .push_str(done);
+            }
+            continue;
+        }
         collect_event_text(&event, &mut text);
     }
-    text
+    transcript_done.unwrap_or(text)
 }
 
 fn collect_event_text(event: &Value, text: &mut String) {
@@ -371,7 +385,9 @@ fn collect_event_text(event: &Value, text: &mut String) {
             push(event.pointer("/delta/text"));
             push(event.pointer("/delta/partial_json"));
         }
-        Some("response.output_text.delta") | Some("response.function_call_arguments.delta") => {
+        Some("response.output_text.delta")
+        | Some("response.function_call_arguments.delta")
+        | Some("transcript.text.delta") => {
             push(event.get("delta"));
         }
         _ => {}
@@ -861,6 +877,19 @@ data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"thinking_delta\",\
         let responses = b"data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n";
         assert_eq!(stream_text(responses), "ok");
         assert_eq!(stream_content(b"garbage")["text"], json!(""));
+    }
+
+    /// A streamed transcription is judged as its text: the deltas joined, or
+    /// the `done` event's whole text once it arrives, never both (#3432).
+    #[test]
+    fn stream_text_reads_a_streamed_transcription() {
+        let deltas = b"data: {\"type\":\"transcript.text.delta\",\"delta\":\"my card \"}\n\n\
+data: {\"type\":\"transcript.text.delta\",\"delta\":\"is 4111\"}\n\n";
+        assert_eq!(stream_text(deltas), "my card is 4111");
+        let done = b"data: {\"type\":\"transcript.text.delta\",\"delta\":\"my card \"}\n\n\
+data: {\"type\":\"transcript.text.delta\",\"delta\":\"is 4111\"}\n\n\
+data: {\"type\":\"transcript.text.done\",\"text\":\"my card is 4111\"}\n\n";
+        assert_eq!(stream_text(done), "my card is 4111");
     }
 
     #[test]
