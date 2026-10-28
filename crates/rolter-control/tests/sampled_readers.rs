@@ -364,6 +364,25 @@ async fn alert_signals_scale_by_the_row_weight_and_the_error_rate_stays_a_ratio_
     near(read_alert(&stack, "error_rate").await, 0.75);
 }
 
+/// The p95 latency alert weights each kept row by the requests it stands for
+/// (#3355): one slow request among fifty-odd fast ones is not the 95th percentile,
+/// though it is one of three stored rows.
+#[tokio::test]
+async fn the_p95_latency_alert_weights_each_row_by_the_requests_it_stands_for() {
+    let Some(stack) = stack().await else {
+        eprintln!("skipping: the postgres and clickhouse test servers are not both set");
+        return;
+    };
+    let mut rows = vec![row("", 200, 50.0), row("", 200, 1.0), row("", 200, 1.0)];
+    for (stored, latency) in rows.iter_mut().zip([100, 200, 1000]) {
+        stored["latency_ms"] = json!(latency);
+    }
+    stack.insert(&rows).await;
+
+    // an unweighted reading of the three rows is the slow one, near 1000
+    near(read_alert(&stack, "p95_latency_ms").await, 100.0);
+}
+
 /// One kept row of `weight` requests whose plugins did `events` (#2243).
 fn plugin_row(org: &str, weight: f64, ts: &str, events: &[&str]) -> Value {
     let mut row = row("key-plugins", 200, weight);

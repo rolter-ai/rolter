@@ -797,7 +797,7 @@ async fn summary(
                 {CACHE_HITS} as cache_hit_requests, \
                 {ERRORS} as errors, \
                 round(avg(latency_ms), 1) as avg_latency_ms, \
-                round(quantile(0.95)(latency_ms), 1) as p95_latency_ms \
+                {P95_LATENCY} as p95_latency_ms \
          from request_logs where {WHERE_WINDOW} and {ROW_VISIBLE} and {ROW_FILTERS} \
          format JSON"
     );
@@ -807,9 +807,30 @@ async fn summary(
 // Request-log sampling keeps 1 row in `1 / sample_rate`, and each stored row
 // carries `sample_weight` (clickhouse/014) = how many real requests it stands
 // for. Counts and sums are scaled by it so a sampled log does not under-report
-// traffic or spend (#2239); averages and percentiles are left alone, since a
-// uniform sample already estimates them. Rows written unsampled, or before the
-// column existed, weigh 1.
+// traffic or spend (#2239). Averages are left alone, since a uniform sample
+// already estimates them; percentiles are weighted (#3355), see
+// `P95_LATENCY`. Rows written unsampled, or before the column existed,
+// weigh 1.
+/// The 95th latency percentile, weighted by `sample_weight` (#3355): each kept row
+/// stands for that many real requests, so a log whose sample rate changed
+/// inside the window, or a route sampled at another rate than the rest, does not
+/// over-represent its lightly sampled traffic.
+///
+/// `quantileExactWeighted` and not `quantileWeighted` or
+/// `quantileTimingWeighted`: ClickHouse's weighted quantiles take an unsigned
+/// integer weight, and `sample_weight` is a `Float64` (`1 / sample_rate`), so it
+/// is scaled to thousandths and rounded, a constant factor that moves no
+/// quantile and keeps three digits of a weight like `3.333`. The timing variant
+/// is out because it clamps every value over 30 000 ms, and a slow completion
+/// legitimately runs longer. The exact variant keeps one counter per distinct
+/// latency, which a column of millisecond integers bounds. The result is
+/// rounded like the other latency figures, and is `0` for no rows.
+pub(crate) const P95_LATENCY: &str =
+    "round(quantileExactWeighted(0.95)(latency_ms, toUInt64(round(sample_weight * 1000))), 1)";
+/// The median counterpart of [`P95_LATENCY`].
+pub(crate) const P50_LATENCY: &str =
+    "round(quantileExactWeighted(0.5)(latency_ms, toUInt64(round(sample_weight * 1000))), 1)";
+
 pub(crate) const REQUESTS: &str = "round(sum(sample_weight))";
 pub(crate) const TOKENS: &str = "round(sum(total_tokens * sample_weight))";
 pub(crate) const PROMPT_TOKENS: &str = "round(sum(prompt_tokens * sample_weight))";
@@ -887,8 +908,8 @@ async fn by_model(
                 {WITHHELD_COST} as withheld_cost, \
                 {USAGE_UNKNOWN} as usage_unknown_requests, \
                 {ERRORS} as errors, \
-                round(quantile(0.5)(latency_ms), 1) as p50_latency_ms, \
-                round(quantile(0.95)(latency_ms), 1) as p95_latency_ms \
+                {P50_LATENCY} as p50_latency_ms, \
+                {P95_LATENCY} as p95_latency_ms \
          from request_logs where {WHERE_WINDOW} and {ROW_VISIBLE} and {ROW_FILTERS} \
          group by model order by cost_usd desc format JSON"
     );
@@ -1651,7 +1672,18 @@ mod tests {
         assert!(!handlers.contains("count()"), "an unweighted count()");
         assert!(!handlers.contains("countIf("), "an unweighted countIf()");
         assert!(handlers.contains("avg(latency_ms)"));
-        assert!(handlers.contains("quantile(0.95)(latency_ms)"));
+        // the percentiles are weighted too (#3355), by an integer weight
+        assert!(handlers.contains("{P95_LATENCY}"));
+        assert!(!handlers.contains("quantile(0.95)(latency_ms)"));
+        for expr in [P50_LATENCY, P95_LATENCY] {
+            assert!(
+                expr.contains("quantileExactWeighted(") && expr.contains("toUInt64("),
+                "{expr}"
+            );
+            assert!(expr.contains("sample_weight"), "{expr}");
+            // the timing variant clamps at 30 000 ms, below a slow completion
+            assert!(!expr.contains("Timing"), "{expr}");
+        }
     }
 
     #[test]

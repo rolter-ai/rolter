@@ -1566,7 +1566,8 @@ fn metric_sql_scoped(signal: &str, window_secs: i32, column: Option<&str>) -> Ap
         // answer (#3294). 4xx stays out, it is the caller's own mistake and a
         // rule on it would page on a client bug
         "error_rate" => "if(sum(sample_weight) = 0, 0, sumIf(sample_weight, status = 0 or status >= 500) / sum(sample_weight))".to_string(),
-        "p95_latency_ms" => "if(count() = 0, 0, quantile(0.95)(latency_ms))".to_string(),
+        // weighted by the row's sample weight like the other signals (#3355)
+        "p95_latency_ms" => format!("if(count() = 0, 0, {})", crate::analytics::P95_LATENCY),
         "spend_velocity" => format!("sum(cost_usd * sample_weight) * 3600 / {window}"),
         "request_volume" => "sum(sample_weight)".to_string(),
         "provider_health_flaps" => "countIf(outcome != 'ok')".to_string(),

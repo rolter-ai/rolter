@@ -1232,10 +1232,12 @@ async fn dashboard_filters_narrow_the_rollups_inside_the_callers_visibility() {
     assert_eq!(rows, vec![(model_one.clone(), 1.0)]);
 }
 
-/// Request-log sampling at 50 % (#2239): two kept rows weigh two requests
-/// each, so counts and sums double while latency percentiles do not.
+/// Request-log sampling (#2239): kept rows weigh the requests they stand for,
+/// so counts and sums scale by it and the latency percentiles are weighted by it
+/// (#3355). The weights differ per row, as they do when the rate changed inside
+/// the window, which is what an unweighted percentile gets wrong.
 #[tokio::test]
-async fn sampled_rows_scale_counts_and_sums_but_not_percentiles() {
+async fn sampled_rows_scale_counts_and_sums_and_weight_percentiles() {
     let ch = skip_without_stack!();
     let http = reqwest::Client::new();
     ensure_schema(&http, &ch).await;
@@ -1255,15 +1257,15 @@ async fn sampled_rows_scale_counts_and_sums_but_not_percentiles() {
     let ts = chrono::Utc::now()
         .format("%Y-%m-%d %H:%M:%S%.3f")
         .to_string();
-    let rows: Vec<Value> = [(200, 100), (500, 300)]
+    let rows: Vec<Value> = [(200, 100, 1.0), (200, 200, 1.0), (500, 300, 8.0)]
         .iter()
         .enumerate()
-        .map(|(i, (status, latency))| {
+        .map(|(i, (status, latency, weight))| {
             json!({
                 "ts": ts, "request_id": format!("sampled-{i}-{}", Uuid::new_v4().simple()),
                 "model": model, "status": status, "latency_ms": latency,
                 "total_tokens": 10, "prompt_tokens": 4, "completion_tokens": 6,
-                "cost_usd": 0.5, "sample_weight": 2.0,
+                "cost_usd": 0.5, "sample_weight": weight,
             })
         })
         .collect();
@@ -1283,17 +1285,18 @@ async fn sampled_rows_scale_counts_and_sums_but_not_percentiles() {
         .iter()
         .find(|row| row["model"] == model.as_str())
         .expect("the sampled model has a row");
-    assert_eq!(row["requests"].as_f64(), Some(4.0));
-    assert_eq!(row["tokens"].as_f64(), Some(40.0));
-    assert_eq!(row["cost_usd"].as_f64(), Some(2.0));
-    assert_eq!(row["errors"].as_f64(), Some(2.0));
-    // a percentile of a uniform sample is already an estimate: never scaled
-    let p50 = row["p50_latency_ms"].as_f64().unwrap();
-    assert!((100.0..=300.0).contains(&p50), "{p50}");
+    assert_eq!(row["requests"].as_f64(), Some(10.0));
+    assert_eq!(row["tokens"].as_f64(), Some(100.0));
+    assert_eq!(row["cost_usd"].as_f64(), Some(5.0));
+    assert_eq!(row["errors"].as_f64(), Some(8.0));
+    // eight of the ten requests took 300 ms: the unweighted median of the three
+    // stored rows would be 200
+    assert_eq!(row["p50_latency_ms"].as_f64(), Some(300.0));
+    assert_eq!(row["p95_latency_ms"].as_f64(), Some(300.0));
 }
 
 /// The summary's cache-hit count is weighted like the other counts and its p95
-/// is read unscaled (#1978). Both sit beside aliased aggregates in one select,
+/// is read from the weighted rows (#1978, #3355). Both sit beside aliased aggregates in one select,
 /// which a fake ClickHouse cannot tell from a real one that nests them.
 #[tokio::test]
 async fn summary_reports_weighted_cache_hits_and_an_overall_p95() {
@@ -1342,8 +1345,8 @@ async fn summary_reports_weighted_cache_hits_and_an_overall_p95() {
     let row = &body["data"][0];
     assert_eq!(row["requests"].as_f64(), Some(4.0));
     assert_eq!(row["cache_hit_requests"].as_f64(), Some(2.0));
-    let p95 = row["p95_latency_ms"].as_f64().unwrap();
-    assert!((100.0..=300.0).contains(&p95), "{p95}");
+    // two requests at 100 ms and two at 300: the 95th percentile is the slow one
+    assert_eq!(row["p95_latency_ms"].as_f64(), Some(300.0));
 }
 
 /// A request that never got a status (`status = 0`) is an error in the totals

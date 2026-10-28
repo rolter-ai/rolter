@@ -48,8 +48,8 @@ not measure it. A deployment with no response cache reads 0.0% with a line sayin
 from the response cache, rather than a bare zero that looks like a failure. A prompt-cache read share
 over `cache_read_tokens` is a separate tile, tracked as its own issue.
 
-Both new summary fields are weighted by `sample_weight` like the other counts (the hit count), or read
-from the sampled rows as they are (the percentile), so a sampled log neither under-reports hits nor
+Both new summary fields are weighted by `sample_weight`, the hit count as a sum and the percentile as
+a weighted quantile (`P95_LATENCY`, #3355), so a sampled log neither under-reports hits nor
 skews the percentile. A control plane older than the fields sends neither, and the tiles read "—"
 rather than showing the mean as a p95 or a rate of zero.
 
