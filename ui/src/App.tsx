@@ -127,6 +127,7 @@ export const SCREENS: Record<string, React.ReactNode> = {
   customers: named(() => import("@/pages/CostAttribution"), "Customers"),
   "user-provisioning": screen(() => import("@/pages/UserProvisioning")),
   sso: screen(() => import("@/pages/SingleSignOn")),
+  ldap: screen(() => import("@/pages/Ldap")),
   "prompt-repo": screen(() => import("@/pages/PromptRepository")),
   "skills-repo": screen(() => import("@/pages/SkillsRepository")),
 };

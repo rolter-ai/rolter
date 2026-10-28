@@ -247,6 +247,7 @@
       "provisioningTokens": "provisioning tokens",
       "publicUrl": "the public URL",
       "ssoProviders": "identity providers",
+      "ldapDirectories": "LDAP directories",
       "signInPolicy": "the sign-in policy",
       "budgets": "budgets",
       "rateLimits": "rate limits",
@@ -703,6 +704,7 @@
     "customers": "Customers",
     "user-provisioning": "User Provisioning",
     "sso": "Single Sign-On",
+    "ldap": "LDAP",
     "rbac": "Roles & Permissions",
     "access-profiles": "Access Profiles",
     "audit-logs": "Audit Logs",
@@ -3266,6 +3268,108 @@
         "removeBody": "Members of that group stop being granted {{role}} on {{scope}} at their next sign-in. Roles they already hold are not withdrawn."
       }
     },
+    "ldap": {
+      "directory": {
+        "title": "Directory",
+        "count_one": "{{count}} registered",
+        "count_other": "{{count}} registered",
+        "add": "Add directory",
+        "oneOnly": "An organization has one directory. Edit or delete the existing one first.",
+        "enabled": "Enabled",
+        "disabled": "Disabled",
+        "noTls": "No TLS required",
+        "noTlsHint": "Plain ldap:// is allowed for this directory, so the bind password and every user's password cross the network in cleartext.",
+        "defaultRole": "Signs in as {{role}} when no group mapping matches.",
+        "noDefaultRole": "No default role: a user in no mapped group is refused, rather than admitted with nothing.",
+        "toggleNamed": "Enable directory {{name}}",
+        "edit": "Edit directory",
+        "editNamed": "Edit directory {{name}}",
+        "delete": "Delete directory",
+        "deleteNamed": "Delete directory {{name}}",
+        "clearPassword": "Remove stored bind password",
+        "clearPasswordNamed": "Remove the stored bind password for {{name}}",
+        "url": "URL",
+        "bindDn": "Bind DN",
+        "bindPassword": "Bind password",
+        "passwordStored": "Stored",
+        "passwordMissing": "Not set (anonymous search)",
+        "baseDn": "Base DN",
+        "userFilter": "User filter",
+        "emailAttr": "Email attribute",
+        "groupAttr": "Group attribute",
+        "enabledToast": "{{name}} is now accepting sign-ins",
+        "disabledToast": "{{name}} is out of service",
+        "passwordClearedToast": "{{name}} no longer has a stored bind password"
+      },
+      "empty": {
+        "title": "No LDAP directory registered yet",
+        "body": "Register your LDAP or Active Directory server and members sign in with the login and password they already use. rolter maps their directory groups to roles at each sign-in."
+      },
+      "create": {
+        "title": "Add directory",
+        "subtitle": "Register the LDAP or Active Directory server this organization signs in against.",
+        "save": "Add directory",
+        "name": "Name",
+        "nameHint": "How the directory is listed here and in the audit log.",
+        "namePlaceholder": "Corporate directory",
+        "url": "URL",
+        "urlHint": "ldaps:// or ldap:// address of the directory.",
+        "urlPlaceholder": "ldaps://dir.example.com",
+        "requireTls": "Require TLS",
+        "requireTlsHint": "Refuse a plain ldap:// address, so the bind password is never sent in cleartext.",
+        "plainWithTls": "This address is plain ldap://, which the control plane refuses while TLS is required. Use ldaps://, or turn this off.",
+        "bindDn": "Bind DN",
+        "bindDnHint": "The read-only service account that finds users.",
+        "bindDnPlaceholder": "cn=svc-rolter,dc=example,dc=com",
+        "bindPassword": "Bind password",
+        "bindPasswordHint": "The service account's password. Leave it empty for an anonymous search.",
+        "passwordWriteOnly": "The bind password is sealed when saved and cannot be read back, here or anywhere else.",
+        "baseDn": "Base DN",
+        "baseDnHint": "The subtree searched for users.",
+        "baseDnPlaceholder": "ou=people,dc=example,dc=com",
+        "userFilter": "User filter",
+        "userFilterHint": "The search filter. {login} is replaced with what the user typed, escaped.",
+        "emailAttr": "Email attribute",
+        "emailAttrHint": "The attribute holding a user's email address.",
+        "displayNameAttr": "Display name attribute",
+        "displayNameAttrHint": "The attribute holding a user's display name.",
+        "groupAttr": "Group attribute",
+        "groupAttrHint": "The attribute on the user entry that lists their groups. Nested groups are not expanded.",
+        "defaultRole": "Default role",
+        "defaultRoleHint": "Granted to a user in no mapped group. Leave it unset to refuse those users.",
+        "defaultRoleNone": "None: refuse unmapped users"
+      },
+      "edit": {
+        "title": "Edit directory",
+        "subtitle": "Change how this organization signs in against the directory.",
+        "save": "Save directory",
+        "bindPasswordHint": "Leave empty to keep the stored password; type one to replace it.",
+        "bindPasswordNoneHint": "No bind password is stored. Type one to start binding as the service account."
+      },
+      "mappings": {
+        "title": "Group mappings",
+        "empty": "No group is mapped yet, so a user in no group is refused.",
+        "emptyWithDefault": "No group is mapped yet, so every directory user signs in as {{role}}.",
+        "grantTiming": "A mapping grants its role the next time each member signs in.",
+        "removeBody": "Members of the group lose {{role}} on {{scope}} the next time they sign in, unless another mapping grants it.",
+        "addNamed": "Map a group in {{directory}}"
+      },
+      "clearPassword": {
+        "title": "Remove the stored bind password of {{name}}?",
+        "body": "From the next sign-in the directory is searched anonymously. If your server refuses anonymous searches, every directory sign-in fails until you enter a new password, and a removed password cannot be read back.",
+        "confirm": "Remove password"
+      },
+      "disable": {
+        "title": "Take {{name}} out of service?",
+        "body": "Directory users can no longer sign in. The registration, bind password and group mappings stay, so turning it back on restores sign-in. Local accounts keep working.",
+        "confirm": "Take out of service"
+      },
+      "confirm": {
+        "title": "Delete directory {{name}}?",
+        "body": "Directory users can no longer sign in, and its group mappings are deleted with it. Accounts already created keep the roles they have.",
+        "confirm": "Delete directory"
+      }
+    },
     "auditLog": {
       "emptyTitle": "No audit entries yet",
       "emptyBody": "Every change made through the control plane is recorded here — who did it, to what, and when.",
@@ -3935,6 +4039,7 @@
       },
       "viaSso": "from SSO",
       "viaScim": "from SCIM",
+      "viaLdap": "from LDAP",
       "changeRole": "Change {{email}}'s {{role}} role on {{scope}}",
       "revokeRole": "Revoke {{role}} on {{scope}} from {{email}}",
       "lastAdminHint": "{{email}}'s {{role}} role on {{scope}} is the organization's last admin grant. Grant admin to someone else first.",
@@ -3980,6 +4085,7 @@
         "revokeLast": "It is their last role in this organization, so they leave this list. The account itself is kept.",
         "revokeFromSso": "The role came from an SSO group mapping, which grants it again the next time they sign in unless the mapping changes.",
         "revokeFromScim": "The role came from a SCIM group, which grants it again at the next sync unless the group mapping changes.",
+        "revokeFromLdap": "The role came from an LDAP group mapping, which grants it again the next time they sign in unless the mapping changes.",
         "revokeSelf": "It is your own role, so you may lose access you are using right now.",
         "revokeConfirm": "Revoke role",
         "revokeRefused": "Revoking a role on {{scope}} takes Admin there or on a scope above it.",
@@ -3988,6 +4094,7 @@
         "changeBody": "They hold {{role}} there now. The role you pick replaces it in one step, so they are never left without a role there.",
         "changeFromSso": "{{role}} came from an SSO group mapping, which grants it again the next time they sign in; change the mapping for the new role to stick.",
         "changeFromScim": "{{role}} came from a SCIM group, which grants it again at the next sync; change the group mapping for the new role to stick.",
+        "changeFromLdap": "{{role}} came from an LDAP group mapping, which grants it again the next time they sign in; change the mapping for the new role to stick.",
         "changeSelf": "It is your own role, so a lower one may take away access you are using right now.",
         "changeConfirm": "Change role",
         "resetTitle": "Reset the password of {{email}}?",
@@ -5099,6 +5206,10 @@
     "sso": {
       "title": "Single Sign-On",
       "subtitle": "Register an identity provider, map its groups to roles, and choose how this organization signs in."
+    },
+    "ldap": {
+      "title": "LDAP",
+      "subtitle": "Register a directory, map its groups to roles, and let its users sign in with their directory password."
     },
     "rbac": {
       "title": "Roles & Permissions",

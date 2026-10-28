@@ -618,6 +618,21 @@ export type {
   CreateSsoGroupMappingInput,
   OrgAuthPolicy,
 } from "./sso";
+export {
+  fetchLdapDirectories,
+  createLdapDirectory,
+  updateLdapDirectory,
+  deleteLdapDirectory,
+  fetchLdapGroupMappings,
+  createLdapGroupMapping,
+  deleteLdapGroupMapping,
+} from "./ldap";
+export type {
+  LdapDirectoryRow,
+  LdapDirectoryInput,
+  LdapGroupMappingRow,
+  CreateLdapGroupMappingInput,
+} from "./ldap";
 export { fetchVersion, fetchStability, fetchPublicUrl } from "./system";
 export type { SubsystemStability, VersionStatus, PublicUrl } from "./system";
 export {

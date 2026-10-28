@@ -1559,7 +1559,8 @@ function RoleGrants({
           email: user.email,
         };
         const last = isLastAdmin(grant);
-        const fromIdp = grant.source === "sso" || grant.source === "scim";
+        const fromIdp =
+          grant.source === "sso" || grant.source === "scim" || grant.source === "ldap";
         return (
           <li key={grant.id} className="flex min-w-0 items-center gap-1.5">
             <span className="flex min-w-0 flex-wrap items-center gap-1.5">
@@ -1571,7 +1572,13 @@ function RoleGrants({
               )}
               {fromIdp && (
                 <span className="text-2xs text-[color:var(--text-subtle)]">
-                  {t(grant.source === "sso" ? "pages.users.viaSso" : "pages.users.viaScim")}
+                  {t(
+                    grant.source === "sso"
+                      ? "pages.users.viaSso"
+                      : grant.source === "ldap"
+                        ? "pages.users.viaLdap"
+                        : "pages.users.viaScim",
+                  )}
                 </span>
               )}
             </span>
@@ -1710,6 +1717,7 @@ function RevokeRoleDialog({
     if (grants.length === 1) body.push(t("pages.users.confirm.revokeLast"));
     if (target.grant.source === "sso") body.push(t("pages.users.confirm.revokeFromSso"));
     if (target.grant.source === "scim") body.push(t("pages.users.confirm.revokeFromScim"));
+    if (target.grant.source === "ldap") body.push(t("pages.users.confirm.revokeFromLdap"));
     if (self && self === target.user.id) body.push(t("pages.users.confirm.revokeSelf"));
   }
 
@@ -1833,6 +1841,7 @@ function ChangeRoleDialog({
     body.push(t("pages.users.confirm.changeBody", names));
     if (target.grant.source === "sso") body.push(t("pages.users.confirm.changeFromSso", names));
     if (target.grant.source === "scim") body.push(t("pages.users.confirm.changeFromScim", names));
+    if (target.grant.source === "ldap") body.push(t("pages.users.confirm.changeFromLdap", names));
     if (self && self === target.user.id) body.push(t("pages.users.confirm.changeSelf"));
   }
 

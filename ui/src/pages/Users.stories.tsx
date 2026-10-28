@@ -1214,6 +1214,43 @@ export const RevokeIsConfirmedThenLands: Story = {
 };
 
 /**
+ * A grant an LDAP sign-in wrote is marked like a single sign-on or SCIM one
+ * (#3261), and revoking or changing it says the directory's group mapping will
+ * grant it again.
+ */
+const viaLdap = (): FetchStub => {
+  const inner = directory();
+  return scoped(async (input, init) => {
+    const res = await inner(input, init);
+    const method = (init?.method ?? "GET").toUpperCase();
+    if (method !== "GET" || !String(input).includes("/memberships")) return res;
+    const rows = (await res.json()) as MembershipRow[];
+    return json(rows.map((g) => (g.id === "m-2" ? { ...g, source: "ldap" } : g)));
+  });
+};
+
+export const LdapGrantsAreMarkedAndExplained: Story = {
+  render: () => (
+    <Harness fetchStub={viaLdap()}>
+      <Users />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("from LDAP")).toBeVisible();
+    await userEvent.click(canvas.getByRole("button", { name: CHANGE_GRACE }));
+    await expect(
+      await within(document.body).findByText(/came from an LDAP group mapping/),
+    ).toBeVisible();
+    await cancelConfirmation();
+    await userEvent.click(canvas.getByRole("button", { name: REVOKE_GRACE }));
+    await expect(
+      await within(document.body).findByText(/The role came from an LDAP group mapping/),
+    ).toBeVisible();
+  },
+};
+
+/**
  * The control plane refuses the revoke. The dialog stays open with its message
  * verbatim and a line on what revoking at that scope takes: the gate answered
  * for the scope the switcher is on, which is not always the grant's.
