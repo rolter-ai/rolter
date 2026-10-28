@@ -1915,3 +1915,171 @@ async fn two_orgs_each_hold_the_same_route_and_provider_names() {
     assert!(config.sanitize_for_snapshot().is_empty());
     config.validate_snapshot().unwrap();
 }
+
+/// One route name per org is held by `routes_org_model_unique` (#3459), not
+/// by a check-then-insert: two projects of one org cannot both hold a name,
+/// even when both creates race, while another org keeps its own.
+#[tokio::test]
+async fn the_database_holds_one_route_name_per_org() {
+    if !super::super::test_database::is_configured() {
+        eprintln!("skipping: {} not set", super::super::test_database::URL_ENV);
+        return;
+    }
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let org_a = OrgRepo(&pool).create("org-a", "org-a").await.unwrap();
+    let org_b = OrgRepo(&pool).create("org-b", "org-b").await.unwrap();
+    let team_a = TeamRepo(&pool).create(org_a.id, "platform").await.unwrap();
+    let team_b = TeamRepo(&pool).create(org_b.id, "core").await.unwrap();
+    let projects = ProjectRepo(&pool);
+    let a1 = projects.create(team_a.id, "one").await.unwrap();
+    let a2 = projects.create(team_a.id, "two").await.unwrap();
+    let b1 = projects.create(team_b.id, "one").await.unwrap();
+    let routes = RouteRepo(&pool);
+
+    // two concurrent creates of one name in two projects of one org: one wins
+    let (first, second) = tokio::join!(
+        routes.create(a1.id, "gpt-4o", "round_robin"),
+        routes.create(a2.id, "gpt-4o", "round_robin"),
+    );
+    let outcomes = [first, second];
+    assert_eq!(
+        outcomes.iter().filter(|r| r.is_ok()).count(),
+        1,
+        "{outcomes:?}"
+    );
+    assert!(
+        outcomes
+            .iter()
+            .any(|r| matches!(r, Err(Error::AlreadyExists(_)))),
+        "{outcomes:?}"
+    );
+    // the other org's namesake is its own
+    routes.create(b1.id, "gpt-4o", "round_robin").await.unwrap();
+    let held: Vec<(Uuid, String)> =
+        sqlx::query_as("select org_id, model from routes order by org_id")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    let mut expected = vec![
+        (org_a.id, "gpt-4o".to_string()),
+        (org_b.id, "gpt-4o".to_string()),
+    ];
+    expected.sort();
+    assert_eq!(held, expected, "each org holds the name once");
+
+    // the copy of the org follows the project, whatever a write says
+    let route = routes.create(a1.id, "claude", "round_robin").await.unwrap();
+    sqlx::query("update routes set org_id = $2 where id = $1")
+        .bind(route.id)
+        .bind(org_b.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let org: Uuid = sqlx::query_scalar("select org_id from routes where id = $1")
+        .bind(route.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(org, org_a.id);
+    // and moves with a team that changes org
+    let refused = sqlx::query("update teams set org_id = $2 where id = $1")
+        .bind(team_a.id)
+        .bind(org_b.id)
+        .execute(&pool)
+        .await
+        .expect_err("org-b already holds gpt-4o, so moving org-a's team must refuse");
+    assert!(
+        refused.to_string().contains("routes_org_model_unique"),
+        "{refused}"
+    );
+    sqlx::query("delete from routes where model = 'gpt-4o' and project_id = $1")
+        .bind(b1.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("update teams set org_id = $2 where id = $1")
+        .bind(team_a.id)
+        .bind(org_b.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let org: Uuid = sqlx::query_scalar("select org_id from routes where id = $1")
+        .bind(route.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(org, org_b.id);
+}
+
+/// Providers and provider groups share one `slug/model` address per org
+/// (#1857), and `0206` holds it across the two tables (#3459): a group cannot
+/// take a slug a provider of its org holds, or the reverse, even when both
+/// creates race, while another org may take it.
+#[tokio::test]
+async fn providers_and_groups_share_one_slug_per_org() {
+    if !super::super::test_database::is_configured() {
+        eprintln!("skipping: {} not set", super::super::test_database::URL_ENV);
+        return;
+    }
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let org_a = OrgRepo(&pool).create("org-a", "org-a").await.unwrap();
+    let org_b = OrgRepo(&pool).create("org-b", "org-b").await.unwrap();
+    let provider = |slug: &'static str| NewProvider {
+        name: slug,
+        slug,
+        kind: "openai_compatible",
+        api_base: "http://127.0.0.1:9/v1",
+        api_key_env: None,
+        egress_proxy: None,
+        egress_proxies: &[],
+        kv_events: None,
+        lmcache: None,
+        project_id: None,
+        allow_custom_api_base: false,
+    };
+    let providers = ProviderRepo(&pool);
+    let groups = ProviderGroupRepo(&pool);
+
+    // a provider and a group racing for one slug in one org: one wins
+    let (p, g) = tokio::join!(
+        providers.create(org_a.id, provider("edge")),
+        groups.create(org_a.id, "edge", "edge", "round_robin", None),
+    );
+    assert!(
+        p.is_ok() != g.is_ok(),
+        "exactly one holder: provider {p:?}, group {g:?}"
+    );
+    let lost = if p.is_ok() {
+        g.map(|_| ())
+    } else {
+        p.map(|_| ())
+    };
+    assert!(matches!(lost, Err(Error::AlreadyExists(_))), "{lost:?}");
+
+    // sequentially, both ways round
+    providers.create(org_a.id, provider("pool")).await.unwrap();
+    assert!(matches!(
+        groups
+            .create(org_a.id, "pool", "pool", "round_robin", None)
+            .await,
+        Err(Error::AlreadyExists(_))
+    ));
+    groups
+        .create(org_a.id, "fleet", "fleet", "round_robin", None)
+        .await
+        .unwrap();
+    assert!(matches!(
+        providers.create(org_a.id, provider("fleet")).await,
+        Err(Error::AlreadyExists(_))
+    ));
+
+    // another org takes every one of them, as a provider or as a group
+    providers.create(org_b.id, provider("edge")).await.unwrap();
+    groups
+        .create(org_b.id, "pool", "pool", "round_robin", None)
+        .await
+        .unwrap();
+    providers.create(org_b.id, provider("fleet")).await.unwrap();
+}

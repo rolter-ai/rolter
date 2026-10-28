@@ -159,6 +159,29 @@ From this release two organizations may each name a route, provider or provider 
 - **A bootstrap-file route can no longer use a provider created in the dashboard or the API.** A flat `[[routes]]` or `[[provider_groups]]` entry in the control plane's bootstrap file is deployment-wide, and a provider created through the dashboard or the API belongs to an organization, so serving it would hand that organization's credential to every organization's keys. Such a target or member is left out of the snapshot and named in `GET /api/v1/config/problems`; if it was the route's only target, the model answers `404`. Declare the provider in the file as well, or move the route into the organization with `[[models.default]]` or `rolter-seed --import`.
 - **The response cache starts cold once.** A route that belongs to an organization now keeps its cached answers under that organization, whether or not another organization shares its name, so its existing entries are no longer read after the upgrade and expire on their own TTL. Routes from the gateway's own file keep their keys.
 
+### Duplicate route names within one organization
+
+The database now enforces one route name per organization, across all of its projects ([#3459](https://github.com/rolter-ai/rolter/issues/3459)), and one `slug/model` address per organization across its providers and provider groups. Before, the control plane checked the name and then wrote it, so two creates of the same name in two projects of one organization, sent at the same moment, could both succeed. Such a duplicate already stopped `/internal/snapshot` from serving, so a deployment that has one is one whose gateways stopped receiving configuration changes.
+
+If the database holds such a duplicate, the control plane refuses to start, and its log names each one:
+
+```
+cannot enforce one route name per org: duplicate routes exist (org 3f2c…: route 'gpt-4o' in projects 0b1e…, 9a7d…)
+```
+
+Before upgrading, find them with:
+
+```sql
+select t.org_id, r.model, array_agg(r.project_id || ' ' || r.id order by r.created_at) as routes
+  from routes r
+  join projects p on p.id = r.project_id
+  join teams t on t.id = p.team_id
+ group by t.org_id, r.model
+having count(*) > 1;
+```
+
+For each row, keep the route the organization's keys should reach and rename or delete the others: create the route under a new name in the dashboard or the API and move the keys that need it there, or delete the copy with `DELETE /api/v1/routes/{id}`. Then start the new control plane. Providers and provider groups that already share a slug in one organization are left as they are; only a new or renamed one is refused.
+
 ## Model price rates
 
 The migration that adds `0084_model_price_rate_checks.sql` makes the database refuse a model price whose rate is negative or `NaN`. Before it, `PUT /api/v1/model-prices` accepted both: a negative rate turned a request into a credit against its budget, and `NaN` was stored but could not be read back, so the model was priced at zero. The API refuses both now (`400`, naming the field), and so does a `rolter.toml` with a negative rate. It also refuses a rate of a million or more, which the `numeric(12, 6)` columns cannot hold and which used to be a `500`.

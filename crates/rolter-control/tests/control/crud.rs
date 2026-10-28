@@ -179,6 +179,84 @@ async fn providers_groups_and_route_names_share_the_gateways_address_namespace()
 /// A readonly provider or group from the bootstrap file answers `slug/model`
 /// for every org, so no database provider or group may take its slug, on create
 /// or on rename, and no route may be named on its address (#1845).
+/// Two creates of one route name, sent at once to two projects of one org,
+/// both pass the API's check before either writes. The database's
+/// `routes_org_model_unique` (#3459) lets exactly one through, and the other
+/// reads the same `409` a sequential create gets, so the snapshot never holds
+/// a duplicate it would refuse. Another org keeps its namesake.
+#[tokio::test]
+async fn concurrent_route_creates_in_one_org_end_in_one_route_and_a_409() {
+    skip_without_db!();
+    let (app, _db) = fresh_app().await;
+    let addr = serve(app).await;
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let post = |url: String, body: Value| {
+        let client = client.clone();
+        async move {
+            let resp = client.post(&url).json(&body).send().await.unwrap();
+            let status = resp.status().as_u16();
+            let json: Value = resp.json().await.unwrap_or(Value::Null);
+            (status, json)
+        }
+    };
+    let id = |v: &Value| v["id"].as_str().unwrap().to_string();
+    let mut projects = Vec::new();
+    for (org, team_projects) in [("race-a", 2), ("race-b", 1)] {
+        let (_, org) = post(
+            format!("{base}/api/v1/orgs"),
+            json!({"name": org, "slug": org}),
+        )
+        .await;
+        let (_, team) = post(
+            format!("{base}/api/v1/orgs/{}/teams", id(&org)),
+            json!({"name": "core"}),
+        )
+        .await;
+        for n in 0..team_projects {
+            let (_, project) = post(
+                format!("{base}/api/v1/teams/{}/projects", id(&team)),
+                json!({"name": format!("app-{n}")}),
+            )
+            .await;
+            projects.push(id(&project));
+        }
+    }
+    let create = |project: String| {
+        post(
+            format!("{base}/api/v1/projects/{project}/routes"),
+            json!({"model": "gpt-4o", "strategy": "round_robin"}),
+        )
+    };
+    for _ in 0..5 {
+        let ((s1, b1), (s2, b2)) =
+            tokio::join!(create(projects[0].clone()), create(projects[1].clone()));
+        let mut statuses = [s1, s2];
+        statuses.sort();
+        assert_eq!(statuses, [200, 409], "{b1} / {b2}");
+        let refused = if s1 == 409 { &b1 } else { &b2 };
+        assert_eq!(refused["error"]["code"], "name_taken", "{refused}");
+        assert!(
+            refused["error"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("in this organization"),
+            "{refused}"
+        );
+        // clear the winner so the next round races again
+        let winner = if s1 == 200 { &b1 } else { &b2 };
+        let resp = client
+            .delete(format!("{base}/api/v1/routes/{}", id(winner)))
+            .send()
+            .await
+            .unwrap();
+        assert!(resp.status().is_success(), "{}", resp.status());
+    }
+    let (s1, _) = create(projects[0].clone()).await;
+    let (s2, other_org) = create(projects[2].clone()).await;
+    assert_eq!((s1, s2), (200, 200), "another org's namesake: {other_org}");
+}
+
 #[tokio::test]
 async fn a_bootstrap_slug_is_refused_to_every_database_row() {
     skip_without_db!();
