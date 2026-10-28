@@ -201,7 +201,29 @@ impl<'a> Rules<'a> {
     /// for everyone; a caller with an assignment is held to the union of its
     /// assigned groups, and also governed by a *disabled* assigned group that
     /// names the server, with none of that group's tools.
+    ///
+    /// A key of the snapshot with an assignment finds that union already merged
+    /// (`Snapshot::mcp_caller_tools`, #3435): per request that is two lookups
+    /// and a borrow, where [`Self::governed_merged`] builds a `Vec` of the
+    /// caller's groups and clones the union of their tool names. The caller's
+    /// project and team are the key's own, taken from the same snapshot, which
+    /// is what lets the key id stand for all three subjects. Any other caller
+    /// takes the merge.
     fn governed<'s>(
+        snapshot: &'s Snapshot,
+        server: &McpServerConfig,
+        caller: &Caller<'_>,
+    ) -> Option<Cow<'s, HashSet<String>>> {
+        match snapshot.mcp_caller_tools.get(caller.key_id) {
+            Some(merged) => merged.governed.get(&server.id).map(Cow::Borrowed),
+            None => Self::governed_merged(snapshot, server, caller),
+        }
+    }
+
+    /// [`Self::governed`] worked out from the assignments for this one caller:
+    /// what a caller the snapshot built nothing for gets, and the reference the
+    /// precomputed union is held to.
+    fn governed_merged<'s>(
         snapshot: &'s Snapshot,
         server: &McpServerConfig,
         caller: &Caller<'_>,
@@ -690,7 +712,7 @@ mod tests {
     use super::*;
     use rolter_core::{
         GatewayConfig, McpOrgSettingsConfig, McpToolGroupConfig, McpToolGroupSubjectConfig,
-        McpToolRefConfig,
+        McpToolRefConfig, VirtualKeyRecord,
     };
 
     fn caller() -> Caller<'static> {
@@ -757,6 +779,31 @@ mod tests {
         let mut config = GatewayConfig::default();
         config.mcp_servers.extend([server.clone(), elsewhere]);
         config.mcp_tool_groups = groups;
+        // the default caller and one nobody is assigned to, as keys of the
+        // snapshot, so their groups are the ones merged when it is built
+        config.db_virtual_keys.extend(
+            [
+                ("key-1", "project-1", "team-1"),
+                ("key-2", "project-2", "team-2"),
+            ]
+            .map(|(id, project, team)| VirtualKeyRecord {
+                id: id.into(),
+                org_id: "org".into(),
+                project_id: project.into(),
+                team_id: team.into(),
+                key_hash: format!("hash-{id}"),
+                previous: None,
+                access_policy: None,
+                user_id: "user-1".into(),
+                models: Vec::new(),
+                providers: Vec::new(),
+                disabled: false,
+                expires_at: None,
+                cache: None,
+                business_unit_id: String::new(),
+                customer_id: String::new(),
+            }),
+        );
         (
             Snapshot::build(&config, &crate::load::LoadTracker::default()),
             server,
@@ -1020,6 +1067,106 @@ mod tests {
         assert_eq!(
             allowed_for(&snapshot, &server, &caller()),
             [false, false, false]
+        );
+    }
+
+    /// #3435: the union merged when the snapshot is built is the one a request
+    /// would have merged for itself, for a key with groups on every subject, an
+    /// overlap, a disabled group, a server only a disabled group names, and for
+    /// callers with none.
+    #[test]
+    fn the_precomputed_union_equals_the_merged_one() {
+        let mut off = assigned(
+            named(group("org", "elsewhere", &["z"]), "off"),
+            "team",
+            "team-2",
+        );
+        off.disabled = true;
+        let (snapshot, server) = world(vec![
+            named(group("org", "srv", &["a", "b", "c"]), "all"),
+            assigned(
+                named(group("org", "srv", &["a", "b"]), "g1"),
+                "team",
+                "team-1",
+            ),
+            assigned(
+                named(group("org", "srv", &["b", "c"]), "g2"),
+                "project",
+                "project-1",
+            ),
+            assigned(
+                named(group("org", "srv", &["a"]), "g3"),
+                "virtual_key",
+                "key-1",
+            ),
+            assigned(
+                named(group("org", "elsewhere", &["z"]), "g4"),
+                "virtual_key",
+                "key-1",
+            ),
+            off,
+            // another organization's assignment matches no caller
+            assigned(
+                named(group("other", "srv", &["c"]), "foreign"),
+                "virtual_key",
+                "key-1",
+            ),
+        ]);
+        assert!(snapshot.mcp_caller_tools.contains_key("key-1"));
+        assert!(snapshot.mcp_caller_tools.contains_key("key-2"));
+        let elsewhere = snapshot
+            .mcp_servers
+            .values()
+            .find(|candidate| candidate.id == "elsewhere")
+            .cloned()
+            .unwrap();
+        for caller in [
+            caller(),
+            Caller {
+                key_id: "key-2",
+                project_id: "project-2",
+                team_id: "team-2",
+                ..caller()
+            },
+            Caller {
+                key_id: "unknown",
+                ..caller()
+            },
+        ] {
+            for server in [&server, &elsewhere] {
+                let precomputed = Rules::governed(&snapshot, server, &caller);
+                let merged = Rules::governed_merged(&snapshot, server, &caller);
+                assert_eq!(
+                    precomputed.as_deref(),
+                    merged.as_deref(),
+                    "{} on {}",
+                    caller.key_id,
+                    server.id
+                );
+            }
+        }
+        // the key with groups on all three subjects: a, b and c, each once, and
+        // nothing is cloned to read it
+        let governed = Rules::governed(&snapshot, &server, &caller()).unwrap();
+        assert!(matches!(governed, Cow::Borrowed(_)));
+        assert_eq!(governed.len(), 3);
+        // key-2's only assignment is a disabled group naming another server, so
+        // here it is the organization's set, and there it is narrowed to none
+        assert_eq!(
+            allowed_for(&snapshot, &server, &caller()),
+            [true, true, true]
+        );
+        let other = Caller {
+            key_id: "key-2",
+            project_id: "project-2",
+            team_id: "team-2",
+            ..caller()
+        };
+        assert_eq!(
+            Rules::governed(&snapshot, &elsewhere, &other)
+                .unwrap()
+                .len(),
+            0
         );
     }
 

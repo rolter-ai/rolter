@@ -184,7 +184,16 @@ after the caller is authenticated and before anything is forwarded.
   organization-wide set or the whole server; deleting a group removes its assignments with it
   (cascade), and its callers return to the organization-wide set. The gateway
   indexes them as `Snapshot::mcp_group_assignments` (subject id to
-  `(kind, organization, group)`) and each enabled group's tools as `mcp_group_tools`.
+  `(kind, organization, group)`) and each enabled group's tools as `mcp_group_tools`. `Snapshot::build` also merges, once, the union a
+  database key's own, project's and team's groups allow on each server
+  (`Snapshot::mcp_caller_tools`, #3435; keys with the same groups share one
+  `Arc`), so a request borrows it with two lookups. Resolving it per request
+  cost a `Vec` of the caller's groups plus a `String` clone and a set insert
+  for every tool of every group assigned to the caller, on a path meant to
+  allocate nothing; now it costs none of that. A caller the snapshot built
+  nothing for (no assignment, or not a key of the snapshot) still takes the
+  merge, `Rules::governed_merged`, which is also what a test holds the
+  precomputed union to.
   `Caller::assigned_groups` collects the groups assigned to the caller's key,
   project and team and returns at once when nothing is assigned anywhere; with
   none the organization-wide set applies, otherwise the allowed tools on a
