@@ -4008,14 +4008,177 @@ fn fold_retired_virtual_key_required(server: &mut ServerConfig, value: &toml::Va
 /// One problem line per enum value in a file config that this build does not
 /// know (#3347). A file is written by hand, where an unknown value is a typo
 /// and must not quietly take its fail-closed reading.
-fn unknown_value(problems: &mut Vec<String>, unknown: bool, what: impl FnOnce() -> String) {
-    if unknown {
+fn unknown_value<T: KnownValues>(
+    problems: &mut Vec<String>,
+    value: &T,
+    what: impl FnOnce() -> String,
+) {
+    if value.is_unknown() {
         problems.push(format!(
-            "{} is not a value this build knows; check its spelling against the \
-             configuration reference",
-            what()
+            "{} is not a value this build knows; expected one of {}",
+            what(),
+            T::spellings()
         ));
     }
+}
+
+/// An enum of the snapshot with an `Unknown` fallback (#3347), and the values
+/// a config file may spell, so a typo can be answered with the list.
+trait KnownValues {
+    /// whether this is the fallback rather than a value this build knows
+    fn is_unknown(&self) -> bool;
+    /// every value this build knows, as a file spells it
+    fn spellings() -> String;
+}
+
+/// [`KnownValues`] for an enum, from the list of its known variants. The
+/// `match` beside the list is exhaustive, so a variant added to the enum and
+/// not to the list fails to compile.
+macro_rules! known_values {
+    ($ty:ident { $($variant:ident),+ $(,)? }) => {
+        impl KnownValues for $ty {
+            fn is_unknown(&self) -> bool {
+                *self == $ty::Unknown
+            }
+
+            fn spellings() -> String {
+                const KNOWN: &[$ty] = &[$($ty::$variant),+];
+                spell(KNOWN)
+            }
+        }
+
+        const _: fn($ty) = |value| match value {
+            $($ty::$variant)|+ | $ty::Unknown => {}
+        };
+    };
+}
+
+/// The spellings of `values`, as serde writes them, joined for a sentence.
+fn spell<T: Serialize>(values: &[T]) -> String {
+    values
+        .iter()
+        .filter_map(|value| serde_json::to_value(value).ok())
+        .filter_map(|value| value.as_str().map(str::to_string))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+impl<T: KnownValues> KnownValues for Option<T> {
+    fn is_unknown(&self) -> bool {
+        self.as_ref().is_some_and(KnownValues::is_unknown)
+    }
+
+    fn spellings() -> String {
+        T::spellings()
+    }
+}
+
+impl KnownValues for ProviderKind {
+    fn is_unknown(&self) -> bool {
+        *self == ProviderKind::Unknown
+    }
+
+    fn spellings() -> String {
+        // `ALL` is held to the enum by `kind_is_listed_in_all`
+        spell(&ProviderKind::ALL)
+    }
+}
+
+mod known_values {
+    use super::*;
+    use crate::guardrail_webhook::FailureMode;
+    use crate::guardrails::{GuardAction, StreamingPostCall};
+    use crate::pii_sanitizer::{RestorationPolicy, SanitizeDirection, StreamingResponse};
+    use crate::semantic_guards::{StreamingStrategy, ViolationAction};
+
+    known_values!(RoleProfile {
+        Openai,
+        SystemOnly,
+        Anthropic
+    });
+    known_values!(BalancingStrategy {
+        RoundRobin,
+        Random,
+        PowerOfTwo,
+        ConsistentHash,
+        CacheAware,
+        Weighted,
+        Pipeline,
+        Cheapest,
+        Fastest,
+        PreciseCacheAware,
+        LmcacheAware,
+        Adaptive,
+        LoraAware,
+        PredictedLatency,
+    });
+    known_values!(OverrideMode { Allow, Deny });
+    known_values!(BudgetScope {
+        Org,
+        Team,
+        Project,
+        Key,
+        BusinessUnit,
+        Customer,
+        User
+    });
+    known_values!(BudgetPeriod {
+        Monthly,
+        Daily,
+        Total
+    });
+    known_values!(UnpricedPolicy {
+        Ignore,
+        Warn,
+        Block
+    });
+    known_values!(BackpressurePolicy { Drop, Block, Error });
+    known_values!(FailureMode {
+        FailOpen,
+        FailClosed
+    });
+    known_values!(GuardAction {
+        Annotate,
+        Block,
+        Redact
+    });
+    known_values!(StreamingPostCall {
+        Reject,
+        Passthrough
+    });
+    known_values!(SanitizeDirection {
+        Request,
+        Response,
+        Both
+    });
+    known_values!(StreamingResponse {
+        Reject,
+        Passthrough,
+        Restore
+    });
+    known_values!(RestorationPolicy {
+        Never,
+        TrustedDownstream,
+        CallerAuthorized
+    });
+    known_values!(ViolationAction { Block, Annotate });
+    known_values!(StreamingStrategy { Reject, Buffer });
+}
+
+/// Every `takes_over` class of `route` this build does not know, with the
+/// provider of the target that carries it (#3390).
+fn unknown_failure_classes(route: &ModelRoute) -> impl Iterator<Item = (&str, String)> {
+    route
+        .targets
+        .iter()
+        .chain(route.variants.iter().flat_map(|v| v.targets.iter()))
+        .flat_map(|target| {
+            target
+                .takes_over
+                .iter()
+                .filter(|class| class.kind == crate::failover::FailureKind::Unknown)
+                .map(move |class| (target.provider.as_str(), class.to_string()))
+        })
 }
 
 /// Replace a value this build does not know with its fail-closed reading and
@@ -4142,6 +4305,15 @@ impl GatewayConfig {
                 problems,
                 || format!("route '{model}' param_policy.mode"),
             );
+            // left in place: the class matches no failure, and keeping it keeps
+            // the target out of the pool (#3390)
+            for (provider, class) in unknown_failure_classes(route) {
+                problems.push(format!(
+                    "route '{model}' target '{provider}' takes over a failure class this \
+                     gateway does not know ('{class}'); it takes over nothing for it until \
+                     the gateway is upgraded"
+                ));
+            }
         }
         for budget in &mut self.budgets {
             let (scope, id) = (budget.scope.key_label(), budget.id.clone());
@@ -4249,35 +4421,26 @@ impl GatewayConfig {
 
     /// Every enum value in a file config this build does not know (#3347).
     fn unknown_value_problems(&self) -> Vec<String> {
-        use crate::guardrail_webhook::FailureMode;
-        use crate::guardrails::{GuardAction, StreamingPostCall};
-        use crate::pii_sanitizer::{RestorationPolicy, SanitizeDirection, StreamingResponse};
-        use crate::semantic_guards::{StreamingStrategy, ViolationAction};
-
         let mut p = Vec::new();
-        unknown_value(
-            &mut p,
-            self.unpriced_policy == UnpricedPolicy::Unknown,
-            || "unpriced_policy".to_string(),
-        );
-        unknown_value(
-            &mut p,
-            self.queue.backpressure == BackpressurePolicy::Unknown,
-            || "queue.backpressure".to_string(),
-        );
+        unknown_value(&mut p, &self.unpriced_policy, || {
+            "unpriced_policy".to_string()
+        });
+        unknown_value(&mut p, &self.queue.backpressure, || {
+            "queue.backpressure".to_string()
+        });
         for provider in self.providers.iter().chain(&self.provider_defaults) {
             let profiles = provider
                 .role_profile
                 .iter()
                 .chain(provider.model_role_profiles.values());
             for profile in profiles {
-                unknown_value(&mut p, *profile == RoleProfile::Unknown, || {
+                unknown_value(&mut p, profile, || {
                     format!("provider '{}' role profile", provider.name)
                 });
             }
         }
         for provider in self.providers.iter().chain(&self.provider_defaults) {
-            unknown_value(&mut p, provider.kind == ProviderKind::Unknown, || {
+            unknown_value(&mut p, &provider.kind, || {
                 format!("provider '{}' kind", provider.name)
             });
         }
@@ -4286,7 +4449,7 @@ impl GatewayConfig {
             .iter()
             .chain(&self.provider_group_defaults)
         {
-            unknown_value(&mut p, group.strategy == BalancingStrategy::Unknown, || {
+            unknown_value(&mut p, &group.strategy, || {
                 format!("provider group '{}' strategy", group.name)
             });
         }
@@ -4296,88 +4459,78 @@ impl GatewayConfig {
             .chain(&self.models.readonly)
             .chain(&self.models.defaults);
         for route in routes {
-            unknown_value(&mut p, route.strategy == BalancingStrategy::Unknown, || {
+            unknown_value(&mut p, &route.strategy, || {
                 format!("route '{}' strategy", route.model)
             });
-            unknown_value(
-                &mut p,
-                route.param_policy.mode == OverrideMode::Unknown,
-                || format!("route '{}' param_policy.mode", route.model),
-            );
+            unknown_value(&mut p, &route.param_policy.mode, || {
+                format!("route '{}' param_policy.mode", route.model)
+            });
+            for (provider, class) in unknown_failure_classes(route) {
+                p.push(format!(
+                    "route '{}' target '{provider}' takes_over '{class}' is not a failure class \
+                     this build knows; expected one of throttled, timeout, transport, \
+                     server_error, refusal or refusal:<category>",
+                    route.model
+                ));
+            }
         }
         for budget in &self.budgets {
-            unknown_value(&mut p, budget.scope == BudgetScope::Unknown, || {
+            unknown_value(&mut p, &budget.scope, || {
                 format!("budget '{}' scope", budget.id)
             });
-            unknown_value(&mut p, budget.period == BudgetPeriod::Unknown, || {
+            unknown_value(&mut p, &budget.period, || {
                 format!("budget '{}' period", budget.id)
             });
-            unknown_value(
-                &mut p,
-                budget.unpriced_policy == Some(UnpricedPolicy::Unknown),
-                || format!("budget '{}' unpriced_policy", budget.id),
-            );
+            unknown_value(&mut p, &budget.unpriced_policy, || {
+                format!("budget '{}' unpriced_policy", budget.id)
+            });
         }
         for limit in &self.rate_limits {
-            unknown_value(&mut p, limit.scope == BudgetScope::Unknown, || {
+            unknown_value(&mut p, &limit.scope, || {
                 format!("rate limit '{}' scope", limit.id)
             });
         }
         for rule in &self.guardrails.rules {
-            unknown_value(&mut p, rule.action == GuardAction::Unknown, || {
+            unknown_value(&mut p, &rule.action, || {
                 format!("guardrail rule '{}' action", rule.name)
             });
         }
-        unknown_value(
-            &mut p,
-            self.guardrails.streaming_post_call == StreamingPostCall::Unknown,
-            || "guardrails.streaming_post_call".to_string(),
-        );
-        unknown_value(
-            &mut p,
-            self.guardrail_webhook.failure_mode == FailureMode::Unknown,
-            || "guardrail_webhook.failure_mode".to_string(),
-        );
+        unknown_value(&mut p, &self.guardrails.streaming_post_call, || {
+            "guardrails.streaming_post_call".to_string()
+        });
+        unknown_value(&mut p, &self.guardrail_webhook.failure_mode, || {
+            "guardrail_webhook.failure_mode".to_string()
+        });
         for provider in &self.semantic_guards.providers {
-            unknown_value(
-                &mut p,
-                provider.failure_mode == FailureMode::Unknown,
-                || format!("semantic guard provider '{}' failure_mode", provider.name),
-            );
+            unknown_value(&mut p, &provider.failure_mode, || {
+                format!("semantic guard provider '{}' failure_mode", provider.name)
+            });
         }
         for policy in &self.semantic_guards.policies {
-            unknown_value(
-                &mut p,
-                policy.on_violation == ViolationAction::Unknown,
-                || format!("semantic guard policy '{}' on_violation", policy.name),
-            );
-            unknown_value(
-                &mut p,
-                policy.streaming == StreamingStrategy::Unknown,
-                || format!("semantic guard policy '{}' streaming", policy.name),
-            );
+            unknown_value(&mut p, &policy.on_violation, || {
+                format!("semantic guard policy '{}' on_violation", policy.name)
+            });
+            unknown_value(&mut p, &policy.streaming, || {
+                format!("semantic guard policy '{}' streaming", policy.name)
+            });
         }
         let pii = &self.pii_sanitizer;
-        unknown_value(&mut p, pii.direction == SanitizeDirection::Unknown, || {
+        unknown_value(&mut p, &pii.direction, || {
             "pii_sanitizer.direction".to_string()
         });
-        unknown_value(
-            &mut p,
-            pii.restoration == RestorationPolicy::Unknown,
-            || "pii_sanitizer.restoration".to_string(),
-        );
-        unknown_value(&mut p, pii.streaming == StreamingResponse::Unknown, || {
+        unknown_value(&mut p, &pii.restoration, || {
+            "pii_sanitizer.restoration".to_string()
+        });
+        unknown_value(&mut p, &pii.streaming, || {
             "pii_sanitizer.streaming".to_string()
         });
-        unknown_value(&mut p, pii.failure_mode == FailureMode::Unknown, || {
+        unknown_value(&mut p, &pii.failure_mode, || {
             "pii_sanitizer.failure_mode".to_string()
         });
         for instance in &self.plugins.instances {
-            unknown_value(
-                &mut p,
-                instance.failure_mode == FailureMode::Unknown,
-                || format!("plugin '{}' failure_mode", instance.slug),
-            );
+            unknown_value(&mut p, &instance.failure_mode, || {
+                format!("plugin '{}' failure_mode", instance.slug)
+            });
         }
         p
     }
@@ -10978,7 +11131,10 @@ mod tests {
                  "members": [{"provider": "known"}]}
             ],
             "routes": [
-                {"model": "kept", "targets": [{"provider": "known"}],
+                {"model": "kept", "targets": [
+                    {"provider": "known"},
+                    {"provider": "known", "takes_over": ["quantum_flux"]}
+                 ],
                  "param_policy": {"mode": "maybe"}},
                 {"model": "orphaned", "targets": [{"provider": "future"}]},
                 {"model": "guessing", "strategy": "mind_reading",
@@ -11047,6 +11203,11 @@ mod tests {
             RoleProfile::SystemOnly
         );
         assert_eq!(cfg.routes[0].param_policy.mode, OverrideMode::Deny);
+        // an unknown class stays in the set, matching nothing (#3390)
+        assert_eq!(
+            cfg.routes[0].targets[1].takes_over[0].kind,
+            crate::failover::FailureKind::Unknown
+        );
         assert_eq!(cfg.budgets[1].unpriced_policy, Some(UnpricedPolicy::Block));
         assert_eq!(cfg.guardrails.rules[0].action, GuardAction::Block);
         assert_eq!(
@@ -11081,6 +11242,7 @@ mod tests {
             "pool",
             "unpriced_policy",
             "plugin 'pl'",
+            "quantum_flux",
         ] {
             assert!(
                 problems.iter().any(|p| p.contains(named)),
@@ -11120,12 +11282,23 @@ mod tests {
                 "[guardrail_webhook]\nfailure_mode = \"fail_closd\"\n",
                 "guardrail_webhook.failure_mode",
             ),
+            (
+                "[[routes]]\nmodel = \"m\"\n[[routes.targets]]\nprovider = \"p\"\n\
+                 takes_over = [\"throtled\"]\n",
+                "takes_over 'throtled'",
+            ),
         ] {
             let err = GatewayConfig::from_toml_str(toml)
                 .err()
                 .unwrap_or_else(|| panic!("{named}: a typo must not load"));
             assert!(err.to_string().contains(named), "{named}: {err}");
+            // a typo is answered with what the build accepts
+            assert!(err.to_string().contains("expected one of"), "{named}: {err}");
         }
+        let err = GatewayConfig::from_toml_str("unpriced_policy = \"blok\"\n")
+            .err()
+            .unwrap();
+        assert!(err.to_string().contains("ignore, warn, block"), "{err}");
     }
 
     #[test]

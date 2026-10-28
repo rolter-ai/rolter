@@ -123,19 +123,20 @@ upgraded. `GatewayConfig::fail_closed_unknown_values`, which the gateway runs on
 every snapshot before it validates one, decides what `Unknown` means, for that
 entity alone:
 
-| Enum                                                                                  | `Unknown` reads as                                                                                                                                 |
-| ------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ProviderKind`                                                                        | the provider is omitted and never dialled; the sanitizer's cascade drops the route targets, group members and key allow-list entries that named it |
-| `BalancingStrategy`                                                                   | a route is omitted (a request for it is answered as for an unknown model); a provider group keeps no members                                       |
-| `BudgetPeriod`                                                                        | the budget refuses every request it covers, before Redis is read                                                                                   |
-| `BudgetScope` (budgets and rate limits)                                               | the cap counts every request, on a counter of its own, so it binds sooner than configured                                                          |
-| `UnpricedPolicy`                                                                      | `block`                                                                                                                                            |
-| `FailureMode` (guardrail webhook, semantic guard providers, PII sanitizer, plugins)   | `fail_closed`                                                                                                                                      |
-| `GuardAction`, `ViolationAction`                                                      | `block`                                                                                                                                            |
-| `StreamingPostCall`, `StreamingStrategy` (semantic guards), `StreamingResponse` (PII) | `reject`                                                                                                                                           |
-| `SanitizeDirection` / `RestorationPolicy`                                             | `both` / `never`                                                                                                                                   |
-| `OverrideMode` / `BackpressurePolicy` / `RoleProfile`                                 | `deny` / `error` / `system_only`                                                                                                                   |
-| `McpAuthKind` (#952)                                                                  | the server is refused, in the MCP proxy                                                                                                            |
+| Enum                                                                                  | `Unknown` reads as                                                                                                                                                  |
+| ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ProviderKind`                                                                        | the provider is omitted and never dialled; the sanitizer's cascade drops the route targets, group members and key allow-list entries that named it                  |
+| `BalancingStrategy`                                                                   | a route is omitted (a request for it is answered as for an unknown model); a provider group keeps no members                                                        |
+| `BudgetPeriod`                                                                        | the budget refuses every request it covers, before Redis is read                                                                                                    |
+| `BudgetScope` (budgets and rate limits)                                               | the cap counts every request, on a counter of its own, so it binds sooner than configured                                                                           |
+| `UnpricedPolicy`                                                                      | `block`                                                                                                                                                             |
+| `FailureMode` (guardrail webhook, semantic guard providers, PII sanitizer, plugins)   | `fail_closed`                                                                                                                                                       |
+| `GuardAction`, `ViolationAction`                                                      | `block`                                                                                                                                                             |
+| `StreamingPostCall`, `StreamingStrategy` (semantic guards), `StreamingResponse` (PII) | `reject`                                                                                                                                                            |
+| `SanitizeDirection` / `RestorationPolicy`                                             | `both` / `never`                                                                                                                                                    |
+| `OverrideMode` / `BackpressurePolicy` / `RoleProfile`                                 | `deny` / `error` / `system_only`                                                                                                                                    |
+| `McpAuthKind` (#952)                                                                  | the server is refused, in the MCP proxy                                                                                                                             |
+| `FailureClass` (a route target's `takes_over`, #3390)                                 | kept in the set but matches no failure, so the target stays a fallback that is never dialled for it; dropping it would empty the set and put the target in the pool |
 
 Each value read this way is logged once per applied snapshot at `warn`. The
 control plane's sanitizer applies the same readings, so an older control plane
@@ -147,7 +148,9 @@ The closed enums are those whose unknown value has no reading that can only
 narrow what is served: the data-carrying `ScopeWithin`, `WebhookAuth` and
 `PromptTemplateActivationScope`, the stages (`WebhookStage`, `GuardStage`,
 `PluginStage`), `BuiltinRule`, `PolicyScope`, and the decorator's `DecoratorRole`
-and `DecoratorPosition`. A new value in one of them is a format bump under
+and `DecoratorPosition`. `FailureKind` is closed too, but never read from the
+wire: it is the gateway's own classification of a failure, and only the
+`FailureClass` that names one travels in the snapshot. A new value in one of them is a format bump under
 ADR-0038 section 2. A new value in an enum with a fallback is additive, provided
 its `Unknown` reading still holds for it; a new enum in the payload gets one or
 the other.
