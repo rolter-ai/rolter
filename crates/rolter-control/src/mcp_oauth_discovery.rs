@@ -31,6 +31,7 @@
 //! egress policy, and a client that does not follow redirects. See
 //! `docs/dev-docs/architecture/mcp-oauth.md` for the SSRF reasoning.
 
+// spec-ref: mcp-authorization, oauth2-protected-resource-metadata, oauth2-resource-indicators, oauth2-iss, oauth2-as-metadata
 use std::time::Duration;
 
 use serde::de::DeserializeOwned;

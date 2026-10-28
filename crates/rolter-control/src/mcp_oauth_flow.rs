@@ -36,6 +36,7 @@
 //! does not match the server it claims to be about, or an `iss` that does not
 //! match what was recorded ends the flow rather than warning and continuing.
 
+// spec-ref: mcp-authorization, oauth2, pkce, oauth2-token-exchange
 use std::collections::HashSet;
 
 use axum::extract::{Path, Query, State};

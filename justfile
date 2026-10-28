@@ -90,6 +90,12 @@ ui-dev:
 ui-build:
     cd ui && bun run build
 
+# rewrite the generated tables of docs/user-docs/api/specifications.mdx from
+# crates/rolter-core/specifications.toml (#907), then align them
+gen-specs:
+    ROLTER_TEST_UPDATE_SPEC_DOCS=1 cargo test -p rolter-core --test spec_registry the_generated_docs_are_current
+    just fmt-docs
+
 # rewrite crates/rolter-control/rbac-matrix.json from CAPABILITIES and copy it
 # into the dashboard's story fixtures (#1369); run after changing the rbac matrix
 gen-rbac:

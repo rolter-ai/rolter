@@ -10,6 +10,7 @@
 //! `type` is inferred from the HTTP status via [`openai_error_type`] so callers
 //! cannot forget it; `code` and `param` are optional refinements.
 
+// spec-ref: openai-errors
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;

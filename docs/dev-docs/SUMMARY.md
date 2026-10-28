@@ -99,6 +99,7 @@
 - [Merge protection on master](development/merge-protection.md)
 - [The ci-ok gate and the title-edit fast path](development/ci-gating.md)
 - [API stability and the semver gate](development/api-stability.md)
+- [External specification registry](development/spec-registry.md)
 - [Stability markers](development/stability-markers.md)
 - [Deprecating a control-plane operation or field](development/deprecations.md)
 - [Config export and the import round trip](development/config-export-round-trip.md)

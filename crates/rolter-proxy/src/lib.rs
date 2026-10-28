@@ -771,6 +771,7 @@ fn apply_passthrough(
     request
 }
 
+// spec-ref: anthropic-messages
 /// Auth headers for `provider`, applying the deployment's compatibility policy
 /// where a header is version-pinned (Anthropic's `anthropic-version`, #546).
 ///
@@ -830,6 +831,7 @@ fn provider_url(provider: &ProviderConfig, path: &str) -> String {
     provider.kind.resolve_upstream_url(&provider.api_base, path)
 }
 
+// spec-ref: gemini-generate-content
 /// build the gemini native generateContent url from the request. the model is
 /// taken from the configured upstream override, else the request's `model`
 /// field; streaming requests use `:streamGenerateContent?alt=sse`.
@@ -862,6 +864,7 @@ fn gemini_generate_url(
     }
 }
 
+// spec-ref: mcp-transport, oauth2-bearer
 /// How the gateway presents itself to an MCP server.
 #[derive(Debug, Clone, Copy)]
 pub enum McpUpstreamAuth<'a> {

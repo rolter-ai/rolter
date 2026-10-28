@@ -132,6 +132,7 @@ prompts below, then the quickstart, then the page for whatever it is wiring.
 ### Gateway API
 
 - [Overview](/api/overview): The Rolter gateway exposes OpenAI and Anthropic-compatible endpoints. Authenticate with a virtual key as a Bearer token or x-api-key header.
+- [Specifications](/api/specifications): Every external API, protocol and wire format Rolter implements, translates or forwards, with the revision reviewed, how much of it Rolter honours, and the tests that prove it.
 - [/v1/chat/completions](/api/chat-completions): Create a chat completion by sending a list of messages. Supports streaming via Server-Sent Events and is fully OpenAI SDK-compatible.
 - [/v1/completions](/api/completions): Create a text completion using the OpenAI legacy completions endpoint. Pass a prompt string and receive a completion response from your configured route.
 - [/v1/messages](/api/messages): Create a message using the Anthropic Messages API. Authenticate with x-api-key and pass a model name defined in your Rolter route config.

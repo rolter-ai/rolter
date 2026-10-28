@@ -26,6 +26,7 @@
 //! open objects: imprecise, but present, so a generated SDK has the call even
 //! where it cannot yet have the struct.
 
+// spec-ref: openapi
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
@@ -2865,7 +2866,7 @@ fn build_document() -> Value {
         paths.insert(path.to_string(), Value::Object(item));
     }
 
-    json!({
+    let mut doc = json!({
         "openapi": "3.1.0",
         "info": {
             "title": "rolter control plane",
@@ -2898,7 +2899,14 @@ fn build_document() -> Value {
             },
             "schemas": schemas()
         }
-    })
+    });
+    // `externalDocs` and `x-rolter-*` provenance from the specification
+    // registry (#907)
+    rolter_core::spec_registry::annotate_openapi(
+        &mut doc,
+        rolter_core::spec_registry::Plane::Control,
+    );
+    doc
 }
 
 /// The primitive schemas the entity definitions reuse, so a `uuid` is spelled
@@ -4287,6 +4295,40 @@ mod tests {
             "these operations are documented but no router mounts them; \
              drop them from `operations()` in src/openapi.rs:\n{}",
             stale.join("\n")
+        );
+    }
+
+    // #907: a control-plane endpoint the specification registry names must
+    // exist, and must carry the registry's provenance in the served document
+    #[test]
+    fn registry_endpoints_are_documented_with_their_provenance() {
+        let registry = rolter_core::spec_registry::registry().expect("the registry parses");
+        let doc = document();
+        assert_eq!(
+            doc["externalDocs"]["url"],
+            rolter_core::spec_registry::REGISTRY_URL
+        );
+        let mut checked = 0;
+        for spec in &registry.specs {
+            for endpoint in &spec.control_endpoints {
+                let (method, path) =
+                    rolter_core::spec_registry::parse_endpoint(endpoint).expect("validated");
+                let method = method.to_ascii_lowercase();
+                assert!(
+                    documents_operation(&method, path),
+                    "the registry names {endpoint}, which the document does not have"
+                );
+                let refs = doc["paths"][path][&method]["x-rolter-spec-refs"]
+                    .as_array()
+                    .unwrap_or_else(|| panic!("{endpoint} carries no x-rolter-spec-refs"));
+                assert!(refs.iter().any(|id| id == spec.id.as_str()), "{endpoint}");
+                checked += 1;
+            }
+        }
+        assert!(checked > 0);
+        assert_eq!(
+            doc["paths"]["/scim/v2/Users"]["get"]["externalDocs"]["url"],
+            "https://www.rfc-editor.org/rfc/rfc7644"
         );
     }
 

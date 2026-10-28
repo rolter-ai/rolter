@@ -40,6 +40,8 @@
 //! feature that writes to ClickHouse, not something telemetry acquires by the
 //! back door.
 
+// spec-ref: otel-genai-semconv
+
 // several of these keys are also spelled out as literals at the `tracing` span
 // macro call site, because `tracing` requires span field names to be literals
 // and will not accept a constant. this module stays the canonical registry
@@ -260,6 +262,49 @@ mod tests {
         );
         assert_eq!(REQUEST_ENCODING_FORMATS, "gen_ai.request.encoding_formats");
         assert_eq!(ERROR_TYPE, "error.type");
+    }
+
+    /// The specification registry's `otel-genai-semconv` record lists every
+    /// attribute the gateway emits and pins the release they were audited
+    /// against (#907). A new or renamed key fails here until the record, and
+    /// the audit it stands for, catch up. `gen_ai.system` is recorded as a
+    /// deviation rather than as supported, since the pinned release deprecates
+    /// it.
+    #[test]
+    fn the_registry_lists_every_emitted_attribute() {
+        let registry = rolter_core::spec_registry::registry().expect("the registry parses");
+        let record = registry
+            .spec("otel-genai-semconv")
+            .expect("the GenAI conventions are recorded");
+        let emitted = [
+            OPERATION_NAME,
+            PROVIDER_NAME,
+            REQUEST_MODEL,
+            RESPONSE_MODEL,
+            RESPONSE_FINISH_REASONS,
+            RESPONSE_ID,
+            OUTPUT_TYPE,
+            USAGE_INPUT_TOKENS,
+            USAGE_OUTPUT_TOKENS,
+            EMBEDDINGS_DIMENSION_COUNT,
+            REQUEST_ENCODING_FORMATS,
+            ERROR_TYPE,
+        ];
+        let mut recorded: Vec<&str> = record.supported.iter().map(String::as_str).collect();
+        let mut emitted = emitted.to_vec();
+        recorded.sort_unstable();
+        emitted.sort_unstable();
+        assert_eq!(recorded, emitted);
+        assert!(record.deviations.iter().any(|d| d.contains(SYSTEM)));
+        for local in [OP_RERANK, OP_DECISION] {
+            assert!(
+                record
+                    .deviations
+                    .iter()
+                    .any(|d| d.contains(&format!("`{local}`"))),
+                "the rolter-local operation `{local}` is not recorded as a deviation"
+            );
+        }
     }
 
     #[test]
