@@ -3441,6 +3441,18 @@
         "nextStep": "Send it as Authorization: Bearer <token> on control-plane requests."
       }
     },
+    "mcpStepUp": {
+      "action": "Reconnect with more access",
+      "actionNamed": "Reconnect {{name}} with more access",
+      "missing_one": "Your connection lacks the scope {{scopes}} that this server requires.",
+      "missing_other": "Your connection lacks the scopes {{scopes}} that this server requires.",
+      "logTitle": "Authorization refused",
+      "logBody": "{{server}} refused this call for authorization. If it wanted a scope your connection does not hold, consent again with more access; your current scopes are kept.",
+      "notOwner": "Only the key's owner can reconnect with more access.",
+      "scopesLabel": "Scopes to add",
+      "scopesHint": "Separate scopes with spaces. The log records the refusal, not the scope the server asked for, so name it here.",
+      "scopesPlaceholder": "repo read:org"
+    },
     "auditLog": {
       "emptyTitle": "No audit entries yet",
       "emptyBody": "Every change made through the control plane is recorded here — who did it, to what, and when.",

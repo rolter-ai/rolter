@@ -276,6 +276,7 @@ export {
   fetchMcpSettings,
   updateMcpSettings,
   fetchMcpGrants,
+  startMcpStepUp,
   revokeMcpGrant,
   fetchMcpSessions,
   revokeMcpSession,
