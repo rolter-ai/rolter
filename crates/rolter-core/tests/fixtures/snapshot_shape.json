@@ -1210,6 +1210,15 @@
     "providers[].status_page_url": [
       "string"
     ],
+    "providers[].tenancy": [
+      "object"
+    ],
+    "providers[].tenancy.org_id": [
+      "string"
+    ],
+    "providers[].tenancy.project_id": [
+      "string"
+    ],
     "queue": [
       "object"
     ],
