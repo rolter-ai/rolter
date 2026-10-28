@@ -175,6 +175,55 @@ impl Drop for ExportPermit {
     }
 }
 
+/// A running export's permit behind a timer (#3433). The row, time and cancel
+/// checks of [`LogWalk`] only run when the body is polled, and a client that
+/// stops reading without closing its connection parks the body on a full
+/// socket buffer, where it is never polled again and would hold its slot until
+/// TCP gave up. So the permit sits in a slot a deadline task empties at
+/// [`ExportLimits::max_duration`] whether or not the body is ever polled; the
+/// slot is also emptied by the usual drop, and the timer is aborted when the
+/// body is dropped first.
+struct TimedPermit {
+    slot: Arc<parking_lot::Mutex<Option<ExportPermit>>>,
+    timer: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl TimedPermit {
+    /// Hold `permit` until the guard drops or `limit` passes. No limit leaves
+    /// the permit to the drop alone.
+    fn new(permit: ExportPermit, limit: Option<Duration>) -> Self {
+        let slot = Arc::new(parking_lot::Mutex::new(Some(permit)));
+        let timer = limit.map(|limit| {
+            let slot = Arc::clone(&slot);
+            tokio::spawn(async move {
+                tokio::time::sleep(limit).await;
+                if slot.lock().take().is_some() {
+                    tracing::warn!(
+                        "request log export passed its time limit; its place was given back"
+                    );
+                }
+            })
+        });
+        Self { slot, timer }
+    }
+
+    /// The permit is still held, so the export may keep running.
+    fn is_held(&self) -> bool {
+        self.slot.lock().is_some()
+    }
+}
+
+impl Drop for TimedPermit {
+    fn drop(&mut self) {
+        if let Some(timer) = self.timer.take() {
+            timer.abort();
+        }
+        // an aborted task drops its clone of the slot only when the runtime
+        // next polls it, so the permit is given back here and not left to that
+        self.slot.lock().take();
+    }
+}
+
 /// `429` for an export the gate refused, with `Retry-After`.
 fn too_many_exports(busy: Busy) -> Response {
     let message = match busy {
@@ -696,7 +745,7 @@ struct LogWalk {
     /// the log has more rows than `max_rows`: the next chunk is the error
     over_rows: bool,
     /// the exports gate's place for this walk, given back when the body drops
-    _permit: Option<ExportPermit>,
+    permit: Option<TimedPermit>,
 }
 
 impl LogWalk {
@@ -704,6 +753,10 @@ impl LogWalk {
     async fn next_chunk(&mut self) -> anyhow::Result<Option<Bytes>> {
         if self.done {
             return Ok(None);
+        }
+        // the timer gave the place back while the body sat unread
+        if self.permit.as_ref().is_some_and(|permit| !permit.is_held()) {
+            anyhow::bail!("the export ran past its time limit");
         }
         if self.over_rows {
             anyhow::bail!(
@@ -844,6 +897,7 @@ async fn export_invocations(
         Err(busy) => return too_many_exports(busy),
     };
     let limits = state.export_gate.limits;
+    let permit = TimedPermit::new(permit, limits.max_duration);
     // which optional columns the table has, so the file still builds before an
     // operator applies the sequence column (see `request_log_columns`)
     let columns = match ch.request_log_columns().await {
@@ -862,7 +916,7 @@ async fn export_invocations(
         deadline: limits.max_duration.map(|limit| Instant::now() + limit),
         written: 0,
         over_rows: false,
-        _permit: Some(permit),
+        permit: Some(permit),
     };
     // the first page is read before the response starts, so a ClickHouse
     // failure is an error the client can read and not a download that ends
@@ -1007,6 +1061,46 @@ mod tests {
         let running = gate.running.lock();
         assert_eq!(running.total, 3);
         assert_eq!(running.by_caller.get("a"), Some(&1));
+    }
+
+    #[tokio::test]
+    async fn a_client_that_stops_reading_loses_its_place_at_the_deadline() {
+        let mut limits = ExportLimits::new(0, 0, 1, 1);
+        limits.max_duration = Some(Duration::from_millis(60));
+        let gate = Arc::new(ExportGate::new(limits));
+        let permit = TimedPermit::new(gate.try_acquire("a").unwrap(), limits.max_duration);
+        // the body of a stalled download: held, and never polled again
+        let stalled = stream::unfold(permit, |permit| async move {
+            Some((Ok::<_, io::Error>(Bytes::new()), permit))
+        });
+        let _body = Body::from_stream(stalled);
+        assert_eq!(gate.try_acquire("a").err(), Some(Busy::Process));
+        let started = Instant::now();
+        loop {
+            if let Ok(again) = gate.try_acquire("a") {
+                drop(again);
+                break;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "the place was never given back"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[tokio::test]
+    async fn a_finished_export_gives_its_place_back_at_once_and_stops_the_timer() {
+        let gate = Arc::new(ExportGate::new(ExportLimits::new(0, 600, 1, 1)));
+        let held = TimedPermit::new(
+            gate.try_acquire("a").unwrap(),
+            Some(Duration::from_secs(600)),
+        );
+        assert!(held.is_held());
+        assert_eq!(gate.try_acquire("b").err(), Some(Busy::Process));
+        drop(held);
+        assert!(gate.try_acquire("b").is_ok());
     }
 
     #[test]
