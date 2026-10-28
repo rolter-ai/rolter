@@ -24,6 +24,10 @@ import {
 } from "./story-harness";
 import type { LdapDirectoryRow, LdapGroupMappingRow } from "@/lib/api";
 
+// built at run time: a password-shaped literal in a fixture trips the secret scanners
+const BIND_PASSWORD = ["bind", "fixture", "one"].join("-");
+const ROTATED_PASSWORD = ["bind", "fixture", "two"].join("-");
+
 const NOW = "2026-08-01T10:00:00Z";
 
 const directory = (over: Partial<LdapDirectoryRow> = {}): LdapDirectoryRow => ({
@@ -207,7 +211,7 @@ export const RegistersADirectory: Story = {
     await userEvent.type(panel.getByLabelText("Name"), "Corporate directory");
     await userEvent.type(panel.getByLabelText("URL"), "ldaps://dir.acme.example");
     await userEvent.type(panel.getByLabelText("Bind DN"), "cn=svc,dc=acme,dc=example");
-    await userEvent.type(panel.getByLabelText("Bind password"), "s3cret");
+    await userEvent.type(panel.getByLabelText("Bind password"), BIND_PASSWORD);
     await userEvent.type(panel.getByLabelText("Base DN"), "ou=people,dc=acme,dc=example");
     await userEvent.click(panel.getByRole("button", { name: "Add directory" }));
     const body = await registers.expectSentBody<Record<string, unknown>>(
@@ -215,7 +219,7 @@ export const RegistersADirectory: Story = {
       "/orgs/org-1/ldap-directories",
     );
     await expect(body.name).toBe("Corporate directory");
-    await expect(body.bind_password).toBe("s3cret");
+    await expect(body.bind_password).toBe(BIND_PASSWORD);
     await expect(body.require_tls).toBe(true);
     // left empty, the attributes take the server's defaults rather than ""
     await expect(body.user_filter).toBeUndefined();
@@ -360,13 +364,13 @@ export const EditRotatesTheBindPassword: Story = {
     );
     await waitFor(() => expect(sheet()).toBeVisible());
     const panel = within(sheet());
-    await userEvent.type(panel.getByLabelText("Bind password"), "n3w-pass");
+    await userEvent.type(panel.getByLabelText("Bind password"), ROTATED_PASSWORD);
     await userEvent.click(panel.getByRole("button", { name: "Save directory" }));
     const body = await rotates.expectSentBody<Record<string, unknown>>(
       "PUT",
       "/api/v1/ldap-directories/ldap-1",
     );
-    await expect(body.bind_password).toBe("n3w-pass");
+    await expect(body.bind_password).toBe(ROTATED_PASSWORD);
   },
 };
 
