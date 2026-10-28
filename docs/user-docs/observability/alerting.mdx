@@ -619,11 +619,16 @@ delete it.
 Creating, editing, deleting and evaluating a rule takes **admin at its scope**:
 an organization admin for an organization rule, a team admin for a team's, and
 so on. A rule for a business unit or a customer is the organization admin's. A
-rule with no scope, which reads every tenant, stays superadmin-only.
+rule with no scope, which reads every tenant, stays with a superadmin and a
+[deployment operator](/security/rbac). An operator, who holds no membership
+anywhere, runs every rule and channel of every organization the same way: the
+capability matrix lists the alerting rows as _admin at the scope, or operator_,
+and `GET /api/v1/rbac/effective` includes them for an operator, so the dashboard
+enables the Alerting controls for one.
 
 A **channel** belongs to one organization or to the deployment. An organization
 admin owns the channels of their organization (`org_id` in the create body); a
-deployment channel is created by a superadmin and can be named by any rule. A
+deployment channel is created by a superadmin or an operator and can be named by any rule. A
 rule can notify only a channel of its own organization or a deployment channel,
 and a deployment-wide rule only a deployment channel. The control plane refuses
 anything else with a `400` on `channel_id`, answering an unknown channel the
@@ -643,8 +648,9 @@ what every organization's together do.
 ## Permissions and audit
 
 Every operation is decided at the owner of the row, as described above, and the
-dashboard shows the Alerting group to anyone who administers a scope. Deployment
-rows and channels are superadmin-only like the other deployment-wide settings in
+dashboard shows the Alerting group to anyone who administers a scope, and to an
+operator. Deployment rows and channels belong to a superadmin and to a
+deployment operator, like the other deployment-wide settings in
 [RBAC](/security/rbac).
 
 | Endpoint                                    | Capability                     |

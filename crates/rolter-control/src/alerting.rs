@@ -481,20 +481,6 @@ fn deployment_only(principal: &Principal) -> ApiResult<()> {
     }
 }
 
-/// [`authorize`], except that a superadmin or deployment operator passes every
-/// scope: alerting was theirs before it was delegated.
-async fn authorize_alerting(
-    state: &ControlState,
-    principal: &Principal,
-    chain: ScopeChain,
-    requirement: Requirement,
-) -> ApiResult<()> {
-    if is_deployment_operator(principal) {
-        return Ok(());
-    }
-    authorize(state, principal, chain, requirement).await
-}
-
 /// Guard a channel at its owning org, or at the deployment when it has none.
 async fn authorize_channel(
     state: &ControlState,
@@ -503,7 +489,7 @@ async fn authorize_channel(
     requirement: Requirement,
 ) -> ApiResult<()> {
     match org_id {
-        Some(org) => authorize_alerting(state, principal, ScopeChain::org(org), requirement).await,
+        Some(org) => authorize(state, principal, ScopeChain::org(org), requirement).await,
         None => deployment_only(principal),
     }
 }
@@ -530,7 +516,7 @@ async fn authorize_rule(
     requirement: Requirement,
 ) -> ApiResult<()> {
     match rule_chain(state, rule).await {
-        Some(chain) => authorize_alerting(state, principal, chain, requirement).await,
+        Some(chain) => authorize(state, principal, chain, requirement).await,
         None => deployment_only(principal),
     }
 }
@@ -884,7 +870,7 @@ async fn create_rule(
     let (org_id, scope) = match (input.scope_type.as_deref(), input.scope_id) {
         (Some(scope_type), Some(scope_id)) => {
             let chain = ScopeChain::from_scope(pool(&state), scope_type, scope_id).await?;
-            authorize_alerting(&state, &principal, chain, cap!("alert_rule", Create)).await?;
+            authorize(&state, &principal, chain, cap!("alert_rule", Create)).await?;
             (chain.org, Some((scope_type, scope_id)))
         }
         _ => {

@@ -98,8 +98,10 @@ export function requirementFor(
   const view = matrix?.resources.find((r) => r.resource === resource);
   const entry = view?.actions.find((a) => a.action === action);
   if (!entry) return null;
-  // a row a deployment role reaches is still a superadmin's: nobody holds it at a scope
-  if (entry.superadmin_only || entry.deployment_roles?.length) return "superadmin";
+  // a row only a deployment role reaches is still a superadmin's: nobody holds it at a scope.
+  // one that also takes a scoped role (#3362) names that role
+  if (entry.superadmin_only) return "superadmin";
+  if (entry.deployment_roles?.length && entry.minimum_role === null) return "superadmin";
   return entry.minimum_role;
 }
 

@@ -104,6 +104,15 @@ pub(crate) enum Authority {
     /// these deployment roles (#1834), may touch. Like [`Authority::Superadmin`]
     /// no scoped role and no custom role reaches it
     Deployment(&'static [DeploymentRole]),
+    /// a scoped role at the row's scope, **or** one of these deployment roles
+    /// (#3362). For a row delegated to the people who own a slice of the
+    /// deployment (alerting, #1829) that a deployment role still runs whole,
+    /// whichever org owns it: the role reaches every scope without a
+    /// membership, and the scoped role reaches its own. A superadmin passes as
+    /// ever; a custom role grants the pair as it does for [`Authority::Role`];
+    /// an API token holds no deployment role, so it falls back to the scoped
+    /// half
+    RoleOrDeployment(Role, &'static [DeploymentRole]),
     /// any authenticated caller, with no membership anywhere. Reserved for
     /// global read-only catalogs that carry no tenant's data: there is no
     /// deployment-scoped membership to hold, so naming a role here would
@@ -181,6 +190,11 @@ const SUPER: Option<Authority> = Some(Authority::Superadmin);
 /// a superadmin or an operator (#1834)
 const OPERATOR: Option<Authority> = Some(Authority::Deployment(&[DeploymentRole::Operator]));
 /// a superadmin or a security auditor (#1834), for a read
+/// an admin at the row's scope, or a deployment operator at any (#3362)
+const ADMIN_OR_OPERATOR: Option<Authority> = Some(Authority::RoleOrDeployment(
+    Role::Admin,
+    &[DeploymentRole::Operator],
+));
 const AUDITOR: Option<Authority> = Some(Authority::Deployment(&[DeploymentRole::SecurityAuditor]));
 /// any authenticated caller; see [`Authority::Authenticated`]
 const ANYONE: Option<Authority> = Some(Authority::Authenticated);
@@ -992,25 +1006,27 @@ const CAPABILITIES: &[Capability] = &[
     // alerting is delegated to the people who own a slice of spend or
     // reliability (#1829). A channel belongs to one org, so an org admin owns
     // it; a rule is scoped to an org, team, project, key, business unit or
-    // customer and is an admin's of that scope. A deployment-wide channel or
-    // rule (no owning org) stays a superadmin's: the handlers refuse it for
-    // anyone else, since no membership could satisfy it
+    // customer and is an admin's of that scope. A deployment operator runs every
+    // channel and rule, whichever org owns it (#3362), so the rows are an admin
+    // at the scope or an operator. A deployment-wide channel or rule (no owning
+    // org) stays with the superadmin and the operator: the handlers refuse it
+    // for anyone else, since no membership could satisfy it
     Capability {
         resource: "alert_channel",
         scope: "org",
-        read: ADMIN,
-        create: ADMIN,
-        update: ADMIN,
-        delete: ADMIN,
+        read: ADMIN_OR_OPERATOR,
+        create: ADMIN_OR_OPERATOR,
+        update: ADMIN_OR_OPERATOR,
+        delete: ADMIN_OR_OPERATOR,
         action_scopes: NONE,
     },
     Capability {
         resource: "alert_rule",
         scope: "project",
-        read: ADMIN,
-        create: ADMIN,
-        update: ADMIN,
-        delete: ADMIN,
+        read: ADMIN_OR_OPERATOR,
+        create: ADMIN_OR_OPERATOR,
+        update: ADMIN_OR_OPERATOR,
+        delete: ADMIN_OR_OPERATOR,
         action_scopes: NONE,
     },
     // notification history is append-only; "create" is asking the deployment to
@@ -1019,8 +1035,8 @@ const CAPABILITIES: &[Capability] = &[
     Capability {
         resource: "alert_history",
         scope: "project",
-        read: ADMIN,
-        create: ADMIN,
+        read: ADMIN_OR_OPERATOR,
+        create: ADMIN_OR_OPERATOR,
         update: NA,
         delete: NA,
         action_scopes: NONE,
@@ -1390,14 +1406,16 @@ fn resource_view(cap: &Capability) -> ResourceView {
                 cap.authority(action).map(|authority| ActionView {
                     action,
                     minimum_role: match authority {
-                        Authority::Role(role) => Some(role),
+                        Authority::Role(role) | Authority::RoleOrDeployment(role, _) => Some(role),
                         Authority::Superadmin
                         | Authority::Deployment(_)
                         | Authority::Authenticated => None,
                     },
                     superadmin_only: authority == Authority::Superadmin,
                     deployment_roles: match authority {
-                        Authority::Deployment(roles) => roles.to_vec(),
+                        Authority::Deployment(roles) | Authority::RoleOrDeployment(_, roles) => {
+                            roles.to_vec()
+                        }
                         _ => Vec::new(),
                     },
                     authenticated_only: authority == Authority::Authenticated,
@@ -1613,6 +1631,20 @@ fn allowed_for(
                 }
                 // reaching this code path means the caller is authenticated
                 Authority::Authenticated => true,
+                Authority::RoleOrDeployment(required, roles) => {
+                    superadmin
+                        || deployment_role.is_some_and(|held| roles.contains(&held))
+                        || user_authorized(memberships, at, required)
+                        || custom_grants_allow(
+                            grants,
+                            at,
+                            Requirement {
+                                resource: cap.resource,
+                                action,
+                                authority,
+                            },
+                        )
+                }
                 Authority::Role(required) => {
                     superadmin
                         || user_authorized(memberships, at, required)
@@ -1752,7 +1784,9 @@ mod tests {
         let mut named = Vec::new();
         for cap in CAPABILITIES {
             for action in Action::ALL {
-                if let Some(Authority::Deployment(roles)) = cap.authority(action) {
+                if let Some(Authority::Deployment(roles) | Authority::RoleOrDeployment(_, roles)) =
+                    cap.authority(action)
+                {
                     if roles.contains(&role) {
                         named.push(format!("{}:{}", cap.resource, action_key(action)));
                     }
@@ -1800,16 +1834,24 @@ mod tests {
                 "operator lacks {pair}"
             );
         }
-        // alerting is delegated to scoped admins (#1829), so its rows are scoped
-        // roles in the table. An operator still runs every rule and channel:
-        // the alerting handlers let a deployment operator through (see
-        // `alerting::authorize_alerting`), which the matrix does not publish
-        for pair in ["alert_channel:create", "alert_rule:update"] {
+        // alerting is delegated to scoped admins (#1829) and an operator still
+        // runs every rule and channel, which the table publishes as an admin at
+        // the scope or an operator (#3362)
+        for pair in [
+            "alert_channel:create",
+            "alert_channel:read",
+            "alert_rule:update",
+            "alert_rule:delete",
+            "alert_history:read",
+            "alert_history:create",
+        ] {
             assert!(
-                !operator.contains(&pair.to_string()),
-                "{pair} is a scoped admin's row; an operator's reach is the handlers' own"
+                operator.contains(&pair.to_string()),
+                "operator lacks {pair}"
             );
         }
+        // and the auditor, who reads policy and never alerting, does not
+        assert!(!auditor.iter().any(|pair| pair.starts_with("alert_")));
         // the auditor reads and never writes
         assert!(
             auditor.iter().all(|pair| pair.ends_with(":read")),
@@ -2093,7 +2135,9 @@ mod tests {
                                 },
                                 _ => c,
                             };
-                            let Authority::Role(required) = authority else {
+                            let (Authority::Role(required)
+                            | Authority::RoleOrDeployment(required, _)) = authority
+                            else {
                                 continue;
                             };
                             let requirement = Requirement {
