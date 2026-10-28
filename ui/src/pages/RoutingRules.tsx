@@ -16,6 +16,7 @@ import { LoadError } from "@/components/LoadError";
 import { CardGridSkeleton, LoadingRegion } from "@/components/LoadingState";
 import { PageBody, StatusDot, Toolbar } from "@/components/screen";
 import { BreakerBadge } from "@/components/BreakerBadge";
+import { FallbackBadge } from "@/components/TakesOverField";
 import { healthPresentation } from "@/components/target-health";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -40,6 +41,7 @@ import {
   type RouteVariantRow,
 } from "@/lib/api";
 import { errorText } from "@/lib/error-copy";
+import { isRestricted } from "@/lib/failure-classes";
 import { useFormat } from "@/lib/i18n/format";
 import { HEALTH_SLA, targetHealth, type TargetHealth } from "@/lib/route-targets";
 import { trafficSplit } from "@/lib/route-variants";
@@ -635,7 +637,10 @@ function RouteTargets({
       <EmptyState inline uxTarget="route-targets" description={t("pages.routing.noTargets")} />
     );
   }
-  const totalWeight = targets.reduce((a, tg) => a + tg.weight, 0) || 1;
+  // a fallback takes no ordinary traffic, so it neither has a share nor
+  // dilutes the others' (#3319)
+  const totalWeight =
+    targets.filter((tg) => !isRestricted(tg.takes_over)).reduce((a, tg) => a + tg.weight, 0) || 1;
   return (
     <div className="flex flex-col gap-2.5">
       {!weighted && targets.length > 1 && (
@@ -652,6 +657,7 @@ function RouteTargets({
         className="flex flex-col gap-2.5"
       >
         {targets.map((tg, i) => {
+          const fallback = isRestricted(tg.takes_over);
           const share = tg.weight / totalWeight;
           return (
             <li key={tg.id} className="flex flex-col gap-[5px]">
@@ -663,15 +669,21 @@ function RouteTargets({
                 <span className="min-w-0 truncate text-muted-foreground">
                   {tg.upstream_model || route.model}
                 </span>
-                {weighted && (
-                  <span className="ml-auto text-[color:var(--text-secondary)]">
-                    {fmt.percent(share, 0)}
+                {fallback ? (
+                  <span className="ml-auto">
+                    <FallbackBadge takesOver={tg.takes_over ?? []} />
                   </span>
+                ) : (
+                  weighted && (
+                    <span className="ml-auto text-[color:var(--text-secondary)]">
+                      {fmt.percent(share, 0)}
+                    </span>
+                  )
                 )}
               </div>
               {healthFor && <TargetHealthLine health={healthFor(tg, route)} />}
               <BreakerBadge breaker={breakerFor(breakers, route.model, i)} className="self-start" />
-              {weighted && (
+              {weighted && !fallback && (
                 <div
                   data-testid="target-share"
                   className="h-[5px] overflow-hidden rounded-full bg-[color:var(--surface-subtle)]"

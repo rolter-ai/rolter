@@ -685,6 +685,25 @@
     "failures_other": "{{count}} consecutive failures",
     "retryIn": "retries in {{duration}}"
   },
+  "fallbackTargets": {
+    "badge": "fallback",
+    "badgeTitle": "A fallback target: never dialled first, and reached only after another target failed with {{classes}}. It takes no ordinary traffic.",
+    "summaryOrdinary": "Ordinary target",
+    "summaryRestricted": "Fallback for {{classes}}",
+    "label": "Fallback for",
+    "groupAria": "Fallback classes of target {{n}}",
+    "variantGroupAria": "Fallback classes of target {{m}} of variant {{n}}",
+    "category": "Refusal category",
+    "categoryInfo": "Narrows a refusal fallback to one category the provider names, such as content_policy_violation. Lowercase letters, digits, _ and -.",
+    "categoryPlaceholder": "content_policy_violation",
+    "addCategory": "Add",
+    "hint": "Pick nothing to keep this an ordinary target. Pick classes and it becomes a fallback: never dialled first, and tried only after another target failed with one of them.",
+    "errors": {
+      "category": "A category is 1 to 64 lowercase letters, digits, _ or -.",
+      "allRestricted": "Every target is a fallback, so the route could never dial anything. Leave at least one target ordinary.",
+      "refused": "The control plane refused this set: a class it does not know, or one listed twice."
+    }
+  },
   "routeTargets": {
     "count_one": "{{count}} target",
     "count_other": "{{count}} targets",
@@ -3948,6 +3967,7 @@
         "providerTarget": "Provider → target",
         "providerToTarget": "{{provider}} → {{target}}",
         "variant": "Variant",
+        "fallbackReason": "Fallback reason",
         "responseCache": "Response cache",
         "cacheHit": "Hit",
         "cacheMiss": "Miss",

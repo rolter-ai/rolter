@@ -973,6 +973,12 @@
     "models.readonly[].variants[].targets[].provider": [
       "string"
     ],
+    "models.readonly[].variants[].targets[].takes_over": [
+      "array"
+    ],
+    "models.readonly[].variants[].targets[].takes_over[]": [
+      "string"
+    ],
     "models.readonly[].variants[].targets[].weight": [
       "number"
     ],

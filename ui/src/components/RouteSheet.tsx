@@ -43,6 +43,7 @@ import {
   type UpdateRouteInput,
 } from "@/lib/api";
 import { errorText } from "@/lib/error-copy";
+import { allRestricted } from "@/lib/failure-classes";
 import { useErrorVisibility } from "@/lib/error-visibility";
 import { providersUsableFrom } from "@/lib/provider-scope";
 import {
@@ -87,6 +88,8 @@ function targetsToApi(targets: DraftTarget[]): RouteTargetInput[] {
     provider_id: tg.providerId,
     upstream_model: tg.upstream.trim() === "" ? null : tg.upstream,
     weight: Number(tg.weight),
+    // always sent: an entry without it clears the stored set (#3319)
+    takes_over: tg.takesOver,
   }));
 }
 
@@ -165,7 +168,13 @@ export function RouteSheet({
       enabled: route.enabled,
       // every stored target, with its upstream model as stored
       targets: targets.data.map((tg) =>
-        newTarget(tg.provider_id, tg.upstream_model ?? "", String(tg.weight), tg.id),
+        newTarget(
+          tg.provider_id,
+          tg.upstream_model ?? "",
+          String(tg.weight),
+          tg.id,
+          tg.takes_over ?? [],
+        ),
       ),
       variants: variantsFromRows(variants.data),
     };
@@ -193,10 +202,23 @@ export function RouteSheet({
   // may stay empty. one that held targets may not be emptied: the update cannot
   // send an empty list, and leaving it out would keep the stored targets
   const emptyAllowed = draft.variants.length > 0 && (targets.data?.length ?? 0) === 0;
-  const errTargets =
-    (draft.targets.length === 0 && !emptyAllowed) || refusal?.field === "targets"
+  // a route left with nothing but fallbacks, its own targets and the
+  // variants' together, could never dial anything: the control plane refuses
+  // it as `all_targets_restricted` (#1584, #3373)
+  const onlyFallbacks =
+    allRestricted([
+      ...draft.targets.map((tg) => tg.takesOver),
+      ...draft.variants.flatMap((v) => v.targets.map((tg) => tg.takesOver)),
+    ]) || !!refusal?.allRestricted;
+  const errTargets = onlyFallbacks
+    ? t("fallbackTargets.errors.allRestricted")
+    : (draft.targets.length === 0 && !emptyAllowed) || refusal?.field === "targets"
       ? t("modelSheet.errors.targets")
       : "";
+  const takesOverError = (tg: DraftTarget) =>
+    refusal?.field === "takesOver" && refusal.key === tg.key
+      ? t("fallbackTargets.errors.refused")
+      : undefined;
   const errProvider =
     draft.targets.some(providerRowInvalid) || refusal?.field === "provider"
       ? t("modelSheet.errors.provider")
@@ -206,6 +228,8 @@ export function RouteSheet({
     targets: errTargets,
     provider: errProvider,
     weight: errWeight,
+    // said under the refused target's own set, not in the summary's count
+    takesOver: "",
   };
   const problems = (Object.keys(found) as FieldKey[]).filter((key) => found[key]);
   const variantCheck = validateVariants(draft.variants);
@@ -421,6 +445,7 @@ export function RouteSheet({
                 }}
                 providerInvalid={providerRowInvalid}
                 weightInvalid={weightRowInvalid}
+                takesOverError={takesOverError}
                 onChange={setTargets}
                 onTouch={visibility.touch}
               />
