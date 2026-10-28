@@ -170,8 +170,11 @@ after the caller is authenticated and before anything is forwarded.
   the `bump_config_version()` trigger in `0151`) assigns a group to a
   `virtual_key`, `project` or `team`. The subject has no foreign key, since it is
   polymorphic: the control plane refuses one outside the group's organization
-  when it is written, and a deleted subject leaves a row that can never match
-  (the next save of the group drops it, and #3382 tracks sweeping it sooner).
+  when it is written, and three statement-level `after delete` triggers on
+  `virtual_keys`, `projects` and `teams` (migration `0200`, #3382, the pattern
+  of the labels sweep) delete the subject's rows in the deleting transaction,
+  so a deleted subject never lingers in the assignments listing or the snapshot
+  and the sweep bumps `config_version` through the table's own trigger.
   Assignments travel as `McpToolGroupConfig::assignments`. A disabled group
   travels too, with its tools and assignments and `disabled: true`. It governs no
   one else (`mcp_governed_tools` counts enabled groups only), but the callers

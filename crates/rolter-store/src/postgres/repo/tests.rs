@@ -1915,3 +1915,95 @@ async fn two_orgs_each_hold_the_same_route_and_provider_names() {
     assert!(config.sanitize_for_snapshot().is_empty());
     config.validate_snapshot().unwrap();
 }
+
+#[tokio::test]
+async fn deleting_a_team_project_or_key_drops_its_mcp_tool_group_assignments() {
+    if !super::super::test_database::is_configured() {
+        eprintln!("skipping: {} not set", super::super::test_database::URL_ENV);
+        return;
+    }
+    let db = fresh_db().await;
+    let pool = db.pool().clone();
+    let org = OrgRepo(&pool).create("acme", "acme").await.unwrap();
+    let teams = TeamRepo(&pool);
+    let projects = ProjectRepo(&pool);
+    let keys = VirtualKeyRepo(&pool);
+    let lone_team = teams.create(org.id, "lone").await.unwrap();
+    let team = teams.create(org.id, "core").await.unwrap();
+    let lone_project = projects.create(team.id, "lone").await.unwrap();
+    let key_project = projects.create(team.id, "keys").await.unwrap();
+    let keys_ref = &keys;
+    let new_key = |hash, prefix| async move {
+        keys_ref
+            .create(
+                key_project.id,
+                NewVirtualKey {
+                    key_hash: hash,
+                    key_prefix: prefix,
+                    name: None,
+                    models: &[],
+                    providers: &[],
+                    cache_enabled: None,
+                    created_by: None,
+                    expires_at: None,
+                    purpose: None,
+                },
+            )
+            .await
+            .unwrap()
+    };
+    let deleted_key = new_key("hash-a", "sk-a").await;
+    let cascaded_key = new_key("hash-b", "sk-b").await;
+
+    let group = McpToolGroupRepo(&pool)
+        .create(NewMcpToolGroup {
+            org_id: org.id,
+            name: "docs",
+            slug: "docs",
+            description: "",
+            enabled: true,
+            tools: &serde_json::json!([]),
+            assignments: &[
+                ("team".to_string(), lone_team.id),
+                ("project".to_string(), lone_project.id),
+                ("virtual_key".to_string(), deleted_key.id),
+                ("virtual_key".to_string(), cascaded_key.id),
+            ],
+        })
+        .await
+        .unwrap();
+    let assignments = McpToolGroupAssignmentRepo(&pool);
+    let version = || async {
+        sqlx::query_scalar::<_, i64>("select version from config_version where id = 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+    };
+    let subjects = || async {
+        let mut ids: Vec<Uuid> = assignments
+            .list_for_group(group.id)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|(_, id)| id)
+            .collect();
+        ids.sort();
+        ids
+    };
+    assert_eq!(subjects().await.len(), 4);
+
+    let before = version().await;
+    keys.delete(deleted_key.id).await.unwrap();
+    assert!(!subjects().await.contains(&deleted_key.id));
+    assert!(version().await > before, "the sweep reaches the gateway");
+
+    projects.delete(lone_project.id).await.unwrap();
+    assert!(!subjects().await.contains(&lone_project.id));
+
+    teams.delete(lone_team.id).await.unwrap();
+    assert!(!subjects().await.contains(&lone_team.id));
+
+    // a project takes its keys with it, and their assignments follow
+    projects.delete(key_project.id).await.unwrap();
+    assert!(subjects().await.is_empty());
+}
