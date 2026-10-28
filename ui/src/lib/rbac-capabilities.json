@@ -14,6 +14,10 @@
       "rank": 2
     }
   ],
+  "deployment_roles": [
+    "operator",
+    "security_auditor"
+  ],
   "resources": [
     {
       "resource": "org",
@@ -1033,7 +1037,10 @@
         {
           "action": "read",
           "minimum_role": null,
-          "superadmin_only": true,
+          "superadmin_only": false,
+          "deployment_roles": [
+            "security_auditor"
+          ],
           "authenticated_only": false
         }
       ]
@@ -1045,7 +1052,10 @@
         {
           "action": "read",
           "minimum_role": null,
-          "superadmin_only": true,
+          "superadmin_only": false,
+          "deployment_roles": [
+            "security_auditor"
+          ],
           "authenticated_only": false
         }
       ]
@@ -1129,6 +1139,60 @@
       ]
     },
     {
+      "resource": "ldap_directory",
+      "scope": "org",
+      "actions": [
+        {
+          "action": "read",
+          "minimum_role": "admin",
+          "superadmin_only": false,
+          "authenticated_only": false
+        },
+        {
+          "action": "create",
+          "minimum_role": "admin",
+          "superadmin_only": false,
+          "authenticated_only": false
+        },
+        {
+          "action": "update",
+          "minimum_role": "admin",
+          "superadmin_only": false,
+          "authenticated_only": false
+        },
+        {
+          "action": "delete",
+          "minimum_role": "admin",
+          "superadmin_only": false,
+          "authenticated_only": false
+        }
+      ]
+    },
+    {
+      "resource": "ldap_group_mapping",
+      "scope": "org",
+      "actions": [
+        {
+          "action": "read",
+          "minimum_role": "admin",
+          "superadmin_only": false,
+          "authenticated_only": false
+        },
+        {
+          "action": "create",
+          "minimum_role": "admin",
+          "superadmin_only": false,
+          "authenticated_only": false
+        },
+        {
+          "action": "delete",
+          "minimum_role": "admin",
+          "superadmin_only": false,
+          "authenticated_only": false
+        }
+      ]
+    },
+    {
       "resource": "org_auth_policy",
       "scope": "org",
       "actions": [
@@ -1147,19 +1211,67 @@
       ]
     },
     {
+      "resource": "api_token",
+      "scope": "project",
+      "actions": [
+        {
+          "action": "read",
+          "minimum_role": "admin",
+          "superadmin_only": false,
+          "authenticated_only": false
+        },
+        {
+          "action": "create",
+          "minimum_role": "admin",
+          "superadmin_only": false,
+          "authenticated_only": false
+        },
+        {
+          "action": "update",
+          "minimum_role": "admin",
+          "superadmin_only": false,
+          "authenticated_only": false
+        },
+        {
+          "action": "delete",
+          "minimum_role": "admin",
+          "superadmin_only": false,
+          "authenticated_only": false
+        }
+      ]
+    },
+    {
+      "resource": "deployment_role",
+      "scope": "deployment",
+      "actions": [
+        {
+          "action": "update",
+          "minimum_role": null,
+          "superadmin_only": true,
+          "authenticated_only": false
+        }
+      ]
+    },
+    {
       "resource": "feature_flags",
       "scope": "deployment",
       "actions": [
         {
           "action": "read",
           "minimum_role": null,
-          "superadmin_only": true,
+          "superadmin_only": false,
+          "deployment_roles": [
+            "operator"
+          ],
           "authenticated_only": false
         },
         {
           "action": "update",
           "minimum_role": null,
-          "superadmin_only": true,
+          "superadmin_only": false,
+          "deployment_roles": [
+            "operator"
+          ],
           "authenticated_only": false
         }
       ]
@@ -1171,13 +1283,19 @@
         {
           "action": "read",
           "minimum_role": null,
-          "superadmin_only": true,
+          "superadmin_only": false,
+          "deployment_roles": [
+            "operator"
+          ],
           "authenticated_only": false
         },
         {
           "action": "update",
           "minimum_role": null,
-          "superadmin_only": true,
+          "superadmin_only": false,
+          "deployment_roles": [
+            "operator"
+          ],
           "authenticated_only": false
         }
       ]
@@ -1189,7 +1307,10 @@
         {
           "action": "read",
           "minimum_role": null,
-          "superadmin_only": true,
+          "superadmin_only": false,
+          "deployment_roles": [
+            "security_auditor"
+          ],
           "authenticated_only": false
         },
         {
@@ -1225,7 +1346,10 @@
         {
           "action": "read",
           "minimum_role": null,
-          "superadmin_only": true,
+          "superadmin_only": false,
+          "deployment_roles": [
+            "security_auditor"
+          ],
           "authenticated_only": false
         },
         {
@@ -1297,7 +1421,10 @@
         {
           "action": "read",
           "minimum_role": null,
-          "superadmin_only": true,
+          "superadmin_only": false,
+          "deployment_roles": [
+            "security_auditor"
+          ],
           "authenticated_only": false
         },
         {
@@ -1327,7 +1454,10 @@
         {
           "action": "read",
           "minimum_role": null,
-          "superadmin_only": true,
+          "superadmin_only": false,
+          "deployment_roles": [
+            "security_auditor"
+          ],
           "authenticated_only": false
         },
         {
@@ -1381,19 +1511,28 @@
         {
           "action": "read",
           "minimum_role": null,
-          "superadmin_only": true,
+          "superadmin_only": false,
+          "deployment_roles": [
+            "operator"
+          ],
           "authenticated_only": false
         },
         {
           "action": "update",
           "minimum_role": null,
-          "superadmin_only": true,
+          "superadmin_only": false,
+          "deployment_roles": [
+            "operator"
+          ],
           "authenticated_only": false
         },
         {
           "action": "delete",
           "minimum_role": null,
-          "superadmin_only": true,
+          "superadmin_only": false,
+          "deployment_roles": [
+            "operator"
+          ],
           "authenticated_only": false
         }
       ]
@@ -1417,7 +1556,10 @@
         {
           "action": "read",
           "minimum_role": null,
-          "superadmin_only": true,
+          "superadmin_only": false,
+          "deployment_roles": [
+            "security_auditor"
+          ],
           "authenticated_only": false
         },
         {
@@ -1435,7 +1577,10 @@
         {
           "action": "read",
           "minimum_role": null,
-          "superadmin_only": true,
+          "superadmin_only": false,
+          "deployment_roles": [
+            "security_auditor"
+          ],
           "authenticated_only": false
         }
       ]
@@ -1447,25 +1592,37 @@
         {
           "action": "read",
           "minimum_role": null,
-          "superadmin_only": true,
+          "superadmin_only": false,
+          "deployment_roles": [
+            "operator"
+          ],
           "authenticated_only": false
         },
         {
           "action": "create",
           "minimum_role": null,
-          "superadmin_only": true,
+          "superadmin_only": false,
+          "deployment_roles": [
+            "operator"
+          ],
           "authenticated_only": false
         },
         {
           "action": "update",
           "minimum_role": null,
-          "superadmin_only": true,
+          "superadmin_only": false,
+          "deployment_roles": [
+            "operator"
+          ],
           "authenticated_only": false
         },
         {
           "action": "delete",
           "minimum_role": null,
-          "superadmin_only": true,
+          "superadmin_only": false,
+          "deployment_roles": [
+            "operator"
+          ],
           "authenticated_only": false
         }
       ]
@@ -1477,25 +1634,37 @@
         {
           "action": "read",
           "minimum_role": null,
-          "superadmin_only": true,
+          "superadmin_only": false,
+          "deployment_roles": [
+            "operator"
+          ],
           "authenticated_only": false
         },
         {
           "action": "create",
           "minimum_role": null,
-          "superadmin_only": true,
+          "superadmin_only": false,
+          "deployment_roles": [
+            "operator"
+          ],
           "authenticated_only": false
         },
         {
           "action": "update",
           "minimum_role": null,
-          "superadmin_only": true,
+          "superadmin_only": false,
+          "deployment_roles": [
+            "operator"
+          ],
           "authenticated_only": false
         },
         {
           "action": "delete",
           "minimum_role": null,
-          "superadmin_only": true,
+          "superadmin_only": false,
+          "deployment_roles": [
+            "operator"
+          ],
           "authenticated_only": false
         }
       ]
@@ -1507,25 +1676,37 @@
         {
           "action": "read",
           "minimum_role": null,
-          "superadmin_only": true,
+          "superadmin_only": false,
+          "deployment_roles": [
+            "operator"
+          ],
           "authenticated_only": false
         },
         {
           "action": "create",
           "minimum_role": null,
-          "superadmin_only": true,
+          "superadmin_only": false,
+          "deployment_roles": [
+            "operator"
+          ],
           "authenticated_only": false
         },
         {
           "action": "update",
           "minimum_role": null,
-          "superadmin_only": true,
+          "superadmin_only": false,
+          "deployment_roles": [
+            "operator"
+          ],
           "authenticated_only": false
         },
         {
           "action": "delete",
           "minimum_role": null,
-          "superadmin_only": true,
+          "superadmin_only": false,
+          "deployment_roles": [
+            "operator"
+          ],
           "authenticated_only": false
         }
       ]
@@ -1537,13 +1718,19 @@
         {
           "action": "read",
           "minimum_role": null,
-          "superadmin_only": true,
+          "superadmin_only": false,
+          "deployment_roles": [
+            "operator"
+          ],
           "authenticated_only": false
         },
         {
           "action": "create",
           "minimum_role": null,
-          "superadmin_only": true,
+          "superadmin_only": false,
+          "deployment_roles": [
+            "operator"
+          ],
           "authenticated_only": false
         }
       ]

@@ -513,6 +513,23 @@ pub(crate) async fn log_audit(
     detail: serde_json::Value,
 ) {
     let actor = principal.account_id();
+    // a token has no account to name, so the row names the token instead
+    // (#1836): an automation's actions are told apart from a person's, and
+    // from another token's, by `detail.api_token`
+    let detail = match principal.api_token() {
+        Some(token) => {
+            let mut detail = match detail {
+                serde_json::Value::Object(map) => map,
+                other => serde_json::Map::from_iter([("detail".to_string(), other)]),
+            };
+            detail.insert(
+                "api_token".to_string(),
+                serde_json::json!({"id": token.id, "name": token.name}),
+            );
+            serde_json::Value::Object(detail)
+        }
+        None => detail,
+    };
     if let Err(err) = AuditLogRepo(pool(state))
         .create(
             org_id,
@@ -617,7 +634,11 @@ fn row_chain(
 
 /// Refuse a caller who holds no role anywhere inside `org_id`; a caller who
 /// holds one below the org gets the rows they may read, which can be none.
-async fn require_reach(state: &ControlState, filter: &ScopeFilter, org_id: Uuid) -> ApiResult<()> {
+pub(crate) async fn require_reach(
+    state: &ControlState,
+    filter: &ScopeFilter,
+    org_id: Uuid,
+) -> ApiResult<()> {
     if reaches_org(&filter.reach(pool(state)).await?, org_id) {
         Ok(())
     } else {

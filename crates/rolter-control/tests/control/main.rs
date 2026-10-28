@@ -17,6 +17,7 @@ macro_rules! skip_without_db {
     };
 }
 
+mod api_tokens;
 mod audit;
 mod auth;
 mod batch_reads;
@@ -25,8 +26,14 @@ mod budgets;
 mod cluster_summary;
 mod crud;
 mod guardrails;
+mod invitation_mail;
+mod ldap;
 mod log_erasure;
 mod mcp;
+mod mcp_discovery;
+mod mcp_enforcement;
+mod mcp_probe;
+mod mcp_scopes;
 mod profile;
 mod rbac;
 mod scim;

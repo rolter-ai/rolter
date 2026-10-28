@@ -15,7 +15,7 @@ use uuid::Uuid;
 use rolter_core::{Error, Result};
 
 use super::super::crypto::Kek;
-use super::super::models::{MfaChallenge, TotpFactorStatus};
+use super::super::models::{MfaChallenge, OrgMemberMfa, TotpFactorStatus};
 use super::support::store_err;
 
 /// Every column of `mfa_challenges` that its row type reads.
@@ -289,6 +289,40 @@ impl MfaRepo<'_> {
         .await
         .map_err(store_err)?;
         Ok(result.rows_affected() > 0)
+    }
+
+    /// Every active member of the org's tree (an org-scoped grant, or one on a
+    /// team or project under it) with whether they hold an armed factor.
+    ///
+    /// The roster an admin reads before turning `mfa_policy` up to a
+    /// `required_*` value: it counts the members the policy would send through
+    /// enrolment, and names them. A deactivated account is left out, since no
+    /// policy can lock out someone who cannot sign in anyway.
+    pub async fn org_roster(&self, org_id: Uuid) -> Result<Vec<OrgMemberMfa>> {
+        sqlx::query_as(
+            "select u.id as user_id, u.email, u.is_superadmin,
+                    (f.confirmed_at is not null) as enabled,
+                    case when f.confirmed_at is not null
+                         then (select count(*) from user_recovery_codes c
+                               where c.user_id = u.id and c.used_at is null)
+                         else 0 end as recovery_codes_remaining
+             from users u
+             left join user_totp_factors f on f.user_id = u.id
+             where u.deactivated_at is null
+               and exists (
+                   select 1 from memberships m
+                   left join teams t on t.id = m.team_id
+                   left join projects p on p.id = m.project_id
+                   left join teams pt on pt.id = p.team_id
+                   where m.user_id = u.id
+                     and (m.org_id = $1 or t.org_id = $1 or pt.org_id = $1)
+               )
+             order by u.email",
+        )
+        .bind(org_id)
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)
     }
 
     /// How many of the user's recovery codes are still unspent.

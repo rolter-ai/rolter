@@ -227,6 +227,26 @@ Unlike `allow_password_login`, `required_all` does not exempt superadmins. The
 exemption there exists because a broken IdP has no other way back in; here the
 way back in is `rolter mfa reset`, which needs no exemption to work.
 
+## Who a policy would lock out
+
+`GET /api/v1/orgs/{org_id}/mfa-status` (#1590) answers the question an admin
+asks before raising `mfa_policy` to a `required_*` value: one row per active
+member of the org's tree, counted once however many grants they hold, with
+`user_id`, `email`, `is_superadmin`, `enabled` and `recovery_codes_remaining`.
+`MfaRepo::org_roster` is a single query over `memberships` (org, team and
+project grants), `user_totp_factors` and `user_recovery_codes`. `enabled` is an
+armed factor, so a pending enrolment reads as not enrolled, exactly as login
+enforcement reads it. A deactivated account is left out: no policy locks out
+someone who cannot sign in anyway.
+
+It is gated on `org_auth_policy:read`, the bar for reading the policy itself, so
+the roster is visible to whoever may decide the policy and to nobody else. It
+carries no secret and no hash. `recovery_codes_remaining` is a count, and is
+deliberately visible: `0` on an enrolled member is operationally useful (one lost
+phone from the host-side break-glass), and the small amount it says about an
+account goes only to an admin who already controls whether that account can sign
+in.
+
 ## Break-glass
 
 `rolter mfa reset --email ... --reason ...` clears the factor and its recovery

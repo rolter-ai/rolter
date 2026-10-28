@@ -33,7 +33,7 @@ use crate::ControlState;
 pub(crate) enum TenantView {
     All,
     Scoped {
-        filter: ScopeFilter,
+        filter: Box<ScopeFilter>,
         reach: Vec<ScopeChain>,
         // a project resolves to its chain once however many rows name it;
         // `None` is a project that no longer exists
@@ -51,13 +51,13 @@ impl TenantView {
         state: &ControlState,
         principal: Option<&Principal>,
     ) -> ApiResult<Self> {
-        let Some(principal @ Principal::User(_)) = principal else {
+        let Some(principal @ (Principal::User(_) | Principal::Token(_))) = principal else {
             return Ok(Self::All);
         };
         let filter = ScopeFilter::load(state, principal, cap!("route", Read)).await?;
         let reach = filter.reach(pool(state)).await?;
         Ok(Self::Scoped {
-            filter,
+            filter: Box::new(filter),
             reach,
             projects: HashMap::new(),
             scopes: HashMap::new(),
