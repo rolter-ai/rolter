@@ -77,6 +77,7 @@ export {
   fetchAttributionSpend,
   fetchGuardrailOutcomes,
   fetchPluginOutcomes,
+  fetchParamAdjustments,
 } from "./analytics";
 export type {
   AnalyticsWindow,
@@ -92,6 +93,8 @@ export type {
   GuardrailOutcomes,
   PluginOutcomeRow,
   PluginOutcomes,
+  ParamAdjustmentRow,
+  ParamAdjustments,
 } from "./analytics";
 export { fetchSavings } from "./savings";
 export type {
@@ -276,6 +279,8 @@ export {
 export type { LabelRow, LabelFilter } from "./labels";
 export { fetchInvocations, fetchInvocationsPage } from "./logs";
 export type { InvocationRow, InvocationsQuery, InvocationsPage } from "./logs";
+export { REQUEST_OUTCOMES } from "./logs";
+export type { RequestOutcome } from "./logs";
 export {
   MCP_TRANSPORTS,
   MCP_STATUSES,

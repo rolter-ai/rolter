@@ -83,7 +83,30 @@ With a [`sample_rate`](/observability/log-settings#sampling) below `1` the gatew
 
 `GET /api/v1/analytics/invocations` takes `guardrail=<action>:<rule>` (`provider_blocked:<provider name>` / `provider_transformed:<provider name>`, or the bare `provider_blocked` / `provider_transformed`) to list exactly those requests, and each row carries `guardrail_events`, an array of the same strings.
 
-`GET /api/v1/analytics/invocations` also takes `plugin=<outcome>:<slug>` (or `error:<slug>:<kind>`), named as the plugin rollup below names its entries, to list exactly the requests a plugin acted on; each row carries `plugin_events`, an array of the same strings. Unlike the four shared filters, `guardrail` and `plugin` are only on the invocation list. So are `withheld=true` and `usage_unknown=true`, which keep the requests whose response a policy withheld after the provider billed them, and the successes whose upstream reported no usage; any other value applies no filter. Both narrow inside the rows you can read, and they combine with every other filter, though a withheld request is a `403` and an unknown-usage one a success, so asking for both returns nothing. On a table without `clickhouse/019_plugin_events.sql` a `plugin` filter matches nothing.
+`GET /api/v1/analytics/invocations` also takes `plugin=<outcome>:<slug>` (or `error:<slug>:<kind>`), named as the plugin rollup below names its entries, to list exactly the requests a plugin acted on; each row carries `plugin_events`, an array of the same strings. Unlike the four shared filters, `guardrail` and `plugin` are only on the invocation list. So are `withheld=true` and `usage_unknown=true`, which keep the requests whose response a policy withheld after the provider billed them, and the successes whose upstream reported no usage; any other value applies no filter. So is `outcome=<name>`, which keeps the requests the gateway recorded with that [outcome](/observability/logs-and-cost#the-outcome-of-each-request) (`served`, `upstream_error`, `refused_budget`, ..., or `unknown` for rows from before it was recorded); an outcome it does not know is a `400`. `GET /api/v1/analytics/invocations/export` takes every one of these filters too, so a filtered view exports the rows it shows. Both narrow inside the rows you can read, and they combine with every other filter, though a withheld request is a `403` and an unknown-usage one a success, so asking for both returns nothing. On a table without `clickhouse/019_plugin_events.sql` a `plugin` filter matches nothing.
+
+## Parameter adjustments
+
+`GET /api/v1/analytics/param-adjustments` takes the same `since` and `until` and answers which request parameters [dialect translation](/api/overview#adjusted-parameters) did not forward as sent, per route and provider, in that window:
+
+```json
+{
+  "recorded": true,
+  "data": [
+    {
+      "route": "claude-sonnet",
+      "provider": "anthropic",
+      "disposition": "dropped",
+      "param": "presence_penalty",
+      "requests": 40,
+      "route_requests": 100,
+      "share": 0.4
+    }
+  ]
+}
+```
+
+`disposition` is `dropped`, `clamped` or `translated`, as in the `x-rolter-param-adjustments` header. `requests` counts the requests that had it, `route_requests` every request that route sent that provider in the window, and `share` is their ratio, so the row above reads "this route drops `presence_penalty` on 40% of its Anthropic traffic". Counts are scaled by the log's sampling weight, and the rows are limited to the request log you can read. A route that translates nothing has no rows. `recorded` is `false`, with `data` empty, when the ClickHouse table lacks `clickhouse/022_param_adjustments.sql`. Each row of `GET /api/v1/analytics/invocations` carries the same entries as `param_adjustments`, an array of `<disposition>:<param>` strings. The **Compatibility** screen lists this rollup under **Parameters not forwarded as sent**, and the **LLM Logs** drawer lists a request's own adjustments.
 
 ## Plugin outcomes
 

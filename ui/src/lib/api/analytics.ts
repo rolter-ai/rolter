@@ -316,3 +316,40 @@ export function fetchPluginOutcomes(window: AnalyticsWindow = {}): Promise<Plugi
     recorded: r.recorded !== false,
   }));
 }
+
+/**
+ * One request parameter dialect translation did not forward as sent, on one
+ * route and provider, over the window (#3323). `share` is `requests` over
+ * `route_requests`, the requests that route sent that provider in all; the
+ * numbers may arrive as strings, like every ClickHouse count.
+ */
+export interface ParamAdjustmentRow {
+  route: string;
+  provider: string;
+  /** `dropped`, `clamped` or `translated`; a newer gateway may add more */
+  disposition: string;
+  param: string;
+  requests: number | string;
+  route_requests: number | string;
+  share: number | string;
+}
+
+export interface ParamAdjustments {
+  data: ParamAdjustmentRow[];
+  /**
+   * `false` when the ClickHouse table lacks the column the adjustments are
+   * kept in (`clickhouse/022_param_adjustments.sql` not applied), so an empty
+   * `data` means "not recorded" and not "every parameter went through"
+   */
+  recorded: boolean;
+}
+
+/** the adjustment rollup; throws AnalyticsUnavailableError without ClickHouse */
+export function fetchParamAdjustments(window: AnalyticsWindow = {}): Promise<ParamAdjustments> {
+  return getAnalytics<Partial<ParamAdjustments>>(
+    `/api/v1/analytics/param-adjustments${windowParams(window)}`,
+  ).then((r) => ({
+    data: Array.isArray(r.data) ? r.data : [],
+    recorded: r.recorded !== false,
+  }));
+}

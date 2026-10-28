@@ -77,11 +77,11 @@ Each entry lists the other models in the **same route's pool** (its targets, var
 
 ### `excluded`: what was left out, and why
 
-`excluded.requests` counts every request that was not re-priced by reason: `unpriced`, `failed`, `cache_hit`, `usage_unknown`, `not_a_model_call`, `no_token_usage`, `prompt_too_large`, `output_too_large`, `route_not_configured` (the route has since been deleted or renamed) and `no_cheaper_candidate`. `excluded.unknown_candidate_prices` names the pool models that could not be considered because they have no price; add one in **Models** and they will be.
+`excluded.requests` counts every request that was not re-priced by reason: `unpriced`, `failed`, `cache_hit`, `usage_unknown`, `not_a_model_call`, `uses_tools` (it offered the model tools), `image_input`, `audio_input` (an input message carried an image or audio), `structured_output` (it asked for output that follows a JSON schema), `multi_turn` (it carried more than one user turn), `no_token_usage`, `prompt_too_large`, `output_too_large`, `route_not_configured` (the route has since been deleted or renamed) and `no_cheaper_candidate`. `excluded.unknown_candidate_prices` names the pool models that could not be considered because they have no price; add one in **Models** and they will be.
 
 ## What it does not claim
 
 - **Quality.** Nothing here says a cheaper model is good enough. Test it.
-- **Request shape beyond size.** The request log does not record whether a request carried tools, images, audio, several turns or a structured-output schema, so the advisor cannot exclude those. A request that needs one of them may still be listed.
+- **Request shape, before it was recorded.** The gateway records whether a request offered tools, sent an image or audio, carried several turns or asked for a structured-output schema, for both the OpenAI and the Anthropic dialects, and the advisor excludes such requests under the reasons above. The flags are columns added by `clickhouse/031_request_shape.sql`: until it is applied none is recorded, nothing is excluded for them and the report's `limits` say so, and a request logged before you applied it reads as having none of them, so it may still be listed.
 - **Models outside the route.** Only models you already configured on the same route are considered; the advisor never suggests a model your deployment does not route to.
 - **Unknown prices.** A request or a candidate without a price is counted, never priced at zero.

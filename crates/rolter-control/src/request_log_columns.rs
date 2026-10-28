@@ -87,6 +87,43 @@ pub(crate) const OPTIONAL_COLUMNS: &[OptionalColumn] = &[
         name: "fallback_reason",
         default: "''",
     },
+    // 022_param_adjustments.sql: what translation did to the request's
+    // parameters (#1586), read by the invocation list and its rollup (#3323)
+    OptionalColumn {
+        name: "param_adjustments",
+        default: "emptyArrayString()",
+    },
+    // 030_request_outcome.sql: the column's own default, which every row
+    // written before it reads as
+    OptionalColumn {
+        name: "outcome",
+        default: "'unknown'",
+    },
+    // 031_request_shape.sql: read by the savings advisor's exclusions (#3317)
+    OptionalColumn {
+        name: "has_tools",
+        default: "toUInt8(0)",
+    },
+    // 031_request_shape.sql
+    OptionalColumn {
+        name: "has_image_input",
+        default: "toUInt8(0)",
+    },
+    // 031_request_shape.sql
+    OptionalColumn {
+        name: "has_audio_input",
+        default: "toUInt8(0)",
+    },
+    // 031_request_shape.sql
+    OptionalColumn {
+        name: "has_response_schema",
+        default: "toUInt8(0)",
+    },
+    // 031_request_shape.sql
+    OptionalColumn {
+        name: "turns",
+        default: "toUInt16(0)",
+    },
 ];
 
 /// The probe: every column `request_logs` has in the database the client reads
@@ -321,6 +358,13 @@ mod tests {
             "plugin_events",
             "seq",
             "fallback_reason",
+            "param_adjustments",
+            "outcome",
+            "has_tools",
+            "has_image_input",
+            "has_audio_input",
+            "has_response_schema",
+            "turns",
         ]))
         .expect("the table is visible");
         assert_eq!(columns.missing(), ["cache_write_1h_tokens"]);

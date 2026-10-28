@@ -500,6 +500,10 @@ pub fn router() -> Router<crate::ControlState> {
         .route("/api/v1/analytics/guardrails", get(guardrails))
         .route("/api/v1/analytics/plugins", get(plugins))
         .merge(crate::analytics_export::router())
+        .route(
+            "/api/v1/analytics/param-adjustments",
+            get(param_adjustments),
+        )
 }
 
 /// Map a cost-attribution dimension name to its whitelisted column. Anything
@@ -1038,6 +1042,56 @@ async fn plugins(
     events_rollup(access, state, q, "plugin_events", plugins_sql()).await
 }
 
+/// Which request parameters dialect translation did not forward as sent, per
+/// route and provider, in the window (#3323): one row per `route` (the public
+/// model), `provider`, `disposition` (`dropped`, `clamped` or `translated`)
+/// and `param`, with the `requests` that had it and the `route_requests` the
+/// route sent that provider in all, so `share` is the part of the traffic it
+/// touched. This is what lets an operator see "this route silently drops
+/// `top_k` on 40% of its traffic" instead of each caller finding out alone.
+/// Counts are scaled by the sampling weight like every other count here. A
+/// table without `clickhouse/022_param_adjustments.sql` answers
+/// `recorded: false` with no rows.
+async fn param_adjustments(
+    access: AnalyticsAccess,
+    state: State<crate::ControlState>,
+    q: Query<WindowQuery>,
+) -> Response {
+    events_rollup(
+        access,
+        state,
+        q,
+        "param_adjustments",
+        param_adjustments_sql(),
+    )
+    .await
+}
+
+/// The rollup behind [`param_adjustments`]. One scan: each `(route, provider)`
+/// group sums its weight and, with `sumMap`, the weight of every
+/// `<disposition>:<param>` entry its rows carry, which the outer query unfolds
+/// into a row per entry. The gateway records a parameter once per request, so
+/// an entry's weight is the requests it touched. The disposition never holds a
+/// `:`, so the first one splits the entry.
+fn param_adjustments_sql() -> String {
+    format!(
+        "select route, provider, \
+            substring(event, 1, position(event, ':') - 1) as disposition, \
+            substring(event, position(event, ':') + 1) as param, \
+            round(weight) as requests, \
+            round(total) as route_requests, \
+            round(weight / total, 4) as share \
+         from (\
+            select model as route, provider, sum(sample_weight) as total, \
+                sumMap(param_adjustments, arrayMap(entry -> sample_weight, param_adjustments)) as adjusted \
+            from request_logs where {WHERE_WINDOW} and {ROW_VISIBLE} \
+            group by route, provider) \
+         array join adjusted.1 as event, adjusted.2 as weight \
+         where position(event, ':') > 0 \
+         order by requests desc, route, provider, disposition, param format JSON"
+    )
+}
+
 /// Run an event-array rollup over `column`, answering `recorded: false` while
 /// the table lacks the column.
 async fn events_rollup(
@@ -1156,6 +1210,11 @@ pub struct InvocationsQuery {
     /// (`blocked:<slug>`, `transformed:<slug>`, `annotated:<slug>` or
     /// `error:<slug>:<kind>`); empty/omitted applies no filter (#2243)
     pub(crate) plugin: Option<String>,
+    /// one request outcome to filter to (#3307): a name from
+    /// `rolter_core::request_outcome::RequestOutcome`, or `unknown` for rows
+    /// written before the gateway recorded one; empty/omitted applies no
+    /// filter
+    pub(crate) outcome: Option<String>,
     /// page size, 1..=200 (defaults to 50)
     pub(crate) limit: Option<u32>,
     /// opaque `timestamp|request_id` cursor returned as the preceding page's
@@ -1251,7 +1310,7 @@ impl TimeBounds for InvocationsQuery {
 /// is not a total order and ClickHouse may return tied rows in any order it
 /// likes (#1344). With `request_id` in both the sort and the cursor, tied
 /// timestamps have one order and the cursor names exactly one row.
-fn invocations_sql(status_expr: &str, columns: &Columns) -> String {
+pub(crate) fn invocations_sql(status_expr: &str, columns: &Columns) -> String {
     let cursor = invocations_keyset_predicate(&columns.expr("seq"));
     let seq = columns.select("seq");
     let seq_order = columns.expr("seq");
@@ -1262,10 +1321,21 @@ fn invocations_sql(status_expr: &str, columns: &Columns) -> String {
     let guardrail_events = columns.select("guardrail_events");
     let plugin_events = columns.select("plugin_events");
     let fallback_reason = columns.select("fallback_reason");
+    let param_adjustments = columns.select("param_adjustments");
     // the filter reads the column, which an older table lacks: it then matches
     // nothing, which is true, since no event was ever recorded there
     let guardrail_filter = columns.expr("guardrail_events");
     let plugin_filter = columns.expr("plugin_events");
+    // without the column every row reads `unknown`, which is what the filter
+    // then matches: true, since no outcome was ever recorded there
+    let outcome = columns.select("outcome");
+    let outcome_filter = columns.expr("outcome");
+    // what the request asked for beyond its tokens (#3317)
+    let has_tools = columns.select("has_tools");
+    let has_image_input = columns.select("has_image_input");
+    let has_audio_input = columns.select("has_audio_input");
+    let has_response_schema = columns.select("has_response_schema");
+    let turns = columns.select("turns");
     format!(
         "select ts, request_id, trace_id, org_id, team_id, project_id, virtual_key_id, \
                 business_unit_id, customer_id, \
@@ -1273,7 +1343,8 @@ fn invocations_sql(status_expr: &str, columns: &Columns) -> String {
                 {cache_write_1h_tokens}, \
                 prompt_tokens, completion_tokens, total_tokens, cost_usd, unpriced, withheld, usage_unknown, latency_ms, ttft_ms, error, \
                 {upstream_status}, {attempts}, {lifecycle_operation}, {guardrail_events}, {plugin_events}, {seq}, \
-                {fallback_reason}, \
+                {fallback_reason}, {param_adjustments}, \
+                {outcome}, {has_tools}, {has_image_input}, {has_audio_input}, {has_response_schema}, {turns}, \
                 if({PAYLOAD_VISIBLE}, payload.request_payload, '') as request_payload, \
                 if({PAYLOAD_VISIBLE}, payload.response_payload, '') as response_payload, \
                 toUInt8(not {PAYLOAD_VISIBLE} \
@@ -1295,11 +1366,30 @@ fn invocations_sql(status_expr: &str, columns: &Columns) -> String {
            and ({{usage_unknown:UInt8}} = 0 or request_logs.usage_unknown = 1) \
            and ({{guardrail:String}} = '' or has({guardrail_filter}, {{guardrail:String}})) \
            and ({{plugin:String}} = '' or has({plugin_filter}, {{plugin:String}})) \
+           and ({{outcome:String}} = '' or {outcome_filter} = {{outcome:String}}) \
            and {status_expr} \
            and {cursor} \
          order by ts desc, {seq_order} desc, request_id desc \
          limit {{limit:UInt32}} format JSON"
     )
+}
+
+/// The values the invocation list's `outcome` filter accepts: every outcome a
+/// gateway writes, then `unknown` for the rows from before it wrote one.
+pub(crate) fn outcome_filter_values() -> Vec<&'static str> {
+    use rolter_core::request_outcome::{RequestOutcome, UNKNOWN_OUTCOME};
+    RequestOutcome::ALL
+        .iter()
+        .map(|outcome| outcome.as_str())
+        .chain([UNKNOWN_OUTCOME])
+        .collect()
+}
+
+/// Whether `outcome` is a value the `outcome` filter accepts; empty is no
+/// filter. Checked before the query so a typo answers 400 rather than an
+/// empty page that reads as "no such requests".
+pub(crate) fn is_outcome_filter(outcome: &str) -> bool {
+    outcome.is_empty() || outcome_filter_values().contains(&outcome)
 }
 
 /// Individual gateway invocations, newest first. Returns every persisted column
@@ -1326,6 +1416,17 @@ async fn invocations(
         )
             .into_response();
     };
+    let outcome = q.outcome.clone().unwrap_or_default();
+    if !is_outcome_filter(&outcome) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": {"message": format!(
+                "outcome must be one of {}",
+                outcome_filter_values().join("|")
+            )}})),
+        )
+            .into_response();
+    }
     // the id half is `<seq>|<request_id>`: room for the number, while the
     // request id keeps the limit it always had
     let (cursor_ts, cursor_tail) = match parse_keyset_cursor_within(
@@ -1389,6 +1490,7 @@ async fn invocations(
         "param_plugin".to_string(),
         q.plugin.clone().unwrap_or_default(),
     ));
+    params.push(("param_outcome".to_string(), outcome));
     params.extend(row_filter_params(
         q.model.as_deref(),
         q.key.as_deref(),
@@ -1809,10 +1911,66 @@ mod tests {
             ))
             .count();
         assert_eq!(
-            rollups, 5,
-            "summary, timeseries, by-model, by-variant, by-attribution"
+            rollups, 6,
+            "summary, timeseries, by-model, by-variant, by-attribution, param-adjustments"
         );
         assert_eq!(filtered, rollups);
+    }
+
+    #[test]
+    fn the_param_adjustment_rollup_is_scoped_and_weighted() {
+        let sql = param_adjustments_sql();
+        assert!(
+            sql.contains(&format!("where {WHERE_WINDOW} and {ROW_VISIBLE}")),
+            "{sql}"
+        );
+        assert!(sql.contains("sum(sample_weight) as total"), "{sql}");
+        assert!(
+            sql.contains("arrayMap(entry -> sample_weight, param_adjustments)"),
+            "{sql}"
+        );
+        assert!(sql.contains("group by route, provider"), "{sql}");
+        assert!(sql.contains("as share"), "{sql}");
+        assert!(!sql.contains("count()"), "an unweighted count: {sql}");
+    }
+
+    #[test]
+    fn the_invocation_list_reads_and_filters_the_outcome() {
+        let sql = invocations_sql(
+            status_predicate("all").expect("all is whitelisted"),
+            &Columns::default(),
+        );
+        assert!(sql.contains(" outcome, "), "{sql}");
+        assert!(
+            sql.contains("({outcome:String} = '' or outcome = {outcome:String})"),
+            "{sql}"
+        );
+        // a table without 030 reads every row as unknown, selected and filtered
+        let old = invocations_sql(
+            status_predicate("all").expect("all is whitelisted"),
+            &Columns::lacking(&["outcome"]),
+        );
+        assert!(old.contains("'unknown' as outcome"), "{old}");
+        assert!(
+            old.contains("({outcome:String} = '' or 'unknown' = {outcome:String})"),
+            "{old}"
+        );
+    }
+
+    #[test]
+    fn the_outcome_filter_accepts_the_published_names_and_unknown() {
+        assert!(is_outcome_filter(""));
+        for name in [
+            "served",
+            "refused_budget",
+            "refused_rate_limit",
+            "upstream_error",
+            "unknown",
+        ] {
+            assert!(is_outcome_filter(name), "{name}");
+        }
+        assert!(!is_outcome_filter("refused_budget' or 1=1"));
+        assert!(!is_outcome_filter("Served"));
     }
 
     #[test]
@@ -2757,6 +2915,80 @@ mod optional_column_tests {
         let (status, body) = rollup(&app).await;
 
         // not a 502: the file is not a condition of upgrading the control plane
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["recorded"], false, "{body}");
+        assert_eq!(body["data"], json!([]), "{body}");
+    }
+
+    /// An outcome the gateway never writes is a 400 on the list and on its
+    /// export alike, before ClickHouse is asked anything (#3307, #3386).
+    #[tokio::test]
+    async fn an_unknown_outcome_is_refused_by_the_list_and_the_export() {
+        let stub = Stub::start(REQUIRED).await;
+        let app = app_over(ClickHouseClient::new(&stub.url));
+        for path in [
+            "/api/v1/analytics/invocations",
+            "/api/v1/analytics/invocations/export",
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::get(format!("{path}?outcome=refused_everything"))
+                        .body(Body::empty())
+                        .expect("a valid request"),
+                )
+                .await
+                .expect("the router answers");
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{path}");
+            let body = to_bytes(response.into_body(), 1 << 20)
+                .await
+                .expect("a readable body");
+            let body: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+            let message = body["error"]["message"].as_str().unwrap_or_default();
+            assert!(message.contains("refused_budget"), "{path}: {body}");
+        }
+    }
+
+    async fn adjustment_rollup(app: &Router) -> (StatusCode, Value) {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/analytics/param-adjustments")
+                    .body(Body::empty())
+                    .expect("a valid request"),
+            )
+            .await
+            .expect("the router answers");
+        let status = response.status();
+        let body = to_bytes(response.into_body(), 1 << 20)
+            .await
+            .expect("a readable body");
+        (status, serde_json::from_slice(&body).unwrap_or(Value::Null))
+    }
+
+    #[tokio::test]
+    async fn the_param_adjustment_rollup_reads_the_column_when_the_table_has_it() {
+        let mut columns = REQUIRED.to_vec();
+        columns.extend(every_optional());
+        let stub = Stub::start(&columns).await;
+        let app = app_over(ClickHouseClient::new(&stub.url));
+
+        let (status, body) = adjustment_rollup(&app).await;
+
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["recorded"], true, "{body}");
+        let sql = stub.list_sql();
+        assert!(sql.contains("sumMap(param_adjustments"), "{sql}");
+        assert!(sql.contains(&format!("and {ROW_VISIBLE}")), "{sql}");
+    }
+
+    #[tokio::test]
+    async fn the_param_adjustment_rollup_says_so_when_the_table_does_not_record_them() {
+        let stub = Stub::start(REQUIRED).await;
+        let app = app_over(ClickHouseClient::new(&stub.url));
+
+        let (status, body) = adjustment_rollup(&app).await;
+
         assert_eq!(status, StatusCode::OK, "{body}");
         assert_eq!(body["recorded"], false, "{body}");
         assert_eq!(body["data"], json!([]), "{body}");
