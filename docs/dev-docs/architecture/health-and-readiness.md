@@ -133,6 +133,14 @@ What the pill cannot see:
   the same `502` as a refused port and the pill reads down. Only connecting is
   bounded; streaming responses stay open.
 
+## The circuit breaker's half-open probe (#3248)
+
+A target's breaker (`rolter-gateway/src/breaker.rs`) is closed, open or half-open. Once an open window (`[breaker].open_secs`) elapses, the next `Breaker::allows` for the target moves it to half-open and admits that one request as the **probe**. Until the probe reports back, every other `allows` for the same `(model, target)` is refused, and `Breaker::open_mask` lists the target as refusing, so the balancer weighs the siblings instead. The probe's success (`on_success`, any non-retryable status) closes the breaker; its failure (`on_failure`, a 429, a 5xx or a connection error) re-opens it for a full window. Before #3248 a half-open target admitted every request that arrived before the probe's result, so a still-failing target took a burst of real traffic each time its window elapsed.
+
+The probe holds its slot on a lease, stored in the phase itself (`Phase::HalfOpen(lease_expiry)`, behind the registry's existing lock, no allocation). A probe can end without reporting either outcome: the caller disconnects, the request is cancelled, or it fails on a path that records neither (a queue-admission refusal). Without a lease that would leave the target half-open and refusing forever. When the lease expires the next `allows` admits a replacement probe and starts a new lease. The lease is `open_secs` floored at `PROBE_LEASE_FLOOR` (30 s): a probe reports back when its response headers arrive, so the floor is how long an abandoned probe can delay recovery, and is long enough that a merely slow upstream is not sent a second probe while the first is waiting.
+
+The fail-open rule is unchanged: when every target of a route is parked, unhealthy or refusing behind its breaker, `pick_untried` still forwards to the first untried target, so a single-target route keeps sending its traffic to a probing target rather than answering a gateway error.
+
 ## The fleet's circuit breakers (#2254)
 
 Breaker state is per process: every gateway replica holds its own registry (`rolter-gateway/src/breaker.rs`), so one replica can shed a target another still uses. The control plane learns it the way it learns the adaptive-routing scores — each gateway **pushes** a sample every 10s to `POST /internal/breaker-state` (`rolter-gateway/src/breaker_report.rs`), over the internal token and the `x-rolter-node-id` identity of the snapshot poll, so a node is one row here and in the cluster inventory. The sample is taken by a background task under the registry lock once per tick; the request path is untouched.

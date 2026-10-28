@@ -1575,8 +1575,8 @@ mod tests {
             "the open target must still be skipped after a sweep"
         );
         assert!(
-            state.breaker.allows("probing-model", 0),
-            "the half-open target is admitted, but must still hold its entry"
+            !state.breaker.allows("probing-model", 0),
+            "the half-open target's probe still holds the slot, so it must still hold its entry"
         );
         // a failure on the half-open target re-opens it, which is only possible
         // if the sweep kept its phase

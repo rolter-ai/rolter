@@ -9,8 +9,19 @@
 //!   the count reaches `failure_threshold` the target trips **open**.
 //! - **Open**: traffic is skipped until `open_secs` elapse, then the next probe is
 //!   admitted, moving the target to **half-open**.
-//! - **Half-open**: a single probe is allowed through; a success closes the
-//!   breaker (reset), a failure re-opens it for another `open_secs` window.
+//! - **Half-open**: exactly one probe is in flight per `(model, target)`. The
+//!   call to [`Breaker::allows`] that moves the target here admits it; every
+//!   other call is refused until that probe reports back, so an elapsed window
+//!   lets one request through rather than every request that arrives before the
+//!   first result (#3248). A success closes the breaker (reset), a failure
+//!   re-opens it for another `open_secs` window.
+//!
+//! A probe holds its slot on a lease, not forever. A probe that never reports
+//! back (the caller went away, the request was cancelled, or it ended on a path
+//! that records neither outcome) would otherwise wedge the target half-open with
+//! every request refused. Once the lease elapses the next `allows` admits a new
+//! probe in its place. The lease is the open window, floored at
+//! [`PROBE_LEASE_FLOOR`], so a slow probe is not raced by a second one.
 //!
 //! A derived `Default` registry is permanently inert (no backing store) and
 //! admits every target. A registry built with [`Breaker::new`] can be enabled,
@@ -25,14 +36,22 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering::Relaxed};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+/// The shortest time a half-open probe holds its slot before another request may
+/// replace it. A probe reports back when its response headers arrive, so this
+/// bounds how long an abandoned probe can keep a target refusing traffic, and
+/// is long enough that an upstream which is merely slow is not sent a second
+/// probe while the first is still waiting.
+pub const PROBE_LEASE_FLOOR: Duration = Duration::from_secs(30);
+
 /// The phase a single target's breaker is in.
 #[derive(Clone, Copy)]
 enum Phase {
     Closed,
     /// tripped; skip traffic until this instant, then probe
     Open(Instant),
-    /// probing; a single request has been admitted after the open window
-    HalfOpen,
+    /// probing; one request was admitted after the open window and holds the
+    /// slot until it reports back or this lease expires
+    HalfOpen(Instant),
 }
 
 /// The phase of a target's breaker, as reported to the control plane.
@@ -155,10 +174,16 @@ impl Breaker {
         inner.enabled.load(Relaxed).then_some(inner)
     }
 
-    /// Whether `(model, idx)` may currently receive traffic. Closed and half-open
-    /// targets are admitted; an open target is skipped until its window elapses,
-    /// at which point the call transitions it to half-open and admits the probe.
+    /// Whether `(model, idx)` may currently receive traffic. A closed target is
+    /// admitted. An open target is skipped until its window elapses, at which
+    /// point the call transitions it to half-open and admits the one probe. A
+    /// half-open target refuses while its probe holds the slot, and admits a
+    /// replacement probe once the probe's lease has expired without a result.
     /// A disabled registry always admits.
+    ///
+    /// Only the call that is answered `true` for a half-open target owns the
+    /// probe, so a caller must ask this for the target it is about to send to
+    /// and not for targets it only considers.
     pub fn allows(&self, model: &str, idx: usize) -> bool {
         let Some(inner) = self.active() else {
             return true;
@@ -173,27 +198,30 @@ impl Breaker {
         else {
             return true; // never-seen target is closed by default
         };
-        match entry.phase {
-            Phase::Closed | Phase::HalfOpen => true,
-            Phase::Open(until) => {
-                if Instant::now() >= until {
-                    entry.phase = Phase::HalfOpen;
-                    true
-                } else {
-                    false
-                }
-            }
+        // the clock is read only off the closed fast path
+        let deadline = match entry.phase {
+            Phase::Closed => return true,
+            Phase::Open(until) | Phase::HalfOpen(until) => until,
+        };
+        let now = Instant::now();
+        if now < deadline {
+            // still inside the open window, or the probe still holds the slot
+            return false;
         }
+        let lease = Duration::from_secs(inner.open_secs.load(Relaxed)).max(PROBE_LEASE_FLOOR);
+        entry.phase = Phase::HalfOpen(now + lease);
+        true
     }
 
     /// Which of a model's first `n` targets would refuse traffic right now (an
-    /// open breaker whose window has not elapsed), answered with one lock
-    /// acquisition rather than one per target (#1942).
+    /// open breaker whose window has not elapsed, or a half-open one whose probe
+    /// still holds the slot), answered with one lock acquisition rather than one
+    /// per target (#1942).
     ///
-    /// Read-only, unlike [`Breaker::allows`]: a target whose open window has
-    /// elapsed is not in the mask, but is not moved to half-open either. A
-    /// caller that goes on to use such a target calls `allows` for it, which
-    /// admits the probe.
+    /// Read-only, unlike [`Breaker::allows`]: a target whose open window (or
+    /// probe lease) has elapsed is not in the mask, but is not moved to
+    /// half-open either. A caller that goes on to use such a target calls
+    /// `allows` for it, which admits the probe.
     pub fn open_mask(&self, model: &str, n: usize) -> TargetMask {
         let mut mask = TargetMask::new();
         let Some(inner) = self.active() else {
@@ -206,7 +234,7 @@ impl Breaker {
         let mut now = None;
         for (idx, entry) in targets.iter().enumerate().take(n) {
             if let Some(Entry {
-                phase: Phase::Open(until),
+                phase: Phase::Open(until) | Phase::HalfOpen(until),
                 ..
             }) = entry
             {
@@ -318,7 +346,7 @@ impl Breaker {
                 let Some(entry) = slot else { continue };
                 let (state, retry_after_secs) = match entry.phase {
                     Phase::Closed => (BreakerPhase::Closed, None),
-                    Phase::HalfOpen => (BreakerPhase::HalfOpen, None),
+                    Phase::HalfOpen(_) => (BreakerPhase::HalfOpen, None),
                     Phase::Open(until) if now >= until => (BreakerPhase::HalfOpen, None),
                     Phase::Open(until) => (
                         BreakerPhase::Open,
@@ -382,7 +410,7 @@ fn record_failure(entry: &mut Entry, failure_threshold: u32, open_until: Instant
     entry.consecutive_failures = entry.consecutive_failures.saturating_add(1);
     match entry.phase {
         // a failed probe drops straight back to open
-        Phase::HalfOpen => {
+        Phase::HalfOpen(_) => {
             entry.phase = Phase::Open(open_until);
             true
         }
@@ -522,6 +550,139 @@ mod tests {
         assert!(b.allows("m", 0)); // admits half-open probe
                                    // the probe fails: straight back to open, counted as a trip
         assert!(b.on_failure("m", 0));
+    }
+
+    /// Push a half-open target's probe lease into the past, as if its probe had
+    /// been abandoned longer ago than the lease allows.
+    fn expire_probe_lease(b: &Breaker, model: &str, idx: usize) {
+        let inner = b.inner.as_ref().expect("a backing store");
+        let mut map = inner.map.lock();
+        let entry = map
+            .get_mut(model)
+            .and_then(|m| m.get_mut(idx))
+            .and_then(Option::as_mut)
+            .expect("an entry under probe");
+        assert!(matches!(entry.phase, Phase::HalfOpen(_)), "not half-open");
+        entry.phase = Phase::HalfOpen(Instant::now() - Duration::from_millis(1));
+    }
+
+    /// The stampede #3248 is about: once the window elapses, every request that
+    /// arrives before the probe's result used to be admitted.
+    #[test]
+    fn half_open_admits_one_probe_until_it_reports_back() {
+        let b = Breaker::new(true, 1, 0);
+        assert!(b.on_failure("m", 0));
+        assert!(b.allows("m", 0), "the elapsed window admits the probe");
+        for _ in 0..100 {
+            assert!(
+                !b.allows("m", 0),
+                "a second request must wait for the probe"
+            );
+        }
+        // a sibling target is unaffected
+        assert!(b.allows("m", 1));
+        // and the in-flight probe is reported as refusing by the read-only mask
+        assert!(b.open_mask("m", 2).contains(0));
+        assert!(!b.open_mask("m", 2).contains(1));
+        assert_eq!(b.snapshot()[0].state, BreakerPhase::HalfOpen);
+    }
+
+    #[test]
+    fn concurrent_allows_while_half_open_admit_exactly_one() {
+        let b = Breaker::new(true, 1, 0);
+        assert!(b.on_failure("m", 0));
+        let barrier = std::sync::Barrier::new(16);
+        let admitted = std::sync::atomic::AtomicUsize::new(0);
+        std::thread::scope(|s| {
+            for _ in 0..16 {
+                s.spawn(|| {
+                    barrier.wait();
+                    if b.allows("m", 0) {
+                        admitted.fetch_add(1, Relaxed);
+                    }
+                });
+            }
+        });
+        assert_eq!(admitted.load(Relaxed), 1);
+    }
+
+    #[test]
+    fn the_probes_success_closes_and_admits_everyone() {
+        let b = Breaker::new(true, 1, 0);
+        assert!(b.on_failure("m", 0));
+        assert!(b.allows("m", 0));
+        assert!(!b.allows("m", 0));
+        assert!(b.on_success("m", 0), "the probe's success is a recovery");
+        assert!(b.allows("m", 0));
+        assert!(b.allows("m", 0));
+    }
+
+    #[test]
+    fn the_probes_failure_reopens_for_a_full_window() {
+        let b = Breaker::new(true, 1, 3600);
+        assert!(b.on_failure("m", 0));
+        expire_open_window(&b, "m", 0);
+        assert!(b.allows("m", 0), "the probe");
+        assert!(b.on_failure("m", 0), "a failed probe re-opens");
+        assert!(!b.allows("m", 0), "and the new window refuses again");
+        assert!(b.open_mask("m", 1).contains(0));
+    }
+
+    /// A probe that never reports back (the caller left, the request was
+    /// cancelled) must not wedge the target half-open with everything refused.
+    #[test]
+    fn an_abandoned_probe_frees_the_slot_once_its_lease_expires() {
+        let b = Breaker::new(true, 1, 0);
+        assert!(b.on_failure("m", 0));
+        assert!(b.allows("m", 0), "the probe that will be abandoned");
+        assert!(!b.allows("m", 0));
+        expire_probe_lease(&b, "m", 0);
+        assert!(
+            !b.open_mask("m", 1).contains(0),
+            "an expired lease is not refusing"
+        );
+        assert!(b.allows("m", 0), "a replacement probe is admitted");
+        assert!(!b.allows("m", 0), "and it holds the slot in turn");
+        assert!(b.on_success("m", 0));
+        assert!(b.allows("m", 0));
+    }
+
+    #[test]
+    fn the_probe_lease_is_the_open_window_floored() {
+        for (open_secs, want) in [(0, PROBE_LEASE_FLOOR), (3600, Duration::from_secs(3600))] {
+            let b = Breaker::new(true, 1, open_secs);
+            assert!(b.on_failure("m", 0));
+            expire_open_window(&b, "m", 0);
+            let before = Instant::now();
+            assert!(b.allows("m", 0));
+            let inner = b.inner.as_ref().expect("a backing store");
+            let map = inner.map.lock();
+            let Some(Some(Entry {
+                phase: Phase::HalfOpen(lease),
+                ..
+            })) = map.get("m").and_then(|m| m.first())
+            else {
+                panic!("not half-open");
+            };
+            let held = lease.saturating_duration_since(before);
+            assert!(
+                held >= want && held <= want + Duration::from_secs(5),
+                "{held:?}"
+            );
+        }
+    }
+
+    /// Move an open target's window into the past without waiting for it.
+    fn expire_open_window(b: &Breaker, model: &str, idx: usize) {
+        let inner = b.inner.as_ref().expect("a backing store");
+        let mut map = inner.map.lock();
+        let entry = map
+            .get_mut(model)
+            .and_then(|m| m.get_mut(idx))
+            .and_then(Option::as_mut)
+            .expect("an open entry");
+        assert!(matches!(entry.phase, Phase::Open(_)), "not open");
+        entry.phase = Phase::Open(Instant::now() - Duration::from_millis(1));
     }
 
     #[test]

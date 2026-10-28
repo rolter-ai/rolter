@@ -20,7 +20,7 @@ Each target has an independent circuit breaker that moves through three states:
   </Card>
 
   <Card title="Half-Open" icon="circle-half-stroke">
-    The open window expired. The next request is used as a probe. A successful response closes the breaker; another failure immediately re-opens it for another `open_secs`.
+    The open window expired. The next request is used as a probe, and it is the only one: other requests skip the target until the probe's result arrives. A successful response closes the breaker; another failure immediately re-opens it for another `open_secs`. A probe that never answers (the caller disconnected) gives up its slot after `open_secs` or 30 seconds, whichever is longer, and the next request probes instead.
   </Card>
 </CardGroup>
 
