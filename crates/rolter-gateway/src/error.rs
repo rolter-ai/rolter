@@ -89,10 +89,19 @@ impl ApiError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ErrorMessage(pub String);
 
+/// The `code` an [`ApiError`] response carries, kept as a response extension
+/// for the same reason as [`ErrorMessage`]: the request-log row of a refusal
+/// names its outcome from it (#3307). Absent when the error has no code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ErrorCode(pub &'static str);
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let mut response = (self.status, Json(self.body())).into_response();
         response.extensions_mut().insert(ErrorMessage(self.message));
+        if let Some(code) = self.code {
+            response.extensions_mut().insert(ErrorCode(code));
+        }
         response
     }
 }

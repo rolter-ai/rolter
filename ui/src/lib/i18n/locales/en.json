@@ -247,6 +247,11 @@
       "provisioningTokens": "provisioning tokens",
       "publicUrl": "the public URL",
       "ssoProviders": "identity providers",
+      "mfaStatus": "the second-factor roster",
+      "logErasure": "the erasure record",
+      "logErasures": "recent erasures",
+      "ldapDirectories": "LDAP directories",
+      "apiTokens": "API tokens",
       "signInPolicy": "the sign-in policy",
       "budgets": "budgets",
       "rateLimits": "rate limits",
@@ -331,7 +336,8 @@
       "priceCatalogue": "price catalogue",
       "guardrailPolicies": "guardrail policies",
       "yourBudget": "your budget",
-      "routeVariants": "route variants"
+      "routeVariants": "route variants",
+      "paramAdjustments": "parameter adjustments"
     },
     "requestFailed": "request failed: {{status}}",
     "gateway": {
@@ -676,6 +682,7 @@
     "mcp-logs": "MCP Logs",
     "connectors": "Connectors",
     "logs-settings": "Logs Settings",
+    "log-erasure": "Log Erasure",
     "models": "Models",
     "model-catalog": "Model Catalog",
     "providers": "Model Providers",
@@ -706,6 +713,8 @@
     "customers": "Customers",
     "user-provisioning": "User Provisioning",
     "sso": "Single Sign-On",
+    "ldap": "LDAP",
+    "api-tokens": "API Tokens",
     "rbac": "Roles & Permissions",
     "access-profiles": "Access Profiles",
     "audit-logs": "Audit Logs",
@@ -3195,8 +3204,10 @@
         "mfaConfirm": {
           "title": "Require a second factor to sign in?",
           "body": "Members who have not set up an authenticator app are asked to set one up at their next password sign-in, before they get a session.",
-          "bodyWithCount_one": "This organization has {{count}} member. Without an authenticator app set up, they are asked to set one up at their next password sign-in, before they get a session.",
-          "bodyWithCount_other": "This organization has {{count}} members. Any of them without an authenticator app set up is asked to set one up at their next password sign-in, before they get a session.",
+          "gap_one": "{{missing}} of {{count}} member has no second factor. Anyone without one is asked to set up an authenticator app at their next password sign-in, before they get a session.",
+          "gap_other": "{{missing}} of {{count}} members have no second factor. Each of them is asked to set up an authenticator app at their next password sign-in, before they get a session.",
+          "gapSuperadmin_one": "{{missing}} of {{count}} superadmin has no second factor. Anyone without one is asked to set up an authenticator app at their next password sign-in, before they get a session.",
+          "gapSuperadmin_other": "{{missing}} of {{count}} superadmins have no second factor. Each of them is asked to set up an authenticator app at their next password sign-in, before they get a session.",
           "confirm": "Require it",
           "grace": "It starts on {{date}}. Until then, members without one sign in as before and are told by when to set one up.",
           "breakGlass": "Someone who loses their device is cleared on the host with `rolter mfa reset`, which is audited.",
@@ -3317,6 +3328,186 @@
         "grantTiming": "Each member gets it at their next sign-in.",
         "removeBody": "Members of that group stop being granted {{role}} on {{scope}} at their next sign-in. Roles they already hold are not withdrawn."
       }
+    },
+    "ldap": {
+      "directory": {
+        "title": "Directory",
+        "count_one": "{{count}} registered",
+        "count_other": "{{count}} registered",
+        "add": "Add directory",
+        "oneOnly": "An organization has one directory. Edit or delete the existing one first.",
+        "enabled": "Enabled",
+        "disabled": "Disabled",
+        "noTls": "No TLS required",
+        "noTlsHint": "Plain ldap:// is allowed for this directory, so the bind password and every user's password cross the network in cleartext.",
+        "defaultRole": "Signs in as {{role}} when no group mapping matches.",
+        "noDefaultRole": "No default role: a user in no mapped group is refused, rather than admitted with nothing.",
+        "toggleNamed": "Enable directory {{name}}",
+        "edit": "Edit directory",
+        "editNamed": "Edit directory {{name}}",
+        "delete": "Delete directory",
+        "deleteNamed": "Delete directory {{name}}",
+        "clearPassword": "Remove stored bind password",
+        "clearPasswordNamed": "Remove the stored bind password for {{name}}",
+        "url": "URL",
+        "bindDn": "Bind DN",
+        "bindPassword": "Bind password",
+        "passwordStored": "Stored",
+        "passwordMissing": "Not set (anonymous search)",
+        "baseDn": "Base DN",
+        "userFilter": "User filter",
+        "emailAttr": "Email attribute",
+        "groupAttr": "Group attribute",
+        "enabledToast": "{{name}} is now accepting sign-ins",
+        "disabledToast": "{{name}} is out of service",
+        "passwordClearedToast": "{{name}} no longer has a stored bind password"
+      },
+      "empty": {
+        "title": "No LDAP directory registered yet",
+        "body": "Register your LDAP or Active Directory server and members sign in with the login and password they already use. rolter maps their directory groups to roles at each sign-in."
+      },
+      "create": {
+        "title": "Add directory",
+        "subtitle": "Register the LDAP or Active Directory server this organization signs in against.",
+        "save": "Add directory",
+        "name": "Name",
+        "nameHint": "How the directory is listed here and in the audit log.",
+        "namePlaceholder": "Corporate directory",
+        "url": "URL",
+        "urlHint": "ldaps:// or ldap:// address of the directory.",
+        "urlPlaceholder": "ldaps://dir.example.com",
+        "requireTls": "Require TLS",
+        "requireTlsHint": "Refuse a plain ldap:// address, so the bind password is never sent in cleartext.",
+        "plainWithTls": "This address is plain ldap://, which the control plane refuses while TLS is required. Use ldaps://, or turn this off.",
+        "bindDn": "Bind DN",
+        "bindDnHint": "The read-only service account that finds users.",
+        "bindDnPlaceholder": "cn=svc-rolter,dc=example,dc=com",
+        "bindPassword": "Bind password",
+        "bindPasswordHint": "The service account's password. Leave it empty for an anonymous search.",
+        "passwordWriteOnly": "The bind password is sealed when saved and cannot be read back, here or anywhere else.",
+        "baseDn": "Base DN",
+        "baseDnHint": "The subtree searched for users.",
+        "baseDnPlaceholder": "ou=people,dc=example,dc=com",
+        "userFilter": "User filter",
+        "userFilterHint": "The search filter. {login} is replaced with what the user typed, escaped.",
+        "emailAttr": "Email attribute",
+        "emailAttrHint": "The attribute holding a user's email address.",
+        "displayNameAttr": "Display name attribute",
+        "displayNameAttrHint": "The attribute holding a user's display name.",
+        "groupAttr": "Group attribute",
+        "groupAttrHint": "The attribute on the user entry that lists their groups. Nested groups are not expanded.",
+        "defaultRole": "Default role",
+        "defaultRoleHint": "Granted to a user in no mapped group. Leave it unset to refuse those users.",
+        "defaultRoleNone": "None: refuse unmapped users"
+      },
+      "edit": {
+        "title": "Edit directory",
+        "subtitle": "Change how this organization signs in against the directory.",
+        "save": "Save directory",
+        "bindPasswordHint": "Leave empty to keep the stored password; type one to replace it.",
+        "bindPasswordNoneHint": "No bind password is stored. Type one to start binding as the service account."
+      },
+      "mappings": {
+        "title": "Group mappings",
+        "empty": "No group is mapped yet, so a user in no group is refused.",
+        "emptyWithDefault": "No group is mapped yet, so every directory user signs in as {{role}}.",
+        "grantTiming": "A mapping grants its role the next time each member signs in.",
+        "removeBody": "Members of the group lose {{role}} on {{scope}} the next time they sign in, unless another mapping grants it.",
+        "addNamed": "Map a group in {{directory}}"
+      },
+      "clearPassword": {
+        "title": "Remove the stored bind password of {{name}}?",
+        "body": "From the next sign-in the directory is searched anonymously. If your server refuses anonymous searches, every directory sign-in fails until you enter a new password, and a removed password cannot be read back.",
+        "confirm": "Remove password"
+      },
+      "disable": {
+        "title": "Take {{name}} out of service?",
+        "body": "Directory users can no longer sign in. The registration, bind password and group mappings stay, so turning it back on restores sign-in. Local accounts keep working.",
+        "confirm": "Take out of service"
+      },
+      "confirm": {
+        "title": "Delete directory {{name}}?",
+        "body": "Directory users can no longer sign in, and its group mappings are deleted with it. Accounts already created keep the roles they have.",
+        "confirm": "Delete directory"
+      }
+    },
+    "apiTokens": {
+      "title": "API tokens",
+      "count_one": "{{count}} token",
+      "count_other": "{{count}} tokens",
+      "customRole": "Custom role",
+      "colName": "Name",
+      "colScope": "Scope",
+      "colRole": "Role",
+      "colPrefix": "Prefix",
+      "colExpires": "Expires",
+      "colLastUsed": "Last used",
+      "colState": "State",
+      "noExpiry": "Never",
+      "neverUsed": "Never used",
+      "state": {
+        "active": "Active",
+        "expired": "Expired",
+        "revoked": "Revoked"
+      },
+      "rotate": "Rotate token {{name}}",
+      "inactiveHint": "A revoked or expired token cannot be rotated; mint a new one.",
+      "revoke": "Revoke token {{name}}",
+      "alreadyRevoked": "This token is already revoked.",
+      "revokedToast": "{{name}} is revoked and stops working on its next request",
+      "empty": {
+        "title": "No API tokens yet",
+        "body": "A token is a named service account that holds one role at one organization, team or project, for the CI jobs and scripts that should not run as the admin token or as a person."
+      },
+      "mint": {
+        "open": "Mint token",
+        "title": "Mint an API token",
+        "subtitle": "A named token that holds one role at the scope you choose.",
+        "save": "Mint token",
+        "name": "Name",
+        "nameHint": "What the audit log shows for this token's changes. At most 80 characters.",
+        "namePlaceholder": "ci-deploy",
+        "scope": "Scope",
+        "scopeHint": "The token reaches this scope and everything below it, never a sibling or the level above.",
+        "role": "Role",
+        "roleHint": "Give automation the narrowest role that does the job. A token never holds more than you do at this scope.",
+        "builtInRoles": "Built-in roles",
+        "customRoles": "Custom roles",
+        "expiry": "Expires",
+        "expiryHint": "The token stops working after this long. 90 days unless you choose otherwise.",
+        "days_one": "In {{count}} day",
+        "days_other": "In {{count}} days",
+        "never": "Never expires",
+        "neverWarning": "A token that never expires stays valid until someone revokes it. Prefer an expiry and rotate it."
+      },
+      "confirm": {
+        "rotateTitle": "Rotate token {{name}}?",
+        "rotateBody": "A new secret is shown once, and the current one stops working in the same instant. Anything still using it fails until it is given the new one.",
+        "rotate": "Rotate token",
+        "revokeTitle": "Revoke token {{name}}?",
+        "revokeBody": "The token stops working on its next request and cannot be restored. It stays in the list as revoked, so the audit trail keeps its name.",
+        "revoke": "Revoke token"
+      },
+      "revealed": {
+        "title": "Token {{name}} is ready",
+        "body": "This is the only time the secret is shown. rolter keeps only a digest of it, so a lost secret is rotated, not looked up.",
+        "rotatedTitle": "Token {{name}} was rotated",
+        "rotatedBody": "This is the only time the new secret is shown. The previous secret no longer works.",
+        "copy": "Copy token",
+        "nextStep": "Send it as Authorization: Bearer <token> on control-plane requests."
+      }
+    },
+    "mcpStepUp": {
+      "action": "Reconnect with more access",
+      "actionNamed": "Reconnect {{name}} with more access",
+      "missing_one": "Your connection lacks the scope {{scopes}} that this server requires.",
+      "missing_other": "Your connection lacks the scopes {{scopes}} that this server requires.",
+      "logTitle": "Authorization refused",
+      "logBody": "{{server}} refused this call for authorization. If it wanted a scope your connection does not hold, consent again with more access; your current scopes are kept.",
+      "notOwner": "Only the key's owner can reconnect with more access.",
+      "scopesLabel": "Scopes to add",
+      "scopesHint": "Separate scopes with spaces. The log records the refusal, not the scope the server asked for, so name it here.",
+      "scopesPlaceholder": "repo read:org"
     },
     "auditLog": {
       "emptyTitle": "No audit entries yet",
@@ -3641,6 +3832,22 @@
       "cost": "Cost",
       "guardrail": "Guardrail",
       "plugin": "Plugin",
+      "outcome": "Outcome",
+      "outcomeAny": "Any outcome",
+      "outcomes": {
+        "served": "Served",
+        "upstream_error": "Upstream error",
+        "withheld": "Withheld after billing",
+        "cancelled": "Caller went away",
+        "refused_budget": "Refused: budget spent",
+        "refused_rate_limit": "Refused: rate limit",
+        "refused_guardrail": "Refused: guardrail",
+        "refused_plugin": "Refused: plugin",
+        "refused_access": "Refused: model not allowed",
+        "refused_invalid": "Refused: invalid request",
+        "refused": "Refused: other reason",
+        "unknown": "Not recorded"
+      },
       "unpricedOnly": "Unpriced only",
       "withheldOnly": "Withheld responses only",
       "usageUnknownOnly": "Unknown usage only",
@@ -3708,7 +3915,9 @@
             "compact": "Compact",
             "input_tokens": "Count input tokens"
           }
-        }
+        },
+        "paramAdjustments": "Parameters not sent as given",
+        "paramAdjustment": "{{param}}: {{disposition}}"
       },
       "payloadWithheld": "A body was captured for this request, but it is hidden for your role: on this project, request and response bodies are shown to its members and admins. A project admin can let viewers read them too, in the project's settings.",
       "feed": {
@@ -3930,6 +4139,31 @@
       "colRoles": "Roles",
       "colProfiles": "Access profiles",
       "colStatus": "Status",
+      "colSecondFactor": "Second factor",
+      "deploymentRole": {
+        "set": "Set the deployment role of {{email}}",
+        "title": "Deployment role",
+        "subtitle": "What {{email}} can reach across the whole deployment.",
+        "label": "Deployment role",
+        "hint": "An account holds at most one. It takes effect on the account's next request.",
+        "none": "None",
+        "noneBody": "No deployment-wide access beyond the roles held in organizations.",
+        "operator": "Operator",
+        "operatorBody": "Maintains the platform: cluster, runtime policy, feature flags, alerting and connectors, read and change.",
+        "securityAuditor": "Security auditor",
+        "securityAuditorBody": "Reviews how it is secured, read only: security, logging, compatibility and guardrail settings, the deployment audit log and the config export.",
+        "scopeNote": "A deployment role gives nothing inside an organization, team or project: it reads no tenant request logs or payloads, mints no credentials and grants no roles.",
+        "badgeHint": "Holds a deployment role: reaches deployment-wide settings, nothing inside an organization.",
+        "toastSet": "{{email}} is now {{role}}",
+        "toastCleared": "{{email}} no longer holds a deployment role"
+      },
+      "factorArmed": "Armed",
+      "factorNone": "Not set up",
+      "factorNotListed": "Not listed",
+      "factorArmedHint_one": "An authenticator app is set up; {{count}} recovery code left.",
+      "factorArmedHint_other": "An authenticator app is set up; {{count}} recovery codes left.",
+      "factorNoneHint": "No authenticator app is set up for this account.",
+      "factorNotListedHint": "This account is not an active member of the organization, so the enrolment roster does not list it.",
       "colCreated": "Created",
       "noRoles": "no role in this org",
       "statusFilterAria": "Filter users by status",
@@ -3987,6 +4221,7 @@
       },
       "viaSso": "from SSO",
       "viaScim": "from SCIM",
+      "viaLdap": "from LDAP",
       "changeRole": "Change {{email}}'s {{role}} role on {{scope}}",
       "revokeRole": "Revoke {{role}} on {{scope}} from {{email}}",
       "lastAdminHint": "{{email}}'s {{role}} role on {{scope}} is the organization's last admin grant. Grant admin to someone else first.",
@@ -4021,7 +4256,10 @@
         "emptyTitle": "No pending invitations",
         "emptyBody": "An invitation waits here until it is accepted, expires or is revoked.",
         "revoke": "Revoke the invitation for {{email}}",
-        "toastRevoked": "Revoked the invitation for {{email}}"
+        "toastRevoked": "Revoked the invitation for {{email}}",
+        "resend": "Email the link to {{email}} again",
+        "toastResent": "Emailed the link to {{email}} again",
+        "toastResendFailed": "The link to {{email}} could not be emailed"
       },
       "confirm": {
         "revokeTitle": "Revoke {{role}} on {{scope}} from {{email}}?",
@@ -4032,6 +4270,7 @@
         "revokeLast": "It is their last role in this organization, so they leave this list. The account itself is kept.",
         "revokeFromSso": "The role came from an SSO group mapping, which grants it again the next time they sign in unless the mapping changes.",
         "revokeFromScim": "The role came from a SCIM group, which grants it again at the next sync unless the group mapping changes.",
+        "revokeFromLdap": "The role came from an LDAP group mapping, which grants it again the next time they sign in unless the mapping changes.",
         "revokeSelf": "It is your own role, so you may lose access you are using right now.",
         "revokeConfirm": "Revoke role",
         "revokeRefused": "Revoking a role on {{scope}} takes Admin there or on a scope above it.",
@@ -4040,6 +4279,7 @@
         "changeBody": "They hold {{role}} there now. The role you pick replaces it in one step, so they are never left without a role there.",
         "changeFromSso": "{{role}} came from an SSO group mapping, which grants it again the next time they sign in; change the mapping for the new role to stick.",
         "changeFromScim": "{{role}} came from a SCIM group, which grants it again at the next sync; change the group mapping for the new role to stick.",
+        "changeFromLdap": "{{role}} came from an LDAP group mapping, which grants it again the next time they sign in; change the mapping for the new role to stick.",
         "changeSelf": "It is your own role, so a lower one may take away access you are using right now.",
         "changeConfirm": "Change role",
         "resetTitle": "Reset the password of {{email}}?",
@@ -4256,6 +4496,89 @@
       "noAnalytics": {
         "title": "No ClickHouse receives the log",
         "body": "This control plane has no ClickHouse, so no request is written to the log. Sample rate, payload capture and retention are still saved and apply once ClickHouse is added: set <0>CLICKHOUSE_URL</0> (the clickhouse_url key in the config file) and restart the control plane."
+      }
+    },
+    "logErasure": {
+      "intro": "Retention is a clock; erasure is a command. It deletes what rolter holds about one subject now and is irreversible. ClickHouse applies it in the background, so a request is pending until the record says it is completed.",
+      "submittedToast": "Erasure submitted. It is pending until ClickHouse has finished.",
+      "form": {
+        "title": "Erase a subject's logs",
+        "hint": "Deletes the request logs and captured prompt bodies of one virtual key, user or organization, and records that it did.",
+        "scope": "Subject",
+        "subject": "Subject id",
+        "subjectPlaceholder": "00000000-0000-0000-0000-000000000000",
+        "subjectInvalid": "This is not an id. Paste the full UUID.",
+        "includeLogs": "Delete the log rows too",
+        "includeLogsOn": "Deletes the request metadata (model, tokens, cost, status) and the captured bodies, so the figures built from them go too.",
+        "includeLogsOff": "Deletes the captured prompt and response bodies only and keeps the request metadata.",
+        "submit": "Erase…"
+      },
+      "scope": {
+        "virtual_key": "Virtual key",
+        "user": "User",
+        "org": "Organization",
+        "request": "One request"
+      },
+      "scopeBody": {
+        "virtual_key": "Every request sent with that key.",
+        "user": "Every request sent with a key that user created and that still exists.",
+        "org": "Every request of that organization."
+      },
+      "subjectHint": {
+        "virtual_key": "The virtual key's id, from Virtual Keys.",
+        "user": "The user's id, from Users. A key that was since deleted leaves nothing to resolve; erase by organization or key id for those.",
+        "org": "The organization's id."
+      },
+      "reason": "Reason",
+      "reasonHint": "Stored and audited. Write the ticket or request reference, not the content.",
+      "reasonPlaceholder": "erasure request DSR-1042",
+      "confirm": {
+        "titleLogs": "Erase the logs of {{noun}} {{id}}?",
+        "titleBodies": "Erase the captured bodies of {{noun}} {{id}}?",
+        "noun": {
+          "virtual_key": "virtual key",
+          "user": "user",
+          "org": "organization"
+        },
+        "bodyAll": "The request logs and captured bodies are deleted for good. This cannot be undone.",
+        "bodyBodies": "The captured prompt and response bodies are deleted for good; the request metadata stays. This cannot be undone.",
+        "confirm": "Erase",
+        "notInstant": "ClickHouse deletes in the background. The record stays pending until it reports every deletion done."
+      },
+      "recent": "Recent erasures",
+      "count_one": "{{count}} erasure",
+      "count_other": "{{count}} erasures",
+      "colRequested": "Requested",
+      "colScope": "Subject",
+      "colReason": "Reason",
+      "colRemoves": "Removes",
+      "colStatus": "Status",
+      "removesAll": "Logs and bodies",
+      "removesBodies": "Bodies only",
+      "empty": {
+        "title": "Nothing has been erased",
+        "body": "Erasures you request here are listed with their status, and the record of each outlives the data it removed."
+      },
+      "status": {
+        "pending": "Pending",
+        "completed": "Erased",
+        "failed": "Failed",
+        "unverified": "Unverified"
+      },
+      "statusHint": {
+        "pending": "Submitted. Treat the data as still present until this reads erased.",
+        "completed": "ClickHouse reports every deletion done. The rows are gone.",
+        "failed": "ClickHouse refused a statement at submission. Earlier ones may be queued; submit again, which is safe to repeat.",
+        "unverified": "No deletion was visible in ClickHouse an hour after submission, so completion cannot be confirmed. Check by querying."
+      },
+      "progress": "{{done}} of {{total}} deletions done",
+      "action": {
+        "erase": "Erase captured payload",
+        "noOrg": "This request records no organization, so it cannot be addressed by request. Erase by virtual key instead.",
+        "noTime": "This row's time could not be read, so the request cannot be told apart from others that reuse its id. Erase by virtual key instead.",
+        "confirmTitle": "Erase the captured payload of {{id}}?",
+        "confirmBody": "Deletes the request and response bodies captured for the call at {{time}}. The request's metadata stays. This cannot be undone.",
+        "confirm": "Erase payload"
       }
     },
     "clientSettings": {
@@ -4505,7 +4828,25 @@
         "anthropicVersion": "Anthropic version must be a dated release like 2023-06-01.",
         "defaultMaxTokens": "Default max tokens must be a whole number between 1 and 1000000."
       },
-      "restart": "Restart"
+      "restart": "Restart",
+      "adjustments": {
+        "title": "Parameters not forwarded as sent",
+        "desc": "Over the last 7 days, the request parameters each route's translation dropped, clamped or approximated for an upstream that speaks another dialect, and the share of that route's traffic to the provider it touched.",
+        "colRoute": "Route",
+        "colProvider": "Provider",
+        "colParam": "Parameter",
+        "colDisposition": "What happened",
+        "colShare": "Share of traffic",
+        "share": "{{share}} ({{requests}} of {{total}})",
+        "emptyTitle": "Every parameter went through",
+        "emptyBody": "No request in the last 7 days had a parameter dropped, clamped or approximated by translation.",
+        "notRecordedTitle": "Parameter adjustments are not recorded",
+        "notRecordedBody": "The request log has no column for them yet. Apply <0>clickhouse/022_param_adjustments.sql</0> to keep them.",
+        "noAnalytics": {
+          "title": "Parameter adjustments need the analytics store",
+          "body": "They are read from the request log, which this deployment does not keep. Set <0>CLICKHOUSE_URL</0> and this panel lists, per route, the parameters translation did not forward as sent."
+        }
+      }
     },
     "featureFlags": {
       "confirm": {
@@ -5120,6 +5461,10 @@
       "title": "Logs Settings",
       "subtitle": "Retention, sampling, and PII redaction for request logs."
     },
+    "log-erasure": {
+      "title": "Log Erasure",
+      "subtitle": "Delete one subject's request logs and captured payloads now, and follow ClickHouse until it has finished."
+    },
     "model-catalog": {
       "title": "Model Catalog",
       "subtitle": "Every model reachable through rolter."
@@ -5235,6 +5580,14 @@
     "sso": {
       "title": "Single Sign-On",
       "subtitle": "Register an identity provider, map its groups to roles, and choose how this organization signs in."
+    },
+    "ldap": {
+      "title": "LDAP",
+      "subtitle": "Register a directory, map its groups to roles, and let its users sign in with their directory password."
+    },
+    "api-tokens": {
+      "title": "API Tokens",
+      "subtitle": "Scoped tokens for CI jobs and scripts: mint, rotate and revoke them, and see what each holds and when it last ran."
     },
     "rbac": {
       "title": "Roles & Permissions",
@@ -5718,7 +6071,12 @@
     },
     "withheld": "withheld",
     "withheldHint": "The provider answered and billed for this response, but an output guardrail or plugin refused to deliver it: the caller received a 403. The cost is real; the policy that refused is named in the error.",
-    "usageUnknownHint": "The upstream answered but reported no usage, so the tokens and cost are unknown, not zero."
+    "usageUnknownHint": "The upstream answered but reported no usage, so the tokens and cost are unknown, not zero.",
+    "paramAdjustments": {
+      "dropped": "dropped",
+      "clamped": "clamped",
+      "translated": "approximated"
+    }
   },
   "savedViews": {
     "open": "Saved views",

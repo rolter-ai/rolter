@@ -10,10 +10,13 @@ itself is stdlib-only: this has to run on a disconnected machine.
 from __future__ import annotations
 
 import json
+import re
 import threading
 import time
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
+from unittest.mock import patch
 
 from bench import (
     Sample,
@@ -24,6 +27,73 @@ from bench import (
     run_phase,
     sample,
 )
+
+
+class BenchmarkRouteTests(unittest.TestCase):
+    def test_benchmark_model_routes_to_the_same_direct_engine(self):
+        config = Path(__file__).with_name("rolter-dummy.toml.in").read_text()
+        with patch("bench.urllib.request.urlopen", side_effect=OSError) as request:
+            sample("http://localhost:4010", stream=False)
+        model = json.loads(request.call_args.args[0].data)["model"]
+        # inspect only the fixture's route/target blocks, without a tomllib
+        # dependency: the stdlib-only harness also runs on python 3.9
+        routes = [
+            block
+            for block in re.split(r"(?m)^\[\[routes\]\]\s*$", config)[1:]
+            if re.search(
+                rf'(?m)^model\s*=\s*"{re.escape(model)}"\s*$',
+                block.split("[[routes.targets]]", 1)[0],
+            )
+        ]
+        self.assertEqual(len(routes), 1, "benchmark model must be a declared gateway route")
+        targets = [
+            dict(re.findall(r'(?m)^(provider|model)\s*=\s*"([^"]+)"', block))
+            for block in routes[0].split("[[routes.targets]]")[1:]
+        ]
+        self.assertEqual(targets, [{"provider": "engine-1", "model": model}])
+
+
+class BaselineSnapshotTests(unittest.TestCase):
+    def test_documented_headlines_match_all_eight_raw_artifacts(self):
+        architecture = Path(__file__).resolve().parents[2] / "docs/dev-docs/architecture"
+        section = (
+            (architecture / "performance.md")
+            .read_text()
+            .split("#### Fixed-hardware load snapshot (#894)", 1)[1]
+            .split("## Inference engines", 1)[0]
+        )
+        rows = []
+        for line in section.splitlines():
+            fields = [field.strip() for field in line.split("|")]
+            if len(fields) == 9 and fields[1] in ("1", "2"):
+                rows.append(fields[1:-1])
+        self.assertEqual(len(rows), 8)
+        for index, (run, mode, added, direct, gateway, retained, itl) in enumerate(rows):
+            kind = "run" if index < 4 else "diagnostic"
+            relative = f"load-baseline-rtx/{kind}-{run}/load-{mode}.json"
+            self.assertIn(f"]({relative})", section)
+            result = json.loads((architecture / relative).read_text())
+            self.assertEqual(result["requests"], 200 if kind == "run" else 2000)
+            a = result["direct"]["levels"][0]
+            b = result["through_rolter"]["levels"][0]
+            self.assertAlmostEqual(
+                float(added), round(b["latency_p50_ms"] - a["latency_p50_ms"], 3)
+            )
+            self.assertEqual(float(direct), result["direct"]["summary"]["max_sustainable_rps"])
+            self.assertEqual(
+                float(gateway), result["through_rolter"]["summary"]["max_sustainable_rps"]
+            )
+            self.assertEqual(float(retained), result["sustainable_rps_retained"])
+            if mode == "streaming":
+                self.assertEqual(
+                    [float(value) for value in itl.split("/")], [a["itl_p50_ms"], b["itl_p50_ms"]]
+                )
+            else:
+                self.assertEqual(itl, "not measured")
+            for side in ("direct", "through_rolter"):
+                for level in result[side]["levels"]:
+                    self.assertEqual(level["error_rate"], 0)
+                    self.assertEqual(level["ok_count"], result["requests"])
 
 
 class PercentileTests(unittest.TestCase):

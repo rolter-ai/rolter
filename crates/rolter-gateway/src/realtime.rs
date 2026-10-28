@@ -38,8 +38,8 @@ use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
 use crate::handlers::{
-    authenticate, authorize_model, authorize_route, budget_refusal, key_pool_key, pick_untried,
-    rate_limit_refusal, request_scope, unpriced_admission, variant_key,
+    authenticate, authorize_model, authorize_route, budget_refusal, key_pool_key,
+    pick_untried_read_only, rate_limit_refusal, request_scope, unpriced_admission, variant_key,
 };
 use crate::realtime_guard::{ClientVerdict, ContentPolicy, Frame};
 use crate::realtime_metering::{Closure, SessionEnd, SessionMeter, TurnTracker};
@@ -356,20 +356,31 @@ async fn connect_selected(
             last_error = "configured target provider not found".to_string();
             continue;
         };
-        let multi_key = provider.api_keys.len() > 1;
         let key_namespace = key_pool_key(&target.provider);
+        let parked_keys = crate::handlers::parked_keys(state, provider, &key_namespace);
         let api_key = provider
-            .pick_api_key_indexed(0.0, |i| {
-                multi_key && state.cooldowns.is_parked(&key_namespace, i)
-            })
+            .pick_api_key_indexed(0.0, |i| parked_keys.contains(i))
             .map(|(_, key)| key);
         let upstream_model = target.model.as_deref().unwrap_or(model);
         let url = realtime_url(&provider.api_base, upstream_model);
         let request = realtime_request(&url, api_key.as_deref(), headers)?;
+        // the list was ordered without taking a breaker's probe slot; the one
+        // target dialled takes it now (#3248). a refusal here is a race with
+        // another probe or a fail-open candidate, which is dialled anyway as
+        // the HTTP path does
+        let _ = state.breaker.allows(&namespace, index);
         let mut load = state.loads.begin(&namespace, index);
         match connect_async(request).await {
             Ok((upstream, _)) => {
                 load.mark_ok();
+                // a good handshake is the target's verdict: it closes a
+                // breaker that was probing, as a good HTTP response does
+                if state.breaker.on_success(&namespace, index) {
+                    state
+                        .metrics
+                        .breaker_closed_total
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
                 return Ok(SelectedSession {
                     upstream,
                     _load: load,
@@ -422,7 +433,10 @@ fn realtime_candidates<'a>(
         }
         let mut ordered = Vec::with_capacity(entry.route.targets.len());
         let mut tried = Vec::with_capacity(entry.route.targets.len());
-        while let Some(index) = pick_untried(
+        // read-only: ordering the list must not take a half-open probe slot
+        // for a target that is never dialled (#3248). it is ordered before any
+        // attempt fails, so a restricted fallback is never on it (#1584)
+        while let Some(index) = pick_untried_read_only(
             entry,
             context,
             &tried,
@@ -433,9 +447,6 @@ fn realtime_candidates<'a>(
             model,
             snap.cooldown.enabled(),
             key_meta,
-            // the candidate list is ordered before any attempt fails, so a
-            // restricted fallback is never on it (#1584)
-            None,
         ) {
             entry.balancer.observe(index, context);
             tried.push(index);
@@ -475,7 +486,7 @@ fn realtime_candidates<'a>(
                     && !target.is_restricted()
                     && (!snap.cooldown.enabled() || !state.cooldowns.is_parked(&namespace, index))
                     && state.health.is_healthy(&target.provider)
-                    && state.breaker.allows(&namespace, index)
+                    && !state.breaker.refuses(&namespace, index)
             })
             .collect();
         // preserve the HTTP route's fail-open behaviour when all candidates

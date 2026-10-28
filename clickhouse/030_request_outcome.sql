@@ -1,0 +1,34 @@
+-- What happened to each request, by name (#3307).
+--
+-- The maintainer's decision on #1395: a request refused after its key resolves
+-- is written to `request_logs` with a distinct outcome. Until this column a
+-- refusal was recognisable only by inference (no provider or target,
+-- `attempts = 0`, a 4xx status). The gateway now writes one of:
+--
+--   served              the caller got a successful answer (an upstream, the
+--                       response cache or the built-in fake-llm)
+--   upstream_error      the request reached an upstream and ended in an error
+--   withheld            the upstream answered and billed, a post-call policy
+--                       withheld the answer
+--   cancelled           the caller went away before the answer was delivered
+--   refused_budget      refused before routing: a budget is spent
+--   refused_rate_limit  refused before routing: a rate limit or route cap
+--   refused_guardrail   refused before routing by a guardrail or the PII
+--                       sanitizer
+--   refused_plugin      refused before routing by a plugin
+--   refused_access      refused before routing: unknown or forbidden model
+--   refused_invalid     refused before routing: the request cannot be served
+--                       as sent
+--   refused             refused for another reason, or no target was left
+--
+-- The names are published (`rolter_core::request_outcome`); new ones may be
+-- added, none is renamed. Every row written before this column, and every row
+-- a gateway older than #3307 writes, reads `unknown`.
+--
+-- A gateway inserts with `input_format_skip_unknown_fields=1`, so one upgraded
+-- before this is applied keeps logging and loses only the outcome. Applying
+-- this file is not a precondition of upgrading the gateway; apply it to keep
+-- the outcome and to filter LLM Logs by it.
+
+alter table request_logs
+    add column if not exists outcome LowCardinality(String) default 'unknown';

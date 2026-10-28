@@ -85,8 +85,11 @@ const HEADER: &str = "\
 # \"acme/platform\"` is the team called `platform` of the org with slug `acme`
 # (`org`, `org/team`, `org/team/project`, `org/slug` for a business unit or a
 # customer). A cap whose scope does not resolve on the receiving deployment is
-# left alone, not half applied. Caps on a virtual key or on a person have no
-# name that survives a move, so they are not exported.
+# left alone, not half applied. A cap on a person is named by the account's
+# email (`scope = \"user\"`, `id = \"alice@example.com\"`), narrowed to an org or a
+# project by the same slug path, `within = { org = \"acme\" }`. The import finds
+# an existing account by that email and never creates one. A cap on a virtual
+# key is not exported: keys are never exported, so it would name nothing.
 #
 # Deliberately not exported, because the importer does not consume them and a
 # file that carried them would promise more than a re-import delivers: virtual
@@ -130,7 +133,16 @@ impl ScopeRefs {
             | rolter_core::BudgetScope::BusinessUnit
             | rolter_core::BudgetScope::Customer => 2,
             rolter_core::BudgetScope::Project => 3,
-            rolter_core::BudgetScope::User | rolter_core::BudgetScope::Unknown => return,
+            // a person is named by the account's email, which is no path: the
+            // importer reads it whole, so it only has to be one token (#3311)
+            rolter_core::BudgetScope::User => {
+                if !reference.is_empty() && !reference.chars().any(char::is_whitespace) {
+                    self.names.insert((scope, id.to_string()), reference);
+                }
+                return;
+            }
+            // a scope a newer release stored (#3347) has no portable name
+            rolter_core::BudgetScope::Unknown => return,
         };
         // the org slug cannot hold a `/`, so a name that does is what makes
         // the count wrong
@@ -141,6 +153,27 @@ impl ScopeRefs {
 
     fn get(&self, scope: rolter_core::BudgetScope, id: &str) -> Option<&str> {
         self.names.get(&(scope, id.to_string())).map(String::as_str)
+    }
+
+    /// A cap's `within`, as the slug path the importer resolves (#3311): `None`
+    /// when the cap has none, `Some(None)` when it has one that names nothing
+    /// portable, which keeps the cap out of the file.
+    fn within(
+        &self,
+        within: Option<&rolter_core::ScopeWithin>,
+    ) -> Option<Option<rolter_core::ScopeWithin>> {
+        use rolter_core::{BudgetScope, ScopeWithin};
+        match within {
+            None => None,
+            Some(ScopeWithin::Org(id)) => Some(
+                self.get(BudgetScope::Org, id)
+                    .map(|name| ScopeWithin::Org(name.to_string())),
+            ),
+            Some(ScopeWithin::Project(id)) => Some(
+                self.get(BudgetScope::Project, id)
+                    .map(|name| ScopeWithin::Project(name.to_string())),
+            ),
+        }
     }
 }
 
@@ -426,26 +459,49 @@ fn render_model_prices(out: &mut String, config: &GatewayConfig) {
 /// A cap with no portable name is counted in one comment instead of being
 /// written under an id that means nothing on another deployment.
 fn render_caps(out: &mut String, config: &GatewayConfig, refs: &ScopeRefs) {
+    // a cap travels when its scope, and its `within` if it has one, have names
+    let named = |scope, id: &str, within: Option<&rolter_core::ScopeWithin>| {
+        let reference = refs.get(scope, id)?;
+        let within = match refs.within(within) {
+            None => None,
+            Some(named) => Some(named?),
+        };
+        Some((reference, within))
+    };
+    // the sort key spells `within` out, so two caps of one person on different
+    // places keep a fixed order
+    let place = |within: &Option<rolter_core::ScopeWithin>| {
+        within
+            .as_ref()
+            .map(rolter_core::ScopeWithin::key_segment)
+            .unwrap_or_default()
+    };
     let mut budgets = Vec::new();
     let mut skipped_budgets = 0usize;
     for b in &config.budgets {
-        match refs.get(b.scope, &b.id) {
-            Some(reference) => budgets.push((b.scope.key_label(), reference, b)),
+        match named(b.scope, &b.id, b.within.as_ref()) {
+            Some((reference, within)) => {
+                budgets.push((b.scope.key_label(), reference, place(&within), within, b))
+            }
             None => skipped_budgets += 1,
         }
     }
     budgets.sort_by(|a, b| {
-        (a.0, a.1, period_rank(a.2.period), a.2.limit_usd).cmp(&(
-            b.0,
+        (&a.0, a.1, &a.2, period_rank(a.4.period), a.4.limit_usd).cmp(&(
+            &b.0,
             b.1,
-            period_rank(b.2.period),
-            b.2.limit_usd,
+            &b.2,
+            period_rank(b.4.period),
+            b.4.limit_usd,
         ))
     });
-    for (_, reference, b) in budgets {
+    for (_, reference, _, within, b) in budgets {
         out.push_str("\n[[budgets]]\n");
         key(out, "scope", &b.scope);
         key(out, "id", reference);
+        if let Some(within) = &within {
+            key(out, "within", within);
+        }
         key(out, "limit_usd", &b.limit_usd);
         key(out, "period", &b.period);
         if let Some(policy) = &b.unpriced_policy {
@@ -455,16 +511,23 @@ fn render_caps(out: &mut String, config: &GatewayConfig, refs: &ScopeRefs) {
     let mut limits = Vec::new();
     let mut skipped_limits = 0usize;
     for l in &config.rate_limits {
-        match refs.get(l.scope, &l.id) {
-            Some(reference) => limits.push((l.scope.key_label(), reference, l)),
+        match named(l.scope, &l.id, l.within.as_ref()) {
+            Some((reference, within)) => {
+                limits.push((l.scope.key_label(), reference, place(&within), within, l))
+            }
             None => skipped_limits += 1,
         }
     }
-    limits.sort_by(|a, b| (a.0, a.1, a.2.rpm, a.2.tpm).cmp(&(b.0, b.1, b.2.rpm, b.2.tpm)));
-    for (_, reference, l) in limits {
+    limits.sort_by(|a, b| {
+        (&a.0, a.1, &a.2, a.4.rpm, a.4.tpm).cmp(&(&b.0, b.1, &b.2, b.4.rpm, b.4.tpm))
+    });
+    for (_, reference, _, within, l) in limits {
         out.push_str("\n[[rate_limits]]\n");
         key(out, "scope", &l.scope);
         key(out, "id", reference);
+        if let Some(within) = &within {
+            key(out, "within", within);
+        }
         if let Some(rpm) = l.rpm {
             key(out, "rpm", &rpm);
         }
@@ -475,7 +538,8 @@ fn render_caps(out: &mut String, config: &GatewayConfig, refs: &ScopeRefs) {
     if skipped_budgets + skipped_limits > 0 {
         out.push_str(&format!(
             "\n# not exported: {skipped_budgets} budget(s) and {skipped_limits} rate limit(s) on a \
-             virtual key, a person or another scope with no name that survives a move\n"
+             virtual key (keys are never exported), on an account or place with no portable \
+             name, or on another scope with no name that survives a move\n"
         ));
     }
 }
@@ -645,6 +709,20 @@ pub async fn load_scope_refs(pool: &sqlx::PgPool) -> rolter_core::Result<ScopeRe
             &id.to_string(),
             format!("{org}/{team}/{project}"),
         );
+    }
+    // a person is named by the account's email, so only the accounts that hold
+    // a cap are read: a deployment's whole user table has no business in a
+    // configuration file (#3311)
+    let rows: Vec<(uuid::Uuid, String)> = sqlx::query_as(
+        "select id, email from users where id in (
+             select scope_id from budgets where scope_type = 'user'
+             union select scope_id from rate_limits where scope_type = 'user')",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(store_err)?;
+    for (id, email) in rows {
+        refs.insert(BudgetScope::User, &id.to_string(), email);
     }
     for (table, scope) in [
         ("business_units", BudgetScope::BusinessUnit),
@@ -902,6 +980,31 @@ scope = "team"
 id = "acme/default"
 rpm = 600
 tpm = 150000
+
+[[budgets]]
+scope = "user"
+id = "alice@example.com"
+limit_usd = 50.0
+period = "monthly"
+
+[[budgets]]
+scope = "user"
+id = "alice@example.com"
+within = { project = "acme/default/default" }
+limit_usd = 10.0
+period = "daily"
+
+[[rate_limits]]
+scope = "user"
+id = "alice@example.com"
+within = { org = "acme" }
+rpm = 60
+
+[[budgets]]
+scope = "user"
+id = "ghost@example.com"
+limit_usd = 99.0
+period = "monthly"
 "#;
 
     /// `ModelRoute` carries no `Default`, so fixtures spell it out once here
@@ -1457,6 +1560,16 @@ tpm = 150000
             let dir = tempdir("export");
             let path = dir.join("rolter.toml");
 
+            // the person the file's per-person caps name; `ghost@example.com`
+            // has no account here, so its cap is skipped, never created (#3311)
+            let alice: Uuid = sqlx::query_scalar(
+                "insert into users (email, password_hash, is_superadmin)
+                 values ('alice@example.com', null, false) returning id",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
             std::fs::write(&path, FIXTURE).unwrap();
             crate::seed::import_bootstrap_toml(&pool, org_id, project_id, &path)
                 .await
@@ -1516,6 +1629,10 @@ tpm = 150000
                 "[[budgets]]\nscope = \"org\"\nid = \"acme\"",
                 "id = \"acme/default/default\"",
                 "[[rate_limits]]\nscope = \"team\"\nid = \"acme/default\"",
+                // a person is named by email, narrowed by a slug path (#3311)
+                "[[budgets]]\nscope = \"user\"\nid = \"alice@example.com\"\nlimit_usd = \"50.0000\"",
+                "within = { project = \"acme/default/default\" }",
+                "[[rate_limits]]\nscope = \"user\"\nid = \"alice@example.com\"\nwithin = { org = \"acme\" }\nrpm = 60",
                 // numeric(12,6) comes back with its scale
                 "cache_write_per_mtok = \"3.125000\"",
                 "cache_write_1h_per_mtok = \"5.500000\"",
@@ -1530,6 +1647,19 @@ tpm = 150000
                 !first.contains(&provider_id.to_string()),
                 "the export leaked a database id:\n{first}"
             );
+            assert!(
+                !first.contains(&alice.to_string()),
+                "the export named a person by database id:\n{first}"
+            );
+            // an account the file names but this deployment lacks got no cap
+            // and was not created
+            assert!(!first.contains("ghost@example.com"), "{first}");
+            let ghosts: i64 =
+                sqlx::query_scalar("select count(*) from users where email = 'ghost@example.com'")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(ghosts, 0, "an import created an account for a cap");
 
             std::fs::write(&path, &first).unwrap();
             crate::seed::import_bootstrap_toml(&pool, org_id, project_id, &path)
@@ -1565,6 +1695,16 @@ tpm = 150000
                 .await
                 .unwrap();
             assert_eq!(first, third, "export, wipe, import changed the caps");
+            // a second import of the same file writes nothing: the person's
+            // three caps are still three rows
+            let user_caps: i64 = sqlx::query_scalar(
+                "select (select count(*) from budgets where scope_type = 'user')
+                      + (select count(*) from rate_limits where scope_type = 'user')",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(user_caps, 3);
             // a database id never stands in for a name
             let org_uuid = org_id.to_string();
             assert!(!third.contains(&org_uuid), "{third}");
@@ -1688,6 +1828,43 @@ rpm = 10
             // recorded at all
             assert!(refs.get(BudgetScope::Team, "t-1").is_none());
             assert_eq!(refs.get(BudgetScope::Team, "t-2"), Some("acme/platform"));
+        }
+
+        /// A person's cap is named by email, a narrowed one carries its place
+        /// by slug path, and one whose place has no name stays out of the file
+        /// (#3311).
+        #[test]
+        fn a_per_person_cap_is_named_by_email_and_its_place_by_slug() {
+            use rolter_core::{BudgetScope, GatewayConfig};
+            let mut config = GatewayConfig::default();
+            let cap = |within: serde_json::Value| {
+                serde_json::from_value(serde_json::json!({
+                    "scope": "user", "id": "u-1", "limit_usd": 5, "period": "monthly",
+                    "within": within
+                }))
+                .unwrap()
+            };
+            config.budgets.push(cap(serde_json::json!({"org": "o-1"})));
+            config
+                .budgets
+                .push(cap(serde_json::json!({"project": "p-gone"})));
+            let mut refs = super::super::ScopeRefs::default();
+            refs.insert(BudgetScope::User, "u-1", "alice@example.com".to_string());
+            refs.insert(BudgetScope::Org, "o-1", "acme".to_string());
+            let out = super::super::render_with(&config, &refs);
+            assert!(
+                out.contains(
+                    "[[budgets]]\nscope = \"user\"\nid = \"alice@example.com\"\n\
+                     within = { org = \"acme\" }"
+                ),
+                "{out}"
+            );
+            assert!(!out.contains("p-gone") && !out.contains("u-1"), "{out}");
+            assert!(out.contains("# not exported: 1 budget(s)"), "{out}");
+            // an address with whitespace in it is no token an importer could
+            // read back, so it is not recorded
+            refs.insert(BudgetScope::User, "u-2", "a b@example.com".to_string());
+            assert!(refs.get(BudgetScope::User, "u-2").is_none());
         }
 
         fn tempdir(label: &str) -> std::path::PathBuf {

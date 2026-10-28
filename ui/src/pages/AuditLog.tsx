@@ -73,6 +73,9 @@ const TARGET_PATH: Record<string, string> = {
   // identity: the screens that own each target, so an SSO or SCIM row links out
   sso_provider: "/sso",
   sso_group_mapping: "/sso",
+  ldap_directory: "/ldap",
+  ldap_group_mapping: "/ldap",
+  api_token: "/api-tokens",
   scim_token: "/user-provisioning",
   scim_group: "/user-provisioning",
   scim_group_mapping: "/user-provisioning",
@@ -92,6 +95,7 @@ const TARGET_PATH: Record<string, string> = {
   feature_flags: "/feature-flags",
   client_settings: "/client-settings",
   logging_settings: "/logs-settings",
+  log_erasure: "/log-erasure",
   compatibility_policy: "/compatibility",
   cluster_node: "/cluster",
 };

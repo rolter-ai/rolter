@@ -48,7 +48,7 @@ Work through these steps before sending production traffic to your gateway:
 
     This is a gate, not a linter: it exits non-zero on anything that would produce a silently-degraded process. The failure it was built for is the one that produces no error at all — a missing `ROLTER_KEK` makes the control plane store provider credentials **unsealed** with only a log warning, so the deployment looks completely healthy while a credential you believed was encrypted at rest is not.
 
-    Add `--connect` to also probe that the database and Redis accept a connection.
+    Add `--connect` to also probe that the database and Redis accept a connection, and, when `ROLTER_SMTP_URL` is set, that the mail relay accepts a connection, negotiates TLS and takes the credential (a warning that names the stage, never the address or the password).
 
     The Helm chart runs exactly this as an init container by default (`preflight.enabled`), against the same environment block the workload gets. See [Cluster deployment](/deployment/cluster).
 

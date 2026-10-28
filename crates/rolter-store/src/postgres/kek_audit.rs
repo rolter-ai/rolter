@@ -77,6 +77,12 @@ pub const SEALED_COLUMNS: &[SealedColumn] = &[
         holds: "observability connector credentials",
     },
     SealedColumn {
+        table: "invitations",
+        ciphertext: "token_ciphertext",
+        nonce: "token_nonce",
+        holds: "pending invitation links, for a resend",
+    },
+    SealedColumn {
         table: "user_totp_factors",
         ciphertext: "secret_ciphertext",
         nonce: "secret_nonce",
