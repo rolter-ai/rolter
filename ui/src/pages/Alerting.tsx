@@ -475,7 +475,11 @@ function ChannelSheet({
         <Field label={t("pages.alerting.channels.fieldName")} required>
           <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="ops-webhook" />
         </Field>
-        <Field label={t("pages.alerting.channels.fieldEndpoint")} required>
+        <Field
+          label={t("pages.alerting.channels.fieldEndpoint")}
+          info={t("pages.alerting.channels.fieldEndpointInfo")}
+          required
+        >
           <Input
             className="font-mono"
             value={endpoint}
@@ -1244,7 +1248,11 @@ function RuleSheet({
         </div>
         {supportsNoData(signal) && (
           <div className="space-y-1.5">
-            <FieldLabel label={t("pages.alerting.rules.fieldNoData")} id={noDataLabelId} />
+            <FieldLabel
+              label={t("pages.alerting.rules.fieldNoData")}
+              info={t("pages.alerting.rules.fieldNoDataInfo")}
+              id={noDataLabelId}
+            />
             <Segmented
               labelledBy={noDataLabelId}
               value={noData}
@@ -1271,7 +1279,10 @@ function RuleSheet({
             onChange={(e) => setWindowSecs(e.target.value)}
           />
         </Field>
-        <Field label={t("pages.alerting.rules.fieldChannel")}>
+        <Field
+          label={t("pages.alerting.rules.fieldChannel")}
+          info={t("pages.alerting.rules.fieldChannelInfo")}
+        >
           <Combobox
             value={channelId}
             onChange={setChannelId}

@@ -36,6 +36,7 @@ import {
 import type { OrgAuthPolicy, PublicUrl, SsoGroupMappingRow, SsoProviderRow } from "@/lib/api";
 import en from "@/lib/i18n/locales/en.json";
 import ru from "@/lib/i18n/locales/ru.json";
+import { expectFieldHints } from "@/lib/story-hints";
 import { atMobile, expectNoHorizontalOverflow } from "@/lib/story-viewport";
 import { UxScreenProvider } from "@/lib/ux-react";
 
@@ -2850,5 +2851,23 @@ export const AddRowFitsAPhoneInRussian: Story = {
     await pickOption(role, ru.shell.roles.admin);
     await waitFor(() => expect(role).toHaveValue(ru.shell.roles.admin));
     await expect(role.scrollWidth).toBeLessThanOrEqual(role.clientWidth);
+  },
+};
+
+/** The group, scope and role of a mapping explain themselves in an (i) (#3285). */
+export const GroupMappingFieldsAreExplainedInAHint: Story = {
+  render: () => (
+    <Harness fetchStub={api({ providers: () => [provider()] })}>
+      <SingleSignOn />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await within(canvasElement).findByLabelText("IdP group");
+    const g = en.groupMappings;
+    await expectFieldHints(canvasElement, en.common.aboutField, [
+      [g.groupLabel, g.groupInfo],
+      [g.scopeLabel, g.scopeInfo],
+      [g.roleLabel, g.roleInfo],
+    ]);
   },
 };

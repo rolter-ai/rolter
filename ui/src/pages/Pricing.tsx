@@ -768,7 +768,11 @@ function UpsertPriceDialog({
       }}
     >
       <div className="space-y-3">
-        <Field label={t("pages.pricing.modelName")} error={shown("model")}>
+        <Field
+          label={t("pages.pricing.modelName")}
+          info={t("pages.pricing.modelNameInfo")}
+          error={shown("model")}
+        >
           <Combobox
             allowCustom
             options={modelOptions}

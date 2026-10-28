@@ -31,7 +31,9 @@ import {
 } from "./story-harness";
 import type { AlertChannelRow, AlertNotificationRow, AlertRuleRow } from "@/lib/api";
 import { formattersFor } from "@/lib/i18n/format";
+import en from "@/lib/i18n/locales/en.json";
 import ru from "@/lib/i18n/locales/ru.json";
+import { expectFieldHints } from "@/lib/story-hints";
 import { atMobile, atWide, expectInFrame, expectNoHorizontalOverflow } from "@/lib/story-viewport";
 
 const CHANNELS: AlertChannelRow[] = [
@@ -2546,5 +2548,41 @@ export const AnEditOpensOnTheStoredComparisonAndNoData: Story = {
     const body = await editsNoData.expectSentBody<RuleBody>("PUT", "/alert-rules/rule-7");
     await expect(body).toMatchObject({ comparison: "above", no_data: "ok" });
     await expectSheetClosed();
+  },
+};
+
+/** The channel's endpoint explains itself in an (i) (#3285). */
+export const ChannelEndpointIsExplainedInAHint: Story = {
+  render: () => (
+    <Harness fetchStub={loaded}>
+      <AlertChannels />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, /add channel/i);
+    const c = en.pages.alerting.channels;
+    await expectFieldHints(sheet(), en.common.aboutField, [[c.fieldEndpoint, c.fieldEndpointInfo]]);
+  },
+};
+
+/**
+ * What a rule does with an empty window, and where its changes are delivered,
+ * explain themselves in an (i) (#3285). The comparison is not one: its options
+ * read "Above or equal" and "Below or equal" and the line under it says the
+ * threshold is inclusive.
+ */
+export const RuleNoDataAndChannelAreExplainedInAHint: Story = {
+  render: () => (
+    <Harness fetchStub={loaded}>
+      <AlertRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, /add rule/i);
+    const r = en.pages.alerting.rules;
+    await expectFieldHints(sheet(), en.common.aboutField, [
+      [r.fieldNoData, r.fieldNoDataInfo],
+      [r.fieldChannel, r.fieldChannelInfo],
+    ]);
   },
 };

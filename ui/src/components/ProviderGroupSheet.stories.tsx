@@ -16,6 +16,7 @@ import {
   pickOption,
 } from "@/pages/story-harness";
 import en from "@/lib/i18n/locales/en.json";
+import { expectFieldHints } from "@/lib/story-hints";
 import type { ProviderGroupRow, ProviderRow } from "@/lib/api";
 
 const provider = (id: string, name: string): ProviderRow => ({
@@ -304,5 +305,14 @@ export const DiscardGuardThrowsItAway: Story = {
     await userEvent.click(dialog.getByRole("button", { name: /close/i }));
     await answerDiscardPrompt(true);
     await expectSheetClosed();
+  },
+};
+
+/** The strategy explains itself in an (i) (#3285). */
+export const StrategyIsExplainedInAHint: Story = {
+  render: () => <Stage mode="add" />,
+  play: async () => {
+    const f = en.providerGroupSheet.fields;
+    await expectFieldHints(sheet(), en.common.aboutField, [[f.strategy, f.strategyInfo]]);
   },
 };
