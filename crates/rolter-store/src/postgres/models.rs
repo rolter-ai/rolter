@@ -386,6 +386,19 @@ pub struct VirtualKey {
     /// for every key an operator created deliberately (#1640)
     pub purpose: Option<String>,
     pub created_at: DateTime<Utc>,
+    /// peppered digest of the secret an admin rotation replaced, while its
+    /// overlap window is open. a digest like `key_hash`, so it never leaves the
+    /// API: only the prefix and the end of the window do (#1837)
+    #[serde(default, skip_serializing)]
+    pub previous_key_hash: Option<String>,
+    /// first characters of the retired secret, so the Keys screen can say which
+    /// one still authenticates
+    #[serde(default)]
+    pub previous_key_prefix: Option<String>,
+    /// last instant the retired secret authenticates; `None` when no overlap is
+    /// running
+    #[serde(default)]
+    pub previous_expires_at: Option<DateTime<Utc>>,
 }
 
 /// a virtual key owned by the current user, enriched with the project/org names

@@ -422,6 +422,8 @@ struct VirtualKeyRow {
     created_by: Option<Uuid>,
     business_unit_id: Option<Uuid>,
     customer_id: Option<Uuid>,
+    previous_key_hash: Option<String>,
+    previous_expires_at: Option<DateTime<Utc>>,
 }
 
 /// One access-profile policy row, tagged with the user it reaches. A user
@@ -1033,7 +1035,8 @@ impl PostgresConfigStore {
         let rows: Vec<VirtualKeyRow> = sqlx::query_as(
             "select vk.id, vk.key_hash, vk.models, vk.providers, vk.disabled, vk.expires_at, \
                     vk.cache_enabled, vk.project_id, p.team_id, t.org_id, vk.created_by, \
-                    vk.business_unit_id, vk.customer_id \
+                    vk.business_unit_id, vk.customer_id, \
+                    vk.previous_key_hash, vk.previous_expires_at \
              from virtual_keys vk \
              join projects p on p.id = vk.project_id \
              join teams t on t.id = p.team_id \
@@ -1095,6 +1098,13 @@ impl PostgresConfigStore {
                     .map(|id| id.to_string())
                     .unwrap_or_default(),
                 customer_id: r.customer_id.map(|id| id.to_string()).unwrap_or_default(),
+                previous: match (r.previous_key_hash, r.previous_expires_at) {
+                    (Some(key_hash), Some(valid_until)) => Some(rolter_core::PreviousKeySecret {
+                        key_hash,
+                        valid_until,
+                    }),
+                    _ => None,
+                },
             })
             .collect())
     }
