@@ -15,6 +15,7 @@ import {
   type ServerRefusal,
 } from "@/components/ModelSheet";
 import { RouteVariantEditor } from "@/components/RouteVariantEditor";
+import { RouteVariantTraffic } from "@/components/RouteVariantTraffic";
 import { StrategyPicker } from "@/components/StrategyPicker";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -441,6 +442,11 @@ export function RouteSheet({
                 showErrors={visibility.attempts > 0}
                 refusal={variantRefusal}
                 onChange={setVariants}
+                observed={
+                  route && variants.data ? (
+                    <RouteVariantTraffic model={route.model} saved={variants.data} />
+                  ) : undefined
+                }
                 empty={
                   <EmptyState
                     inline

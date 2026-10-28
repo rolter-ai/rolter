@@ -2332,6 +2332,14 @@ fn operations() -> Vec<Op> {
             .clickhouse_read()
             .query(DASHBOARD_QUERY),
             Op::get(
+                "/api/v1/analytics/by-variant",
+                "getAnalyticsByVariant",
+                "Spend and usage grouped by route and the weighted variant that served it (`model` \
+                 narrows to one route); requests served without a variant come back under the empty string",
+            )
+            .clickhouse_read()
+            .query(DASHBOARD_QUERY),
+            Op::get(
                 "/api/v1/analytics/by-attribution",
                 "getAnalyticsByAttribution",
                 "Spend and usage grouped by business unit or customer",

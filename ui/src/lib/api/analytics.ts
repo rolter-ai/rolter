@@ -157,6 +157,35 @@ export function fetchAnalyticsByModel(
   ).then((r) => r.data);
 }
 
+/**
+ * One variant of a route over a window (#3342). `variant` is the empty string
+ * for requests the gateway served without one: the classic single pool, or
+ * traffic from before the route had variants.
+ */
+export interface AnalyticsByVariantRow {
+  /** the route's public name */
+  model: string;
+  variant: string;
+  requests: number | string;
+  tokens: number | string;
+  cost_usd: number | string;
+  /** requests recorded with no price for their model; see AnalyticsSummary */
+  unpriced_requests: number | string;
+  errors: number | string;
+  p50_latency_ms: number | string;
+  p95_latency_ms: number | string;
+}
+
+/** What each variant of the route `model` served over the window. */
+export function fetchAnalyticsByVariant(
+  model: string,
+  window: AnalyticsWindow = {},
+): Promise<AnalyticsByVariantRow[]> {
+  return getAnalytics<DataEnvelope<AnalyticsByVariantRow>>(
+    `/api/v1/analytics/by-variant${windowParams({ ...window, model })}`,
+  ).then((r) => r.data);
+}
+
 /** the governance dimension `by-attribution` groups on */
 export type AttributionDimension = "business_unit" | "customer";
 

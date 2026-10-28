@@ -299,6 +299,7 @@
       "mcpLogDetail": "this MCP tool call",
       "mcpLogs": "MCP tool-call logs",
       "mcpSummary": "MCP call summary",
+      "variantTraffic": "the variants' observed traffic",
       "savings": "the savings report",
       "mcpServers": "MCP servers",
       "mcpSettings": "MCP settings",
@@ -600,6 +601,24 @@
       "summary_other": "{{count}} fields need attention before this route can be saved."
     },
     "variants": {
+      "observed": {
+        "title": "Observed traffic",
+        "variant": "Variant",
+        "configured": "Configured",
+        "share": "Observed",
+        "requests": "Requests",
+        "errors": "Errors",
+        "latency": "p50 / p95",
+        "latencyValue": "{{p50}} / {{p95}} ms",
+        "empty": "No variant served a request in the {{window}}. Traffic appears here once the route has been called with the variants saved.",
+        "note": "Observed is each variant's share of the requests the variants served, counting failovers as well as first attempts, so a variant that others fail over to reads higher than its weight.",
+        "unattributed_one": "{{requests}} request in this window was served without a variant.",
+        "unattributed_other": "{{requests}} requests in this window were served without a variant.",
+        "noAnalytics": {
+          "title": "Observed traffic needs ClickHouse",
+          "body": "Per-variant traffic is read from the request log in ClickHouse. Set <0>CLICKHOUSE_URL</0> on the control plane to see each variant's share here."
+        }
+      },
       "title": "Variants",
       "info": "Named buckets that split this route's traffic by weight, for A/B tests and canaries. Each request samples one variant by weight; if it fails, the others are tried in the order listed. Request logs record which variant served a request.",
       "add": "Add variant",

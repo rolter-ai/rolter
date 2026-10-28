@@ -11,10 +11,13 @@ The **Dashboard**'s cards and charts are three control-plane reads over the requ
 | `GET`  | `/api/v1/analytics/summary`    | one row of totals: requests, tokens, cost, unpriced, withheld and unknown-usage traffic, response-cache hits, errors, average latency and p95 latency |
 | `GET`  | `/api/v1/analytics/timeseries` | requests, tokens and cost per time bucket                                                                                                             |
 | `GET`  | `/api/v1/analytics/by-model`   | requests, tokens, cost, unpriced, withheld and unknown-usage traffic, errors and p50/p95 latency per model, costliest first                           |
+| `GET`  | `/api/v1/analytics/by-variant` | requests, tokens, cost, unpriced traffic, errors and p50/p95 latency per route and variant, busiest first                                             |
 
 Each answers `{"data": [...]}`, the rows straight from ClickHouse.
 
 The summary's `cache_hit_requests` counts the requests the gateway answered from its own response cache, scaled by the log's sampling weight like every other count; the Dashboard divides it by `requests` for its _response-cache hit rate_. It does not count provider prompt caching, which shows in each row's `cache_read_tokens` instead. `p95_latency_ms` is the 95th percentile of latency over the whole window, read from the sampled rows as they are; `avg_latency_ms` is still sent. A control plane older than these fields sends neither.
+
+`by-variant` groups requests by route and by the weighted [variant](/concepts/providers-and-routes) that served them, one row per `model` (the route's public name) and `variant`; pass `model` to read one route's rows, so an A/B split or a canary can be compared with its configured weights. Requests the gateway served without a variant (the classic single pool, or traffic from before the route had variants) come back under the empty `variant`, so the rows add up to the route's whole traffic. It reads the same row scope and filters as the other reads, and the log records the variant that answered, so a variant that others fail over to counts the failovers it served as well as its first attempts.
 
 ## Query parameters
 

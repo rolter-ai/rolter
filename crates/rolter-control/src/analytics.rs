@@ -494,6 +494,7 @@ pub fn router() -> Router<crate::ControlState> {
         .route("/api/v1/analytics/summary", get(summary))
         .route("/api/v1/analytics/timeseries", get(timeseries))
         .route("/api/v1/analytics/by-model", get(by_model))
+        .route("/api/v1/analytics/by-variant", get(by_variant))
         .route("/api/v1/analytics/by-attribution", get(by_attribution))
         .route("/api/v1/analytics/invocations", get(invocations))
         .route("/api/v1/analytics/guardrails", get(guardrails))
@@ -880,6 +881,43 @@ async fn by_model(
                 round(quantile(0.95)(latency_ms), 1) as p95_latency_ms \
          from request_logs where {WHERE_WINDOW} and {ROW_VISIBLE} and {ROW_FILTERS} \
          group by model order by cost_usd desc format JSON"
+    );
+    run(ch.query(&sql, &with_access(q.params(), &access)).await)
+}
+
+/// Per-variant aggregates (#3342): what each weighted variant of a route
+/// served, so an operator running an A/B split or a canary can compare the
+/// observed share, errors, latency and cost with the configured split.
+///
+/// A variant name means something only inside its route, so rows are keyed by
+/// `(model, variant)` and a caller reading one route passes `model`. Rows the
+/// gateway served without a variant (the classic single pool, or traffic from
+/// before the route had variants) come back under the empty string, so a
+/// route's shares add up to its whole traffic. Everything else is
+/// [`by_model`]'s: the same window, row filters and `AnalyticsAccess` scoping.
+async fn by_variant(
+    access: AnalyticsAccess,
+    State(state): State<crate::ControlState>,
+    Query(q): Query<DashboardQuery>,
+) -> Response {
+    let ch = match client_or_503(&state) {
+        Ok(ch) => ch,
+        Err(resp) => return resp,
+    };
+    // `model` and `variant` are plain columns and no select item aliases
+    // either; the sums alias other names, which their own qualifiers cover
+    let sql = format!(
+        "select request_logs.model as model, request_logs.variant as variant, \
+                {REQUESTS} as requests, \
+                {TOKENS} as tokens, \
+                {COST} as cost_usd, \
+                {UNPRICED} as unpriced_requests, \
+                {ERRORS} as errors, \
+                round(quantile(0.5)(latency_ms), 1) as p50_latency_ms, \
+                round(quantile(0.95)(latency_ms), 1) as p95_latency_ms \
+         from request_logs where {WHERE_WINDOW} and {ROW_VISIBLE} and {ROW_FILTERS} \
+         group by request_logs.model, request_logs.variant \
+         order by requests desc, model, variant format JSON"
     );
     run(ch.query(&sql, &with_access(q.params(), &access)).await)
 }
