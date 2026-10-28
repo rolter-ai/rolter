@@ -127,7 +127,11 @@ const MODELS = [{ model: "gpt-4o" }, { model: "internal-llama" }];
 // the control plane's status classes, as `status_predicate` in
 // crates/rolter-control/src/analytics.rs writes them
 const inStatusClass = (status: number, wanted: string) =>
-  wanted === "error" ? status >= 400 : wanted === "success" ? status > 0 && status < 400 : true;
+  wanted === "error"
+    ? status === 0 || status >= 400
+    : wanted === "success"
+      ? status > 0 && status < 400
+      : true;
 
 /**
  * A stub that filters the way the control plane does (#1247): the attribution
@@ -3375,10 +3379,14 @@ const withSavedView = recording(
  * #2452: applying a saved view writes its `effective_filters` into the address,
  * so the screen reads them like any link, and the id it could not apply is
  * counted, not named. The log is then read with the view's window, key and
- * attribution, and with no cursor or request id.
+ * attribution, and with no cursor or request id. The Cost checks are not part
+ * of a view, so each one ticked beforehand is cleared with the rest instead of
+ * narrowing the log beyond what the view says (#3346).
  */
 export const ApplyingASavedViewSetsTheAddress: Story = {
-  parameters: { address: "/logs?request_id=req-ok&unpriced=true" },
+  parameters: {
+    address: "/logs?request_id=req-ok&unpriced=true&withheld=true&usage_unknown=true",
+  },
   render: () => (
     <Harness fetchStub={withSavedView.stub}>
       <Logs />
@@ -3396,10 +3404,12 @@ export const ApplyingASavedViewSetsTheAddress: Story = {
     await expect(address.get("key")).toBe(KEY_ID);
     await expect(address.get("business_unit")).toBe("unit-1");
     await expect(address.get("customer")).toBe("cust-1");
-    // the lookup would have masked the filters, so it is gone; the unpriced
-    // flag is not part of a view and stays
+    // the lookup would have masked the filters, so it is gone, and so is every
+    // Cost check the view does not name
     await expect(address.has("request_id")).toBe(false);
-    await expect(address.get("unpriced")).toBe("true");
+    for (const flag of ["unpriced", "withheld", "usage_unknown"]) {
+      await expect(address.has(flag)).toBe(false);
+    }
     await expect(await canvas.findByRole("status")).toHaveTextContent(
       "Applied without: 1 customer.",
     );
@@ -3409,6 +3419,8 @@ export const ApplyingASavedViewSetsTheAddress: Story = {
       expect(sent.get("customer")).toBe("cust-1");
       expect(sent.get("status")).toBe("error");
       expect(sent.has("request_id")).toBe(false);
+      for (const flag of ["unpriced", "withheld", "usage_unknown"])
+        expect(sent.has(flag)).toBe(false);
       const span = Date.now() - Date.parse(sent.get("since") ?? "");
       expect(span).toBeGreaterThan(6.9 * 24 * 3600_000);
     });

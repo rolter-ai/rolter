@@ -19,6 +19,9 @@
 //!   project. Viewer is the lowest role there is, so a narrower membership never
 //!   takes away what a wider one showed. A row the gateway logged with no org at
 //!   all is visible only to the first group.
+//! * **An API token** — the chain it holds, by the rules of a person with that
+//!   role (#3291). Its one role is a synthetic membership, or the grants of its
+//!   custom role, so the lines below apply to it unchanged.
 //! * **Bodies** — the captured request and response bodies need the
 //!   `request_payload` floor at the row's own scope. The role there is resolved
 //!   most-specific membership first, exactly as `rbac::resolve_role` does, and
@@ -352,9 +355,15 @@ async fn resolve(
             Ok(Principal::User(user)) => scoped::for_user(state, &user, reads)
                 .await
                 .map_err(IntoResponse::into_response),
-            // request logs and analytics are read by people: a token has no
-            // account to scope them by, so it reads none (#1836)
-            Ok(Principal::Token(_)) => Err(crate::crud::ApiError::Forbidden.into_response()),
+            // a token holds its one role at one chain, so it reads the rows of
+            // that chain by the rules of a person with that role, the
+            // `request_payload` floor included (#3291). It has no account, so
+            // the rows of an MCP session "of its own" do not exist for it
+            Ok(Principal::Token(held)) => {
+                scoped::for_roles(state, &held.memberships, &held.grants, None, reads)
+                    .await
+                    .map_err(IntoResponse::into_response)
+            }
             Err(error) => Err(error.into_response()),
         };
     }
@@ -596,6 +605,20 @@ mod scoped {
         let grants = AccessProfileRepo(pool)
             .effective_grants_for_user(user.id)
             .await?;
+        for_roles(state, &memberships, &grants, Some(user.id), reads).await
+    }
+
+    /// The reach of a caller whose memberships and grants are already in hand:
+    /// a signed-in user's, read from the store, or an API token's own (#3291).
+    /// `caller` is the account behind the request, which a token does not have.
+    pub(super) async fn for_roles(
+        state: &ControlState,
+        memberships: &[Membership],
+        grants: &[EffectiveGrant],
+        caller: Option<Uuid>,
+        reads: super::Reads,
+    ) -> ApiResult<AnalyticsAccess> {
+        let pool = pool(state);
         let (resource, read_floor) = match reads {
             super::Reads::Analytics => ("analytics", floor(cap!("analytics", Read))),
             super::Reads::Savings => ("savings", floor(cap!("savings", Read))),
@@ -603,12 +626,12 @@ mod scoped {
         };
         let mut access = from_roles_for(
             resource,
-            &memberships,
-            &grants,
+            memberships,
+            grants,
             read_floor,
             floor(cap!("request_payload", Read)),
         );
-        access.caller_id = user.id.to_string();
+        access.caller_id = caller.map(|id| id.to_string()).unwrap_or_default();
         let (orgs, teams, projects) = reach(&access);
         access.viewer_payload_projects = ProjectRepo(pool)
             .viewer_payload_projects(&orgs, &teams, &projects)
@@ -617,7 +640,7 @@ mod scoped {
             .map(|id| id.to_string())
             .collect();
         access.viewer_payload_projects.sort();
-        let health = health_orgs(&memberships, &grants, floor(cap!("provider_health", Read)));
+        let health = health_orgs(memberships, grants, floor(cap!("provider_health", Read)));
         // `health_orgs` returns the ids sorted and deduplicated
         access.health_orgs = health.iter().map(Uuid::to_string).collect();
         // a role on a team or project reaches the providers its routes target

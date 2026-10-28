@@ -2360,6 +2360,14 @@ fn operations() -> Vec<Op> {
             .clickhouse_read()
             .query(DASHBOARD_QUERY),
             Op::get(
+                "/api/v1/analytics/by-variant",
+                "getAnalyticsByVariant",
+                "Spend and usage grouped by route and the weighted variant that served it (`model` \
+                 narrows to one route); requests served without a variant come back under the empty string",
+            )
+            .clickhouse_read()
+            .query(DASHBOARD_QUERY),
+            Op::get(
                 "/api/v1/analytics/by-attribution",
                 "getAnalyticsByAttribution",
                 "Spend and usage grouped by business unit or customer",
@@ -2722,6 +2730,24 @@ fn operations() -> Vec<Op> {
                 "Revoke an invitation",
             )
             .ok(Payload::Ref("Invitation")),
+            Op::post(
+                "/api/v1/invitations/{id}/resend",
+                "resendInvitation",
+                "Email a pending invitation's link again (at most once a minute; `429` with `Retry-After` otherwise)",
+            )
+            .body(Payload::Empty)
+            .ok(Payload::Ref("Invitation"))
+            .conflict(
+                "the invitation is not pending, has expired, has no kept link, or mail is not configured",
+            ),
+            Op::post(
+                "/api/v1/orgs/{org_id}/invitations/mail-check",
+                "checkInvitationMailRelay",
+                "Check the mail relay without sending an invitation",
+            )
+            .body(Payload::Empty)
+            .ok(Payload::Open)
+            .conflict("mail is not configured on this control plane"),
             Op::get(
                 "/api/v1/invitations/accept/{token}",
                 "previewInvitation",
@@ -4895,6 +4921,7 @@ mod tests {
             "/api/v1/analytics/summary",
             "/api/v1/analytics/timeseries",
             "/api/v1/analytics/by-model",
+            "/api/v1/analytics/by-variant",
         ] {
             let names = names_of(path);
             for filter in [

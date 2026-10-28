@@ -181,11 +181,19 @@ const node = (id: string, over: Partial<ClusterNodeRow> = {}): ClusterNodeRow =>
   ...over,
 });
 
-const answer = (routes: RouteRow[], status = 200, labels: LabelRow[] = []): FetchStub =>
+const answer = (
+  routes: RouteRow[],
+  status = 200,
+  labels: LabelRow[] = [],
+  // the variants each route embeds when the list asks for them (#3343)
+  variants: Record<string, RouteVariantRow[]> = {},
+): FetchStub =>
   scoped(async (input) => {
     const url = String(input);
     if (url.includes("/providers")) return json(PROVIDERS);
     if (url.includes("/analytics/by-model")) return json({ data: TRAFFIC });
+    // the route sheet reads what each saved variant served (#3342); none, unless a story says
+    if (url.includes("/analytics/by-variant")) return json({ data: [] });
     if (url.includes("/cluster/nodes")) return json([node("gw-1"), node("gw-2")]);
     // the label list is its own endpoint; without this branch it would be
     // answered with the route list and the chips would be nonsense (#1329)
@@ -200,7 +208,13 @@ const answer = (routes: RouteRow[], status = 200, labels: LabelRow[] = []): Fetc
     // the route list embeds each route's targets when it is asked to, which
     // is how the screen reads them (#3031)
     if (status === 200 && url.includes("include=targets")) {
-      return json(routes.map((r) => ({ ...r, targets: TARGETS[r.id] ?? [] })));
+      return json(
+        routes.map((r) => ({
+          ...r,
+          targets: TARGETS[r.id] ?? [],
+          ...(url.includes("variants") ? { variants: variants[r.id] ?? [] } : {}),
+        })),
+      );
     }
     return json(status === 200 ? routes : { error: { message: "forbidden" } }, status);
   });
@@ -1289,6 +1303,177 @@ export const EditsAVariantSplit: Story = {
     await expect(
       splits.calls.filter((c) => c.method === "PUT" && /\/routes\/route-1$/.test(c.url)),
     ).toHaveLength(0);
+  },
+};
+
+/**
+ * A route that routes through variants shows them on its card, in fallback
+ * order with the split their weights give, and sets its own targets aside
+ * (#3343); a route with targets only is drawn as it always was, beside it.
+ */
+const variantRoutes = recording(
+  answer(ROUTES, 200, [], {
+    "route-1": [
+      variantRow(
+        "canary",
+        1,
+        [{ provider_id: "prov-2", upstream_model: "gpt-4o-next", weight: 1 }],
+        1,
+      ),
+      variantRow("stable", 9, [{ provider_id: "prov-1", upstream_model: "gpt-4o", weight: 1 }], 0),
+    ],
+    // route-2 has no targets of its own, and routes only through variants
+    "route-2": [variantRow("only", 1, [{ provider_id: "prov-1", weight: 1 }], 0)],
+  }),
+);
+export const CardsShowTheVariantsTheyRouteThrough: Story = {
+  render: () => (
+    <Harness fetchStub={variantRoutes.stub}>
+      <RoutingRules />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("gpt-4o", ROUTE_NAME)).toBeInTheDocument();
+    const list = within(
+      await canvas.findByRole("list", { name: "Variants of gpt-4o, in fallback order" }),
+    );
+    // declared order is the fallback order, whatever the order the API listed them in
+    const names = list.getAllByRole("listitem").map((li) => li.textContent);
+    await expect(names[0]).toContain("stable");
+    await expect(names[0]).toContain("90%");
+    await expect(names[0]).toContain("openai-prod → gpt-4o");
+    await expect(names[1]).toContain("canary");
+    await expect(names[1]).toContain("10%");
+    await expect(canvas.getByText(/its own 2 targets are not used/)).toBeVisible();
+    // the unused target split is not drawn as if the gateway applied it
+    await expect(canvas.queryByRole("list", { name: "Targets of gpt-4o" })).toBeNull();
+    await expect(canvas.getByText("2 variants")).toBeVisible();
+    await expect(canvas.queryByText("2 targets")).toBeNull();
+    // a variants-only route never reads as having no targets
+    await expect(canvas.queryByText("No targets yet.")).toBeNull();
+    await expect(canvas.queryByText("0 targets")).toBeNull();
+    await expect(canvas.getByText("1 variant")).toBeVisible();
+    await variantRoutes.expectSent("GET", "include=targets,variants");
+  },
+};
+
+/**
+ * The sheet shows what each saved variant served beside the split its weights
+ * configure (#3342): the observed share is of the requests the variants served,
+ * a variant no longer configured still counts, and traffic served without a
+ * variant is said apart rather than diluting the shares.
+ */
+const observing = (data: unknown[], status = 200) =>
+  recording(
+    scoped(async (input, init) => {
+      const url = String(input);
+      if (url.includes("/analytics/by-variant")) {
+        return status === 200
+          ? json({ data })
+          : json({ error: { message: "no clickhouse_url" } }, status);
+      }
+      if (/\/routes\/route-1\/variants$/.test(url)) return json(SPLIT);
+      return answer(ROUTES)(input, init);
+    }),
+  );
+const variantTraffic = (variant: string, requests: number, errors: number, p95 = 300) => ({
+  model: "gpt-4o",
+  variant,
+  requests,
+  tokens: requests * 10,
+  cost_usd: requests / 100,
+  unpriced_requests: 0,
+  errors,
+  p50_latency_ms: p95 / 3,
+  p95_latency_ms: p95,
+});
+const observed = observing([
+  variantTraffic("stable", 880, 8, 420),
+  variantTraffic("canary", 120, 24, 900),
+  variantTraffic("old-experiment", 40, 0),
+  variantTraffic("", 15, 0),
+]);
+export const ShowsTheObservedShareBesideTheConfiguredSplit: Story = {
+  render: () => (
+    <Harness fetchStub={observed.stub} role="admin">
+      <Toasted>
+        <RoutingRules />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const dialog = await openRouteSheet(canvasElement);
+    const table = within(await dialog.findByRole("table", { name: "Observed traffic" }));
+    await observed.expectSent("GET", "/analytics/by-variant?");
+    const row = (name: string) => table.getByText(name).closest('[role="row"]') as HTMLElement;
+    // 9:1 configured; 880 of the 1040 requests variants served observed
+    await waitFor(() => expect(within(row("stable")).getByText("90%")).toBeVisible());
+    await expect(within(row("stable")).getByText("85%")).toBeVisible();
+    await expect(within(row("stable")).getByText("0.9%")).toBeVisible();
+    await expect(within(row("canary")).getByText("10%")).toBeVisible();
+    await expect(within(row("canary")).getByText("20.0%")).toBeVisible();
+    await expect(within(row("canary")).getByText("300 / 900 ms")).toBeVisible();
+    // a variant nobody configures any more has no configured share
+    await expect(within(row("old-experiment")).getByText("—")).toBeVisible();
+    await expect(
+      dialog.getByText(/15 requests in this window were served without a variant/),
+    ).toBeVisible();
+    const url = new URL(
+      observed.calls.find((c) => c.url.includes("/analytics/by-variant"))!.url,
+      "http://x",
+    );
+    await expect(url.searchParams.get("model")).toBe("gpt-4o");
+    // route names are unique per project only, so the read is narrowed to the route's
+    await expect(url.searchParams.get("project")).toBe("project-1");
+  },
+};
+
+export const ObservedTrafficIsEmptyBeforeTheRouteIsCalled: Story = {
+  render: () => (
+    <Harness fetchStub={observing([]).stub} role="admin">
+      <Toasted>
+        <RoutingRules />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const dialog = await openRouteSheet(canvasElement);
+    await expect(
+      await dialog.findByText(/No variant served a request in the Last 7 days/),
+    ).toBeVisible();
+    await expect(dialog.queryByRole("table", { name: "Observed traffic" })).toBeNull();
+  },
+};
+
+export const ObservedTrafficNeedsClickHouse: Story = {
+  render: () => (
+    <Harness fetchStub={observing([], 503).stub} role="admin">
+      <Toasted>
+        <RoutingRules />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const dialog = await openRouteSheet(canvasElement);
+    await expect(await dialog.findByText("Observed traffic needs ClickHouse")).toBeVisible();
+    // not an alert: a deployment without ClickHouse is a supported one
+    await expect(dialog.queryByRole("alert")).toBeNull();
+  },
+};
+
+export const ObservedTrafficReadFails: Story = {
+  render: () => (
+    <Harness fetchStub={observing([], 500).stub} role="admin">
+      <Toasted>
+        <RoutingRules />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const dialog = await openRouteSheet(canvasElement);
+    await expectLoadError(sheetElement(), /observed traffic/);
+    await expect(dialog.queryByRole("table", { name: "Observed traffic" })).toBeNull();
   },
 };
 

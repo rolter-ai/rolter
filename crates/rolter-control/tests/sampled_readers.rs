@@ -364,6 +364,25 @@ async fn alert_signals_scale_by_the_row_weight_and_the_error_rate_stays_a_ratio_
     near(read_alert(&stack, "error_rate").await, 0.75);
 }
 
+/// #3294: the error rate counts server failures and a request that never got
+/// a status (0), and leaves out a 4xx, which is the caller's own mistake.
+#[tokio::test]
+async fn the_error_rate_alert_counts_status_zero_and_leaves_out_a_4xx() {
+    let Some(stack) = stack().await else {
+        eprintln!("skipping: the postgres and clickhouse test servers are not both set");
+        return;
+    };
+    stack
+        .insert(&[
+            row("", 200, 1.0),
+            row("", 0, 1.0),
+            row("", 429, 1.0),
+            row("", 502, 1.0),
+        ])
+        .await;
+    near(read_alert(&stack, "error_rate").await, 0.5);
+}
+
 /// The p95 latency alert weights each kept row by the requests it stands for
 /// (#3355): one slow request among fifty-odd fast ones is not the 95th percentile,
 /// though it is one of three stored rows.

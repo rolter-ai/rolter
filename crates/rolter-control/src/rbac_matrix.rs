@@ -189,12 +189,12 @@ const ADMIN: Option<Authority> = Some(Authority::Role(Role::Admin));
 const SUPER: Option<Authority> = Some(Authority::Superadmin);
 /// a superadmin or an operator (#1834)
 const OPERATOR: Option<Authority> = Some(Authority::Deployment(&[DeploymentRole::Operator]));
-/// a superadmin or a security auditor (#1834), for a read
 /// an admin at the row's scope, or a deployment operator at any (#3362)
 const ADMIN_OR_OPERATOR: Option<Authority> = Some(Authority::RoleOrDeployment(
     Role::Admin,
     &[DeploymentRole::Operator],
 ));
+/// a superadmin or a security auditor (#1834), for a read
 const AUDITOR: Option<Authority> = Some(Authority::Deployment(&[DeploymentRole::SecurityAuditor]));
 /// any authenticated caller; see [`Authority::Authenticated`]
 const ANYONE: Option<Authority> = Some(Authority::Authenticated);
@@ -1228,8 +1228,9 @@ struct ActionView {
     minimum_role: Option<Role>,
     superadmin_only: bool,
     /// the deployment roles that also reach this action (#1834), besides a
-    /// superadmin; empty for every action that takes a scoped role or a
-    /// superadmin alone
+    /// superadmin; empty for every action that takes a scoped role alone or a
+    /// superadmin alone. An action that takes a scoped role *or* a deployment
+    /// role (#3362) carries both this and `minimum_role`
     #[serde(skip_serializing_if = "Vec::is_empty")]
     deployment_roles: Vec<DeploymentRole>,
     /// no membership required: any authenticated caller may perform it
@@ -1770,7 +1771,10 @@ mod tests {
         for cap in CAPABILITIES.iter().filter(|cap| cap.scope == "deployment") {
             for action in Action::ALL {
                 assert!(
-                    !matches!(cap.authority(action), Some(Authority::Role(_))),
+                    !matches!(
+                        cap.authority(action),
+                        Some(Authority::Role(_) | Authority::RoleOrDeployment(..))
+                    ),
                     "{}:{} is deployment-scoped but takes a role",
                     cap.resource,
                     action_key(action)
