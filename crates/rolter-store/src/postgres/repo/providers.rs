@@ -181,10 +181,16 @@ impl ProviderRepo<'_> {
             return Ok(Vec::new());
         };
         let routes: Vec<String> = sqlx::query_scalar(
-            "select distinct r.model from route_targets rt
-             join routes r on r.id = rt.route_id
-             where rt.provider_id = $1 and r.project_id <> $2
-             order by r.model",
+            "select model from (
+                 select r.model from route_targets rt
+                 join routes r on r.id = rt.route_id
+                 where rt.provider_id = $1 and r.project_id <> $2
+                 union
+                 select r.model from route_variant_targets vt
+                 join route_variants v on v.id = vt.variant_id
+                 join routes r on r.id = v.route_id
+                 where vt.provider_id = $1 and r.project_id <> $2
+             ) dependents order by model",
         )
         .bind(provider_id)
         .bind(scope)
@@ -332,8 +338,8 @@ impl ProviderRepo<'_> {
         .await
     }
 
-    /// Delete provider `id` unless a route target or a provider-group member
-    /// still references it (#2438).
+    /// Delete provider `id` unless a route target, a route variant's target
+    /// (#391) or a provider-group member still references it (#2438).
     ///
     /// Both references are `on delete restrict`, so the database would refuse
     /// anyway, but only with a foreign-key error that names nothing the caller
@@ -350,10 +356,16 @@ impl ProviderRepo<'_> {
         )
         .await?;
         let routes: Vec<String> = sqlx::query_scalar(
-            "select distinct r.model from route_targets rt
-             join routes r on r.id = rt.route_id
-             where rt.provider_id = $1
-             order by r.model",
+            "select model from (
+                 select r.model from route_targets rt
+                 join routes r on r.id = rt.route_id
+                 where rt.provider_id = $1
+                 union
+                 select r.model from route_variant_targets vt
+                 join route_variants v on v.id = vt.variant_id
+                 join routes r on r.id = v.route_id
+                 where vt.provider_id = $1
+             ) dependents order by model",
         )
         .bind(id)
         .fetch_all(&mut *tx)

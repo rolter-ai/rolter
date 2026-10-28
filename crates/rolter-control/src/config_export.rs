@@ -76,9 +76,9 @@ const HEADER: &str = "\
 # copy of this file applies the edits rather than duplicating rows.
 #
 # Round-trips: providers, provider groups and their members, routes with their
-# targets, parameter defaults and override policy, model prices, published
-# prompt templates, the payload-capture policy and the dashboard UX-event
-# opt-out.
+# targets, weighted variants, parameter defaults and override policy, model
+# prices, published prompt templates, the payload-capture policy and the
+# dashboard UX-event opt-out.
 #
 # Budgets and rate limits round-trip too, and name what they cap the way the
 # importer finds it, never by database id: `scope = \"team\"` with `id =
@@ -329,6 +329,54 @@ fn render_routes(out: &mut String, config: &GatewayConfig) {
                 key(out, "model", model);
             }
             key(out, "weight", &target.weight);
+        }
+        // declared order, never sorted: it is the fallback chain, and a
+        // variant's targets are its routing order (#391)
+        let exported: std::collections::HashSet<&str> = config
+            .providers
+            .iter()
+            .chain(&config.provider_defaults)
+            .map(|p| p.name.as_str())
+            .collect();
+        for variant in &route.variants {
+            out.push_str("\n[[routes.variants]]\n");
+            key(out, "name", &variant.name);
+            key(out, "weight", &variant.weight);
+            if !variant.params.is_empty() {
+                out.push_str("\n[routes.variants.params]\n");
+                let mut names: Vec<&String> = variant.params.keys().collect();
+                names.sort();
+                for name in names {
+                    match variant.params.get(name) {
+                        Some(value) if !value.is_null() => key(out, name, value),
+                        _ => {
+                            out.push_str(&format!(
+                                "# {name}: not representable in toml, omitted\n"
+                            ));
+                        }
+                    }
+                }
+            }
+            for target in &variant.targets {
+                // a stored target on a provider the snapshot left out is kept,
+                // not dropped: the importer replaces a route's whole variant
+                // set, so dropping it here would delete it on the next import.
+                // naming a provider the file does not declare makes the
+                // importer leave this route's variants as they are instead
+                if !exported.contains(target.provider.as_str()) {
+                    out.push_str(&format!(
+                        "\n# provider '{}' is not in this export (left out of the snapshot); \
+                         the importer leaves this route's variants as stored",
+                        target.provider
+                    ));
+                }
+                out.push_str("\n[[routes.variants.targets]]\n");
+                key(out, "provider", &target.provider);
+                if let Some(model) = &target.model {
+                    key(out, "model", model);
+                }
+                key(out, "weight", &target.weight);
+            }
         }
     }
 }
@@ -618,7 +666,70 @@ pub async fn export_document(
     pool: &sqlx::PgPool,
     config: &GatewayConfig,
 ) -> rolter_core::Result<String> {
-    Ok(render_with(config, &load_scope_refs(pool).await?))
+    let mut config = config.clone();
+    with_stored_variants(pool, &mut config).await?;
+    Ok(render_with(&config, &load_scope_refs(pool).await?))
+}
+
+/// Replace each database route's variants with the set as stored (#391).
+///
+/// The loaded config is what the gateway serves, which drops a variant target
+/// on a provider left out of the snapshot, and a variant left with no target.
+/// `rolter-seed --import` replaces a route's whole variant set, so an export of
+/// the served set would delete those on the next import. The stored set keeps
+/// them, and [`render`] marks a target whose provider the file does not carry.
+#[cfg(feature = "postgres")]
+async fn with_stored_variants(
+    pool: &sqlx::PgPool,
+    config: &mut GatewayConfig,
+) -> rolter_core::Result<()> {
+    use rolter_store::postgres::store_err;
+
+    let variants: Vec<(String, uuid::Uuid, String, i32, serde_json::Value)> = sqlx::query_as(
+        "select r.model, v.id, v.name, v.weight, v.params
+         from route_variants v join routes r on r.id = v.route_id
+         where r.enabled order by r.model, v.position",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(store_err)?;
+    let targets: Vec<(uuid::Uuid, String, Option<String>, i32)> = sqlx::query_as(
+        "select vt.variant_id, p.name, vt.upstream_model, vt.weight
+         from route_variant_targets vt join providers p on p.id = vt.provider_id
+         order by vt.variant_id, vt.position",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(store_err)?;
+    let mut by_route: std::collections::HashMap<String, Vec<rolter_core::Variant>> =
+        std::collections::HashMap::new();
+    for (model, id, name, weight, params) in variants {
+        by_route
+            .entry(model)
+            .or_default()
+            .push(rolter_core::Variant {
+                name,
+                weight: weight.max(0) as u32,
+                // the column is held to an object by a check constraint
+                params: serde_json::from_value(params).unwrap_or_default(),
+                targets: targets
+                    .iter()
+                    .filter(|t| t.0 == id)
+                    .map(|(_, provider, model, weight)| rolter_core::Target {
+                        provider: provider.clone(),
+                        model: model.clone(),
+                        weight: (*weight).max(0) as u32,
+                    })
+                    .collect(),
+            });
+    }
+    for route in &mut config.routes {
+        // only a database route has a tenancy; a file route keeps its own
+        if route.tenancy.is_some() {
+            route.variants = by_route.remove(&route.model).unwrap_or_default();
+        }
+    }
+    Ok(())
 }
 
 #[cfg(feature = "postgres")]
@@ -711,6 +822,29 @@ strategy = "cache_aware"
 provider = "vllm-1"
 model = "meta-llama/Llama-3.1-8B-Instruct"
 weight = 3
+
+[[routes]]
+model = "split"
+strategy = "round_robin"
+[[routes.variants]]
+name = "stable"
+weight = 9
+[[routes.variants.targets]]
+provider = "openai-primary"
+model = "gpt-4o"
+weight = 1
+[[routes.variants]]
+name = "canary"
+weight = 1
+[routes.variants.params]
+temperature = 0.7
+[[routes.variants.targets]]
+provider = "vllm-1"
+model = "meta-llama/Llama-3.1-8B-Instruct"
+weight = 1
+[[routes.variants.targets]]
+provider = "openai-primary"
+weight = 2
 
 [[model_prices]]
 model = "gpt-4o"
@@ -1366,6 +1500,10 @@ tpm = 150000
                 "[[routes.targets]]",
                 "[routes.params]",
                 "[routes.param_policy]",
+                // declared order survives, and with it the fallback chain
+                "[[routes.variants]]\nname = \"stable\"\nweight = 9",
+                "[[routes.variants]]\nname = \"canary\"\nweight = 1\n\n[routes.variants.params]\ntemperature = 0.7",
+                "[[routes.variants.targets]]\nprovider = \"vllm-1\"",
                 "[[model_prices]]",
                 "[[budgets]]\nscope = \"org\"\nid = \"acme\"",
                 "id = \"acme/default/default\"",

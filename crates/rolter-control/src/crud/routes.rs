@@ -9,8 +9,11 @@ use std::collections::HashMap;
 use uuid::Uuid;
 
 use rolter_core::{AdvancedModelConfig, Error, MAX_ROUTE_RETRIES};
-use rolter_store::postgres::models::{Route, RouteTarget};
-use rolter_store::postgres::repo::{RouteRepo, RouteTargetRepo, RouteTargetSpec, RouteUpdate};
+use rolter_store::postgres::models::{Route, RouteTarget, RouteVariant};
+use rolter_store::postgres::repo::{
+    RouteRepo, RouteTargetRepo, RouteTargetSpec, RouteUpdate, RouteVariantRepo, RouteVariantSpec,
+    RouteVariantTargetSpec,
+};
 
 use super::{
     authorize_route, invalid_field, log_audit, name_taken, pool, publish_config_change,
@@ -47,6 +50,10 @@ pub(super) fn router() -> Router<ControlState> {
                 .delete(disable_route_complexity),
         )
         .route("/api/v1/routes/{id}/advanced", put(set_route_advanced))
+        .route(
+            "/api/v1/routes/{id}/variants",
+            get(list_route_variants).put(set_route_variants),
+        )
         .route(
             "/api/v1/routes/{route_id}/targets",
             get(list_route_targets).post(create_route_target),
@@ -103,8 +110,10 @@ async fn require_route_name_free(
 #[derive(Deserialize, Default)]
 struct ListRoutesQuery {
     /// comma-separated extras: `targets` (the route's targets, as
-    /// `GET /api/v1/routes/{id}/targets` lists them) and `complexity` (its
-    /// complexity policy, as `GET /api/v1/routes/{id}/complexity` returns it).
+    /// `GET /api/v1/routes/{id}/targets` lists them), `variants` (its weighted
+    /// variants, as `GET /api/v1/routes/{id}/variants` lists them) and
+    /// `complexity` (its complexity policy, as
+    /// `GET /api/v1/routes/{id}/complexity` returns it).
     /// Omitted, the list is the plain routes it always was
     include: Option<String>,
 }
@@ -118,6 +127,8 @@ struct RouteListEntry {
     route: Route,
     #[serde(skip_serializing_if = "Option::is_none")]
     targets: Option<Vec<RouteTarget>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    variants: Option<Vec<RouteVariant>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     complexity: Option<serde_json::Value>,
 }
@@ -138,16 +149,18 @@ async fn list_routes(
     Query(query): Query<ListRoutesQuery>,
 ) -> ApiResult<Json<Vec<RouteListEntry>>> {
     let mut with_targets = false;
+    let mut with_variants = false;
     let mut with_complexity = false;
     for token in query.include.as_deref().unwrap_or("").split(',') {
         match token.trim() {
             "" => {}
             "targets" => with_targets = true,
+            "variants" => with_variants = true,
             "complexity" => with_complexity = true,
             other => {
                 return Err(invalid_field(
                     "include",
-                    format!("unknown include `{other}`; expected targets or complexity"),
+                    format!("unknown include `{other}`; expected targets, variants or complexity"),
                 ))
             }
         }
@@ -179,11 +192,22 @@ async fn list_routes(
             targets.entry(target.route_id).or_default().push(target);
         }
     }
+    // the variants are dealt out the same way, for the same reason
+    let mut variants: HashMap<Uuid, Vec<RouteVariant>> = HashMap::new();
+    if with_variants {
+        for variant in RouteVariantRepo(pool(&state))
+            .list_for_project(project_id)
+            .await?
+        {
+            variants.entry(variant.route_id).or_default().push(variant);
+        }
+    }
     Ok(Json(
         routes
             .into_iter()
             .map(|route| RouteListEntry {
                 targets: with_targets.then(|| targets.remove(&route.id).unwrap_or_default()),
+                variants: with_variants.then(|| variants.remove(&route.id).unwrap_or_default()),
                 complexity: with_complexity.then(|| route_complexity(&route)),
                 route,
             })
@@ -808,6 +832,303 @@ async fn delete_route_target(
     )
     .await;
     Ok(StatusCode::NO_CONTENT)
+}
+
+// --- weighted variants (#391) ---
+
+/// The most variants one route may carry. A split wider than this is a
+/// mistake rather than an experiment, and the bound keeps one body from
+/// writing an unbounded number of rows.
+const MAX_VARIANTS: usize = 32;
+
+/// The most targets one variant may carry, for the same reason.
+const MAX_VARIANT_TARGETS: usize = 32;
+
+async fn list_route_variants(
+    principal: Principal,
+    State(state): State<ControlState>,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<Vec<RouteVariant>>> {
+    authorize_route(&state, &principal, id, cap!("route", Read)).await?;
+    Ok(Json(RouteVariantRepo(pool(&state)).list(id).await?))
+}
+
+/// The body of `PUT /api/v1/routes/{id}/variants`: the route's whole variant
+/// set, in fallback order. An empty list clears the variants and puts the
+/// route back on its own target pool.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SetRouteVariants {
+    variants: Vec<VariantInput>,
+}
+
+/// One variant as a client sends it.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct VariantInput {
+    name: String,
+    #[serde(default = "default_weight")]
+    weight: i32,
+    /// variant-scoped default inference params, layered over the route's own;
+    /// omitted or `null` is none
+    #[serde(default)]
+    params: serde_json::Value,
+    /// in routing order
+    targets: Vec<VariantTargetInput>,
+}
+
+/// One target of a [`VariantInput`].
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct VariantTargetInput {
+    provider_id: Uuid,
+    /// the model name sent upstream; omitted, `null` or blank forwards the
+    /// route's public name
+    upstream_model: Option<String>,
+    #[serde(default = "default_weight")]
+    weight: i32,
+}
+
+/// The checks a variant set passes before any provider is looked up, and the
+/// set as the store takes it: unique non-blank names, a variant weight of at
+/// least 1, target weights none negative and not all zero within a variant, at
+/// least one target per variant, and object params. Every refusal names
+/// the field it is about, `variants[i].targets[j].weight` say.
+fn variant_specs(variants: Vec<VariantInput>) -> ApiResult<Vec<RouteVariantSpec>> {
+    if variants.len() > MAX_VARIANTS {
+        return Err(invalid_field(
+            "variants",
+            format!("a route takes at most {MAX_VARIANTS} variants"),
+        ));
+    }
+    let mut names = std::collections::HashSet::new();
+    let mut specs = Vec::new();
+    for (i, variant) in variants.into_iter().enumerate() {
+        let name = variant.name.trim().to_string();
+        if name.is_empty() {
+            return Err(invalid_field(
+                format!("variants[{i}].name"),
+                "a variant needs a name",
+            ));
+        }
+        if !names.insert(name.clone()) {
+            return Err(invalid_field(
+                format!("variants[{i}].name"),
+                format!("variant name '{name}' is used twice; names must be unique in a route"),
+            ));
+        }
+        // a 0 would read as "fallback only", but the gateway samples it as a 1
+        // (#3341), so it is refused like a route target's until that changes
+        if variant.weight < 1 {
+            return Err(invalid_field(
+                format!("variants[{i}].weight"),
+                "weight must be at least 1",
+            ));
+        }
+        if variant.targets.is_empty() {
+            return Err(invalid_field(
+                format!("variants[{i}].targets"),
+                "a variant needs at least one target",
+            ));
+        }
+        if variant.targets.len() > MAX_VARIANT_TARGETS {
+            return Err(invalid_field(
+                format!("variants[{i}].targets"),
+                format!("a variant takes at most {MAX_VARIANT_TARGETS} targets"),
+            ));
+        }
+        for (j, target) in variant.targets.iter().enumerate() {
+            if target.weight < 0 {
+                return Err(invalid_field(
+                    format!("variants[{i}].targets[{j}].weight"),
+                    "weight must be 0 or more",
+                ));
+            }
+        }
+        if variant.targets.iter().all(|t| t.weight == 0) {
+            return Err(invalid_field(
+                format!("variants[{i}].targets"),
+                "at least one target of a variant needs a weight above 0",
+            ));
+        }
+        let params = normalize_json_object(variant.params, &format!("variants[{i}].params"))?;
+        specs.push(RouteVariantSpec {
+            name,
+            weight: variant.weight,
+            params,
+            targets: variant
+                .targets
+                .into_iter()
+                .map(|target| RouteVariantTargetSpec {
+                    provider_id: target.provider_id,
+                    // blank is none, as for a route target
+                    upstream_model: target.upstream_model.filter(|m| !m.trim().is_empty()),
+                    weight: target.weight,
+                })
+                .collect(),
+        });
+    }
+    Ok(specs)
+}
+
+async fn set_route_variants(
+    principal: Principal,
+    State(state): State<ControlState>,
+    Path(id): Path<Uuid>,
+    SafeJson(body): SafeJson<SetRouteVariants>,
+) -> ApiResult<Json<Vec<RouteVariant>>> {
+    let route = RouteRepo(pool(&state)).get(id).await?;
+    let chain = ScopeChain::from_project(pool(&state), route.project_id).await?;
+    let org_id = chain.org;
+    authorize(&state, &principal, chain, cap!("route", Update)).await?;
+    let specs = variant_specs(body.variants)?;
+    let mut provider_ids: Vec<Uuid> = specs
+        .iter()
+        .flat_map(|v| v.targets.iter().map(|t| t.provider_id))
+        .collect();
+    provider_ids.sort_unstable();
+    provider_ids.dedup();
+    // every target names a provider of the route's org (an unknown or foreign
+    // one is the same 404) that the route's project may use (#1919), the
+    // checks a route target passes
+    if let Some(org_id) = org_id {
+        require_providers_in_org(&state, org_id, &provider_ids).await?;
+    }
+    require_providers_usable_from(&state, &provider_ids, Some(route.project_id), "this route")
+        .await?;
+    let (variants, changed) = RouteVariantRepo(pool(&state)).replace(id, &specs).await?;
+    // an unchanged set wrote nothing, so there is nothing to publish or audit
+    if !changed {
+        return Ok(Json(variants));
+    }
+    publish_config_change(&state).await?;
+    log_audit(
+        &state,
+        &principal,
+        org_id,
+        "route.set_variants",
+        "route",
+        id,
+        serde_json::json!({
+            "variants": variants
+                .iter()
+                .map(|v| serde_json::json!({
+                    "name": v.name,
+                    "weight": v.weight,
+                    "targets": v.targets.len(),
+                }))
+                .collect::<Vec<_>>(),
+        }),
+    )
+    .await;
+    Ok(Json(variants))
+}
+
+#[cfg(test)]
+mod variant_tests {
+    use super::*;
+
+    fn target(weight: i32) -> VariantTargetInput {
+        VariantTargetInput {
+            provider_id: Uuid::nil(),
+            upstream_model: None,
+            weight,
+        }
+    }
+
+    fn variant(name: &str, weight: i32) -> VariantInput {
+        VariantInput {
+            name: name.to_string(),
+            weight,
+            params: serde_json::Value::Null,
+            targets: vec![target(1)],
+        }
+    }
+
+    /// the field a refusal names, or `None` when the set was accepted
+    fn refused_field(variants: Vec<VariantInput>) -> Option<String> {
+        match variant_specs(variants) {
+            Ok(_) => None,
+            Err(ApiError::InvalidField { field, .. }) => Some(field),
+            Err(other) => panic!("expected a field refusal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_valid_set_maps_in_order_with_blank_models_as_none() {
+        let mut canary = variant(" canary ", 1);
+        canary.targets = vec![
+            VariantTargetInput {
+                provider_id: Uuid::nil(),
+                upstream_model: Some("  ".into()),
+                weight: 2,
+            },
+            target(0),
+        ];
+        let specs = variant_specs(vec![variant("stable", 9), canary]).unwrap();
+        assert_eq!(specs.len(), 2);
+        assert_eq!(specs[0].name, "stable");
+        assert_eq!(specs[1].name, "canary", "the name is trimmed");
+        assert_eq!(specs[1].targets[0].upstream_model, None);
+        assert_eq!(specs[1].params, serde_json::json!({}));
+        assert!(
+            variant_specs(Vec::new()).unwrap().is_empty(),
+            "empty clears"
+        );
+    }
+
+    #[test]
+    fn weights_may_not_be_negative_or_all_zero() {
+        assert_eq!(
+            refused_field(vec![variant("a", -1)]).as_deref(),
+            Some("variants[0].weight")
+        );
+        // a 0 is sampled as a 1 by the gateway (#3341), so it is refused
+        assert_eq!(
+            refused_field(vec![variant("a", 3), variant("b", 0)]).as_deref(),
+            Some("variants[1].weight")
+        );
+        let mut negative_target = variant("a", 1);
+        negative_target.targets = vec![target(1), target(-3)];
+        assert_eq!(
+            refused_field(vec![negative_target]).as_deref(),
+            Some("variants[0].targets[1].weight")
+        );
+        let mut idle_targets = variant("a", 1);
+        idle_targets.targets = vec![target(0), target(0)];
+        assert_eq!(
+            refused_field(vec![idle_targets]).as_deref(),
+            Some("variants[0].targets")
+        );
+    }
+
+    #[test]
+    fn each_variant_needs_a_unique_name_and_a_target() {
+        assert_eq!(
+            refused_field(vec![variant(" ", 1)]).as_deref(),
+            Some("variants[0].name")
+        );
+        assert_eq!(
+            refused_field(vec![variant("a", 1), variant("a ", 1)]).as_deref(),
+            Some("variants[1].name")
+        );
+        let mut empty = variant("a", 1);
+        empty.targets.clear();
+        assert_eq!(
+            refused_field(vec![empty]).as_deref(),
+            Some("variants[0].targets")
+        );
+        let mut params = variant("a", 1);
+        params.params = serde_json::json!([1]);
+        assert_eq!(
+            refused_field(vec![params]).as_deref(),
+            Some("variants[0].params")
+        );
+        let many = (0..=MAX_VARIANTS)
+            .map(|i| variant(&format!("v{i}"), 1))
+            .collect();
+        assert_eq!(refused_field(many).as_deref(), Some("variants"));
+    }
 }
 
 #[cfg(test)]

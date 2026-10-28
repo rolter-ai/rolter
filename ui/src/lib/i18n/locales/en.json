@@ -327,7 +327,8 @@
       "unpricedModels": "unpriced models",
       "mcpServerTools": "tools of the MCP server",
       "priceCatalogue": "price catalogue",
-      "yourBudget": "your budget"
+      "yourBudget": "your budget",
+      "routeVariants": "route variants"
     },
     "requestFailed": "request failed: {{status}}",
     "gateway": {
@@ -590,6 +591,51 @@
       "weightRow": "The control plane refused the weight of target {{n}}. Weights are whole numbers, 1 or more.",
       "summary_one": "{{count}} field needs attention before this route can be saved.",
       "summary_other": "{{count}} fields need attention before this route can be saved."
+    },
+    "variants": {
+      "title": "Variants",
+      "info": "Named buckets that split this route's traffic by weight, for A/B tests and canaries. Each request samples one variant by weight; if it fails, the others are tried in the order listed. Request logs record which variant served a request.",
+      "add": "Add variant",
+      "empty": "No variants. Requests use this route's targets. Add a variant to split traffic between groups of targets.",
+      "overridesTargets": "While this route has variants, its targets above are not used. Remove every variant to route through them again.",
+      "previewLabel": "Traffic split",
+      "previewPending": "Enter a whole-number weight for every variant to see the split.",
+      "zeroWeight": "A weight of 0, which an import from rolter.toml can store, is sampled as 1 by the gateway, so that variant takes the share shown here. Set 1 or more to save.",
+      "unnamed": "Variant {{n}}",
+      "nameAria": "Variant {{n}} name",
+      "namePlaceholder": "canary",
+      "weightAria": "Variant {{n}} weight",
+      "moveUp": "Move variant {{n}} up",
+      "moveDown": "Move variant {{n}} down",
+      "moveUpTitle": "Move up",
+      "moveDownTitle": "Move down",
+      "remove": "Remove variant {{n}}",
+      "params_one": "Keeps {{count}} parameter default, set through the API or rolter.toml.",
+      "params_other": "Keeps {{count}} parameter defaults, set through the API or rolter.toml.",
+      "targets": "Targets, in the order they are tried",
+      "addTarget": "Add target",
+      "addTargetAria": "Add target to variant {{n}}",
+      "targetProviderAria": "Variant {{n}} target {{m}} provider",
+      "targetUpstreamAria": "Variant {{n}} target {{m}} upstream model",
+      "targetWeightAria": "Variant {{n}} target {{m}} weight",
+      "targetMoveUp": "Move variant {{n}} target {{m}} up",
+      "targetMoveDown": "Move variant {{n}} target {{m}} down",
+      "targetRemove": "Remove variant {{n}} target {{m}}",
+      "errors": {
+        "nameRequired": "Give the variant a name.",
+        "nameTaken": "Another variant of this route has this name. Names must be unique.",
+        "weight": "A variant weight is a whole number, 1 or more.",
+        "targetsRequired": "A variant needs at least one target.",
+        "targetsAllZero": "At least one target of the variant needs a weight above 0.",
+        "provider": "Pick a provider for every target.",
+        "targetWeight": "A target weight is a whole number, 0 or more.",
+        "refused": "The control plane refused this field. Check it and save again.",
+        "tooMany": "A route takes at most {{max}} variants. Remove some before saving.",
+        "targetsTooMany": "A variant takes at most {{max}} targets. Remove some before saving."
+      },
+      "full": "A route takes at most {{max}} variants.",
+      "targetsFull": "A variant takes at most {{max}} targets.",
+      "weightsIgnored": "<0>{{strategy}}</0> does not read weights, so target weights do not split traffic inside a variant; the first target leads. Variant weights always split traffic."
     }
   },
   "breaker": {
