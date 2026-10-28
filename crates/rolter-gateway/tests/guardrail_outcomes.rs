@@ -288,6 +288,36 @@ async fn a_pre_call_block_keeps_the_redactions_applied_before_it() {
     );
 }
 
+/// A response-stage block keeps the redactions of the output rules that ran
+/// before it, as the request stage does (#3403).
+#[tokio::test]
+async fn a_post_call_block_keeps_the_redactions_applied_before_it() {
+    let rows = Rows::default();
+    let clickhouse = rows.serve().await;
+    let up = upstream().await;
+    let mut config = config(up, clickhouse, GuardStage::PostCall, GuardAction::Redact);
+    // the upstream answers "write to ops@corp.com": the address is redacted
+    // first, then the verb withholds the masked answer
+    config.guardrails.rules.push(GuardrailRule {
+        name: "verb".to_string(),
+        builtin: None,
+        pattern: Some("write".to_string()),
+        stage: GuardStage::PostCall,
+        action: GuardAction::Block,
+        replacement: None,
+        include_system: false,
+    });
+    let (status, row) = run_with(config, &rows, "ping").await;
+    assert_eq!(status, 403);
+    assert_eq!(row["withheld"], 1, "{row}");
+    assert_eq!(
+        row["guardrail_events"],
+        json!(["redacted:email", "blocked:verb"]),
+        "{row}"
+    );
+    assert!(!row.to_string().contains("ops@corp.com"), "{row}");
+}
+
 async fn webhook(decision: Value) -> SocketAddr {
     serve(Router::new().route(
         "/check",
