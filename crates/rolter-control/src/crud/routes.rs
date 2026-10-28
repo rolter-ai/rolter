@@ -902,7 +902,7 @@ fn variant_specs(variants: Vec<VariantInput>) -> ApiResult<Vec<RouteVariantSpec>
         ));
     }
     let mut names = std::collections::HashSet::new();
-    let mut specs = Vec::with_capacity(variants.len());
+    let mut specs = Vec::new();
     for (i, variant) in variants.into_iter().enumerate() {
         let name = variant.name.trim().to_string();
         if name.is_empty() {

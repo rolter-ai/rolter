@@ -524,7 +524,7 @@ impl RouteVariantRepo<'_> {
             .execute(&mut *tx)
             .await
             .map_err(store_err)?;
-        let mut written = Vec::with_capacity(desired.len());
+        let mut written = Vec::new();
         for (position, spec) in desired.iter().enumerate() {
             let mut variant: RouteVariant = sqlx::query_as(sqlx::AssertSqlSafe(format!(
                 "insert into route_variants (route_id, name, weight, position, params)
