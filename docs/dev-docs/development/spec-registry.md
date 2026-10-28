@@ -54,6 +54,18 @@ auth/path profile over an OpenAI-shaped transport), `reviewed_at`, `notes` and
 `tests`. `auth` and `primary_path` are not just documentation: a test holds them
 to `ProviderKind::auth_header` and `primary_upstream_path`.
 
+Each distinct auth/path profile also has a conformance fixture in
+`crates/rolter-gateway/tests/provider_profiles.rs` (#3336): a request and a
+response in the shape the vendor's own documentation shows, replayed through the
+gateway against a mock upstream mounted at the documented base. It checks the
+path the upstream receives, the header the credential travels in, and that the
+response reaches the client whole, vendor extensions included. A kind that
+shares a profile with one of them (every hosted kind whose base ends in `/v1`)
+is covered by that profile's case; a new profile gets a case and lists it under
+its record's `tests`. A kind whose record says "Unverified" in `notes` has no
+fixture on purpose: no public API reference was found, and a fixture written
+from a guess would be evidence of nothing.
+
 `[native] gateway_endpoints` lists the gateway's own endpoints (`/healthz`,
 `/docs`, …), which implement no external specification. A route is either there
 or named by a record, never both.

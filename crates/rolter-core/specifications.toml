@@ -1468,6 +1468,7 @@ conformance = "provider-profile"
 reviewed_at = "2026-10-27"
 tests = [
   "crates/rolter-proxy/src/lib.rs::every_kind_authenticates_with_the_header_the_probes_use",
+  "crates/rolter-gateway/tests/provider_profiles.rs::azure_openai_v1_authenticates_with_the_api_key_header",
 ]
 
 [[provider]]
@@ -1483,6 +1484,7 @@ reviewed_at = "2026-10-27"
 notes = "a Bedrock API key as a bearer token; SigV4 signing is not implemented"
 tests = [
   "crates/rolter-proxy/src/lib.rs::the_previewed_address_is_the_one_the_forwarder_builds",
+  "crates/rolter-gateway/tests/provider_profiles.rs::bedrock_runtime_authenticates_with_a_bearer_api_key_under_openai_v1",
 ]
 
 [[provider]]
@@ -1498,6 +1500,7 @@ reviewed_at = "2026-10-27"
 notes = "a short-lived OAuth access token as the bearer; rolter does not mint it"
 tests = [
   "crates/rolter-proxy/src/lib.rs::the_previewed_address_is_the_one_the_forwarder_builds",
+  "crates/rolter-gateway/tests/provider_profiles.rs::vertex_takes_an_oauth_access_token_as_a_bearer_under_the_project_endpoint",
 ]
 
 [[provider]]
@@ -1512,6 +1515,7 @@ conformance = "provider-profile"
 reviewed_at = "2026-10-27"
 tests = [
   "crates/rolter-core/src/config.rs::every_kind_resolves_by_the_documented_rule",
+  "crates/rolter-gateway/tests/provider_profiles.rs::gemini_openai_shim_lives_under_v1beta_openai",
 ]
 
 [[provider]]
@@ -1554,6 +1558,7 @@ conformance = "provider-profile"
 reviewed_at = "2026-10-27"
 tests = [
   "crates/rolter-core/src/config.rs::every_kind_resolves_by_the_documented_rule",
+  "crates/rolter-gateway/tests/provider_profiles.rs::mistral_base_carries_v1_and_the_gateway_prefix_is_not_doubled",
 ]
 
 [[provider]]
@@ -1568,6 +1573,7 @@ conformance = "provider-profile"
 reviewed_at = "2026-10-27"
 tests = [
   "crates/rolter-core/src/config.rs::every_kind_resolves_by_the_documented_rule",
+  "crates/rolter-gateway/tests/provider_profiles.rs::groq_keeps_the_openai_prefix_of_its_base",
 ]
 
 [[provider]]
@@ -1725,6 +1731,7 @@ conformance = "provider-profile"
 reviewed_at = "2026-10-27"
 tests = [
   "crates/rolter-core/src/config.rs::every_kind_resolves_by_the_documented_rule",
+  "crates/rolter-gateway/tests/provider_profiles.rs::deepseek_base_has_no_version_segment",
 ]
 
 [[provider]]
@@ -1856,6 +1863,7 @@ reviewed_at = "2026-10-27"
 notes = "GigaChat issues short-lived access tokens from an OAuth endpoint; rolter sends the configured key as the bearer and does not mint one"
 tests = [
   "crates/rolter-core/src/config.rs::every_kind_resolves_by_the_documented_rule",
+  "crates/rolter-gateway/tests/provider_profiles.rs::gigachat_takes_an_oauth_access_token_as_a_bearer",
 ]
 
 [[provider]]
@@ -1893,7 +1901,7 @@ auth = "bearer"
 primary_path = "/v1/chat/completions"
 conformance = "provider-profile"
 reviewed_at = "2026-10-27"
-notes = "product page; no public API reference was found at review"
+notes = "product page; no public API reference was found at review. Unverified: whether it speaks an OpenAI-compatible API at a stable base URL is not established, so no conformance fixture is recorded and the profile rests on the walk-every-kind tests alone (#3336)"
 tests = [
   "crates/rolter-core/src/config.rs::every_kind_resolves_by_the_documented_rule",
 ]
@@ -1933,7 +1941,7 @@ auth = "bearer"
 primary_path = "/v1/chat/completions"
 conformance = "provider-profile"
 reviewed_at = "2026-10-27"
-notes = "company site; no public API reference was found at review"
+notes = "company site; no public API reference was found at review. Unverified: whether it speaks an OpenAI-compatible API at a stable base URL is not established, so no conformance fixture is recorded and the profile rests on the walk-every-kind tests alone (#3336)"
 tests = [
   "crates/rolter-core/src/config.rs::every_kind_resolves_by_the_documented_rule",
 ]
@@ -1947,7 +1955,7 @@ auth = "bearer"
 primary_path = "/v1/chat/completions"
 conformance = "provider-profile"
 reviewed_at = "2026-10-27"
-notes = "product site; no public API reference was found at review"
+notes = "product site; no public API reference was found at review. Unverified: whether it speaks an OpenAI-compatible API at a stable base URL is not established, so no conformance fixture is recorded and the profile rests on the walk-every-kind tests alone (#3336)"
 tests = [
   "crates/rolter-core/src/config.rs::every_kind_resolves_by_the_documented_rule",
 ]
@@ -1974,7 +1982,7 @@ auth = "bearer"
 primary_path = "/v1/chat/completions"
 conformance = "provider-profile"
 reviewed_at = "2026-10-27"
-notes = "console; no public API reference was found at review"
+notes = "console; no public API reference was found at review. Unverified: whether it speaks an OpenAI-compatible API at a stable base URL is not established, so no conformance fixture is recorded and the profile rests on the walk-every-kind tests alone (#3336)"
 tests = [
   "crates/rolter-core/src/config.rs::every_kind_resolves_by_the_documented_rule",
 ]
@@ -1988,7 +1996,7 @@ auth = "bearer"
 primary_path = "/v1/chat/completions"
 conformance = "provider-profile"
 reviewed_at = "2026-10-27"
-notes = "product site; no public API reference was found at review"
+notes = "product site; no public API reference was found at review. Unverified: whether it speaks an OpenAI-compatible API at a stable base URL is not established, so no conformance fixture is recorded and the profile rests on the walk-every-kind tests alone (#3336)"
 tests = [
   "crates/rolter-core/src/config.rs::every_kind_resolves_by_the_documented_rule",
 ]
