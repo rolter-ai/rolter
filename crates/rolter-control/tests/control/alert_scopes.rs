@@ -615,3 +615,170 @@ async fn an_orgs_alert_changes_are_in_that_orgs_audit_log() {
         .iter()
         .all(|e| !e["action"].as_str().unwrap_or("").starts_with("alert.")));
 }
+
+/// #3361: a scoped admin's rules are chosen in SQL from their reach. Whatever
+/// other orgs hold, the listings answer the same (what is read from the table is
+/// pinned by `alerting::tests::delivery::only_the_rules_inside_the_reach_are_read`).
+#[tokio::test]
+async fn other_orgs_rules_do_not_change_a_scoped_admins_listings() {
+    skip_without_db!();
+    let t = tenants().await;
+    for (bearer, name, scope) in [
+        (&t.admin_a, "a project", ("project", t.project_a)),
+        (&t.team_admin_a, "a team", ("team", t.team_a)),
+    ] {
+        let (status, body) = post(
+            &t,
+            "/api/v1/alert-rules",
+            bearer,
+            rule(name, Some(scope), None),
+        )
+        .await;
+        assert_eq!(status, 200, "{body}");
+    }
+    let names = |rows: &Value| -> Vec<String> {
+        rows.as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["name"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let paths = ["/api/v1/alert-rules", "/api/v1/alert-notifications"];
+    let mut before = Vec::new();
+    for path in paths {
+        let (status, body) = get(&t, path, &t.admin_a).await;
+        assert_eq!(status, 200, "{path}: {body}");
+        before.push(names(&body));
+    }
+
+    // another org's project rules, each of which the old walk resolved with
+    // queries of its own
+    for i in 0..25 {
+        let (status, body) = post(
+            &t,
+            "/api/v1/alert-rules",
+            &t.admin_b,
+            rule(&format!("b {i}"), Some(("project", t.project_b)), None),
+        )
+        .await;
+        assert_eq!(status, 200, "{body}");
+    }
+    for (path, was_names) in paths.iter().zip(before) {
+        let (status, body) = get(&t, path, &t.admin_a).await;
+        assert_eq!(status, 200, "{path}: {body}");
+        assert_eq!(names(&body), was_names, "{path}");
+    }
+    let (_, rules) = get(&t, "/api/v1/alert-rules", &t.admin_a).await;
+    assert_eq!(names(&rules), ["a project", "a team"]);
+}
+
+/// #3362: a deployment operator runs every rule and channel through the same
+/// guard a scoped admin does, and the matrix and `effective` say so.
+#[tokio::test]
+async fn a_deployment_operator_runs_every_rule_and_the_matrix_publishes_it() {
+    skip_without_db!();
+    let t = tenants().await;
+    let mut sessions = Vec::new();
+    for (email, role) in [
+        ("operator@x.test", "operator"),
+        ("auditor@x.test", "security_auditor"),
+    ] {
+        let user = seed_user(&t.pool, email, false).await;
+        sqlx::query("update users set deployment_role = $2 where id = $1")
+            .bind(user)
+            .bind(role)
+            .execute(&t.pool)
+            .await
+            .unwrap();
+        sessions.push(seed_session(&t.pool, user, &email.replace(['@', '.'], "_")).await);
+    }
+    let (operator, auditor) = (&sessions[0], &sessions[1]);
+
+    // published: an admin at the scope, or an operator
+    let (_, matrix) = get(&t, "/api/v1/rbac/matrix", operator).await;
+    let update = matrix["resources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["resource"] == "alert_rule")
+        .and_then(|r| {
+            r["actions"]
+                .as_array()?
+                .iter()
+                .find(|a| a["action"] == "update")
+        })
+        .expect("alert_rule:update in the matrix")
+        .clone();
+    assert_eq!(update["minimum_role"], "admin");
+    assert_eq!(update["deployment_roles"], json!(["operator"]));
+    let (_, effective) = get(&t, "/api/v1/rbac/effective", operator).await;
+    let allowed: Vec<&str> = effective["allowed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    for pair in [
+        "alert_channel:create",
+        "alert_rule:update",
+        "alert_history:create",
+    ] {
+        assert!(allowed.contains(&pair), "operator lacks {pair}");
+    }
+    let (_, effective) = get(&t, "/api/v1/rbac/effective", auditor).await;
+    assert!(
+        !effective["allowed"].to_string().contains("alert_rule"),
+        "{effective}"
+    );
+
+    // and honoured: any org's rule, a deployment rule, a channel, no membership
+    let (status, theirs) = post(
+        &t,
+        "/api/v1/alert-rules",
+        operator,
+        rule("b by operator", Some(("project", t.project_b)), None),
+    )
+    .await;
+    assert_eq!(status, 200, "{theirs}");
+    let (status, everything) = post(
+        &t,
+        "/api/v1/alert-rules",
+        operator,
+        rule("everything", None, None),
+    )
+    .await;
+    assert_eq!(status, 200, "{everything}");
+    let (status, _) = post(
+        &t,
+        "/api/v1/alert-channels",
+        operator,
+        channel("a hook", Some(t.org_a)),
+    )
+    .await;
+    assert_eq!(status, 200);
+    let (_, rules) = get(&t, "/api/v1/alert-rules", operator).await;
+    assert_eq!(rules.as_array().unwrap().len(), 2);
+    let id = theirs["id"].as_str().unwrap();
+    let (status, _) = send(
+        &t,
+        reqwest::Method::DELETE,
+        &format!("/api/v1/alert-rules/{id}"),
+        operator,
+        None,
+    )
+    .await;
+    assert_eq!(status, 204);
+    // a deployment role that is not the operator's reaches none of it
+    assert_eq!(get(&t, "/api/v1/alert-rules", auditor).await.0, 403);
+    assert_eq!(
+        post(
+            &t,
+            "/api/v1/alert-rules",
+            auditor,
+            rule("x", Some(("org", t.org_a)), None)
+        )
+        .await
+        .0,
+        403
+    );
+}

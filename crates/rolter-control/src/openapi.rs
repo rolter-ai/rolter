@@ -168,6 +168,8 @@ struct Op {
     conflict: Option<&'static str>,
     /// when this operation can answer `406`, what that refusal means
     not_acceptable: Option<&'static str>,
+    /// when this operation can answer `429`, what bounds it
+    too_many_requests: Option<&'static str>,
     /// a ClickHouse-backed read, which can answer `502` or `504`
     clickhouse: bool,
     /// seals a credential with `ROLTER_KEK`, so it can answer `503`
@@ -195,6 +197,7 @@ impl Op {
             see_other: None,
             conflict: None,
             not_acceptable: None,
+            too_many_requests: None,
             clickhouse: false,
             needs_kek: false,
         }
@@ -253,6 +256,13 @@ impl Op {
 
     fn not_acceptable(mut self, description: &'static str) -> Self {
         self.not_acceptable = Some(description);
+        self
+    }
+
+    /// Mark an operation bounded in how many may run at once: past the bound it
+    /// answers `429` with a `Retry-After` header.
+    fn too_many_requests(mut self, description: &'static str) -> Self {
+        self.too_many_requests = Some(description);
         self
     }
 
@@ -327,6 +337,16 @@ impl Op {
             responses.insert(
                 "406".into(),
                 json!({"$ref": "#/components/responses/Error", "description": description}),
+            );
+        }
+        if let Some(description) = self.too_many_requests {
+            responses.insert(
+                "429".into(),
+                json!({
+                    "$ref": "#/components/responses/Error",
+                    "description": description,
+                    "headers": {"Retry-After": {"schema": {"type": "integer"}}}
+                }),
             );
         }
         if self.needs_kek {
@@ -2411,7 +2431,10 @@ fn operations() -> Vec<Op> {
             Op::get(
                 "/api/v1/analytics/invocations/export",
                 "exportInvocations",
-                "Stream the request log as CSV, metadata only (never bodies or error text), under the same row scoping as the JSON list; `limit` and `cursor` are ignored",
+                "Stream the request log as CSV, metadata only (never bodies or error text), under the same row scoping as the JSON list; `limit` and `cursor` are ignored. An export is bounded in rows and in time: past either the body ends in an error rather than passing for a complete file",
+            )
+            .too_many_requests(
+                "too many request log exports are running, in this process or for this caller; wait for `Retry-After` seconds",
             )
             .clickhouse_read()
             .query(INVOCATIONS_QUERY),

@@ -418,7 +418,7 @@ mod scoped {
     /// [`NO_RANK`]'s opposite: no membership reaches it.
     fn floor(requirement: Requirement) -> i8 {
         match requirement.authority {
-            Authority::Role(role) => role_rank(role) as i8,
+            Authority::Role(role) | Authority::RoleOrDeployment(role, _) => role_rank(role) as i8,
             Authority::Authenticated => 0,
             Authority::Superadmin | Authority::Deployment(_) => i8::MAX,
         }

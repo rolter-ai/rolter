@@ -176,7 +176,7 @@
     "sampledLog": {
       "title_one": "The request log keeps about {{numerator}} in {{denominator}} request.",
       "title_other": "The request log keeps about {{numerator}} in {{denominator}} requests.",
-      "figures": "Request counts, spend and tokens here are estimates scaled up from that sample. Averages and percentiles are read from the sample as it is.",
+      "figures": "Request counts, spend and tokens here are estimates scaled up from that sample. Averages are read from the sample as it is; latency percentiles are weighted by the sample.",
       "rows": "This list shows only the sampled requests. A request missing from it was still served.",
       "noneTitle": "The request log keeps no requests.",
       "noneBody": "Nothing new is recorded, so these figures stop growing."

@@ -516,6 +516,14 @@ pub(crate) fn attribution_column(dimension: &str) -> Option<&'static str> {
     }
 }
 
+/// What the dashboard calls an error: a status the caller received that is a
+/// client or server failure (`>= 400`), or `0`, the row of a transport failure
+/// or an exhausted retry that never got a status (#1995, #3294). One spelling
+/// for the LLM Logs `error` filter ([`status_predicate`]) and the error totals
+/// ([`ERRORS`]), so the two screens cannot disagree about how many requests
+/// failed. Parenthesised because it is spliced after `and`.
+pub(crate) const ERROR_STATUS: &str = "(status = 0 or status >= 400)";
+
 /// Map a status filter name to a whitelisted SQL predicate. Anything else is
 /// rejected so it can never be spliced into SQL. `all` applies no filter.
 ///
@@ -527,7 +535,7 @@ pub(crate) fn attribution_column(dimension: &str) -> Option<&'static str> {
 pub(crate) fn status_predicate(status: &str) -> Option<&'static str> {
     match status {
         "all" => Some("1"),
-        "error" => Some("(status = 0 or status >= 400)"),
+        "error" => Some(ERROR_STATUS),
         "success" => Some("status > 0 and status < 400"),
         _ => None,
     }
@@ -795,19 +803,40 @@ async fn summary(
                 {CACHE_HITS} as cache_hit_requests, \
                 {ERRORS} as errors, \
                 round(avg(latency_ms), 1) as avg_latency_ms, \
-                round(quantile(0.95)(latency_ms), 1) as p95_latency_ms \
+                {P95_LATENCY} as p95_latency_ms \
          from request_logs where {WHERE_WINDOW} and {ROW_VISIBLE} and {ROW_FILTERS} \
          format JSON"
     );
     run(ch.query(&sql, &with_access(q.params(), &access)).await)
 }
 
+/// The 95th latency percentile, weighted by `sample_weight` (#3355): each kept row
+/// stands for that many real requests, so a log whose sample rate changed
+/// inside the window, or a route sampled at another rate than the rest, does not
+/// over-represent its lightly sampled traffic.
+///
+/// `quantileExactWeighted` and not `quantileWeighted` or
+/// `quantileTimingWeighted`: ClickHouse's weighted quantiles take an unsigned
+/// integer weight, and `sample_weight` is a `Float64` (`1 / sample_rate`), so it
+/// is scaled to thousandths and rounded, a constant factor that moves no
+/// quantile and keeps three digits of a weight like `3.333`. The timing variant
+/// is out because it clamps every value over 30 000 ms, and a slow completion
+/// legitimately runs longer. The exact variant keeps one counter per distinct
+/// latency, which a column of millisecond integers bounds. The result is
+/// rounded like the other latency figures, and is `0` for no rows.
+pub(crate) const P95_LATENCY: &str =
+    "round(quantileExactWeighted(0.95)(latency_ms, toUInt64(round(sample_weight * 1000))), 1)";
+/// The median counterpart of [`P95_LATENCY`].
+pub(crate) const P50_LATENCY: &str =
+    "round(quantileExactWeighted(0.5)(latency_ms, toUInt64(round(sample_weight * 1000))), 1)";
+
 // Request-log sampling keeps 1 row in `1 / sample_rate`, and each stored row
 // carries `sample_weight` (clickhouse/014) = how many real requests it stands
 // for. Counts and sums are scaled by it so a sampled log does not under-report
-// traffic or spend (#2239); averages and percentiles are left alone, since a
-// uniform sample already estimates them. Rows written unsampled, or before the
-// column existed, weigh 1.
+// traffic or spend (#2239). Averages are left alone, since a uniform sample
+// already estimates them; percentiles are weighted (#3355), see
+// `P95_LATENCY`. Rows written unsampled, or before the column existed,
+// weigh 1.
 pub(crate) const REQUESTS: &str = "round(sum(sample_weight))";
 pub(crate) const TOKENS: &str = "round(sum(total_tokens * sample_weight))";
 pub(crate) const PROMPT_TOKENS: &str = "round(sum(prompt_tokens * sample_weight))";
@@ -838,7 +867,10 @@ pub(crate) const USAGE_UNKNOWN: &str = "round(sumIf(sample_weight, usage_unknown
 /// dashboard's cache-hit rate, over `requests`. `cache_hit` is not a select
 /// alias in any read that uses this, so it needs no table qualifier.
 pub(crate) const CACHE_HITS: &str = "round(sumIf(sample_weight, cache_hit = 1))";
-pub(crate) const ERRORS: &str = "round(sumIf(sample_weight, status >= 400))";
+/// Requests that ended in an error, by the same rule as the LLM Logs `error`
+/// filter ([`ERROR_STATUS`]): status `0` counts, so a request that never got an
+/// answer is in the error totals and rates (#3294).
+pub(crate) const ERRORS: &str = "round(sumIf(sample_weight, (status = 0 or status >= 400)))";
 
 /// Per-bucket time series of requests, tokens and cost.
 async fn timeseries(
@@ -889,8 +921,8 @@ async fn by_model(
                 {WITHHELD_COST} as withheld_cost, \
                 {USAGE_UNKNOWN} as usage_unknown_requests, \
                 {ERRORS} as errors, \
-                round(quantile(0.5)(latency_ms), 1) as p50_latency_ms, \
-                round(quantile(0.95)(latency_ms), 1) as p95_latency_ms \
+                {P50_LATENCY} as p50_latency_ms, \
+                {P95_LATENCY} as p95_latency_ms \
          from request_logs where {WHERE_WINDOW} and {ROW_VISIBLE} and {ROW_FILTERS} \
          group by model order by cost_usd desc format JSON"
     );
@@ -927,8 +959,8 @@ async fn by_variant(
                 {COST} as cost_usd, \
                 {UNPRICED} as unpriced_requests, \
                 {ERRORS} as errors, \
-                round(quantile(0.5)(latency_ms), 1) as p50_latency_ms, \
-                round(quantile(0.95)(latency_ms), 1) as p95_latency_ms \
+                {P50_LATENCY} as p50_latency_ms, \
+                {P95_LATENCY} as p95_latency_ms \
          from request_logs where {WHERE_WINDOW} and {ROW_VISIBLE} and {ROW_FILTERS} \
          group by request_logs.model, request_logs.variant \
          order by requests desc, model, variant format JSON"
@@ -1790,7 +1822,28 @@ mod tests {
         assert!(!handlers.contains("count()"), "an unweighted count()");
         assert!(!handlers.contains("countIf("), "an unweighted countIf()");
         assert!(handlers.contains("avg(latency_ms)"));
-        assert!(handlers.contains("quantile(0.95)(latency_ms)"));
+        // the percentiles are weighted too (#3355), by an integer weight
+        assert!(handlers.contains("{P95_LATENCY}"));
+        assert!(!handlers.contains("quantile(0.95)(latency_ms)"));
+        for expr in [P50_LATENCY, P95_LATENCY] {
+            assert!(
+                expr.contains("quantileExactWeighted(") && expr.contains("toUInt64("),
+                "{expr}"
+            );
+            assert!(expr.contains("sample_weight"), "{expr}");
+            // the timing variant clamps at 30 000 ms, below a slow completion
+            assert!(!expr.contains("Timing"), "{expr}");
+        }
+    }
+
+    #[test]
+    fn the_error_totals_count_the_same_statuses_as_the_error_filter() {
+        // a request that never got a status (0) is an error in the list and in
+        // the totals, or the screens disagree about how many requests failed
+        assert_eq!(
+            ERRORS,
+            format!("round(sumIf(sample_weight, {ERROR_STATUS}))")
+        );
     }
 
     #[test]
@@ -2476,10 +2529,8 @@ mod tests {
     #[test]
     fn status_predicate_whitelists() {
         assert_eq!(status_predicate("all"), Some("1"));
-        assert_eq!(
-            status_predicate("error"),
-            Some("(status = 0 or status >= 400)")
-        );
+        assert_eq!(status_predicate("error"), Some(ERROR_STATUS));
+        assert_eq!(ERROR_STATUS, "(status = 0 or status >= 400)");
         assert_eq!(
             status_predicate("success"),
             Some("status > 0 and status < 400")
