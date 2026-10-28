@@ -243,8 +243,6 @@ async fn erasure_is_a_superadmins_and_validates_its_input() {
     for body in [
         json!({"scope": scope, "reason": "  "}),
         json!({"scope": {"kind": "request", "request_id": "", "org_id": uuid::Uuid::new_v4()}, "reason": "r"}),
-        // a user who created no key that still exists has no rows to find
-        json!({"scope": {"kind": "user", "id": member}, "reason": "r"}),
     ] {
         let response = client
             .post(&url)
@@ -256,4 +254,14 @@ async fn erasure_is_a_superadmins_and_validates_its_input() {
         assert_eq!(response.status(), 400, "{body}");
     }
     assert!(audit_actions(&pool).await.is_empty());
+    // a user who created no key that still exists is not refused: the MCP log
+    // carries their id itself, so there are rows to find (#3278)
+    let response = client
+        .post(&url)
+        .bearer_auth(admin_token())
+        .json(&json!({"scope": {"kind": "user", "id": member}, "reason": "r"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 202);
 }
