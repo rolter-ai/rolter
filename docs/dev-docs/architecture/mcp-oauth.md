@@ -164,6 +164,21 @@ after the caller is authenticated and before anything is forwarded.
   refused whole if any call in it is. A `tools/call` notification (no id) is
   refused too. A body that is not JSON is refused `400`
   `mcp_request_unreadable`; an empty body is not a call and is forwarded.
+- **Repeated keys (#3298).** `serde_json` keeps the last copy of a repeated key
+  and another parser may keep the first, so the tool the policy judged could
+  differ from the tool that runs. A message, or its `params`, that repeats a key
+  is refused `403` `mcp_tool_denied` (`Verdict::Ambiguous`) whatever the
+  failure policy says; keys inside tool `arguments` are the tool's own data and
+  are not checked.
+- **`tools/list` (#3297).** A reply to a `tools/list` request is narrowed by the
+  same `judge` rule (`mcp_list_filter.rs`), matched to its request by JSON-RPC
+  id, so a client is not shown a tool it would be refused. It only happens when a
+  rule applies to the server and the request holds a `tools/list`; everything
+  else streams through unread. A JSON reply is buffered (16 MiB at most), an SSE
+  reply is rewritten event by event so a stream is not held back, and each page
+  of a paginated listing is filtered on its own with its `nextCursor` kept. The
+  request goes out with `Accept-Encoding: identity`; a reply that is still
+  encoded, too large or not JSON is refused `502` rather than forwarded unfiltered.
 - **Logging.** Each refused call becomes an `auth_denied` row in
   `mcp_tool_call_logs` with the tool name and the caller's attribution, via
   `PendingCall::from_request`; the closed status set is unchanged.

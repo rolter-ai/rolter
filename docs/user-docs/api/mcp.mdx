@@ -157,7 +157,10 @@ be read as JSON-RPC is refused with `400` (`mcp_request_unreadable`) rather than
 forwarded unchecked. A body that repeats a key in a message or in its `params`
 (two `name` entries, say) is refused with `403` `mcp_tool_denied` whatever the
 failure policy says, because parsers disagree about which copy wins and the
-tool judged could then differ from the tool that runs. Disabling or deleting a group lifts its restriction on the
+tool judged could then differ from the tool that runs. A `tools/list` reply through the proxy is narrowed by the same rules, so a client
+is shown only the tools it may call; a paginated listing is filtered page by page
+and a page can come back shorter than the server's page size. Disabling or
+deleting a group lifts its restriction on the
 next snapshot.
 
 MCP Settings holds organization defaults, and the proxy applies them on every

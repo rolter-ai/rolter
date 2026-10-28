@@ -26,6 +26,9 @@
 //! per-key or per-project assignment of a group yet, so "the caller's effective
 //! tool groups" is the organization's enabled set.
 //!
+//! A `tools/list` reply is narrowed by the same rule ([`list_filter`]), so a
+//! client is not shown a tool it would be refused (#3297).
+//!
 //! The request body is parsed in full whenever the rule applies, with no
 //! substring shortcut: JSON lets `tools/call` be written with an escaped slash
 //! or a `\u` escape, so a byte search is a bypass here even though it is a fine
@@ -40,6 +43,7 @@ use serde_json::{Map, Value};
 
 use rolter_core::McpServerConfig;
 
+use crate::mcp_list_filter::ListFilter;
 use crate::state::Snapshot;
 
 /// Why a `tools/call` was refused.
@@ -141,18 +145,48 @@ impl<'a> Rules<'a> {
 
     /// Judge one tool name.
     fn judge(&self, tool: Option<&str>) -> Option<Denial> {
-        if let Some(allowed) = self.governed {
-            if !tool.is_some_and(|tool| allowed.contains(tool)) {
-                return Some(Denial::NotInGroup);
-            }
-        }
-        if let Some(declared) = self.declared {
-            if !tool.is_some_and(|tool| declared.iter().any(|name| name == tool)) {
-                return Some(Denial::Undeclared);
-            }
-        }
-        None
+        judge(self.governed, self.declared, tool)
     }
+}
+
+/// Judge one tool name against a server's groups and manifest. A `tools/call`
+/// and the entries of a `tools/list` reply are judged by this one rule, so what
+/// a client is shown is what it may call.
+pub(crate) fn judge(
+    governed: Option<&HashSet<String>>,
+    declared: Option<&[String]>,
+    tool: Option<&str>,
+) -> Option<Denial> {
+    if let Some(allowed) = governed {
+        if !tool.is_some_and(|tool| allowed.contains(tool)) {
+            return Some(Denial::NotInGroup);
+        }
+    }
+    if let Some(declared) = declared {
+        if !tool.is_some_and(|tool| declared.iter().any(|name| name == tool)) {
+            return Some(Denial::Undeclared);
+        }
+    }
+    None
+}
+
+/// The filter a `tools/list` reply from `server` must pass through, or `None`
+/// when the request holds no `tools/list` or no rule applies to the server and
+/// the reply can be forwarded untouched (#3297).
+pub(crate) fn list_filter(
+    snapshot: &Snapshot,
+    server: &McpServerConfig,
+    body: &[u8],
+) -> Option<ListFilter> {
+    let rules = Rules::of(snapshot, server);
+    if !rules.any() || body.is_empty() {
+        return None;
+    }
+    ListFilter::new(
+        rules.governed.cloned(),
+        rules.declared.map(<[String]>::to_vec),
+        body,
+    )
 }
 
 /// The `tools/call` requests in a JSON-RPC body, which is one message or a
