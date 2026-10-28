@@ -4123,10 +4123,13 @@ impl Blocked {
 /// The `(variant, target)` pairs an attempt walks, in order: `primary` first,
 /// then the rest in declared order, each variant's targets flattened with the
 /// one its balancer picks from the eligible targets in the lead.
+/// The variant keys are `variant_keys`, one per variant in declared order,
+/// built once by the caller and reused by its forward loop.
+#[allow(clippy::too_many_arguments)]
 fn variant_candidates(
     state: &AppState,
     entry: &crate::state::RouteEntry,
-    model: &str,
+    variant_keys: &[String],
     ctx: &RouteContext<'_>,
     primary: usize,
     key_meta: Option<&KeyMeta>,
@@ -4136,9 +4139,8 @@ fn variant_candidates(
     let mut candidates: Vec<(usize, usize)> =
         Vec::with_capacity(route.variants.iter().map(|v| v.targets.len()).sum());
     for vi in route.fallback_order(primary) {
-        if let Some(v) = route.variants.get(vi) {
-            let key = variant_key(model, &v.name);
-            let mut loads = state.loads.snapshot(&key, v.targets.len());
+        if let (Some(v), Some(key)) = (route.variants.get(vi), variant_keys.get(vi)) {
+            let mut loads = state.loads.snapshot(key, v.targets.len());
             for (i, target) in v.targets.iter().enumerate() {
                 if let Some(l) = loads.get_mut(i) {
                     *l = l.saturating_add(state.upstream_metrics.queue_depth(&target.provider));
@@ -4150,7 +4152,7 @@ fn variant_candidates(
                 &state.cooldowns,
                 &state.health,
                 &state.breaker,
-                &key,
+                key,
                 cd_enabled,
                 v.targets.len(),
                 v.targets.iter().map(|t| t.provider.as_str()),
@@ -4205,7 +4207,23 @@ async fn forward_variants(
     let cd_enabled = cooldown.enabled();
 
     let primary = route.sample_variant(jitter(started)).unwrap_or(0);
-    let candidates = variant_candidates(state, entry, model, ctx, primary, key_meta, cd_enabled);
+    // each variant's registry key, built once per request for the candidate
+    // list and the loop below rather than once per candidate per attempt
+    // (#3249)
+    let variant_keys: Vec<String> = route
+        .variants
+        .iter()
+        .map(|v| variant_key(model, &v.name))
+        .collect();
+    let candidates = variant_candidates(
+        state,
+        entry,
+        &variant_keys,
+        ctx,
+        primary,
+        key_meta,
+        cd_enabled,
+    );
 
     let mut out = ForwardOutcome {
         outcome: None,
@@ -4221,25 +4239,11 @@ async fn forward_variants(
         fallback_reason: String::new(),
     };
     let mut tried: Vec<usize> = Vec::with_capacity(candidates.len());
-    // each variant's registry key, built once per request rather than once per
-    // candidate per attempt (#3249)
-    let variant_keys: Vec<String> = route
-        .variants
-        .iter()
-        .map(|v| variant_key(model, &v.name))
-        .collect();
-    // each variant's blocked targets, read from the registries at most once
-    // per attempt and only for a variant a candidate is asked about
-    let mut blocked: Vec<std::cell::OnceCell<Blocked>> =
-        route.variants.iter().map(|_| Default::default()).collect();
     // the failure the last attempt ended with, which decides which targets
     // may follow it and is what the row records as the fallback reason (#1584)
     let mut last_failure: Option<Failure> = None;
 
     for attempt in 0..=max_retries {
-        for cell in &mut blocked {
-            cell.take();
-        }
         let open = |ci: &usize| {
             !tried.contains(ci) && candidate_admits(route, candidates[*ci], last_failure.as_ref())
         };
@@ -4247,10 +4251,16 @@ async fn forward_variants(
         let fresh = {
             // a candidate is skippable when its target is parked, its provider is
             // unhealthy, or its breaker is open (or probing) — keyed per variant
+            // the candidates come grouped by variant, so one slot holding the
+            // variant last read means each variant's registries are read at
+            // most once per attempt, with nothing allocated to hold them
+            let read: std::cell::RefCell<Option<(usize, Blocked)>> = Default::default();
             let skip = |&(vi, ti): &(usize, usize)| {
-                let v = &route.variants[vi];
-                blocked[vi]
-                    .get_or_init(|| {
+                let mut read = read.borrow_mut();
+                if read.as_ref().is_none_or(|(held, _)| *held != vi) {
+                    let v = &route.variants[vi];
+                    *read = Some((
+                        vi,
                         Blocked::read(
                             &state.cooldowns,
                             &state.health,
@@ -7033,7 +7043,8 @@ mod tests {
             .map(|ti| state.loads.begin(&key, ti))
             .collect();
         assert_eq!(state.loads.snapshot(&key, 3), vec![10, 3, 0]);
-        let candidates = variant_candidates(&state, &entry, "m", &ctx, 0, None, false);
+        let keys = [key.clone()];
+        let candidates = variant_candidates(&state, &entry, &keys, &ctx, 0, None, false);
         assert_eq!(
             candidates.first(),
             Some(&(0, 1)),
