@@ -55,6 +55,15 @@ fn prompt_of(body: &Value) -> String {
     }
 }
 
+/// The value of one text field of a multipart body.
+fn form_field(body: &str, name: &str) -> String {
+    let marker = format!("name=\"{name}\"\r\n\r\n");
+    body.split_once(&marker)
+        .and_then(|(_, rest)| rest.split_once("\r\n"))
+        .map(|(value, _)| value.to_string())
+        .unwrap_or_default()
+}
+
 fn sse(events: Vec<String>) -> Response {
     Response::builder()
         .header(header::CONTENT_TYPE, "text/event-stream")
@@ -128,6 +137,36 @@ impl Upstream {
                         }
                     }),
                 ),
+        )
+        .await
+    }
+
+    /// An upstream for `/v1/audio/transcriptions` and `/v1/audio/translations`
+    /// that "transcribes" the request's `prompt` field, as plain text when the
+    /// caller asked for `response_format=text` and as `verbose_json` otherwise.
+    async fn serve_audio(&self) -> SocketAddr {
+        let transcribe = |upstream: Upstream| {
+            post(move |body: String| {
+                let upstream = upstream.clone();
+                async move {
+                    upstream.calls.fetch_add(1, SeqCst);
+                    let transcript = form_field(&body, "prompt");
+                    if form_field(&body, "response_format") == "text" {
+                        return ([(header::CONTENT_TYPE, "text/plain")], transcript)
+                            .into_response();
+                    }
+                    Json(json!({
+                        "task": "transcribe", "duration": 60.0, "text": transcript,
+                        "segments": [{"id": 0, "start": 0.0, "end": 60.0, "text": transcript}]
+                    }))
+                    .into_response()
+                }
+            })
+        };
+        serve(
+            Router::new()
+                .route("/v1/audio/transcriptions", transcribe(self.clone()))
+                .route("/v1/audio/translations", transcribe(self.clone())),
         )
         .await
     }
@@ -527,4 +566,125 @@ async fn the_most_specific_policy_replaces_the_broader_one() {
     config.semantic_guards.policies.pop();
     let org = send(&config, Dialect::OpenAi, "an attack", false, Some(KEY)).await;
     assert_eq!(org.status, 400, "{}", org.body);
+}
+
+/// A transcription of `spoken` to `path`, as `response_format` (#3331).
+async fn transcribe(config: &GatewayConfig, path: &str, spoken: &str, format: &str) -> Run {
+    let state = rolter_gateway::AppState::with_logging(config, None);
+    let gw = serve(rolter_gateway::build_router(
+        state,
+        "/metrics",
+        32 * 1024 * 1024,
+    ))
+    .await;
+    let boundary = "GUARDBOUND";
+    let body = format!(
+        "--{b}\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\ntest-model\r\n\
+         --{b}\r\nContent-Disposition: form-data; name=\"prompt\"\r\n\r\n{spoken}\r\n\
+         --{b}\r\nContent-Disposition: form-data; name=\"response_format\"\r\n\r\n{format}\r\n\
+         --{b}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.wav\"\r\n\
+         Content-Type: audio/wav\r\n\r\nRIFFxxxxWAVE\r\n--{b}--\r\n",
+        b = boundary
+    );
+    let response = reqwest::Client::new()
+        .post(format!("http://{gw}{path}"))
+        .header(
+            header::CONTENT_TYPE,
+            format!("multipart/form-data; boundary={boundary}"),
+        )
+        .body(body)
+        .send()
+        .await
+        .unwrap();
+    Run {
+        status: response.status().as_u16(),
+        body: response.text().await.unwrap(),
+    }
+}
+
+#[tokio::test]
+async fn a_transcript_is_judged_by_the_response_stage_in_every_format() {
+    let upstream = Upstream::default();
+    let up = upstream.serve_audio().await;
+    let envelopes = Arc::default();
+    let url = provider(Arc::clone(&envelopes)).await;
+    let mut config = config(up, ProviderKind::OpenaiCompatible);
+    config.semantic_guards.providers = vec![guard(
+        "tox",
+        &url,
+        WebhookStage::PostCall,
+        FailureMode::FailOpen,
+    )];
+    config.semantic_guards.policies = vec![policy("all", PolicyScope::Deployment, None, &["tox"])];
+
+    for path in ["/v1/audio/transcriptions", "/v1/audio/translations"] {
+        for format in ["verbose_json", "text"] {
+            let withheld = transcribe(&config, path, "something violent", format).await;
+            assert_eq!(withheld.status, 403, "{path} {format} {}", withheld.body);
+            assert_eq!(withheld.code(), "guardrail_blocked");
+            assert!(
+                !withheld.body.contains("something violent"),
+                "the transcript must not leak: {}",
+                withheld.body
+            );
+
+            let delivered = transcribe(&config, path, "a calm answer", format).await;
+            assert_eq!(delivered.status, 200, "{path} {format} {}", delivered.body);
+            if format == "text" {
+                // still the plain text the caller asked for
+                assert_eq!(delivered.body, "a calm answer");
+                let shown = envelopes.lock().last().cloned().unwrap();
+                assert_eq!(shown["content"], json!({"text": "a calm answer"}));
+            } else {
+                let body: Value = serde_json::from_str(&delivered.body).unwrap();
+                assert_eq!(body["text"], "a calm answer");
+                assert_eq!(body["duration"], 60.0);
+            }
+        }
+    }
+    let seen = envelopes.lock().clone();
+    assert!(
+        seen.iter()
+            .all(|e| e["policy"] == "all" && e["direction"] == "response"),
+        "only the response stage judges a transcript: {seen:?}"
+    );
+}
+
+#[tokio::test]
+async fn the_built_in_output_rules_mask_and_withhold_a_transcript() {
+    use rolter_core::{BuiltinRule, GuardAction, GuardStage, GuardrailRule, GuardrailsConfig};
+    let upstream = Upstream::default();
+    let up = upstream.serve_audio().await;
+    let rule = |name: &str, builtin, action| GuardrailRule {
+        name: name.to_string(),
+        builtin: Some(builtin),
+        pattern: None,
+        stage: GuardStage::PostCall,
+        action,
+        replacement: None,
+        include_system: false,
+    };
+    let mut config = config(up, ProviderKind::OpenaiCompatible);
+    config.guardrails = GuardrailsConfig {
+        enabled: true,
+        rules: vec![
+            rule("email", BuiltinRule::Email, GuardAction::Redact),
+            rule("card", BuiltinRule::PaymentCard, GuardAction::Block),
+        ],
+        ..Default::default()
+    };
+    let path = "/v1/audio/transcriptions";
+
+    let masked = transcribe(&config, path, "write to ops@corp.com", "text").await;
+    assert_eq!(masked.status, 200, "{}", masked.body);
+    assert_eq!(masked.body, "write to [REDACTED:EMAIL]");
+
+    let masked = transcribe(&config, path, "write to ops@corp.com", "verbose_json").await;
+    assert_eq!(masked.status, 200, "{}", masked.body);
+    assert!(!masked.body.contains("ops@corp.com"), "{}", masked.body);
+
+    let withheld = transcribe(&config, path, "card 4111 1111 1111 1111", "text").await;
+    assert_eq!(withheld.status, 403, "{}", withheld.body);
+    assert_eq!(withheld.code(), "guardrail_blocked");
+    assert!(!withheld.body.contains("4111"), "{}", withheld.body);
 }

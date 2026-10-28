@@ -330,6 +330,11 @@ pub struct RequestLog {
     /// ends. Not a column: the cost it produces is
     #[serde(skip)]
     pub unit_basis: crate::unit_billing::UnitBasis,
+    /// the units read from the upstream body before a guardrail, plugin or
+    /// sanitizer rewrote or withheld it, billed instead of what the delivered
+    /// body states (#3331). `None` reads them from the forwarded body
+    #[serde(skip)]
+    pub billed_units: Option<rolter_core::BilledUnits>,
     /// raw bodies are persisted in the short-retention `request_payloads`
     /// table, never in the primary metadata table
     #[serde(skip)]
@@ -404,6 +409,7 @@ impl Default for RequestLog {
             plugin_events: Vec::new(),
             param_adjustments: rolter_proxy::ParamAdjustments::default(),
             unit_basis: crate::unit_billing::UnitBasis::Tokens,
+            billed_units: None,
             request_payload: String::new(),
             response_payload: String::new(),
             capture_payloads: false,
@@ -1134,7 +1140,9 @@ impl UsageLoggingStream {
         // not left its usage unknown when the count is read and has a rate
         // (#2937)
         let units = if upstream_answered {
-            log.unit_basis.units(&self.buf)
+            log.billed_units
+                .take()
+                .or_else(|| log.unit_basis.units(&self.buf))
         } else {
             None
         };

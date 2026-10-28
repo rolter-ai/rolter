@@ -2483,6 +2483,7 @@ async fn proxy(
                     semantic: semantic_leg,
                     plugins: post_response_plugins.as_ref(),
                     pii: pii_leg.as_ref(),
+                    transcript: false,
                 },
                 pii_stream.take(),
             )
@@ -2553,6 +2554,7 @@ async fn proxy(
                             semantic: semantic_leg,
                             plugins: post_response_plugins.as_ref(),
                             pii: pii_leg.as_ref(),
+                            transcript: false,
                         },
                         pii_stream.take(),
                     )
@@ -3212,6 +3214,7 @@ async fn proxy(
                                 semantic: semantic_leg,
                                 plugins: post_response_plugins.as_ref(),
                                 pii: pii_leg.as_ref(),
+                                transcript: false,
                             };
                             let status_code =
                                 StatusCode::from_u16(status).unwrap_or(StatusCode::OK);
@@ -3280,6 +3283,7 @@ async fn proxy(
                 pii_leg.as_ref(),
                 semantic_leg,
                 pii_stream.take(),
+                false,
             )
             .await
         }
@@ -3530,6 +3534,82 @@ async fn proxy_multipart(
     if let Some(refused) = unpriced_admission(&state, &snap, &scope, &model, price.is_some()) {
         return refuse.log(refused);
     }
+
+    // the response stage of the guardrails, on the transcript (#3331). the
+    // request is audio, which no request-stage rule, provider, plugin or
+    // sanitizer reads, so those do not run; the answer is text, small and never
+    // a stream, so everything that judges a chat completion judges it, in the
+    // same order: the built-in post_call rules, the semantic policy's
+    // post_call providers, the post_response plugins, then the sanitizer's
+    // response leg. no placeholder went upstream, so nothing is restored
+    let output_guard = crate::guardrails::OutputGuard::resolve(
+        &snap.guardrails,
+        &entry.guardrails,
+        &state.metrics,
+        path,
+    );
+    let semantic_guard = snap
+        .semantic_guards
+        .resolve(&crate::semantic_guards::policy_request(
+            &scope,
+            &entry.route.model,
+        ))
+        .filter(|policy| policy.runs_at(rolter_core::WebhookStage::PostCall))
+        .map(|policy| crate::semantic_guards::SemanticGuard {
+            guards: &snap.semantic_guards,
+            policy,
+            metrics: &state.metrics,
+            egress: &state.side_client,
+            model: model.clone(),
+            route: entry.route.model.clone(),
+            trace_id: trace_id.to_string(),
+            tenant: plugin_tenant(&scope),
+        });
+    let semantic_leg = semantic_guard.as_ref().map(|guard| SemanticLeg {
+        guard,
+        stream: false,
+    });
+    let post_response_plugin_list = snap.plugins.for_stage(
+        rolter_core::PluginStage::PostResponse,
+        &scope.org,
+        (!scope.project.is_empty()).then_some(scope.project.as_str()),
+    );
+    let post_response_plugins = (!post_response_plugin_list.is_empty()).then(|| {
+        crate::plugin_dispatch::PostResponsePlugins {
+            plugins: post_response_plugin_list,
+            metrics: &state.metrics,
+            egress: &state.side_client,
+            model: model.clone(),
+            route: entry.route.model.clone(),
+            trace_id: trace_id.clone(),
+            tenant: plugin_tenant(&scope),
+        }
+    });
+    // the log row takes these before the response leg runs
+    let pii_model = model.clone();
+    let pii_trace_id = trace_id.clone();
+    let pii_scope = rolter_core::TokenScope {
+        org: scope.org.clone(),
+        team: scope.team.clone(),
+        project: scope.project.clone(),
+        route: entry.route.model.clone(),
+    };
+    let pii_leg = snap
+        .pii_sanitizer
+        .sanitizes_response()
+        .then(|| PiiResponseLeg {
+            state: &state,
+            config: &snap.pii_sanitizer,
+            model: &pii_model,
+            route: &entry.route.model,
+            trace_id: &pii_trace_id,
+            tenant: plugin_tenant(&scope),
+            scope: &pii_scope,
+            ticket: None,
+            will_restore: false,
+            capture: payload_capture_enabled(&snap.logging.payload_capture, &model, &scope.key),
+        });
+
     let recorder = SpendRecorder::new(state.budgets.clone(), snap.budgets.clone(), scope);
 
     let token_ids = parse_vllm_token_ids(&headers);
@@ -3889,12 +3969,13 @@ async fn proxy_multipart(
                 token_recorder,
                 inflight_guard,
                 None,
+                output_guard.as_ref(),
                 None,
+                post_response_plugins,
+                pii_leg.as_ref(),
+                semantic_leg,
                 None,
-                None,
-                None,
-                None,
-                None,
+                true,
             )
             .await
         }
@@ -4738,6 +4819,7 @@ async fn stream_response(
     pii: Option<&PiiResponseLeg<'_>>,
     semantic: Option<SemanticLeg<'_, '_>>,
     pii_stream: Option<crate::pii_stream::StreamRestore>,
+    transcript: bool,
 ) -> Response {
     let status =
         StatusCode::from_u16(response.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
@@ -4823,10 +4905,14 @@ async fn stream_response(
                     semantic,
                     plugins: post_response_plugins.as_ref(),
                     pii,
+                    transcript,
                 };
+                let mut log = log;
+                // read before the policy too: a transcript's audio duration is
+                // billed whether it is rewritten, withheld or delivered (#3331)
+                log.billed_units = log.unit_basis.units(&bytes);
                 let mut post_events = Vec::new();
                 let applied = policy.apply(status, &mut post_events, bytes).await;
-                let mut log = log;
                 log.plugin_events.extend(post_events);
                 let (bytes, pre_restore) = match applied {
                     Delivery::Send { body, pre_restore } => (body, pre_restore),
@@ -5595,6 +5681,9 @@ struct DeliveryPolicy<'p, 'a> {
     semantic: Option<SemanticLeg<'p, 'a>>,
     plugins: Option<&'p crate::plugin_dispatch::PostResponsePlugins<'a>>,
     pii: Option<&'p PiiResponseLeg<'a>>,
+    /// the body is an audio transcription or translation, which may come back
+    /// as plain text or subtitles rather than JSON (#3331)
+    transcript: bool,
 }
 
 impl DeliveryPolicy<'_, '_> {
@@ -5607,6 +5696,39 @@ impl DeliveryPolicy<'_, '_> {
                 pre_restore: None,
             };
         }
+        // a transcript answered as `text`, `srt` or `vtt` is no JSON object, so
+        // every leg below is shown it as `{"text": …}` and the body delivered is
+        // its text again. one that is not even UTF-8 is nothing a leg could
+        // judge, and is withheld rather than delivered unchecked (#3331)
+        let (bytes, plain_text) = if self.transcript
+            && serde_json::from_slice::<serde_json::Map<String, Value>>(&bytes).is_err()
+        {
+            match std::str::from_utf8(&bytes) {
+                Ok(text) => (
+                    Bytes::from(serde_json::json!({ "text": text }).to_string()),
+                    true,
+                ),
+                Err(_) => {
+                    return Delivery::Refuse {
+                        response: guardrail_output_blocked("unreadable_transcript"),
+                        reason: guardrail_withheld_reason("unreadable_transcript"),
+                    }
+                }
+            }
+        } else {
+            (bytes, false)
+        };
+        match self.finalise(events, bytes).await {
+            Delivery::Send { body, pre_restore } if plain_text => Delivery::Send {
+                body: transcript_text(body),
+                pre_restore: pre_restore.map(transcript_text),
+            },
+            delivery => delivery,
+        }
+    }
+
+    /// Run every leg over a successful body, in order.
+    async fn finalise(&self, events: &mut Vec<String>, bytes: Bytes) -> Delivery {
         let bytes = match self.output {
             Some(guard) => match guard.apply(&bytes) {
                 crate::guardrails::OutputDecision::Unchanged => bytes,
@@ -5663,6 +5785,19 @@ impl DeliveryPolicy<'_, '_> {
                 pre_restore: None,
             },
         }
+    }
+}
+
+/// The text of a plain-text transcript [`DeliveryPolicy::apply`] wrapped as
+/// `{"text": …}`. A leg that replaced the object with one carrying no `text`
+/// string leaves it as the JSON it made.
+fn transcript_text(body: Bytes) -> Bytes {
+    match serde_json::from_slice::<Value>(&body) {
+        Ok(Value::Object(mut object)) => match object.remove("text") {
+            Some(Value::String(text)) => Bytes::from(text),
+            _ => body,
+        },
+        _ => body,
     }
 }
 

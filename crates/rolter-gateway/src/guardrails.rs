@@ -321,6 +321,20 @@ pub fn apply_output(
             }
             scan.field(body, "output_text", false)?;
         }
+        // a transcription or translation: the whole `text`, plus the timed
+        // `segments[].text` and `words[].word` of `verbose_json`, which repeat
+        // it piecewise. a plain-text or subtitle answer reaches here as
+        // `{"text": …}` (#3331)
+        "/v1/audio/transcriptions" | "/v1/audio/translations" => {
+            scan.field(body, "text", false)?;
+            for (list, field) in [("segments", "text"), ("words", "word")] {
+                if let Some(items) = body.get_mut(list).and_then(Value::as_array_mut) {
+                    for item in items {
+                        scan.field(item, field, false)?;
+                    }
+                }
+            }
+        }
         _ => {}
     }
 
@@ -720,6 +734,41 @@ mod tests {
         assert_eq!(
             body["choices"][0]["message"]["content"],
             json!("write to [REDACTED:EMAIL]")
+        );
+    }
+
+    #[test]
+    fn a_transcript_is_masked_in_its_text_segments_and_words() {
+        let g = engine(vec![out(redact("email", BuiltinRule::Email))]);
+        for path in ["/v1/audio/transcriptions", "/v1/audio/translations"] {
+            let mut body = json!({
+                "task": "transcribe",
+                "duration": 3.5,
+                "text": "write to ops@corp.com",
+                "segments": [{"id": 0, "start": 0.0, "end": 3.5, "text": "write to ops@corp.com"}],
+                "words": [{"word": "ops@corp.com", "start": 2.0, "end": 3.5}]
+            });
+            let report = apply_output(&g, &RuleSelection::default(), path, &mut body).unwrap();
+            assert_eq!(report.redactions, 3, "{path}");
+            let text = body.to_string();
+            assert!(!text.contains("ops@corp.com"), "{path}: {text}");
+            // what billing reads is left alone
+            assert_eq!(body["duration"], json!(3.5));
+        }
+    }
+
+    #[test]
+    fn a_blocking_output_rule_withholds_a_transcript() {
+        let g = engine(vec![out(block("card", BuiltinRule::PaymentCard))]);
+        let mut body = json!({"text": "my card is 4111 1111 1111 1111"});
+        assert_eq!(
+            apply_output(
+                &g,
+                &RuleSelection::default(),
+                "/v1/audio/transcriptions",
+                &mut body
+            ),
+            Err("card".to_string())
         );
     }
 
