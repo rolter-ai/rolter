@@ -5974,9 +5974,9 @@ mod tests {
             None,
         );
         let state = AppState::new(&open);
-        for secret in ["sk-new", "sk-old"] {
+        for (which, secret) in [("new", "sk-new"), ("previous", "sk-old")] {
             let resp = list_models(State(state.clone()), bearer(secret)).await;
-            assert_eq!(resp.status(), StatusCode::OK, "{secret}");
+            assert_eq!(resp.status(), StatusCode::OK, "the {which} secret");
         }
         // one key, not two: same identity and same tenant isolation, so a rate
         // limit or budget is not doubled by the second secret
@@ -6010,9 +6010,13 @@ mod tests {
             Some(Utc::now() - chrono::Duration::minutes(1)),
         );
         let state = AppState::new(&config);
-        for secret in ["sk-new", "sk-old"] {
+        for (which, secret) in [("new", "sk-new"), ("previous", "sk-old")] {
             let resp = list_models(State(state.clone()), bearer(secret)).await;
-            assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "{secret}");
+            assert_eq!(
+                resp.status(),
+                StatusCode::UNAUTHORIZED,
+                "the {which} secret"
+            );
         }
     }
 
