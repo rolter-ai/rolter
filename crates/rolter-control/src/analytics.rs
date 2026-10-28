@@ -511,6 +511,14 @@ pub(crate) fn attribution_column(dimension: &str) -> Option<&'static str> {
     }
 }
 
+/// What the dashboard calls an error: a status the caller received that is a
+/// client or server failure (`>= 400`), or `0`, the row of a transport failure
+/// or an exhausted retry that never got a status (#1995, #3294). One spelling
+/// for the LLM Logs `error` filter ([`status_predicate`]) and the error totals
+/// ([`ERRORS`]), so the two screens cannot disagree about how many requests
+/// failed. Parenthesised because it is spliced after `and`.
+pub(crate) const ERROR_STATUS: &str = "(status = 0 or status >= 400)";
+
 /// Map a status filter name to a whitelisted SQL predicate. Anything else is
 /// rejected so it can never be spliced into SQL. `all` applies no filter.
 ///
@@ -522,7 +530,7 @@ pub(crate) fn attribution_column(dimension: &str) -> Option<&'static str> {
 pub(crate) fn status_predicate(status: &str) -> Option<&'static str> {
     match status {
         "all" => Some("1"),
-        "error" => Some("(status = 0 or status >= 400)"),
+        "error" => Some(ERROR_STATUS),
         "success" => Some("status > 0 and status < 400"),
         _ => None,
     }
@@ -825,7 +833,10 @@ pub(crate) const USAGE_UNKNOWN: &str = "round(sumIf(sample_weight, usage_unknown
 /// dashboard's cache-hit rate, over `requests`. `cache_hit` is not a select
 /// alias in any read that uses this, so it needs no table qualifier.
 pub(crate) const CACHE_HITS: &str = "round(sumIf(sample_weight, cache_hit = 1))";
-pub(crate) const ERRORS: &str = "round(sumIf(sample_weight, status >= 400))";
+/// Requests that ended in an error, by the same rule as the LLM Logs `error`
+/// filter ([`ERROR_STATUS`]): status `0` counts, so a request that never got an
+/// answer is in the error totals and rates (#3294).
+pub(crate) const ERRORS: &str = "round(sumIf(sample_weight, (status = 0 or status >= 400)))";
 
 /// Per-bucket time series of requests, tokens and cost.
 async fn timeseries(
@@ -1644,6 +1655,16 @@ mod tests {
     }
 
     #[test]
+    fn the_error_totals_count_the_same_statuses_as_the_error_filter() {
+        // a request that never got a status (0) is an error in the list and in
+        // the totals, or the screens disagree about how many requests failed
+        assert_eq!(
+            ERRORS,
+            format!("round(sumIf(sample_weight, {ERROR_STATUS}))")
+        );
+    }
+
+    #[test]
     fn bucket_expr_whitelists() {
         assert_eq!(bucket_expr("hour"), Some("toStartOfHour(ts, 'UTC')"));
         assert_eq!(bucket_expr("day"), Some("toStartOfDay(ts, 'UTC')"));
@@ -2267,10 +2288,8 @@ mod tests {
     #[test]
     fn status_predicate_whitelists() {
         assert_eq!(status_predicate("all"), Some("1"));
-        assert_eq!(
-            status_predicate("error"),
-            Some("(status = 0 or status >= 400)")
-        );
+        assert_eq!(status_predicate("error"), Some(ERROR_STATUS));
+        assert_eq!(ERROR_STATUS, "(status = 0 or status >= 400)");
         assert_eq!(
             status_predicate("success"),
             Some("status > 0 and status < 400")

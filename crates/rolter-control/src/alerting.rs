@@ -1562,7 +1562,10 @@ fn metric_sql_scoped(signal: &str, window_secs: i32, column: Option<&str>) -> Ap
     let expression = match signal {
         // a ratio of weighted counts: each kept row stands for `sample_weight`
         // real requests, so a rate change inside the window cannot skew it
-        "error_rate" => "if(sum(sample_weight) = 0, 0, sumIf(sample_weight, status >= 500) / sum(sample_weight))".to_string(),
+        // server-side failures: 5xx plus status 0, a request that never got an
+        // answer (#3294). 4xx stays out, it is the caller's own mistake and a
+        // rule on it would page on a client bug
+        "error_rate" => "if(sum(sample_weight) = 0, 0, sumIf(sample_weight, status = 0 or status >= 500) / sum(sample_weight))".to_string(),
         "p95_latency_ms" => "if(count() = 0, 0, quantile(0.95)(latency_ms))".to_string(),
         "spend_velocity" => format!("sum(cost_usd * sample_weight) * 3600 / {window}"),
         "request_volume" => "sum(sample_weight)".to_string(),
@@ -2354,6 +2357,14 @@ mod tests {
         // the health stream is keyed by org alone
         let sql = metric_sql_scoped("provider_health_flaps", 300, Some("org_id")).unwrap();
         assert!(sql.contains("provider_health_events") && sql.contains("org_id = {scope_id"));
+    }
+
+    #[test]
+    fn the_error_rate_counts_server_failures_and_requests_without_a_status() {
+        let sql = metric_sql("error_rate", 300).unwrap();
+        // status 0 never got an answer; a 4xx is the caller's own mistake
+        assert!(sql.contains("status = 0 or status >= 500"), "{sql}");
+        assert!(!sql.contains("status >= 400"), "{sql}");
     }
 
     #[test]

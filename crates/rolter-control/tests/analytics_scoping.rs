@@ -1346,6 +1346,87 @@ async fn summary_reports_weighted_cache_hits_and_an_overall_p95() {
     assert!((100.0..=300.0).contains(&p95), "{p95}");
 }
 
+/// A request that never got a status (`status = 0`) is an error in the totals
+/// and in the LLM Logs `error` filter alike (#3294): the two screens must agree
+/// about how many requests failed.
+#[tokio::test]
+async fn a_status_zero_request_counts_as_an_error_in_totals_and_in_the_error_filter() {
+    let ch = skip_without_stack!();
+    let http = reqwest::Client::new();
+    ensure_schema(&http, &ch).await;
+
+    let db = TestSchema::create(&test_database::url().await.unwrap()).await;
+    let app = rolter_control::test_app_with_clickhouse_and_admin_token(
+        db.pool().clone(),
+        &ch,
+        Some(ADMIN_TOKEN.to_string()),
+    )
+    .await
+    .unwrap();
+    let addr = serve(app).await;
+
+    let model = format!("status0-{}", Uuid::new_v4().simple());
+    let ts = chrono::Utc::now()
+        .format("%Y-%m-%d %H:%M:%S%.3f")
+        .to_string();
+    // a success, a transport failure, a 4xx and a 5xx
+    let rows: Vec<Value> = [200, 0, 429, 502]
+        .iter()
+        .enumerate()
+        .map(|(i, status)| {
+            json!({
+                "ts": ts, "request_id": format!("status0-{i}-{}", Uuid::new_v4().simple()),
+                "model": model, "status": status, "latency_ms": 10,
+            })
+        })
+        .collect();
+    insert_rows(&http, &ch, "request_logs", &rows).await;
+
+    let summary: Value = http
+        .get(format!(
+            "http://{addr}/api/v1/analytics/summary?model={model}"
+        ))
+        .bearer_auth(ADMIN_TOKEN)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(summary["data"][0]["requests"].as_f64(), Some(4.0));
+    assert_eq!(summary["data"][0]["errors"].as_f64(), Some(3.0));
+
+    let by_model: Value = http
+        .get(format!("http://{addr}/api/v1/analytics/by-model"))
+        .bearer_auth(ADMIN_TOKEN)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let row = by_model["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["model"] == model.as_str())
+        .expect("the model has a row");
+    assert_eq!(row["errors"].as_f64(), Some(3.0));
+
+    let listed: Value = http
+        .get(format!(
+            "http://{addr}/api/v1/analytics/invocations?model={model}&status=error&limit=100"
+        ))
+        .bearer_auth(ADMIN_TOKEN)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(listed["data"].as_array().map(Vec::len), Some(3));
+}
+
 /// The invocation list's request ids for `token`, among `request_ids`, for one
 /// query string, sorted.
 async fn invocation_ids(
