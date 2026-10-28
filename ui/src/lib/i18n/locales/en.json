@@ -268,7 +268,6 @@
       "analytics": "analytics",
       "dashboardFigures": "the overview figures",
       "dashboardSpend": "hourly spend",
-      "dashboardTrafficShare": "the traffic share",
       "dashboardByModel": "requests by model",
       "dashboardRecent": "recent requests",
       "savedViews": "your saved views",
@@ -728,9 +727,11 @@
       "hideSteps": "Hide steps"
     },
     "dashboard": {
-      "statRequests": "Requests (24h)",
-      "statSpend": "Spend (24h)",
-      "statAvgLatency": "Avg latency",
+      "statRequests": "Requests",
+      "statSpend": "Spend",
+      "statP95": "p95 latency",
+      "statCacheHit": "Response-cache hit rate",
+      "statFleet": "Gateways",
       "statErrorRate": "Error rate",
       "notMeasured": "—",
       "noRequestsInWindow": "No requests in this window",
@@ -738,6 +739,9 @@
       "withChange": "{{detail}} · {{change}}",
       "errors_one": "{{count}} error",
       "errors_other": "{{count}} errors",
+      "cacheHits_one": "{{count}} response served from the cache",
+      "cacheHits_other": "{{count}} responses served from the cache",
+      "cacheHitsNone": "No response came from the response cache",
       "live": "Live",
       "feed": {
         "loading": "Loading",
@@ -747,15 +751,17 @@
       "spendTitle": "Spend",
       "spendSub": "Hourly gateway spend, {{currency}}",
       "noSpendRecorded": "No spend recorded for this window. Requests were served, but none of them were priced — add pricing for the models in use to see cost here.",
-      "trafficTitle": "Traffic share",
-      "trafficSub": "Requests by model",
       "noTraffic": "No traffic yet.",
       "noMatch": "No requests match these filters in this window.",
-      "sharedRead": "This card reads the same data as {{card}}, which failed to load. Use {{retry}} there.",
-      "requests_one": "request",
-      "requests_other": "requests",
-      "byModelTitle": "Requests by model",
+      "byModelTitle": "By model",
+      "byModelSub": "Requests, p95 latency and spend, busiest first",
+      "byModelMore_one": "+{{count}} more model not shown",
+      "byModelMore_other": "+{{count}} more models not shown",
+      "colRequests": "Requests",
+      "colP95": "p95",
+      "colSpend": "Spend",
       "recentTitle": "Recent requests",
+      "recentAll": "Open in LLM Logs",
       "nothingLogged": "Nothing logged yet.",
       "colTime": "Time",
       "colModel": "Model",
@@ -769,7 +775,44 @@
         "body_other": "They ran against {{count}} models with no price set, so spend below is a floor, not a total. Set prices to include them.",
         "link": "See which models"
       },
+      "withheld": {
+        "title_one": "{{count}} request in this window was billed but its response was withheld.",
+        "title_other": "{{count}} requests in this window were billed but their responses were withheld.",
+        "body": "{{cost}} of the spend above bought answers nobody received: a guardrail or plugin refused to deliver them.",
+        "link": "Show withheld requests"
+      },
+      "usageUnknown": {
+        "title_one": "{{count}} successful request in this window reported no usage.",
+        "title_other": "{{count}} successful requests in this window reported no usage.",
+        "body": "Their tokens and cost are unknown, not zero, so the figures above may be a floor.",
+        "link": "Show requests with unknown usage"
+      },
       "spendChartAria": "Spend, {{window}}",
+      "scope": {
+        "label": "Scope of these figures",
+        "all": "Every request on this deployment",
+        "member": "The requests your roles can read",
+        "filters_one": "{{count}} filter",
+        "filters_other": "{{count}} filters"
+      },
+      "fleet": {
+        "liveUnit": "live",
+        "allCurrent": "All on the latest config",
+        "lagging_one": "{{count}} not on the latest config",
+        "lagging_other": "{{count}} not on the latest config",
+        "stale_one": "{{count}} stale",
+        "stale_other": "{{count}} stale",
+        "none": "No gateway is live",
+        "probeNote": "One gateway checked; the fleet could not be counted",
+        "unknownNote": "The gateway could not be checked",
+        "probe": {
+          "checking": "Checking",
+          "healthy": "Ready",
+          "degraded": "Draining",
+          "down": "Unreachable",
+          "unknown": "Unknown"
+        }
+      },
       "noAnalytics": {
         "title": "Traffic and spend need ClickHouse",
         "body": "This control plane runs without <0>CLICKHOUSE_URL</0>, or is older than the endpoints this screen reads, so it has no traffic to count. Set <0>CLICKHOUSE_URL</0> and restart the control plane: gateways with no address of their own inherit it, and every request they serve from then on is counted here."
@@ -1893,7 +1936,6 @@
       "summary_other": "{{count}} profiles · reusable permission bundles",
       "add": "Add profile",
       "unassigned": "Not assigned to anyone yet",
-      "detailUnavailable": "What this profile carries is unavailable",
       "roleCount_one": "{{count}} custom role",
       "roleCount_other": "{{count}} custom roles",
       "policyNone": "No model or route policy",
@@ -3502,6 +3544,8 @@
       "guardrail": "Guardrail",
       "plugin": "Plugin",
       "unpricedOnly": "Unpriced only",
+      "withheldOnly": "Withheld responses only",
+      "usageUnknownOnly": "Unknown usage only",
       "tokens": "Tokens",
       "tokensInOut": "{{in}} in · {{out}} out",
       "virtualKey": "Virtual key",
@@ -5130,12 +5174,30 @@
       "degraded": "gateway draining",
       "down": "gateway unreachable",
       "unknown": "gateway status unknown",
+      "fleet": {
+        "live_one": "{{count}} gateway live",
+        "live_other": "{{count}} gateways live",
+        "behind_one": "{{lagging}} of {{count}} gateway behind",
+        "behind_other": "{{lagging}} of {{count}} gateways behind",
+        "stale_one": "{{live}} live · {{count}} stale",
+        "stale_other": "{{live}} live · {{count}} stale",
+        "none": "no gateway live"
+      },
       "detail": {
         "checking": "Checking whether the gateway is taking traffic.",
         "healthy": "The control plane reached the gateway, and it is taking traffic.",
         "degraded": "The gateway is draining: it finishes the requests in flight and takes no new ones.",
         "down": "The control plane cannot reach the gateway at ROLTER_GATEWAY_URL.",
-        "unknown": "The gateway could not be checked."
+        "unknown": "The gateway could not be checked.",
+        "fleet": {
+          "healthy_one": "The control plane counts {{count}} live gateway, and it runs the latest config.",
+          "healthy_other": "The control plane counts {{count}} live gateways, and all of them run the latest config.",
+          "behind_one": "{{count}} of {{live}} live gateways has not picked up the latest config yet.",
+          "behind_other": "{{count}} of {{live}} live gateways have not picked up the latest config yet.",
+          "stale_one": "{{count}} gateway stopped polling the control plane in the last 15 minutes: it crashed or lost its connection.",
+          "stale_other": "{{count}} gateways stopped polling the control plane in the last 15 minutes: they crashed or lost their connection.",
+          "none": "No gateway has polled the control plane in the last minute."
+        }
       },
       "checkedAt": "Checked at {{time}}.",
       "lastAnswerAt": "Last answer at {{time}}; the latest check failed."

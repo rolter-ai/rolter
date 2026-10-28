@@ -97,3 +97,22 @@ export const NoComparison: Story = {
     await expect(delta.querySelector("svg")).toBeNull();
   },
 };
+
+/**
+ * A state that is degraded but still serving reads in the warning text colour,
+ * the amber the header's gateway pill uses, and not in the danger red (#1978).
+ */
+export const Warning: Story = {
+  args: {
+    label: "Gateways",
+    value: "3",
+    unit: "live",
+    delta: "1 not on the latest config",
+    tone: "warning",
+  },
+  play: async ({ canvasElement }) => {
+    const delta = deltaOf(canvasElement, "1 not on the latest config");
+    await expect(colorOf(delta)).toBe(resolveColorToken("--status-warning-text"));
+    await expect(colorOf(delta)).not.toBe(resolveColorToken(DANGER));
+  },
+};

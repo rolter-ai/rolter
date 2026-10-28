@@ -86,6 +86,7 @@
 - [Dashboard one-time secrets](development/secret-reveal.md)
 - [Dashboard capability gating](development/rbac-gating.md)
 - [Dashboard navigation rail](development/dashboard-navigation.md)
+- [Dashboard home](development/dashboard-home.md)
 - [Dashboard theme](development/dashboard-theme.md)
 - [Dashboard design context for agents (impeccable)](development/impeccable.md)
 - [Dashboard code highlighting](development/highlighting.md)
