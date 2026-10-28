@@ -123,6 +123,7 @@ services:
     command:
       - -c
       - |
+        /signoz-otel-collector migrate ready &&
         /signoz-otel-collector migrate bootstrap &&
         /signoz-otel-collector migrate sync up &&
         /signoz-otel-collector migrate async up
@@ -137,6 +138,8 @@ services:
     depends_on:
       signoz-clickhouse:
         condition: service_healthy
+      signoz-schema-migrator:
+        condition: service_completed_successfully
     ports:
       - "8080:8080" # SigNoz UI
     volumes:
@@ -154,6 +157,8 @@ services:
     depends_on:
       signoz-clickhouse:
         condition: service_healthy
+      signoz-schema-migrator:
+        condition: service_completed_successfully
     ports:
       - "4317:4317" # OTLP gRPC
       - "4318:4318" # OTLP HTTP
@@ -170,7 +175,12 @@ services:
       # own resource view, which is exactly the wrong answer to "is the laptop
       # saturated". read-only, and local-overlay only
       - /:/hostfs:ro
-    command: ["--config=/etc/otel-collector-config.yaml"]
+    entrypoint: ["/bin/sh"]
+    command:
+      - -c
+      - |
+        /signoz-otel-collector migrate sync check &&
+        exec /signoz-otel-collector --config=/etc/otel-collector-config.yaml
 
   # SigNoz's MCP server, so an agent can query traces, run ClickHouse queries and
   # manage dashboards against this local instance. its dashboard tools need

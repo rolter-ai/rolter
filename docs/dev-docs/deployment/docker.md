@@ -2,6 +2,12 @@
 
 ## Compose (full stack)
 
+The optional SigNoz overlay waits for its schema migrator to complete before
+starting either the collector or the query service. The migrator first runs
+`migrate ready`; the collector also checks `migrate sync check` before accepting
+OTLP. A fresh volume therefore does not rely on a collector crash and restart
+to wait for missing databases or tables. The same ordering applies to `just dogfood`.
+
 `docker/docker-compose.yml` brings up Postgres, Redis, ClickHouse, and the rolter `gateway` + `control` services. It is the **local stack**, open on purpose: no admin token (`ROLTER_ALLOW_OPEN_MODE=1` acknowledges the `0.0.0.0` bind), the example `rolter`/`rolter` Postgres login, no Redis password, a passwordless ClickHouse user, every port published on every interface.
 
 ```bash
