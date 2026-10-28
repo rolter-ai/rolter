@@ -30,11 +30,16 @@ The export deliberately carries only the sections the importer consumes, so noth
 | `[[providers.readonly]]` and `[[providers.default]]`                                | name, slug, kind, `api_base`, `api_keys` (the variable name only), `egress_proxies`, in both tiers |
 | `[[provider_groups.readonly]]` / `[[provider_groups.default]]` and their `.members` | group strategy and its weighted members                                                            |
 | `[[routes]]`, `[routes.params]`, `[routes.param_policy]`, `[[routes.targets]]`      | strategy, admin parameter defaults, the override policy, and the weighted upstream targets         |
+| `[[routes.variants]]`, `[routes.variants.params]`, `[[routes.variants.targets]]`    | weighted variants in fallback order, their parameter defaults and their ordered targets            |
 | `[[model_prices]]`                                                                  | input, output, cached-input and cache-write rates with their currency                              |
 | `[[budgets]]` and `[[rate_limits]]`                                                 | spend and rate caps, each naming its scope by a portable reference (below)                         |
 | `[prompt_templates]`                                                                | published templates with their variables, decorators and route bindings                            |
 | `[logging]` `ui_events`                                                             | whether the control plane records dashboard usage events                                           |
 | `[logging.payload_capture]`                                                         | the capture policy, its size cap and its redaction and model filters                               |
+
+A route's variants are the one place an import deletes what the file leaves out. A route whose entry declares `[[routes.variants]]` has its stored variants replaced by the file's, because an ordered, weighted split cannot be merged; the import warns with the names of the variants it removes. A route whose entry declares no variants keeps the stored ones, and the import warns when the entry gives the route `[[routes.targets]]`, since a route with variants does not use its targets.
+
+A variant target on a provider that is left out of the gateway snapshot is still exported, under a comment that names the provider. The provider itself is not in the file, so the import cannot resolve that target and leaves the route's variants as they are rather than deleting it.
 
 ### Import warnings
 

@@ -1834,7 +1834,11 @@ An external PII sanitizer: a self-hosted de-identification service, Microsoft Pr
 </ParamField>
 
 <ParamField path="streaming" default="reject" type="string">
-  What a streamed request does while the response leg is active. `reject` refuses it with `400 pii_streaming_unsupported`; `passthrough` serves the stream with the response leg skipped. A request-only setup streams normally.
+  What a streamed request does while the response leg is active. `reject` refuses it with `400 pii_streaming_unsupported`; `passthrough` serves the stream with the response leg skipped; `restore` restores the stream through `restore_stream_url`. `restore` covers restoration only: when `direction` also covers the response, a streamed request is refused as under `reject`. It needs `restore_stream_url` and a `restoration` other than `never`. A request-only setup streams normally.
+</ParamField>
+
+<ParamField path="restore_stream_url" type="string">
+  The endpoint that restores a stream over one full-duplex NDJSON exchange per streamed response. Required when `streaming` is `restore`. [PII sanitizer](/security/pii-sanitizer#restoring-a-stream) describes the protocol.
 </ParamField>
 
 <ParamField path="timeout_ms" default="5000" type="integer">
@@ -1861,7 +1865,7 @@ An external PII sanitizer: a self-hosted de-identification service, Microsoft Pr
   An optional credential, in the same two forms as `[guardrail_webhook]`, resolved from the environment at call time.
 </ParamField>
 
-Both URLs are checked against the [egress policy](/configuration/egress) when the config loads and again before every call.
+All three URLs are checked against the [egress policy](/configuration/egress) when the config loads and again before every call.
 
 ```toml
 [pii_sanitizer]

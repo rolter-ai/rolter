@@ -5,12 +5,19 @@ use uuid::Uuid;
 
 use rolter_core::{Error, Result};
 
-use super::super::models::{Route, RouteTarget};
+use super::super::models::{Route, RouteTarget, RouteVariant, RouteVariantTarget};
 use super::providers::ProviderRepo;
 use super::support::{fetch_optional_or_not_found, require_affected, store_err};
 
 /// Every column of `route_targets` that its row type reads.
 const ROUTE_TARGET_COLUMNS: &str = "id, route_id, provider_id, upstream_model, weight, created_at";
+
+/// Every column of `route_variants` that its row type reads.
+const ROUTE_VARIANT_COLUMNS: &str = "id, route_id, name, weight, position, params, created_at";
+
+/// Every column of `route_variant_targets` that its row type reads.
+const ROUTE_VARIANT_TARGET_COLUMNS: &str =
+    "id, variant_id, provider_id, upstream_model, weight, position";
 
 /// Every column of `routes` that its row type reads.
 const ROUTE_COLUMNS: &str =
@@ -330,7 +337,7 @@ impl RouteTargetRepo<'_> {
     }
 
     /// The `(org, provider name)` of every provider a route in these teams or
-    /// projects targets, once each. Bounded by the scopes a caller holds a role
+    /// projects targets, directly or through a variant (#391), once each. Bounded by the scopes a caller holds a role
     /// in, like `ProjectRepo::viewer_payload_projects`, so provider health can
     /// follow the routes a project member actually uses (#1833). Nothing about
     /// the provider but its name leaves here.
@@ -343,13 +350,22 @@ impl RouteTargetRepo<'_> {
             return Ok(Vec::new());
         }
         sqlx::query_as(
-            "select distinct p.org_id, p.name
-             from route_targets t
-             join routes r on r.id = t.route_id
-             join projects pr on pr.id = r.project_id
-             join providers p on p.id = t.provider_id
-             where r.project_id = any($1) or pr.team_id = any($2)
-             order by p.org_id, p.name",
+            "select org_id, name from (
+                 select p.org_id, p.name
+                 from route_targets t
+                 join routes r on r.id = t.route_id
+                 join projects pr on pr.id = r.project_id
+                 join providers p on p.id = t.provider_id
+                 where r.project_id = any($1) or pr.team_id = any($2)
+                 union
+                 select p.org_id, p.name
+                 from route_variant_targets t
+                 join route_variants v on v.id = t.variant_id
+                 join routes r on r.id = v.route_id
+                 join projects pr on pr.id = r.project_id
+                 join providers p on p.id = t.provider_id
+                 where r.project_id = any($1) or pr.team_id = any($2)
+             ) targeted order by org_id, name",
         )
         .bind(project_ids)
         .bind(team_ids)
@@ -431,6 +447,199 @@ impl RouteTargetRepo<'_> {
         .await?;
         Ok(())
     }
+}
+
+/// The weighted variants of a route (#391), scoped to a route.
+pub struct RouteVariantRepo<'a>(pub &'a PgPool);
+
+impl RouteVariantRepo<'_> {
+    /// The variants of `route_id` in declared order, each with its targets in
+    /// routing order.
+    pub async fn list(&self, route_id: Uuid) -> Result<Vec<RouteVariant>> {
+        let mut conn = self.0.acquire().await.map_err(store_err)?;
+        variants_of(&mut conn, route_id).await
+    }
+
+    /// Every variant of every route in `project_id`, in two reads, for the
+    /// routes list's `?include=variants`. Grouped by route and in declared
+    /// order inside it, the order [`RouteVariantRepo::list`] gives.
+    pub async fn list_for_project(&self, project_id: Uuid) -> Result<Vec<RouteVariant>> {
+        let variants: Vec<RouteVariant> = sqlx::query_as(
+            "select v.id, v.route_id, v.name, v.weight, v.position, v.params, v.created_at
+             from route_variants v join routes r on r.id = v.route_id
+             where r.project_id = $1 order by v.route_id, v.position",
+        )
+        .bind(project_id)
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)?;
+        let targets: Vec<RouteVariantTarget> = sqlx::query_as(
+            "select t.id, t.variant_id, t.provider_id, t.upstream_model, t.weight, t.position
+             from route_variant_targets t
+             join route_variants v on v.id = t.variant_id
+             join routes r on r.id = v.route_id
+             where r.project_id = $1 order by t.variant_id, t.position",
+        )
+        .bind(project_id)
+        .fetch_all(self.0)
+        .await
+        .map_err(store_err)?;
+        Ok(attach_variant_targets(variants, targets))
+    }
+
+    /// Make `desired` the route's whole variant set, in one transaction, so a
+    /// gateway polling `/internal/snapshot` sees the old split or the new one
+    /// and never a mix. An empty `desired` clears the variants, which puts the
+    /// route back on its classic target pool.
+    ///
+    /// A set equal to the stored one (same names, weights, params and targets
+    /// in the same order) writes nothing, so a re-import of an unchanged file
+    /// neither bumps the config version nor churns the rows' ids. Otherwise
+    /// the stored variants are replaced whole: a variant has no identity
+    /// outside its route but its name, and nothing else references its row.
+    /// Nothing here validates the values; the caller does.
+    ///
+    /// Returns the variants as stored afterwards and whether anything changed.
+    pub async fn replace(
+        &self,
+        route_id: Uuid,
+        desired: &[RouteVariantSpec],
+    ) -> Result<(Vec<RouteVariant>, bool)> {
+        let mut tx = self.0.begin().await.map_err(store_err)?;
+        // the same lock `RouteRepo::update` takes, so two edits of one route's
+        // variants serialise rather than interleaving their deletes and inserts
+        let _: Uuid = super::support::fetch_scalar_or_not_found(
+            sqlx::query_scalar("select id from routes where id = $1 for update").bind(route_id),
+            &mut *tx,
+            || format!("route {route_id}"),
+        )
+        .await?;
+        let stored = variants_of(&mut tx, route_id).await?;
+        if specs_match(&stored, desired) {
+            tx.commit().await.map_err(store_err)?;
+            return Ok((stored, false));
+        }
+        sqlx::query("delete from route_variants where route_id = $1")
+            .bind(route_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(store_err)?;
+        let mut written = Vec::new();
+        for (position, spec) in desired.iter().enumerate() {
+            let mut variant: RouteVariant = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "insert into route_variants (route_id, name, weight, position, params)
+                 values ($1, $2, $3, $4, $5)
+                 returning {ROUTE_VARIANT_COLUMNS}"
+            )))
+            .bind(route_id)
+            .bind(&spec.name)
+            .bind(spec.weight)
+            .bind(position as i32)
+            .bind(&spec.params)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(store_err)?;
+            for (position, target) in spec.targets.iter().enumerate() {
+                let row: RouteVariantTarget = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                    "insert into route_variant_targets \
+                        (variant_id, provider_id, upstream_model, weight, position)
+                     values ($1, $2, $3, $4, $5)
+                     returning {ROUTE_VARIANT_TARGET_COLUMNS}"
+                )))
+                .bind(variant.id)
+                .bind(target.provider_id)
+                .bind(target.upstream_model.as_deref())
+                .bind(target.weight)
+                .bind(position as i32)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(store_err)?;
+                variant.targets.push(row);
+            }
+            written.push(variant);
+        }
+        tx.commit().await.map_err(store_err)?;
+        Ok((written, true))
+    }
+}
+
+/// The variants of `route_id` with their targets, read on `conn` so
+/// [`RouteVariantRepo::replace`] can read inside its own transaction.
+async fn variants_of(conn: &mut sqlx::PgConnection, route_id: Uuid) -> Result<Vec<RouteVariant>> {
+    let variants: Vec<RouteVariant> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "select {ROUTE_VARIANT_COLUMNS}
+         from route_variants where route_id = $1 order by position"
+    )))
+    .bind(route_id)
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(store_err)?;
+    let targets: Vec<RouteVariantTarget> = sqlx::query_as(
+        "select t.id, t.variant_id, t.provider_id, t.upstream_model, t.weight, t.position
+         from route_variant_targets t join route_variants v on v.id = t.variant_id
+         where v.route_id = $1 order by t.variant_id, t.position",
+    )
+    .bind(route_id)
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(store_err)?;
+    Ok(attach_variant_targets(variants, targets))
+}
+
+/// Deal `targets` (sorted by variant, then position) out to their variants.
+fn attach_variant_targets(
+    mut variants: Vec<RouteVariant>,
+    targets: Vec<RouteVariantTarget>,
+) -> Vec<RouteVariant> {
+    let mut by_variant: std::collections::HashMap<Uuid, Vec<RouteVariantTarget>> =
+        std::collections::HashMap::new();
+    for target in targets {
+        by_variant
+            .entry(target.variant_id)
+            .or_default()
+            .push(target);
+    }
+    for variant in &mut variants {
+        variant.targets = by_variant.remove(&variant.id).unwrap_or_default();
+    }
+    variants
+}
+
+/// Whether the stored variants already are `desired`, field for field and in
+/// the same order.
+fn specs_match(stored: &[RouteVariant], desired: &[RouteVariantSpec]) -> bool {
+    stored.len() == desired.len()
+        && stored.iter().zip(desired).all(|(row, spec)| {
+            row.name == spec.name
+                && row.weight == spec.weight
+                && row.params == spec.params
+                && row.targets.len() == spec.targets.len()
+                && row.targets.iter().zip(&spec.targets).all(|(t, s)| {
+                    t.provider_id == s.provider_id
+                        && t.upstream_model == s.upstream_model
+                        && t.weight == s.weight
+                })
+        })
+}
+
+/// One variant as [`RouteVariantRepo::replace`] is asked to leave it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RouteVariantSpec {
+    pub name: String,
+    pub weight: i32,
+    /// variant-scoped default inference params, a json object
+    pub params: serde_json::Value,
+    /// in routing order
+    pub targets: Vec<RouteVariantTargetSpec>,
+}
+
+/// One target of a [`RouteVariantSpec`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RouteVariantTargetSpec {
+    pub provider_id: Uuid,
+    /// the model name sent upstream; `None` forwards the route's public name
+    pub upstream_model: Option<String>,
+    pub weight: i32,
 }
 
 /// One target of a route as [`RouteRepo::update`] is asked to leave it.

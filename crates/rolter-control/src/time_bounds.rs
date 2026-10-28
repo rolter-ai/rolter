@@ -409,6 +409,7 @@ mod tests {
         ("/api/v1/analytics/invocations/export", None),
         ("/api/v1/analytics/guardrails", None),
         ("/api/v1/analytics/plugins", None),
+        ("/api/v1/analytics/savings", None),
         ("/api/v1/health/uptime", None),
         ("/api/v1/health/mttr", None),
         ("/api/v1/health/timeline", None),
@@ -506,7 +507,9 @@ mod tests {
     fn windowed_app(clickhouse_url: &str) -> Router {
         let mut state = crate::tests::state_with_token(None);
         state.clickhouse = Some(crate::analytics::ClickHouseClient::new(clickhouse_url));
-        let router = crate::analytics::router().merge(crate::health::router());
+        let router = crate::analytics::router()
+            .merge(crate::savings::router())
+            .merge(crate::health::router());
         #[cfg(feature = "postgres")]
         let router = router.merge(crate::mcp_logs::router());
         router.with_state(state)

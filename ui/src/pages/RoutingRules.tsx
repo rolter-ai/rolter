@@ -41,16 +41,13 @@ import {
 import { errorText } from "@/lib/error-copy";
 import { useFormat } from "@/lib/i18n/format";
 import { HEALTH_SLA, targetHealth, type TargetHealth } from "@/lib/route-targets";
+import { shareBarColor } from "@/lib/share-bars";
 import { useScope } from "@/lib/scope";
 import { StrategyBadge } from "@/components/StrategyBadge";
 import { usesWeights } from "@/lib/strategies";
 import { useToast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { useScreenReady } from "@/lib/ux-react";
-
-// the nth of several targets takes the nth categorical token, so no card is
-// red by default and every fill clears the shape floor (#2139)
-const TARGET_BARS = [1, 2, 3, 4, 5, 6].map((n) => `var(--chart-${n})`);
 
 /** how far back a card counts requests, in hours */
 const TRAFFIC_WINDOW_HOURS = 24;
@@ -665,7 +662,10 @@ function RouteTargets({
                     style={{
                       // a CSS length, never a localized percentage
                       width: `${Math.round(share * 100)}%`,
-                      background: TARGET_BARS[i % TARGET_BARS.length],
+                      // the nth of several targets takes the nth categorical
+                      // token, so no card is red by default and every fill
+                      // clears the shape floor (#2139)
+                      background: shareBarColor(i),
                     }}
                   />
                 </div>

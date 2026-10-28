@@ -931,6 +931,9 @@ pub struct UsageLoggingStream {
     billed: Option<Usage>,
     /// how the provider counts its thinking tokens (#2880)
     thinking: rolter_proxy::ThinkingCount,
+    /// the `response_payload` to store instead of capturing the forwarded
+    /// bytes: the placeholder-bearing body a PII restore replaced (#3240)
+    captured_payload: Option<String>,
     /// the prompt-cache hit the response headers state (Fireworks, #2882),
     /// used when the body states none
     header_cache_read: Option<u32>,
@@ -968,6 +971,7 @@ impl UsageLoggingStream {
             completed: false,
             billed: None,
             thinking: rolter_proxy::ThinkingCount::Stated,
+            captured_payload: None,
             header_cache_read: None,
         }
     }
@@ -998,6 +1002,22 @@ impl UsageLoggingStream {
     /// the provider charged.
     pub fn with_billed_usage(mut self, usage: Usage) -> Self {
         self.billed = Some(usage);
+        self
+    }
+
+    /// Store `payload` as the row's `response_payload` instead of capturing
+    /// the bytes this stream forwards (#3240).
+    ///
+    /// The buffered path hands a PII-restored body to this stream, and the
+    /// restored plaintext is what the sanitizer exists to keep out of rolter's
+    /// stores. The captured response is the placeholder-bearing body the
+    /// restore replaced, the same text the captured request holds, already
+    /// redacted and cut by [`capture_payload`]. `None` keeps the default, the
+    /// forwarded bytes. Billing reads the usage parsed from the upstream body
+    /// (see [`UsageLoggingStream::with_billed_usage`]); the completion
+    /// observer reads the forwarded bytes.
+    pub fn with_captured_payload(mut self, payload: Option<String>) -> Self {
+        self.captured_payload = payload;
         self
     }
 
@@ -1139,8 +1159,10 @@ impl UsageLoggingStream {
             observer(&self.buf);
         }
         if log.capture_payloads {
-            log.response_payload =
-                capture_payload(&self.buf, log.payload_max_bytes, &log.payload_redactor);
+            log.response_payload = match self.captured_payload.take() {
+                Some(payload) => payload,
+                None => capture_payload(&self.buf, log.payload_max_bytes, &log.payload_redactor),
+            };
         }
         self.buffer_pool.recycle(std::mem::take(&mut self.buf));
         log.prompt_tokens = usage.prompt;

@@ -881,13 +881,18 @@ disabled = false # revoke without deleting
 #                                 # the caller and nothing is ever reversed.
 #                                 # `caller_authorized` reverses only when the
 #                                 # request carries `x-rolter-pii-restore: true`
-# streaming = "reject"            # reject | passthrough. restoring or sanitizing a
-#                                 # response needs the whole body, so it cannot run
-#                                 # on an SSE stream; `reject` refuses a streamed
-#                                 # request while the response leg is active,
-#                                 # `passthrough` serves the stream with that leg
-#                                 # not applied. only matters when the response leg
-#                                 # is active — a request-only setup always streams
+# streaming = "reject"            # reject | passthrough | restore. what a streamed
+#                                 # request gets while the response leg is active:
+#                                 # `reject` refuses it, `passthrough` serves the
+#                                 # stream with that leg not applied, `restore`
+#                                 # restores it through restore_stream_url
+#                                 # (restoration only: a response-direction
+#                                 # sanitize is still refused). only matters when
+#                                 # the response leg is active — a request-only
+#                                 # setup always streams
+# restore_stream_url = "https://presidio.internal/restore-stream"
+#                                 # required when streaming = "restore": one
+#                                 # full-duplex NDJSON exchange per stream
 # timeout_ms = 5000
 # max_retries = 0                 # extra attempts on a transient failure
 # failure_mode = "fail_open"      # fail_open forwards the *unsanitized* body when

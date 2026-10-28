@@ -286,6 +286,35 @@ pub struct RouteTarget {
     pub created_at: DateTime<Utc>,
 }
 
+/// One weighted variant of a route (#391), the stored form of a
+/// `[[routes.variants]]` entry. `position` is the declared order, which is the
+/// fallback chain after the sampled primary.
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct RouteVariant {
+    pub id: Uuid,
+    pub route_id: Uuid,
+    pub name: String,
+    pub weight: i32,
+    pub position: i32,
+    pub params: serde_json::Value,
+    pub created_at: DateTime<Utc>,
+    /// the variant's targets in routing order; filled in by the repository
+    #[sqlx(skip)]
+    #[serde(default)]
+    pub targets: Vec<RouteVariantTarget>,
+}
+
+/// One target of a [`RouteVariant`], tried in `position` order.
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct RouteVariantTarget {
+    pub id: Uuid,
+    pub variant_id: Uuid,
+    pub provider_id: Uuid,
+    pub upstream_model: Option<String>,
+    pub weight: i32,
+    pub position: i32,
+}
+
 /// A provider group: a fleet of providers addressable as `group-slug/model`
 /// (ADR-0017 addendum, ADR-0022). Org-scoped; the slug shares the provider slug
 /// namespace.

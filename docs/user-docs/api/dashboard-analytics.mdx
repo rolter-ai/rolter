@@ -126,3 +126,7 @@ The file name says what it holds: `<what>_<from>_to_<to>_<CURRENCY>.csv`, such a
 **The log is streamed.** The control plane reads it one bounded page at a time with the keyset cursor the JSON list uses and writes each page as it arrives, so a month of requests does not wait for, or hold in memory, the whole result, and rows logged during the export neither repeat nor go missing. ClickHouse failing before the first row answers a JSON error; failing part way ends the body with an error so the download fails instead of passing for a complete file.
 
 **Cells are safe to open.** A value a spreadsheet would run as a formula (one starting with `=`, `+`, `-`, `@`, a tab or a carriage return, such as a business unit someone named `=Payments`) is written with a leading `'`. Numbers are written as they are.
+
+## The savings advisor
+
+`GET /api/v1/analytics/savings` re-prices the same rows at the cheaper models already configured in each route's pool, and says where the window's spend went. It takes the window plus `org`, `project`, `route` and `key`, answers one object rather than `{"data": [...]}`, and is gated by the `savings` capability. It re-prices and never evaluates quality; see [Savings advisor](/observability/savings-advisor) for how to read it and what it does not claim.

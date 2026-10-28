@@ -125,6 +125,7 @@
             "pages": [
               "observability/metrics",
               "observability/logs-and-cost",
+              "observability/savings-advisor",
               "observability/tracing",
               "observability/what-to-look-at",
               "observability/log-settings",

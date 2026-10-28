@@ -390,8 +390,8 @@ const ASSIGNMENT_SUBJECT_QUERY: &[QueryParam] = &[
 const ROUTE_INCLUDE_QUERY: &[QueryParam] = &[QueryParam::new(
     "include",
     "string",
-    "comma-separated extras to embed in each route: `targets` and `complexity`; omitted, the \
-     list carries neither, and a value outside those two is a 400",
+    "comma-separated extras to embed in each route: `targets`, `variants` and `complexity`; \
+     omitted, the list carries none of them, and a value outside those three is a 400",
 )];
 
 /// The access-profile list's query string: what to embed beside each profile.
@@ -608,6 +608,40 @@ const DASHBOARD_QUERY: &[QueryParam] = &[
     BUSINESS_UNIT_FILTER,
     CUSTOMER_FILTER,
     PROJECT_FILTER,
+];
+
+/// The savings advisor's window, scope and thresholds (#1581).
+const SAVINGS_QUERY: &[QueryParam] = &[
+    SINCE,
+    UNTIL,
+    QueryParam::new(
+        "org",
+        "string",
+        "exact org id; omit for every org the caller may read",
+    ),
+    PROJECT_FILTER,
+    QueryParam::new(
+        "route",
+        "string",
+        "exact route (its public model name); omit for every route",
+    ),
+    KEY_FILTER,
+    QueryParam::new(
+        "max_prompt_tokens",
+        "integer",
+        "a request with a longer prompt is not substitutable; defaults to 4000",
+    ),
+    QueryParam::new(
+        "max_completion_tokens",
+        "integer",
+        "a request with a longer output is not substitutable; defaults to 1000",
+    ),
+    QueryParam::new(
+        "output_margin",
+        "number",
+        "how much longer a candidate's answers are assumed to run at the high end of the \
+         range, as a fraction; defaults to 0.25 and is clamped to 0..4",
+    ),
 ];
 
 /// The window plus the bucket only the timeseries endpoint reads, and the
@@ -1383,7 +1417,7 @@ fn operations() -> Vec<Op> {
             Op::get(
                 "/api/v1/projects/{project_id}/routes",
                 "listRoutes",
-                "List a project's routes; `include` embeds each route's targets and complexity policy so a screen needs one request, not one per route",
+                "List a project's routes; `include` embeds each route's targets, variants and complexity policy so a screen needs one request, not one per route",
             )
             .query(ROUTE_INCLUDE_QUERY)
             .ok(Payload::List("Route")),
@@ -1414,6 +1448,19 @@ fn operations() -> Vec<Op> {
                 "Replace a route's catalog metadata and execution policy (headers, timeout, retries, output-token cap, visibility, guardrails)",
             )
             .ok(Payload::Ref("Route")),
+            Op::get(
+                "/api/v1/routes/{id}/variants",
+                "listRouteVariants",
+                "List a route's weighted variants in fallback order, each with its targets in routing order",
+            )
+            .ok(Payload::List("RouteVariant")),
+            Op::put(
+                "/api/v1/routes/{id}/variants",
+                "setRouteVariants",
+                "Replace a route's weighted variants; an empty list puts the route back on its own targets",
+            )
+            .body(Payload::Ref("SetRouteVariants"))
+            .ok(Payload::List("RouteVariant")),
             Op::get(
                 "/api/v1/routes/{id}/complexity",
                 "getRouteComplexity",
@@ -2293,6 +2340,20 @@ fn operations() -> Vec<Op> {
             )
             .clickhouse_read()
             .query(WINDOW_QUERY),
+            Op::get(
+                "/api/v1/analytics/savings",
+                "getAnalyticsSavings",
+                "The savings advisor: where the window's spend went (by route, upstream model and \
+                 caller, with retries and failovers, failed requests and response-cache misses \
+                 called out), which requests were substitutable, and what they would have cost at \
+                 each cheaper model already in the same route's pool, as a `low`/`high` range. It \
+                 re-prices and never evaluates quality, so it is a shortlist to test, not a \
+                 recommendation; `limits` says so on every answer. A request or a candidate whose \
+                 price is unknown is excluded and counted under `excluded`, never priced at zero",
+            )
+            .clickhouse_read()
+            .query(SAVINGS_QUERY)
+            .ok(Payload::Ref("SavingsReport")),
             Op::get(
                 "/api/v1/analytics/sampling",
                 "getAnalyticsSampling",
@@ -3686,6 +3747,11 @@ fn routing_schemas(p: &Prim) -> Value {
                     "description": "the route's targets, as GET /api/v1/routes/{route_id}/targets lists them; present only when the list was asked for `include=targets`",
                     "items": {"$ref": "#/components/schemas/RouteTarget"}
                 },
+                "variants": {
+                    "type": "array",
+                    "description": "the route's weighted variants, as GET /api/v1/routes/{id}/variants lists them; present only when the list was asked for `include=variants`",
+                    "items": {"$ref": "#/components/schemas/RouteVariant"}
+                },
                 "complexity": {
                     "type": "object",
                     "description": "the route's complexity policy, as GET /api/v1/routes/{id}/complexity returns it (`{\"tiers\": []}` when none is set); present only when the list was asked for `include=complexity`"
@@ -3751,6 +3817,71 @@ fn routing_schemas(p: &Prim) -> Value {
                 "weight": {"type": "integer"},
                 "created_at": timestamp
             }
+        },
+        "RouteVariant": {
+            "type": "object",
+            "required": ["id", "route_id", "name", "weight", "position", "params", "targets", "created_at"],
+            "properties": {
+                "id": uuid, "route_id": uuid,
+                "name": {"type": "string", "description": "the variant's name, unique in its route; request logs and metrics carry it"},
+                "weight": {"type": "integer", "minimum": 0, "description": "relative share of the requests that sample this variant as their primary. The API writes 1 or more; a 0 imported from rolter.toml is sampled as 1"},
+                "position": {"type": "integer", "description": "the declared order, which is the fallback chain after the sampled primary"},
+                "params": {"type": "object", "description": "variant-scoped default inference params, layered over the route's"},
+                "targets": {
+                    "type": "array",
+                    "description": "the variant's targets in routing order",
+                    "items": {"$ref": "#/components/schemas/RouteVariantTarget"}
+                },
+                "created_at": timestamp
+            }
+        },
+        "RouteVariantTarget": {
+            "type": "object",
+            "required": ["id", "variant_id", "provider_id", "weight", "position"],
+            "properties": {
+                "id": uuid, "variant_id": uuid, "provider_id": uuid,
+                "upstream_model": nullable_string,
+                "weight": {"type": "integer", "minimum": 0},
+                "position": {"type": "integer"}
+            }
+        },
+        "SetRouteVariants": {
+            "type": "object",
+            "required": ["variants"],
+            "properties": {
+                "variants": {
+                    "type": "array",
+                    "maxItems": 32,
+                    "description": "the route's whole variant set in fallback order. A variant's weight is at least 1; names are unique and not blank; each variant names 1 to 32 targets, each a provider of the route's org its project may use",
+                    "items": {
+                        "type": "object",
+                        "required": ["name", "targets"],
+                        "properties": {
+                            "name": string,
+                            "weight": {"type": "integer", "default": 1, "minimum": 1},
+                            "params": {"type": ["object", "null"], "description": "variant-scoped default inference params; omitted or null is none"},
+                            "targets": {
+                                "type": "array",
+                                "minItems": 1,
+                                "maxItems": 32,
+                                "description": "in routing order; at least one needs a weight above 0",
+                                "items": {
+                                    "type": "object",
+                                    "required": ["provider_id"],
+                                    "properties": {
+                                        "provider_id": uuid,
+                                        "upstream_model": {"type": ["string", "null"], "description": "the model name sent upstream; omitted, null or blank forwards the route's public name"},
+                                        "weight": {"type": "integer", "default": 1, "minimum": 0}
+                                    },
+                                    "additionalProperties": false
+                                }
+                            }
+                        },
+                        "additionalProperties": false
+                    }
+                }
+            },
+            "additionalProperties": false
         },
         "CreateRouteTarget": {
             "type": "object",
@@ -4116,6 +4247,65 @@ fn governance_schemas(p: &Prim) -> Value {
                 "currency": {"type": "string", "default": "USD"}
             },
             "additionalProperties": false
+        },
+        "SavingsReport": {
+            "type": "object",
+            "description": "money is in the deployment's base `currency`; counts and costs are scaled by the sampling weight",
+            "required": ["currency", "limits", "assumptions", "spend", "substitutable", "candidates", "excluded"],
+            "properties": {
+                "currency": {"type": "string"},
+                "limits": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "what the report does not claim, in prose"
+                },
+                "assumptions": {
+                    "type": "object",
+                    "description": "the thresholds and margin the report was built with, after defaults and clamping",
+                    "properties": {
+                        "max_prompt_tokens": {"type": "integer"},
+                        "max_completion_tokens": {"type": "integer"},
+                        "output_margin": {"type": "number"}
+                    }
+                },
+                "spend": {
+                    "type": "object",
+                    "description": "where the money went: totals, `multi_attempt` (requests that took more than one upstream attempt), `failed`, `cache` (hits, and misses on routes that cache), and `by_route`, `by_model` (upstream model) and `by_caller` (project and virtual key, the 50 most expensive)",
+                    "properties": {
+                        "requests": {"type": "number"},
+                        "cost_usd": {"type": "number"},
+                        "unpriced_requests": {"type": "number"},
+                        "multi_attempt": {"type": "object"},
+                        "failed": {"type": "object"},
+                        "cache": {"type": "object"},
+                        "by_route": {"type": "array", "items": {"type": "object"}},
+                        "by_model": {"type": "array", "items": {"type": "object"}},
+                        "by_caller": {"type": "array", "items": {"type": "object"}}
+                    }
+                },
+                "substitutable": {
+                    "type": "object",
+                    "description": "the requests with at least one cheaper candidate, their recorded cost, and the saving at the best candidate of each as `{low, high}`",
+                    "properties": {
+                        "requests": {"type": "number"},
+                        "current_cost_usd": {"type": "number"},
+                        "projected_savings_usd": {"type": "object"}
+                    }
+                },
+                "candidates": {
+                    "type": "array",
+                    "description": "one entry per route and current upstream model, biggest conservative saving first; each lists its `candidates` with `projected_cost_usd` and `savings_usd` as `{low, high}`",
+                    "items": {"type": "object"}
+                },
+                "excluded": {
+                    "type": "object",
+                    "description": "`requests` counts what was not re-priced by reason (`unpriced`, `failed`, `cache_hit`, `usage_unknown`, `not_a_model_call`, `no_token_usage`, `prompt_too_large`, `output_too_large`, `route_not_configured`, `no_cheaper_candidate`); `unknown_candidate_prices` names pool models with no price",
+                    "properties": {
+                        "requests": {"type": "object", "additionalProperties": {"type": "number"}},
+                        "unknown_candidate_prices": {"type": "array", "items": {"type": "string"}}
+                    }
+                }
+            }
         },
         "LogSampling": {
             "type": "object",
