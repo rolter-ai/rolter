@@ -8,7 +8,7 @@ description: "Delete one virtual key's, user's or organization's request logs an
 
 Use it for two requests: an erasure request ("delete everything you hold about this employee"), and the operational one, an engineer who pasted a secret into a prompt and needs that request's captured body gone before its TTL.
 
-Erasure is **superadmin only**, needs the control plane to have a ClickHouse URL, and is irreversible.
+Erasure is **superadmin only** (no [deployment role](/security/rbac#deployment-roles) reaches it), needs the control plane to have a ClickHouse URL, and is irreversible.
 
 ---
 

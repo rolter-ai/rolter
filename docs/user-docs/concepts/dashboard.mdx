@@ -63,7 +63,7 @@ When part of the window's spend was billed for responses a guardrail or plugin w
 
 ## The left rail
 
-Everything lives under one of these groups. Screens you cannot read with your role are hidden; superadmin-only screens are hidden for everyone else.
+Everything lives under one of these groups. Screens you cannot read with your role are hidden; a deployment-wide screen is shown to a superadmin and to the [deployment role](/security/rbac#deployment-roles) that reaches it (an operator for the cluster, runtime policy, feature flags, alerting and connectors; a security auditor, read only, for the security, logging, compatibility and guardrail settings, the audit log and the config export), and hidden for everyone else.
 
 | Group                                        | What is inside                                                                                                                                                                                                                                                      |
 | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

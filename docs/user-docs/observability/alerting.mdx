@@ -27,9 +27,9 @@ In the dashboard it is the **Alerting** group, with one screen for each:
   delivery time to unseal it.
 - A route from the control plane to each channel endpoint that the
   [egress policy](#endpoints-and-the-egress-policy) permits.
-- A superadmin account or the deployment admin token. Alerting is
-  deployment-wide, so no organization role reaches it (see
-  [Permissions](#permissions-and-audit)).
+- A superadmin account, an operator (a [deployment role](/security/rbac#deployment-roles)) or the
+  deployment admin token. Alerting is deployment-wide, so no organization role
+  reaches it (see [Permissions](#permissions-and-audit)).
 
 Rules read the request log, and the log can be sampled. With a
 [`sample_rate`](/observability/log-settings#sampling) below `1`, each kept row
@@ -601,9 +601,10 @@ curl -s "https://control.example.com/api/v1/alert-notifications?delivery_status=
 
 ## Permissions and audit
 
-Alerting has no tenancy scope, so every operation is superadmin-only, the same
-as the other deployment-wide settings in [RBAC](/security/rbac). The dashboard
-hides the Alerting group from other roles.
+Alerting has no tenancy scope, so every operation is for a superadmin or an
+operator (a [deployment role](/security/rbac#deployment-roles)), the same as the other deployment-wide
+settings in [RBAC](/security/rbac). The dashboard hides the Alerting group from
+other roles.
 
 | Endpoint                                    | Capability                     |
 | ------------------------------------------- | ------------------------------ |
