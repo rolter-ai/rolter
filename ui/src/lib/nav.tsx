@@ -10,6 +10,7 @@ import {
   ChartColumn,
   CircuitBoard,
   Database,
+  Eraser,
   Eye,
   FileText,
   Flag,
@@ -73,6 +74,7 @@ export const NAV: NavDef[] = [
       { key: "mcp-logs", icon: <Waypoints />, resource: "mcp_log" },
       { key: "connectors", icon: <Cable />, resource: "connector" },
       { key: "logs-settings", icon: <Settings />, resource: "logging_settings" },
+      { key: "log-erasure", icon: <Eraser />, resource: "log_erasure" },
     ],
   },
   {

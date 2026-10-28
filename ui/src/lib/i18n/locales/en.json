@@ -248,6 +248,8 @@
       "publicUrl": "the public URL",
       "ssoProviders": "identity providers",
       "mfaStatus": "the second-factor roster",
+      "logErasure": "the erasure record",
+      "logErasures": "recent erasures",
       "ldapDirectories": "LDAP directories",
       "apiTokens": "API tokens",
       "signInPolicy": "the sign-in policy",
@@ -676,6 +678,7 @@
     "mcp-logs": "MCP Logs",
     "connectors": "Connectors",
     "logs-settings": "Logs Settings",
+    "log-erasure": "Log Erasure",
     "models": "Models",
     "model-catalog": "Model Catalog",
     "providers": "Model Providers",
@@ -4421,6 +4424,82 @@
         "body": "This control plane has no ClickHouse, so no request is written to the log. Sample rate, payload capture and retention are still saved and apply once ClickHouse is added: set <0>CLICKHOUSE_URL</0> (the clickhouse_url key in the config file) and restart the control plane."
       }
     },
+    "logErasure": {
+      "intro": "Retention is a clock; erasure is a command. It deletes what rolter holds about one subject now and is irreversible. ClickHouse applies it in the background, so a request is pending until the record says it is completed.",
+      "submittedToast": "Erasure submitted. It is pending until ClickHouse has finished.",
+      "form": {
+        "title": "Erase a subject's logs",
+        "hint": "Deletes the request logs and captured prompt bodies of one virtual key, user or organization, and records that it did.",
+        "scope": "Subject",
+        "subject": "Subject id",
+        "subjectPlaceholder": "00000000-0000-0000-0000-000000000000",
+        "subjectInvalid": "This is not an id. Paste the full UUID.",
+        "includeLogs": "Delete the log rows too",
+        "includeLogsOn": "Deletes the request metadata (model, tokens, cost, status) and the captured bodies, so the figures built from them go too.",
+        "includeLogsOff": "Deletes the captured prompt and response bodies only and keeps the request metadata.",
+        "submit": "Erase…"
+      },
+      "scope": {
+        "virtual_key": "Virtual key",
+        "user": "User",
+        "org": "Organization",
+        "request": "One request"
+      },
+      "scopeBody": {
+        "virtual_key": "Every request sent with that key.",
+        "user": "Every request sent with a key that user created and that still exists.",
+        "org": "Every request of that organization."
+      },
+      "subjectHint": {
+        "virtual_key": "The virtual key's id, from Virtual Keys.",
+        "user": "The user's id, from Users. A key that was since deleted leaves nothing to resolve; erase by organization or key id for those.",
+        "org": "The organization's id."
+      },
+      "reason": "Reason",
+      "reasonHint": "Stored and audited. Write the ticket or request reference, not the content.",
+      "reasonPlaceholder": "erasure request DSR-1042",
+      "confirm": {
+        "title": "Erase this {{scope}}'s logs?",
+        "bodyAll": "The request logs and captured bodies are deleted for good. This cannot be undone.",
+        "bodyBodies": "The captured prompt and response bodies are deleted for good; the request metadata stays. This cannot be undone.",
+        "confirm": "Erase",
+        "notInstant": "ClickHouse deletes in the background. The record stays pending until it reports every deletion done."
+      },
+      "recent": "Recent erasures",
+      "count_one": "{{count}} erasure",
+      "count_other": "{{count}} erasures",
+      "colRequested": "Requested",
+      "colScope": "Subject",
+      "colReason": "Reason",
+      "colRemoves": "Removes",
+      "colStatus": "Status",
+      "removesAll": "Logs and bodies",
+      "removesBodies": "Bodies only",
+      "empty": {
+        "title": "Nothing has been erased",
+        "body": "Erasures you request here are listed with their status, and the record of each outlives the data it removed."
+      },
+      "status": {
+        "pending": "Pending",
+        "completed": "Erased",
+        "failed": "Failed",
+        "unverified": "Unverified"
+      },
+      "statusHint": {
+        "pending": "Submitted. Treat the data as still present until this reads erased.",
+        "completed": "ClickHouse reports every deletion done. The rows are gone.",
+        "failed": "ClickHouse refused a statement at submission. Earlier ones may be queued; submit again, which is safe to repeat.",
+        "unverified": "No deletion was visible in ClickHouse an hour after submission, so completion cannot be confirmed. Check by querying."
+      },
+      "progress": "{{done}} of {{total}} deletions done",
+      "action": {
+        "erase": "Erase captured payload",
+        "noOrg": "This request records no organization, so it cannot be addressed by request. Erase by virtual key instead.",
+        "confirmTitle": "Erase the captured payload of {{id}}?",
+        "confirmBody": "Deletes the request and response bodies captured for the call at {{time}}. The request's metadata stays. This cannot be undone.",
+        "confirm": "Erase payload"
+      }
+    },
     "clientSettings": {
       "exampleRequest": "Example request",
       "baseUrl": "Base URL",
@@ -5198,6 +5277,10 @@
     "logs-settings": {
       "title": "Logs Settings",
       "subtitle": "Retention, sampling, and PII redaction for request logs."
+    },
+    "log-erasure": {
+      "title": "Log Erasure",
+      "subtitle": "Delete one subject's request logs and captured payloads now, and follow ClickHouse until it has finished."
     },
     "model-catalog": {
       "title": "Model Catalog",

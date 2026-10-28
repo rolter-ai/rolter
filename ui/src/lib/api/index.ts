@@ -643,6 +643,13 @@ export {
   revokeApiToken,
 } from "./api-tokens";
 export type { ApiTokenRow, ApiTokenState, MintedApiToken, MintApiTokenInput } from "./api-tokens";
+export { createLogErasure, fetchLogErasure, fetchLogErasures } from "./log-erasure";
+export type {
+  CreateLogErasureInput,
+  LogErasureRow,
+  LogErasureScope,
+  LogErasureStatus,
+} from "./log-erasure";
 export { fetchVersion, fetchStability, fetchPublicUrl } from "./system";
 export type { SubsystemStability, VersionStatus, PublicUrl } from "./system";
 export {

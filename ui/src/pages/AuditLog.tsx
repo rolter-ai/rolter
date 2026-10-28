@@ -94,6 +94,7 @@ const TARGET_PATH: Record<string, string> = {
   feature_flags: "/feature-flags",
   client_settings: "/client-settings",
   logging_settings: "/logs-settings",
+  log_erasure: "/log-erasure",
   compatibility_policy: "/compatibility",
   cluster_node: "/cluster",
 };

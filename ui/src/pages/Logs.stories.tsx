@@ -2664,7 +2664,7 @@ export const ARequestWithOneBodyExplainsTheMissingOneOnly: Story = {
     await expect(drawer.queryByText(/No request body was stored/)).toBeNull();
     await expect(drawer.queryByRole("heading", { name: "Request and response" })).toBeNull();
     // the three guesses are for a request with neither body
-    await expect(drawer.queryByText(/retention window|capture/i)).toBeNull();
+    await expect(drawer.queryByText(/retention window|\bcapture\b/i)).toBeNull();
     await expect(drawer.queryByRole("link", { name: "Open log settings" })).toBeNull();
   },
 };
