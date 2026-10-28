@@ -375,6 +375,44 @@ async fn each_role_reads_its_own_tenancy_and_bodies_only_where_it_may() {
         rows(&[("acme-a", true, false)])
     );
 
+    // an API token reads the chain it holds by the rules of a person with that
+    // role, the body floor included (#3291): a project member token sees the
+    // project with its bodies, an org viewer token the org's rows without them
+    let mint = |scope: Value| {
+        let http = http.clone();
+        async move {
+            let minted: Value = http
+                .post(format!("http://{addr}/api/v1/orgs/{}/api-tokens", acme.org))
+                .bearer_auth(ADMIN_TOKEN)
+                .json(&scope)
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            minted["secret"]
+                .as_str()
+                .expect("a minted secret")
+                .to_string()
+        }
+    };
+    let project_token = mint(json!({
+        "name": "reporting",
+        "project_id": acme.project_a,
+        "role": "member",
+    }))
+    .await;
+    assert_eq!(
+        visible(&http, addr, &project_token, &ids).await,
+        rows(&[("acme-a", true, false)])
+    );
+    let org_token = mint(json!({"name": "org reporting", "role": "viewer"})).await;
+    assert_eq!(
+        visible(&http, addr, &org_token, &ids).await,
+        rows(&[("acme-a", false, true), ("acme-b", false, true)])
+    );
+
     // a team member reaches both of the team's projects
     let team_member = seed_user(&pool, None, Some(umbrella.team), None, "member").await;
     assert_eq!(
