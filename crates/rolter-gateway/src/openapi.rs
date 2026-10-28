@@ -614,7 +614,8 @@ mod tests {
                 "content_block_stop",
                 "message_delta",
                 "message_stop",
-                "error"
+                "error",
+                "ping"
             ]
         );
         let responses = schemas["ResponseStreamEvent"]["description"]

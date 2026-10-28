@@ -358,10 +358,10 @@ fn streaming_events() -> Vec<(&'static str, Value)> {
         (
             "MessageStreamEvent",
             object(
-                "One Anthropic stream event, named by its `type`: `message_start`, `content_block_start`, `content_block_delta`, `content_block_stop`, `message_delta` and `message_stop`, plus `error`. Streams translated from OpenAI or Gemini produce exactly these.",
+                "One Anthropic stream event, named by its `type`: `message_start`, `content_block_start`, `content_block_delta`, `content_block_stop`, `message_delta` and `message_stop`, plus `error`. A stream translated from OpenAI or Gemini produces these, without `ping`; a native Anthropic route also forwards the upstream's `ping` keep-alives as sent.",
                 &["type"],
                 json!({
-                    "type": {"type": "string", "enum": ["message_start", "content_block_start", "content_block_delta", "content_block_stop", "message_delta", "message_stop", "error"]},
+                    "type": {"type": "string", "enum": ["message_start", "content_block_start", "content_block_delta", "content_block_stop", "message_delta", "message_stop", "error", "ping"]},
                     "index": {"type": "integer", "description": "the content block, on the `content_block_*` events"},
                     "message": {"type": "object", "additionalProperties": true, "description": "on `message_start`"},
                     "delta": {"type": "object", "additionalProperties": true, "description": "on `content_block_delta` and `message_delta`; the latter carries `stop_reason`"},
