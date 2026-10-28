@@ -232,19 +232,23 @@ The write path keeps the snapshot inside that rule:
   gets, so the refusal does not confirm that the provider exists. The snapshot
   loader also drops, with a warning, any cross-org target or member written
   before the guard existed, rather than serve it.
-- Route names and provider names are unique across the whole deployment,
-  because the gateway indexes them that way and `Config::validate` refuses a
-  snapshot holding a duplicate, which would stop config propagation for every
-  org at once.
-- Provider slugs and provider-group slugs form one address namespace across
-  the deployment, bootstrap-file rows included, because the gateway resolves
-  `provider-slug/model` and `group-slug/model` from it. `Config::validate` does
-  not check slugs; a second holder would silently take the address instead, and
-  a group whose slug a provider holds would drop out of routing. So a provider
-  slug is refused when any provider or group holds it, and the same for a
-  group slug, on create and on a slug change. The gateway indexes first-wins in
-  file order, bootstrap rows before database rows, so a slug two rows still
-  share from before the guard resolves the same way on every build.
+- Route names and provider names are unique per org, not across the
+  deployment (#1857, [ADR-0039](../adr/2026-10-28-per-org-namespaces.md)):
+  the gateway names rows `(org, name)` and `Config::validate` refuses a name
+  only twice in one org. A route name is held once across all of an org's
+  projects, since a key resolves a name per org (`RouteRepo::model_in_use`,
+  `ProviderRepo::name_in_use`, both scoped by org).
+- Provider slugs and provider-group slugs form one address namespace per org,
+  because the gateway resolves `provider-slug/model` and `group-slug/model`
+  from it; a bootstrap-file row's slug is kept from every org. `Config::validate`
+  does not check slugs; a second holder would silently take the address
+  instead, and a group whose slug a provider of its org holds would drop out of
+  routing. So a provider slug is refused when a provider or group of the same
+  org (or a bootstrap row) holds it, and the same for a group slug, on create
+  and on a slug change (`ProviderRepo::address_slug_in_use`). The gateway
+  indexes first-wins in file order, bootstrap rows before database rows, so a
+  slug two rows of one org still share from before the guard resolves the same
+  way on every build.
 - A route name may contain `/` (`Qwen/Qwen2.5-7B`), but not as the address of
   another org's or a bootstrap-file provider or group (`edge/…` while another
   org holds `edge`), and a database route may not be named `fake-llm`. The
@@ -258,11 +262,13 @@ The write path keeps the snapshot inside that rule:
   reach the other org's route. An operator may still replace the builtin:
   a bootstrap-file route, a `[[models.default]]` or a `rolter-seed --import`
   named `fake-llm` shadows it.
-- Every refusal is a `409` ("… is already in use in this deployment; choose
-  another") that never says which org holds the name. `rolter-seed --import`
-  refuses the same collisions, and the startup seeders (`[[providers.default]]`,
-  `[[provider_groups.default]]`, `[[models.default]]`) skip a colliding default
-  with a warning instead of writing it. Per-org namespaces are #1857.
+- Every refusal is a `409`: "… is already in use in this organization; choose
+  another" for the caller's own org, and "… in this deployment" for a
+  bootstrap-file row or another org's address, which never says which org
+  holds it. `rolter-seed --import` refuses the same collisions, and the startup
+  seeders (`[[providers.default]]`, `[[provider_groups.default]]`,
+  `[[models.default]]`) skip a colliding default with a warning instead of
+  writing it.
 
 The dashboard never sees `tenancy`: `redact_config_for_dashboard` clears it
 along with the credentials, and drops the database key records, which name
@@ -331,19 +337,23 @@ The write path keeps the snapshot inside that rule:
   gets, so the refusal does not confirm that the provider exists. The snapshot
   loader also drops, with a warning, any cross-org target or member written
   before the guard existed, rather than serve it.
-- Route names and provider names are unique across the whole deployment,
-  because the gateway indexes them that way and `Config::validate` refuses a
-  snapshot holding a duplicate, which would stop config propagation for every
-  org at once.
-- Provider slugs and provider-group slugs form one address namespace across
-  the deployment, bootstrap-file rows included, because the gateway resolves
-  `provider-slug/model` and `group-slug/model` from it. `Config::validate` does
-  not check slugs; a second holder would silently take the address instead, and
-  a group whose slug a provider holds would drop out of routing. So a provider
-  slug is refused when any provider or group holds it, and the same for a
-  group slug, on create and on a slug change. The gateway indexes first-wins in
-  file order, bootstrap rows before database rows, so a slug two rows still
-  share from before the guard resolves the same way on every build.
+- Route names and provider names are unique per org, not across the
+  deployment (#1857, [ADR-0039](../adr/2026-10-28-per-org-namespaces.md)):
+  the gateway names rows `(org, name)` and `Config::validate` refuses a name
+  only twice in one org. A route name is held once across all of an org's
+  projects, since a key resolves a name per org (`RouteRepo::model_in_use`,
+  `ProviderRepo::name_in_use`, both scoped by org).
+- Provider slugs and provider-group slugs form one address namespace per org,
+  because the gateway resolves `provider-slug/model` and `group-slug/model`
+  from it; a bootstrap-file row's slug is kept from every org. `Config::validate`
+  does not check slugs; a second holder would silently take the address
+  instead, and a group whose slug a provider of its org holds would drop out of
+  routing. So a provider slug is refused when a provider or group of the same
+  org (or a bootstrap row) holds it, and the same for a group slug, on create
+  and on a slug change (`ProviderRepo::address_slug_in_use`). The gateway
+  indexes first-wins in file order, bootstrap rows before database rows, so a
+  slug two rows of one org still share from before the guard resolves the same
+  way on every build.
 - A route name may contain `/` (`Qwen/Qwen2.5-7B`), but not as the address of
   another org's or a bootstrap-file provider or group (`edge/…` while another
   org holds `edge`), and a database route may not be named `fake-llm`. The
@@ -357,11 +367,13 @@ The write path keeps the snapshot inside that rule:
   reach the other org's route. An operator may still replace the builtin:
   a bootstrap-file route, a `[[models.default]]` or a `rolter-seed --import`
   named `fake-llm` shadows it.
-- Every refusal is a `409` ("… is already in use in this deployment; choose
-  another") that never says which org holds the name. `rolter-seed --import`
-  refuses the same collisions, and the startup seeders (`[[providers.default]]`,
-  `[[provider_groups.default]]`, `[[models.default]]`) skip a colliding default
-  with a warning instead of writing it. Per-org namespaces are #1857.
+- Every refusal is a `409`: "… is already in use in this organization; choose
+  another" for the caller's own org, and "… in this deployment" for a
+  bootstrap-file row or another org's address, which never says which org
+  holds it. `rolter-seed --import` refuses the same collisions, and the startup
+  seeders (`[[providers.default]]`, `[[provider_groups.default]]`,
+  `[[models.default]]`) skip a colliding default with a warning instead of
+  writing it.
 
 The dashboard never sees `tenancy`: `redact_config_for_dashboard` clears it
 along with the credentials, and drops the database key records, which name

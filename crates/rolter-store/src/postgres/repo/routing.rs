@@ -28,16 +28,23 @@ const ROUTE_COLUMNS: &str =
 pub struct RouteRepo<'a>(pub &'a PgPool);
 
 impl RouteRepo<'_> {
-    /// Whether any route in the deployment already answers to `model`. The
-    /// gateway keys routes by public name alone, across every org, so a
-    /// second one would make the snapshot refuse (#1845); per-org names are
-    /// #1857.
-    pub async fn model_in_use(&self, model: &str) -> Result<bool> {
-        sqlx::query_scalar("select exists(select 1 from routes where model = $1)")
-            .bind(model)
-            .fetch_one(self.0)
-            .await
-            .map_err(store_err)
+    /// Whether a route of `org_id` already answers to `model`, in any of the
+    /// org's projects. The gateway names routes by `(org, model)` (#1857,
+    /// ADR-0039), so another org may hold the same name, but a key resolves a
+    /// name per org, not per project, so two projects of one org may not.
+    /// `None` asks across every org.
+    pub async fn model_in_use(&self, model: &str, org_id: Option<Uuid>) -> Result<bool> {
+        sqlx::query_scalar(
+            "select exists(select 1 from routes r \
+               join projects p on p.id = r.project_id \
+               join teams t on t.id = p.team_id \
+              where r.model = $1 and ($2::uuid is null or t.org_id = $2))",
+        )
+        .bind(model)
+        .bind(org_id)
+        .fetch_one(self.0)
+        .await
+        .map_err(store_err)
     }
 
     /// Whether a route named `model` in `org_id` would sit on the

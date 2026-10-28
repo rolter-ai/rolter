@@ -3,9 +3,10 @@
 use crate::support::*;
 use serde_json::{json, Value};
 
-/// Providers and provider groups answer `slug/model` from one namespace at the
-/// gateway, so a slug either kind holds is refused to the other kind too, on
-/// create and on rename. A route name is refused where it would sit on another
+/// Providers and provider groups answer `slug/model` from one namespace per
+/// org at the gateway, so a slug either kind of an org holds is refused to the
+/// other kind of that org too, on create and on rename, while another org may
+/// reuse it (#1857). A route name is refused where it would sit on another
 /// org's `slug/model` address or on the builtin `fake-llm`, and is otherwise
 /// free to contain `/` (#1845).
 #[tokio::test]
@@ -74,20 +75,8 @@ async fn providers_groups_and_route_names_share_the_gateways_address_namespace()
     .await;
     assert_eq!(status, 200, "{pool}");
 
-    // across kinds: a provider may not take a group's slug, nor a group a
-    // provider's, and the refusal does not say which org holds it
-    let (status, body) = provider(&org_b, "pool-provider", "pool").await;
-    assert_eq!(status, 409, "provider on a group slug: {body}");
-    assert!(!body.to_string().contains("tenant-a"), "{body}");
     let (status, own) = provider(&org_b, "edge-b", "edge-b").await;
     assert_eq!(status, 200, "{own}");
-    let (status, body) = post(
-        format!("{base}/api/v1/orgs/{org_b}/provider-groups"),
-        json!({"name": "edge", "slug": "edge", "strategy": "round_robin",
-               "members": [{"provider_id": own["id"]}]}),
-    )
-    .await;
-    assert_eq!(status, 409, "group on a provider slug: {body}");
     let (status, own_group) = post(
         format!("{base}/api/v1/orgs/{org_b}/provider-groups"),
         json!({"name": "pool-b", "slug": "pool-b", "strategy": "round_robin",
@@ -96,11 +85,23 @@ async fn providers_groups_and_route_names_share_the_gateways_address_namespace()
     .await;
     assert_eq!(status, 200, "{own_group}");
 
+    // within one org, across kinds: a provider may not take its org's group
+    // slug, nor a group its org's provider slug
+    let (status, body) = provider(&org_b, "pool-b-provider", "pool-b").await;
+    assert_eq!(status, 409, "provider on a group slug: {body}");
+    let (status, body) = post(
+        format!("{base}/api/v1/orgs/{org_b}/provider-groups"),
+        json!({"name": "edge-b group", "slug": "edge-b", "strategy": "round_robin",
+               "members": [{"provider_id": own["id"]}]}),
+    )
+    .await;
+    assert_eq!(status, 409, "group on a provider slug: {body}");
+
     // the same on rename
     let (status, body) = send(
         reqwest::Method::PUT,
         format!("{base}/api/v1/providers/{}", own["id"].as_str().unwrap()),
-        json!({"slug": "pool", "allow_slug_change": true}),
+        json!({"slug": "pool-b", "allow_slug_change": true}),
     )
     .await;
     assert_eq!(status, 409, "provider renamed onto a group slug: {body}");
@@ -110,7 +111,7 @@ async fn providers_groups_and_route_names_share_the_gateways_address_namespace()
             "{base}/api/v1/provider-groups/{}",
             own_group["id"].as_str().unwrap()
         ),
-        json!({"slug": "edge", "allow_slug_change": true}),
+        json!({"slug": "edge-b", "allow_slug_change": true}),
     )
     .await;
     assert_eq!(status, 409, "group renamed onto a provider slug: {body}");
@@ -147,6 +148,18 @@ async fn providers_groups_and_route_names_share_the_gateways_address_namespace()
         let (status, body) = route(project, model).await;
         assert_eq!(status, 200, "{model}: {body}");
     }
+
+    // another org may reuse either slug, for either kind (#1857). this comes
+    // last: an `edge/…` route of org a would then sit on org b's address too
+    let (status, body) = provider(&org_b, "pool-provider", "pool").await;
+    assert_eq!(status, 200, "another org's group slug: {body}");
+    let (status, body) = post(
+        format!("{base}/api/v1/orgs/{org_b}/provider-groups"),
+        json!({"name": "edge", "slug": "edge", "strategy": "round_robin",
+               "members": [{"provider_id": own["id"]}]}),
+    )
+    .await;
+    assert_eq!(status, 200, "another org's provider slug: {body}");
 
     // nothing refused above reached the snapshot, and it still builds
     let snapshot: Value = client

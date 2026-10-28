@@ -170,9 +170,16 @@ With collisions harmless, the deployment-wide checks from the tenancy PR are
 removed: creating or renaming a route, provider or group refuses only on a
 name or slug **its own org** already uses (`model_in_use_in_org`,
 `name_in_use_in_org`, and the slug checks scoped by `org_id`), and
-`rolter-seed --import` applies the same rule. The refusal for a route whose
-name sits on another org's `provider-slug/model` address stays: it is about
-the operator's org-less keys reaching an address, not about collisions.
+`rolter-seed --import` applies the same rule. Two refusals stay. A route whose
+name sits on another org's `provider-slug/model` address is still refused: it
+is about the operator's org-less keys reaching an address, not about
+collisions. And a name or slug a readonly row of the control plane's
+bootstrap file holds is still refused to every org's rows, as it was before
+this change: those rows are the operator's, and the dashboard cannot edit
+them, so an org row shadowing one for its own keys would be a change the
+operator never sees. A gateway-only `rolter.toml` has no such guard, since it
+has no store to write to; there an org row of the same name does shadow the
+global one for that org's keys, as section 1 says.
 
 ## Options considered
 

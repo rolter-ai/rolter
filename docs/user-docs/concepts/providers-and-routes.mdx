@@ -20,7 +20,7 @@ A provider is an upstream AI service that Rolter can forward requests to. Each p
 | `egress_proxy` | —        | Optional outbound proxy URL (`http://`, `https://`, `socks5://`, or `socks5h://`) |
 
 <Note>
-  Providers, provider groups and routes created through the dashboard or the API belong to an organization. Only that organization's virtual keys can use them — by route name, as `provider-slug/model`, or through a group as `group-slug/model` — and a route target or group member must be a provider of the same organization. Route names and provider names are unique across the whole deployment for now, and provider slugs and provider group slugs share one namespace, so a provider cannot take a slug a group already has and the other way round. A name another organization already uses is refused with `409 Conflict`, without saying which organization holds it. A route name may contain `/`, as in `Qwen/Qwen2.5-7B`, but not as another organization's `provider-slug/…` or `group-slug/…` address, and `fake-llm` is reserved for the built-in model. The address check is made when the route is created: a slug created afterwards is not refused, and keys from a config file, which carry no organization, then reach the route rather than the new address.
+  Providers, provider groups and routes created through the dashboard or the API belong to an organization. Only that organization's virtual keys can use them — by route name, as `provider-slug/model`, or through a group as `group-slug/model` — and a route target or group member must be a provider of the same organization. Names belong to the organization too: two organizations can each have a `gpt-4o` route and an `openai` provider, and each organization's keys reach only their own. Within one organization a route name is used once across all its projects, a provider name once, and provider slugs and provider group slugs share one namespace, so a provider cannot take a slug a group of the same organization already has and the other way round. A name your organization already uses is refused with `409 Conflict`. A name, slug or address that a readonly row of the bootstrap file holds is refused to every organization, without saying who holds it. A route name may contain `/`, as in `Qwen/Qwen2.5-7B`, but not as another organization's `provider-slug/…` or `group-slug/…` address, and `fake-llm` is reserved for the built-in model. The address check is made when the route is created: a slug created afterwards is not refused, and keys from a config file, which carry no organization, then reach the route rather than the new address.
 
 Only the readonly rows of a file a process loads directly are deployment-wide: a gateway's `--config`, and the control plane's bootstrap `--config` (flat `[[providers]]`, `[[routes]]`, `[[provider_groups]]` and the `*.readonly` tiers). Entries under `[[providers.default]]`, `[[provider_groups.default]]` and `[[models.default]]` are seeded into the `default` organization, skipping any whose name another organization already uses, and `rolter-seed --import` writes into the organization it imports into (`default` unless you name another). Like dashboard-created rows, only that organization's keys can use them.
 
@@ -103,14 +103,14 @@ egress_proxy = "http://corp-proxy:3128"   # optional outbound proxy
 
 A route maps a **public model name** — what your application actually sends in the `"model"` field — to one or more upstream targets plus a load-balancing strategy. When a request arrives for `"gpt-4o"`, Rolter looks up the matching route and forwards it to the appropriate provider.
 
-| Field                | Description                                                                    |
-| -------------------- | ------------------------------------------------------------------------------ |
-| `model`              | Public model name clients request (must be unique across the deployment)       |
-| `strategy`           | Load-balancing strategy (see [Load Balancing](/concepts/load-balancing))       |
-| `[[routes.targets]]` | One or more upstream targets to balance across                                 |
-| `targets[].provider` | Name of a declared provider                                                    |
-| `targets[].model`    | Upstream model identifier; omit to forward the public name as-is               |
-| `targets[].weight`   | Relative traffic share for `weighted` and `pipeline` strategies (default: `1`) |
+| Field                | Description                                                                                                                                  |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `model`              | Public model name clients request (unique in the file; an organization's own route of the same name serves that organization's keys instead) |
+| `strategy`           | Load-balancing strategy (see [Load Balancing](/concepts/load-balancing))                                                                     |
+| `[[routes.targets]]` | One or more upstream targets to balance across                                                                                               |
+| `targets[].provider` | Name of a declared provider                                                                                                                  |
+| `targets[].model`    | Upstream model identifier; omit to forward the public name as-is                                                                             |
+| `targets[].weight`   | Relative traffic share for `weighted` and `pipeline` strategies (default: `1`)                                                               |
 
 ### Basic route example
 

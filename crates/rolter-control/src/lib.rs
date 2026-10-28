@@ -1790,11 +1790,12 @@ async fn build_store(
 /// default project no longer has is seeded again, so deleting a default only
 /// lasts until the next restart unless the file drops it too.
 ///
-/// A route name is held once across the deployment, the same rule the API and
-/// `rolter-seed --import` enforce (#1845): a default whose name another org's
-/// route or a readonly route already has, or that is the `slug/…` address of
-/// another org's or a readonly provider or group, is skipped with a warning,
-/// since a duplicate name would stop the snapshot from building for every org.
+/// A route name is held once per org, the same rule the API and
+/// `rolter-seed --import` enforce (#1857): a default whose name another
+/// project of the default org or a readonly route already has, or that is the
+/// `slug/…` address of another org's or a readonly provider or group, is
+/// skipped with a warning. Another org's route of the same name is no reason
+/// to skip it (ADR-0039).
 /// The builtin `fake-llm` is the operator's to replace, so a default of that
 /// name is seeded as before.
 #[cfg(feature = "postgres")]
@@ -1834,14 +1835,14 @@ async fn seed_default_models(pool: &sqlx::PgPool, config: &GatewayConfig) -> any
         }
         if readonly.models.contains(&route.model)
             || readonly.holds_address_of(&route.model)
-            || routes.model_in_use(&route.model).await?
+            || routes.model_in_use(&route.model, Some(org_id)).await?
             || routes
                 .name_takes_address_outside_org(&route.model, Some(org_id))
                 .await?
         {
             tracing::warn!(
                 model = %route.model,
-                "models.default not seeded: the name is already in use elsewhere in this deployment"
+                "models.default not seeded: the name is already in use in the default organization or by a readonly row"
             );
             continue;
         }
@@ -1974,10 +1975,10 @@ fn provider_kind_str(kind: &rolter_core::ProviderKind) -> &'static str {
 /// and one the default org deleted is seeded again on the next restart.
 /// Seeded providers are DB-owned and editable — not config-owned.
 ///
-/// A default whose name another provider holds, or whose slug a provider or
-/// provider group anywhere in the deployment (readonly rows included) already
+/// A default whose name another provider of the default org holds, or whose
+/// slug a provider or provider group of that org or a readonly row already
 /// answers, is skipped with a warning rather than written as a duplicate: the
-/// same deployment-wide rule the API enforces (#1845).
+/// same per-org rule the API enforces (#1857).
 #[cfg(feature = "postgres")]
 async fn seed_default_providers(pool: &sqlx::PgPool, config: &GatewayConfig) -> anyhow::Result<()> {
     if config.provider_defaults.is_empty() {
@@ -2006,13 +2007,13 @@ async fn seed_default_providers(pool: &sqlx::PgPool, config: &GatewayConfig) -> 
         }
         if readonly.providers.contains(&provider.name)
             || readonly.holds_slug(&slug)
-            || repo.name_in_use(&provider.name).await?
-            || repo.address_slug_in_use(&slug, None).await?
+            || repo.name_in_use(&provider.name, Some(org_id)).await?
+            || repo.address_slug_in_use(&slug, Some(org_id), None).await?
         {
             tracing::warn!(
                 provider = %provider.name,
                 %slug,
-                "providers.default not seeded: the name or slug is already in use elsewhere in this deployment"
+                "providers.default not seeded: the name or slug is already in use in the default organization or by a readonly row"
             );
             continue;
         }
@@ -2104,13 +2105,13 @@ async fn seed_default_provider_groups(
         }
         if readonly.holds_slug(&slug)
             || rolter_store::postgres::repo::ProviderRepo(pool)
-                .address_slug_in_use(&slug, None)
+                .address_slug_in_use(&slug, Some(org_id), None)
                 .await?
         {
             tracing::warn!(
                 group = %group.name,
                 %slug,
-                "provider_groups.default not seeded: the slug is already in use elsewhere in this deployment"
+                "provider_groups.default not seeded: the slug is already in use in the default organization or by a readonly row"
             );
             continue;
         }
@@ -2844,6 +2845,14 @@ async fn build_snapshot(
             let omitted = {
                 let _entered = sanitize.enter();
                 let mut omitted = down_omitted;
+                // a gateway that states no formats predates per-org namespaces
+                // and refuses a repeated name, so every org row whose name
+                // another row shares is left out for it, failing closed
+                // (ADR-0039 section 5). before the sanitizer, so its cascade
+                // prunes what referenced a provider left out
+                if query.formats.is_none() {
+                    omitted.extend(rolter_core::namespace::fold_for_legacy_gateway(&mut config));
+                }
                 omitted.extend(sanitize_snapshot(&state, &mut config).problems);
                 omitted
             };
