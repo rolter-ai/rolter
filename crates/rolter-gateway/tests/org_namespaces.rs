@@ -3,16 +3,20 @@
 //!
 //! Each org's keys must reach only their own provider, by the route's name and
 //! by `openai/<model>`; the per-target state behind the two routes (breakers,
-//! cooldowns, in-flight counts) must never be shared.
+//! cooldowns, in-flight counts) must never be shared; and the request log must
+//! name the provider by its display name and record whose it was.
 
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::post;
 use axum::{Json, Router};
+use parking_lot::Mutex;
 use rolter_core::{
     BalancingStrategy, GatewayConfig, ModelRoute, ProviderConfig, ProviderKind, Target, Tenancy,
     VirtualKeyRecord,
@@ -61,6 +65,45 @@ async fn upstream(name: &'static str, status: StatusCode) -> (SocketAddr, Arc<At
         }),
     );
     (serve(app).await, hits)
+}
+
+/// A stand-in for ClickHouse keeping every `request_logs` row.
+#[derive(Clone, Default)]
+struct Rows(Arc<Mutex<Vec<Value>>>);
+
+impl Rows {
+    async fn serve(&self) -> SocketAddr {
+        async fn ingest(
+            State(rows): State<Rows>,
+            axum::extract::RawQuery(query): axum::extract::RawQuery,
+            body: String,
+        ) -> &'static str {
+            if query.unwrap_or_default().contains("request_logs") {
+                for line in body.lines().filter(|line| !line.trim().is_empty()) {
+                    if let Ok(row) = serde_json::from_str::<Value>(line) {
+                        rows.0.lock().push(row);
+                    }
+                }
+            }
+            "ok"
+        }
+        serve(
+            Router::new()
+                .route("/", post(ingest))
+                .with_state(self.clone()),
+        )
+        .await
+    }
+
+    async fn wait_for(&self, count: usize) -> Vec<Value> {
+        for _ in 0..200 {
+            if self.0.lock().len() >= count {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        self.0.lock().clone()
+    }
 }
 
 fn owned_by(org: &str) -> Option<Tenancy> {
@@ -248,6 +291,36 @@ async fn a_failing_provider_in_one_org_never_trips_the_other_orgs_breaker() {
         .iter()
         .all(|view| view.model != "gpt-4o@org-a"
             || view.state == rolter_gateway::breaker::BreakerPhase::Closed));
+}
+
+#[tokio::test]
+async fn the_request_log_names_the_provider_and_the_org_that_owns_it() {
+    let (a, _) = upstream("from-a", StatusCode::OK).await;
+    let (b, _) = upstream("from-b", StatusCode::OK).await;
+    let rows = Rows::default();
+    let clickhouse = rows.serve().await;
+    let mut config = config(a, b);
+    config.logging.clickhouse_url = Some(format!("http://{clickhouse}"));
+    config.logging.flush_ms = 20;
+    config.logging.batch_max = 1;
+    let state = rolter_gateway::AppState::with_logging(&config, None);
+    let gw = gateway(state).await;
+
+    let response = ask(gw, ORG_B, "gpt-4o").await;
+    assert_eq!(
+        response
+            .headers()
+            .get("x-rolter-provider")
+            .and_then(|v| v.to_str().ok()),
+        Some("openai"),
+        "the header shows the display name, never the runtime id"
+    );
+    assert_eq!(answer(response).await, (200, "from-b".into()));
+    let logged = rows.wait_for(1).await;
+    assert_eq!(logged.len(), 1, "{logged:?}");
+    assert_eq!(logged[0]["provider"], "openai");
+    assert_eq!(logged[0]["provider_org_id"], ORG_B);
+    assert_eq!(logged[0]["org_id"], ORG_B);
 }
 
 #[tokio::test]

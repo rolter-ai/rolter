@@ -113,6 +113,11 @@ impl HealthEventSink {
         self.orgs.store(Arc::new(map));
     }
 
+    /// The org that owns the provider with runtime id `provider`, if any.
+    pub fn provider_org(&self, provider: &str) -> Option<String> {
+        self.orgs.load().get(provider).cloned()
+    }
+
     /// Build a sink and spawn the background batch writer targeting the
     /// ClickHouse HTTP endpoint at `clickhouse_url`. Must be called from within a
     /// Tokio runtime.
@@ -171,10 +176,16 @@ impl HealthEventSink {
         }
     }
 
-    /// Fill in the owning org of the event's provider unless the builder set one.
+    /// Fill in the owning org of the event's provider unless the builder set
+    /// one, and write the provider's display name rather than its runtime id,
+    /// so two orgs' `openai` are two series that each read `openai`.
     fn stamp_org(&self, event: &mut HealthEvent) {
-        if event.org_id.is_empty() {
-            if let Some(org) = self.orgs.load().get(&event.provider) {
+        if let Some(org) = self.orgs.load().get(&event.provider) {
+            let display = rolter_core::namespace::display_name(&event.provider, org);
+            if display.len() != event.provider.len() {
+                event.provider = display.to_string();
+            }
+            if event.org_id.is_empty() {
                 event.org_id.clone_from(org);
             }
         }
@@ -364,6 +375,23 @@ mod tests {
         // a reload that drops the provider stops attributing to its old org
         sink.set_provider_orgs(&[]);
         assert_eq!(stamped("openai"), "");
+    }
+
+    #[test]
+    fn two_orgs_namesakes_are_two_series_that_each_show_the_name() {
+        let sink = HealthEventSink::disabled(Arc::new(Metrics::default()));
+        // runtime ids, as the snapshot assigns them when two orgs share a name
+        sink.set_provider_orgs(&[
+            provider("openai@org-a", Some("org-a")),
+            provider("openai@org-b", Some("org-b")),
+        ]);
+        for org in ["org-a", "org-b"] {
+            let mut e = event();
+            e.provider = format!("openai@{org}");
+            e.org_id = String::new();
+            sink.stamp_org(&mut e);
+            assert_eq!((e.provider.as_str(), e.org_id.as_str()), ("openai", org));
+        }
     }
 
     #[test]
