@@ -728,7 +728,7 @@ export const Mobile: Story = {
     await expect(scale).toBeLessThan(1.05);
     const axis = [...svg.querySelectorAll("text")];
     for (const text of axis) {
-      await expect(parseFloat(getComputedStyle(text).fontSize) * scale).toBeGreaterThanOrEqual(10);
+      await expect(parseFloat(getComputedStyle(text).fontSize) * scale).toBeGreaterThanOrEqual(11);
     }
     // and the labels are thinned to what fits, so none runs into the next
     const boxes = axis
@@ -1306,7 +1306,7 @@ const partial = recording(except([ENDPOINTS[1]], refused, () => !spendDown));
 
 /**
  * One failing read takes down one card. The spend chart's endpoint answers
- * 500; the figures, the donut, the bars and the recent rows stay up instead of
+ * 500; the figures, the by-model table and the recent rows stay up instead of
  * giving way to a whole-screen alert (#1976). The card's own alert names what
  * it could not read, carries its own retry, and says nothing about an empty
  * window. The retry asks for the spend series and nothing else.
@@ -1491,7 +1491,7 @@ const cardDown = recording(except([ENDPOINTS[1]], refused));
 /**
  * The no-polling rule belongs to the read, not to the screen: the spend chart
  * failed holding nothing, so it stops asking and keeps its alert, while the
- * figures, the donut, the bars and the rows go on refreshing around it.
+ * figures, the by-model table and the rows go on refreshing around it.
  */
 export const AFailedCardHoldsItsAlertWhileTheOthersKeepPolling: Story = {
   render: () => render(cardDown.stub, undefined, FAST_POLL_MS),

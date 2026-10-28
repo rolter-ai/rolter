@@ -207,14 +207,14 @@ function DirectorySheet({
       saving={save.isPending}
       onSubmit={() => save.mutate()}
     >
-      <Field label={t("pages.ldap.create.name")} hint={t("pages.ldap.create.nameHint")}>
+      <Field label={t("pages.ldap.create.name")} hint={t("pages.ldap.create.nameHint")} required>
         <Input
           value={draft.name}
           onChange={(e) => set({ name: e.target.value })}
           placeholder={t("pages.ldap.create.namePlaceholder")}
         />
       </Field>
-      <Field label={t("pages.ldap.create.url")} hint={t("pages.ldap.create.urlHint")}>
+      <Field label={t("pages.ldap.create.url")} hint={t("pages.ldap.create.urlHint")} required>
         <Input
           value={draft.url}
           onChange={(e) => set({ url: e.target.value })}
@@ -256,7 +256,11 @@ function DirectorySheet({
       <p className="text-sm font-medium text-[color:var(--status-warning-text)]">
         {t("pages.ldap.create.passwordWriteOnly")}
       </p>
-      <Field label={t("pages.ldap.create.baseDn")} hint={t("pages.ldap.create.baseDnHint")}>
+      <Field
+        label={t("pages.ldap.create.baseDn")}
+        hint={t("pages.ldap.create.baseDnHint")}
+        required
+      >
         <Input
           value={draft.baseDn}
           onChange={(e) => set({ baseDn: e.target.value })}

@@ -1,4 +1,4 @@
-import { expect, userEvent, waitFor, within } from "storybook/test";
+import { expect, userEvent, within } from "storybook/test";
 
 // Fixture for stories that assert the (i) note beside a form field (#487).
 //
@@ -26,9 +26,6 @@ export async function expectFieldHint(
   says: string | RegExp,
 ): Promise<void> {
   const button = await within(scope).findByRole("button", { name: trigger });
-  // a sheet slides in under a transform, and a fixed note placed while one is on
-  // an ancestor is placed against the sheet instead of the window
-  await waitFor(() => expect(getComputedStyle(scope).transform).toBe("none"));
   await userEvent.hover(button);
   const note = within(scope).getByRole("tooltip");
   await expect(note).toHaveTextContent(says);
@@ -44,4 +41,21 @@ export async function expectFieldHint(
 
   await userEvent.unhover(button);
   await expect(within(scope).queryByRole("tooltip")).toBeNull();
+}
+
+/**
+ * `expectFieldHint` for several fields of one form, in the order they sit.
+ *
+ * `aboutField` is the catalog's `common.aboutField`, so the button each note is
+ * reached by is named in the locale the story runs in. Each pair is the field's
+ * visible label and what its note says.
+ */
+export async function expectFieldHints(
+  scope: HTMLElement,
+  aboutField: string,
+  notes: readonly (readonly [label: string, says: string])[],
+): Promise<void> {
+  for (const [label, says] of notes) {
+    await expectFieldHint(scope, aboutField.replace("{{label}}", label), says);
+  }
 }

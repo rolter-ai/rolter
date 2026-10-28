@@ -85,6 +85,32 @@ export const RenderedCells: Story = {
 };
 
 /**
+ * A table is named by its caption, and a column can be the row's header, so a
+ * screen reader reads each value under both the column and the row it is in.
+ */
+export const NamedWithRowHeaders: Story = {
+  render: () => (
+    <Table
+      caption="Models by usage"
+      columns={[{ ...COLUMNS[0]!, rowHeader: true }, ...COLUMNS.slice(1)]}
+      data={ROWS}
+      rowKey="id"
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByRole("table", { name: "Models by usage" })).toBeVisible();
+    await expect(canvas.getAllByRole("rowheader")).toHaveLength(ROWS.length);
+    await expect(canvas.getByRole("rowheader", { name: ROWS[0]!.model as string })).toBeVisible();
+    // the last row draws no rule under any of its cells, the row header included
+    const last = canvas.getByRole("rowheader", { name: ROWS[ROWS.length - 1]!.model as string });
+    for (const cell of last.closest("tr")!.children) {
+      await expect(getComputedStyle(cell).borderBottomWidth).toBe("0px");
+    }
+  },
+};
+
+/**
  * A row's detail opens in a full-width row directly under it (#2129), so the
  * reader never has to match a block below the table to the row it came from.
  */

@@ -38,6 +38,7 @@ import { AuthProvider } from "@/lib/auth";
 import type { BudgetRow, BudgetSpendReport, RateLimitRow, VirtualKeyRow } from "@/lib/api";
 import en from "@/lib/i18n/locales/en.json";
 import ru from "@/lib/i18n/locales/ru.json";
+import { expectFieldHints } from "@/lib/story-hints";
 import { atMobile, expectNoHorizontalOverflow } from "@/lib/story-viewport";
 import { UxScreenProvider } from "@/lib/ux-react";
 
@@ -656,6 +657,97 @@ export const CreatesARateLimit: Story = {
     await expectSheetClosed();
   },
 };
+
+/**
+ * Either cap will do, so neither field is marked required; a refused submit with
+ * both empty says what is missing in the footer (#3242), and Enter submits once
+ * one is typed.
+ */
+let rateLimitBlocked: Recorder;
+export const RateLimitSheetNamesWhatIsMissing: Story = {
+  render: () => {
+    rateLimitBlocked = recording(
+      scoped(async (input, init) => {
+        const url = String(input);
+        if (init?.method === "POST") return json(RATE_LIMITS[0], 201);
+        if (url.includes("/virtual-keys")) return json(KEYS);
+        if (url.includes("/budgets")) return budgetRead(url, BUDGETS);
+        return json(RATE_LIMITS);
+      }),
+    );
+    return (
+      <Harness fetchStub={rateLimitBlocked.stub}>
+        <Limits />
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, /add rate limit/i);
+    const form = within(sheet());
+    const rpm = form.getByLabelText("Requests per minute (optional)");
+    await expect(form.queryByRole("status")).toBeNull();
+
+    await userEvent.click(form.getByRole("button", { name: "Create" }));
+    await expect(await form.findByRole("status")).toHaveTextContent(
+      "Set a requests or a tokens per minute limit.",
+    );
+    rateLimitBlocked.expectNotSent("POST", "/rate-limits");
+
+    await userEvent.type(rpm, "300{Enter}");
+    await expectSheetClosed();
+    await expect(await rateLimitBlocked.expectSentBody("POST", "/rate-limits")).toMatchObject({
+      rpm: 300,
+    });
+  },
+};
+
+/**
+ * The scope type, the budget's limit and both rate-limit caps explain
+ * themselves in an (i) (#3285): what the caps belong to, what spend is counted
+ * from, and that an empty cap is no cap.
+ */
+function explainsEveryField(locale: "en" | "ru"): Story {
+  const catalog = locale === "ru" ? ru : en;
+  const p = catalog.pages.limits;
+  return {
+    ...(locale === "ru" ? { globals: { locale: "ru" } } : {}),
+    render: () => (
+      <Harness
+        fetchStub={scoped(async (input) => {
+          const url = String(input);
+          if (url.includes("/virtual-keys")) return json(KEYS);
+          if (url.includes("/budgets")) return budgetRead(url, BUDGETS);
+          return json(RATE_LIMITS);
+        })}
+      >
+        <Limits />
+      </Harness>
+    ),
+    play: async ({ canvasElement }) => {
+      const open = locale === "ru" ? /добавить бюджет/i : /add budget/i;
+      const openRate = locale === "ru" ? /добавить лимит скорости/i : /add rate limit/i;
+      await clickWhenEnabled(canvasElement, open);
+      await expectFieldHints(sheet(), catalog.common.aboutField, [
+        [
+          p.budgetLimitLabel.replace("{{currency}}", "USD"),
+          p.budgetLimitInfo.replace("{{currency}}", "USD"),
+        ],
+      ]);
+      await userEvent.keyboard("{Escape}");
+      await expectSheetClosed();
+      await expectFieldHints(canvasElement, catalog.common.aboutField, [
+        [p.scopeTypeLabel, p.scopeTypeInfo],
+      ]);
+      await clickWhenEnabled(canvasElement, openRate);
+      await expectFieldHints(sheet(), catalog.common.aboutField, [
+        [p.rpmLabel, p.rpmInfo],
+        [p.tpmLabel, p.tpmInfo],
+      ]);
+    },
+  };
+}
+export const ExplainsEachFieldInAHint: Story = explainsEveryField("en");
+export const ExplainsEachFieldInAHintInRussian: Story = explainsEveryField("ru");
 
 /**
  * The edits #1285 exists for. Each answers a PATCH with the row it would have

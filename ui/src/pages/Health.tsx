@@ -306,7 +306,7 @@ function BreakerPanel({
     <section
       aria-labelledby="health-breakers-title"
       data-testid="health-breakers"
-      className="flex flex-col gap-2.5 rounded-[10px] border bg-card p-4"
+      className="flex flex-col gap-2.5 rounded-lg border bg-card p-4"
     >
       <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
         <h2 id="health-breakers-title" className="text-sm font-semibold">
@@ -565,7 +565,7 @@ export default function Health() {
             <div
               key={group.provider}
               data-testid={`health-card-${group.provider}`}
-              className="flex flex-col gap-3.5 rounded-[10px] border bg-card p-4"
+              className="flex flex-col gap-3.5 rounded-lg border bg-card p-4"
               style={{
                 borderColor:
                   state === "within"

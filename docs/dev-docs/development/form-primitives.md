@@ -148,6 +148,7 @@ drops one fails the story rather than shipping.
 - `EditorSheet` takes `onSubmit` (it was `onSave`) and `canSave`. A `Dialog` takes `onSubmit`, `canSubmit` and `busy`, and its footer's primary button is `type="submit"` by hand.
 - The primary button is never natively `disabled` for a validation error. While `canSave` is false it is `aria-disabled` and still pressable, because pressing it, or Enter in a field, is how the form is asked why. Only `saving` really disables it.
 - A required field is `<Field required>`: the control gets the native `required` and `aria-required`, the label a marker. After a refused submit a still-empty required control says "Required" under itself (`role="alert"`, wired through `aria-describedby`), focus moves to the first field at fault, and `SubmitFormStatus` in the footer counts them (`N fields need attention`, a polite `role="status"`). Typing into the field clears its message. A value of spaces counts as empty, since every save trims it.
+- A `Combobox` takes `required` and `aria-required` on its text input, so `<Field required>` works on a picker the same way (an empty pick refuses the submit and names the field). Where either of two inputs will do (a rate limit needs a requests or a tokens cap), neither is `required`: pass the sheet's `blockedMessage` for the refused submit instead. A dialog that already owns a `<form>` (the two-factor enrol step) cannot take `Dialog onSubmit`, since forms do not nest; say so in a comment there.
 - Only `required` is read from the attributes. A range, a charset or a clash with another field stays with the screen's own check (`useFieldErrors`, `FieldError`), which says more than a browser message can, in the dashboard's language. The browser's own bubble is off (`noValidate`).
 - A refusal that comes from the caller's rule rather than a field (a pick that is not an input) passes `blockedMessage` to `EditorSheet`, which the status line shows when no field is at fault.
 - A native `<button>` written by hand inside an editor carries `type="button"`, or it submits the form. `filter-panel.tsx` was the one that did not.
@@ -303,7 +304,8 @@ screen's wording stays in the screen's namespace and arrives as a prop.
 
 `bun run check:primitives` (`ui/scripts/check-ui-primitives.ts`) is what keeps
 this page from being advice. It runs in the `ui, storybook, docs` job and fails on
-ten things: a bare `<select>`, a hand-written `role="listbox"` / `"option"` /
+eleven things: a native `<button>` with no `type` and no props spread (a
+button defaults to submit, so one inside an editor sheet submits the form, #3241), a bare `<select>`, a hand-written `role="listbox"` / `"option"` /
 `"combobox"` (#3058), a native `<input type="checkbox">` outside
 `checkbox.tsx` (#2223), a raw `<pre>`, a `window.confirm`/`alert`/
 `prompt`, a component re-declared under a name `src/components/ui/` already
@@ -472,7 +474,7 @@ const { draft: form, fields, changed, set } = sf;
   the old value until Save, so `SettingsPanel unsaved` and `SwitchRow unsaved` draw a `Not saved` chip
   (`UnsavedBadge`) beside the title while the field differs from the baseline: `unsaved={changed.includes("enabled")}`.
 
-The Security screen predates this and keeps its own footer; it can move onto the same pieces.
+The Security screen uses the same pieces (#3243): its lists feed `useFieldErrors` through `local` (one message per list, with the full per-entry problems still drawn under the field), and its Save asks the loosening confirmation from `security-loosening.ts` before the request, like Feature Flags asks its own.
 
 ## The versioned-repository kit
 

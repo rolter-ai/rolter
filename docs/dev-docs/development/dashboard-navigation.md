@@ -40,7 +40,11 @@ have written a third and fourth copy. They are one now:
   (`InfoHint`, `side="below"` and `align="center"`, #487), so a dialog body's scroll
   area cannot clip it. It is rendered inline, as the anchor's
   sibling, so it escapes `overflow` without leaving the nav drawer's focus trap,
-  and it follows the anchor when a list it sits in scrolls. A press outside, focus
+  and it follows the anchor when a list it sits in scrolls. A `transform` on an ancestor
+  (the side sheet and the nav drawer slide in under one) makes that ancestor the block
+  `fixed` is placed against, so `place` measures where the block's corner is from the
+  panel's own rectangle and translates the answer into it, and places the panel again
+  when the ancestor's animation or transition ends (#3286). A press outside, focus
   moving elsewhere, and Escape close it; Escape closes only the panel on top, so
   a menu opened from inside the scope popover does not take the popover with it.
   `openPanelCount()` is what the nav drawer asks before treating Escape as its own.

@@ -209,6 +209,37 @@ export const LoadFailed: Story = {
   },
 };
 
+const blockedMint = recording(api());
+
+/** A token without a name is refused by naming the field; Enter mints once it has one (#3242). */
+export const BlockedSubmitNamesTheTokenName: Story = {
+  beforeEach: stubClipboard(async () => {}),
+  render: () => (
+    <Harness fetchStub={blockedMint.stub}>
+      <ApiTokens />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    await clickWhenEnabled(canvasElement, /Mint token/);
+    await waitFor(() => expect(sheet()).toBeVisible());
+    const panel = within(sheet());
+    const name = panel.getByLabelText("Name");
+    await expect(name).toBeRequired();
+    await expect(panel.queryByText("Required")).toBeNull();
+
+    await userEvent.click(panel.getByRole("button", { name: "Mint token" }));
+    await waitFor(async () => expect(await panel.findByText("Required")).toBeVisible());
+    await waitFor(() => expect(name).toHaveFocus());
+    await expect(await panel.findByRole("status")).toHaveTextContent("1 field needs attention");
+    blockedMint.expectNotSent("POST", `/orgs/${ORG.id}/api-tokens`);
+
+    await userEvent.type(name, "ci-new{Enter}");
+    await expect(
+      await blockedMint.expectSentBody("POST", `/orgs/${ORG.id}/api-tokens`),
+    ).toMatchObject({ name: "ci-new" });
+  },
+};
+
 const mints = recording(api());
 
 /** The body carries the picked scope, role and expiry, and the secret is shown once. */

@@ -302,7 +302,7 @@ function SpendStrip({
   const share = total > 0 ? unattributed / total : 0;
 
   return (
-    <div className="flex flex-wrap items-start gap-x-10 gap-y-3 rounded-[10px] border border-[color:var(--border-default)] bg-card px-4 py-3">
+    <div className="flex flex-wrap items-start gap-x-10 gap-y-3 rounded-lg border border-[color:var(--border-default)] bg-card px-4 py-3">
       <SpendFigure
         label={labels[window]}
         value={fmt.currency(total, currency)}
@@ -706,7 +706,7 @@ function AttributionScreen<T extends BusinessUnitRow | CustomerRow>({
                 // a retired unit reads as a quieter card, not as faded text:
                 // container opacity takes every glyph under 4.5:1 (#1181)
                 className={cn(
-                  "flex flex-col gap-3 rounded-[10px] border border-[color:var(--border-default)] p-4",
+                  "flex flex-col gap-3 rounded-lg border border-[color:var(--border-default)] p-4",
                   row.retired_at ? "bg-[color:var(--surface-subtle)]/60" : "bg-card",
                 )}
               >

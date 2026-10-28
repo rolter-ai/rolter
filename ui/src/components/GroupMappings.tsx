@@ -268,6 +268,7 @@ export function GroupMappings({
       <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-start">
         <Field
           label={t("groupMappings.groupLabel")}
+          info={t("groupMappings.groupInfo")}
           className="sm:max-w-[22rem] sm:flex-[1_1_14rem]"
         >
           <Input
@@ -277,7 +278,11 @@ export function GroupMappings({
             placeholder={t("groupMappings.groupPlaceholder")}
           />
         </Field>
-        <Field label={t("groupMappings.scopeLabel")} className="sm:w-[196px]">
+        <Field
+          label={t("groupMappings.scopeLabel")}
+          info={t("groupMappings.scopeInfo")}
+          className="sm:w-[196px]"
+        >
           <OrgScopePicker
             orgId={orgId}
             value={target}
@@ -286,7 +291,11 @@ export function GroupMappings({
             className="w-full"
           />
         </Field>
-        <Field label={t("groupMappings.roleLabel")} className="sm:w-40">
+        <Field
+          label={t("groupMappings.roleLabel")}
+          info={t("groupMappings.roleInfo")}
+          className="sm:w-40"
+        >
           <Combobox
             size="sm"
             className="w-full"

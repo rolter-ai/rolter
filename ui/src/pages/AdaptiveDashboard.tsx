@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import type { TFunction } from "i18next";
 import { Activity, ChevronRight, Network, PowerOff } from "lucide-react";
+import type * as React from "react";
 import { useTranslation } from "react-i18next";
 
 import { superadminOnly } from "@/components/ForbiddenScreen";
@@ -9,6 +10,7 @@ import { PanelSkeleton, StatGridSkeleton } from "@/components/LoadingState";
 import { PageBody } from "@/components/screen";
 import { Badge } from "@/components/ui/badge";
 import { EmptyState, EmptyStateLink } from "@/components/ui/empty-state";
+import { Table, type TableColumn } from "@/components/ui/table";
 import { STAT_GRID, StatCard } from "@/components/ui/stat-card";
 import {
   fetchAdaptiveRoutingPolicy,
@@ -113,6 +115,74 @@ const MODE_SWATCH = {
   exploration: "bg-[color:var(--status-info)]",
   fallback: "bg-[color:var(--text-subtle)]",
 } as const;
+
+/** one upstream of a route node, wrapped for the shared table */
+type TargetRow = { id: number; target: AdaptiveTargetTelemetryDto };
+
+/** the columns of a node's upstream table; the upstream's name is the row header */
+function targetColumns(
+  t: TFunction,
+  fmt: Formatters,
+  preferred: number | null,
+): TableColumn<TargetRow>[] {
+  const cell = (render: (target: AdaptiveTargetTelemetryDto) => React.ReactNode) => ({
+    align: "right" as const,
+    mono: true,
+    render: (_: unknown, row: TargetRow) => (
+      <span className="tabular-nums">{render(row.target)}</span>
+    ),
+  });
+  return [
+    {
+      key: "upstream",
+      header: t("pages.adaptiveDashboard.columns.upstream"),
+      rowHeader: true,
+      mono: true,
+      render: (_, { target }) => (
+        <>
+          {targetName(t, target)}
+          {target.target === preferred && (
+            <Badge tone="success" className="ml-2 align-middle">
+              {t("pages.adaptiveDashboard.preferred")}
+            </Badge>
+          )}
+        </>
+      ),
+    },
+    {
+      key: "score",
+      header: (
+        <>
+          {t("pages.adaptiveDashboard.columns.blendScore")}
+          <span className="block font-normal">
+            {t("pages.adaptiveDashboard.columns.blendScoreHint")}
+          </span>
+        </>
+      ),
+      ...cell((target) => (target.score == null ? "—" : fmt.number(target.score, DECIMAL))),
+    },
+    {
+      key: "latency",
+      header: t("pages.adaptiveDashboard.columns.latency"),
+      ...cell((target) => formatLatency(t, fmt, target.latency_ms)),
+    },
+    {
+      key: "cost",
+      header: t("pages.adaptiveDashboard.columns.cost"),
+      ...cell((target) => formatCost(t, fmt, target.cost_per_mtok)),
+    },
+    {
+      key: "inFlight",
+      header: t("pages.adaptiveDashboard.columns.inFlight"),
+      ...cell((target) => fmt.number(target.in_flight ?? 0)),
+    },
+    {
+      key: "samples",
+      header: t("pages.adaptiveDashboard.columns.samples"),
+      ...cell((target) => fmt.number(target.samples ?? 0)),
+    },
+  ];
+}
 
 function targetName(t: TFunction, target: AdaptiveTargetTelemetryDto): string {
   const provider =
@@ -277,7 +347,7 @@ function AdaptiveDashboardScreen() {
               <section
                 key={route.model}
                 aria-label={t("pages.adaptiveDashboard.routeAria", { model: route.model })}
-                className="overflow-hidden rounded-[10px] border border-[color:var(--border-subtle)]"
+                className="overflow-hidden rounded-lg border border-[color:var(--border-subtle)]"
               >
                 <div className="flex flex-wrap items-center justify-between gap-3 bg-[color:var(--surface-subtle)] px-4 py-3">
                   <div className="min-w-0">
@@ -399,80 +469,15 @@ function AdaptiveDashboardScreen() {
                               {t("pages.adaptiveDashboard.noTargets")}
                             </p>
                           ) : (
-                            <div
-                              tabIndex={0}
-                              className="overflow-x-auto rounded-lg border border-[color:var(--border-subtle)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                            >
-                              <table className="w-full min-w-[760px] border-collapse text-sm">
-                                <caption className="sr-only">
-                                  {t("pages.adaptiveDashboard.tableCaption", {
-                                    node: node.node_id,
-                                  })}
-                                </caption>
-                                <thead className="bg-[color:var(--surface-subtle)] text-left text-2xs uppercase tracking-[0.07em] text-muted-foreground">
-                                  <tr>
-                                    <th scope="col" className="px-3 py-2 font-medium">
-                                      {t("pages.adaptiveDashboard.columns.upstream")}
-                                    </th>
-                                    <th scope="col" className="px-3 py-2 text-right font-medium">
-                                      {t("pages.adaptiveDashboard.columns.blendScore")}
-                                      <span className="block font-normal normal-case tracking-normal">
-                                        {t("pages.adaptiveDashboard.columns.blendScoreHint")}
-                                      </span>
-                                    </th>
-                                    <th scope="col" className="px-3 py-2 text-right font-medium">
-                                      {t("pages.adaptiveDashboard.columns.latency")}
-                                    </th>
-                                    <th scope="col" className="px-3 py-2 text-right font-medium">
-                                      {t("pages.adaptiveDashboard.columns.cost")}
-                                    </th>
-                                    <th scope="col" className="px-3 py-2 text-right font-medium">
-                                      {t("pages.adaptiveDashboard.columns.inFlight")}
-                                    </th>
-                                    <th scope="col" className="px-3 py-2 text-right font-medium">
-                                      {t("pages.adaptiveDashboard.columns.samples")}
-                                    </th>
-                                  </tr>
-                                </thead>
-                                <tbody>
-                                  {node.targets.map((target) => (
-                                    <tr
-                                      key={target.target}
-                                      className="border-t border-[color:var(--border-subtle)]"
-                                    >
-                                      <th
-                                        scope="row"
-                                        className="break-words px-3 py-2.5 text-left font-mono text-xs font-medium"
-                                      >
-                                        {targetName(t, target)}
-                                        {target.target === preferredTarget(node) && (
-                                          <Badge tone="success" className="ml-2 align-middle">
-                                            {t("pages.adaptiveDashboard.preferred")}
-                                          </Badge>
-                                        )}
-                                      </th>
-                                      <td className="px-3 py-2.5 text-right font-mono text-xs tabular-nums">
-                                        {target.score == null
-                                          ? "—"
-                                          : fmt.number(target.score, DECIMAL)}
-                                      </td>
-                                      <td className="px-3 py-2.5 text-right font-mono text-xs tabular-nums">
-                                        {formatLatency(t, fmt, target.latency_ms)}
-                                      </td>
-                                      <td className="px-3 py-2.5 text-right font-mono text-xs tabular-nums">
-                                        {formatCost(t, fmt, target.cost_per_mtok)}
-                                      </td>
-                                      <td className="px-3 py-2.5 text-right font-mono text-xs tabular-nums">
-                                        {fmt.number(target.in_flight ?? 0)}
-                                      </td>
-                                      <td className="px-3 py-2.5 text-right font-mono text-xs tabular-nums">
-                                        {fmt.number(target.samples ?? 0)}
-                                      </td>
-                                    </tr>
-                                  ))}
-                                </tbody>
-                              </table>
-                            </div>
+                            <Table
+                              caption={t("pages.adaptiveDashboard.tableCaption", {
+                                node: node.node_id,
+                              })}
+                              rowKey="id"
+                              hover={false}
+                              columns={targetColumns(t, fmt, preferredTarget(node))}
+                              data={node.targets.map((target) => ({ id: target.target, target }))}
+                            />
                           )}
                         </div>
                       </details>

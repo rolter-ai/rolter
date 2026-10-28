@@ -19,6 +19,7 @@ import { HttpStatusBadge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Combobox } from "@/components/ui/combobox";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { BarTrack } from "@/components/ui/bar-chart";
 import { LineChart } from "@/components/ui/line-chart";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ListSkeleton, LoadingRegion } from "@/components/LoadingState";
@@ -792,18 +793,11 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
                             <span className="inline-flex items-center justify-end gap-2">
                               {/* the bar is the share of the busiest model; the
                                   number beside it is what a reader takes in */}
-                              <span
-                                aria-hidden
-                                className="hidden h-2 w-16 overflow-hidden rounded-[2px] bg-[color:var(--surface-subtle)] sm:block"
-                              >
-                                <span
-                                  className="block h-full rounded-[2px]"
-                                  style={{
-                                    width: `${row.pct as number}%`,
-                                    background: row.color as string,
-                                  }}
-                                />
-                              </span>
+                              <BarTrack
+                                share={(row.pct as number) / 100}
+                                color={row.color as string}
+                                className="hidden h-2 w-16 sm:block"
+                              />
                               <span>{fmtK(v as number)}</span>
                             </span>
                           ),

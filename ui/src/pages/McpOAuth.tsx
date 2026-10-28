@@ -117,7 +117,7 @@ function ownerLabel(users: UserRow[] | undefined, id: string): string {
 // the table is not ringed with four separate paragraphs (#2177)
 function TokenNotice({ children, notes }: { children: React.ReactNode; notes: string[] }) {
   return (
-    <div className="space-y-1.5 rounded-[10px] border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] px-3.5 py-2.5 text-xs leading-relaxed text-muted-foreground">
+    <div className="space-y-1.5 rounded-lg border border-[color:var(--border-subtle)] bg-[color:var(--surface-subtle)] px-3.5 py-2.5 text-xs leading-relaxed text-muted-foreground">
       <p>{children}</p>
       {notes.map((note) => (
         <p key={note}>{note}</p>
@@ -587,7 +587,7 @@ function ConsentOutcome({
       role={ok ? "status" : "alert"}
       aria-labelledby={titleId}
       className={cn(
-        "flex flex-col gap-3 rounded-[10px] border bg-[color:var(--surface-subtle)] p-4 sm:flex-row sm:items-start sm:justify-between",
+        "flex flex-col gap-3 rounded-lg border bg-[color:var(--surface-subtle)] p-4 sm:flex-row sm:items-start sm:justify-between",
         ok ? "border-[color:var(--status-success)]/40" : "border-[color:var(--status-danger)]/40",
       )}
     >

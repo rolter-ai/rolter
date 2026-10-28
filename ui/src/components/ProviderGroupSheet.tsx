@@ -474,6 +474,7 @@ export function ProviderGroupSheet({
 
         <Field
           label={t("providerGroupSheet.fields.strategy")}
+          info={t("providerGroupSheet.fields.strategyInfo")}
           // several children, so Field cannot tell which one the label means
           htmlFor="provider-group-strategy"
         >

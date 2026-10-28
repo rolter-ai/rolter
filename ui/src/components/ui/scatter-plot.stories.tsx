@@ -88,3 +88,26 @@ export const NoPoints: Story = {
     await expect(canvasElement.querySelector("svg")).toBeTruthy();
   },
 };
+
+/**
+ * The labels are drawn in viewBox units of a 640-wide plot, so at that width
+ * they read at the dashboard's 11px floor (#3284). Narrower, the plot scales
+ * down with its card and so do they; DESIGN.md names that exception.
+ */
+export const LabelsReachTheTextFloor: Story = {
+  render: (args) => (
+    <div style={{ width: 640 }}>
+      <ScatterPlot {...args} />
+    </div>
+  ),
+  play: async ({ canvasElement }) => {
+    const svg = canvasElement.querySelector("svg")!;
+    const scale = svg.getBoundingClientRect().width / svg.viewBox.baseVal.width;
+    await expect(scale).toBeCloseTo(1, 1);
+    for (const text of svg.querySelectorAll("text")) {
+      await expect(parseFloat(getComputedStyle(text).fontSize) * scale).toBeGreaterThanOrEqual(
+        10.9,
+      );
+    }
+  },
+};

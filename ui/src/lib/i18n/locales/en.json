@@ -1103,10 +1103,14 @@
       "fieldSlug": "Slug",
       "fieldDescription": "Description",
       "fieldScope": "Scope",
+      "fieldScopeInfo": "Organization-wide applies the plugin to every project in the organization; picking a project limits it to that project. An organization-wide plugin and a project one at the same stage both run, interleaved by position.",
       "fieldStage": "Pipeline stage",
+      "fieldStageInfo": "Where in a request the plugin is consulted: before rolter picks a route, just before the provider call, or on the provider's answer before it reaches the client.",
       "fieldEndpoint": "Webhook endpoint",
+      "fieldEndpointInfo": "The URL the gateway sends each request or response to as JSON. The plugin answers with allow, transform, block or annotate. It must start with http:// or https://.",
       "fieldPosition": "Position",
       "fieldFailure": "Failure policy",
+      "fieldFailureInfo": "What happens when the plugin gives no verdict because it is unreachable, times out or errors. Fail open treats that as allow; fail closed blocks the request.",
       "fieldSecret": "Secret environment variable",
       "fieldConfig": "Plugin configuration",
       "hintSlugLocked": "Immutable after install.",
@@ -1204,6 +1208,7 @@
       "editTitle": "Edit {{model}}",
       "editSubtitle": "Prices are per million tokens (Mtok); saving upserts by model name.",
       "modelName": "Model name",
+      "modelNameInfo": "The model id this price applies to, spelled as clients send it. Pick one from the list or type it. A model with no price row adds nothing to the spend figures.",
       "inputPrice": "Input price per Mtok",
       "outputPrice": "Output price per Mtok",
       "cachedInputPrice": "Cached input price per Mtok (optional)",
@@ -1825,6 +1830,7 @@
         "editTitle": "Edit channel {{name}}",
         "fieldName": "Name",
         "fieldEndpoint": "Endpoint URL",
+        "fieldEndpointInfo": "The http or https URL the control plane POSTs a JSON body to whenever a rule using this channel changes state. Put a credential in the secret, not in the URL.",
         "fieldSecret": "Bearer secret (optional, write-only)",
         "secretPlaceholder": "stored encrypted",
         "secretKeepHint": "A secret is stored. Leave this blank to keep it, or type a new one to replace it.",
@@ -1879,6 +1885,7 @@
           "nonNegative": "0 or more."
         },
         "fieldChannel": "Channel",
+        "fieldChannelInfo": "The webhook channel that receives each state change of this rule. With none, changes are only recorded in the History.",
         "channelNone": "none (record only)",
         "namePlaceholder": "high error rate",
         "fieldComparison": "Comparison",
@@ -1889,6 +1896,7 @@
         "thresholdInclusive": "The threshold is inclusive: the rule fires when the value equals it.",
         "trafficStoppedHelp": "This rule fires when no requests arrive in the window, so it alerts when traffic stops.",
         "fieldNoData": "When there is no data",
+        "fieldNoDataInfo": "What the rule does when its window holds no requests, so there is no value to compare. Keep current state changes nothing, Fire treats it as a breach, and Resolve treats it as healthy and clears a firing alert.",
         "noData": {
           "ignore": "Keep current state",
           "fire": "Fire",
@@ -2078,6 +2086,7 @@
       "form": {
         "name": "Name",
         "endpoint": "Endpoint URL",
+        "endpointInfo": "The http or https URL of your collector, which the telemetry is POSTed to.",
         "sampling": "Sampling (%)",
         "samplingHint": "Share of requests sent to this endpoint: 100 sends all of them, 0 sends none.",
         "samplingInvalid": "Enter a number from 0 to 100.",
@@ -3860,6 +3869,7 @@
       "scopeTitle": "Scope",
       "scopeBody": "Budgets and rate limits below apply to this scope.",
       "scopeTypeLabel": "Scope type",
+      "scopeTypeInfo": "What the caps below belong to: the whole organization, or one team, project, virtual key, business unit, customer or user. Pick a type to see its caps, or All scopes to list every cap at once.",
       "scopeLabel": "Scope",
       "selectOrg": "Select an org",
       "selectTeam": "Select a team",
@@ -3873,6 +3883,7 @@
       "budgetEditTitle": "Edit budget",
       "budgetSheetSubtitle": "Spend cap for {{scope}}",
       "budgetLimitLabel": "Limit ({{currency}})",
+      "budgetLimitInfo": "The most this scope may spend in the period below, in {{currency}}. Spend is worked out from your price table, so a model with no price adds nothing to it.",
       "budgetPeriodLabel": "Period",
       "budgetPeriodHint": "Counted over calendar windows in UTC. There are no rolling windows, such as the last 7 days.",
       "periodPlaceholder": "Pick a period",
@@ -3901,7 +3912,10 @@
       "rateLimitEditTitle": "Edit rate limit",
       "rateLimitSheetSubtitle": "Throughput caps for {{scope}} — blank leaves a field uncapped",
       "rpmLabel": "Requests per minute (optional)",
+      "rpmInfo": "How many requests this scope may send in one minute. Leave it empty for no cap on requests; either cap alone is enough.",
       "tpmLabel": "Tokens per minute (optional)",
+      "tpmInfo": "How many tokens, prompt and completion together, this scope may use in one minute. Leave it empty for no cap on tokens.",
+      "rateLimitNeedsOne": "Set a requests or a tokens per minute limit.",
       "uncapped": "unlimited",
       "userScope": {
         "all": "every key they minted",
@@ -4817,23 +4831,6 @@
       "bypassRoutesHint": "One exact /v1 path per line that skips the auth middleware. System routes like /health and the login endpoints are always open.",
       "bypassRoutesPlaceholder": "/v1/models\n/v1/ping",
       "edited": "Edited",
-      "discard": "Discard changes",
-      "status": {
-        "invalid_one": "Fix {{count}} entry to save.",
-        "invalid_other": "Fix {{count}} entries to save.",
-        "changed_one": "{{count}} setting changed, not saved yet.",
-        "changed_other": "{{count}} settings changed, not saved yet.",
-        "saved": "Saved at {{time}}."
-      },
-      "pickup": {
-        "checking": "Checking which gateways run it…",
-        "converged_one": "{{count}} live gateway is running it.",
-        "converged_other": "All {{count}} live gateways are running it.",
-        "lagging_one": "{{converged}} of {{count}} live gateway is running it; the rest pick it up on their next config poll.",
-        "lagging_other": "{{converged}} of {{count}} live gateways are running it; the rest pick it up on their next config poll.",
-        "none": "No live gateway has reported to this control plane, so pickup cannot be confirmed. A gateway applies it on its next config poll, 5 s by default.",
-        "unavailable": "The live gateways could not be read, so pickup cannot be confirmed. A gateway applies it on its next config poll, 5 s by default."
-      },
       "confirm": {
         "title_one": "Save a change that loosens security?",
         "title_other": "Save changes that loosen security?",
@@ -5089,6 +5086,9 @@
       "scope": {
         "title": "Default scope",
         "hint": "The org, team and project the dashboard opens on. A scope you pick in the switcher during a session wins until you sign out.",
+        "orgInfo": "The organization the dashboard opens on. Clearing it also clears the team and project.",
+        "teamInfo": "The team the dashboard opens on, from the chosen organization. Choose an organization first; clearing the team also clears the project.",
+        "projectInfo": "The project the dashboard opens on, from the chosen team. Choose a team first.",
         "none": "None",
         "lost": "Your saved default is no longer available to you, so the dashboard opens on the first scope you can reach.",
         "moved": "Part of your saved default is no longer available to you, so the dashboard opens on the closest scope you can reach."
@@ -6363,7 +6363,8 @@
       "slugHintLocked": "Immutable identity for group-slug/model addressing. Enable the switch to change it.",
       "copyPrefix": "Copy address prefix",
       "allowSlugChange": "Allow slug change",
-      "strategy": "Strategy"
+      "strategy": "Strategy",
+      "strategyInfo": "How a request picks among this group's providers. The line under the picker says what the chosen strategy does; member weights matter only to strategies that read them."
     },
     "members": {
       "title": "Members",
@@ -6425,21 +6426,18 @@
       "skills_repository": "A skill resolves only through the control-plane API; the gateway serves no skill surface, so how a client addresses and fetches one is not settled"
     }
   },
-  "charts": {
-    "donut": {
-      "other_one": "Other ({{value}})",
-      "other_other": "Other ({{value}})"
-    }
-  },
   "guardrailPanel": {
     "enforced": "enforced",
     "paused": "paused"
   },
   "groupMappings": {
     "groupLabel": "IdP group",
+    "groupInfo": "The group's name as your identity provider sends it. Matching ignores case and surrounding spaces.",
     "groupPlaceholder": "e.g. platform-engineering",
     "scopeLabel": "Where the role applies",
+    "scopeInfo": "Where the role applies: the whole organization, or one team or project in it. A mapping can only grant inside this organization.",
     "roleLabel": "Role to grant",
+    "roleInfo": "The role everyone in the group is granted at that scope when they sign in. Admin has full control of the scope, including members and budgets.",
     "add": "Map group",
     "remove": "Remove mapping",
     "removeNamed": "Remove the mapping for {{group}}",

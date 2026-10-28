@@ -24,6 +24,13 @@ export const OUTCOME_STYLES: Record<ReturnType<typeof probeOutcome>, string> = {
   failed: "border-[color:var(--status-danger)]/40 bg-destructive/10",
 };
 
+/**
+ * The result of a connection probe.
+ *
+ * Always names the URL that was tried. "It failed" is not actionable when the
+ * operator cannot see how their `api_base` was turned into an endpoint — a
+ * doubled `/v1` is the single most common cause and is invisible otherwise.
+ */
 export function TestOutcome({
   result,
   className = "mx-[22px] mt-2.5",

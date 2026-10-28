@@ -1000,14 +1000,14 @@ function ProviderSheet({
       saving={save.isPending}
       onSubmit={() => save.mutate()}
     >
-      <Field label={t("pages.sso.create.name")} hint={t("pages.sso.create.nameHint")}>
+      <Field label={t("pages.sso.create.name")} hint={t("pages.sso.create.nameHint")} required>
         <Input
           value={draft.name}
           onChange={(e) => set({ name: e.target.value })}
           placeholder={t("pages.sso.create.namePlaceholder")}
         />
       </Field>
-      <Field label={t("pages.sso.create.slug")} htmlFor={slugId}>
+      <Field label={t("pages.sso.create.slug")} htmlFor={slugId} required={!editing}>
         <Input
           id={slugId}
           value={draft.slug}
@@ -1035,14 +1035,18 @@ function ProviderSheet({
           />
         )}
       </RedirectUriRow>
-      <Field label={t("pages.sso.create.issuer")} hint={t("pages.sso.create.issuerHint")}>
+      <Field label={t("pages.sso.create.issuer")} hint={t("pages.sso.create.issuerHint")} required>
         <Input
           value={draft.issuer}
           onChange={(e) => set({ issuer: e.target.value })}
           placeholder={t("pages.sso.create.issuerPlaceholder")}
         />
       </Field>
-      <Field label={t("pages.sso.create.clientId")} hint={t("pages.sso.create.clientIdHint")}>
+      <Field
+        label={t("pages.sso.create.clientId")}
+        hint={t("pages.sso.create.clientIdHint")}
+        required
+      >
         <Input
           value={draft.clientId}
           onChange={(e) => set({ clientId: e.target.value })}
@@ -1221,9 +1225,9 @@ export default function SingleSignOn() {
   if (scope.isLoading || (!!orgId && (providers.isLoading || policy.isLoading))) {
     return (
       <PageBody>
-        <Skeleton className="h-[196px] rounded-[10px]" />
+        <Skeleton className="h-[196px] rounded-lg" />
         <Skeleton className="h-9 w-[280px] rounded-md" />
-        <Skeleton className="h-[240px] rounded-[10px]" />
+        <Skeleton className="h-[240px] rounded-lg" />
       </PageBody>
     );
   }
