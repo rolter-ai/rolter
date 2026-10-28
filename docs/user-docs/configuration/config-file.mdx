@@ -1775,8 +1775,20 @@ A vendor-neutral hook to a self-hosted semantic guardrail service, such as Guard
   A label recorded with this hook's outcomes in LLM Logs (`provider_blocked:<name>`). Optional; empty records the bare `provider_blocked` / `provider_transformed`. A provider registered on the dashboard supplies its own name.
 </ParamField>
 
+<ParamField path="kind" default="webhook" type="string">
+  `webhook` posts the envelope to `url`. `local` runs a small classifier inside the gateway instead, from `model_path`; see [local classifier](/security/semantic-guard-policies#local-classifier).
+</ParamField>
+
 <ParamField path="url" type="string">
-  The `http://` or `https://` endpoint the envelope is POSTed to. Required when `enabled` is `true`. The URL is checked against the [egress policy](/configuration/egress) when the config loads and again before every call, and Rolter does not follow a redirect from it.
+  The `http://` or `https://` endpoint the envelope is POSTed to. Required when `enabled` is `true` and `kind` is `webhook`; empty for `local`. The URL is checked against the [egress policy](/configuration/egress) when the config loads and again before every call, and Rolter does not follow a redirect from it.
+</ParamField>
+
+<ParamField path="model_path" type="string">
+  For `kind = "local"` only, and required there: the path of the `rolter-linear/1` weights file on the gateway's file system. The gateway reads it when the configuration is applied and never downloads one.
+</ParamField>
+
+<ParamField path="model_sha256" type="string">
+  For `kind = "local"` only, and required there: the file's SHA-256 as 64 hex digits. A file that does not match is not loaded, and the provider follows its `failure_mode`.
 </ParamField>
 
 <ParamField path="stage" default="pre_call" type="string">
@@ -1823,6 +1835,10 @@ Several guardrail providers side by side, and the scoped policies that pick whic
   The providers, each a `[[semantic_guards.providers]]` table below.
 </ParamField>
 
+<ParamField path="local_concurrency" type="integer">
+  How many [local classifier](/security/semantic-guard-policies#local-classifier) calls one gateway runs at once, across all its `local` providers, from 1 to 4096. Unset, it is the number of CPUs the gateway process may use. A call that waits longer than its provider's `timeout_ms` for a slot follows that provider's `failure_mode`, counted as `overloaded`.
+</ParamField>
+
 <ParamField path="policies" type="array of tables">
   The policies, each a `[[semantic_guards.policies]]` table below.
 </ParamField>
@@ -1839,8 +1855,20 @@ The same keys as [`[guardrail_webhook]`](#guardrail_webhook), one table per prov
   Required and unique, including against `[guardrail_webhook]`'s name. Policies list providers by it, and it labels the provider's metrics and log events.
 </ParamField>
 
+<ParamField path="kind" default="webhook" type="string">
+  `webhook` or `local`, an in-process [local classifier](/security/semantic-guard-policies#local-classifier).
+</ParamField>
+
 <ParamField path="url" type="string">
-  The `http://` or `https://` endpoint, checked against the [egress policy](/configuration/egress) at load and before every call.
+  The `http://` or `https://` endpoint, checked against the [egress policy](/configuration/egress) at load and before every call. Empty for a `local` provider.
+</ParamField>
+
+<ParamField path="model_path" type="string">
+  A `local` provider's weights file on the gateway's file system. Required for `local`, refused for `webhook`.
+</ParamField>
+
+<ParamField path="model_sha256" type="string">
+  The weights file's SHA-256 as 64 hex digits. Required for `local`, refused for `webhook`.
 </ParamField>
 
 <ParamField path="stage" default="pre_call" type="string">
@@ -1852,7 +1880,7 @@ The same keys as [`[guardrail_webhook]`](#guardrail_webhook), one table per prov
 </ParamField>
 
 <ParamField path="max_retries" default="0" type="integer">
-  Extra attempts after a transient failure.
+  Extra attempts after a transient failure. A `local` provider ignores it.
 </ParamField>
 
 <ParamField path="failure_mode" default="fail_open" type="string">
@@ -1864,7 +1892,7 @@ The same keys as [`[guardrail_webhook]`](#guardrail_webhook), one table per prov
 </ParamField>
 
 <ParamField path="auth" type="table">
-  An optional credential, in the same two forms as `[guardrail_webhook]`.
+  An optional credential, in the same two forms as `[guardrail_webhook]`. Refused for a `local` provider.
 </ParamField>
 
 #### \[\[semantic_guards.policies\]\]
@@ -1915,6 +1943,22 @@ scope_id = "1f0e…"
 providers = ["toxicity"]
 thresholds = { violence = 0.8, "*" = 0.95 }
 streaming = "buffer"
+```
+
+A local provider runs in the gateway process instead of behind a URL:
+
+```toml
+[semantic_guards]
+local_concurrency = 4
+
+[[semantic_guards.providers]]
+name = "injection"
+enabled = true
+kind = "local"
+model_path = "/etc/rolter/models/injection.json"
+model_sha256 = "<sha256sum of the file>"
+failure_mode = "fail_closed"
+timeout_ms = 50
 ```
 
 ---

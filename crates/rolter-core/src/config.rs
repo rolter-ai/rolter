@@ -5109,6 +5109,24 @@ impl GatewayConfig {
         problems
     }
 
+    /// The guardrail providers whose `kind` this build does not know.
+    fn unknown_guard_provider_kinds(&self) -> Vec<String> {
+        let unknown = crate::guardrail_webhook::GuardProviderKind::Unknown;
+        let mut problems = Vec::new();
+        if self.guardrail_webhook.enabled && self.guardrail_webhook.kind == unknown {
+            problems.push("guardrail_webhook.kind must be webhook or local".to_string());
+        }
+        for provider in &self.semantic_guards.providers {
+            if provider.enabled && provider.kind == unknown {
+                problems.push(format!(
+                    "semantic_guards.providers '{}': kind must be webhook or local",
+                    provider.name
+                ));
+            }
+        }
+        problems
+    }
+
     /// Egress-policy problems with the gateway-side URLs an operator writes
     /// outside a provider: the guardrail webhook, the PII sanitizer and each
     /// plugin endpoint. A disabled block is never a problem, matching the
@@ -5116,12 +5134,19 @@ impl GatewayConfig {
     /// [`provider_problems`](Self::provider_problems).
     pub fn operator_url_problems(&self) -> Vec<String> {
         let mut problems = Vec::new();
-        if self.guardrail_webhook.enabled {
+        // a local provider has no url: it runs in the gateway process (#3329)
+        let webhook = crate::guardrail_webhook::GuardProviderKind::Webhook;
+        if self.guardrail_webhook.enabled && self.guardrail_webhook.kind == webhook {
             problems.extend(
                 self.egress_problem(self.guardrail_webhook.url.trim(), "guardrail_webhook.url"),
             );
         }
-        for provider in self.semantic_guards.providers.iter().filter(|p| p.enabled) {
+        for provider in self
+            .semantic_guards
+            .providers
+            .iter()
+            .filter(|p| p.enabled && p.kind == webhook)
+        {
             problems.extend(self.egress_problem(
                 provider.url.trim(),
                 &format!("semantic_guards.providers '{}' url", provider.name),
@@ -5487,6 +5512,11 @@ impl GatewayConfig {
         // validate the custom guardrail webhook (url/timeout/auth) at load time
         problems.append(&mut self.guardrail_webhook.validate());
         problems.append(&mut self.semantic_guards.validate(&self.guardrail_webhook));
+        if strict_urls {
+            // a snapshot keeps a provider kind this build does not know (it
+            // fails closed per request); a file naming one is a typo
+            problems.extend(self.unknown_guard_provider_kinds());
+        }
         problems.append(&mut self.pii_sanitizer.validate());
 
         // validate every enabled plugin instance's endpoint at load time
@@ -10520,5 +10550,26 @@ mod tests {
         )
         .expect("parses");
         assert!(cfg.project_scoped_warnings().is_empty());
+    }
+
+    #[test]
+    fn a_file_refuses_an_unknown_guard_provider_kind_and_a_snapshot_keeps_it() {
+        let mut config = GatewayConfig::default();
+        config.semantic_guards.providers.push(
+            serde_json::from_value(serde_json::json!({
+                "enabled": true,
+                "name": "x",
+                "kind": "quantum",
+            }))
+            .expect("an unknown kind parses"),
+        );
+        let file = config.validate().unwrap_err().join("\n");
+        assert!(file.contains("kind must be webhook or local"), "{file}");
+        let snapshot = config
+            .validate_snapshot()
+            .err()
+            .unwrap_or_default()
+            .join("\n");
+        assert!(!snapshot.contains("kind"), "{snapshot}");
     }
 }

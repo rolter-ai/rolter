@@ -1080,7 +1080,14 @@ pub struct GuardrailProvider {
     pub id: Uuid,
     pub name: String,
     pub enabled: bool,
+    /// `webhook` or `local` (#3329)
+    pub kind: String,
+    /// empty for a local provider
     pub url: String,
+    /// a local provider's weights file on the gateways' file system
+    pub model_path: Option<String>,
+    /// a local provider's pinned sha256, 64 lowercase hex digits
+    pub model_sha256: Option<String>,
     pub stage: String,
     pub timeout_ms: i32,
     pub max_retries: i32,

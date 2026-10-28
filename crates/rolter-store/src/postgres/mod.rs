@@ -11,14 +11,14 @@ use rolter_core::failover::FailureClass;
 use rolter_core::{
     AdvancedModelConfig, BackpressurePolicy, BalancingStrategy, BudgetConfig, BudgetPeriod,
     BudgetScope, BuiltinRule, Decorator, Error, FailureMode, FeatureFlagsConfig, GatewayConfig,
-    GroupMember, GuardAction, GuardStage, GuardrailPolicy, GuardrailRule, GuardrailWebhookConfig,
-    GuardrailsConfig, McpAuthKind, McpOAuthSessionConfig, McpOrgSettingsConfig, McpServerConfig,
-    McpToolGroupConfig, McpToolGroupSubjectConfig, McpToolRefConfig, ModelPolicy, ModelPriceConfig,
-    ModelRoute, ParamPolicy, PluginInstanceConfig, PluginStage, PluginsConfig, PolicyScope,
-    PromptTemplate, PromptTemplateActivationScope, PromptTemplatesConfig, ProviderConfig,
-    ProviderGroupConfig, ProviderKind, RateLimitConfig, Result, ScopeWithin, SemanticGuardsConfig,
-    StreamingStrategy, Target, TemplateVariable, Tenancy, UnpricedPolicy, ViolationAction,
-    VirtualKeyRecord, WebhookAuth, WebhookStage,
+    GroupMember, GuardAction, GuardProviderKind, GuardStage, GuardrailPolicy, GuardrailRule,
+    GuardrailWebhookConfig, GuardrailsConfig, McpAuthKind, McpOAuthSessionConfig,
+    McpOrgSettingsConfig, McpServerConfig, McpToolGroupConfig, McpToolGroupSubjectConfig,
+    McpToolRefConfig, ModelPolicy, ModelPriceConfig, ModelRoute, ParamPolicy, PluginInstanceConfig,
+    PluginStage, PluginsConfig, PolicyScope, PromptTemplate, PromptTemplateActivationScope,
+    PromptTemplatesConfig, ProviderConfig, ProviderGroupConfig, ProviderKind, RateLimitConfig,
+    Result, ScopeWithin, SemanticGuardsConfig, StreamingStrategy, Target, TemplateVariable,
+    Tenancy, UnpricedPolicy, ViolationAction, VirtualKeyRecord, WebhookAuth, WebhookStage,
 };
 use rust_decimal::Decimal;
 use sqlx::postgres::PgPoolOptions;
@@ -738,11 +738,10 @@ impl PostgresConfigStore {
     /// Disabled policies are carried for the same reason, and because a
     /// provider any policy lists is confined to policies.
     async fn load_semantic_guards(&self) -> Result<SemanticGuardsConfig> {
-        let rows: Vec<GuardrailProvider> = sqlx::query_as(
-            "select id, name, enabled, url, stage, timeout_ms, max_retries, failure_mode, \
-                    max_body_bytes, auth_kind, auth_env, created_at, updated_at \
-             from guardrail_providers order by name",
-        )
+        let rows: Vec<GuardrailProvider> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "select {} from guardrail_providers order by name",
+            repo::GUARDRAIL_PROVIDER_COLUMNS
+        )))
         .fetch_all(&self.pool)
         .await
         .map_err(store_err)?;
@@ -794,6 +793,9 @@ impl PostgresConfigStore {
         Ok(SemanticGuardsConfig {
             providers,
             policies,
+            // a per-gateway resource knob, set in the file only; the merge
+            // keeps the file's value
+            local_concurrency: None,
         })
     }
 
@@ -2157,7 +2159,12 @@ fn provider_from_row(row: GuardrailProvider) -> GuardrailWebhookConfig {
     GuardrailWebhookConfig {
         enabled: row.enabled,
         name: row.name,
+        // a kind this build cannot parse reaches the gateway as one it does
+        // not know, which fails closed there (ADR-0039)
+        kind: GuardProviderKind::parse(&row.kind).unwrap_or(GuardProviderKind::Unknown),
         url: row.url,
+        model_path: row.model_path.unwrap_or_default(),
+        model_sha256: row.model_sha256.unwrap_or_default(),
         stage: if row.stage == "post_call" {
             WebhookStage::PostCall
         } else {

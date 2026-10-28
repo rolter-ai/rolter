@@ -683,6 +683,19 @@
         "max_retries": 1,
         "failure_mode": "fail_closed",
         "max_body_bytes": 65536
+      },
+      {
+        "enabled": true,
+        "name": "local-injection",
+        "kind": "local",
+        "url": "",
+        "model_path": "/etc/rolter/models/injection.json",
+        "model_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "stage": "pre_call",
+        "timeout_ms": 50,
+        "max_retries": 0,
+        "failure_mode": "fail_closed",
+        "max_body_bytes": 65536
       }
     ],
     "policies": [
@@ -698,7 +711,8 @@
         "on_violation": "block",
         "streaming": "buffer"
       }
-    ]
+    ],
+    "local_concurrency": 4
   },
   "server": {
     "host": "0.0.0.0",

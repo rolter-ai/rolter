@@ -1941,7 +1941,7 @@ fn operations() -> Vec<Op> {
             Op::post(
                 "/api/v1/guardrails/providers",
                 "createGuardrailProvider",
-                "Register a guardrail provider",
+                "Register a guardrail provider: a webhook, or a local classifier the gateways run in process",
             ),
             Op::put(
                 "/api/v1/guardrails/providers/{id}",

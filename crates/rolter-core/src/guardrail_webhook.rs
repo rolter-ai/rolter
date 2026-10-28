@@ -42,6 +42,51 @@ pub enum FailureMode {
     FailClosed,
 }
 
+/// Where a guardrail provider's verdict comes from (#3329, ADR-0039).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GuardProviderKind {
+    /// an HTTP service spoken to over this module's webhook contract
+    #[default]
+    Webhook,
+    /// a classifier the gateway runs in process from `model_path`
+    Local,
+    /// a kind this build does not know, read from a newer control plane's
+    /// snapshot. It fails closed: the stage blocks whatever the provider's
+    /// `failure_mode` says, so a future kind is additive (ADR-0038)
+    #[serde(other)]
+    Unknown,
+}
+
+impl GuardProviderKind {
+    /// The stored and serialized spelling.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Webhook => "webhook",
+            Self::Local => "local",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    /// Parse the stored spelling; `None` for anything but a known kind.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "webhook" => Some(Self::Webhook),
+            "local" => Some(Self::Local),
+            _ => None,
+        }
+    }
+
+    fn is_webhook(&self) -> bool {
+        *self == Self::Webhook
+    }
+}
+
+/// Whether `value` is a SHA-256 digest written as 64 hex digits.
+pub fn is_sha256_hex(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
 /// Credential attached to the webhook call. The secret is never inlined in
 /// config; it is resolved from the named environment variable at call time.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -84,9 +129,20 @@ pub struct GuardrailWebhookConfig {
     /// row's name; empty records the bare action.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub name: String,
-    /// http(s) endpoint the gateway POSTs the contract envelope to
+    /// `webhook` (the default) or `local`, an in-process classifier
+    #[serde(default, skip_serializing_if = "GuardProviderKind::is_webhook")]
+    pub kind: GuardProviderKind,
+    /// http(s) endpoint the gateway POSTs the contract envelope to; empty for
+    /// a local provider
     #[serde(default)]
     pub url: String,
+    /// a local provider's weights file on the gateway's file system
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub model_path: String,
+    /// the SHA-256 the weights file must have, as 64 hex digits; required for
+    /// a local provider, so a swapped file is refused rather than obeyed
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub model_sha256: String,
     #[serde(default)]
     pub stage: WebhookStage,
     #[serde(default = "default_timeout_ms")]
@@ -116,7 +172,10 @@ impl Default for GuardrailWebhookConfig {
         Self {
             enabled: false,
             name: String::new(),
+            kind: GuardProviderKind::Webhook,
             url: String::new(),
+            model_path: String::new(),
+            model_sha256: String::new(),
             stage: WebhookStage::default(),
             timeout_ms: DEFAULT_TIMEOUT_MS,
             max_retries: 0,
@@ -136,11 +195,29 @@ impl GuardrailWebhookConfig {
         if !self.enabled {
             return problems;
         }
-        let url = self.url.trim();
-        if !(url.starts_with("http://") || url.starts_with("https://")) {
-            problems.push(format!(
-                "guardrail_webhook.url '{url}' must be an http:// or https:// URL"
-            ));
+        match self.kind {
+            GuardProviderKind::Webhook => {
+                let url = self.url.trim();
+                if !(url.starts_with("http://") || url.starts_with("https://")) {
+                    problems.push(format!(
+                        "guardrail_webhook.url '{url}' must be an http:// or https:// URL"
+                    ));
+                }
+                if !self.model_path.is_empty() || !self.model_sha256.is_empty() {
+                    problems.push(
+                        "guardrail_webhook.model_path and model_sha256 apply to a local \
+                         provider only"
+                            .to_string(),
+                    );
+                }
+            }
+            GuardProviderKind::Local => problems.extend(self.local_problems()),
+            // not a problem here: a snapshot from a newer control plane may
+            // carry a kind this build does not know, and refusing the whole
+            // snapshot over it would freeze every other setting. it fails
+            // closed at request time instead, and a config file naming one is
+            // refused by `GatewayConfig::validate`
+            GuardProviderKind::Unknown => {}
         }
         if self.timeout_ms == 0 {
             problems.push("guardrail_webhook.timeout_ms must be greater than zero".to_string());
@@ -155,6 +232,28 @@ impl GuardrailWebhookConfig {
                         .to_string(),
                 );
             }
+        }
+        problems
+    }
+
+    /// Problems specific to a local provider: it names a model and its pin,
+    /// and nothing a webhook call would use.
+    fn local_problems(&self) -> Vec<String> {
+        let mut problems = Vec::new();
+        if self.model_path.trim().is_empty() {
+            problems.push("guardrail_webhook.model_path is required for a local provider".into());
+        }
+        if !is_sha256_hex(self.model_sha256.trim()) {
+            problems.push(
+                "guardrail_webhook.model_sha256 must be the model file's SHA-256 as 64 hex digits"
+                    .into(),
+            );
+        }
+        if !self.url.trim().is_empty() {
+            problems.push("guardrail_webhook.url must be empty for a local provider".into());
+        }
+        if self.auth.is_some() {
+            problems.push("guardrail_webhook.auth does not apply to a local provider".into());
         }
         problems
     }
@@ -234,6 +333,71 @@ impl WebhookDecision {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn local() -> GuardrailWebhookConfig {
+        GuardrailWebhookConfig {
+            enabled: true,
+            name: "injection".to_string(),
+            kind: GuardProviderKind::Local,
+            model_path: "/models/injection.json".to_string(),
+            model_sha256: "ab".repeat(32),
+            ..GuardrailWebhookConfig::default()
+        }
+    }
+
+    #[test]
+    fn a_local_provider_needs_a_model_and_its_pin_and_no_url() {
+        assert!(local().validate().is_empty(), "{:?}", local().validate());
+        let mut bad = local();
+        bad.model_path = " ".to_string();
+        bad.model_sha256 = "not-a-digest".to_string();
+        bad.url = "https://x".to_string();
+        bad.auth = Some(WebhookAuth::Bearer {
+            token_env: "TOKEN".to_string(),
+        });
+        let problems = bad.validate().join("\n");
+        for expected in [
+            "model_path is required",
+            "64 hex digits",
+            "url must be empty",
+            "auth",
+        ] {
+            assert!(problems.contains(expected), "{expected}: {problems}");
+        }
+        // a webhook takes neither model field
+        let webhook = GuardrailWebhookConfig {
+            enabled: true,
+            url: "https://x".to_string(),
+            model_path: "/m.json".to_string(),
+            ..GuardrailWebhookConfig::default()
+        };
+        assert!(webhook.validate().join("").contains("local provider only"));
+    }
+
+    #[test]
+    fn an_unknown_kind_parses_and_is_left_to_the_file_validator() {
+        let parsed: GuardrailWebhookConfig =
+            serde_json::from_value(serde_json::json!({"enabled": true, "kind": "gpu_cluster"}))
+                .unwrap();
+        assert_eq!(parsed.kind, GuardProviderKind::Unknown);
+        // a snapshot carrying it must still apply (it fails closed per request)
+        assert!(parsed.validate().is_empty());
+        assert_eq!(
+            GuardProviderKind::parse("local"),
+            Some(GuardProviderKind::Local)
+        );
+        assert_eq!(GuardProviderKind::parse("unknown"), None);
+    }
+
+    #[test]
+    fn a_webhook_serializes_without_a_kind_and_a_local_one_with_it() {
+        let webhook = serde_json::to_value(GuardrailWebhookConfig::default()).unwrap();
+        assert!(webhook.get("kind").is_none());
+        assert!(webhook.get("model_path").is_none());
+        let local = serde_json::to_value(local()).unwrap();
+        assert_eq!(local["kind"], "local");
+        assert_eq!(local["model_sha256"], "ab".repeat(32));
+    }
 
     #[test]
     fn disabled_config_is_never_a_problem() {

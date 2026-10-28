@@ -2965,6 +2965,19 @@
       "emptyAction": "Register first provider",
       "detailLine_one": "{{timeout}} ms timeout · {{count}} retry · {{kib}} KiB cap",
       "detailLine_other": "{{timeout}} ms timeout · {{count}} retries · {{kib}} KiB cap",
+      "detailLineLocal": "{{timeout}} ms timeout · {{kib}} KiB cap",
+      "fieldKind": "Kind",
+      "kindInfo": "A webhook posts each request to an HTTP service. A local classifier runs inside every gateway from a weights file on the gateway's own file system.",
+      "kind": {
+        "webhook": "Webhook",
+        "local": "Local classifier"
+      },
+      "fieldModelPath": "Model path",
+      "modelPathHint": "Absolute path of the weights file on each gateway's file system. The control plane does not read it.",
+      "modelPathRequired": "Enter the path of the model file on the gateways.",
+      "fieldModelSha": "Model SHA-256",
+      "modelShaHint": "The model file's SHA-256 as 64 hex digits. A gateway refuses a file that does not match.",
+      "modelShaInvalid": "Enter exactly 64 hexadecimal digits.",
       "statusOverridden": "overridden by config file",
       "statusUnknown": "status unknown",
       "editProvider": "Edit provider",
@@ -3006,6 +3019,7 @@
       "publishing": "Publishing…",
       "save": "Save provider",
       "trial": {
+        "localNote": "A local model lives on the gateways, so it cannot be tested from the control plane.",
         "title": "Send a test envelope",
         "intro": "The control plane sends the gateway's request envelope with a sample message to the address above, under the egress policy. Nothing is saved.",
         "fieldSample": "Sample message",

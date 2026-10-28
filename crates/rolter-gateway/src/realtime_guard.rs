@@ -87,6 +87,8 @@ pub(crate) struct ContentPolicy {
     tenant: WebhookTenant,
     /// the egress-checked client the webhook and plugins are consulted through
     egress: crate::egress_client::EgressClient,
+    /// the in-process classifiers `local` semantic guard providers run on
+    local: crate::local_classifier::LocalClassifiers,
     /// responses whose text was withheld; the rest of their text events are
     /// dropped
     blocked: Vec<String>,
@@ -107,6 +109,7 @@ impl ContentPolicy {
         model: &str,
         trace_id: &str,
         egress: &crate::egress_client::EgressClient,
+        local: &crate::local_classifier::LocalClassifiers,
     ) -> Option<Self> {
         let input = snap.guardrails.pre_call_active_for(&entry.guardrails);
         let output = snap.guardrails.post_call_active_for(&entry.guardrails);
@@ -143,6 +146,7 @@ impl ContentPolicy {
             trace_id: trace_id.to_string(),
             tenant: crate::handlers::plugin_tenant(scope),
             egress: egress.clone(),
+            local: local.clone(),
             blocked: Vec::new(),
             tails: Vec::new(),
             plugin_calls: Default::default(),
@@ -236,6 +240,7 @@ impl ContentPolicy {
                 policy,
                 metrics,
                 egress: &self.egress,
+                local: &self.local,
                 model: self.model.clone(),
                 route: self.route.clone(),
                 trace_id: self.trace_id.clone(),

@@ -112,6 +112,13 @@ element in every list, and `the_representative_config_populates_every_list`
 fails when a list serializes empty, so a new `Vec` field needs an element there
 before the guard can see what it holds.
 
+A snapshot enum with a fail-closed `#[serde(other)]` fallback takes a new
+value without a format bump. Two have one: `McpAuthKind` (#952) and a semantic
+guard provider's `GuardProviderKind` (#3329, ADR-0039), whose `Unknown`
+parses, passes `validate_snapshot` (only a file config's `validate` refuses
+it, as a typo) and blocks the provider's stage whatever its `failure_mode`.
+Every other snapshot enum is closed: a new value is a format bump.
+
 ## Why this design
 
 - Redis pub/sub gives near-instant fan-out to many gateway replicas.
