@@ -508,6 +508,7 @@ async fn the_most_specific_policy_replaces_the_broader_one() {
         cache: None,
         business_unit_id: String::new(),
         customer_id: String::new(),
+        previous: None,
     });
     config.semantic_guards.providers = vec![guard(
         "inj",

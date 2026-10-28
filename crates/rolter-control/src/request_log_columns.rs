@@ -77,6 +77,11 @@ pub(crate) const OPTIONAL_COLUMNS: &[OptionalColumn] = &[
         name: "plugin_events",
         default: "emptyArrayString()",
     },
+    // 021_request_log_seq.sql
+    OptionalColumn {
+        name: "seq",
+        default: "toUInt64(0)",
+    },
     // 023_fallback_reason.sql
     OptionalColumn {
         name: "fallback_reason",
@@ -314,6 +319,7 @@ mod tests {
             "lifecycle_operation",
             "guardrail_events",
             "plugin_events",
+            "seq",
             "fallback_reason",
         ]))
         .expect("the table is visible");

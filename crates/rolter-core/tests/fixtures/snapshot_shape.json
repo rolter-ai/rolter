@@ -190,6 +190,15 @@
     "db_virtual_keys[].org_id": [
       "string"
     ],
+    "db_virtual_keys[].previous": [
+      "object"
+    ],
+    "db_virtual_keys[].previous.key_hash": [
+      "string"
+    ],
+    "db_virtual_keys[].previous.valid_until": [
+      "string"
+    ],
     "db_virtual_keys[].project_id": [
       "string"
     ],

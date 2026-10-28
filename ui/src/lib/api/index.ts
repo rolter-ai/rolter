@@ -40,6 +40,7 @@ export type {
   AdaptiveRoutingTelemetryDto,
 } from "./adaptive-routing";
 export {
+  ALERT_SCOPE_TYPES,
   ALERT_SIGNALS,
   ALERT_COMPARISONS,
   ALERT_NO_DATA_POLICIES,
@@ -55,6 +56,7 @@ export {
   fetchAlertHistory,
 } from "./alerts";
 export type {
+  AlertScopeType,
   AlertComparison,
   AlertNoDataPolicy,
   AlertChannelRow,
@@ -64,6 +66,8 @@ export type {
   AlertNotificationRow,
   AlertEvaluation,
 } from "./alerts";
+export { exportAttributionCsv, exportInvocationsCsv } from "./analytics-export";
+export type { AnalyticsExportFile } from "./analytics-export";
 export {
   AnalyticsUnavailableError,
   fetchAnalyticsSummary,
@@ -699,5 +703,7 @@ export {
   setVirtualKeyProviders,
   setVirtualKeyAttribution,
   deleteVirtualKey,
+  rotateVirtualKey,
+  revokeVirtualKeyPreviousSecret,
 } from "./virtual-keys";
 export type { VirtualKeyRow, CreatedVirtualKey, CreateVirtualKeyInput } from "./virtual-keys";

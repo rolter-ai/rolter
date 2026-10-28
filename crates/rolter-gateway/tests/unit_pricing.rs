@@ -140,6 +140,7 @@ fn config(
         tenancy: None,
     });
     config.db_virtual_keys.push(VirtualKeyRecord {
+        previous: None,
         access_policy: None,
         key_hash: rolter_auth::hash_key(&config.server.resolve_key_pepper(), &key()),
         id: format!("key-{org}"),

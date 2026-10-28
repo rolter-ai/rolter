@@ -774,7 +774,7 @@ disabled = false
 
 ### \[\[db_virtual_keys\]\]
 
-Not a `rolter.toml` table. Virtual keys created on the dashboard or through the API live in the database, and the control plane puts them in the snapshot as `db_virtual_keys`. Each entry carries the key's peppered digest, never the plaintext, with its id, the scope its usage is attributed to (organization, team, project, creator, business unit and customer) and the same `models`, `providers`, `disabled`, `expires_at` and `cache` settings as a `[[virtual_keys]]` entry. A gateway matches a presented key against those digests alongside the keys of `[[virtual_keys]]`, which stay the file's own list. See [Virtual keys](/concepts/virtual-keys).
+Not a `rolter.toml` table. Virtual keys created on the dashboard or through the API live in the database, and the control plane puts them in the snapshot as `db_virtual_keys`. Each entry carries the key's peppered digest, never the plaintext, with its id, the scope its usage is attributed to (organization, team, project, creator, business unit and customer) and the same `models`, `providers`, `disabled`, `expires_at` and `cache` settings as a `[[virtual_keys]]` entry. While a rotation's overlap is running (see [Virtual keys](/concepts/virtual-keys)), an entry also carries `previous`: the digest of the replaced secret and the `valid_until` instant up to which it still authenticates as the same key. A gateway matches a presented key against those digests alongside the keys of `[[virtual_keys]]`, which stay the file's own list. See [Virtual keys](/concepts/virtual-keys).
 
 ---
 

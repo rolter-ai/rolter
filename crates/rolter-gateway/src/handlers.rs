@@ -2585,6 +2585,7 @@ async fn proxy(
         started,
         RequestLog {
             ts: crate::logging::started_at(started),
+            seq: crate::logging::start_seq(started),
             request_id: request_id.clone(),
             trace_id: trace_id.clone(),
             virtual_key_id: vk_id.clone(),
@@ -3105,6 +3106,7 @@ async fn proxy(
                 };
             let mut log = RequestLog {
                 ts: crate::logging::started_at(started),
+                seq: crate::logging::start_seq(started),
                 request_id,
                 trace_id,
                 virtual_key_id: vk_id,
@@ -3322,6 +3324,7 @@ async fn proxy(
             };
             let row = RequestLog {
                 ts: crate::logging::started_at(started),
+                seq: crate::logging::start_seq(started),
                 request_id,
                 trace_id,
                 virtual_key_id: vk_id,
@@ -3551,6 +3554,7 @@ async fn proxy_multipart(
         started,
         RequestLog {
             ts: crate::logging::started_at(started),
+            seq: crate::logging::start_seq(started),
             request_id: request_id.clone(),
             trace_id: trace_id.clone(),
             virtual_key_id: vk_id.clone(),
@@ -3839,6 +3843,7 @@ async fn proxy_multipart(
         Some((response, status, is_sse)) => {
             let log = RequestLog {
                 ts: crate::logging::started_at(started),
+                seq: crate::logging::start_seq(started),
                 request_id,
                 trace_id,
                 virtual_key_id: vk_id,
@@ -3927,6 +3932,7 @@ async fn proxy_multipart(
             };
             let row = RequestLog {
                 ts: crate::logging::started_at(started),
+                seq: crate::logging::start_seq(started),
                 request_id,
                 trace_id,
                 virtual_key_id: vk_id,
@@ -5215,6 +5221,7 @@ impl RequestLogCtx {
         let latency_ms = self.started.elapsed().as_millis() as u32;
         RequestLog {
             ts: crate::logging::started_at(self.started),
+            seq: crate::logging::start_seq(self.started),
             request_id: self.request_id,
             trace_id: self.trace_id,
             virtual_key_id: self.vk_id,
@@ -6438,6 +6445,7 @@ mod tests {
         let mut config = GatewayConfig::default();
         let pepper = config.server.resolve_key_pepper();
         config.db_virtual_keys.push(VirtualKeyRecord {
+            previous: None,
             access_policy: None,
             key_hash: rolter_auth::hash_key(&pepper, "sk-db-key"),
             id: "vk-1".to_string(),
@@ -6474,6 +6482,94 @@ mod tests {
         assert_eq!(meta.project_id, "proj-1");
     }
 
+    fn rotated_key(
+        current: &str,
+        previous: &str,
+        valid_until: chrono::DateTime<Utc>,
+        expires_at: Option<chrono::DateTime<Utc>>,
+    ) -> GatewayConfig {
+        let mut config = GatewayConfig::default();
+        let pepper = config.server.resolve_key_pepper();
+        config.db_virtual_keys.push(VirtualKeyRecord {
+            previous: Some(rolter_core::PreviousKeySecret {
+                key_hash: rolter_auth::hash_key(&pepper, previous),
+                valid_until,
+            }),
+            access_policy: None,
+            key_hash: rolter_auth::hash_key(&pepper, current),
+            id: "vk-rotated".to_string(),
+            org_id: "org-1".to_string(),
+            team_id: "team-1".to_string(),
+            project_id: "proj-1".to_string(),
+            user_id: String::new(),
+            models: vec![],
+            providers: vec![],
+            disabled: false,
+            expires_at,
+            cache: None,
+            business_unit_id: String::new(),
+            customer_id: String::new(),
+        });
+        config
+    }
+
+    /// A rotation's overlap (#1837): both secrets authenticate as the one key,
+    /// then the old one stops at the end of its window while the new one lives on.
+    #[tokio::test]
+    async fn a_rotated_keys_previous_secret_authenticates_until_its_overlap_ends() {
+        let open = rotated_key(
+            "sk-new",
+            "sk-old",
+            Utc::now() + chrono::Duration::hours(1),
+            None,
+        );
+        let state = AppState::new(&open);
+        for (which, secret) in [("new", "sk-new"), ("previous", "sk-old")] {
+            let resp = list_models(State(state.clone()), bearer(secret)).await;
+            assert_eq!(resp.status(), StatusCode::OK, "the {which} secret");
+        }
+        // one key, not two: same identity and same tenant isolation, so a rate
+        // limit or budget is not doubled by the second secret
+        let snap = state.snapshot.load();
+        let new = &snap.keys[&rolter_auth::hash_key(&snap.pepper, "sk-new")];
+        let old = &snap.keys[&rolter_auth::hash_key(&snap.pepper, "sk-old")];
+        assert_eq!(old.id, new.id);
+        assert_eq!(old.tenant_key, new.tenant_key);
+
+        let ended = rotated_key(
+            "sk-new",
+            "sk-old",
+            Utc::now() - chrono::Duration::seconds(1),
+            None,
+        );
+        let state = AppState::new(&ended);
+        let resp = list_models(State(state.clone()), bearer("sk-old")).await;
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        let resp = list_models(State(state), bearer("sk-new")).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    /// The overlap never outlives the key: an old secret cannot authenticate
+    /// after the key it belonged to has expired.
+    #[tokio::test]
+    async fn a_previous_secret_never_outlives_the_key_that_expires_first() {
+        let config = rotated_key(
+            "sk-new",
+            "sk-old",
+            Utc::now() + chrono::Duration::hours(1),
+            Some(Utc::now() - chrono::Duration::minutes(1)),
+        );
+        let state = AppState::new(&config);
+        for (which, secret) in [("new", "sk-new"), ("previous", "sk-old")] {
+            let resp = list_models(State(state.clone()), bearer(secret)).await;
+            assert_eq!(
+                resp.status(),
+                StatusCode::UNAUTHORIZED,
+                "the {which} secret"
+            );
+        }
+    }
+
     /// The shape of a fresh managed deployment (#2300): no provider, no route,
     /// and the one key the control plane mints for the Playground of a
     /// routeless project, scoped to the builtin alone. That key gets an answer
@@ -6484,6 +6580,7 @@ mod tests {
         let mut config = GatewayConfig::default();
         let pepper = config.server.resolve_key_pepper();
         config.db_virtual_keys.push(VirtualKeyRecord {
+            previous: None,
             access_policy: None,
             key_hash: rolter_auth::hash_key(&pepper, "sk-playground"),
             id: "vk-playground".to_string(),
@@ -6547,6 +6644,7 @@ mod tests {
         let mut config = GatewayConfig::default();
         let pepper = config.server.resolve_key_pepper();
         config.db_virtual_keys.push(VirtualKeyRecord {
+            previous: None,
             access_policy: None,
             key_hash: rolter_auth::hash_key(&pepper, "sk-attributed"),
             id: "vk-1".to_string(),

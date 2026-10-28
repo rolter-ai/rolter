@@ -402,7 +402,11 @@ mod tests {
         ("/api/v1/analytics/timeseries", None),
         ("/api/v1/analytics/by-model", None),
         ("/api/v1/analytics/by-attribution", None),
+        ("/api/v1/analytics/by-attribution/export", None),
+        ("/api/v1/analytics/timeseries/export", None),
         ("/api/v1/analytics/invocations", Some("request_id")),
+        // streams the same list from the start; it takes no cursor of its own
+        ("/api/v1/analytics/invocations/export", None),
         ("/api/v1/analytics/guardrails", None),
         ("/api/v1/analytics/plugins", None),
         ("/api/v1/analytics/savings", None),
