@@ -12,8 +12,11 @@ from __future__ import annotations
 import json
 import threading
 import time
+import tomllib
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
+from unittest.mock import patch
 
 from bench import (
     Sample,
@@ -24,6 +27,20 @@ from bench import (
     run_phase,
     sample,
 )
+
+
+class BenchmarkRouteTests(unittest.TestCase):
+    def test_benchmark_model_routes_to_the_same_direct_engine(self):
+        config = Path(__file__).with_name("rolter-dummy.toml.in").read_text()
+        for name, port in (("ROLTER", 4010), ("ENGINE_1", 8000), ("ENGINE_2", 8001)):
+            config = config.replace(f"__{name}_PORT__", str(port))
+        config = tomllib.loads(config)
+        with patch("bench.urllib.request.urlopen", side_effect=OSError) as request:
+            sample("http://localhost:4010", stream=False)
+        model = json.loads(request.call_args.args[0].data)["model"]
+        routes = [route for route in config["routes"] if route["model"] == model]
+        self.assertEqual(len(routes), 1, "benchmark model must be a declared gateway route")
+        self.assertEqual(routes[0]["targets"], [{"provider": "engine-1", "model": model}])
 
 
 class PercentileTests(unittest.TestCase):

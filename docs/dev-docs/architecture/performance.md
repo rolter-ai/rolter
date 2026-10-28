@@ -162,6 +162,12 @@ levels takes minutes, and silently making the added-latency run that much slower
 would be a bad trade. Tune with `LOAD_LEVELS`, `LOAD_REQUESTS`, `LOAD_WARMUP`
 and `LOAD_MAX_TOKENS`.
 
+The benchmark uses the public `rolter-dummy` route, pinned to `engine-1`, so
+direct and gateway phases hit the same upstream. The `dummy-<strategy>` routes
+remain two-target pools for the compatibility smoke. A harness regression test
+checks that the model sent by `bench.py` names exactly that single-target route;
+otherwise the smoke can pass while the measured gateway requests all return 404.
+
 Two measurement rules worth knowing when reading the JSON:
 
 - **Failed requests are counted, never timed.** A connection refused in 0.1 ms
