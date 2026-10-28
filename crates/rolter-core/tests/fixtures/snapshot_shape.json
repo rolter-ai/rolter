@@ -415,6 +415,9 @@
     "mcp_servers[].connect_timeout_ms": [
       "number"
     ],
+    "mcp_servers[].enforce_manifest_by_default": [
+      "boolean"
+    ],
     "mcp_servers[].id": [
       "string"
     ],
@@ -477,6 +480,18 @@
     ],
     "mcp_tool_groups[]": [
       "object"
+    ],
+    "mcp_tool_groups[].assignments": [
+      "array"
+    ],
+    "mcp_tool_groups[].assignments[]": [
+      "object"
+    ],
+    "mcp_tool_groups[].assignments[].id": [
+      "string"
+    ],
+    "mcp_tool_groups[].assignments[].kind": [
+      "string"
     ],
     "mcp_tool_groups[].id": [
       "string"

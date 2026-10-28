@@ -193,6 +193,12 @@
           "server_id": "mcp-1",
           "tool": "search"
         }
+      ],
+      "assignments": [
+        {
+          "kind": "team",
+          "id": "team-1"
+        }
       ]
     }
   ],

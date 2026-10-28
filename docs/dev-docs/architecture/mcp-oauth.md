@@ -184,6 +184,9 @@ after the caller is authenticated and before anything is forwarded.
 /api/v1/mcp/tool-groups/{id}/assignments` (replaces the group's whole set in one
   transaction), under the `mcp_tool_group_assignment` capability; the dashboard's
   group dialog edits the team and project kinds.
+  Both snapshot fields added for assignments and the manifest default restrict
+  what the gateway serves, so ADR-0038 calls for a format bump; it is tracked in
+  #3384 and the shape fixture already carries the fields.
 - **Parsing.** When the rule applies the body is parsed in full, as one message
   or a batch, with no substring shortcut: `tools\/call` and `\u`-escaped spellings
   are the same JSON string, so a byte search would be a bypass. A batch is
