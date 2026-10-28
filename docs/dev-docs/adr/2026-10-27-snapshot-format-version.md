@@ -539,8 +539,10 @@ helpers live in `crates/rolter-control/src/snapshot_negotiation.rs` rather than
 in `lib.rs`, and the route-limit advice in `upgrading.mdx` is rephrased as an
 instance of rule 3 of the procedure rather than removed: it is still true of a
 gateway from before #2936, which predates negotiation. The shape guard's
-representative config is `rolter.example.toml`, and the guard ignores `null`,
-since an unset `Option` says nothing about the type it carries.
+representative config is `crates/rolter-core/tests/fixtures/snapshot_representative.json`,
+which gives every list at least one element (a test fails on a list that
+serializes empty, since it hides the shape of its items), and the guard ignores
+`null`, since an unset `Option` says nothing about the type it carries.
 
 - `crates/rolter-core/src/snapshot_format.rs`, new and exported from
   `lib.rs`: `SNAPSHOT_FORMAT = 1`, `MIN_SERVED_FORMAT = 1`, `FormatRange` with

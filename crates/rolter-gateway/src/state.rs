@@ -921,10 +921,6 @@ pub struct AppState {
     /// draining; `/readyz` then reports not-ready so a load balancer stops
     /// sending new traffic while in-flight requests finish (#543)
     pub draining: Arc<std::sync::atomic::AtomicBool>,
-    /// set the first time the control plane serves this gateway a snapshot
-    /// format it marks deprecated, so the warning is said once per process
-    /// rather than on every poll (ADR-0038)
-    pub snapshot_format_deprecation_warned: Arc<std::sync::atomic::AtomicBool>,
     /// live egress policy every upstream client's resolver consults at connect
     /// time; swapped on reload so hostname/rebinding enforcement re-tunes
     /// without rebuilding pooled clients (#656)
@@ -1119,7 +1115,6 @@ impl AppState {
             managed_auth: false,
             exposed_bind: false,
             draining: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            snapshot_format_deprecation_warned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             egress,
             side_client,
             forwarder,

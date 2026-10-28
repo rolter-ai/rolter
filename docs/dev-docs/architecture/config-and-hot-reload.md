@@ -106,7 +106,11 @@ payload is classified under ADR-0038 section 2; the `Changed the snapshot
 payload` row of the AGENTS.md maintenance matrix is the checklist, and the
 shape guard in `snapshot_format.rs` (`crates/rolter-core/tests/fixtures/snapshot_shape.json`,
 regenerated with `ROLTER_TEST_UPDATE_SNAPSHOT_SHAPE=1`) fails on a removed path
-or a changed JSON type within one format.
+or a changed JSON type within one format. It reads the shape off
+`tests/fixtures/snapshot_representative.json`, a config with at least one
+element in every list, and `the_representative_config_populates_every_list`
+fails when a list serializes empty, so a new `Vec` field needs an element there
+before the guard can see what it holds.
 
 ## Why this design
 

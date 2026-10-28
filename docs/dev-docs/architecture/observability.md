@@ -276,7 +276,7 @@ reconstructed from a counter after the fact.
 
 | Metric                          | Unit | Attributes                                                        |
 | ------------------------------- | ---- | ----------------------------------------------------------------- |
-| `rolter_snapshot_build_ms`      | ms   | `outcome` (`ok` / `not_modified` / `error`)                       |
+| `rolter_snapshot_build_ms`      | ms   | `outcome` (`ok` / `not_modified` / `error` / `refused`)           |
 | `rolter_snapshot_payload_bytes` | By   | `outcome`                                                         |
 | `rolter_control_request_ms`     | ms   | `http.route`, `http.request.method`, `http.response.status_class` |
 | `rolter_db_pool_acquire_ms`     | ms   | `outcome` (`ok` / `timeout`)                                      |

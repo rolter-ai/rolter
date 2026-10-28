@@ -342,20 +342,16 @@ async fn poll_once_reading(
         state.clear_snapshot_format_refusal();
         return Ok(None);
     }
-    if resp.status() == StatusCode::NOT_ACCEPTABLE {
-        // nothing else on the snapshot endpoint answers 406
-        let status = resp.status();
-        let body = read_refusal(resp).await;
-        let refusal = FormatRefusal::from_body(&body, readable);
-        enter_format_refusal(state, &refusal, current);
-        anyhow::bail!(
-            "snapshot endpoint returned {status}{}",
-            refusal_detail(&body)
-        );
-    }
     if !resp.status().is_success() {
         let status = resp.status();
         let body = read_refusal(resp).await;
+        // a 406 is a format refusal only when the control plane says so: one
+        // from a proxy or a misrouted request is an ordinary failed poll
+        if status == StatusCode::NOT_ACCEPTABLE {
+            if let Some(refusal) = FormatRefusal::from_body(&body, readable) {
+                enter_format_refusal(state, &refusal, current);
+            }
+        }
         anyhow::bail!(
             "snapshot endpoint returned {status}{}",
             refusal_detail(&body)
@@ -473,13 +469,14 @@ struct FormatRefusal {
 }
 
 impl FormatRefusal {
-    /// Read a `406` body. A body that is not the control plane's shape is
-    /// still a format refusal, since nothing else answers `406` there.
-    fn from_body(body: &serde_json::Value, readable: FormatRange) -> Self {
+    /// Read a `406` body, or `None` when it carries neither format code and
+    /// so is not the control plane's refusal.
+    fn from_body(body: &serde_json::Value, readable: FormatRange) -> Option<Self> {
         let error = &body["error"];
         let code = match error["code"].as_str() {
             Some(FORMAT_INEXPRESSIBLE) => FORMAT_INEXPRESSIBLE,
-            _ => FORMAT_UNSUPPORTED,
+            Some(FORMAT_UNSUPPORTED) => FORMAT_UNSUPPORTED,
+            _ => return None,
         };
         let bound = |key: &str| {
             error["served"][key]
@@ -490,11 +487,11 @@ impl FormatRefusal {
             (Some(min), Some(max)) if min <= max => Some(FormatRange { min, max }),
             _ => None,
         };
-        Self {
+        Some(Self {
             code,
             served,
             readable,
-        }
+        })
     }
 
     /// The one-line account an operator acts on.
@@ -560,7 +557,11 @@ fn warn_format_deprecation(
     if headers.get("deprecation").is_none() {
         return false;
     }
-    if state.snapshot_format_deprecation_warned.swap(true, Relaxed) {
+    if state
+        .metrics
+        .snapshot_format_deprecation_warned
+        .swap(true, Relaxed)
+    {
         return false;
     }
     let sunset = headers
@@ -1122,6 +1123,33 @@ mod tests {
         assert_eq!(ready(&fresh).await, (200, "ok".to_string()));
     }
 
+    /// A `406` that does not carry a snapshot-format code (a proxy, a
+    /// misrouted request) is an ordinary failed poll, not a format refusal.
+    #[tokio::test]
+    async fn a_406_without_a_format_code_is_an_ordinary_failure() {
+        let client = Client::new();
+        for body in [
+            serde_json::Value::Null,
+            serde_json::json!({"error": {"code": "something_else", "message": "nope"}}),
+        ] {
+            let stub = stub(StubAnswer::Refuse(406, body.clone())).await;
+            let state = AppState::new(&GatewayConfig::default());
+            let err = poll_once(&client, &state, &stub.url, None)
+                .await
+                .unwrap_err();
+            assert!(err.to_string().contains("406"), "{err}");
+            assert_eq!(
+                state.metrics.snapshot_format_refused.load(Relaxed),
+                0,
+                "{body}"
+            );
+            assert_eq!(ready(&state).await, (200, "ok".to_string()));
+        }
+        assert!(
+            FormatRefusal::from_body(&serde_json::Value::Null, FormatRange::single(1)).is_none()
+        );
+    }
+
     /// The `error` line is said on the transition into the refused state, not
     /// on every poll, and says what to do.
     #[test]
@@ -1132,7 +1160,7 @@ mod tests {
         state.clear_snapshot_format_refusal();
         assert!(state.refuse_snapshot_format());
 
-        let refusal = FormatRefusal::from_body(&unsupported_406(), FormatRange::single(1));
+        let refusal = FormatRefusal::from_body(&unsupported_406(), FormatRange::single(1)).unwrap();
         assert_eq!(refusal.code, FORMAT_UNSUPPORTED);
         assert_eq!(refusal.served, Some(FormatRange { min: 2, max: 3 }));
         assert_eq!(
@@ -1146,8 +1174,9 @@ mod tests {
             .contains("not ready until a snapshot is applied"));
 
         let newer = FormatRefusal {
+            code: FORMAT_UNSUPPORTED,
             served: Some(FormatRange::single(1)),
-            ..FormatRefusal::from_body(&serde_json::Value::Null, FormatRange::single(2))
+            readable: FormatRange::single(2),
         };
         assert!(newer
             .sentence(3)
@@ -1155,7 +1184,8 @@ mod tests {
         let inexpressible = FormatRefusal::from_body(
             &serde_json::json!({"error": {"code": "snapshot_format_inexpressible"}}),
             FormatRange::single(1),
-        );
+        )
+        .unwrap();
         assert_eq!(inexpressible.code, FORMAT_INEXPRESSIBLE);
         assert!(inexpressible.sentence(3).contains("cannot be expressed"));
     }
@@ -1172,7 +1202,10 @@ mod tests {
         for _ in 0..3 {
             poll_once(&client, &state, &stub.url, None).await.unwrap();
         }
-        assert!(state.snapshot_format_deprecation_warned.load(Relaxed));
+        assert!(state
+            .metrics
+            .snapshot_format_deprecation_warned
+            .load(Relaxed));
         assert_eq!(state.metrics.snapshot_format.load(Relaxed), 1);
 
         // the once is per process, not per poll

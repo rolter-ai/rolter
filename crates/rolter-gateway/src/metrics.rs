@@ -304,6 +304,10 @@ pub struct Metrics {
     /// `1` while the control plane's last answer was a snapshot format this
     /// gateway cannot read, `0` once a compatible answer arrives (ADR-0038)
     pub snapshot_format_refused: AtomicU64,
+    /// set the first time the control plane serves this gateway a snapshot
+    /// format it marks deprecated, so the warning is said once per process
+    /// rather than on every poll (ADR-0038). Not exported
+    pub snapshot_format_deprecation_warned: std::sync::atomic::AtomicBool,
     /// live per-(model, target) circuit-breaker entries after the last reload,
     /// so registry growth across config generations is observable (#1053)
     pub breaker_entries: AtomicU64,

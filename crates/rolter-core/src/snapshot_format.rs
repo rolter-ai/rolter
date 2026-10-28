@@ -656,16 +656,40 @@ mod tests {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/snapshot_shape.json")
     }
 
-    /// The representative config: the example every operator copies from,
-    /// which carries a row for every provider kind and most settings.
+    /// The representative config: a snapshot with at least one element in
+    /// every list, so the guard sees the shape of what a list holds and not
+    /// only that it is a list. Decoded through `GatewayConfig` and serialized
+    /// again, so what is checked is what the control plane writes.
     fn representative_shape() -> BTreeMap<String, BTreeSet<String>> {
-        let config = GatewayConfig::from_toml_str(include_str!("../../../rolter.example.toml"))
-            .expect("rolter.example.toml parses");
+        let config: GatewayConfig = serde_json::from_str(include_str!(
+            "../tests/fixtures/snapshot_representative.json"
+        ))
+        .expect("snapshot_representative.json decodes as a GatewayConfig");
         let json = serde_json::to_value(&config).expect("the config serializes");
         shape(&json)
             .into_iter()
             .map(|(path, kinds)| (path, kinds.into_iter().map(str::to_string).collect()))
             .collect()
+    }
+
+    /// Every list the representative config serializes empty. An empty list
+    /// hides the shape of its items from the guard, so a new `Vec` field fails
+    /// here until the representative config gives it an element.
+    #[test]
+    fn the_representative_config_populates_every_list() {
+        let current = representative_shape();
+        let empty: Vec<&String> = current
+            .iter()
+            .filter(|(path, kinds)| {
+                kinds.contains("array") && !current.contains_key(&format!("{path}[]"))
+            })
+            .map(|(path, _)| path)
+            .collect();
+        assert!(
+            empty.is_empty(),
+            "tests/fixtures/snapshot_representative.json leaves these lists empty, so the \
+             shape guard cannot see what they hold; give each one an element: {empty:#?}"
+        );
     }
 
     /// Every `path: type` in `fixture` that `current` no longer serializes.

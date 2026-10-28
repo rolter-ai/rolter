@@ -2881,7 +2881,8 @@ async fn build_snapshot(
                 // every poll of every gateway in the fleet
                 //
                 // `format` is what this answer is, so a captured snapshot is
-                // self-describing; a gateway that predates it ignores the field.
+                // self-describing; a gateway that predates it ignores the field
+                //
                 // the rewriting half of each down-step works on the serialized
                 // config, and crosses no step for a gateway of this format
                 serde_json::to_value(&config).and_then(|mut config| {
