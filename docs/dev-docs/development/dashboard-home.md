@@ -30,24 +30,26 @@ the requests their roles can read.
 
 ## What it shows
 
-| Block                        | Source                                                        | Why                                                                                                                                              |
-| ---------------------------- | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Gateways tile                | `GET /api/v1/cluster/summary`, falling back to `/readyz`      | The fleet, and whether the latest config reached it. The same hook as the header's pill.                                                         |
-| Providers tile               | `GET /api/v1/health/uptime` (the Health screen's cached read) | Of the providers that reported, how many meet the SLA, and the worst by name. Mid-incident the upstream is as likely to be down as the gateways. |
-| p95 latency tile             | `p95_latency_ms` on `GET /api/v1/analytics/summary`           | A mean hides the tail. The by-model table already returned p95; the overall one is new.                                                          |
-| Error rate tile              | `errors / requests`                                           | Kept.                                                                                                                                            |
-| Response-cache hit rate tile | `cache_hit_requests / requests`                               | How much traffic rolter's own response cache absorbs. Not prompt caching: see below.                                                             |
-| Requests, Spend              | `requests`, `cost_usd`                                        | Kept, last in the strip: they follow traffic, they are not an alarm.                                                                             |
-| Spend over time              | `GET /api/v1/analytics/timeseries`                            | Kept.                                                                                                                                            |
-| By model                     | `GET /api/v1/analytics/by-model`                              | One view for what the donut and the bars showed twice: share, p95 and spend per model.                                                           |
-| Recent requests              | `GET /api/v1/analytics/invocations`                           | Each row opens its request; a link under it opens the whole log with the same filters.                                                           |
+| Block                        | Source                                                                 | Why                                                                                                                                              |
+| ---------------------------- | ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Gateways tile                | `GET /api/v1/cluster/summary`, falling back to `/readyz`               | The fleet, and whether the latest config reached it. The same hook as the header's pill.                                                         |
+| Providers tile               | `GET /api/v1/health/uptime` (the Health screen's cached read)          | Of the providers that reported, how many meet the SLA, and the worst by name. Mid-incident the upstream is as likely to be down as the gateways. |
+| Prompt-cache read share tile | `cache_read_tokens / prompt_tokens` on `GET /api/v1/analytics/summary` | The provider's prompt cache, the signal `cache_aware` balancing exists to raise. Weighted by `sample_weight`.                                    |
+| p95 latency tile             | `p95_latency_ms` on `GET /api/v1/analytics/summary`                    | A mean hides the tail. The by-model table already returned p95; the overall one is new.                                                          |
+| Error rate tile              | `errors / requests`                                                    | Kept.                                                                                                                                            |
+| Response-cache hit rate tile | `cache_hit_requests / requests`                                        | How much traffic rolter's own response cache absorbs. Not prompt caching: see below.                                                             |
+| Requests, Spend              | `requests`, `cost_usd`                                                 | Kept, last in the strip: they follow traffic, they are not an alarm.                                                                             |
+| Spend over time              | `GET /api/v1/analytics/timeseries`                                     | Kept.                                                                                                                                            |
+| By model                     | `GET /api/v1/analytics/by-model`                                       | One view for what the donut and the bars showed twice: share, p95 and spend per model.                                                           |
+| Recent requests              | `GET /api/v1/analytics/invocations`                                    | Each row opens its request; a link under it opens the whole log with the same filters.                                                           |
 
 **The cache tile is the response cache, not prompt caching.** `cache_hit` on a log row is a rolter
 response-cache hit, which the gateway records apart from `cache_read_tokens` (the provider's prompt
 cache; see `logging.rs`). Cache-aware balancing shows up in `cache_read_tokens`, so this tile does
 not measure it. A deployment with no response cache reads 0.0% with a line saying no response came
-from the response cache, rather than a bare zero that looks like a failure. A prompt-cache read share
-over `cache_read_tokens` is a separate tile, tracked as its own issue.
+from the response cache, rather than a bare zero that looks like a failure. The prompt-cache read share (#3356) is its own tile
+beside it. A window where no provider reported a cached token reads "—" with a line saying so,
+since `cache_read_tokens = 0` cannot tell a provider that does not report from one that never hits.
 
 Both new summary fields are weighted by `sample_weight` like the other counts (the hit count), or read
 from the sampled rows as they are (the percentile), so a sampled log neither under-reports hits nor
@@ -67,7 +69,7 @@ rather than showing the mean as a p95 or a rate of zero.
   number of filters. It waits for the session before it claims either.
 - **The fleet is not analytics.** The Gateways tile also shows on the "analytics unavailable" and
   outage screens, and it is drawn outside the summary's `CardRead`: when only the summary (the
-  heaviest read) is slow or fails, the tile stays as the first of the strip and the other five tiles'
+  heaviest read) is slow or fails, the tile stays as the first of the strip and the other tiles'
   skeleton or alert fill the rest of the grid.
 - **Degraded is amber.** The tile uses the header pill's severity: a lagging or stale gateway is
   `warning` (a new `StatTone`), and only "no gateway live" is `bad`. After a rollout a stale gateway

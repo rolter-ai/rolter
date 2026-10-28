@@ -278,6 +278,90 @@ export const TheCacheHitRateIsComparedWithThePreviousWindow: Story = {
 };
 
 /**
+ * #3356: the prompt-cache read share is the provider's prompt cache, apart from
+ * the response-cache tile beside it: 360k of the 900k prompt tokens is 40%, the
+ * line under it counts them, and it is compared with the window before.
+ */
+export const ThePromptCacheReadShareIsTheShareOfPromptTokensServedFromTheProvidersCache: Story = {
+  render: () => render(loadedWith(SUMMARY, { ...SUMMARY, cache_read_tokens: 180_000 })),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const share = await waitFor(() => {
+      const found = canvas.getByTestId("dashboard-prompt-cache");
+      expect(found).toHaveTextContent(`${fmt.number(40, { minimumFractionDigits: 1 })}%`);
+      return found;
+    });
+    await expect(share).toHaveTextContent("360K of 900K prompt tokens");
+    // it doubled against the window before, and more of the prompt cached is good news
+    await expect(share).toHaveTextContent(vsPrevious("+100%"));
+    // and it is not the response-cache tile: that one still counts requests
+    await expect(tile(canvas, en.pages.dashboard.statCacheHit)).toHaveTextContent("25.0%");
+  },
+};
+
+/**
+ * A window in which no provider reported a cached token is not a 0.0% hit rate:
+ * a provider that does not report it looks the same as one that never hits, so
+ * the tile reads "—" and says why.
+ */
+export const NoProviderReportingCachedTokensReadsUnmeasured: Story = {
+  render: () => render(loadedWith({ ...SUMMARY, cache_read_tokens: 0 })),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const share = await waitFor(() => {
+      const found = canvas.getByTestId("dashboard-prompt-cache");
+      expect(found).toHaveTextContent(en.pages.dashboard.promptCacheNone);
+      return found;
+    });
+    await expect(share).toHaveTextContent(en.pages.dashboard.notMeasured);
+    await expect(share).not.toHaveTextContent("%");
+  },
+};
+
+/** An older control plane sends no `cache_read_tokens`, and the tile says it is not measured. */
+export const AnOlderControlPlaneLeavesThePromptCacheShareUnmeasured: Story = {
+  render: () => {
+    const { cache_read_tokens: _read, ...older } = SUMMARY;
+    return render(loadedWith(older as typeof SUMMARY));
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findAllByText(fmt.number(132));
+    const share = canvas.getByTestId("dashboard-prompt-cache");
+    await expect(share).toHaveTextContent(en.pages.dashboard.notMeasured);
+    await expect(share).not.toHaveTextContent(en.pages.dashboard.promptCacheNone);
+  },
+};
+
+/** A window with no requests gives the tile the reason every other tile gives. */
+export const ANoTrafficWindowGivesThePromptCacheTileItsReason: Story = {
+  render: () => render(loadedWith(QUIET_SUMMARY)),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const share = await waitFor(() => {
+      const found = canvas.getByTestId("dashboard-prompt-cache");
+      expect(found).toHaveTextContent(en.pages.dashboard.noRequestsInWindow);
+      return found;
+    });
+    await expect(share).toHaveTextContent(en.pages.dashboard.notMeasured);
+  },
+};
+
+export const ThePromptCacheTileInRussian: Story = {
+  globals: { locale: "ru" },
+  render: () => render(loaded),
+  play: async ({ canvasElement }) => {
+    const share = await waitFor(() => {
+      const found = within(canvasElement).getByTestId("dashboard-prompt-cache");
+      expect(found).toHaveTextContent(ru.pages.dashboard.statPromptCache);
+      return found;
+    });
+    await expect(share).toHaveTextContent("40,0");
+    await expect(share).toHaveTextContent("токенов промпта");
+  },
+};
+
+/**
  * A control plane older than #1978 sends neither a p95 nor a cache-hit count.
  * The tiles say they are not measured rather than showing the mean as a p95 or a
  * rate of zero.
@@ -299,11 +383,6 @@ export const AnOlderControlPlaneLeavesP95AndCacheHitsUnmeasured: Story = {
   },
 };
 
-/**
- * #1978, #3263: the fleet leads the strip. Three live gateways, all on the
- * control plane's config, read as the count with "live" after it and a line
- * saying none is behind.
- */
 /** the same stub with the health read answered by `answer` */
 const withHealth = (answer: () => Response | Promise<Response>): FetchStub =>
   scoped(async (input, init) =>
@@ -414,6 +493,11 @@ export const TheProviderTileInRussian: Story = {
   },
 };
 
+/**
+ * #1978, #3263: the fleet leads the strip. Three live gateways, all on the
+ * control plane's config, read as the count with "live" after it and a line
+ * saying none is behind.
+ */
 export const TheFleetTileCountsTheLiveGateways: Story = {
   render: () => render(loaded),
   play: async ({ canvasElement }) => {
@@ -526,6 +610,7 @@ export const Loading: Story = {
 // the story sat on the "cannot reach the control plane" screen with no `play`
 // to notice
 const QUIET = Object.fromEntries(Object.keys(SUMMARY).map((k) => [k, 0]));
+const QUIET_SUMMARY = QUIET as typeof SUMMARY;
 
 const quiet: FetchStub = routes([
   ["/api/v1/analytics/summary", () => ({ data: [QUIET] })],

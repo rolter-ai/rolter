@@ -436,7 +436,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
             // tiles it stands in for
             skeleton={
               <LoadingRegion className="contents">
-                {Array.from({ length: 5 }, (_, i) => (
+                {Array.from({ length: 6 }, (_, i) => (
                   <Skeleton key={i} height={96} radius={10} />
                 ))}
               </LoadingRegion>
@@ -477,7 +477,25 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
                 before && before.cache_hit_requests != null
                   ? (num(before.cache_hit_requests) / prevRequests) * 100
                   : undefined;
+              // the provider's prompt cache, apart from rolter's response cache: the
+              // signal cache-aware balancing exists to improve (#3356). A window in
+              // which no provider reported a cached token reads as unmeasured, since
+              // a provider that does not report it looks the same as one that never hits
+              const promptTokens = num(s?.prompt_tokens);
+              const cacheRead = s?.cache_read_tokens != null ? num(s.cache_read_tokens) : undefined;
+              const readShare =
+                cacheRead !== undefined && cacheRead > 0 && promptTokens > 0
+                  ? (cacheRead / promptTokens) * 100
+                  : undefined;
+              const prevReadShare =
+                before &&
+                before.cache_read_tokens != null &&
+                num(before.cache_read_tokens) > 0 &&
+                num(before.prompt_tokens) > 0
+                  ? (num(before.cache_read_tokens) / num(before.prompt_tokens)) * 100
+                  : undefined;
               const changes = {
+                readShare: compare(readShare, prevReadShare),
                 requests: compare(requests, was(before?.requests)),
                 spend: compare(num(s?.cost_usd), was(before?.cost_usd)),
                 latency: compare(
@@ -573,6 +591,37 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
                             : hits === 0
                               ? t("pages.dashboard.cacheHitsNone")
                               : t("pages.dashboard.cacheHits", { count: hits })
+                    }
+                  />
+                  <StatCard
+                    data-testid="dashboard-prompt-cache"
+                    label={t("pages.dashboard.statPromptCache")}
+                    value={readShare !== undefined ? percent(readShare) : unmeasured}
+                    unit={readShare !== undefined ? "%" : undefined}
+                    // more of the prompt served from the cache is what cache-aware routing is for
+                    trend={changes.readShare?.trend}
+                    tone={
+                      changes.readShare ? toneOfChange(changes.readShare.trend, "good") : undefined
+                    }
+                    delta={
+                      promptTokens === 0
+                        ? why
+                        : cacheRead === undefined
+                          ? undefined
+                          : readShare === undefined
+                            ? t("pages.dashboard.promptCacheNone")
+                            : changes.readShare
+                              ? t("pages.dashboard.withChange", {
+                                  detail: t("pages.dashboard.promptCacheTokens", {
+                                    read: fmt.compact(cacheRead),
+                                    prompt: fmt.compact(promptTokens),
+                                  }),
+                                  change: said(changes.readShare),
+                                })
+                              : t("pages.dashboard.promptCacheTokens", {
+                                  read: fmt.compact(cacheRead),
+                                  prompt: fmt.compact(promptTokens),
+                                })
                     }
                   />
                   <StatCard

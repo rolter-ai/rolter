@@ -98,6 +98,13 @@ export interface AnalyticsSummary {
   usage_unknown_requests?: number | string;
   /** requests answered from a cache, weighted like `requests`; absent from an older control plane */
   cache_hit_requests?: number | string;
+  /**
+   * prompt tokens the provider served from its own prompt cache, weighted like
+   * the other sums; the read share is this over `prompt_tokens` (#3356). Not
+   * rolter's response cache (`cache_hit_requests`). Zero when no provider in the
+   * window reports it; absent from an older control plane
+   */
+  cache_read_tokens?: number | string;
   errors: number | string;
   avg_latency_ms: number | string;
   /** the 95th percentile over the whole window; absent from an older control plane */

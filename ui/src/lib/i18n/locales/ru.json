@@ -842,6 +842,9 @@
       "statSpend": "Расходы",
       "statP95": "Задержка p95",
       "statCacheHit": "Доля ответов из кэша ответов",
+      "statPromptCache": "Доля токенов из кэша промптов",
+      "promptCacheTokens": "{{read}} из {{prompt}} токенов промпта",
+      "promptCacheNone": "Ни один провайдер не сообщил о токенах из кэша",
       "statFleet": "Шлюзы",
       "statProviders": "Провайдеры",
       "providers": {

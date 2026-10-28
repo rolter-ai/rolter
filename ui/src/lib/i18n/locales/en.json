@@ -806,6 +806,9 @@
       "statSpend": "Spend",
       "statP95": "p95 latency",
       "statCacheHit": "Response-cache hit rate",
+      "statPromptCache": "Prompt-cache read share",
+      "promptCacheTokens": "{{read}} of {{prompt}} prompt tokens",
+      "promptCacheNone": "No provider reported cached prompt tokens",
       "statFleet": "Gateways",
       "statProviders": "Providers",
       "providers": {

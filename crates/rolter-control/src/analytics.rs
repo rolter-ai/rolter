@@ -781,6 +781,7 @@ async fn summary(
                 {TOKENS} as tokens, \
                 {PROMPT_TOKENS} as prompt_tokens, \
                 {COMPLETION_TOKENS} as completion_tokens, \
+                {CACHE_READ_TOKENS} as cache_read_tokens, \
                 {COST} as cost_usd, \
                 {UNPRICED} as unpriced_requests, \
                 uniqIf(model, unpriced = 1) as unpriced_models, \
@@ -807,6 +808,13 @@ pub(crate) const REQUESTS: &str = "round(sum(sample_weight))";
 pub(crate) const TOKENS: &str = "round(sum(total_tokens * sample_weight))";
 pub(crate) const PROMPT_TOKENS: &str = "round(sum(prompt_tokens * sample_weight))";
 pub(crate) const COMPLETION_TOKENS: &str = "round(sum(completion_tokens * sample_weight))";
+/// Prompt tokens the provider served from its own prompt cache (#3356), the
+/// numerator of a read share over `prompt_tokens`. This is the provider's
+/// cache, not rolter's response cache (`cache_hit`). The column is qualified
+/// because the summary also selects this sum as `cache_read_tokens`, and
+/// ClickHouse resolves a bare name to the select alias before the column.
+pub(crate) const CACHE_READ_TOKENS: &str =
+    "round(sum(request_logs.cache_read_tokens * sample_weight))";
 pub(crate) const COST: &str = "round(sum(cost_usd * sample_weight), 6)";
 pub(crate) const UNPRICED: &str = "round(sumIf(sample_weight, unpriced = 1))";
 /// Requests whose provider answered, and billed, but whose response a post-call

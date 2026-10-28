@@ -1868,3 +1868,56 @@ async fn by_variant_groups_one_route_inside_the_callers_scope() {
         .unwrap();
     assert_eq!(anonymous.status(), 401);
 }
+
+/// The summary carries the weighted prompt-cache read tokens beside the prompt
+/// tokens (#3356), so a read share is one division, and a row logged before the
+/// provider reported any reads as zero.
+#[tokio::test]
+async fn summary_reports_weighted_prompt_cache_reads_beside_prompt_tokens() {
+    let ch = skip_without_stack!();
+    let http = reqwest::Client::new();
+    ensure_schema(&http, &ch).await;
+
+    let db = TestSchema::create(&test_database::url().await.unwrap()).await;
+    let app = rolter_control::test_app_with_clickhouse_and_admin_token(
+        db.pool().clone(),
+        &ch,
+        Some(ADMIN_TOKEN.to_string()),
+    )
+    .await
+    .unwrap();
+    let addr = serve(app).await;
+
+    let model = format!("promptcache-{}", Uuid::new_v4().simple());
+    let ts = chrono::Utc::now()
+        .format("%Y-%m-%d %H:%M:%S%.3f")
+        .to_string();
+    // each kept row stands for three requests: 600 of 1000 prompt tokens were read
+    // from the cache on one, none on the other
+    let rows: Vec<Value> = [(1000, 600), (1000, 0)]
+        .iter()
+        .enumerate()
+        .map(|(i, (prompt, read))| {
+            json!({
+                "ts": ts, "request_id": format!("pc-{i}-{}", Uuid::new_v4().simple()),
+                "model": model, "status": 200, "prompt_tokens": prompt,
+                "cache_read_tokens": read, "sample_weight": 3.0,
+            })
+        })
+        .collect();
+    insert_rows(&http, &ch, "request_logs", &rows).await;
+
+    let response = http
+        .get(format!(
+            "http://{addr}/api/v1/analytics/summary?model={model}"
+        ))
+        .bearer_auth(ADMIN_TOKEN)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let body: Value = response.json().await.unwrap();
+    let row = &body["data"][0];
+    assert_eq!(number(&row["prompt_tokens"]), 6000.0);
+    assert_eq!(number(&row["cache_read_tokens"]), 1800.0);
+}
