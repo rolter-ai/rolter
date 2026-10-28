@@ -13,12 +13,12 @@ use rolter_core::{
     BudgetScope, BuiltinRule, Decorator, Error, FailureMode, FeatureFlagsConfig, GatewayConfig,
     GroupMember, GuardAction, GuardStage, GuardrailPolicy, GuardrailRule, GuardrailWebhookConfig,
     GuardrailsConfig, McpAuthKind, McpOAuthSessionConfig, McpOrgSettingsConfig, McpServerConfig,
-    McpToolGroupConfig, McpToolRefConfig, ModelPolicy, ModelPriceConfig, ModelRoute, ParamPolicy,
-    PluginInstanceConfig, PluginStage, PluginsConfig, PolicyScope, PromptTemplate,
-    PromptTemplateActivationScope, PromptTemplatesConfig, ProviderConfig, ProviderGroupConfig,
-    ProviderKind, RateLimitConfig, Result, ScopeWithin, SemanticGuardsConfig, StreamingStrategy,
-    Target, TemplateVariable, Tenancy, UnpricedPolicy, ViolationAction, VirtualKeyRecord,
-    WebhookAuth, WebhookStage,
+    McpToolGroupConfig, McpToolGroupSubjectConfig, McpToolRefConfig, ModelPolicy, ModelPriceConfig,
+    ModelRoute, ParamPolicy, PluginInstanceConfig, PluginStage, PluginsConfig, PolicyScope,
+    PromptTemplate, PromptTemplateActivationScope, PromptTemplatesConfig, ProviderConfig,
+    ProviderGroupConfig, ProviderKind, RateLimitConfig, Result, ScopeWithin, SemanticGuardsConfig,
+    StreamingStrategy, Target, TemplateVariable, Tenancy, UnpricedPolicy, ViolationAction,
+    VirtualKeyRecord, WebhookAuth, WebhookStage,
 };
 use rust_decimal::Decimal;
 use sqlx::postgres::PgPoolOptions;
@@ -474,6 +474,7 @@ struct McpServerSnapshotRow {
     request_timeout_ms: Option<i32>,
     max_retries: Option<i32>,
     tools: Vec<String>,
+    enforce_manifest_by_default: bool,
 }
 
 #[derive(FromRow)]
@@ -491,6 +492,7 @@ struct McpToolGroupSnapshotRow {
     id: Uuid,
     org_id: Uuid,
     slug: String,
+    enabled: bool,
     tools: serde_json::Value,
 }
 
@@ -1256,7 +1258,10 @@ impl PostgresConfigStore {
         let rows: Vec<McpServerSnapshotRow> = sqlx::query_as(
             "select id, org_id, slug, url, transport, required_scopes, \
                     auth_kind, auth_header_name, credential_ciphertext, credential_nonce, \
-                    connect_timeout_ms, request_timeout_ms, max_retries, tools \
+                    connect_timeout_ms, request_timeout_ms, max_retries, tools, \
+                    coalesce((select o.mcp_enforce_manifests from orgs o \
+                              where o.id = mcp_servers.org_id), false) \
+                        as enforce_manifest_by_default \
              from mcp_servers where enabled order by org_id, slug",
         )
         .fetch_all(&self.pool)
@@ -1310,19 +1315,33 @@ impl PostgresConfigStore {
                     request_timeout_ms: row.request_timeout_ms.map(|ms| ms.max(0) as u64),
                     max_retries: row.max_retries.map(|n| n.max(0) as u32),
                     tools: row.tools,
+                    enforce_manifest_by_default: row.enforce_manifest_by_default,
                 }
             })
             .collect())
     }
 
-    /// Enabled tool groups for the snapshot (#1403). A disabled group governs
-    /// nothing, so it is not carried. A reference that does not parse is left
+    /// Enabled tool groups for the snapshot (#1403), and the disabled ones that
+    /// callers are assigned to, marked `disabled` (#3295). A reference that does not parse is left
     /// out with a warning rather than failing the snapshot; the API only ever
     /// writes well-formed ones, so this is a row written around it.
     async fn load_mcp_tool_groups(&self) -> Result<Vec<McpToolGroupConfig>> {
         let rows: Vec<McpToolGroupSnapshotRow> = sqlx::query_as(
-            "select id, org_id, slug, tools from mcp_tool_groups where enabled \
+            "select id, org_id, slug, enabled, tools from mcp_tool_groups g where enabled \
+             or exists (select 1 from mcp_tool_group_assignments a where a.group_id = g.id) \
              order by org_id, slug",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(store_err)?;
+        // a disabled group governs no one else, but the callers assigned to it
+        // stay narrowed (to none of its tools) on the servers it names, so it
+        // travels with its assignments, marked disabled, rather than handing
+        // them the organization-wide set or the whole server back
+        let assignments: Vec<(Uuid, String, Uuid)> = sqlx::query_as(
+            "select a.group_id, a.subject_kind, a.subject_id \
+             from mcp_tool_group_assignments a \
+             order by a.group_id, a.subject_kind, a.subject_id",
         )
         .fetch_all(&self.pool)
         .await
@@ -1330,6 +1349,14 @@ impl PostgresConfigStore {
         Ok(rows
             .into_iter()
             .map(|row| {
+                let assignments = assignments
+                    .iter()
+                    .filter(|(group_id, _, _)| *group_id == row.id)
+                    .map(|(_, kind, subject)| McpToolGroupSubjectConfig {
+                        kind: kind.clone(),
+                        id: subject.to_string(),
+                    })
+                    .collect();
                 let tools = match serde_json::from_value::<Vec<McpToolRefConfig>>(row.tools) {
                     Ok(tools) => tools,
                     Err(error) => {
@@ -1346,6 +1373,8 @@ impl PostgresConfigStore {
                     org_id: row.org_id.to_string(),
                     slug: row.slug,
                     tools,
+                    assignments,
+                    disabled: !row.enabled,
                 }
             })
             .collect())
