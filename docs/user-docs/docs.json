@@ -180,6 +180,7 @@
               "api/org-projects",
               "api/teams",
               "api/deployment-users",
+              "api/api-tokens",
               "api/providers",
               "api/routes",
               "api/attribution-listings",

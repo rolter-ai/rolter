@@ -493,4 +493,8 @@ function Snippet({ base }: { base: string }) {
 // deployment-scoped settings: superadmin-only in the capability table, so a
 // lesser caller sees the refusal instead of a screen that loads and then 403s
 // (#1183)
-export default superadminOnly(ClientSettingsScreen, "errors.resources.clientSettings");
+export default superadminOnly(
+  ClientSettingsScreen,
+  "errors.resources.clientSettings",
+  "client_settings:read",
+);

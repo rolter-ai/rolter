@@ -349,4 +349,8 @@ function ModelSettingsScreen() {
 // deployment-scoped settings: superadmin-only in the capability table, so a
 // lesser caller sees the refusal instead of a screen that loads and then 403s
 // (#1183)
-export default superadminOnly(ModelSettingsScreen, "errors.resources.modelSettings");
+export default superadminOnly(
+  ModelSettingsScreen,
+  "errors.resources.modelSettings",
+  "model_defaults:read",
+);
