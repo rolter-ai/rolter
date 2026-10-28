@@ -26,6 +26,7 @@
 //! or a `\u` escape, so a byte search is a bypass here even though it is a fine
 //! optimisation for the log.
 
+// spec-ref: json-rpc, mcp-transport
 use std::collections::HashSet;
 
 use serde_json::{Map, Value};

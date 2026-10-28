@@ -26,6 +26,7 @@
 //! open objects: imprecise, but present, so a generated SDK has the call even
 //! where it cannot yet have the struct.
 
+// spec-ref: openapi
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
@@ -409,6 +410,25 @@ const PROVIDER_TEST_QUERY: &[QueryParam] = &[QueryParam::new(
     "an upstream model name to look up in the provider's catalogue; the response then carries \
      `model_listed`: true or false, or null when the provider has no catalogue to check",
 )];
+
+const PROVIDER_CACHE_PROBE_QUERY: &[QueryParam] = &[QueryParam::new(
+    "model",
+    "string",
+    "the upstream model to ask for one token (required); the probe is a completion, so it costs a token",
+)];
+
+const PRICE_CATALOGUE_QUERY: &[QueryParam] = &[
+    QueryParam::new(
+        "q",
+        "string",
+        "a substring of the model id; every model when omitted",
+    ),
+    QueryParam::new(
+        "limit",
+        "integer",
+        "at most this many entries (default and ceiling 200)",
+    ),
+];
 
 /// The MCP call log's query string. The same keyset-paging problem as the
 /// invocation log below, and the one #1412 names first: `next_cursor` comes
@@ -1286,6 +1306,20 @@ fn operations() -> Vec<Op> {
             )
             .query(PROVIDER_TEST_QUERY)
             .body(Payload::Empty),
+            Op::post(
+                "/api/v1/providers/{id}/probe-cache",
+                "probeProviderCache",
+                "Ask a provider for one token and record whether the answer's usage carries prompt-cache metrics (needs provider:update)",
+            )
+            .query(PROVIDER_CACHE_PROBE_QUERY)
+            .body(Payload::Empty)
+            .ok(Payload::Open),
+            Op::get(
+                "/api/v1/orgs/{org_id}/provider-cache-probes",
+                "listProviderCacheProbes",
+                "List the stored prompt-cache reporting verdicts of an org's providers; a provider with no entry was never probed",
+            )
+            .ok(Payload::Open),
             Op::get(
                 "/api/v1/providers/{id}/models",
                 "listProviderModels",
@@ -1670,6 +1704,20 @@ fn operations() -> Vec<Op> {
                 "deleteModelPrice",
                 "Delete a model's price",
             ),
+            Op::get(
+                "/api/v1/model-prices/catalogue",
+                "listPriceCatalogue",
+                "Search the vendored price catalogue the importer reads (offline), with its source, licence and snapshot date",
+            )
+            .query(PRICE_CATALOGUE_QUERY)
+            .ok(Payload::Open),
+            Op::post(
+                "/api/v1/model-prices/import",
+                "importModelPrices",
+                "Import the named models' prices from the vendored catalogue; an operator-set price is never replaced",
+            )
+            .body(Payload::Open)
+            .ok(Payload::Open),
         ],
     ));
 
@@ -2831,7 +2879,7 @@ fn build_document() -> Value {
         paths.insert(path.to_string(), Value::Object(item));
     }
 
-    json!({
+    let mut doc = json!({
         "openapi": "3.1.0",
         "info": {
             "title": "rolter control plane",
@@ -2864,7 +2912,14 @@ fn build_document() -> Value {
             },
             "schemas": schemas()
         }
-    })
+    });
+    // `externalDocs` and `x-rolter-*` provenance from the specification
+    // registry (#907)
+    rolter_core::spec_registry::annotate_openapi(
+        &mut doc,
+        rolter_core::spec_registry::Plane::Control,
+    );
+    doc
 }
 
 /// The primitive schemas the entity definitions reuse, so a `uuid` is spelled
@@ -4018,7 +4073,16 @@ fn governance_schemas(p: &Prim) -> Value {
                     "description": "price per million cached audio input tokens; null charges them at cached_input_per_mtok when that is set, otherwise at the audio input rate"
                 },
                 "currency": string,
-                "created_at": timestamp
+                "created_at": timestamp,
+                "source": {
+                    "type": ["string", "null"],
+                    "description": "the catalogue this price was imported from (e.g. litellm), a value subject to change; null is a price an operator set, which is an override that an import never replaces"
+                },
+                "source_imported_at": {
+                    "type": ["string", "null"],
+                    "format": "date-time",
+                    "description": "the day the catalogue snapshot behind an imported price was taken; null for an operator-set price"
+                }
             }
         },
         "UpsertModelPrice": {
@@ -4314,6 +4378,40 @@ mod tests {
             "these operations are documented but no router mounts them; \
              drop them from `operations()` in src/openapi.rs:\n{}",
             stale.join("\n")
+        );
+    }
+
+    // #907: a control-plane endpoint the specification registry names must
+    // exist, and must carry the registry's provenance in the served document
+    #[test]
+    fn registry_endpoints_are_documented_with_their_provenance() {
+        let registry = rolter_core::spec_registry::registry().expect("the registry parses");
+        let doc = document();
+        assert_eq!(
+            doc["externalDocs"]["url"],
+            rolter_core::spec_registry::REGISTRY_URL
+        );
+        let mut checked = 0;
+        for spec in &registry.specs {
+            for endpoint in &spec.control_endpoints {
+                let (method, path) =
+                    rolter_core::spec_registry::parse_endpoint(endpoint).expect("validated");
+                let method = method.to_ascii_lowercase();
+                assert!(
+                    documents_operation(&method, path),
+                    "the registry names {endpoint}, which the document does not have"
+                );
+                let refs = doc["paths"][path][&method]["x-rolter-spec-refs"]
+                    .as_array()
+                    .unwrap_or_else(|| panic!("{endpoint} carries no x-rolter-spec-refs"));
+                assert!(refs.iter().any(|id| id == spec.id.as_str()), "{endpoint}");
+                checked += 1;
+            }
+        }
+        assert!(checked > 0);
+        assert_eq!(
+            doc["paths"]["/scim/v2/Users"]["get"]["externalDocs"]["url"],
+            "https://www.rfc-editor.org/rfc/rfc7644"
         );
     }
 

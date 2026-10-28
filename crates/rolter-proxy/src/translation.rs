@@ -4,6 +4,7 @@
 //! dialects add a protocol mapping and a pair implementation here; forwarding,
 //! retries, caching and response accounting do not need provider-specific code.
 
+// spec-ref: translation-openai-anthropic, translation-responses, translation-gemini
 use std::collections::{HashMap, VecDeque};
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -141,6 +142,7 @@ static TRANSLATION_PAIRS: &[TranslationPair] = &[
     },
 ];
 
+// spec-ref: anthropic-messages
 /// The Anthropic Messages API rejects a request without `max_tokens`, so a
 /// translated request that carried neither `max_tokens` nor
 /// `max_completion_tokens` gets the deployment's configured default (#546).
@@ -1077,21 +1079,54 @@ fn anthropic_block_to_openai(block: Value) -> Value {
 /// - `cached_tokens` at the top of `usage`: Kimi (Moonshot), beside the details
 ///   block, and gateways that flatten it
 /// - `precached_prompt_tokens`: GigaChat
+/// - `cache_read_input_tokens` at the top of `usage`: Databricks' Claude
+///   endpoints (#2882), last in line and read as inside the prompt total like
+///   any body that carries `prompt_tokens`; the reference does not say
 ///
-/// The first spelling present wins. Anthropic's `cache_read_input_tokens` is
-/// not here on purpose: it sits *beside* `input_tokens`, not inside it, so the
-/// callers that read it also add it back into the prompt.
+/// The first spelling present wins. Anthropic's own `cache_read_input_tokens`
+/// sits *beside* `input_tokens`, not inside it, so the callers that read an
+/// Anthropic-shaped body (`merge_usage`, `TokenUsage::from_anthropic`) read it
+/// themselves and add it back into the prompt; this list is only for a body
+/// that states `prompt_tokens` or the Responses API's `input_tokens` with the
+/// details block.
 pub fn cached_prompt_tokens(usage: &Value) -> Option<u64> {
-    const SPELLINGS: [&str; 5] = [
-        "/prompt_tokens_details/cached_tokens",
-        "/input_tokens_details/cached_tokens",
-        "/prompt_cache_hit_tokens",
-        "/cached_tokens",
-        "/precached_prompt_tokens",
-    ];
-    SPELLINGS
+    CACHE_HIT_SPELLINGS
         .iter()
         .find_map(|pointer| usage.pointer(pointer)?.as_u64())
+}
+
+/// The JSON pointer of the first prompt-cache hit spelling `usage` carries,
+/// a zero included (#984). A provider that states `cached_tokens: 0` reports
+/// cache metrics; one that omits the field does not, and the control plane's
+/// probe tells the two apart with this.
+pub fn cached_prompt_tokens_spelling(usage: &Value) -> Option<&'static str> {
+    CACHE_HIT_SPELLINGS
+        .iter()
+        .copied()
+        .find(|pointer| usage.pointer(pointer).and_then(Value::as_u64).is_some())
+}
+
+const CACHE_HIT_SPELLINGS: [&str; 6] = [
+    "/prompt_tokens_details/cached_tokens",
+    "/input_tokens_details/cached_tokens",
+    "/prompt_cache_hit_tokens",
+    "/cached_tokens",
+    "/precached_prompt_tokens",
+    "/cache_read_input_tokens",
+];
+
+/// The response header Fireworks puts the prompt-cache hit in, for dedicated
+/// deployments (#2882). The count is "out of" the prompt tokens, so it is
+/// inside the prompt total like every body spelling. A header is invisible to
+/// `merge_usage`, which only reads the body, so the gateway reads it with
+/// [`cached_prompt_tokens_header`] and fills the row's `cache_read_tokens`
+/// when the body states none.
+pub const CACHED_PROMPT_TOKENS_HEADER: &str = "fireworks-cached-prompt-tokens";
+
+/// The prompt-cache hit a [`CACHED_PROMPT_TOKENS_HEADER`] value states, `None`
+/// for a value that is not a non-negative integer.
+pub fn cached_prompt_tokens_header(value: &str) -> Option<u64> {
+    value.trim().parse().ok()
 }
 
 /// The prompt tokens an OpenAI-shaped `usage` object says were written to the
@@ -1693,6 +1728,7 @@ fn remove_keys(obj: &mut Map<String, Value>, keys: &[&str]) {
 
 // --- google gemini native generateContent translation ----------------------
 
+// spec-ref: gemini-generate-content
 /// Translate an OpenAI Chat Completions request into a Gemini `generateContent`
 /// body. System/developer messages become `systemInstruction`; user/assistant
 /// turns become `contents` with roles `user`/`model`; tool messages become
@@ -1954,6 +1990,7 @@ fn gemini_finish(v: Option<&Value>) -> Value {
     }
 }
 
+// spec-ref: gemini-interactions
 /// Translate an OpenAI Chat Completions request into a Gemini Interactions
 /// `interactions.create` body (#599).
 ///
@@ -2353,6 +2390,7 @@ fn interaction_finish(status: Option<&Value>) -> Value {
     }
 }
 
+// spec-ref: sse
 struct SseConverter {
     plan: TranslationPlan,
     pending: Vec<u8>,
@@ -5234,6 +5272,55 @@ mod tests {
             "cached_tokens":64
         });
         assert_eq!(cached_prompt_tokens(&native), Some(64));
+    }
+
+    /// databricks' claude endpoints put `cache_read_input_tokens` at the top of
+    /// an OpenAI-shaped `usage` that states `prompt_tokens` (#2882)
+    #[test]
+    fn databricks_top_level_cache_read_is_read_on_the_openai_path() {
+        let usage = json!({
+            "prompt_tokens":120,"completion_tokens":5,"total_tokens":125,
+            "cache_read_input_tokens":80,"cache_creation_input_tokens":10
+        });
+        assert_eq!(cached_prompt_tokens(&usage), Some(80));
+        let read = TokenUsage::from_openai(&usage);
+        assert_eq!(read.cache_read, Some(80));
+        assert_eq!(read.prompt, 120);
+        // a details block still wins over the flat spelling
+        let both = json!({
+            "prompt_tokens":120,
+            "prompt_tokens_details":{"cached_tokens":64},
+            "cache_read_input_tokens":80
+        });
+        assert_eq!(cached_prompt_tokens(&both), Some(64));
+    }
+
+    /// #984: a stated zero is a provider that reports, an absent field is not
+    #[test]
+    fn the_spelling_found_is_named_and_a_zero_counts() {
+        let zero = json!({"prompt_tokens":9,"prompt_tokens_details":{"cached_tokens":0}});
+        assert_eq!(
+            cached_prompt_tokens_spelling(&zero),
+            Some("/prompt_tokens_details/cached_tokens")
+        );
+        let flat = json!({"prompt_tokens":9,"cache_read_input_tokens":0});
+        assert_eq!(
+            cached_prompt_tokens_spelling(&flat),
+            Some("/cache_read_input_tokens")
+        );
+        let none = json!({"prompt_tokens":9,"completion_tokens":1});
+        assert_eq!(cached_prompt_tokens_spelling(&none), None);
+        let null = json!({"prompt_tokens_details":{"cached_tokens":null}});
+        assert_eq!(cached_prompt_tokens_spelling(&null), None);
+    }
+
+    #[test]
+    fn fireworks_header_value_is_read_as_a_count() {
+        assert_eq!(cached_prompt_tokens_header("1920"), Some(1920));
+        assert_eq!(cached_prompt_tokens_header(" 0 "), Some(0));
+        assert_eq!(cached_prompt_tokens_header(""), None);
+        assert_eq!(cached_prompt_tokens_header("-3"), None);
+        assert_eq!(cached_prompt_tokens_header("many"), None);
     }
 
     #[test]

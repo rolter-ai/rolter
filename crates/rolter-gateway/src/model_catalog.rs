@@ -16,6 +16,7 @@
 //! or not they are (#1729). The refresher is what lets a deployment that never
 //! enabled `[health]` list a complete fleet.
 
+// spec-ref: openai-models
 use parking_lot::Mutex;
 use rolter_core::probe::{probe_expectation, ProbeExpectation};
 use std::collections::{HashMap, HashSet};

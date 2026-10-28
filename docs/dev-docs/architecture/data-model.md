@@ -15,6 +15,7 @@ erDiagram
   projects ||--o{ virtual_keys : has
   orgs ||--o{ providers : has
   providers ||--o{ provider_keys : has
+  providers ||--o| provider_cache_probes : probed
   users ||--o{ memberships : has
   orgs ||--o{ mcp_servers : registers
   users ||--o{ mcp_oauth_grants : consents
@@ -26,6 +27,8 @@ erDiagram
 
 - **Org → Team → Project → Virtual Key** is the hierarchy. Budgets and rate limits attach at any scope and combine **most-restrictive-wins**.
 - **Providers** are owned at the org level and referenced by route targets. Upstream credentials live in `provider_keys`, **envelope-encrypted** (see [security.md](security.md)).
+- **Provider cache probes** (`provider_cache_probes`, #984) hold at most one row per provider: whether a one-token completion from that provider carried a prompt-cache usage field (`reports`, the `spelling` found as a JSON pointer, the probed `model`, `probed_at`). Written by `POST /api/v1/providers/{id}/probe-cache`, matched against `rolter_proxy::cached_prompt_tokens_spelling` so "reports" means the gateway would see a hit. No row means never probed, which the dashboard shows apart from "does not report". The gateway never reads it, so it has no `bump_config_version()` trigger and a probe does not reload the data plane.
+- **Price provenance** (`model_prices.source`, `source_imported_at`, `0126`, #966): a row an operator wrote has both `null` and is an override; a row `ModelPriceRepo::import_catalogue` wrote names its catalogue (free text, since the importer is source-agnostic) and the snapshot's date. `upsert` resets both to `null`, so editing an imported price makes it an override, and the import's `on conflict … where model_prices.source is not null` is what keeps an override from being replaced. No new trigger: `0004`'s fires on any write. The adapter is `rolter-control/src/price_catalogue.rs` (`PriceSource`, `LiteLlm`), reading `crates/rolter-control/catalogue/litellm-prices.json`, which `scripts/refresh-price-catalogue.ts` (`just refresh-prices`) cuts down from upstream with the MIT notice beside it; the file has no currency field so the adapter stamps USD. It is compiled in (`include_str!`), never fetched, and excluded from prettier and typos.
 - **Routes** belong to a project and map a public `model` to `route_targets` with a `strategy`.
 - **Virtual keys** belong to a project, store only a hash of the key plus a display prefix, and carry an optional model allow-list.
 - **MCP servers** belong to an org and declare required OAuth scopes and exposed tool names. Only enabled servers reach gateway snapshots. Grants bind a user to a server; sealed token sessions belong to a grant. **MCP tool groups** persist named server/tool manifests, while **MCP gateway settings** hold organization defaults for registration and MCP-aware clients; neither is currently a request-path authorization boundary.
