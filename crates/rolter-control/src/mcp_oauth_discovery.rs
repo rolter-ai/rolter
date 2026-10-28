@@ -670,7 +670,7 @@ mod tests {
     fn discovery_errors_redact_urls_and_credentials() {
         let state = crate::tests::state_with_token(None);
         let secret = "secret_token_12345";
-        let url = format!("https://mcp.example.com/mcp?token={secret}");
+        let url = format!("http://mcp.example.com/mcp?token={secret}");
         let err = guard_url(&state, &url).unwrap_err().to_string();
         assert!(
             !err.contains(secret),
