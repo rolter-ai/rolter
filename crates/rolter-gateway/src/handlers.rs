@@ -863,7 +863,10 @@ impl LifecycleLog<'_> {
             }
             // a leg that went upstream always has the route it went to; the
             // arm exists so that a refusal reads the same on every path
-            _ => row.error = refusal_error(&response),
+            _ => {
+                row.error = refusal_error(&response);
+                row.outcome = Some(refusal_outcome(&response));
+            }
         }
         self.state.log.log_lifecycle(row);
         response
@@ -2711,6 +2714,8 @@ async fn proxy(
             let provider = match snap.providers.get(&target.provider) {
                 Some(provider) => provider,
                 None => {
+                    // nothing was sent, so the probe slot this target took goes back
+                    state.breaker.release(&model, idx);
                     last_error = Some("configured target provider not found".to_string());
                     break;
                 }
@@ -2724,9 +2729,9 @@ async fn proxy(
             // parked on a cooldown (single-key providers yield their one key)
             let multi_key = provider.api_keys.len() > 1;
             let key_ns = key_pool_key(&target.provider);
-            let picked_key = provider.pick_api_key_indexed(jitter(started), |i| {
-                multi_key && state.cooldowns.is_parked(&key_ns, i)
-            });
+            let parked_keys = parked_keys(&state, provider, &key_ns);
+            let picked_key =
+                provider.pick_api_key_indexed(jitter(started), |i| parked_keys.contains(i));
             let api_key = picked_key.as_ref().map(|(_, k)| k.as_str());
             last_key_fingerprint = api_key.map(provider_key_fingerprint);
             let upstream_model = target.model.as_deref();
@@ -2867,6 +2872,7 @@ async fn proxy(
                                 });
                                 last_error = None;
                                 last_failure = Some(failure);
+                                state.breaker.release(&model, idx);
                                 continue;
                             }
                             _ => peeked.response,
@@ -2886,6 +2892,9 @@ async fn proxy(
                         }
                         // let the same target be re-picked with a fresh key
                         tried.pop();
+                        // a key-level failure says nothing about the target, so its probe
+                        // slot is given back rather than held for the lease
+                        state.breaker.release(&model, idx);
                         last_failure = Failure::from_status(status);
                         if attempt < max_retries {
                             // the caller will never see this failure, so record it against the
@@ -2986,6 +2995,8 @@ async fn proxy(
                     let message = err.to_string();
                     last_failure = Some(Failure::from_transport_error(&message));
                     if is_queue_admission_error(&message) {
+                        // the queue turned the request away before the target saw it
+                        state.breaker.release(&model, idx);
                         last_error = Some(message);
                         break;
                     }
@@ -3127,6 +3138,7 @@ async fn proxy(
                 fallback_reason,
                 stream: stream as u8,
                 unit_basis: crate::unit_billing::UnitBasis::for_json(path, &parsed),
+                request_shape: crate::request_shape::RequestShape::of(path, &parsed),
                 capture_payloads,
                 payload_max_bytes: snap.logging.payload_capture.max_bytes,
                 payload_redactor: snap.payload_redactor.clone(),
@@ -3178,6 +3190,7 @@ async fn proxy(
                                     status,
                                     content_type: content_type.clone(),
                                     body: bytes.to_vec(),
+                                    param_adjustments: log.param_adjustments.log_entries(),
                                 };
                                 state.response_cache.put(&key, &cached, cache_ttl).await;
                                 if let Some((index, entry_id, embedding, max_candidates)) =
@@ -3710,6 +3723,8 @@ async fn proxy_multipart(
         let provider = match snap.providers.get(&target.provider) {
             Some(provider) => provider,
             None => {
+                // nothing was sent, so the probe slot this target took goes back
+                state.breaker.release(&model, idx);
                 last_error = Some("configured target provider not found".to_string());
                 break;
             }
@@ -3720,9 +3735,9 @@ async fn proxy_multipart(
         cancel.attribute(&last_provider, &last_target, "");
         let multi_key = provider.api_keys.len() > 1;
         let key_ns = key_pool_key(&target.provider);
-        let picked_key = provider.pick_api_key_indexed(jitter(started), |i| {
-            multi_key && state.cooldowns.is_parked(&key_ns, i)
-        });
+        let parked_keys = parked_keys(&state, provider, &key_ns);
+        let picked_key =
+            provider.pick_api_key_indexed(jitter(started), |i| parked_keys.contains(i));
         let api_key = picked_key.as_ref().map(|(_, k)| k.as_str());
 
         // per-attempt clock: `started` is the whole request, and a superseded
@@ -3778,6 +3793,7 @@ async fn proxy_multipart(
                             });
                             last_error = None;
                             last_failure = Some(failure);
+                            state.breaker.release(&model, idx);
                             continue;
                         }
                         _ => peeked.response,
@@ -3796,6 +3812,9 @@ async fn proxy_multipart(
                             .fetch_add(1, Relaxed);
                     }
                     tried.pop();
+                    // a key-level failure says nothing about the target, so its probe
+                    // slot is given back rather than held for the lease
+                    state.breaker.release(&model, idx);
                     last_failure = Failure::from_status(status);
                     if attempt < max_retries {
                         // the caller will never see this failure, so record it against the
@@ -3877,6 +3896,8 @@ async fn proxy_multipart(
                 let message = err.to_string();
                 last_failure = Some(Failure::from_transport_error(&message));
                 if is_queue_admission_error(&message) {
+                    // the queue turned the request away before the target saw it
+                    state.breaker.release(&model, idx);
                     last_error = Some(message);
                     break;
                 }
@@ -4095,6 +4116,21 @@ pub(crate) fn key_pool_key(provider: &str) -> String {
     format!("key::{provider}")
 }
 
+/// Which of `provider`'s keys are parked on a cooldown under `key_ns`, read in
+/// one lock acquisition rather than one per key (#3249). A single-key provider
+/// has nothing to choose between, so it reads nothing.
+pub(crate) fn parked_keys(
+    state: &AppState,
+    provider: &rolter_core::ProviderConfig,
+    key_ns: &str,
+) -> crate::target_mask::TargetMask {
+    if provider.api_keys.len() > 1 {
+        state.cooldowns.parked_mask(key_ns, provider.api_keys.len())
+    } else {
+        Default::default()
+    }
+}
+
 /// The order a variant's targets are tried: the variant balancer's pick leads
 /// (fed the same live in-flight + upstream queue-depth signal as the classic
 /// pool, and told which targets are `eligible` as the classic pool's balancer
@@ -4168,10 +4204,13 @@ impl Blocked {
 /// The `(variant, target)` pairs an attempt walks, in order: `primary` first,
 /// then the rest in declared order, each variant's targets flattened with the
 /// one its balancer picks from the eligible targets in the lead.
+/// The variant keys are `variant_keys`, one per variant in declared order,
+/// built once by the caller and reused by its forward loop.
+#[allow(clippy::too_many_arguments)]
 fn variant_candidates(
     state: &AppState,
     entry: &crate::state::RouteEntry,
-    model: &str,
+    variant_keys: &[String],
     ctx: &RouteContext<'_>,
     primary: usize,
     key_meta: Option<&KeyMeta>,
@@ -4181,9 +4220,8 @@ fn variant_candidates(
     let mut candidates: Vec<(usize, usize)> =
         Vec::with_capacity(route.variants.iter().map(|v| v.targets.len()).sum());
     for vi in route.fallback_order(primary) {
-        if let Some(v) = route.variants.get(vi) {
-            let key = variant_key(model, &v.name);
-            let mut loads = state.loads.snapshot(&key, v.targets.len());
+        if let (Some(v), Some(key)) = (route.variants.get(vi), variant_keys.get(vi)) {
+            let mut loads = state.loads.snapshot(key, v.targets.len());
             for (i, target) in v.targets.iter().enumerate() {
                 if let Some(l) = loads.get_mut(i) {
                     *l = l.saturating_add(state.upstream_metrics.queue_depth(&target.provider));
@@ -4195,7 +4233,7 @@ fn variant_candidates(
                 &state.cooldowns,
                 &state.health,
                 &state.breaker,
-                &key,
+                key,
                 cd_enabled,
                 v.targets.len(),
                 v.targets.iter().map(|t| t.provider.as_str()),
@@ -4250,7 +4288,23 @@ async fn forward_variants(
     let cd_enabled = cooldown.enabled();
 
     let primary = route.sample_variant(jitter(started)).unwrap_or(0);
-    let candidates = variant_candidates(state, entry, model, ctx, primary, key_meta, cd_enabled);
+    // each variant's registry key, built once per request for the candidate
+    // list and the loop below rather than once per candidate per attempt
+    // (#3249)
+    let variant_keys: Vec<String> = route
+        .variants
+        .iter()
+        .map(|v| variant_key(model, &v.name))
+        .collect();
+    let candidates = variant_candidates(
+        state,
+        entry,
+        &variant_keys,
+        ctx,
+        primary,
+        key_meta,
+        cd_enabled,
+    );
 
     let mut out = ForwardOutcome {
         outcome: None,
@@ -4271,24 +4325,49 @@ async fn forward_variants(
     let mut last_failure: Option<Failure> = None;
 
     for attempt in 0..=max_retries {
-        // a candidate is skippable when its target is parked, its provider is
-        // unhealthy, or its breaker is open — keyed per variant
-        let skip = |&(vi, ti): &(usize, usize)| {
-            let v = &route.variants[vi];
-            let key = variant_key(model, &v.name);
-            (cd_enabled && state.cooldowns.is_parked(&key, ti))
-                || !state.health.is_healthy(&v.targets[ti].provider)
-                || !state.breaker.allows(&key, ti)
-        };
-        // prefer an untried, non-skipped candidate; fail open to any untried one
-        // when every remaining candidate is parked/unhealthy/open
-        // and only a candidate that may follow the last failure: a restricted
-        // fallback never leads and follows only a failure it takes over (#1584)
         let open = |ci: &usize| {
             !tried.contains(ci) && candidate_admits(route, candidates[*ci], last_failure.as_ref())
         };
-        let fresh = (0..candidates.len()).find(|ci| open(ci) && !skip(&candidates[*ci]));
-        let ci = match fresh.or_else(|| (0..candidates.len()).find(open)) {
+        // scoped so the borrow of the non-`Sync` cells ends before any await
+        let fresh = {
+            // a candidate is skippable when its target is parked, its provider is
+            // unhealthy, or its breaker is open (or probing) — keyed per variant
+            // the candidates come grouped by variant, so one slot holding the
+            // variant last read means each variant's registries are read at
+            // most once per attempt, with nothing allocated to hold them
+            let read: std::cell::RefCell<Option<(usize, Blocked)>> = Default::default();
+            let skip = |&(vi, ti): &(usize, usize)| {
+                let mut read = read.borrow_mut();
+                if read.as_ref().is_none_or(|(held, _)| *held != vi) {
+                    let v = &route.variants[vi];
+                    *read = Some((
+                        vi,
+                        Blocked::read(
+                            &state.cooldowns,
+                            &state.health,
+                            &state.breaker,
+                            &variant_keys[vi],
+                            cd_enabled,
+                            v.targets.len(),
+                            v.targets.iter().map(|t| t.provider.as_str()),
+                        ),
+                    ));
+                }
+                read.as_ref()
+                    .is_some_and(|(_, blocked)| blocked.contains(ti))
+            };
+            // prefer an untried, non-skipped candidate whose breaker admits it (the
+            // read above leaves an elapsed open window to `allows`, which takes the
+            // one half-open probe); fail open to any untried one when every
+            // remaining candidate is parked/unhealthy/open
+            (0..candidates.len()).find(|&ci| {
+                let (vi, ti) = candidates[ci];
+                open(&ci) && !skip(&candidates[ci]) && state.breaker.allows(&variant_keys[vi], ti)
+            })
+        };
+        // and only a candidate that may follow the last failure: a restricted
+        // fallback never leads and follows only a failure it takes over (#1584)
+        let ci = match fresh.or_else(|| (0..candidates.len()).find(|ci| open(ci))) {
             Some(ci) => ci,
             None => break, // no untried candidate left to fail over to
         };
@@ -4300,7 +4379,7 @@ async fn forward_variants(
         let (vi, ti) = candidates[ci];
         let v = &route.variants[vi];
         let target = &v.targets[ti];
-        let key = variant_key(model, &v.name);
+        let key = variant_keys[vi].as_str();
         // let learning strategies (cache-aware) see which target actually served
         if let Some(b) = entry.variant_balancers.get(vi) {
             b.observe(ti, ctx);
@@ -4309,6 +4388,8 @@ async fn forward_variants(
         let provider = match snap.providers.get(&target.provider) {
             Some(provider) => provider,
             None => {
+                // nothing was sent, so the probe slot this target took goes back
+                state.breaker.release(key, ti);
                 out.last_error = Some("configured target provider not found".to_string());
                 break;
             }
@@ -4327,7 +4408,7 @@ async fn forward_variants(
             .unwrap_or_else(|_| body.clone());
 
         // count this attempt as in-flight under the variant's key
-        let mut guard = state.loads.begin(&key, ti);
+        let mut guard = state.loads.begin(key, ti);
         // the latency model learns cost as a function of prompt size, so it
         // needs this request's size before the guard's drop folds in the
         // sample (#853). inert on every other strategy
@@ -4336,9 +4417,9 @@ async fn forward_variants(
         // on a cooldown — same policy as the classic path
         let multi_key = provider.api_keys.len() > 1;
         let key_ns = key_pool_key(&target.provider);
-        let picked_key = provider.pick_api_key_indexed(jitter(started), |i| {
-            multi_key && state.cooldowns.is_parked(&key_ns, i)
-        });
+        let parked_keys = parked_keys(state, provider, &key_ns);
+        let picked_key =
+            provider.pick_api_key_indexed(jitter(started), |i| parked_keys.contains(i));
         let api_key = picked_key.as_ref().map(|(_, k)| k.as_str());
         out.provider_key_fingerprint = api_key.map(provider_key_fingerprint);
         let upstream_model = target.model.as_deref();
@@ -4403,6 +4484,7 @@ async fn forward_variants(
                             });
                             out.last_error = None;
                             last_failure = Some(failure);
+                            state.breaker.release(key, ti);
                             continue;
                         }
                         _ => peeked.response,
@@ -4421,6 +4503,9 @@ async fn forward_variants(
                             .fetch_add(1, Relaxed);
                     }
                     tried.pop();
+                    // a key-level failure says nothing about the target, so its probe
+                    // slot is given back rather than held for the lease
+                    state.breaker.release(key, ti);
                     last_failure = Failure::from_status(status);
                     if attempt < max_retries {
                         // the caller will never see this failure, so record it against the
@@ -4458,10 +4543,10 @@ async fn forward_variants(
                     last_failure = Failure::from_status(status);
                     if cd_enabled {
                         let secs = cooldown.duration_secs(retry_after_secs(&response));
-                        state.cooldowns.park(&key, ti, secs);
+                        state.cooldowns.park(key, ti, secs);
                         state.metrics.cooldowns_tripped_total.fetch_add(1, Relaxed);
                     }
-                    if state.breaker.on_failure(&key, ti) {
+                    if state.breaker.on_failure(key, ti) {
                         state.metrics.breaker_opened_total.fetch_add(1, Relaxed);
                     }
                     if attempt < max_retries {
@@ -4496,7 +4581,7 @@ async fn forward_variants(
                         back_off(delay, retrying).await;
                         continue;
                     }
-                } else if state.breaker.on_success(&key, ti) {
+                } else if state.breaker.on_success(key, ti) {
                     state.metrics.breaker_closed_total.fetch_add(1, Relaxed);
                 }
                 let is_sse = response
@@ -4516,15 +4601,17 @@ async fn forward_variants(
                 let message = err.to_string();
                 last_failure = Some(Failure::from_transport_error(&message));
                 if is_queue_admission_error(&message) {
+                    // the queue turned the request away before the target saw it
+                    state.breaker.release(key, ti);
                     out.last_error = Some(message);
                     break;
                 }
                 out.last_error = Some(message);
                 if cd_enabled {
-                    state.cooldowns.park(&key, ti, cooldown.duration_secs(None));
+                    state.cooldowns.park(key, ti, cooldown.duration_secs(None));
                     state.metrics.cooldowns_tripped_total.fetch_add(1, Relaxed);
                 }
-                if state.breaker.on_failure(&key, ti) {
+                if state.breaker.on_failure(key, ti) {
                     state.metrics.breaker_opened_total.fetch_add(1, Relaxed);
                 }
                 if attempt < max_retries {
@@ -4573,7 +4660,63 @@ pub(crate) fn pick_untried(
     key_meta: Option<&KeyMeta>,
     failure: Option<&Failure>,
 ) -> Option<usize> {
+    pick_untried_with(
+        entry, ctx, tried, loads, cooldowns, health, breaker, model, cd_enabled, key_meta, failure,
+        true,
+    )
+}
+
+/// [`pick_untried`] for a caller that picks a candidate before deciding to send
+/// to it, such as a realtime session walking its dial list: the breaker is
+/// only read (`Breaker::refuses`), so no half-open probe slot is taken for a
+/// target the caller may never dial. The caller asks `Breaker::allows` of the
+/// one it dials (#3248). `failure` is how the previous dial failed, as for
+/// [`pick_untried`] (#3322).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn pick_untried_read_only(
+    entry: &crate::state::RouteEntry,
+    ctx: &RouteContext,
+    tried: &[usize],
+    loads: &[u64],
+    cooldowns: &crate::cooldowns::Cooldowns,
+    health: &crate::health::Health,
+    breaker: &crate::breaker::Breaker,
+    model: &str,
+    cd_enabled: bool,
+    key_meta: Option<&KeyMeta>,
+    failure: Option<&Failure>,
+) -> Option<usize> {
+    pick_untried_with(
+        entry, ctx, tried, loads, cooldowns, health, breaker, model, cd_enabled, key_meta, failure,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn pick_untried_with(
+    entry: &crate::state::RouteEntry,
+    ctx: &RouteContext,
+    tried: &[usize],
+    loads: &[u64],
+    cooldowns: &crate::cooldowns::Cooldowns,
+    health: &crate::health::Health,
+    breaker: &crate::breaker::Breaker,
+    model: &str,
+    cd_enabled: bool,
+    key_meta: Option<&KeyMeta>,
+    failure: Option<&Failure>,
+    take_probe: bool,
+) -> Option<usize> {
     let n = entry.route.targets.len();
+    // the breaker's admission: `allows` takes the half-open probe slot, so
+    // only a caller about to send asks it
+    let breaker_admits = |i: usize| {
+        if take_probe {
+            breaker.allows(model, i)
+        } else {
+            !breaker.refuses(model, i)
+        }
+    };
     // a target the key may use and, if it is a restricted fallback, one the
     // failure being walked away from lets it take over (#1584)
     let key_allows = |i: usize| admits(entry, i, key_meta, failure);
@@ -4585,7 +4728,7 @@ pub(crate) fn pick_untried(
         !key_allows(i)
             || (cd_enabled && cooldowns.is_parked(model, i))
             || !health.is_healthy(&entry.route.targets[i].provider)
-            || !breaker.allows(model, i)
+            || !breaker_admits(i)
     };
     // the same rules for every target at once, read from each registry in one
     // lock acquisition and only if something asks. a strategy that weighs
@@ -4628,7 +4771,7 @@ pub(crate) fn pick_untried(
     // not move an open breaker whose window has elapsed to half-open, so the
     // target chosen here asks `allows`, which does
     (0..n)
-        .find(|&i| usable(i) && breaker.allows(model, i))
+        .find(|&i| usable(i) && breaker_admits(i))
         .or_else(|| first_untried_allowed(entry, tried, key_meta, failure))
 }
 
@@ -5347,6 +5490,16 @@ fn refusal_error(response: &Response) -> String {
     error
 }
 
+/// Why the gateway refused with `response`, for the row's `outcome` (#3307):
+/// from the error code it answered with, or its status when it has none.
+fn refusal_outcome(response: &Response) -> rolter_core::request_outcome::RequestOutcome {
+    let code = response
+        .extensions()
+        .get::<crate::error::ErrorCode>()
+        .map(|code| code.0);
+    rolter_core::request_outcome::RequestOutcome::for_refusal(response.status().as_u16(), code)
+}
+
 /// Writes the request-log row for a request the gateway refused before it
 /// reached an upstream (#2807).
 ///
@@ -5413,6 +5566,7 @@ impl Refusals<'_> {
         );
         self.state.log.log_refusal(RequestLog {
             status: response.status().as_u16(),
+            outcome: Some(refusal_outcome(&response)),
             error,
             guardrail_events,
             plugin_events: self.plugin_events(),
@@ -5452,6 +5606,8 @@ fn log_builtin(
         provider: fake_llm::PROVIDER_LABEL.to_string(),
         target: fake_llm::MODEL_NAME.to_string(),
         status: response.status().as_u16(),
+        // the built-in has no upstream to fail: an error is the request's own
+        outcome: (!response.status().is_success()).then(|| refusal_outcome(&response)),
         stream: u8::from(stream),
         prompt_tokens: usage.prompt,
         completion_tokens: usage.completion,
@@ -5615,6 +5771,11 @@ async fn cached_response(
     let mut log = RequestLog {
         status: hit.status,
         cache_hit: 1,
+        // the answer was produced by a request translated this way, so a hit
+        // says so as the miss did (#3326)
+        param_adjustments: rolter_proxy::ParamAdjustments::from_log_entries(
+            hit.param_adjustments.iter().map(String::as_str),
+        ),
         ..ctx.into_log()
     };
     post_events.record(&mut log);
@@ -7038,7 +7199,8 @@ mod tests {
             .map(|ti| state.loads.begin(&key, ti))
             .collect();
         assert_eq!(state.loads.snapshot(&key, 3), vec![10, 3, 0]);
-        let candidates = variant_candidates(&state, &entry, "m", &ctx, 0, None, false);
+        let keys = [key.clone()];
+        let candidates = variant_candidates(&state, &entry, &keys, &ctx, 0, None, false);
         assert_eq!(
             candidates.first(),
             Some(&(0, 1)),

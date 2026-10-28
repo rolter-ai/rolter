@@ -1381,7 +1381,7 @@ status_page_interval_secs = 60
 
 ### \[breaker\]
 
-The circuit breaker complements the short-lived cooldown with a longer-lived state machine. After `failure_threshold` consecutive transient failures a target trips **open** and is skipped for `open_secs`. The first request after that window probes the target in a **half-open** state; a success closes the breaker, a failure re-opens it. Disabled by default.
+The circuit breaker complements the short-lived cooldown with a longer-lived state machine. After `failure_threshold` consecutive transient failures a target trips **open** and is skipped for `open_secs`. The first request after that window probes the target in a **half-open** state, and other requests skip the target until that probe answers; a success closes the breaker, a failure re-opens it. Disabled by default.
 
 <ParamField path="enabled" default="false" type="boolean">
   Master switch for the circuit breaker.

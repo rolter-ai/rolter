@@ -325,6 +325,23 @@ pub struct RequestLog {
         serialize_with = "serialize_param_adjustments"
     )]
     pub param_adjustments: rolter_proxy::ParamAdjustments,
+    /// What happened to the request, by its published name
+    /// ([`rolter_core::request_outcome::RequestOutcome`], #3307): `served`,
+    /// `upstream_error`, `withheld`, `cancelled` or one of the `refused_*`
+    /// reasons. A path that knows why it refused sets it; every other row is
+    /// named by [`LogSink`] as it is queued ([`outcome_of`]), so no row leaves
+    /// without one. Always serialized: a ClickHouse without
+    /// `clickhouse/030_request_outcome.sql` drops it under
+    /// `input_format_skip_unknown_fields`, and reads its rows as `unknown`
+    #[serde(serialize_with = "serialize_outcome")]
+    pub outcome: Option<rolter_core::request_outcome::RequestOutcome>,
+    /// What the request asked the model to do beyond its tokens: tools, image
+    /// or audio input, a response schema, its caller turns (#3317). Read off
+    /// the parsed body for the OpenAI and Anthropic dialects; each column is
+    /// left out of a row while zero, so a ClickHouse without
+    /// `clickhouse/031_request_shape.sql` keeps accepting every row
+    #[serde(flatten)]
+    pub request_shape: crate::request_shape::RequestShape,
     /// what the request is billed by besides tokens (#2937), known once the
     /// request is parsed and finished off against the response when the stream
     /// ends. Not a column: the cost it produces is
@@ -354,6 +371,34 @@ pub struct RequestLog {
     /// traffic that actually ran (#2239). Stamped by the sink after the
     /// sampling decision, never by the request path.
     pub sample_weight: f64,
+}
+
+/// The outcome of a row whose writer did not name one, read from what the row
+/// records (#3307). A refusal path names its own reason before this runs, so
+/// what reaches here unnamed is a request that was answered (served, failed
+/// upstream, withheld, abandoned) or refused with no target left to try.
+pub(crate) fn outcome_of(row: &RequestLog) -> rolter_core::request_outcome::RequestOutcome {
+    use rolter_core::request_outcome::RequestOutcome;
+    if row.withheld == 1 {
+        RequestOutcome::Withheld
+    } else if row.is_client_disconnect() {
+        RequestOutcome::Cancelled
+    } else if row.status < 400 {
+        RequestOutcome::Served
+    } else if row.attempts > 0 || row.upstream_status > 0 || !row.target.is_empty() {
+        RequestOutcome::UpstreamError
+    } else {
+        RequestOutcome::for_refusal(row.status, None)
+    }
+}
+
+fn serialize_outcome<S: serde::Serializer>(
+    outcome: &Option<rolter_core::request_outcome::RequestOutcome>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    // a row is only serialized once `enqueue` named it; the empty fallback is
+    // the column's own default, never a name
+    serializer.serialize_str(outcome.map_or("", |outcome| outcome.as_str()))
 }
 
 fn is_zero_seq(seq: &u64) -> bool {
@@ -408,6 +453,8 @@ impl Default for RequestLog {
             guardrail_events: Vec::new(),
             plugin_events: Vec::new(),
             param_adjustments: rolter_proxy::ParamAdjustments::default(),
+            outcome: None,
+            request_shape: Default::default(),
             unit_basis: crate::unit_billing::UnitBasis::Tokens,
             billed_units: None,
             request_payload: String::new(),
@@ -1637,6 +1684,8 @@ impl LogSink {
         if !should_sample_request(&record.request_id, record.sample_rate) {
             return;
         }
+        // the one place every row passes, so none is written without a name
+        record.outcome = Some(record.outcome.unwrap_or_else(|| outcome_of(&record)));
         let Some(tx) = &self.tx else {
             return;
         };
@@ -1833,6 +1882,58 @@ mod tests {
     /// A System One answer states `input_tokens` and `output_tokens` the way
     /// Anthropic does, so it is reported usage (not `usage_unknown`) and a model
     /// whose output is free costs exactly its input (#3150).
+    /// What `LogSink::enqueue` names a row no refusal path named (#3307).
+    #[test]
+    fn an_unnamed_row_is_given_its_outcome_from_what_it_records() {
+        use rolter_core::request_outcome::RequestOutcome::*;
+        let row = |f: fn(&mut RequestLog)| {
+            let mut row = RequestLog {
+                status: 200,
+                ..Default::default()
+            };
+            f(&mut row);
+            outcome_of(&row)
+        };
+        assert_eq!(row(|_| {}), Served);
+        assert_eq!(
+            row(|r| {
+                r.status = 403;
+                r.withheld = 1;
+            }),
+            Withheld
+        );
+        assert_eq!(row(|r| r.status = CLIENT_DISCONNECT_STATUS), Cancelled);
+        assert_eq!(
+            row(|r| {
+                r.status = 503;
+                r.attempts = 2;
+            }),
+            UpstreamError
+        );
+        // the caller got the provider's own 499: not a disconnect
+        assert_eq!(
+            row(|r| {
+                r.status = CLIENT_DISCONNECT_STATUS;
+                r.upstream_status = CLIENT_DISCONNECT_STATUS;
+                r.attempts = 1;
+            }),
+            UpstreamError
+        );
+        // nothing tried and no target left: a refusal by status
+        assert_eq!(row(|r| r.status = 503), Refused);
+        assert_eq!(row(|r| r.status = 429), RefusedRateLimit);
+    }
+
+    #[test]
+    fn a_queued_row_always_carries_its_outcome() {
+        let row = RequestLog {
+            outcome: Some(rolter_core::request_outcome::RequestOutcome::RefusedBudget),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&row).unwrap();
+        assert_eq!(json["outcome"], "refused_budget");
+    }
+
     #[test]
     fn a_decision_reports_its_usage_and_costs_only_its_input() {
         let body = br#"{"model":"jev-1.13.0","answers":{"q":{"type":"noul","noul":0.9}},"usage":{"input_tokens":307,"output_tokens":3}}"#;
