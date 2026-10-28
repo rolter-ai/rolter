@@ -106,6 +106,10 @@ An export that carried rows the importer ignores would promise more than a re-im
 - **Users, teams, projects and memberships.** `rolter-seed` creates the org, team and project it imports into.
 - **Operational tables** — request logs, sessions, audit records and usage. These are history, not configuration.
 
+### Two organizations sharing a name
+
+Two organizations can each have a `gpt-4o` route or an `openai` provider, but the exported file carries no organization, so it could not hold both. While two organizations (or an organization and a readonly row) share a route name, a provider name or a provider or group slug, the export refuses with `400` (`rolter config export` exits with an error) and names each shared name, rather than writing a file that would not load. Rename one of them to export, until per-organization exports land ([#3440](https://github.com/rolter-ai/rolter/issues/3440)).
+
 ### Credentials never leave
 
 A provider key is exported only as the **name** of the environment variable it is read from:

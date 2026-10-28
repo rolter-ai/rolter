@@ -350,8 +350,12 @@ A `429` carries the upstream's `Retry-After` when it sent one. The message names
 `GET /v1/models` answers with three kinds of id, filtered to what the caller's
 virtual key may reach. A key minted in the store sees only its own org's
 routes, providers and groups, the same boundary the route authorization
-contract enforces on a call (#1844); a key from the gateway's config file sees
-them all:
+contract enforces on a call (#1844). Names are per org (#1857), so two orgs may
+each list a `gpt-4o`; a key lists the one its name resolves to, its own org's
+before a global one. A key from the gateway's config file carries no org: it
+sees global rows and every org row whose name only one org uses, while a name
+two orgs share (with no global row of it) is unknown to it, on a call and in
+the listing:
 
 | Id                    | `owned_by`          | Where it comes from                                                                                                  |
 | --------------------- | ------------------- | -------------------------------------------------------------------------------------------------------------------- |
