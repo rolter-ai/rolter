@@ -354,9 +354,9 @@ async fn proxy(
             // an upstream that says the user's token was valid but too narrow
             // gets the step-up answer, not a bare 403 (#1417)
             if matches!(server.auth_kind, McpAuthKind::Oauth) {
-                if let Some(step_up) = insufficient_scope(&response, &server.slug) {
+                if let Some((step_up, scopes)) = insufficient_scope(&response, &server.slug) {
                     if let Some(call) = call {
-                        call.fail("auth_denied");
+                        call.fail_insufficient_scope(scopes);
                     }
                     return step_up;
                 }
@@ -401,8 +401,10 @@ async fn proxy(
 /// the upstream's would point `resource_metadata` at the upstream itself. The
 /// key's owner then re-consents with those scopes, through the dashboard or
 /// `POST /api/v1/mcp-servers/{id}/oauth/authorize` with `step_up_scopes`; until
-/// they do, every such call fails the same way and is logged as `auth_denied`.
-fn insufficient_scope(response: &reqwest::Response, slug: &str) -> Option<Response> {
+/// they do, every such call fails the same way and is logged as `auth_denied`,
+/// with the error `insufficient scope` and the scopes the challenge named
+/// (#3375), which are returned beside the answer.
+fn insufficient_scope(response: &reqwest::Response, slug: &str) -> Option<(Response, Vec<String>)> {
     use rolter_core::mcp_challenge::{challenge_scopes, is_insufficient_scope};
 
     if response.status() != reqwest::StatusCode::FORBIDDEN {
@@ -438,7 +440,7 @@ fn insufficient_scope(response: &reqwest::Response, slug: &str) -> Option<Respon
     if let Ok(value) = HeaderValue::from_str(&rebuilt) {
         answer.headers_mut().insert(header::WWW_AUTHENTICATE, value);
     }
-    Some(answer)
+    Some((answer, scopes))
 }
 
 /// A server configured to present a credential that did not reach the snapshot.
@@ -1410,6 +1412,9 @@ mod tests {
             (event.status, event.tool.as_str()),
             ("auth_denied", "anything")
         );
+        // the row says why, and which scopes the upstream asked for (#3375)
+        assert_eq!(event.error, "insufficient scope");
+        assert_eq!(event.error_scopes, ["repo", "read:org"]);
     }
 
     #[tokio::test]

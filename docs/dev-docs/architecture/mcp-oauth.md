@@ -633,6 +633,16 @@ The gateway records every proxied JSON-RPC `tools/call` in ClickHouse's
   body is not parsed at all unless a rule applies to the caller or the sink is
   enabled and the bytes hold `tools/call` or an escape that could spell it; with
   no `clickhouse_url` the sink is disabled and nothing is parsed for the log.
+- **Insufficient scope (#3375).** A call an OAuth upstream refuses with
+  `insufficient_scope` is recorded `auth_denied` with the error
+  `insufficient scope` (`INSUFFICIENT_SCOPE_ERROR`) and the challenge's
+  validated scopes in `error_scopes` (`clickhouse/042_mcp_log_error_scopes.sql`,
+  `Array(String)`), the same list the caller gets as `error.required_scopes`.
+  The field is left out of every other row and the writer sends
+  `input_format_skip_unknown_fields=1`, so an un-migrated ClickHouse keeps
+  accepting rows. The control plane's detail read probes `system.columns` for
+  the column (`McpColumnCache`, the lifetimes of the request-log probe) and
+  selects an empty array in its place until the migration is applied.
 - **Write path.** `McpEventSink` (`crates/rolter-gateway/src/mcp_log.rs`) is a
   bounded channel and a batch writer, built like the request-log and
   health-event writers and sharing their `[logging]` `batch_max`, `flush_ms`

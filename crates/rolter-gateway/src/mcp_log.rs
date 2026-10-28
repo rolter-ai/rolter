@@ -61,6 +61,13 @@ pub struct McpEvent {
     pub arguments: String,
     pub result: String,
     pub error: String,
+    /// the scopes an upstream's `insufficient_scope` challenge asked for,
+    /// validated and bounded (#3375). Left out of the row when empty, so a
+    /// gateway writing to a ClickHouse that has not applied migration `042`
+    /// sends nothing it would have to drop, and `input_format_skip_unknown_fields`
+    /// covers the one that does
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub error_scopes: Vec<String>,
 }
 
 /// Handle the proxy uses to record tool calls. Cheap to clone.
@@ -278,9 +285,16 @@ pub(crate) struct CallContext<'a> {
     pub redactor: &'a Arc<rolter_core::payload_redaction::PayloadRedactor>,
 }
 
+/// The `error` of a row refused for an insufficient OAuth scope, which tells it
+/// from the other `auth_denied` causes (no session, an expired one, a scope the
+/// server requires and the session lacks).
+pub(crate) const INSUFFICIENT_SCOPE_ERROR: &str = "insufficient scope";
+
 /// What a finished call amounts to, before it is rendered into a row.
 struct Outcome {
     status: &'static str,
+    /// a fixed category that replaces the one `status` implies
+    error: Option<&'static str>,
     /// the JSON-RPC `result` or `error` object, when one was seen
     payload: Option<Value>,
 }
@@ -337,6 +351,7 @@ impl PendingCall {
             arguments: String::new(),
             result: String::new(),
             error: String::new(),
+            error_scopes: Vec::new(),
         };
         let capturing = context.capture.enabled && context.capture.max_bytes > 0;
         Some(Self {
@@ -361,6 +376,19 @@ impl PendingCall {
     pub(crate) fn fail(self, status: &'static str) {
         self.finish(Outcome {
             status,
+            error: None,
+            payload: None,
+        });
+    }
+
+    /// Record a call the upstream refused for want of an OAuth scope (#3375): an
+    /// `auth_denied` row that says so, with the scopes the challenge named, so
+    /// the dashboard can offer the step-up for exactly those.
+    pub(crate) fn fail_insufficient_scope(mut self, scopes: Vec<String>) {
+        self.event.error_scopes = scopes;
+        self.finish(Outcome {
+            status: "auth_denied",
+            error: Some(INSUFFICIENT_SCOPE_ERROR),
             payload: None,
         });
     }
@@ -391,7 +419,11 @@ impl PendingCall {
     }
 
     fn finish(mut self, outcome: Outcome) {
-        let Outcome { status, payload } = outcome;
+        let Outcome {
+            status,
+            error,
+            payload,
+        } = outcome;
         self.event.ts = self.ts;
         self.event.status = status;
         self.event.latency_ms =
@@ -405,7 +437,7 @@ impl PendingCall {
             "transport_error" => Some("transport"),
             _ => Some("tool error"),
         };
-        self.event.error = safe_error(status, detail);
+        self.event.error = error.map_or_else(|| safe_error(status, detail), str::to_string);
         self.event.arguments = capture(
             self.arguments.take(),
             self.capture_enabled,
@@ -453,6 +485,7 @@ fn outcome(
 ) -> Outcome {
     let none = |status| Outcome {
         status,
+        error: None,
         payload: None,
     };
     if matches!(http_status, 401 | 403) {
@@ -463,6 +496,7 @@ fn outcome(
             if let Some(error) = reply.get_mut("error").map(Value::take) {
                 return Outcome {
                     status: "error",
+                    error: None,
                     payload: Some(error),
                 };
             }
@@ -474,6 +508,7 @@ fn outcome(
                 .unwrap_or(false);
             return Outcome {
                 status: if is_error { "error" } else { "success" },
+                error: None,
                 payload: result,
             };
         }
@@ -495,6 +530,7 @@ impl Outcome {
         if stream_failed && self.payload.is_none() && !matches!(self.status, "auth_denied") {
             Self {
                 status: "transport_error",
+                error: None,
                 payload: None,
             }
         } else {
@@ -630,6 +666,27 @@ mod tests {
             value["id"] = json!(id);
         }
         serde_json::to_vec(&value).unwrap()
+    }
+
+    #[test]
+    fn the_scopes_of_a_refusal_ride_in_the_row_only_when_there_are_some() {
+        let (sink, mut rx) = sink();
+        let capture = rolter_core::PayloadCaptureConfig::default();
+        let redactor = redactor(&capture);
+        let ctx = context(&capture, &redactor);
+        let call = parse(&sink, &request("tools/call", Some(1)), &ctx).unwrap();
+        call.fail_insufficient_scope(vec!["repo".into(), "read:org".into()]);
+        let denied = serde_json::to_value(rx.try_recv().unwrap()).unwrap();
+        assert_eq!(denied["status"], "auth_denied");
+        assert_eq!(denied["error"], INSUFFICIENT_SCOPE_ERROR);
+        assert_eq!(denied["error_scopes"], json!(["repo", "read:org"]));
+        // every other row omits the field, so an un-migrated table is not sent
+        // a column it would have to drop
+        let call = parse(&sink, &request("tools/call", Some(2)), &ctx).unwrap();
+        call.fail("auth_denied");
+        let plain = serde_json::to_value(rx.try_recv().unwrap()).unwrap();
+        assert!(plain.get("error_scopes").is_none(), "{plain}");
+        assert_eq!(plain["error"], "authentication denied");
     }
 
     #[test]

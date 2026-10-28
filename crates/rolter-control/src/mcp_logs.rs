@@ -41,6 +41,43 @@ pub(crate) fn router() -> Router<ControlState> {
         .route("/api/v1/mcp/logs/{event_id}", get(event_detail))
 }
 
+/// Every column `mcp_tool_call_logs` has in the database the client reads from.
+const MCP_PROBE_SQL: &str = "select name from system.columns \
+     where database = currentDatabase() and table = 'mcp_tool_call_logs' format JSON";
+
+/// Whether the table has `error_scopes` (`042`). A table the probe cannot see,
+/// or a probe ClickHouse refuses, reads as "present", the behaviour before the
+/// probe existed, so it is no worse than it was; a server that cannot be
+/// reached is an error, since the select that follows would fail on the same
+/// connection.
+async fn has_error_scopes(ch: &crate::analytics::ClickHouseClient) -> anyhow::Result<bool> {
+    let now = std::time::Instant::now();
+    if let Some(present) = ch.mcp_columns.fresh(now) {
+        return Ok(present);
+    }
+    let present = match ch.query(MCP_PROBE_SQL, &[]).await {
+        Ok(rows) if rows.is_empty() => true,
+        Ok(rows) => rows
+            .iter()
+            .any(|row| row.get("name").and_then(Value::as_str) == Some("error_scopes")),
+        Err(err) if crate::analytics::is_transport(&err) => return Err(err),
+        Err(err) => {
+            tracing::warn!(
+                error = %err,
+                "could not read the columns of mcp_tool_call_logs; selecting every optional column"
+            );
+            true
+        }
+    };
+    ch.mcp_columns.store(now, present);
+    if !present {
+        tracing::info!(
+            "mcp_tool_call_logs lacks error_scopes; apply clickhouse/042_mcp_log_error_scopes.sql to record them"
+        );
+    }
+    Ok(present)
+}
+
 #[derive(Debug, Deserialize)]
 struct IngestEvent {
     event_id: String,
@@ -296,7 +333,14 @@ async fn list_events(
 /// table-qualified columns because an unqualified `arguments` in the same
 /// select would resolve to the masked alias and always report "nothing
 /// withheld".
-fn event_detail_sql() -> String {
+fn event_detail_sql(error_scopes: bool) -> String {
+    // the column's own default stands in until the migration is applied, typed
+    // as the column is so the row reads the same either way
+    let error_scopes = if error_scopes {
+        "error_scopes"
+    } else {
+        "emptyArrayString() as error_scopes"
+    };
     format!(
         "select ts, event_id, server, tool, transport, status, latency_ms, org_id, team_id, project_id, \
                 virtual_key_id, user_id, request_id, trace_id, \
@@ -305,7 +349,7 @@ fn event_detail_sql() -> String {
                 toUInt8(not {PAYLOAD_VISIBLE} \
                         and (notEmpty(mcp_tool_call_logs.arguments) \
                              or notEmpty(mcp_tool_call_logs.result))) as payload_withheld, \
-                error \
+                error, {error_scopes} \
          from mcp_tool_call_logs \
          where event_id = {{event_id:String}} and {MCP_ROW_VISIBLE} \
          order by ts desc limit 1 format JSON"
@@ -331,12 +375,20 @@ async fn event_detail(
         Err(response) => return response,
     };
     let params = with_access(vec![("param_event_id".to_string(), event_id)], &access);
-    match ch.query(&event_detail_sql(), &params).await {
+    let error_scopes = match has_error_scopes(ch).await {
+        Ok(present) => present,
+        Err(error) => return query_failed("mcp log query failed", &error),
+    };
+    match ch.query(&event_detail_sql(error_scopes), &params).await {
         Ok(data) => match data.into_iter().next() {
             Some(row) => Json(row).into_response(),
             None => StatusCode::NOT_FOUND.into_response(),
         },
-        Err(error) => query_failed("mcp log query failed", &error),
+        Err(error) => {
+            // the table may have changed under the probe's answer
+            ch.mcp_columns.forget();
+            query_failed("mcp log query failed", &error)
+        }
     }
 }
 
@@ -367,6 +419,7 @@ async fn summary(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::request_log_columns::McpColumnCache;
 
     #[test]
     fn event_validation_covers_success_timeout_auth_and_transport() {
@@ -448,7 +501,7 @@ mod tests {
         // list and summary share the row filter; the detail query adds the mask
         let list = list_events_sql();
         assert!(list.contains(&format!("and {MCP_ROW_VISIBLE}")));
-        let detail = event_detail_sql();
+        let detail = event_detail_sql(true);
         assert!(detail.contains(&format!("and {MCP_ROW_VISIBLE}")));
         assert!(detail.contains(&format!(
             "if({PAYLOAD_VISIBLE}, arguments, '') as arguments"
@@ -457,6 +510,31 @@ mod tests {
         // the flag must read the column, not the masked alias of the same name
         assert!(detail.contains("notEmpty(mcp_tool_call_logs.arguments)"));
         assert!(detail.contains("{event_id:String}"));
+    }
+
+    #[test]
+    fn the_detail_reads_a_missing_scopes_column_as_empty() {
+        // before `042` is applied the select stands the column's default in, so
+        // it still answers and the row has the same shape
+        assert!(event_detail_sql(true).contains("error, error_scopes from"));
+        assert!(event_detail_sql(false).contains("error, emptyArrayString() as error_scopes from"));
+    }
+
+    #[test]
+    fn the_scopes_probe_settles_only_once_the_column_is_found() {
+        let cache = McpColumnCache::default();
+        let now = std::time::Instant::now();
+        assert_eq!(cache.fresh(now), None);
+        cache.store(now, false);
+        assert_eq!(cache.fresh(now), Some(false));
+        // a missing column is looked for again within the minute, a found one
+        // is kept for longer
+        let later = now + crate::request_log_columns::UNSETTLED_FOR;
+        assert_eq!(cache.fresh(later), None);
+        cache.store(now, true);
+        assert_eq!(cache.fresh(later), Some(true));
+        cache.forget();
+        assert_eq!(cache.fresh(now), None);
     }
 
     #[test]
