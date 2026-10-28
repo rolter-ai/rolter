@@ -34,6 +34,27 @@ The two-minor half of the window counts releases, which the build cannot see. Th
 notes print the first release the target may go in (`removable_from`, `since`
 plus two minors), and a removal PR is checked against it by review.
 
+## Deprecating a snapshot format
+
+A superseded `/internal/snapshot` format is deprecated through the same
+registry ([ADR-0038](../adr/2026-10-27-snapshot-format-version.md) section 5).
+The release that bumps `SNAPSHOT_FORMAT` adds an entry whose target is
+`Target::SnapshotFormat(k)` for the format it supersedes, so the release notes
+list it (as `` `/internal/snapshot format k` ``) and `problems` holds it to the
+same window. It names no operation, so `apply` adds nothing for it: the
+snapshot handler asks `for_snapshot_format` and sends `Deprecation` and
+`Sunset` with every snapshot served in that format, since which format a poll
+gets depends on the gateway rather than on the path. `problems` refuses an
+entry for format 0 or for a format the build does not supersede.
+
+`MIN_SERVED_FORMAT` in `rolter_core::snapshot_format` is held to the registry
+by `min_served_format_is_held_to_the_registry` (`snapshot_format_problems`):
+every format from `MIN_SERVED_FORMAT` up to the current one that is
+superseded must have an entry, and raising `MIN_SERVED_FORMAT` past `k` (a
+removal under ADR-0032 rule 3) fails until format `k`'s entry is past its
+sunset and the workspace version has reached its `removable_from`. Retiring a
+format is when its down-step may be deleted.
+
 ## The release notes
 
 release-plz writes the changelog and cannot call into Rust, so the section is

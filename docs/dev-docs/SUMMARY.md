@@ -55,6 +55,7 @@
   - [ADR-0034 — CI is sized to the 20-slot runner pool](adr/2026-09-29-ci-runner-budget.md)
   - [ADR-0035 — System One decisions: one generic kind on a native pass-through route](adr/2026-10-14-system-one-decision-api.md)
   - [ADR-0036 — PII restoration on streamed responses: the sanitizer restores the stream](adr/2026-10-27-pii-streaming-restoration.md)
+  - [ADR-0038 — A negotiated format version for /internal/snapshot](adr/2026-10-27-snapshot-format-version.md)
 
 # API
 

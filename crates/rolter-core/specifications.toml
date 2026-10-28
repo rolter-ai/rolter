@@ -700,12 +700,17 @@ contract = "rfc"
 version = "RFC 9745"
 reviewed_at = "2026-10-27"
 conformance = "native-passthrough"
-modules = ["crates/rolter-control/src/deprecation.rs"]
+modules = [
+  "crates/rolter-control/src/deprecation.rs",
+  "crates/rolter-control/src/snapshot_negotiation.rs",
+]
 supported = [
   "`Deprecation: @<unix seconds>` on a deprecated control-plane operation",
+  "`Deprecation` on every `/internal/snapshot` answer served in a deprecated snapshot format (ADR-0038)",
 ]
 tests = [
   "crates/rolter-control/src/deprecation.rs::headers_follow_rfc_9745_and_rfc_8594",
+  "crates/rolter-control/src/snapshot_negotiation.rs::a_deprecated_format_carries_the_headers_and_only_it",
 ]
 
 [[spec]]
@@ -718,12 +723,17 @@ contract = "rfc"
 version = "RFC 8594"
 reviewed_at = "2026-10-27"
 conformance = "native-passthrough"
-modules = ["crates/rolter-control/src/deprecation.rs"]
+modules = [
+  "crates/rolter-control/src/deprecation.rs",
+  "crates/rolter-control/src/snapshot_negotiation.rs",
+]
 supported = [
   "`Sunset` as an IMF-fixdate on every deprecated control-plane operation",
+  "`Sunset` on every `/internal/snapshot` answer served in a deprecated snapshot format (ADR-0038)",
 ]
 tests = [
   "crates/rolter-control/src/deprecation.rs::headers_follow_rfc_9745_and_rfc_8594",
+  "crates/rolter-control/src/snapshot_negotiation.rs::a_deprecated_format_carries_the_headers_and_only_it",
 ]
 
 [[spec]]

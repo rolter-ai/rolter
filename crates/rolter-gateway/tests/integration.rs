@@ -6526,3 +6526,76 @@ mod template_vars_leak {
         assert!(seen[0].get("rolter_template_vars").is_none(), "{}", seen[0]);
     }
 }
+
+/// ADR-0038: a gateway that has never applied a snapshot and is refused one
+/// for its format answers `/readyz` with `503 snapshot_format_unsupported`, so
+/// a rollout whose new gateways lead the control plane holds. Once it holds a
+/// snapshot it stays ready on a refusal, and keeps serving its last config.
+#[tokio::test]
+async fn readyz_holds_a_gateway_refused_its_snapshot_format_only_before_a_first_snapshot() {
+    let state = rolter_gateway::AppState::with_logging(&GatewayConfig::default(), None);
+    let gw = serve(rolter_gateway::build_router(
+        state.clone(),
+        "/metrics",
+        32 * 1024 * 1024,
+    ))
+    .await;
+    let readyz = || async {
+        let response = reqwest::get(format!("http://{gw}/readyz")).await.unwrap();
+        (
+            response.status().as_u16(),
+            response.text().await.unwrap_or_default(),
+        )
+    };
+    let metric = |text: &str, name: &str| {
+        text.lines()
+            .find(|line| line.split_whitespace().next() == Some(name))
+            .and_then(|line| line.split_whitespace().nth(1))
+            .map(str::to_string)
+    };
+    let metrics = || async {
+        reqwest::get(format!("http://{gw}/metrics"))
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap()
+    };
+
+    assert_eq!(readyz().await, (200, "ok".to_string()));
+    let text = metrics().await;
+    assert_eq!(
+        metric(&text, "rolter_snapshot_format").as_deref(),
+        Some("0")
+    );
+    assert_eq!(
+        metric(&text, "rolter_snapshot_format_refused").as_deref(),
+        Some("0")
+    );
+
+    // refused before any snapshot: out of the Service
+    assert!(state.refuse_snapshot_format());
+    assert_eq!(
+        readyz().await,
+        (503, "snapshot_format_unsupported".to_string())
+    );
+    assert_eq!(
+        metric(&metrics().await, "rolter_snapshot_format_refused").as_deref(),
+        Some("1")
+    );
+
+    // served once, then refused again: ready on the config it holds
+    state.reload(&GatewayConfig::default(), 3);
+    state.record_snapshot_format(1);
+    assert!(state.refuse_snapshot_format());
+    assert_eq!(readyz().await, (200, "ok".to_string()));
+    let text = metrics().await;
+    assert_eq!(
+        metric(&text, "rolter_snapshot_format").as_deref(),
+        Some("1")
+    );
+    assert_eq!(
+        metric(&text, "rolter_snapshot_format_refused").as_deref(),
+        Some("1")
+    );
+}
