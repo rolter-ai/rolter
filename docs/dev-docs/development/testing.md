@@ -384,6 +384,22 @@ The `nextest / doctests` and coverage jobs in `quality.yml` run a Redis service
 and set the variable, so these tests run in CI rather than passing as silent
 no-ops.
 
+## The examples tests
+
+The reference services under `examples/` carry their own tests, which `quality.yml`'s
+`examples (pytest)` job runs (#3429), so a release of one of their dependencies cannot break
+them unseen. The job installs the example's pinned `requirements-dev.txt` through `uv` and runs
+`pytest`; reproduce it with
+
+```sh
+cd examples/presidio-restore-shim
+uv run --no-project --python 3.13 --with-requirements requirements-dev.txt pytest
+```
+
+It is part of `quality`, so `ci-ok` waits on it. dependabot's `pip` ecosystem covers each
+example's directory, so a new example with a `requirements.txt` needs its own entry in
+`.github/dependabot.yml`.
+
 ## Layout
 
 - **Unit tests** live next to the code in `#[cfg(test)] mod tests`. Current coverage: balancer strategies (round-robin cycling, consistent-hash stability, cache-aware affinity, empty targets), the prefix trie, config parsing, model rewrite, auth checks, and the in-memory store.

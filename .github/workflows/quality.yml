@@ -680,6 +680,28 @@ jobs:
           cargo build -p rolter
           ROLTER_BIN="$PWD/target/debug/rolter" bash scripts/check-helm-chart.sh preflight
 
+  # ── examples: the reference services under examples/ ────────────────────────
+  # `examples/presidio-restore-shim/` has its own pytest suite, which nothing
+  # ran until #3429, so it could rot unseen when presidio or starlette moved.
+  # the requirements it installs are the example's own pinned files, so
+  # dependabot's pip entry for the directory is what bumps them. it takes no
+  # secrets and needs no service
+  examples:
+    name: examples (pytest)
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: set up uv
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - name: presidio restore shim
+        working-directory: examples/presidio-restore-shim
+        run: uv run --no-project --python 3.13 --with-requirements requirements-dev.txt pytest -q
+
   # ── static checks: everything that reads the tree and builds nothing ────────
   # twelve checks that used to be twelve jobs. each did 0-15 s of work and then
   # waited a median 86-200 s for a runner: a pr push started 36 jobs at once

@@ -49,3 +49,14 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+
+  # the example services under examples/ pin their own requirements, and the
+  # `examples` job of quality.yml installs exactly those files (#3429)
+  - package-ecosystem: pip
+    directory: /examples/presidio-restore-shim
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      example-python:
+        update-types: [minor, patch]
