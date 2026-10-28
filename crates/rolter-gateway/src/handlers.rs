@@ -933,19 +933,11 @@ fn lifecycle_response(
     let status =
         StatusCode::from_u16(response.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
     let mut upstream_headers = response.headers().clone();
-    for name in [
-        "connection",
-        "keep-alive",
-        "proxy-authenticate",
-        "proxy-authorization",
-        "te",
-        "trailer",
-        "transfer-encoding",
-        "upgrade",
-        "content-length",
-    ] {
-        upstream_headers.remove(name);
-    }
+    // `Connection`, every field it nominates and the RFC 9110 set, as the
+    // control-plane and MCP relays strip them (#3393). the length is the
+    // upstream's framing, and the body is re-streamed
+    rolter_proxy::hop_by_hop::strip(&mut upstream_headers);
+    upstream_headers.remove(header::CONTENT_LENGTH);
     if !upstream_headers.contains_key(header::CONTENT_TYPE) {
         upstream_headers.insert(
             header::CONTENT_TYPE,
