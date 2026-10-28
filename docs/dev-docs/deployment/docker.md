@@ -18,6 +18,13 @@ that require that function or collector-generated `signoz.gen_ai.usage.*.cost`
 attributes are not provided by this overlay. Those are explicit differences
 from Foundry, not claims of feature parity (#2929).
 
+The optional SGLang profile in `docker-compose.engines.yml` is a **Xeon CPU**
+build, not a portable x86 smoke. It remains intentionally pinned to v0.5.21:
+the v0.5.22 kernels target AVX-512/BF16 and AMX, which the Ryzen 5900X on rtx
+does not expose. No SGLang runtime success on that host is claimed, for either
+version. #3414 tracks validation and the next bump on compatible hardware.
+The Ollama smoke is independently verified against 0.40.12.
+
 `docker/docker-compose.yml` brings up Postgres, Redis, ClickHouse, and the rolter `gateway` + `control` services. It is the **local stack**, open on purpose: no admin token (`ROLTER_ALLOW_OPEN_MODE=1` acknowledges the `0.0.0.0` bind), the example `rolter`/`rolter` Postgres login, no Redis password, a passwordless ClickHouse user, every port published on every interface.
 
 ```bash

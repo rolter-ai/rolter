@@ -273,6 +273,15 @@ docker run --rm -p 127.0.0.1:4000:4000 -p 127.0.0.1:4001:4001 \
 
 </CodeGroup>
 
+## Optional inference-engine smokes
+
+The optional engine-compatibility stack is separate from this deployment. Its
+SGLang profile builds upstream's Xeon CPU image and needs the CPU instruction
+set that image targets; being x86_64 or having an NVIDIA GPU is not sufficient
+for a profile launched with `--device cpu`. It is intentionally pinned at
+v0.5.21 pending compatible-hardware validation. The independent Ollama smoke
+has been verified with 0.40.12, including embeddings and SSE.
+
 ## SigNoz startup
 
 With the optional SigNoz overlay, first startup waits for the schema migrator
