@@ -43,7 +43,12 @@ version = "v1"
 reviewed_at = "2026-10-27"
 conformance = "native-passthrough"
 gateway_endpoints = ["POST /v1/chat/completions"]
-gateway_schemas = ["ChatCompletionRequest", "ChatCompletionResponse", "ChatCompletionChunk", "Usage"]
+gateway_schemas = [
+  "ChatCompletionRequest",
+  "ChatCompletionResponse",
+  "ChatCompletionChunk",
+  "Usage",
+]
 modules = [
   "crates/rolter-gateway/src/handlers.rs",
   "crates/rolter-proxy/src/lib.rs",
@@ -115,7 +120,13 @@ gateway_endpoints = [
   "POST /v1/responses/{response_id}/compact",
   "GET /v1/responses/{response_id}/input_tokens",
 ]
-gateway_schemas = ["ResponsesRequest", "ResponseObject", "ResponseDeletion", "ResponseInputItems", "ResponseStreamEvent"]
+gateway_schemas = [
+  "ResponsesRequest",
+  "ResponseObject",
+  "ResponseDeletion",
+  "ResponseInputItems",
+  "ResponseStreamEvent",
+]
 modules = [
   "crates/rolter-gateway/src/handlers.rs",
   "crates/rolter-gateway/src/response_registry.rs",
