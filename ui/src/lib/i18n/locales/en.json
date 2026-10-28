@@ -3524,6 +3524,7 @@
       },
       "selectBusinessUnit": "Select a business unit",
       "selectCustomer": "Select a customer",
+      "selectUser": "Select a person",
       "unpriced": {
         "inherit": "Inherit deployment setting",
         "ignore": "Serve and ignore",
@@ -3556,6 +3557,22 @@
         "tpm": "tpm"
       },
       "scopeNamed": "{{type}} {{name}}",
+      "userScopeNamed": "{{name}} ({{reach}})",
+      "reachLabel": "Counts",
+      "reachHint": "Which of the person's keys this cap counts. The place also decides who may manage it: only a superadmin may leave it un-narrowed.",
+      "reachOptions": {
+        "all": "Every key they minted",
+        "org": "Keys minted in one organization",
+        "project": "Keys minted in one project"
+      },
+      "reachPlace": {
+        "org": "Organization",
+        "project": "Project"
+      },
+      "reachPlacePlaceholder": {
+        "org": "Select an organization",
+        "project": "Select a project"
+      },
       "scopeBlocked": "Scope defaults are unavailable: {{detail}}. Pick a scope manually below.",
       "scopeTitle": "Scope",
       "scopeBody": "Budgets and rate limits below apply to this scope.",
