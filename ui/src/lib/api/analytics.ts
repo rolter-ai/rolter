@@ -96,8 +96,12 @@ export interface AnalyticsSummary {
   withheld_cost?: number | string;
   /** successful requests whose upstream reported no usage, so their cost is unknown */
   usage_unknown_requests?: number | string;
+  /** requests answered from a cache, weighted like `requests`; absent from an older control plane */
+  cache_hit_requests?: number | string;
   errors: number | string;
   avg_latency_ms: number | string;
+  /** the 95th percentile over the whole window; absent from an older control plane */
+  p95_latency_ms?: number | string;
 }
 
 export interface AnalyticsTimeseriesPoint {

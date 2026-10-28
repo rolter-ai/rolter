@@ -35,6 +35,7 @@
 //! [`IdentityError::NotVerified`]. A directory that enumerates its users
 //! through rolter's error messages would be worse than no LDAP at all.
 
+// spec-ref: ldap
 use async_trait::async_trait;
 
 use rolter_auth::{Credential, Identity, IdentityError, IdentityProvider};

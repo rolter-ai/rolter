@@ -123,6 +123,16 @@ export interface InvocationsQuery extends AnalyticsWindow, AnalyticsRowFilters {
    * 50 unpriced requests
    */
   unpriced?: boolean;
+  /**
+   * Only the requests whose response a guardrail or plugin withheld after the
+   * provider billed them (#3302), narrowed by the server like `unpriced`
+   */
+  withheld?: boolean;
+  /**
+   * Only the requests the upstream answered without reporting usage, so their
+   * tokens and cost are unknown rather than zero (#3302)
+   */
+  usage_unknown?: boolean;
   limit?: number;
   /**
    * The previous page's `next_cursor`, handed back unchanged; omitted for the
@@ -153,6 +163,8 @@ export function fetchInvocationsPage(query: InvocationsQuery = {}): Promise<Invo
   if (query.request_id) params.set("request_id", query.request_id);
   if (query.trace_id) params.set("trace_id", query.trace_id);
   if (query.unpriced) params.set("unpriced", "true");
+  if (query.withheld) params.set("withheld", "true");
+  if (query.usage_unknown) params.set("usage_unknown", "true");
   if (query.guardrail) params.set("guardrail", query.guardrail);
   if (query.plugin) params.set("plugin", query.plugin);
   if (query.limit != null) params.set("limit", String(query.limit));

@@ -316,6 +316,20 @@ pub struct ProviderGroupMember {
     pub position: i32,
 }
 
+/// What the last probe of a provider observed about prompt-cache reporting
+/// (#984). A provider with no row has never been probed.
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct ProviderCacheProbe {
+    pub provider_id: Uuid,
+    /// the probed response carried a prompt-cache usage field
+    pub reports: bool,
+    /// the field it was found under, as a JSON pointer
+    pub spelling: Option<String>,
+    /// the upstream model the probe asked
+    pub model: String,
+    pub probed_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct VirtualKey {
     pub id: Uuid,
@@ -445,6 +459,11 @@ pub struct ModelPrice {
     pub cached_audio_input_per_mtok: Option<String>,
     pub currency: String,
     pub created_at: DateTime<Utc>,
+    /// the catalogue this price was imported from (#966); `None` is a price an
+    /// operator set, which is an override that an import never replaces
+    pub source: Option<String>,
+    /// the day the catalogue snapshot the price came from was taken
+    pub source_imported_at: Option<DateTime<Utc>>,
 }
 /// singleton persisted feature flags that gate supported subsystems
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]

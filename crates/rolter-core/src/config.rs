@@ -3411,7 +3411,9 @@ fn default_adaptive_min_samples() -> u32 {
 }
 
 fn default_anthropic_version() -> String {
-    "2023-06-01".to_string()
+    // one source for the dated version, shared with the health probes;
+    // spec-ref: anthropic-messages
+    crate::probe::ANTHROPIC_VERSION.to_string()
 }
 
 fn default_translation_max_tokens() -> u32 {
