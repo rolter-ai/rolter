@@ -80,7 +80,7 @@ Every request-log row records the failure that sent the request on to the target
 
 ## Realtime sessions
 
-A [realtime](/api/realtime) session picks its target while it connects, and a failed upstream handshake is classified like an HTTP failure: no answer is `transport` (or `timeout`), a `429` is `throttled` and a `5xx` is `server_error`. The next target is chosen with that failure, so a restricted target that takes it over is reached. A handshake answered with any other status names no class, so only an ordinary target follows it. Once connected, the session stays on its target; a failure later in the session is not taken over. A content refusal cannot happen while connecting, so a target that takes over only refusals is never used by a realtime session.
+A [realtime](/api/realtime) session picks its target while it connects, and a failed upstream handshake is classified like an HTTP failure: no answer is `transport` (or `timeout`), a `429` is `throttled`, a `408` or `504` is `timeout`, and any other `5xx` is `server_error`. The next target is chosen with that failure, so a restricted target that takes it over is reached. A handshake answered with any other status names no class, so only an ordinary target follows it. Once connected, the session stays on its target; a failure later in the session is not taken over. A content refusal cannot happen while connecting, so a target that takes over only refusals is never used by a realtime session.
 
 ## Limits
 

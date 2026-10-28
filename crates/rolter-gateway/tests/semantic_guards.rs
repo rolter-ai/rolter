@@ -801,3 +801,38 @@ async fn a_response_stage_provider_error_is_recorded() {
         "{row}"
     );
 }
+
+/// A policy that flags both the request and the response leaves one
+/// `policy_flagged:<policy>` on the row, since the rollups count a request
+/// once per entry (#3330).
+#[tokio::test]
+async fn a_policy_flagged_on_both_stages_is_recorded_once() {
+    let upstream = Upstream::default();
+    let up = upstream.serve().await;
+    let url = provider(Arc::default()).await;
+    let rows = Rows::default();
+    let clickhouse = rows.serve().await;
+    let mut config = config(up, ProviderKind::OpenaiCompatible);
+    config.logging.clickhouse_url = Some(format!("http://{clickhouse}"));
+    config.logging.flush_ms = 20;
+    config.logging.batch_max = 1;
+    config.semantic_guards.providers = vec![
+        guard("in", &url, WebhookStage::PreCall, FailureMode::FailOpen),
+        guard("out", &url, WebhookStage::PostCall, FailureMode::FailOpen),
+    ];
+    let mut annotating = policy("watch", PolicyScope::Deployment, None, &["in", "out"]);
+    annotating.on_violation = ViolationAction::Annotate;
+    config.semantic_guards.policies = vec![annotating];
+
+    let delivered = send(&config, Dialect::OpenAi, "something violent", false, None).await;
+    assert_eq!(delivered.status, 200, "{}", delivered.body);
+    let row = rows.only_row().await;
+    let flagged = row["guardrail_events"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .filter(|event| *event == "policy_flagged:watch")
+        .count();
+    assert_eq!(flagged, 1, "{row}");
+}

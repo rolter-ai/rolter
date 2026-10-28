@@ -2380,8 +2380,19 @@ impl ConfigStore for PostgresConfigStore {
                 }
             })
         }));
-        // a target or route the snapshot drops for `takes_over` (#3321)
-        problems.extend(self.assemble_routes(&left_out).await?.1);
+        // a target or route the snapshot drops for `takes_over` (#3321). a
+        // failure to read them is itself the problem to report: failing the
+        // whole list would hide every other explanation with it
+        match self.assemble_routes(&left_out).await {
+            Ok((_, dropped)) => problems.extend(dropped),
+            Err(error) => {
+                tracing::warn!("the routes could not be read for their problems: {error}");
+                problems.push(ConfigProblem::deployment(format!(
+                    "the routes could not be read, so a target or route left out of the \
+                     snapshot is not listed here: {error}"
+                )));
+            }
+        }
         Ok(problems)
     }
 }
@@ -5598,6 +5609,75 @@ mod tests {
             .await
             .unwrap();
         assert!(current_version(&pool).await.unwrap() > before);
+    }
+
+    /// #3321: a route the assembly cannot read at all (a strategy no build
+    /// knows) fails the routes' own part of the problem list, not the list:
+    /// every other explanation is still there, with a line saying the routes
+    /// could not be read.
+    #[tokio::test]
+    async fn an_unreadable_route_keeps_the_other_problems() {
+        if !test_database::is_configured() {
+            eprintln!("skipping: {} not set", test_database::URL_ENV);
+            return;
+        }
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
+        let org_id: Uuid = sqlx::query_scalar(
+            "insert into orgs (name, slug) values ('acme', 'acme') returning id",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let team_id: Uuid =
+            sqlx::query_scalar("insert into teams (org_id, name) values ($1, 'core') returning id")
+                .bind(org_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let project_id: Uuid = sqlx::query_scalar(
+            "insert into projects (team_id, name) values ($1, 'api') returning id",
+        )
+        .bind(team_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        // the constraint that stops a write of an unknown strategy is dropped
+        // so the row can be made, as a downgrade could leave one
+        sqlx::query("alter table routes drop constraint routes_strategy_check")
+            .execute(&pool)
+            .await
+            .unwrap();
+        for (model, strategy, params) in [
+            ("bad-params", "round_robin", r#"["max_tokens"]"#),
+            ("teleported", "teleport", "{}"),
+        ] {
+            sqlx::query(
+                "insert into routes (project_id, model, strategy, params)
+                 values ($1, $2, $3, $4::jsonb)",
+            )
+            .bind(project_id)
+            .bind(model)
+            .bind(strategy)
+            .bind(params)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let store = PostgresConfigStore::new(pool.clone());
+        let problems = store.load_problem_records().await.unwrap();
+        assert!(
+            problems.iter().any(|p| p.message.contains("bad-params")),
+            "{problems:?}"
+        );
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.message.contains("the routes could not be read")
+                    && p.message.contains("teleport")),
+            "{problems:?}"
+        );
     }
 
     /// #2938: a route whose jsonb settings do not parse used to load on the

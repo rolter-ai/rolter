@@ -3,8 +3,8 @@
  * with any is a fallback, never dialled first, and reached only after another
  * target failed with one of them. The tokens are the API's
  * (`rolter_core::failover::FailureClass`), so they are notation and never
- * translated; what each means is in the catalogs under
- * `fallbackTargets.classes.<token>`.
+ * translated: the editor shows them as they are sent, and its hint and the
+ * fallback-targets docs say what each one covers.
  */
 export const FAILURE_CLASSES = [
   "throttled",

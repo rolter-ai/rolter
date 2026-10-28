@@ -34,6 +34,12 @@ The listing is exhaustive. Anything not named there is untouched.
   A pending migration is not a fault. It is reported as a warning so that a CI job running `rolter check --strict` can notice a config drifting behind, but a config that is behind starts normally and serves traffic normally.
 </Note>
 
+## `rolter check` runs the gateway's validation
+
+From this release `rolter check --config` runs the same validation the gateway runs at startup and reports each problem it finds as an error: a route on an unknown provider, a duplicate route, a target with weight `0`, a budget whose limit is not positive, a route whose every target is a [fallback target](/reliability/fallback-targets), and the rest. Before, the gateway only logged these and served everything else, and `rolter check` let the file through.
+
+The Helm chart's preflight init containers and the compose stack's preflight run `rolter check --strict`, so **a config with such a problem now stops the rollout** instead of starting a gateway that answers the affected routes with errors. Run the new binary's `rolter check --config rolter.toml` against your file before you upgrade, and fix what it lists. The `rolter.example.toml` the release ships, and the file `rolter init` writes from it, pass it.
+
 ## What `schema_version` is
 
 A `rolter.toml` may carry a version stamp at the top:

@@ -321,17 +321,25 @@ pub fn apply_output(
             }
             scan.field(body, "output_text", false)?;
         }
-        // a transcription or translation: the whole `text`, plus the timed
-        // `segments[].text` and `words[].word` of `verbose_json`, which repeat
-        // it piecewise. a plain-text or subtitle answer reaches here as
-        // `{"text": …}` (#3331)
+        // a transcription or translation: the whole `text` and the timed
+        // `segments[].text` of `verbose_json`. a plain-text or subtitle answer
+        // reaches here as `{"text": …}` (#3331)
         "/v1/audio/transcriptions" | "/v1/audio/translations" => {
             scan.field(body, "text", false)?;
-            for (list, field) in [("segments", "text"), ("words", "word")] {
-                if let Some(items) = body.get_mut(list).and_then(Value::as_array_mut) {
-                    for item in items {
-                        scan.field(item, field, false)?;
-                    }
+            if let Some(segments) = body.get_mut("segments").and_then(Value::as_array_mut) {
+                for segment in segments {
+                    scan.field(segment, "text", false)?;
+                }
+            }
+            // `words[].word` and `logprobs[].token` split the text one token
+            // at a time, so a card or phone number spread over several of
+            // them matches no rule there. once anything was redacted they are
+            // dropped whole rather than delivered with the redacted value
+            // still in pieces
+            if scan.report.redactions > 0 {
+                if let Some(object) = body.as_object_mut() {
+                    object.remove("words");
+                    object.remove("logprobs");
                 }
             }
         }
@@ -746,7 +754,7 @@ mod tests {
     }
 
     #[test]
-    fn a_transcript_is_masked_in_its_text_segments_and_words() {
+    fn a_transcript_is_masked_in_its_text_and_segments_and_loses_its_words() {
         let g = engine(vec![out(redact("email", BuiltinRule::Email))]);
         for path in ["/v1/audio/transcriptions", "/v1/audio/translations"] {
             let mut body = json!({
@@ -757,12 +765,53 @@ mod tests {
                 "words": [{"word": "ops@corp.com", "start": 2.0, "end": 3.5}]
             });
             let report = apply_output(&g, &RuleSelection::default(), path, &mut body).unwrap();
-            assert_eq!(report.redactions, 3, "{path}");
+            assert_eq!(report.redactions, 2, "{path}");
             let text = body.to_string();
             assert!(!text.contains("ops@corp.com"), "{path}: {text}");
+            assert!(body.get("words").is_none(), "{path}: {text}");
             // what billing reads is left alone
             assert_eq!(body["duration"], json!(3.5));
         }
+    }
+
+    /// A card number spoken as several words is one token per digit group in
+    /// `words[]` and `logprobs[]`, where no rule can see it whole, so both go
+    /// once the text was redacted (#3331).
+    #[test]
+    fn a_multi_token_card_number_does_not_survive_in_words_or_logprobs() {
+        let g = engine(vec![out(redact("card", BuiltinRule::PaymentCard))]);
+        let groups = ["4111", "1111", "1111", "1111"];
+        let mut body = json!({
+            "text": format!("my card is {}", groups.join(" ")),
+            "words": groups.iter().map(|g| json!({"word": g})).collect::<Vec<_>>(),
+            "logprobs": groups.iter().map(|g| json!({"token": g, "logprob": -0.1})).collect::<Vec<_>>()
+        });
+        let report = apply_output(
+            &g,
+            &RuleSelection::default(),
+            "/v1/audio/transcriptions",
+            &mut body,
+        )
+        .unwrap();
+        assert_eq!(report.redactions, 1);
+        let text = body.to_string();
+        assert!(!text.contains("4111"), "{text}");
+        assert!(body.get("words").is_none() && body.get("logprobs").is_none());
+    }
+
+    /// Nothing redacted, nothing dropped: the timings stay for the caller.
+    #[test]
+    fn a_clean_transcript_keeps_its_words() {
+        let g = engine(vec![out(redact("email", BuiltinRule::Email))]);
+        let mut body = json!({"text": "hello", "words": [{"word": "hello"}]});
+        apply_output(
+            &g,
+            &RuleSelection::default(),
+            "/v1/audio/transcriptions",
+            &mut body,
+        )
+        .unwrap();
+        assert_eq!(body["words"], json!([{"word": "hello"}]));
     }
 
     #[test]

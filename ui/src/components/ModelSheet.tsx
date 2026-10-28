@@ -43,6 +43,7 @@ import {
   fetchModelPrices,
   fetchProviderModels,
   fetchRouteTargets,
+  fetchRouteVariants,
   fetchTeams,
   fetchUsers,
   fetchVirtualKeys,
@@ -1195,6 +1196,13 @@ export function ModelSheet({
     queryFn: () => fetchRouteTargets(route!.id),
     enabled: open && mode === "edit" && !!route,
   });
+  // the route's variants are not edited here, but their targets count with
+  // the list's when the control plane decides a route is all fallbacks (#3373)
+  const variants = useQuery({
+    queryKey: ["route-variants", route?.id],
+    queryFn: () => fetchRouteVariants(route!.id),
+    enabled: open && mode === "edit" && !!route,
+  });
   const prices = useQuery({
     queryKey: ["model-prices"],
     queryFn: fetchModelPrices,
@@ -1391,8 +1399,15 @@ export function ModelSheet({
   // a refusal from the control plane marks the same fields until the list is edited
   // a list of nothing but fallbacks could never dial anything, which the
   // control plane refuses as `all_targets_restricted` (#1584)
+  // the stored variants' targets count too, as the control plane counts them
+  // (#3373); while they are unread the list alone is judged, and the save's
+  // own refusal still says so
+  const variantTargetSets = (Array.isArray(variants.data) ? variants.data : []).flatMap((v) =>
+    (v.targets ?? []).map((tg) => tg.takes_over ?? []),
+  );
   const onlyFallbacks =
-    allRestricted(draft.targets.map((tg) => tg.takesOver)) || !!refusal?.allRestricted;
+    allRestricted([...draft.targets.map((tg) => tg.takesOver), ...variantTargetSets]) ||
+    !!refusal?.allRestricted;
   const errTargets = readonly
     ? ""
     : onlyFallbacks

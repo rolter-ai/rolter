@@ -6063,10 +6063,22 @@ struct PolicyEvents {
 }
 
 impl PolicyEvents {
-    /// Append the outcomes to the row the request leaves.
+    /// Append the outcomes to the row the request leaves, each once: the
+    /// request stage may already have recorded the same entry (a policy that
+    /// flags both the request and the response), and the rollups count a
+    /// request once per entry, so a repeat would count it twice.
     fn record(self, log: &mut RequestLog) {
-        log.guardrail_events.extend(self.guardrail);
-        log.plugin_events.extend(self.plugin);
+        append_new(&mut log.guardrail_events, self.guardrail);
+        append_new(&mut log.plugin_events, self.plugin);
+    }
+}
+
+/// Append each of `entries` that `into` does not hold yet.
+fn append_new(into: &mut Vec<String>, entries: Vec<String>) {
+    for entry in entries {
+        if !into.contains(&entry) {
+            into.push(entry);
+        }
     }
 }
 

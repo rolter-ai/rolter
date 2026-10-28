@@ -1257,6 +1257,74 @@ export const ChangesTheStrategy: Story = {
   },
 };
 
+/** route-1 read with one variant whose only target takes over `takesOver` */
+const withVariant =
+  (takesOver: string[]): FetchStub =>
+  (input, init) =>
+    String(input).includes("/routes/route-1/variants")
+      ? Promise.resolve(
+          json([
+            {
+              id: "var-1",
+              route_id: "route-1",
+              name: "canary",
+              weight: 1,
+              position: 0,
+              params: {},
+              created_at: "2026-05-01T00:00:00Z",
+              targets: [
+                {
+                  id: "vt-1",
+                  variant_id: "var-1",
+                  provider_id: "prov-2",
+                  upstream_model: null,
+                  weight: 1,
+                  position: 0,
+                  takes_over: takesOver,
+                },
+              ],
+            },
+          ]),
+        )
+      : backing(input, init);
+
+/**
+ * The control plane counts the route's variants with its own targets (#3373):
+ * a variant with an ordinary target lets every target of the list be a
+ * fallback, and the sheet saves it.
+ */
+export const AVariantsOrdinaryTargetAllowsAListOfFallbacks: Story = {
+  render: () => <Stage mode="edit" route={ROUTE} stub={withVariant([])} />,
+  play: async () => {
+    const dialog = within(sheet());
+    await seeded(dialog);
+    const first = within(dialog.getByRole("group", { name: "Fallback classes of target 1" }));
+    await userEvent.click(first.getByRole("button", { name: "Ordinary target" }));
+    await userEvent.click(first.getByRole("button", { name: "timeout" }));
+    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
+    await expect(await routeUpdate("route-1")).toEqual({
+      targets: [
+        { provider_id: "prov-1", upstream_model: null, weight: 1, takes_over: ["timeout"] },
+      ],
+    });
+  },
+};
+
+/** With every variant target a fallback too, the route could dial nothing: refused in the sheet. */
+export const VariantFallbacksCountTowardsAllFallbacks: Story = {
+  render: () => <Stage mode="edit" route={ROUTE} stub={withVariant(["throttled"])} />,
+  play: async () => {
+    const dialog = within(sheet());
+    await seeded(dialog);
+    const first = within(dialog.getByRole("group", { name: "Fallback classes of target 1" }));
+    await userEvent.click(first.getByRole("button", { name: "Ordinary target" }));
+    await userEvent.click(first.getByRole("button", { name: "timeout" }));
+    await userEvent.click(dialog.getByRole("button", { name: "Save route" }));
+    await waitFor(() => expect(dialog.getByText(/Every target is a fallback/)).toBeVisible());
+    calls.expectNotSent("PUT", "/routes/route-1");
+  },
+};
+
 /**
  * A refusal the control plane pins to a target (`targets[1].weight`) is said at
  * that line, the sheet stays open and nothing is announced as saved.
