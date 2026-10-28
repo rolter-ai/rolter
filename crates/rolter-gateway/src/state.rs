@@ -220,6 +220,19 @@ pub struct Snapshot {
     /// groups allow, keyed by server id (#1403). A server absent from the map
     /// is not governed by a group
     pub mcp_governed_tools: HashMap<String, std::collections::HashSet<String>>,
+    /// the tools each enabled tool group allows, by group id then server id
+    /// (#3295); the building block of a caller's assigned groups
+    pub mcp_group_tools: HashMap<String, HashMap<String, std::collections::HashSet<String>>>,
+    /// the servers each group names, enabled or not (#3295): a caller assigned to
+    /// a disabled group is narrowed on them even when no enabled group names
+    /// them, so they are governed for that caller
+    pub mcp_group_servers: HashMap<String, std::collections::HashSet<String>>,
+    /// the groups assigned to a virtual key, project or team, keyed by subject
+    /// id (#3295), each as `(subject kind, organization id, group id)`. A
+    /// disabled group is here too, with no tools in `mcp_group_tools`, so its
+    /// callers stay narrowed. A caller found in none keeps the organization-wide
+    /// groups
+    pub mcp_group_assignments: HashMap<String, Vec<(String, String, String)>>,
     /// saved MCP settings by organization id (#1404). An organization with
     /// none saved is absent and gets the defaults
     pub mcp_org_settings: HashMap<String, rolter_core::McpOrgSettingsConfig>,
@@ -277,9 +290,10 @@ pub struct Snapshot {
     /// built-in regex guardrails / PII redaction, compiled once per snapshot and
     /// shared across requests; inert unless enabled (ROL-261)
     pub guardrails: Arc<rolter_core::CompiledGuardrails>,
-    /// custom guardrail webhook config, swapped atomically with the snapshot;
-    /// inert unless enabled (ROL-257)
-    pub guardrail_webhook: rolter_core::GuardrailWebhookConfig,
+    /// semantic guardrail providers — `[guardrail_webhook]` among them — and
+    /// the scoped policies that pick them, compiled once per snapshot so a
+    /// request only resolves; empty unless a provider is enabled (#459)
+    pub semantic_guards: Arc<rolter_core::CompiledSemanticGuards>,
     /// external PII sanitizer config, swapped atomically with the snapshot;
     /// inert unless enabled (#848)
     pub pii_sanitizer: rolter_core::PiiSanitizerConfig,
@@ -292,6 +306,23 @@ pub struct Snapshot {
     /// enabled webhook plugin instances, swapped atomically with the snapshot;
     /// empty by default and inert on the request path (#509)
     pub plugins: Arc<rolter_core::PluginsConfig>,
+}
+
+/// The longest an upstream request may take to answer under `config`: the
+/// connect and request timeouts, with the longest route override of the
+/// latter. A half-open breaker's probe holds its slot at least this long
+/// (#3248). `0` when the request timeout is off, so nothing bounds it.
+fn probe_timeout_secs(config: &GatewayConfig) -> u64 {
+    if config.timeouts.request_secs == 0 {
+        return 0;
+    }
+    let request = config
+        .routes
+        .iter()
+        .filter_map(|route| route.advanced.limits.timeout_secs)
+        .map(u64::from)
+        .fold(config.timeouts.request_secs, u64::max);
+    config.timeouts.connect_secs.saturating_add(request)
 }
 
 /// Live per-target latency handle for the `fastest` strategy, backed by the
@@ -432,6 +463,7 @@ impl Snapshot {
                     provider: m.provider.clone(),
                     model: m.model.clone(),
                     weight: m.weight,
+                    takes_over: Vec::new(),
                 })
                 .collect();
             let weights: Vec<u32> = targets.iter().map(|t| t.weight).collect();
@@ -571,25 +603,39 @@ impl Snapshot {
         }
         // database-defined keys: digest already stored, carry scope identity
         for k in &config.db_virtual_keys {
-            keys.insert(
-                k.key_hash.clone(),
-                KeyMeta {
-                    tenant_key: k.key_hash.clone(),
-                    id: k.id.clone(),
-                    org_id: k.org_id.clone(),
-                    team_id: k.team_id.clone(),
-                    project_id: k.project_id.clone(),
-                    user_id: k.user_id.clone(),
-                    models: k.models.clone(),
-                    providers: k.providers.clone(),
-                    disabled: k.disabled,
-                    expires_at: k.expires_at,
-                    cache_override: k.cache,
-                    business_unit_id: k.business_unit_id.clone(),
-                    customer_id: k.customer_id.clone(),
-                    access_policy: k.access_policy.clone(),
-                },
-            );
+            let meta = KeyMeta {
+                tenant_key: k.key_hash.clone(),
+                id: k.id.clone(),
+                org_id: k.org_id.clone(),
+                team_id: k.team_id.clone(),
+                project_id: k.project_id.clone(),
+                user_id: k.user_id.clone(),
+                models: k.models.clone(),
+                providers: k.providers.clone(),
+                disabled: k.disabled,
+                expires_at: k.expires_at,
+                cache_override: k.cache,
+                business_unit_id: k.business_unit_id.clone(),
+                customer_id: k.customer_id.clone(),
+                access_policy: k.access_policy.clone(),
+            };
+            // a rotated key's previous secret authenticates as the same key
+            // until its overlap ends: same id, limits and tenant isolation (so
+            // a rate limit is not doubled by the second secret), but never
+            // longer than the key itself lives
+            if let Some(previous) = &k.previous {
+                keys.insert(
+                    previous.key_hash.clone(),
+                    KeyMeta {
+                        expires_at: Some(
+                            k.expires_at
+                                .map_or(previous.valid_until, |exp| exp.min(previous.valid_until)),
+                        ),
+                        ..meta.clone()
+                    },
+                );
+            }
+            keys.insert(k.key_hash.clone(), meta);
         }
         let mcp_servers = config
             .mcp_servers
@@ -607,14 +653,43 @@ impl Snapshot {
             .collect();
         let mut mcp_governed_tools: HashMap<String, std::collections::HashSet<String>> =
             HashMap::new();
+        let mut mcp_group_tools: HashMap<
+            String,
+            HashMap<String, std::collections::HashSet<String>>,
+        > = HashMap::new();
+        let mut mcp_group_servers: HashMap<String, std::collections::HashSet<String>> =
+            HashMap::new();
+        let mut mcp_group_assignments: HashMap<String, Vec<(String, String, String)>> =
+            HashMap::new();
         for group in &config.mcp_tool_groups {
             for reference in &group.tools {
                 if org_of_server.get(reference.server_id.as_str()) == Some(&group.org_id.as_str()) {
+                    mcp_group_servers
+                        .entry(group.id.clone())
+                        .or_default()
+                        .insert(reference.server_id.clone());
+                    // a disabled group names its servers for the callers
+                    // assigned to it and allows them nothing
+                    if group.disabled {
+                        continue;
+                    }
                     mcp_governed_tools
                         .entry(reference.server_id.clone())
                         .or_default()
                         .insert(reference.tool.clone());
+                    mcp_group_tools
+                        .entry(group.id.clone())
+                        .or_default()
+                        .entry(reference.server_id.clone())
+                        .or_default()
+                        .insert(reference.tool.clone());
                 }
+            }
+            for subject in &group.assignments {
+                mcp_group_assignments
+                    .entry(subject.id.clone())
+                    .or_default()
+                    .push((subject.kind.clone(), group.org_id.clone(), group.id.clone()));
             }
         }
         let mcp_org_settings = config
@@ -643,6 +718,9 @@ impl Snapshot {
             keys,
             mcp_servers,
             mcp_governed_tools,
+            mcp_group_tools,
+            mcp_group_servers,
+            mcp_group_assignments,
             mcp_org_settings,
             mcp_oauth_sessions,
             pepper,
@@ -674,7 +752,10 @@ impl Snapshot {
             },
             realtime: config.realtime.clone(),
             guardrails: compiled_guardrails,
-            guardrail_webhook: config.guardrail_webhook.clone(),
+            semantic_guards: Arc::new(rolter_core::CompiledSemanticGuards::from_config(
+                &config.semantic_guards,
+                &config.guardrail_webhook,
+            )),
             pii_sanitizer: config.pii_sanitizer.clone(),
             prompt_templates: Arc::new(rolter_core::CompiledTemplates::from_config(
                 &config.prompt_templates,
@@ -733,6 +814,7 @@ impl Snapshot {
                 provider: provider_name.clone(),
                 model: Some(upstream.to_string()),
                 weight: 1,
+                takes_over: Vec::new(),
             };
             let strategy = rolter_core::BalancingStrategy::default();
             // the address inherits the provider's org, so the route gate refuses
@@ -758,6 +840,7 @@ impl Snapshot {
                     provider: m.provider.clone(),
                     model: Some(m.model.clone().unwrap_or_else(|| upstream.to_string())),
                     weight: m.weight,
+                    takes_over: Vec::new(),
                 })
                 .collect();
             if targets.is_empty() {
@@ -1085,6 +1168,8 @@ impl AppState {
         rate_limiter: RateLimiter,
         response_cache: ResponseCache,
     ) -> Self {
+        // before any request can start, so no start sequence precedes its epoch
+        crate::logging::init_start_sequence();
         // created before the snapshot so the fastest strategy's latency
         // sources can hold a handle to the same tracker the guards record into
         let loads = crate::load::LoadTracker::new();
@@ -1142,11 +1227,15 @@ impl AppState {
             // always a reconfigurable breaker (even when currently disabled) so a
             // config hot-reload can enable/disable and re-tune it in place without
             // discarding accumulated per-target state; see reload()
-            breaker: crate::breaker::Breaker::new(
-                config.breaker.enabled(),
-                config.breaker.failure_threshold,
-                config.breaker.open_secs,
-            ),
+            breaker: {
+                let breaker = crate::breaker::Breaker::new(
+                    config.breaker.enabled(),
+                    config.breaker.failure_threshold,
+                    config.breaker.open_secs,
+                );
+                breaker.set_probe_timeout(probe_timeout_secs(config));
+                breaker
+            },
             // an enabled snapshot only when scraping is on, else an inert one
             // that reports zero depth so it never perturbs the load view
             upstream_metrics: if config.metrics_scrape.enabled {
@@ -1191,6 +1280,7 @@ impl AppState {
             config.breaker.failure_threshold,
             config.breaker.open_secs,
         );
+        self.breaker.set_probe_timeout(probe_timeout_secs(config));
         // a reload is where models and targets get retired, and the gateway
         // applies one without restarting — so it is also where the breaker
         // sheds entries nothing routes to any more. Open and half-open targets
@@ -1208,6 +1298,46 @@ impl AppState {
         self.metrics
             .config_reloads_total
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Record the snapshot format of the snapshot just applied, which also
+    /// ends any format refusal (ADR-0038).
+    pub fn record_snapshot_format(&self, format: u32) {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.metrics
+            .snapshot_format
+            .store(u64::from(format), Relaxed);
+        self.metrics.snapshot_format_refused.store(0, Relaxed);
+    }
+
+    /// The control plane answered in a snapshot format this gateway reads,
+    /// so any earlier refusal is over.
+    pub fn clear_snapshot_format_refusal(&self) {
+        self.metrics
+            .snapshot_format_refused
+            .store(0, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The control plane serves no snapshot format this gateway reads. Returns
+    /// whether this is a transition into that state, which is when the
+    /// watcher says so at `error`.
+    pub fn refuse_snapshot_format(&self) -> bool {
+        self.metrics
+            .snapshot_format_refused
+            .swap(1, std::sync::atomic::Ordering::Relaxed)
+            == 0
+    }
+
+    /// Whether `/readyz` should hold this gateway out of service for its
+    /// snapshot format: it has never applied a snapshot, and the control
+    /// plane's last answer was one it cannot read. A gateway that holds a
+    /// snapshot stays ready on its last config, since flipping it would turn
+    /// one out-of-order control-plane upgrade into an outage of every gateway
+    /// at once (ADR-0038 section 3).
+    pub fn unready_for_snapshot_format(&self) -> bool {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.metrics.snapshot_format_refused.load(Relaxed) == 1
+            && self.metrics.snapshot_format.load(Relaxed) == 0
     }
 
     /// Close every live `/v1/realtime` session and wait, at most `grace`, for
@@ -1295,6 +1425,7 @@ mod tests {
             provider: provider.to_string(),
             model: model.map(str::to_string),
             weight: 1,
+            takes_over: Vec::new(),
         }
     }
 
@@ -1575,8 +1706,8 @@ mod tests {
             "the open target must still be skipped after a sweep"
         );
         assert!(
-            state.breaker.allows("probing-model", 0),
-            "the half-open target is admitted, but must still hold its entry"
+            !state.breaker.allows("probing-model", 0),
+            "the half-open target's probe still holds the slot, so it must still hold its entry"
         );
         // a failure on the half-open target re-opens it, which is only possible
         // if the sweep kept its phase

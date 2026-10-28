@@ -77,6 +77,7 @@ fn config_for(model: &str, providers: Vec<(&str, SocketAddr)>) -> GatewayConfig 
             provider: name.to_string(),
             model: None,
             weight: 1,
+            takes_over: Vec::new(),
         })
         .collect();
     for (name, addr) in providers {
@@ -128,6 +129,7 @@ async fn mcp_proxy_binds_virtual_key_owner_to_server_scopes_and_bearer() {
     let upstream = serve(Router::new().route("/{*path}", any(mcp_upstream))).await;
     let mut config = GatewayConfig::default();
     config.db_virtual_keys.push(VirtualKeyRecord {
+        previous: None,
         access_policy: None,
         key_hash: rolter_auth::hash_key(&config.server.resolve_key_pepper(), "sk-user-owned"),
         id: "key-1".to_string(),
@@ -270,6 +272,7 @@ async fn mcp_logging_config(
     config.logging.flush_ms = flush_ms;
     config.logging.payload_capture.enabled = true;
     config.db_virtual_keys.push(VirtualKeyRecord {
+        previous: None,
         access_policy: None,
         key_hash: rolter_auth::hash_key(&config.server.resolve_key_pepper(), "sk-mcp-log"),
         id: "key-1".to_string(),
@@ -444,6 +447,7 @@ async fn mcp_proxy_presents_a_stored_static_credential_without_an_oauth_session(
     let upstream = serve(Router::new().route("/{*path}", any(echo))).await;
     let mut config = GatewayConfig::default();
     config.db_virtual_keys.push(VirtualKeyRecord {
+        previous: None,
         access_policy: None,
         key_hash: rolter_auth::hash_key(&config.server.resolve_key_pepper(), "sk-user-owned"),
         id: "key-1".to_string(),
@@ -523,6 +527,7 @@ async fn mcp_proxy_presents_a_stored_static_credential_without_an_oauth_session(
 async fn mcp_proxy_refuses_a_credentialled_server_whose_secret_did_not_arrive() {
     let mut config = GatewayConfig::default();
     config.db_virtual_keys.push(VirtualKeyRecord {
+        previous: None,
         access_policy: None,
         key_hash: rolter_auth::hash_key(&config.server.resolve_key_pepper(), "sk-user-owned"),
         id: "key-1".to_string(),
@@ -574,6 +579,7 @@ async fn mcp_proxy_applies_the_per_server_request_timeout() {
     let upstream = serve(Router::new().route("/{*path}", any(slow))).await;
     let mut config = GatewayConfig::default();
     config.db_virtual_keys.push(VirtualKeyRecord {
+        previous: None,
         access_policy: None,
         key_hash: rolter_auth::hash_key(&config.server.resolve_key_pepper(), "sk-user-owned"),
         id: "key-1".to_string(),
@@ -746,6 +752,7 @@ async fn models_endpoint_lists_route_ids_and_provider_slug_model_ids() {
             provider: "vLLM SPB".to_string(),
             model: Some("qwen3".to_string()),
             weight: 1,
+            takes_over: Vec::new(),
         }],
         params: Default::default(),
         param_policy: Default::default(),
@@ -805,6 +812,7 @@ async fn a_key_neither_lists_nor_calls_another_orgs_routes_or_providers() {
             provider: provider.to_string(),
             model: Some("m".to_string()),
             weight: 1,
+            takes_over: Vec::new(),
         }],
         params: Default::default(),
         param_policy: Default::default(),
@@ -940,6 +948,7 @@ async fn a_project_scoped_provider_is_reached_only_from_its_own_project() {
                 provider: provider.to_string(),
                 model: Some("m".to_string()),
                 weight: 1,
+                takes_over: Vec::new(),
             })
             .collect(),
         params: Default::default(),
@@ -1110,6 +1119,7 @@ async fn another_orgs_route_shadows_no_address_or_builtin_on_any_path() {
                 provider: "their-upstream".to_string(),
                 model: Some("m".to_string()),
                 weight: 1,
+                takes_over: Vec::new(),
             }],
             params: Default::default(),
             param_policy: Default::default(),
@@ -1267,6 +1277,7 @@ async fn models_endpoint_lists_the_whole_probed_provider_catalogue() {
             provider: "openai-edge".to_string(),
             model: Some("gpt-4o".to_string()),
             weight: 1,
+            takes_over: Vec::new(),
         }],
         params: Default::default(),
         param_policy: Default::default(),
@@ -1351,6 +1362,7 @@ async fn models_endpoint_serves_route_catalog_metadata_but_not_the_description()
             provider: "openai-edge".to_string(),
             model: Some("gpt-4o".to_string()),
             weight: 1,
+            takes_over: Vec::new(),
         }],
         params: Default::default(),
         param_policy: Default::default(),
@@ -2526,6 +2538,37 @@ async fn param_adjustments_name_what_an_anthropic_upstream_drops() {
     }
 }
 
+/// OpenAI accepts a `temperature` up to 2 and Anthropic up to 1: the gateway
+/// clamps rather than forward a value the upstream would refuse (#3324).
+#[tokio::test]
+async fn a_chat_temperature_above_one_is_clamped_for_an_anthropic_upstream() {
+    let upstream = serve(Router::new().route(
+        "/v1/messages",
+        post(|Json(body): Json<Value>| async move {
+            assert_eq!(body["temperature"], 1.0, "anthropic refuses above 1");
+            anthropic_strict(Json(body)).await
+        }),
+    ))
+    .await;
+    let mut config = config_for("to-anthropic", vec![("anthropic", upstream)]);
+    config.providers[0].kind = ProviderKind::Anthropic;
+    let gw = serve_gateway(&config).await;
+    let response = reqwest::Client::new()
+        .post(format!("http://{gw}/v1/chat/completions"))
+        .json(&json!({
+            "model":"to-anthropic","max_tokens":16,"temperature":1.3,
+            "messages":[{"role":"user","content":"ping"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(
+        param_adjustments(&response).as_deref(),
+        Some("temperature=clamped")
+    );
+}
+
 #[tokio::test]
 async fn param_adjustments_name_what_a_gemini_upstream_drops_for_an_anthropic_client() {
     let upstream = serve(Router::new().fallback(post(gemini_strict))).await;
@@ -2590,8 +2633,17 @@ async fn param_adjustments_name_a_forced_function_an_interactions_upstream_canno
 }
 
 #[tokio::test]
-async fn param_adjustments_name_what_an_openai_upstream_cannot_carry_for_an_anthropic_client() {
-    let upstream = serve(Router::new().route("/v1/chat/completions", post(mock_openai))).await;
+async fn an_anthropic_serial_tool_choice_reaches_an_openai_upstream_as_parallel_tool_calls() {
+    // carried rather than reported since #3325: chat has the same switch as a
+    // top-level flag
+    let upstream = serve(Router::new().route(
+        "/v1/chat/completions",
+        post(|body: Json<Value>| async move {
+            assert_eq!(body["parallel_tool_calls"], false, "{}", body.0);
+            mock_openai(body).await
+        }),
+    ))
+    .await;
     let gw = serve_gateway(&config_for("to-openai", vec![("openai", upstream)])).await;
     let client = reqwest::Client::new();
 
@@ -2608,11 +2660,7 @@ async fn param_adjustments_name_what_an_openai_upstream_cannot_carry_for_an_anth
             .await
             .unwrap();
         assert_eq!(response.status(), 200, "stream={stream}");
-        assert_eq!(
-            param_adjustments(&response).as_deref(),
-            Some("tool_choice=translated"),
-            "stream={stream}"
-        );
+        assert_eq!(param_adjustments(&response), None, "stream={stream}");
     }
 }
 
@@ -2768,6 +2816,7 @@ async fn complexity_policy_selects_routes_for_openai_and_anthropic_requests() {
                 provider: provider.to_string(),
                 model: None,
                 weight: 1,
+                takes_over: Vec::new(),
             }],
             params: Default::default(),
             param_policy: Default::default(),
@@ -3120,6 +3169,77 @@ async fn realtime_websocket_fails_over_during_connection_establishment() {
         captured_rx.recv().await.unwrap().uri,
         "/v1/realtime?model=realtime-alias"
     );
+}
+
+/// An upstream that answers every realtime handshake with `status`.
+async fn serve_realtime_refusal(status: u16) -> SocketAddr {
+    serve(Router::new().route(
+        "/v1/realtime",
+        get(move || async move {
+            axum::http::StatusCode::from_u16(status)
+                .unwrap()
+                .into_response()
+        }),
+    ))
+    .await
+}
+
+/// #3322: a throttled primary hands the session to the fallback that takes
+/// throttling over, on a classic pool and on a variant alike; an answer the
+/// fallback does not take over never reaches it.
+#[tokio::test]
+async fn realtime_websocket_reaches_a_restricted_fallback_only_for_its_failure() {
+    for variants in [false, true] {
+        for (primary_status, reaches_burst) in [(429, true), (503, false), (401, false)] {
+            let primary = serve_realtime_refusal(primary_status).await;
+            let (burst, mut captured_rx) = serve_realtime_echo().await;
+            let mut config = config_for(
+                "realtime-burst",
+                vec![("primary", primary), ("burst", burst)],
+            );
+            let throttled = vec!["throttled".parse().unwrap()];
+            let route = &mut config.routes[0];
+            route.targets[1].takes_over = throttled;
+            if variants {
+                route.variants = vec![rolter_core::Variant {
+                    name: "only".into(),
+                    weight: 1,
+                    targets: std::mem::take(&mut route.targets),
+                    params: Default::default(),
+                }];
+            }
+            let gw = serve_gateway(&config).await;
+            let dial = tokio_tungstenite::connect_async(realtime_client_request(
+                gw,
+                "realtime-burst",
+                None,
+                None,
+            ))
+            .await;
+            let case = format!("variants={variants} primary={primary_status}");
+            if reaches_burst {
+                let (mut socket, _) = dial.unwrap_or_else(|e| panic!("{case}: {e}"));
+                socket
+                    .send(WebSocketMessage::Text("ping".into()))
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    socket.next().await.unwrap().unwrap().into_text().unwrap(),
+                    "ping",
+                    "{case}"
+                );
+                socket.close(None).await.unwrap();
+                assert!(captured_rx.recv().await.is_some(), "{case}");
+            } else {
+                let error = dial.err().unwrap_or_else(|| panic!("{case}: connected"));
+                assert_eq!(websocket_handshake_status(error), 502, "{case}");
+                assert!(
+                    captured_rx.try_recv().is_err(),
+                    "{case}: the restricted fallback was dialled"
+                );
+            }
+        }
+    }
 }
 
 #[tokio::test]
@@ -3557,6 +3677,7 @@ async fn variant_routing_fails_over_to_next_variant() {
             provider: provider.to_string(),
             model: None,
             weight: 1,
+            takes_over: Vec::new(),
         }],
         params: Default::default(),
     };
@@ -5917,6 +6038,7 @@ fn scoped_key(
     providers: Vec<String>,
 ) -> VirtualKeyRecord {
     VirtualKeyRecord {
+        previous: None,
         key_hash: rolter_auth::hash_key(&config.server.resolve_key_pepper(), plaintext),
         id: id.to_string(),
         org_id: "org-1".to_string(),
@@ -6292,6 +6414,7 @@ async fn response_lifecycle_rechecks_route_authorization_after_revocation() {
         provider: "other".to_string(),
         model: None,
         weight: 1,
+        takes_over: Vec::new(),
     });
     provider_narrowed.db_virtual_keys[0].providers = vec!["other".to_string()];
 
@@ -6525,4 +6648,77 @@ mod template_vars_leak {
         assert_eq!(seen.len(), 1);
         assert!(seen[0].get("rolter_template_vars").is_none(), "{}", seen[0]);
     }
+}
+
+/// ADR-0038: a gateway that has never applied a snapshot and is refused one
+/// for its format answers `/readyz` with `503 snapshot_format_unsupported`, so
+/// a rollout whose new gateways lead the control plane holds. Once it holds a
+/// snapshot it stays ready on a refusal, and keeps serving its last config.
+#[tokio::test]
+async fn readyz_holds_a_gateway_refused_its_snapshot_format_only_before_a_first_snapshot() {
+    let state = rolter_gateway::AppState::with_logging(&GatewayConfig::default(), None);
+    let gw = serve(rolter_gateway::build_router(
+        state.clone(),
+        "/metrics",
+        32 * 1024 * 1024,
+    ))
+    .await;
+    let readyz = || async {
+        let response = reqwest::get(format!("http://{gw}/readyz")).await.unwrap();
+        (
+            response.status().as_u16(),
+            response.text().await.unwrap_or_default(),
+        )
+    };
+    let metric = |text: &str, name: &str| {
+        text.lines()
+            .find(|line| line.split_whitespace().next() == Some(name))
+            .and_then(|line| line.split_whitespace().nth(1))
+            .map(str::to_string)
+    };
+    let metrics = || async {
+        reqwest::get(format!("http://{gw}/metrics"))
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap()
+    };
+
+    assert_eq!(readyz().await, (200, "ok".to_string()));
+    let text = metrics().await;
+    assert_eq!(
+        metric(&text, "rolter_snapshot_format").as_deref(),
+        Some("0")
+    );
+    assert_eq!(
+        metric(&text, "rolter_snapshot_format_refused").as_deref(),
+        Some("0")
+    );
+
+    // refused before any snapshot: out of the Service
+    assert!(state.refuse_snapshot_format());
+    assert_eq!(
+        readyz().await,
+        (503, "snapshot_format_unsupported".to_string())
+    );
+    assert_eq!(
+        metric(&metrics().await, "rolter_snapshot_format_refused").as_deref(),
+        Some("1")
+    );
+
+    // served once, then refused again: ready on the config it holds
+    state.reload(&GatewayConfig::default(), 3);
+    state.record_snapshot_format(1);
+    assert!(state.refuse_snapshot_format());
+    assert_eq!(readyz().await, (200, "ok".to_string()));
+    let text = metrics().await;
+    assert_eq!(
+        metric(&text, "rolter_snapshot_format").as_deref(),
+        Some("1")
+    );
+    assert_eq!(
+        metric(&text, "rolter_snapshot_format_refused").as_deref(),
+        Some("1")
+    );
 }

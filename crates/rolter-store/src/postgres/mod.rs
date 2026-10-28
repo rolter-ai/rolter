@@ -7,16 +7,18 @@ pub mod repo;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use rolter_core::failover::FailureClass;
 use rolter_core::{
     AdvancedModelConfig, BackpressurePolicy, BalancingStrategy, BudgetConfig, BudgetPeriod,
     BudgetScope, BuiltinRule, Decorator, Error, FailureMode, FeatureFlagsConfig, GatewayConfig,
-    GroupMember, GuardAction, GuardStage, GuardrailRule, GuardrailWebhookConfig, GuardrailsConfig,
-    McpAuthKind, McpOAuthSessionConfig, McpOrgSettingsConfig, McpServerConfig, McpToolGroupConfig,
-    McpToolRefConfig, ModelPolicy, ModelPriceConfig, ModelRoute, ParamPolicy, PluginInstanceConfig,
-    PluginStage, PluginsConfig, PromptTemplate, PromptTemplateActivationScope,
-    PromptTemplatesConfig, ProviderConfig, ProviderGroupConfig, ProviderKind, RateLimitConfig,
-    Result, ScopeWithin, Target, TemplateVariable, Tenancy, UnpricedPolicy, VirtualKeyRecord,
-    WebhookAuth, WebhookStage,
+    GroupMember, GuardAction, GuardStage, GuardrailPolicy, GuardrailRule, GuardrailWebhookConfig,
+    GuardrailsConfig, McpAuthKind, McpOAuthSessionConfig, McpOrgSettingsConfig, McpServerConfig,
+    McpToolGroupConfig, McpToolGroupSubjectConfig, McpToolRefConfig, ModelPolicy, ModelPriceConfig,
+    ModelRoute, ParamPolicy, PluginInstanceConfig, PluginStage, PluginsConfig, PolicyScope,
+    PromptTemplate, PromptTemplateActivationScope, PromptTemplatesConfig, ProviderConfig,
+    ProviderGroupConfig, ProviderKind, RateLimitConfig, Result, ScopeWithin, SemanticGuardsConfig,
+    StreamingStrategy, Target, TemplateVariable, Tenancy, UnpricedPolicy, ViolationAction,
+    VirtualKeyRecord, WebhookAuth, WebhookStage,
 };
 use rust_decimal::Decimal;
 use sqlx::postgres::PgPoolOptions;
@@ -367,6 +369,7 @@ struct TargetRow {
     provider_name: String,
     upstream_model: Option<String>,
     weight: i32,
+    takes_over: Vec<String>,
 }
 
 #[derive(FromRow)]
@@ -385,6 +388,7 @@ struct VariantTargetRow {
     provider_name: String,
     upstream_model: Option<String>,
     weight: i32,
+    takes_over: Vec<String>,
 }
 
 #[derive(FromRow)]
@@ -421,6 +425,8 @@ struct VirtualKeyRow {
     created_by: Option<Uuid>,
     business_unit_id: Option<Uuid>,
     customer_id: Option<Uuid>,
+    previous_key_hash: Option<String>,
+    previous_expires_at: Option<DateTime<Utc>>,
 }
 
 /// One access-profile policy row, tagged with the user it reaches. A user
@@ -468,6 +474,7 @@ struct McpServerSnapshotRow {
     request_timeout_ms: Option<i32>,
     max_retries: Option<i32>,
     tools: Vec<String>,
+    enforce_manifest_by_default: bool,
 }
 
 #[derive(FromRow)]
@@ -485,6 +492,7 @@ struct McpToolGroupSnapshotRow {
     id: Uuid,
     org_id: Uuid,
     slug: String,
+    enabled: bool,
     tools: serde_json::Value,
 }
 
@@ -724,41 +732,68 @@ impl PostgresConfigStore {
         })
     }
 
-    async fn load_guardrail_webhook(&self) -> Result<GuardrailWebhookConfig> {
-        let row: Option<GuardrailProvider> = sqlx::query_as(
+    /// Every registry guardrail provider and policy, for the gateway's
+    /// semantic guards (#459). Disabled providers are carried too, so a policy
+    /// that names one still validates; the gateway runs enabled ones only.
+    /// Disabled policies are carried for the same reason, and because a
+    /// provider any policy lists is confined to policies.
+    async fn load_semantic_guards(&self) -> Result<SemanticGuardsConfig> {
+        let rows: Vec<GuardrailProvider> = sqlx::query_as(
             "select id, name, enabled, url, stage, timeout_ms, max_retries, failure_mode, \
                     max_body_bytes, auth_kind, auth_env, created_at, updated_at \
-             from guardrail_providers where enabled limit 1",
+             from guardrail_providers order by name",
         )
-        .fetch_optional(&self.pool)
+        .fetch_all(&self.pool)
         .await
         .map_err(store_err)?;
-        let Some(row) = row else {
-            return Ok(GuardrailWebhookConfig::default());
-        };
-        let auth = match (row.auth_kind.as_str(), row.auth_env) {
-            ("bearer", Some(token_env)) => Some(WebhookAuth::Bearer { token_env }),
-            ("shared_secret", Some(secret_env)) => Some(WebhookAuth::SharedSecret { secret_env }),
-            _ => None,
-        };
-        Ok(GuardrailWebhookConfig {
-            enabled: true,
-            name: row.name,
-            url: row.url,
-            stage: if row.stage == "post_call" {
-                WebhookStage::PostCall
-            } else {
-                WebhookStage::PreCall
-            },
-            timeout_ms: row.timeout_ms.max(1) as u64,
-            max_retries: row.max_retries.max(0) as u32,
-            failure_mode: if row.failure_mode == "fail_closed" {
-                FailureMode::FailClosed
-            } else {
-                FailureMode::FailOpen
-            },
-            max_body_bytes: row.max_body_bytes.max(1) as usize,
-            auth,
+        let names: std::collections::HashMap<Uuid, String> =
+            rows.iter().map(|row| (row.id, row.name.clone())).collect();
+        let providers = rows.into_iter().map(provider_from_row).collect();
+        let policies = repo::GuardrailRepo(&self.pool)
+            .list_policies()
+            .await?
+            .into_iter()
+            .map(|row| GuardrailPolicy {
+                name: row.name,
+                enabled: row.enabled,
+                scope: PolicyScope::parse(&row.scope_kind).unwrap_or_default(),
+                scope_id: row.scope_id,
+                providers: row
+                    .provider_ids
+                    .iter()
+                    .filter_map(|id| names.get(id).cloned())
+                    .collect(),
+                // the control plane validated these on the way in; a value
+                // that is not a number in range is left out rather than read
+                // as some other threshold
+                thresholds: row
+                    .thresholds
+                    .as_object()
+                    .map(|map| {
+                        map.iter()
+                            .filter_map(|(category, value)| {
+                                let value = value.as_f64()?;
+                                (value.is_finite() && (0.0..=1.0).contains(&value))
+                                    .then(|| (category.clone(), value))
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                on_violation: if row.on_violation == "annotate" {
+                    ViolationAction::Annotate
+                } else {
+                    ViolationAction::Block
+                },
+                streaming: if row.streaming == "buffer" {
+                    StreamingStrategy::Buffer
+                } else {
+                    StreamingStrategy::Reject
+                },
+            })
+            .collect();
+        Ok(SemanticGuardsConfig {
+            providers,
+            policies,
         })
     }
 
@@ -829,11 +864,23 @@ impl PostgresConfigStore {
 
     /// `left_out` names the providers [`Self::load_providers`] did not return.
     async fn load_routes(&self, left_out: &HashSet<String>) -> Result<Vec<ModelRoute>> {
+        Ok(self.assemble_routes(left_out).await?.0)
+    }
+
+    /// The routes [`Self::load_routes`] serves, and what it dropped from them
+    /// on the way: a target whose `takes_over` does not parse, and a route left
+    /// with only restricted targets (#3321). `load_problem_records` reports the
+    /// second half, so the two cannot disagree about what the snapshot left
+    /// out. Each problem is owned by its route's tenant.
+    async fn assemble_routes(
+        &self,
+        left_out: &HashSet<String>,
+    ) -> Result<(Vec<ModelRoute>, Vec<crate::ConfigProblem>)> {
         let route_rows = self.enabled_route_rows().await?;
 
         let target_rows: Vec<TargetRow> = sqlx::query_as(
             "select rt.route_id, p.org_id as provider_org_id, p.name as provider_name,
-                    rt.upstream_model, rt.weight
+                    rt.upstream_model, rt.weight, rt.takes_over
              from route_targets rt
              join providers p on p.id = rt.provider_id
              order by rt.route_id, rt.created_at, rt.id",
@@ -854,7 +901,7 @@ impl PostgresConfigStore {
         .map_err(store_err)?;
         let variant_target_rows: Vec<VariantTargetRow> = sqlx::query_as(
             "select vt.variant_id, p.org_id as provider_org_id, p.name as provider_name,
-                    vt.upstream_model, vt.weight
+                    vt.upstream_model, vt.weight, vt.takes_over
              from route_variant_targets vt
              join providers p on p.id = vt.provider_id
              order by vt.variant_id, vt.position",
@@ -864,7 +911,13 @@ impl PostgresConfigStore {
         .map_err(store_err)?;
 
         let mut routes = Vec::with_capacity(route_rows.len());
+        let mut problems = Vec::new();
         for r in route_rows {
+            let tenancy = Tenancy {
+                org_id: r.org_id.to_string(),
+                project_id: Some(r.project_id.to_string()),
+            };
+            let mut route_problems = Vec::new();
             let strategy = parse_strategy(&r.strategy)?;
             // a route whose settings do not parse is left out, not served on
             // the permissive defaults: those are public visibility, no
@@ -894,13 +947,71 @@ impl PostgresConfigStore {
                     }
                     same_org
                 })
-                .map(|t| Target {
-                    provider: t.provider_name.clone(),
-                    model: t.upstream_model.clone(),
-                    weight: t.weight.max(0) as u32,
+                .filter_map(|t| {
+                    // a class the gateway cannot read leaves the target out
+                    // rather than serving it as an ordinary member of the
+                    // pool: an expensive fallback must fail closed (#1584)
+                    let takes_over = match t
+                        .takes_over
+                        .iter()
+                        .map(|token| token.parse::<FailureClass>())
+                        .collect::<std::result::Result<Vec<_>, _>>()
+                    {
+                        Ok(classes) => classes,
+                        Err(problem) => {
+                            let problem = format!(
+                                "route '{}' target on provider '{}' omitted from the snapshot: {problem}",
+                                r.model, t.provider_name
+                            );
+                            tracing::warn!("{problem}");
+                            route_problems.push(problem);
+                            return None;
+                        }
+                    };
+                    Some(Target {
+                        provider: t.provider_name.clone(),
+                        model: t.upstream_model.clone(),
+                        weight: t.weight.max(0) as u32,
+                        takes_over,
+                    })
                 })
-                .collect();
-            let variants = route_variants(&r, &variant_rows, &variant_target_rows, left_out);
+                .collect::<Vec<_>>();
+            let variants = route_variants(
+                &r,
+                &variant_rows,
+                &variant_target_rows,
+                left_out,
+                &mut route_problems,
+            );
+            // a route left with only restricted targets could never dial
+            // anything, and one such route would fail validation of the whole
+            // snapshot, so it is left out instead (#1584). the classic pool and
+            // every variant count together, as validation counts them
+            let mut every_target = targets
+                .iter()
+                .chain(variants.iter().flat_map(|v| v.targets.iter()))
+                .peekable();
+            let stranded = every_target.peek().is_some() && every_target.all(Target::is_restricted);
+            if stranded {
+                let problem = format!(
+                    "route '{}' omitted from the snapshot: {}",
+                    r.model,
+                    rolter_core::failover::all_targets_restricted(&r.model)
+                );
+                tracing::warn!("{problem}");
+                route_problems.push(problem);
+            }
+            problems.extend(
+                route_problems
+                    .into_iter()
+                    .map(|message| crate::ConfigProblem {
+                        message,
+                        owner: crate::ProblemOwner::Tenant(tenancy.clone()),
+                    }),
+            );
+            if stranded {
+                continue;
+            }
             routes.push(ModelRoute {
                 model: r.model,
                 strategy,
@@ -912,13 +1023,10 @@ impl PostgresConfigStore {
                 // response-cache opt-in is config-only for now; a db-backed
                 // cache policy lands with its own store follow-up
                 cache: None,
-                tenancy: Some(Tenancy {
-                    org_id: r.org_id.to_string(),
-                    project_id: Some(r.project_id.to_string()),
-                }),
+                tenancy: Some(tenancy),
             });
         }
-        Ok(routes)
+        Ok((routes, problems))
     }
 
     /// Load provider groups and their members into `ProviderGroupConfig`
@@ -1005,7 +1113,8 @@ impl PostgresConfigStore {
         let rows: Vec<VirtualKeyRow> = sqlx::query_as(
             "select vk.id, vk.key_hash, vk.models, vk.providers, vk.disabled, vk.expires_at, \
                     vk.cache_enabled, vk.project_id, p.team_id, t.org_id, vk.created_by, \
-                    vk.business_unit_id, vk.customer_id \
+                    vk.business_unit_id, vk.customer_id, \
+                    vk.previous_key_hash, vk.previous_expires_at \
              from virtual_keys vk \
              join projects p on p.id = vk.project_id \
              join teams t on t.id = p.team_id \
@@ -1067,6 +1176,13 @@ impl PostgresConfigStore {
                     .map(|id| id.to_string())
                     .unwrap_or_default(),
                 customer_id: r.customer_id.map(|id| id.to_string()).unwrap_or_default(),
+                previous: match (r.previous_key_hash, r.previous_expires_at) {
+                    (Some(key_hash), Some(valid_until)) => Some(rolter_core::PreviousKeySecret {
+                        key_hash,
+                        valid_until,
+                    }),
+                    _ => None,
+                },
             })
             .collect())
     }
@@ -1142,7 +1258,10 @@ impl PostgresConfigStore {
         let rows: Vec<McpServerSnapshotRow> = sqlx::query_as(
             "select id, org_id, slug, url, transport, required_scopes, \
                     auth_kind, auth_header_name, credential_ciphertext, credential_nonce, \
-                    connect_timeout_ms, request_timeout_ms, max_retries, tools \
+                    connect_timeout_ms, request_timeout_ms, max_retries, tools, \
+                    coalesce((select o.mcp_enforce_manifests from orgs o \
+                              where o.id = mcp_servers.org_id), false) \
+                        as enforce_manifest_by_default \
              from mcp_servers where enabled order by org_id, slug",
         )
         .fetch_all(&self.pool)
@@ -1196,19 +1315,33 @@ impl PostgresConfigStore {
                     request_timeout_ms: row.request_timeout_ms.map(|ms| ms.max(0) as u64),
                     max_retries: row.max_retries.map(|n| n.max(0) as u32),
                     tools: row.tools,
+                    enforce_manifest_by_default: row.enforce_manifest_by_default,
                 }
             })
             .collect())
     }
 
-    /// Enabled tool groups for the snapshot (#1403). A disabled group governs
-    /// nothing, so it is not carried. A reference that does not parse is left
+    /// Enabled tool groups for the snapshot (#1403), and the disabled ones that
+    /// callers are assigned to, marked `disabled` (#3295). A reference that does not parse is left
     /// out with a warning rather than failing the snapshot; the API only ever
     /// writes well-formed ones, so this is a row written around it.
     async fn load_mcp_tool_groups(&self) -> Result<Vec<McpToolGroupConfig>> {
         let rows: Vec<McpToolGroupSnapshotRow> = sqlx::query_as(
-            "select id, org_id, slug, tools from mcp_tool_groups where enabled \
+            "select id, org_id, slug, enabled, tools from mcp_tool_groups g where enabled \
+             or exists (select 1 from mcp_tool_group_assignments a where a.group_id = g.id) \
              order by org_id, slug",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(store_err)?;
+        // a disabled group governs no one else, but the callers assigned to it
+        // stay narrowed (to none of its tools) on the servers it names, so it
+        // travels with its assignments, marked disabled, rather than handing
+        // them the organization-wide set or the whole server back
+        let assignments: Vec<(Uuid, String, Uuid)> = sqlx::query_as(
+            "select a.group_id, a.subject_kind, a.subject_id \
+             from mcp_tool_group_assignments a \
+             order by a.group_id, a.subject_kind, a.subject_id",
         )
         .fetch_all(&self.pool)
         .await
@@ -1216,6 +1349,14 @@ impl PostgresConfigStore {
         Ok(rows
             .into_iter()
             .map(|row| {
+                let assignments = assignments
+                    .iter()
+                    .filter(|(group_id, _, _)| *group_id == row.id)
+                    .map(|(_, kind, subject)| McpToolGroupSubjectConfig {
+                        kind: kind.clone(),
+                        id: subject.to_string(),
+                    })
+                    .collect();
                 let tools = match serde_json::from_value::<Vec<McpToolRefConfig>>(row.tools) {
                     Ok(tools) => tools,
                     Err(error) => {
@@ -1232,6 +1373,8 @@ impl PostgresConfigStore {
                     org_id: row.org_id.to_string(),
                     slug: row.slug,
                     tools,
+                    assignments,
+                    disabled: !row.enabled,
                 }
             })
             .collect())
@@ -1631,11 +1774,15 @@ fn route_settings_from_row(row: &RouteRow) -> std::result::Result<RouteSettings,
 /// since validation reads a targetless variant as a defect of the snapshot.
 /// The params column is held to a json object by a check constraint
 /// (`0138`), and any object reads as a param map, so it cannot fail to parse.
+///
+/// A target whose stored `takes_over` does not parse is left out, as on the
+/// classic pool, with a line in `problems` (#3373).
 fn route_variants(
     r: &RouteRow,
     variant_rows: &[VariantRow],
     target_rows: &[VariantTargetRow],
     left_out: &HashSet<String>,
+    problems: &mut Vec<String>,
 ) -> Vec<rolter_core::Variant> {
     use serde::Deserialize;
 
@@ -1656,10 +1803,33 @@ fn route_variants(
                 }
                 same_org
             })
-            .map(|t| Target {
-                provider: t.provider_name.clone(),
-                model: t.upstream_model.clone(),
-                weight: t.weight.max(0) as u32,
+            .filter_map(|t| {
+                // a class the gateway cannot read leaves the target out rather
+                // than serving it as an ordinary member (#1584, #3373)
+                let takes_over = match t
+                    .takes_over
+                    .iter()
+                    .map(|token| token.parse::<FailureClass>())
+                    .collect::<std::result::Result<Vec<_>, _>>()
+                {
+                    Ok(classes) => classes,
+                    Err(problem) => {
+                        let problem = format!(
+                            "route '{}' variant '{}' target on provider '{}' omitted from the \
+                             snapshot: {problem}",
+                            r.model, v.name, t.provider_name
+                        );
+                        tracing::warn!("{problem}");
+                        problems.push(problem);
+                        return None;
+                    }
+                };
+                Some(Target {
+                    provider: t.provider_name.clone(),
+                    model: t.upstream_model.clone(),
+                    weight: t.weight.max(0) as u32,
+                    takes_over,
+                })
             })
             .collect();
         if targets.is_empty() {
@@ -1977,6 +2147,34 @@ fn parse_unpriced_policy(value: &str) -> Option<UnpricedPolicy> {
     }
 }
 
+/// A registry provider row as the gateway's provider config.
+fn provider_from_row(row: GuardrailProvider) -> GuardrailWebhookConfig {
+    let auth = match (row.auth_kind.as_str(), row.auth_env) {
+        ("bearer", Some(token_env)) => Some(WebhookAuth::Bearer { token_env }),
+        ("shared_secret", Some(secret_env)) => Some(WebhookAuth::SharedSecret { secret_env }),
+        _ => None,
+    };
+    GuardrailWebhookConfig {
+        enabled: row.enabled,
+        name: row.name,
+        url: row.url,
+        stage: if row.stage == "post_call" {
+            WebhookStage::PostCall
+        } else {
+            WebhookStage::PreCall
+        },
+        timeout_ms: row.timeout_ms.max(1) as u64,
+        max_retries: row.max_retries.max(0) as u32,
+        failure_mode: if row.failure_mode == "fail_closed" {
+            FailureMode::FailClosed
+        } else {
+            FailureMode::FailOpen
+        },
+        max_body_bytes: row.max_body_bytes.max(1) as usize,
+        auth,
+    }
+}
+
 /// Read the current global config version. Bumping happens in the database
 /// itself: migration 0003 installs triggers that increment the version
 /// atomically with any write to providers/routes/route_targets/virtual_keys.
@@ -2003,7 +2201,7 @@ impl ConfigStore for PostgresConfigStore {
         let model_defaults = self.load_model_defaults().await?;
         let adaptive = self.load_adaptive_routing_policy().await?;
         let guardrails = self.load_guardrails().await?;
-        let guardrail_webhook = self.load_guardrail_webhook().await?;
+        let semantic_guards = self.load_semantic_guards().await?;
         let (providers, left_out) = self.load_providers().await?;
         let routes = self.load_routes(&left_out).await?;
         let provider_groups = self.load_provider_groups(&left_out).await?;
@@ -2032,7 +2230,7 @@ impl ConfigStore for PostgresConfigStore {
             rate_limits,
             prompt_templates,
             guardrails,
-            guardrail_webhook,
+            semantic_guards,
             plugins,
             feature_flags: FeatureFlagsConfig {
                 response_cache: flags.response_cache,
@@ -2197,17 +2395,33 @@ impl ConfigStore for PostgresConfigStore {
         .fetch_all(&self.pool)
         .await
         .map_err(store_err)?;
+        let mut left_out = HashSet::new();
         problems.extend(proxies.iter().filter_map(|(name, org, project, value)| {
-            egress_proxies_from_value(name, value)
-                .err()
-                .map(|message| ConfigProblem {
+            egress_proxies_from_value(name, value).err().map(|message| {
+                // the provider `load_providers` leaves out for it
+                left_out.insert(name.clone());
+                ConfigProblem {
                     message,
                     owner: ProblemOwner::Tenant(rolter_core::Tenancy {
                         org_id: org.to_string(),
                         project_id: project.map(|p| p.to_string()),
                     }),
-                })
+                }
+            })
         }));
+        // a target or route the snapshot drops for `takes_over` (#3321). a
+        // failure to read them is itself the problem to report: failing the
+        // whole list would hide every other explanation with it
+        match self.assemble_routes(&left_out).await {
+            Ok((_, dropped)) => problems.extend(dropped),
+            Err(error) => {
+                tracing::warn!("the routes could not be read for their problems: {error}");
+                problems.push(ConfigProblem::deployment(format!(
+                    "the routes could not be read, so a target or route left out of the \
+                     snapshot is not listed here: {error}"
+                )));
+            }
+        }
         Ok(problems)
     }
 }
@@ -3060,6 +3274,7 @@ mod tests {
             provider_id,
             upstream_model: None,
             weight: 1,
+            takes_over: Vec::new(),
         };
         let variant =
             |name: &str, targets: Vec<repo::RouteVariantTargetSpec>| repo::RouteVariantSpec {
@@ -4600,17 +4815,16 @@ mod tests {
             config.guardrails.rules[0].builtin,
             Some(BuiltinRule::Email)
         ));
-        assert!(config.guardrail_webhook.enabled);
-        assert_eq!(
-            config.guardrail_webhook.url,
-            "https://guardrails.internal/evaluate"
-        );
+        // registry providers reach the gateway as semantic guard providers
+        // (#459); `[guardrail_webhook]` is the config file's alone
+        assert!(!config.guardrail_webhook.enabled);
+        let provider = &config.semantic_guards.providers[0];
+        assert!(provider.enabled);
+        assert_eq!(provider.name, "policy-service");
+        assert_eq!(provider.url, "https://guardrails.internal/evaluate");
+        assert!(matches!(provider.failure_mode, FailureMode::FailClosed));
         assert!(matches!(
-            config.guardrail_webhook.failure_mode,
-            FailureMode::FailClosed
-        ));
-        assert!(matches!(
-            config.guardrail_webhook.auth,
+            provider.auth,
             Some(WebhookAuth::Bearer { ref token_env }) if token_env == "ROLTER_GUARDRAIL_TOKEN"
         ));
     }
@@ -5204,6 +5418,295 @@ mod tests {
             .map(|p| p.slug.as_str())
             .collect();
         assert_eq!(plugins, ["audit", "from-file"]);
+    }
+
+    /// #1584: `takes_over` reaches the snapshot, a change to it bumps
+    /// `config_version`, and both ways a stored row could leave a route unable
+    /// to dial anything fail closed: a class the gateway cannot read drops its
+    /// target rather than serving it as an ordinary one, and a route whose
+    /// every remaining target is restricted is left out rather than failing
+    /// validation of the whole snapshot.
+    #[tokio::test]
+    async fn takes_over_reaches_the_snapshot_and_fails_closed() {
+        if !test_database::is_configured() {
+            eprintln!("skipping: {} not set", test_database::URL_ENV);
+            return;
+        }
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
+        let org_id: Uuid = sqlx::query_scalar(
+            "insert into orgs (name, slug) values ('acme', 'acme') returning id",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let team_id: Uuid =
+            sqlx::query_scalar("insert into teams (org_id, name) values ($1, 'core') returning id")
+                .bind(org_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let project_id: Uuid = sqlx::query_scalar(
+            "insert into projects (team_id, name) values ($1, 'api') returning id",
+        )
+        .bind(team_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let mut providers = HashMap::new();
+        for name in ["cheap", "premium"] {
+            let id: Uuid = sqlx::query_scalar(
+                "insert into providers (org_id, name, slug, kind, api_base)
+                 values ($1, $2, $2, 'openai', 'https://api.openai.com') returning id",
+            )
+            .bind(org_id)
+            .bind(name)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            providers.insert(name, id);
+        }
+        // (route, [(provider, takes_over)])
+        type Targets<'a> = &'a [(&'a str, &'a [&'a str])];
+        let routes: [(&str, Targets); 3] = [
+            ("guarded", &[("cheap", &[]), ("premium", &["refusal"])]),
+            ("bad-class", &[("cheap", &[]), ("premium", &["bogus"])]),
+            ("stranded", &[("premium", &["refusal"])]),
+        ];
+        for (model, targets) in routes {
+            let route_id: Uuid = sqlx::query_scalar(
+                "insert into routes (project_id, model, strategy) values ($1, $2, 'round_robin')
+                 returning id",
+            )
+            .bind(project_id)
+            .bind(model)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            for (provider, takes_over) in targets {
+                sqlx::query(
+                    "insert into route_targets (route_id, provider_id, weight, takes_over)
+                     values ($1, $2, 1, $3)",
+                )
+                .bind(route_id)
+                .bind(providers[provider])
+                .bind(takes_over)
+                .execute(&pool)
+                .await
+                .unwrap();
+            }
+        }
+
+        // a variant's targets carry the same classes (#3373): `split` has a
+        // guarded variant, a variant whose only readable target is ordinary,
+        // and `split-stranded` only a restricted target across its variants
+        type VariantTargets<'a> = &'a [(&'a str, &'a [(&'a str, &'a [&'a str])])];
+        let variant_routes: [(&str, VariantTargets); 2] = [
+            (
+                "split",
+                &[
+                    ("a", &[("cheap", &[]), ("premium", &["throttled"])]),
+                    ("b", &[("cheap", &[]), ("premium", &["bogus"])]),
+                ],
+            ),
+            ("split-stranded", &[("a", &[("premium", &["refusal"])])]),
+        ];
+        for (model, variants) in variant_routes {
+            let route_id: Uuid = sqlx::query_scalar(
+                "insert into routes (project_id, model, strategy) values ($1, $2, 'round_robin')
+                 returning id",
+            )
+            .bind(project_id)
+            .bind(model)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            for (position, (name, targets)) in variants.iter().enumerate() {
+                let variant_id: Uuid = sqlx::query_scalar(
+                    "insert into route_variants (route_id, name, weight, position)
+                     values ($1, $2, 1, $3) returning id",
+                )
+                .bind(route_id)
+                .bind(name)
+                .bind(position as i32)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+                for (position, (provider, takes_over)) in targets.iter().enumerate() {
+                    sqlx::query(
+                        "insert into route_variant_targets
+                             (variant_id, provider_id, weight, position, takes_over)
+                         values ($1, $2, 1, $3, $4)",
+                    )
+                    .bind(variant_id)
+                    .bind(providers[provider])
+                    .bind(position as i32)
+                    .bind(takes_over)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+                }
+            }
+        }
+
+        let store = PostgresConfigStore::new(pool.clone());
+        let config = store.load().await.unwrap();
+        let models: Vec<&str> = config.routes.iter().map(|r| r.model.as_str()).collect();
+        assert_eq!(models, ["bad-class", "guarded", "split"]);
+        let split = &config.routes[2];
+        assert_eq!(
+            split.variants[0].targets[1].takes_over,
+            vec!["throttled".parse().unwrap()]
+        );
+        assert_eq!(
+            split.variants[1].targets.len(),
+            1,
+            "the unreadable variant target is dropped"
+        );
+        assert_eq!(config.validate_snapshot(), Ok(()));
+        let guarded = &config.routes[1];
+        assert_eq!(guarded.targets.len(), 2);
+        assert_eq!(
+            guarded.targets[1].takes_over,
+            vec!["refusal".parse().unwrap()]
+        );
+        let bad = &config.routes[0];
+        assert_eq!(bad.targets.len(), 1, "the unreadable target is dropped");
+        assert_eq!(bad.targets[0].provider, "cheap");
+
+        // both are reported, owned by the route's tenant (#3321)
+        let problems = store.load_problem_records().await.unwrap();
+        let tenant = crate::ProblemOwner::Tenant(Tenancy {
+            org_id: org_id.to_string(),
+            project_id: Some(project_id.to_string()),
+        });
+        let dropped = problems
+            .iter()
+            .find(|p| p.message.contains("route 'bad-class'"))
+            .unwrap_or_else(|| panic!("no problem for the dropped target: {problems:?}"));
+        assert!(
+            dropped.message.contains("provider 'premium'"),
+            "{dropped:?}"
+        );
+        assert!(dropped.message.contains("'bogus'"), "{dropped:?}");
+        assert_eq!(dropped.owner, tenant);
+        let stranded = problems
+            .iter()
+            .find(|p| p.message.contains("route 'stranded'"))
+            .unwrap_or_else(|| panic!("no problem for the left-out route: {problems:?}"));
+        assert!(
+            stranded
+                .message
+                .contains(rolter_core::failover::ALL_TARGETS_RESTRICTED),
+            "{stranded:?}"
+        );
+        assert_eq!(stranded.owner, tenant);
+        assert!(
+            !problems.iter().any(|p| p.message.contains("'guarded'")),
+            "{problems:?}"
+        );
+        let variant_dropped = problems
+            .iter()
+            .find(|p| p.message.contains("route 'split' variant 'b'"))
+            .unwrap_or_else(|| panic!("no problem for the variant target: {problems:?}"));
+        assert!(
+            variant_dropped.message.contains("'bogus'"),
+            "{variant_dropped:?}"
+        );
+        assert_eq!(variant_dropped.owner, tenant);
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.message.contains("route 'split-stranded'")
+                    && p.message
+                        .contains(rolter_core::failover::ALL_TARGETS_RESTRICTED)),
+            "{problems:?}"
+        );
+
+        let before = current_version(&pool).await.unwrap();
+        sqlx::query(
+            "update route_targets set takes_over = '{throttled}' where takes_over = '{refusal}'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert!(current_version(&pool).await.unwrap() > before);
+        // the variant targets' existing trigger (0139) covers the new column
+        let before = current_version(&pool).await.unwrap();
+        sqlx::query("update route_variant_targets set takes_over = '{timeout}' where takes_over = '{throttled}'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(current_version(&pool).await.unwrap() > before);
+    }
+
+    /// #3321: a route the assembly cannot read at all (a strategy no build
+    /// knows) fails the routes' own part of the problem list, not the list:
+    /// every other explanation is still there, with a line saying the routes
+    /// could not be read.
+    #[tokio::test]
+    async fn an_unreadable_route_keeps_the_other_problems() {
+        if !test_database::is_configured() {
+            eprintln!("skipping: {} not set", test_database::URL_ENV);
+            return;
+        }
+        let db = fresh_db().await;
+        let pool = db.pool().clone();
+        let org_id: Uuid = sqlx::query_scalar(
+            "insert into orgs (name, slug) values ('acme', 'acme') returning id",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let team_id: Uuid =
+            sqlx::query_scalar("insert into teams (org_id, name) values ($1, 'core') returning id")
+                .bind(org_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let project_id: Uuid = sqlx::query_scalar(
+            "insert into projects (team_id, name) values ($1, 'api') returning id",
+        )
+        .bind(team_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        // the constraint that stops a write of an unknown strategy is dropped
+        // so the row can be made, as a downgrade could leave one
+        sqlx::query("alter table routes drop constraint routes_strategy_check")
+            .execute(&pool)
+            .await
+            .unwrap();
+        for (model, strategy, params) in [
+            ("bad-params", "round_robin", r#"["max_tokens"]"#),
+            ("teleported", "teleport", "{}"),
+        ] {
+            sqlx::query(
+                "insert into routes (project_id, model, strategy, params)
+                 values ($1, $2, $3, $4::jsonb)",
+            )
+            .bind(project_id)
+            .bind(model)
+            .bind(strategy)
+            .bind(params)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let store = PostgresConfigStore::new(pool.clone());
+        let problems = store.load_problem_records().await.unwrap();
+        assert!(
+            problems.iter().any(|p| p.message.contains("bad-params")),
+            "{problems:?}"
+        );
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.message.contains("the routes could not be read")
+                    && p.message.contains("teleport")),
+            "{problems:?}"
+        );
     }
 
     /// #2938: a route whose jsonb settings do not parse used to load on the

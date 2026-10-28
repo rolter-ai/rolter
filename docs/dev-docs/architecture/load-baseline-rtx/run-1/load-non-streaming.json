@@ -1,0 +1,162 @@
+{
+  "stream": false,
+  "requests": 200,
+  "max_tokens": 1,
+  "mode": "sweep",
+  "concurrency_levels": [1, 2, 4, 8, 16],
+  "direct": {
+    "levels": [
+      {
+        "count": 200,
+        "ok_count": 200,
+        "error_rate": 0.0,
+        "ttft_p50_ms": 0.28,
+        "ttft_p95_ms": 0.355,
+        "latency_p50_ms": 0.41,
+        "latency_p95_ms": 0.499,
+        "latency_p99_ms": 0.639,
+        "latency_mean_ms": 0.421,
+        "requests_per_second": 2221.627,
+        "concurrency": 1
+      },
+      {
+        "count": 200,
+        "ok_count": 200,
+        "error_rate": 0.0,
+        "ttft_p50_ms": 0.51,
+        "ttft_p95_ms": 0.731,
+        "latency_p50_ms": 0.782,
+        "latency_p95_ms": 0.978,
+        "latency_p99_ms": 1.081,
+        "latency_mean_ms": 0.789,
+        "requests_per_second": 2395.44,
+        "concurrency": 2
+      },
+      {
+        "count": 200,
+        "ok_count": 200,
+        "error_rate": 0.0,
+        "ttft_p50_ms": 0.871,
+        "ttft_p95_ms": 1.517,
+        "latency_p50_ms": 1.288,
+        "latency_p95_ms": 1.893,
+        "latency_p99_ms": 2.237,
+        "latency_mean_ms": 1.329,
+        "requests_per_second": 2885.809,
+        "concurrency": 4
+      },
+      {
+        "count": 200,
+        "ok_count": 200,
+        "error_rate": 0.0,
+        "ttft_p50_ms": 2.181,
+        "ttft_p95_ms": 3.316,
+        "latency_p50_ms": 2.601,
+        "latency_p95_ms": 3.799,
+        "latency_p99_ms": 4.411,
+        "latency_mean_ms": 2.625,
+        "requests_per_second": 2877.481,
+        "concurrency": 8
+      },
+      {
+        "count": 200,
+        "ok_count": 200,
+        "error_rate": 0.0,
+        "ttft_p50_ms": 4.269,
+        "ttft_p95_ms": 7.756,
+        "latency_p50_ms": 4.944,
+        "latency_p95_ms": 9.22,
+        "latency_p99_ms": 11.188,
+        "latency_mean_ms": 5.196,
+        "requests_per_second": 2718.288,
+        "concurrency": 16
+      }
+    ],
+    "summary": {
+      "baseline_p99_ms": 0.639,
+      "knee_factor": 2.0,
+      "p99_ceiling_ms": 1.278,
+      "max_sustainable_rps": 2395.44,
+      "at_concurrency": 2,
+      "knee_at_concurrency": 4
+    }
+  },
+  "through_rolter": {
+    "levels": [
+      {
+        "count": 200,
+        "ok_count": 200,
+        "error_rate": 0.0,
+        "ttft_p50_ms": 1.126,
+        "ttft_p95_ms": 1.277,
+        "latency_p50_ms": 1.312,
+        "latency_p95_ms": 1.493,
+        "latency_p99_ms": 1.564,
+        "latency_mean_ms": 1.319,
+        "requests_per_second": 740.616,
+        "concurrency": 1
+      },
+      {
+        "count": 200,
+        "ok_count": 200,
+        "error_rate": 0.0,
+        "ttft_p50_ms": 1.256,
+        "ttft_p95_ms": 1.387,
+        "latency_p50_ms": 1.548,
+        "latency_p95_ms": 1.716,
+        "latency_p99_ms": 2.226,
+        "latency_mean_ms": 1.576,
+        "requests_per_second": 1237.896,
+        "concurrency": 2
+      },
+      {
+        "count": 200,
+        "ok_count": 200,
+        "error_rate": 0.0,
+        "ttft_p50_ms": 1.788,
+        "ttft_p95_ms": 2.311,
+        "latency_p50_ms": 2.121,
+        "latency_p95_ms": 2.702,
+        "latency_p99_ms": 3.14,
+        "latency_mean_ms": 2.144,
+        "requests_per_second": 1809.317,
+        "concurrency": 4
+      },
+      {
+        "count": 200,
+        "ok_count": 200,
+        "error_rate": 0.0,
+        "ttft_p50_ms": 2.85,
+        "ttft_p95_ms": 4.226,
+        "latency_p50_ms": 3.536,
+        "latency_p95_ms": 5.022,
+        "latency_p99_ms": 5.383,
+        "latency_mean_ms": 3.586,
+        "requests_per_second": 2158.855,
+        "concurrency": 8
+      },
+      {
+        "count": 200,
+        "ok_count": 200,
+        "error_rate": 0.0,
+        "ttft_p50_ms": 5.395,
+        "ttft_p95_ms": 8.041,
+        "latency_p50_ms": 6.175,
+        "latency_p95_ms": 9.73,
+        "latency_p99_ms": 12.046,
+        "latency_mean_ms": 6.511,
+        "requests_per_second": 2234.648,
+        "concurrency": 16
+      }
+    ],
+    "summary": {
+      "baseline_p99_ms": 1.564,
+      "knee_factor": 2.0,
+      "p99_ceiling_ms": 3.128,
+      "max_sustainable_rps": 1237.896,
+      "at_concurrency": 2,
+      "knee_at_concurrency": 4
+    }
+  },
+  "sustainable_rps_retained": 0.5168
+}

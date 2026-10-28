@@ -13,11 +13,15 @@ The control plane resolves the token to that role, so every permission check wor
 - It holds one built-in role (`admin`, `member`, `viewer`) or one [custom role](/security/rbac#custom-roles-and-access-profiles) of the organization, at the scope it was minted for. It reaches that scope and everything below it, never a sibling or the level above.
 - It **never** reaches deployment-wide settings (feature flags, the security settings, cluster nodes, alerting, the configuration export) and never holds a [deployment role](/security/rbac#deployment-roles). Those stay with the admin token, superadmins and the deployment roles.
 - It **cannot manage tokens**: minting, listing, rotating and revoking answer `403` for a token, so a leaked one cannot mint a successor that outlives its own revocation.
-- It cannot read request logs or analytics, which are scoped to people, and it is not a session: the dashboard's account endpoints answer `401`.
+- It reads request logs and analytics for the scope it holds, by the same rules as a person with that role: the rows of its project, team or org, and no others. The same read covers what shares that guard: the CSV export of the request log, the savings report, provider health, the log sampling rate and the MCP tool-call log. The captured request and response bodies are withheld unless the token's role reaches the project's `request_payload` floor: a `member` token or better reads them, and a `viewer` token reads them only on a project whose admin lowered the floor to `viewer` (`payload_min_role`). It is not a session: the dashboard's account endpoints answer `401`.
 - It **never grants access**: adding, changing or removing a membership, sending or revoking an invitation, editing a custom role or its assignments, resetting a password, editing an account, and changing an SSO provider, an LDAP directory, a SCIM token, a group mapping or the org's sign-in policy all answer `403` for a token, whatever its role. It can still read them. Access a leaked token handed out would outlive the token's revocation, so these stay with people.
 - Otherwise an `admin` token can do what an admin of its scope can do. Give automation the narrowest role that does the job.
 
 It is not a virtual key (the data plane, `/v1/*`) and not a SCIM token (provisioning, `/scim/v2/*`); each is refused at the other's door. See [which key do I need](/security/which-key).
+
+## In the dashboard
+
+**Governance › API tokens** lists the organization's tokens with their scope, role, prefix, expiry, last use and state (active, expired or revoked), mints one (the secret is shown once, with a copy button), and rotates or revokes one after a confirmation. It takes the same roles as the API: minting, rotating and revoking need admin at the token's own scope. A revoked or expired token cannot be rotated.
 
 ## Mint a token
 

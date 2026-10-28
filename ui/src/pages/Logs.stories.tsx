@@ -14,6 +14,8 @@ import {
   expectSkeleton,
   expectUxEvent,
   json,
+  Toasted,
+  expectToast,
   pending,
   recordUxEvents,
   recording,
@@ -149,8 +151,10 @@ const serverFiltered = (rows: InvocationRow[], base = "USD"): FetchStub =>
       const onlyUnpriced = url.searchParams.get("unpriced") === "true";
       const onlyWithheld = url.searchParams.get("withheld") === "true";
       const onlyUnknown = url.searchParams.get("usage_unknown") === "true";
+      const outcome = url.searchParams.get("outcome");
       const data = rows.filter(
         (r) =>
+          (!outcome || (r.outcome ?? "unknown") === outcome) &&
           (!onlyWithheld || Number(r.withheld ?? 0) === 1) &&
           (!onlyUnknown || Number(r.usage_unknown ?? 0) === 1) &&
           (!units || units.includes(r.business_unit_id)) &&
@@ -1233,6 +1237,81 @@ export const StatusIsOneChoiceOfThree: Story = {
   },
 };
 
+const OUTCOMES: InvocationRow[] = [
+  row({ request_id: "req-served", model: "gpt-4o", outcome: "served" }),
+  row({
+    request_id: "req-budget",
+    model: "internal-llama",
+    provider: "",
+    target: "",
+    status: 402,
+    attempts: 0,
+    error: "budget exceeded",
+    outcome: "refused_budget",
+  }),
+];
+
+const byOutcome = recording(serverFiltered(OUTCOMES));
+
+/**
+ * #3307: a refusal is picked by the outcome the gateway recorded rather than
+ * inferred from an empty provider and a 4xx. The pick is the outcome the
+ * server is asked for, the address carries it, and the drawer names a row's
+ * outcome in words.
+ */
+export const FiltersByOutcome: Story = {
+  render: () => (
+    <Harness fetchStub={byOutcome.stub}>
+      <Logs />
+      <AddressProbe />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText("internal-llama");
+    await userEvent.click(canvas.getByRole("button", { name: /Filters/ }));
+    const picker = await canvas.findByRole("combobox", { name: "Outcome" });
+    await userEvent.click(picker);
+    await userEvent.click(await canvas.findByRole("option", { name: "Refused: budget spent" }));
+    await waitFor(() => expect(modelsOnScreen(canvasElement)).toEqual(["internal-llama"]));
+    await expect(lastLogQuery(byOutcome).get("outcome")).toBe("refused_budget");
+    await expect(addressOf(canvasElement).get("outcome")).toBe("refused_budget");
+    await expect(canvas.getByRole("button", { name: "Filters · 1" })).toBeVisible();
+
+    const details = within(await openDetails(canvasElement, "internal-llama"));
+    await expect(details.getByText("Refused: budget spent")).toBeVisible();
+  },
+};
+
+/**
+ * #3323: a translated request that lost or changed a parameter says which in
+ * the drawer, in words; a row whose parameters all went through has no row.
+ */
+export const TheDrawerListsTheParameterAdjustments: Story = {
+  render: () => (
+    <Harness
+      fetchStub={withLogs([
+        row({
+          request_id: "req-adjusted",
+          model: "claude-sonnet",
+          param_adjustments: ["dropped:presence_penalty", "clamped:temperature"],
+        }),
+        row({ request_id: "req-plain", model: "gpt-4o" }),
+      ])}
+    >
+      <Logs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const details = within(await openDetails(canvasElement, "claude-sonnet"));
+    await expect(details.getByText("Parameters not sent as given")).toBeVisible();
+    await expect(details.getByText("presence_penalty: dropped")).toBeVisible();
+    await expect(details.getByText("temperature: clamped")).toBeVisible();
+    const plain = within(await openDetails(canvasElement, "gpt-4o"));
+    await expect(plain.queryByText("Parameters not sent as given")).toBeNull();
+  },
+};
+
 const byModel = recording(serverFiltered(MIXED));
 
 /**
@@ -1861,6 +1940,8 @@ export const TheDrawerGroupsRoutingUsageAndAttribution: Story = {
     const routing = drawer.getByRole("region", { name: "Routing" });
     await expect(valueOf(routing, "Provider → target")).toBe("openai → openai/gpt-4o");
     await expect(valueOf(routing, "Variant")).toBe("canary");
+    // the first dial answered, so no fallback reason is stated (#3319)
+    await expect(within(routing).queryByText("Fallback reason")).toBeNull();
     await expect(valueOf(routing, "Response cache")).toBe("Hit");
     await expect(valueOf(routing, "Stream")).toBe("Streamed");
     await expect(valueOf(routing, "Time to first token")).toBe(`${fmt.number(120)} ms`);
@@ -1882,6 +1963,45 @@ export const TheDrawerGroupsRoutingUsageAndAttribution: Story = {
     await expect(within(attribution).queryByText("vk-ci")).toBeNull();
     await expect(valueOf(attribution, "Business unit")).toBe("Platform Engineering");
     await expect(valueOf(attribution, "Customer")).toBe("Acme Corp");
+  },
+};
+
+/**
+ * #3319: a request a fallback target answered names the failure that sent it
+ * there in its Routing group, beside the attempts it took.
+ */
+export const TheDrawerNamesTheFallbackReason: Story = {
+  render: () => (
+    <Harness
+      fetchStub={routes([
+        [
+          "/api/v1/analytics/invocations",
+          () => ({
+            data: [
+              row({
+                request_id: "req-fallback",
+                provider: "anthropic-burst",
+                upstream_status: 200,
+                attempts: 2,
+                fallback_reason: "refusal:content_policy_violation",
+              }),
+            ],
+          }),
+        ],
+        ["/api/v1/currency", () => ({ base: "USD", codes: ["USD"], rates: {} })],
+      ])}
+    >
+      <Logs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(
+      await canvas.findByRole("button", { name: /Open request details for gpt-4o/i }),
+    );
+    const panel = await canvas.findByRole("complementary", { name: "Details" });
+    const routing = within(panel).getByRole("region", { name: "Routing" });
+    await expect(valueOf(routing, "Fallback reason")).toBe("refusal:content_policy_violation");
   },
 };
 
@@ -2664,7 +2784,7 @@ export const ARequestWithOneBodyExplainsTheMissingOneOnly: Story = {
     await expect(drawer.queryByText(/No request body was stored/)).toBeNull();
     await expect(drawer.queryByRole("heading", { name: "Request and response" })).toBeNull();
     // the three guesses are for a request with neither body
-    await expect(drawer.queryByText(/retention window|capture/i)).toBeNull();
+    await expect(drawer.queryByText(/retention window|\bcapture\b/i)).toBeNull();
     await expect(drawer.queryByRole("link", { name: "Open log settings" })).toBeNull();
   },
 };
@@ -3296,10 +3416,14 @@ const withSavedView = recording(
  * #2452: applying a saved view writes its `effective_filters` into the address,
  * so the screen reads them like any link, and the id it could not apply is
  * counted, not named. The log is then read with the view's window, key and
- * attribution, and with no cursor or request id.
+ * attribution, and with no cursor or request id. The Cost checks are not part
+ * of a view, so each one ticked beforehand is cleared with the rest instead of
+ * narrowing the log beyond what the view says (#3346).
  */
 export const ApplyingASavedViewSetsTheAddress: Story = {
-  parameters: { address: "/logs?request_id=req-ok&unpriced=true" },
+  parameters: {
+    address: "/logs?request_id=req-ok&unpriced=true&withheld=true&usage_unknown=true",
+  },
   render: () => (
     <Harness fetchStub={withSavedView.stub}>
       <Logs />
@@ -3317,10 +3441,12 @@ export const ApplyingASavedViewSetsTheAddress: Story = {
     await expect(address.get("key")).toBe(KEY_ID);
     await expect(address.get("business_unit")).toBe("unit-1");
     await expect(address.get("customer")).toBe("cust-1");
-    // the lookup would have masked the filters, so it is gone; the unpriced
-    // flag is not part of a view and stays
+    // the lookup would have masked the filters, so it is gone, and so is every
+    // Cost check the view does not name
     await expect(address.has("request_id")).toBe(false);
-    await expect(address.get("unpriced")).toBe("true");
+    for (const flag of ["unpriced", "withheld", "usage_unknown"]) {
+      await expect(address.has(flag)).toBe(false);
+    }
     await expect(await canvas.findByRole("status")).toHaveTextContent(
       "Applied without: 1 customer.",
     );
@@ -3330,6 +3456,8 @@ export const ApplyingASavedViewSetsTheAddress: Story = {
       expect(sent.get("customer")).toBe("cust-1");
       expect(sent.get("status")).toBe("error");
       expect(sent.has("request_id")).toBe(false);
+      for (const flag of ["unpriced", "withheld", "usage_unknown"])
+        expect(sent.has(flag)).toBe(false);
       const span = Date.now() - Date.parse(sent.get("since") ?? "");
       expect(span).toBeGreaterThan(6.9 * 24 * 3600_000);
     });
@@ -3788,5 +3916,104 @@ export const AUsageUnknownRequestIsNotShownAsZero: Story = {
     const panel = await canvas.findByRole("complementary", { name: "Details" });
     await waitFor(() => expect(panel).toBeVisible());
     await expect(await within(panel).findAllByText(/reported no usage/i)).toHaveLength(2);
+  },
+};
+
+async function captureDownload(names: string[], run: () => Promise<void>): Promise<void> {
+  const original = HTMLAnchorElement.prototype.click;
+  HTMLAnchorElement.prototype.click = function capture(this: HTMLAnchorElement) {
+    names.push(this.download);
+  };
+  try {
+    await run();
+  } finally {
+    HTMLAnchorElement.prototype.click = original;
+  }
+}
+
+const csvFile = (name: string) =>
+  new Response("a,b\r\n", {
+    headers: {
+      "content-type": "text/csv; charset=utf-8",
+      "content-disposition": `attachment; filename="${name}"`,
+    },
+  });
+
+/**
+ * The Export button asks the control plane for the log under the filters on
+ * screen (#1838): the file is built there, under the caller's own row scope,
+ * so the request carries the filters and no page cursor, and the file keeps
+ * the name the server gave it (window and currency).
+ */
+let logExport: Recorder;
+export const ExportSendsTheFiltersOnScreenAndKeepsTheServersFileName: Story = {
+  parameters: {
+    address:
+      "/logs?status=error&unpriced=true&withheld=true&usage_unknown=true&outcome=refused_budget&model=internal-llama&guardrail=blocked:pii&plugin=blocked:acme",
+  },
+  render: () => {
+    logExport = recording(
+      scoped(async (input) =>
+        String(input).includes("/analytics/invocations/export")
+          ? csvFile("request-log_2026-10-01_to_now_EUR.csv")
+          : ((await withLogs(ROWS)(input)) as Response),
+      ),
+    );
+    return (
+      <Harness fetchStub={logExport.stub}>
+        <Toasted>
+          <Logs />
+        </Toasted>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const names: string[] = [];
+    await captureDownload(names, async () => {
+      await userEvent.click(await canvas.findByRole("button", { name: "Export CSV" }));
+      await waitFor(() => expect(names).toHaveLength(1));
+    });
+    await expect(names[0]).toBe("request-log_2026-10-01_to_now_EUR.csv");
+    await expectToast(canvasElement, /Export downloaded/, "success");
+    const call = logExport.calls.find((c) => c.url.includes("/invocations/export"))!;
+    const params = new URL(call.url, "http://localhost").searchParams;
+    await expect(params.get("status")).toBe("error");
+    await expect(params.get("unpriced")).toBe("true");
+    await expect(params.get("model")).toBe("internal-llama");
+    // the guardrail and plugin filters travel too, or the file would hold the unfiltered log
+    await expect(params.get("guardrail")).toBe("blocked:pii");
+    await expect(params.get("plugin")).toBe("blocked:acme");
+    // and so do the delivery flags and the outcome (#3386)
+    await expect(params.get("withheld")).toBe("true");
+    await expect(params.get("usage_unknown")).toBe("true");
+    await expect(params.get("outcome")).toBe("refused_budget");
+    await expect(params.has("cursor")).toBe(false);
+    await expect(params.has("limit")).toBe(false);
+  },
+};
+
+export const AFailedExportIsAToastNotAHalfDownload: Story = {
+  render: () => (
+    <Harness
+      fetchStub={scoped(async (input) =>
+        String(input).includes("/invocations/export")
+          ? json({ error: { message: "analytics query failed" } }, 502)
+          : ((await withLogs(ROWS)(input)) as Response),
+      )}
+    >
+      <Toasted>
+        <Logs />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const names: string[] = [];
+    await captureDownload(names, async () => {
+      await userEvent.click(await canvas.findByRole("button", { name: "Export CSV" }));
+      await expectToast(canvasElement, /Could not export request log export/, "error");
+    });
+    await expect(names).toHaveLength(0);
   },
 };

@@ -283,6 +283,10 @@ pub struct RouteTarget {
     pub provider_id: Uuid,
     pub upstream_model: Option<String>,
     pub weight: i32,
+    /// failure class tokens this target takes over (#1584); empty for an
+    /// ordinary member of the pool
+    #[serde(default)]
+    pub takes_over: Vec<String>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -313,6 +317,10 @@ pub struct RouteVariantTarget {
     pub upstream_model: Option<String>,
     pub weight: i32,
     pub position: i32,
+    /// failure class tokens this target takes over (#3373), as
+    /// [`RouteTarget::takes_over`]; empty for an ordinary member of the variant
+    #[serde(default)]
+    pub takes_over: Vec<String>,
 }
 
 /// A provider group: a fleet of providers addressable as `group-slug/model`
@@ -386,6 +394,19 @@ pub struct VirtualKey {
     /// for every key an operator created deliberately (#1640)
     pub purpose: Option<String>,
     pub created_at: DateTime<Utc>,
+    /// peppered digest of the secret an admin rotation replaced, while its
+    /// overlap window is open. a digest like `key_hash`, so it never leaves the
+    /// API: only the prefix and the end of the window do (#1837)
+    #[serde(default, skip_serializing)]
+    pub previous_key_hash: Option<String>,
+    /// first characters of the retired secret, so the Keys screen can say which
+    /// one still authenticates
+    #[serde(default)]
+    pub previous_key_prefix: Option<String>,
+    /// last instant the retired secret authenticates; `None` when no overlap is
+    /// running
+    #[serde(default)]
+    pub previous_expires_at: Option<DateTime<Utc>>,
 }
 
 /// a virtual key owned by the current user, enriched with the project/org names
@@ -918,6 +939,15 @@ pub struct McpToolGroup {
     pub updated_at: DateTime<Utc>,
 }
 
+/// a virtual key, project or team an MCP tool group is assigned to (#3295)
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct McpToolGroupAssignment {
+    pub group_id: Uuid,
+    pub subject_kind: String,
+    pub subject_id: Uuid,
+    pub created_at: DateTime<Utc>,
+}
+
 /// organization defaults managed by the MCP Settings screen
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct McpGatewaySettings {
@@ -1043,7 +1073,8 @@ pub struct GuardrailRule {
     pub updated_at: DateTime<Utc>,
 }
 
-/// one external guardrail service; at most one row can be enabled at a time
+/// one external guardrail service; several can be enabled, and the scoped
+/// policies pick which of them judge a request (#459)
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct GuardrailProvider {
     pub id: Uuid,
@@ -1057,6 +1088,31 @@ pub struct GuardrailProvider {
     pub max_body_bytes: i32,
     pub auth_kind: String,
     pub auth_env: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// one scoped semantic guardrail policy (#459): the providers it consults, in
+/// order, and the thresholds their scored categories are held to
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
+pub struct GuardrailPolicyRow {
+    pub id: Uuid,
+    pub name: String,
+    pub enabled: bool,
+    /// `deployment`, `org`, `project`, `route` or `key`
+    pub scope_kind: String,
+    /// the org / project / key id, or the route's public model name; `None`
+    /// for the deployment scope
+    pub scope_id: Option<String>,
+    /// the providers the policy consults, in order
+    pub provider_ids: Vec<Uuid>,
+    /// category -> threshold in `[0, 1]`
+    pub thresholds: serde_json::Value,
+    /// `block` or `annotate`
+    pub on_violation: String,
+    /// `reject` or `buffer`
+    pub streaming: String,
+    pub description: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

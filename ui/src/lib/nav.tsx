@@ -10,16 +10,20 @@ import {
   ChartColumn,
   CircuitBoard,
   Database,
+  Eraser,
   Eye,
   FileText,
   Flag,
+  Bot,
   Fingerprint,
+  FolderTree,
   FolderGit2,
   Gavel,
   Grid2x2,
   History,
   KeyRound,
   Landmark,
+  ListChecks,
   Layers,
   LayoutGrid,
   Megaphone,
@@ -38,6 +42,7 @@ import {
   UserCheck,
   UserCog,
   Users,
+  Scale,
   Wallet,
   WalletCards,
   Waypoints,
@@ -68,9 +73,11 @@ export const NAV: NavDef[] = [
     children: [
       { key: "dashboard", icon: <ChartColumn /> },
       { key: "logs", icon: <FileText /> },
+      { key: "savings", icon: <Scale />, resource: "savings" },
       { key: "mcp-logs", icon: <Waypoints />, resource: "mcp_log" },
       { key: "connectors", icon: <Cable />, resource: "connector" },
       { key: "logs-settings", icon: <Settings />, resource: "logging_settings" },
+      { key: "log-erasure", icon: <Eraser />, resource: "log_erasure" },
     ],
   },
   {
@@ -121,6 +128,8 @@ export const NAV: NavDef[] = [
       { key: "customers", icon: <WalletCards />, resource: "customer" },
       { key: "user-provisioning", icon: <BookUser />, resource: "scim_token" },
       { key: "sso", icon: <Fingerprint />, resource: "sso_provider" },
+      { key: "ldap", icon: <FolderTree />, resource: "ldap_directory" },
+      { key: "api-tokens", icon: <Bot />, resource: "api_token" },
       /* no resource: the role matrix describes what roles can do, not anyone's
          data, so every signed-in role reads it (#2527). the org's custom roles
          on it stay behind the server's own check */
@@ -135,6 +144,7 @@ export const NAV: NavDef[] = [
     children: [
       { key: "guardrail-rules", icon: <Gavel />, resource: "guardrail_rule" },
       { key: "guardrail-providers", icon: <Boxes />, resource: "guardrail_provider" },
+      { key: "guardrail-policies", icon: <ListChecks />, resource: "guardrail_policy" },
     ],
   },
   { key: "cluster", icon: <Network />, resource: "cluster_node" },

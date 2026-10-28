@@ -76,6 +76,34 @@ pub fn started_at(started: Instant) -> DateTime<Utc> {
         .unwrap_or(now)
 }
 
+/// The instant this process began counting request starts from. Forced when the
+/// log sink is built, before any request can start, so no request begins ahead
+/// of it.
+static SEQ_EPOCH: std::sync::LazyLock<Instant> = std::sync::LazyLock::new(Instant::now);
+
+/// Fix the sequence's epoch. Called when the gateway state is built, before any
+/// request can start, so every start is at or after it.
+pub fn init_start_sequence() {
+    std::sync::LazyLock::force(&SEQ_EPOCH);
+}
+
+/// Where a request began in this process's order of starts (#1392).
+///
+/// `request_logs.ts` is a millisecond, so requests that begin inside one share
+/// it. This is the sequence that tells them apart: nanoseconds on the monotonic
+/// clock since the process began, counted from 1, so a later start is always a
+/// larger number and `0` stays the "no sequence" a row older than the column
+/// reads as. It is taken from the same `Instant` as [`started_at`], so it needs
+/// no counter threaded through the forwarding paths and cannot drift from `ts`.
+///
+/// Only meaningful within one gateway process: another instance's sequence is
+/// unrelated and a restart begins again.
+pub fn start_seq(started: Instant) -> u64 {
+    started
+        .checked_duration_since(*SEQ_EPOCH)
+        .map_or(1, |since| (since.as_nanos() as u64).saturating_add(1))
+}
+
 /// Bounded, lock-free reuse for the response bytes retained only long enough
 /// to extract token usage. Oversized buffers are deliberately not retained so
 /// one unusually large completion cannot inflate the steady-state footprint.
@@ -156,6 +184,11 @@ pub struct RequestLog {
     /// batch lands on one millisecond and ordering within it is lost
     #[serde(serialize_with = "clickhouse_ts::serialize")]
     pub ts: DateTime<Utc>,
+    /// where the request began in this process's order of starts, which `ts`
+    /// cannot say inside one millisecond (#1392); see [`start_seq`]. `0`, left
+    /// out of the row, when the writer did not stamp one
+    #[serde(skip_serializing_if = "is_zero_seq")]
+    pub seq: u64,
     pub request_id: String,
     /// the gateway's own key for this row, minted when the row is queued. the
     /// caller picks `request_id`, so only this names one request: the control
@@ -240,6 +273,17 @@ pub struct RequestLog {
     /// How many upstream attempts the request made, the one that answered
     /// included; `0` when it never reached an upstream. Saturates at 255.
     pub attempts: u8,
+    /// The failure that sent the request on to the last target it tried, as
+    /// its class token (`throttled`, `timeout`, `transport`, `server_error`,
+    /// `refusal` or `refusal:<category>`, see `rolter_core::failover`). Empty
+    /// when the first dial answered, so a row that never failed over reads as
+    /// it did before the column (#1584). It is what tells a request that
+    /// reached a fallback target because of a content refusal from one that
+    /// reached it because of load. Not serialized when empty, so a ClickHouse
+    /// without `clickhouse/023_fallback_reason.sql` keeps accepting every row
+    /// that has none
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub fallback_reason: String,
     /// Which call on a stored response this row records: `retrieve`, `delete`,
     /// `cancel`, `input_items`, or one of the two the gateway does not serve
     /// (`compact`, `input_tokens`). Empty for a request that ran a model,
@@ -281,11 +325,33 @@ pub struct RequestLog {
         serialize_with = "serialize_param_adjustments"
     )]
     pub param_adjustments: rolter_proxy::ParamAdjustments,
+    /// What happened to the request, by its published name
+    /// ([`rolter_core::request_outcome::RequestOutcome`], #3307): `served`,
+    /// `upstream_error`, `withheld`, `cancelled` or one of the `refused_*`
+    /// reasons. A path that knows why it refused sets it; every other row is
+    /// named by [`LogSink`] as it is queued ([`outcome_of`]), so no row leaves
+    /// without one. Always serialized: a ClickHouse without
+    /// `clickhouse/030_request_outcome.sql` drops it under
+    /// `input_format_skip_unknown_fields`, and reads its rows as `unknown`
+    #[serde(serialize_with = "serialize_outcome")]
+    pub outcome: Option<rolter_core::request_outcome::RequestOutcome>,
+    /// What the request asked the model to do beyond its tokens: tools, image
+    /// or audio input, a response schema, its caller turns (#3317). Read off
+    /// the parsed body for the OpenAI and Anthropic dialects; each column is
+    /// left out of a row while zero, so a ClickHouse without
+    /// `clickhouse/031_request_shape.sql` keeps accepting every row
+    #[serde(flatten)]
+    pub request_shape: crate::request_shape::RequestShape,
     /// what the request is billed by besides tokens (#2937), known once the
     /// request is parsed and finished off against the response when the stream
     /// ends. Not a column: the cost it produces is
     #[serde(skip)]
     pub unit_basis: crate::unit_billing::UnitBasis,
+    /// the units read from the upstream body before a guardrail, plugin or
+    /// sanitizer rewrote or withheld it, billed instead of what the delivered
+    /// body states (#3331). `None` reads them from the forwarded body
+    #[serde(skip)]
+    pub billed_units: Option<rolter_core::BilledUnits>,
     /// raw bodies are persisted in the short-retention `request_payloads`
     /// table, never in the primary metadata table
     #[serde(skip)]
@@ -307,6 +373,38 @@ pub struct RequestLog {
     pub sample_weight: f64,
 }
 
+/// The outcome of a row whose writer did not name one, read from what the row
+/// records (#3307). A refusal path names its own reason before this runs, so
+/// what reaches here unnamed is a request that was answered (served, failed
+/// upstream, withheld, abandoned) or refused with no target left to try.
+pub(crate) fn outcome_of(row: &RequestLog) -> rolter_core::request_outcome::RequestOutcome {
+    use rolter_core::request_outcome::RequestOutcome;
+    if row.withheld == 1 {
+        RequestOutcome::Withheld
+    } else if row.is_client_disconnect() {
+        RequestOutcome::Cancelled
+    } else if row.status < 400 {
+        RequestOutcome::Served
+    } else if row.attempts > 0 || row.upstream_status > 0 || !row.target.is_empty() {
+        RequestOutcome::UpstreamError
+    } else {
+        RequestOutcome::for_refusal(row.status, None)
+    }
+}
+
+fn serialize_outcome<S: serde::Serializer>(
+    outcome: &Option<rolter_core::request_outcome::RequestOutcome>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    // a row is only serialized once `enqueue` named it; the empty fallback is
+    // the column's own default, never a name
+    serializer.serialize_str(outcome.map_or("", |outcome| outcome.as_str()))
+}
+
+fn is_zero_seq(seq: &u64) -> bool {
+    *seq == 0
+}
+
 /// How a withheld row's `error` begins when an output guardrail rule refused
 /// the response; the rest of it is the rule's name.
 pub const GUARDRAIL_WITHHELD_PREFIX: &str = "guardrail_blocked: ";
@@ -318,6 +416,7 @@ impl Default for RequestLog {
             // slightly late, where a zero would land in a 1970 partition and
             // fall straight past the table's ttl
             ts: Utc::now(),
+            seq: 0,
             request_id: String::new(),
             log_id: Uuid::nil(),
             trace_id: String::new(),
@@ -349,11 +448,15 @@ impl Default for RequestLog {
             error: String::new(),
             upstream_status: 0,
             attempts: 0,
+            fallback_reason: String::new(),
             lifecycle_operation: String::new(),
             guardrail_events: Vec::new(),
             plugin_events: Vec::new(),
             param_adjustments: rolter_proxy::ParamAdjustments::default(),
+            outcome: None,
+            request_shape: Default::default(),
             unit_basis: crate::unit_billing::UnitBasis::Tokens,
+            billed_units: None,
             request_payload: String::new(),
             response_payload: String::new(),
             capture_payloads: false,
@@ -1084,7 +1187,9 @@ impl UsageLoggingStream {
         // not left its usage unknown when the count is read and has a rate
         // (#2937)
         let units = if upstream_answered {
-            log.unit_basis.units(&self.buf)
+            log.billed_units
+                .take()
+                .or_else(|| log.unit_basis.units(&self.buf))
         } else {
             None
         };
@@ -1579,6 +1684,8 @@ impl LogSink {
         if !should_sample_request(&record.request_id, record.sample_rate) {
             return;
         }
+        // the one place every row passes, so none is written without a name
+        record.outcome = Some(record.outcome.unwrap_or_else(|| outcome_of(&record)));
         let Some(tx) = &self.tx else {
             return;
         };
@@ -1775,6 +1882,58 @@ mod tests {
     /// A System One answer states `input_tokens` and `output_tokens` the way
     /// Anthropic does, so it is reported usage (not `usage_unknown`) and a model
     /// whose output is free costs exactly its input (#3150).
+    /// What `LogSink::enqueue` names a row no refusal path named (#3307).
+    #[test]
+    fn an_unnamed_row_is_given_its_outcome_from_what_it_records() {
+        use rolter_core::request_outcome::RequestOutcome::*;
+        let row = |f: fn(&mut RequestLog)| {
+            let mut row = RequestLog {
+                status: 200,
+                ..Default::default()
+            };
+            f(&mut row);
+            outcome_of(&row)
+        };
+        assert_eq!(row(|_| {}), Served);
+        assert_eq!(
+            row(|r| {
+                r.status = 403;
+                r.withheld = 1;
+            }),
+            Withheld
+        );
+        assert_eq!(row(|r| r.status = CLIENT_DISCONNECT_STATUS), Cancelled);
+        assert_eq!(
+            row(|r| {
+                r.status = 503;
+                r.attempts = 2;
+            }),
+            UpstreamError
+        );
+        // the caller got the provider's own 499: not a disconnect
+        assert_eq!(
+            row(|r| {
+                r.status = CLIENT_DISCONNECT_STATUS;
+                r.upstream_status = CLIENT_DISCONNECT_STATUS;
+                r.attempts = 1;
+            }),
+            UpstreamError
+        );
+        // nothing tried and no target left: a refusal by status
+        assert_eq!(row(|r| r.status = 503), Refused);
+        assert_eq!(row(|r| r.status = 429), RefusedRateLimit);
+    }
+
+    #[test]
+    fn a_queued_row_always_carries_its_outcome() {
+        let row = RequestLog {
+            outcome: Some(rolter_core::request_outcome::RequestOutcome::RefusedBudget),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&row).unwrap();
+        assert_eq!(json["outcome"], "refused_budget");
+    }
+
     #[test]
     fn a_decision_reports_its_usage_and_costs_only_its_input() {
         let body = br#"{"model":"jev-1.13.0","answers":{"q":{"type":"noul","noul":0.9}},"usage":{"input_tokens":307,"output_tokens":3}}"#;
@@ -3369,6 +3528,57 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
         // no queue, nothing written or dropped
         assert_eq!(metrics.logs_dropped_total.load(Relaxed), 0);
         assert_eq!(metrics.logs_written_total.load(Relaxed), 0);
+    }
+
+    #[test]
+    fn requests_that_start_inside_one_millisecond_are_ordered_by_start() {
+        init_start_sequence();
+        let first = Instant::now();
+        let second = first + Duration::from_nanos(700);
+        let third = first + Duration::from_nanos(900_000);
+        // the wall clock cannot tell them apart: one millisecond stamp for all
+        let ts = started_at(first);
+        // the sequence can, and it is never 0 (that is "no sequence")
+        let (a, b, c) = (start_seq(first), start_seq(second), start_seq(third));
+        assert!(a > 0 && a < b && b < c, "{a} {b} {c}");
+        // so rows written in the opposite order still sort by when they began
+        let mut rows = [
+            RequestLog {
+                ts,
+                seq: c,
+                request_id: "zzz-third".into(),
+                ..Default::default()
+            },
+            RequestLog {
+                ts,
+                seq: a,
+                request_id: "mmm-first".into(),
+                ..Default::default()
+            },
+            RequestLog {
+                ts,
+                seq: b,
+                request_id: "aaa-second".into(),
+                ..Default::default()
+            },
+        ];
+        rows.sort_by_key(|row| (row.ts.timestamp_millis(), row.seq));
+        let order: Vec<&str> = rows.iter().map(|r| r.request_id.as_str()).collect();
+        assert_eq!(order, ["mmm-first", "aaa-second", "zzz-third"]);
+    }
+
+    #[test]
+    fn the_sequence_is_written_when_stamped_and_left_out_otherwise() {
+        init_start_sequence();
+        let stamped = serde_json::to_value(RequestLog {
+            seq: start_seq(Instant::now()),
+            ..Default::default()
+        })
+        .unwrap();
+        assert!(stamped["seq"].as_u64().unwrap() > 0);
+        // an unstamped row omits the field, so ClickHouse fills in the default
+        let unstamped = serde_json::to_value(RequestLog::default()).unwrap();
+        assert!(unstamped.get("seq").is_none());
     }
 
     #[test]

@@ -11,6 +11,7 @@ import { FieldLabel } from "@/components/ui/field-label";
 import { Input } from "@/components/ui/input";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import { SurfacePanel } from "@/components/ui/surface-panel";
+import { TakesOverField } from "@/components/TakesOverField";
 import type { ProviderRow } from "@/lib/api";
 import { useFormat } from "@/lib/i18n/format";
 import { shareBarColor } from "@/lib/share-bars";
@@ -43,6 +44,8 @@ export interface RouteVariantEditorProps {
   /** a field the control plane refused, said at its line whatever `showErrors` is */
   refusal: VariantRefusal | null;
   onChange: (next: DraftVariant[]) => void;
+  /** what the saved variants actually served, shown under the split preview (#3342) */
+  observed?: React.ReactNode;
   /**
    * what stands in for the list while there are no variants; the caller owns
    * it, since it owns the read the empty state is paired with
@@ -70,6 +73,7 @@ export function RouteVariantEditor({
   showErrors,
   refusal,
   onChange,
+  observed,
   empty,
 }: RouteVariantEditorProps) {
   const { t } = useTranslation();
@@ -139,6 +143,7 @@ export function RouteVariantEditor({
             {t("routeSheet.variants.overridesTargets")}
           </p>
           <SplitPreview variants={variants} />
+          {observed}
           {weightsIgnored && (
             <p className="text-xs leading-snug text-muted-foreground">
               <Trans
@@ -456,6 +461,16 @@ function VariantCard({
                   onClick={() =>
                     onChange({ targets: variant.targets.filter((_, idx) => idx !== j) })
                   }
+                />
+                <TakesOverField
+                  groupLabel={t("fallbackTargets.variantGroupAria", { n, m })}
+                  value={tg.takesOver}
+                  error={
+                    refusal?.field === "takesOver" && refusal.targetKey === tg.key
+                      ? t("fallbackTargets.errors.refused")
+                      : undefined
+                  }
+                  onChange={(takesOver) => updateTarget(j, { takesOver })}
                 />
               </li>
             );

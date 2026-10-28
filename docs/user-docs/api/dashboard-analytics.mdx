@@ -4,17 +4,20 @@ sidebarTitle: "Dashboard analytics"
 description: "Read the spend, usage and per-model figures the Dashboard shows, over any time window and narrowed to one model, virtual key, business unit or customer."
 ---
 
-The **Dashboard**'s cards and charts are three control-plane reads over the request log in ClickHouse. They need the control plane's `CLICKHOUSE_URL`; without it they answer `503`.
+The **Dashboard**'s cards and charts are three control-plane reads over the request log in ClickHouse (a fourth, `by-variant`, feeds the route sheet). They need the control plane's `CLICKHOUSE_URL`; without it they answer `503`.
 
 | Method | Path                           | What it returns                                                                                                                                       |
 | ------ | ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `GET`  | `/api/v1/analytics/summary`    | one row of totals: requests, tokens, cost, unpriced, withheld and unknown-usage traffic, response-cache hits, errors, average latency and p95 latency |
 | `GET`  | `/api/v1/analytics/timeseries` | requests, tokens and cost per time bucket                                                                                                             |
 | `GET`  | `/api/v1/analytics/by-model`   | requests, tokens, cost, unpriced, withheld and unknown-usage traffic, errors and p50/p95 latency per model, costliest first                           |
+| `GET`  | `/api/v1/analytics/by-variant` | requests, tokens, cost, unpriced traffic, errors and p50/p95 latency per route and variant, busiest first                                             |
 
 Each answers `{"data": [...]}`, the rows straight from ClickHouse.
 
-The summary's `cache_hit_requests` counts the requests the gateway answered from its own response cache, scaled by the log's sampling weight like every other count; the Dashboard divides it by `requests` for its _response-cache hit rate_. It does not count provider prompt caching, which shows in each row's `cache_read_tokens` instead. `p95_latency_ms` is the 95th percentile of latency over the whole window, read from the sampled rows as they are; `avg_latency_ms` is still sent. A control plane older than these fields sends neither.
+The summary's `cache_hit_requests` counts the requests the gateway answered from its own response cache, scaled by the log's sampling weight like every other count; the Dashboard divides it by `requests` for its _response-cache hit rate_. It does not count provider prompt caching, which shows in the summary's `cache_read_tokens` instead: the prompt tokens the provider served from its own cache, scaled by the sampling weight like `prompt_tokens`, so the Dashboard's _prompt-cache read share_ is `cache_read_tokens / prompt_tokens`. It is `0` when no provider in the window reports cached tokens, which a read share cannot tell from a provider that never hits. `p95_latency_ms` is the 95th percentile of latency over the whole window, read from the sampled rows as they are; `avg_latency_ms` is still sent. A control plane older than these fields sends neither.
+
+`by-variant` groups requests by route and by the weighted [variant](/concepts/providers-and-routes) that served them, one row per `model` (the route's public name) and `variant`; pass `model` to read one route's rows, so an A/B split or a canary can be compared with its configured weights. Requests the gateway served without a variant (the classic single pool, or traffic from before the route had variants) come back under the empty `variant`, so the rows add up to the route's whole traffic. It reads the same row scope and filters as the other reads, and the log records the variant that answered, so a variant that others fail over to counts the failovers it served as well as its first attempts.
 
 ## Query parameters
 
@@ -80,7 +83,30 @@ With a [`sample_rate`](/observability/log-settings#sampling) below `1` the gatew
 
 `GET /api/v1/analytics/invocations` takes `guardrail=<action>:<rule>` (`provider_blocked:<provider name>` / `provider_transformed:<provider name>`, or the bare `provider_blocked` / `provider_transformed`) to list exactly those requests, and each row carries `guardrail_events`, an array of the same strings.
 
-`GET /api/v1/analytics/invocations` also takes `plugin=<outcome>:<slug>` (or `error:<slug>:<kind>`), named as the plugin rollup below names its entries, to list exactly the requests a plugin acted on; each row carries `plugin_events`, an array of the same strings. Unlike the four shared filters, `guardrail` and `plugin` are only on the invocation list. So are `withheld=true` and `usage_unknown=true`, which keep the requests whose response a policy withheld after the provider billed them, and the successes whose upstream reported no usage; any other value applies no filter. Both narrow inside the rows you can read, and they combine with every other filter, though a withheld request is a `403` and an unknown-usage one a success, so asking for both returns nothing. On a table without `clickhouse/019_plugin_events.sql` a `plugin` filter matches nothing.
+`GET /api/v1/analytics/invocations` also takes `plugin=<outcome>:<slug>` (or `error:<slug>:<kind>`), named as the plugin rollup below names its entries, to list exactly the requests a plugin acted on; each row carries `plugin_events`, an array of the same strings. Unlike the four shared filters, `guardrail` and `plugin` are only on the invocation list. So are `withheld=true` and `usage_unknown=true`, which keep the requests whose response a policy withheld after the provider billed them, and the successes whose upstream reported no usage; any other value applies no filter. So is `outcome=<name>`, which keeps the requests the gateway recorded with that [outcome](/observability/logs-and-cost#the-outcome-of-each-request) (`served`, `upstream_error`, `refused_budget`, ..., or `unknown` for rows from before it was recorded); an outcome it does not know is a `400`. `GET /api/v1/analytics/invocations/export` takes every one of these filters too, so a filtered view exports the rows it shows. Both narrow inside the rows you can read, and they combine with every other filter, though a withheld request is a `403` and an unknown-usage one a success, so asking for both returns nothing. On a table without `clickhouse/019_plugin_events.sql` a `plugin` filter matches nothing.
+
+## Parameter adjustments
+
+`GET /api/v1/analytics/param-adjustments` takes the same `since` and `until` and answers which request parameters [dialect translation](/api/overview#adjusted-parameters) did not forward as sent, per route and provider, in that window:
+
+```json
+{
+  "recorded": true,
+  "data": [
+    {
+      "route": "claude-sonnet",
+      "provider": "anthropic",
+      "disposition": "dropped",
+      "param": "presence_penalty",
+      "requests": 40,
+      "route_requests": 100,
+      "share": 0.4
+    }
+  ]
+}
+```
+
+`disposition` is `dropped`, `clamped` or `translated`, as in the `x-rolter-param-adjustments` header. `requests` counts the requests that had it, `route_requests` every request that route sent that provider in the window, and `share` is their ratio, so the row above reads "this route drops `presence_penalty` on 40% of its Anthropic traffic". Counts are scaled by the log's sampling weight, and the rows are limited to the request log you can read. A route that translates nothing has no rows. `recorded` is `false`, with `data` empty, when the ClickHouse table lacks `clickhouse/022_param_adjustments.sql`. Each row of `GET /api/v1/analytics/invocations` carries the same entries as `param_adjustments`, an array of `<disposition>:<param>` strings. The **Compatibility** screen lists this rollup under **Parameters not forwarded as sent**, and the **LLM Logs** drawer lists a request's own adjustments.
 
 ## Plugin outcomes
 
@@ -106,6 +132,26 @@ With a [`sample_rate`](/observability/log-settings#sampling) below `1` the gatew
 ```
 
 `calls` is every consultation, and `blocked`, `transformed`, `annotated` and `errors` are the parts of it that ended that way; the rest were allowed. A call that got no verdict is an `errors` one, so a fail-closed plugin that refused traffic because its endpoint was down counts there and not under `blocked`. `last_error_kind` is `refused`, `timeout`, `connect`, `status_<code>` or `body`; `last_error_at` and `last_error_kind` are `null` and empty while `errors` is `0`. Counts are scaled by the log's sampling weight and limited to the request log you can read, like every other count here. `recorded` is `false`, with `data` empty, when the ClickHouse table lacks `clickhouse/019_plugin_events.sql`. Each row of `GET /api/v1/analytics/invocations` carries `plugin_events`, the entries behind the counts.
+
+## CSV exports
+
+Three reads have a file form, for the spreadsheet a chargeback or an invoice reconciliation ends in. Each is the same read as its JSON twin, so it takes the same window and filters and shows a caller exactly the rows they could page through: a project member exports their project's requests, an org viewer their org's, and nobody another tenant's. The Export CSV button on **Cost Attribution** and **LLM Logs** calls them.
+
+| Route                                         | File                                                                                              |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `GET /api/v1/analytics/by-attribution/export` | one row per business unit or customer (`dimension`, `include_unattributed`), with the unit's name |
+| `GET /api/v1/analytics/timeseries/export`     | one row per `bucket`, under the Dashboard's filters                                               |
+| `GET /api/v1/analytics/invocations/export`    | the request log, newest first, under the LLM Logs filters; `limit` and `cursor` are ignored       |
+
+The file name says what it holds: `<what>_<from>_to_<to>_<CURRENCY>.csv`, such as `cost-attribution-business_unit_2026-10-01_to_2026-11-01_USD.csv`. The `cost` columns are in the deployment's base currency, named in the `currency` column of every row.
+
+**Unpriced requests are flagged, never folded in.** The rollups carry `unpriced_requests` and `cost_is_partial` (`true` when that count is above zero), so a total that leaves out requests with no price is not read as final. In the request log, `unpriced` is `1` on such a row and its `cost` is left blank rather than written as `0`, as the screen shows it as unpriced instead of free.
+
+**The request log is metadata only.** The columns are fixed: identifiers, model, provider, status, token counts, cost, currency, `unpriced`, latency and `sample_weight`. No captured request or response body, error text, guardrail or plugin detail is ever in the file, whatever the caller's payload role. Counts and sums in the rollups are scaled by the sampling weight like the JSON reads, while each log row is one stored row.
+
+**The log is streamed.** The control plane reads it one bounded page at a time with the keyset cursor the JSON list uses and writes each page as it arrives, so a month of requests does not wait for, or hold in memory, the whole result, and rows logged during the export neither repeat nor go missing. ClickHouse failing before the first row answers a JSON error; failing part way ends the body with an error so the download fails instead of passing for a complete file.
+
+**Cells are safe to open.** A value a spreadsheet would run as a formula (one starting with `=`, `+`, `-`, `@`, a tab or a carriage return, such as a business unit someone named `=Payments`) is written with a leading `'`. Numbers are written as they are.
 
 ## The savings advisor
 

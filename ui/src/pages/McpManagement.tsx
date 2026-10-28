@@ -57,7 +57,11 @@ import {
   fetchMcpServers,
   fetchMcpSessions,
   fetchMcpSettings,
+  fetchMcpToolGroupAssignments,
   fetchMcpToolGroups,
+  fetchOrgProjects,
+  fetchTeams,
+  replaceMcpToolGroupAssignments,
   MCP_AUTH_KINDS,
   MCP_OAUTH_DISCOVERY_MODES,
   setMcpOAuthClient,
@@ -75,6 +79,8 @@ import {
   type McpServerAuthInput,
   type McpServerInput,
   type McpServerRow,
+  type McpAssignmentSubject,
+  type McpToolGroupAssignmentRow,
   type McpToolGroupRow,
   type McpToolRef,
   type McpTransportOverridesPatch,
@@ -82,6 +88,7 @@ import {
 import { errorText } from "@/lib/error-copy";
 import { useOptionalAuth } from "@/lib/auth";
 import { useCan } from "@/lib/can";
+import { ServerStepUp } from "@/components/McpStepUp";
 import { discoveryReasonKey, discoveryRefetchInterval, discoveryView } from "@/lib/mcp-discovery";
 import { useFormat } from "@/lib/i18n/format";
 import {
@@ -915,6 +922,14 @@ export function McpCatalog() {
                   known={connectionKnown}
                 />
               )}
+              {server.auth_kind === "oauth" && (
+                <ServerStepUp
+                  server={server}
+                  grants={grants.data}
+                  sessions={sessions.data}
+                  userId={auth?.user?.id}
+                />
+              )}
               <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-[color:var(--border-subtle)] pt-3">
                 <Badge tone="info">{server.transport.replace("_", " ")}</Badge>
                 <AuthBadge server={server} />
@@ -1715,18 +1730,38 @@ export function ToolGroups() {
     enabled: !!orgId,
     retry: false,
   });
+  // who each group is assigned to (#3295). a failed read leaves the dialog
+  // without an assignment editor rather than offering one that would replace
+  // the stored set with an empty one
+  const assignments = useQuery({
+    queryKey: ["mcp-tool-group-assignments", orgId],
+    queryFn: () => fetchMcpToolGroupAssignments(orgId as string),
+    enabled: !!orgId,
+    retry: false,
+  });
   const [editing, setEditing] = React.useState<McpToolGroupRow | null | undefined>(undefined);
   const save = useMutation({
-    mutationFn: ({
+    mutationFn: async ({
       initial,
       input,
+      subjects,
     }: {
       initial: McpToolGroupRow | null;
       input: Omit<McpToolGroupRow, "id" | "org_id" | "created_at" | "updated_at">;
-    }) =>
-      initial ? updateMcpToolGroup(initial.id, input) : createMcpToolGroup(orgId as string, input),
+      subjects: McpAssignmentSubject[] | null;
+    }) => {
+      // a new group is created with its assignments in one request, so it is
+      // never visible to a gateway as applying to the whole organization
+      if (!initial) {
+        return createMcpToolGroup(orgId as string, { ...input, assignments: subjects ?? [] });
+      }
+      const group = await updateMcpToolGroup(initial.id, input);
+      if (subjects) await replaceMcpToolGroupAssignments(group.id, subjects);
+      return group;
+    },
     onSuccess: (group, { initial }) => {
       void client.invalidateQueries({ queryKey: ["mcp-tool-groups", orgId] });
+      void client.invalidateQueries({ queryKey: ["mcp-tool-group-assignments", orgId] });
       setEditing(undefined);
       toast.push(
         initial
@@ -1843,6 +1878,13 @@ export function ToolGroups() {
               <p className="mt-2 min-h-10 text-xs leading-relaxed text-muted-foreground">
                 {group.description || t("pages.mcpCatalog.noDescription")}
               </p>
+              {assignments.data && (
+                <p className="mt-3 text-xs text-muted-foreground">
+                  {assignments.data.some((row) => row.group_id === group.id)
+                    ? t("pages.tool-groups.assign.narrowed")
+                    : t("pages.tool-groups.assign.everyone")}
+                </p>
+              )}
               <div className="mt-3 flex flex-wrap gap-1.5">
                 {group.tools.map((item) => (
                   <Badge key={`${item.server_id}/${item.tool}`} tone="outline">
@@ -1900,10 +1942,12 @@ export function ToolGroups() {
         <ToolGroupDialog
           initial={editing}
           servers={servers.data ?? []}
+          assignments={assignments.data}
+          assignmentsStatus={assignments.status}
           pending={save.isPending}
           error={save.error}
           onClose={() => setEditing(undefined)}
-          onSave={(input) => save.mutate({ initial: editing, input })}
+          onSave={(input, subjects) => save.mutate({ initial: editing, input, subjects })}
         />
       )}
     </PageBody>
@@ -1913,6 +1957,8 @@ export function ToolGroups() {
 function ToolGroupDialog({
   initial,
   servers,
+  assignments,
+  assignmentsStatus,
   pending,
   error,
   onClose,
@@ -1920,12 +1966,23 @@ function ToolGroupDialog({
 }: {
   initial: McpToolGroupRow | null;
   servers: McpServerRow[];
+  /** every assignment of the org, and how reading them is going */
+  assignments: McpToolGroupAssignmentRow[] | undefined;
+  assignmentsStatus: "pending" | "error" | "success";
   pending: boolean;
   error: Error | null;
   onClose: () => void;
-  onSave: (input: Omit<McpToolGroupRow, "id" | "org_id" | "created_at" | "updated_at">) => void;
+  onSave: (
+    input: Omit<McpToolGroupRow, "id" | "org_id" | "created_at" | "updated_at">,
+    /** the whole assignment set to store, or null to leave it alone */
+    subjects: McpAssignmentSubject[] | null,
+  ) => void;
 }) {
   const { t } = useTranslation();
+  // what the assignment editor last reported: the whole set to store, or null
+  // while it is unchanged (or was never readable), which leaves the stored set
+  // alone
+  const [subjects, setSubjects] = React.useState<McpAssignmentSubject[] | null>(null);
   const [name, setName] = React.useState(initial?.name ?? "");
   const [description, setDescription] = React.useState(initial?.description ?? "");
   const [enabled, setEnabled] = React.useState(initial?.enabled ?? true);
@@ -1941,13 +1998,16 @@ function ToolGroupDialog({
       open
       onClose={onClose}
       onSubmit={() =>
-        onSave({
-          name,
-          slug: initial?.slug ?? slugify(name),
-          description,
-          enabled,
-          tools: selected,
-        })
+        onSave(
+          {
+            name,
+            slug: initial?.slug ?? slugify(name),
+            description,
+            enabled,
+            tools: selected,
+          },
+          subjects,
+        )
       }
       canSubmit={!!name.trim() && !!selected.length}
       busy={pending}
@@ -1995,6 +2055,24 @@ function ToolGroupDialog({
             ))}
           </div>
         </fieldset>
+        <fieldset>
+          <legend className="text-sm font-medium">{t("pages.tool-groups.assign.title")}</legend>
+          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+            {t("pages.tool-groups.assign.hint")}
+          </p>
+          {!initial || (assignmentsStatus === "success" && assignments) ? (
+            <AssignmentEditor
+              rows={(assignments ?? []).filter((row) => row.group_id === initial?.id)}
+              onChange={setSubjects}
+            />
+          ) : (
+            <p className="mt-2 text-xs text-muted-foreground">
+              {assignmentsStatus === "pending"
+                ? t("pages.tool-groups.assign.loading")
+                : t("pages.tool-groups.assign.unavailable")}
+            </p>
+          )}
+        </fieldset>
         {error && (
           <p role="alert" className="text-sm text-[color:var(--danger-text)]">
             {errorText(error, t)}
@@ -2016,6 +2094,95 @@ function ToolGroupDialog({
         </Button>
       </DialogFooter>
     </Dialog>
+  );
+}
+
+/**
+ * The team and project chips of a tool group's assignments. Mounted only once
+ * the stored assignments are known, so its state starts from them and never
+ * from an empty set a slow read has not filled in yet (an empty set would widen
+ * a narrowed group to the whole organization when saved). It reports the whole
+ * set to store, or null while nothing changed.
+ */
+function AssignmentEditor({
+  rows,
+  onChange,
+}: {
+  rows: McpToolGroupAssignmentRow[];
+  onChange: (subjects: McpAssignmentSubject[] | null) => void;
+}) {
+  const { t } = useTranslation();
+  const { orgId } = useScope();
+  const ofKind = (kind: McpToolGroupAssignmentRow["subject_kind"]) =>
+    rows.filter((row) => row.subject_kind === kind).map((row) => row.subject_id);
+  const [stored] = React.useState(() => ({
+    teams: ofKind("team"),
+    projects: ofKind("project"),
+  }));
+  const [teamIds, setTeamIds] = React.useState(stored.teams);
+  const [projectIds, setProjectIds] = React.useState(stored.projects);
+  // single virtual keys have no picker here (#3380); they ride along as stored
+  const keyIds = ofKind("virtual_key");
+  const canAssign = useCan()("mcp_tool_group_assignment", "update") !== false;
+  const teams = useQuery({
+    queryKey: ["teams", orgId],
+    queryFn: () => fetchTeams(orgId as string),
+    enabled: !!orgId,
+    retry: false,
+  });
+  const projects = useQuery({
+    queryKey: ["org-projects", orgId],
+    queryFn: () => fetchOrgProjects(orgId as string),
+    enabled: !!orgId,
+    retry: false,
+  });
+  const flip = (ids: string[], id: string) =>
+    ids.includes(id) ? ids.filter((current) => current !== id) : [...ids, id];
+  // an id that is no longer among the options (a deleted team) is dropped from
+  // what is saved, once the options have been read
+  const live = (ids: string[], options: { id: string }[] | undefined) =>
+    options ? ids.filter((id) => options.some((option) => option.id === id)) : ids;
+  const savedTeams = live(teamIds, teams.data);
+  const savedProjects = live(projectIds, projects.data);
+  const same = (a: string[], b: string[]) =>
+    a.length === b.length && a.every((id) => b.includes(id));
+  const changed = !same(savedTeams, stored.teams) || !same(savedProjects, stored.projects);
+  const report = JSON.stringify([changed, savedTeams, savedProjects, keyIds]);
+  React.useEffect(() => {
+    onChange(
+      changed
+        ? [
+            ...savedTeams.map((id) => ({ kind: "team" as const, id })),
+            ...savedProjects.map((id) => ({ kind: "project" as const, id })),
+            ...keyIds.map((id) => ({ kind: "virtual_key" as const, id })),
+          ]
+        : null,
+    );
+    // `report` stands for exactly the values read above
+  }, [report]);
+  return (
+    <div className="mt-2 space-y-3">
+      <ChipGroup
+        label={t("pages.tool-groups.assign.teams")}
+        options={(teams.data ?? []).map((team) => ({ id: team.id, name: team.name }))}
+        selected={teamIds}
+        onToggle={(id) => setTeamIds((current) => flip(current, id))}
+        disabled={!canAssign}
+      />
+      <ChipGroup
+        label={t("pages.tool-groups.assign.projects")}
+        options={(projects.data ?? []).map((project) => ({
+          id: project.id,
+          name: `${project.team_name} / ${project.name}`,
+        }))}
+        selected={projectIds}
+        onToggle={(id) => setProjectIds((current) => flip(current, id))}
+        disabled={!canAssign}
+      />
+      {keyIds.length > 0 && (
+        <p className="text-xs text-muted-foreground">{t("pages.tool-groups.assign.keysKept")}</p>
+      )}
+    </div>
   );
 }
 

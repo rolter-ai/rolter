@@ -53,6 +53,8 @@ granted and adds the scopes, then the next call works. Until then every such
 call fails the same way. A server with a static credential has no consent to
 repeat, so its `403` is passed through unchanged.
 
+In the dashboard, the server's card on **MCP → MCP Catalog** names the scopes the server declares that your connection lacks, with a **Reconnect with more access** button that sends that `step_up_scopes` request. The detail of an `auth_denied` call in **MCP Logs** offers the same to the key's owner. The log records the refusal and not the scope the upstream asked for, so when the connection already holds everything the server declares, the owner names the scope to add.
+
 ### Which scopes a consent asks for
 
 Unless the request lists `scopes` itself, a consent asks for, in order of
@@ -136,6 +138,12 @@ with `tools/list` in the background after you install it, after you set its
 credential, and after a user completes OAuth consent; **Discover now** on the
 card (or `POST /api/v1/mcp-servers/{id}/discover`) asks again. The list a
 catalog entry ships with is only the fallback until the server has answered.
+Discovery, the connection status check and **Try it** follow the server's
+transport: a `streamable_http` server is asked over `POST`, and a legacy `sse`
+server over its own handshake (open the event stream, wait for the `endpoint`
+event, `POST` there and read the replies off the stream). The endpoint the server
+names must be on the address you registered; one on another host fails the
+handshake.
 
 A server that is down never blocks the install: the card says when it was last
 discovered, or that it has not been discovered yet and why. A tool the server
@@ -149,12 +157,40 @@ and the proxy enforces them. A server that at least one enabled group names
 serves only the tools those groups list: a `tools/call` for any other tool is
 refused with `403` and the code `mcp_tool_denied` before anything is forwarded,
 and the refusal is recorded in the MCP log as an `auth_denied` row naming the
-tool. A server no group names is not narrowed by groups. The groups an
-organization enables apply to every caller in it; there is no per-key or
-per-project assignment yet. Batches are refused as a whole when any call in
+tool. A server no group names is not narrowed by groups. By default the groups an
+organization enables apply to every caller in it. A group can also be assigned to
+teams, projects or single virtual keys (**Configure** on the group, or
+`PUT /api/v1/mcp/tool-groups/{id}/assignments` with
+`{"assignments":[{"kind":"team","id":"…"}]}`, where `kind` is `team`,
+`project` or `virtual_key`; `GET /api/v1/orgs/{org_id}/mcp/tool-group-assignments`
+lists them). An assignment only ever narrows: a caller whose key, project or team
+is named by the assignments of any enabled group is held to the union of the
+groups assigned to those three, so on a server the organization's groups govern
+it may call only what its own groups list there, and nothing when none of them
+names the server. A caller none of the assignments name keeps the
+organization-wide set, exactly as before, so a deployment that never assigns a
+group behaves as it did. A group you disable keeps its assignments: the keys,
+projects and teams assigned to it stay narrowed and get none of its tools on the
+servers it names, even when it is the only group that names one. They do not fall
+back to the organization's groups or to the whole server; everyone else is
+unaffected. Deleting a group removes its
+assignments with it, and a team, project or key that was assigned only to that
+group returns to the organization-wide set. A new group can be created with its
+`assignments` in the same request. The dashboard edits team and project assignments;
+virtual-key assignments are set through the API and kept as they are when a group
+is saved there. Batches are refused as a whole when any call in
 them is refused, and while a group governs a server a request body that cannot
 be read as JSON-RPC is refused with `400` (`mcp_request_unreadable`) rather than
-forwarded unchecked. Disabling or deleting a group lifts its restriction on the
+forwarded unchecked. A body that repeats a key in a message or in its `params`
+(two `name` entries, or `name` and `NAME`, since some servers match keys without
+regard to case) is refused with `403` `mcp_tool_denied` whatever the
+failure policy says, and is logged like any other refused call, because parsers disagree about which copy wins and the
+tool judged could then differ from the tool that runs. A `tools/list` reply through the proxy is narrowed by the same rules, so a client
+is shown only the tools it may call, whatever id the request carried. That covers
+the reply to the `POST` that asked and the event stream a legacy `sse` server
+sends its replies on; a paginated listing is filtered page by page and a page can
+come back shorter than the server's page size. Disabling or
+deleting a group lifts its restriction on the
 next snapshot.
 
 MCP Settings holds organization defaults, and the proxy applies them on every
@@ -170,9 +206,11 @@ request once they are saved:
   `allow_unlisted_tools` off, a server that declares tools (discovered or
   typed) serves only those, and a call naming a tool outside the manifest is
   refused with `403` `mcp_tool_denied`. An organization that never saved its
-  settings allows unlisted tools, as every organization did before manifests
-  were enforced, so an upgrade does not start refusing calls. A server that
-  declares no tools has nothing to check against.
+  settings allows unlisted tools if it existed before manifests were
+  enforced, so an upgrade does not start refusing calls; an organization created
+  since then enforces manifests until it saves settings with `allow_unlisted_tools`
+  on, which `GET /api/v1/orgs/{org_id}/mcp/settings` reports before anything is
+  saved. A server that declares no tools has nothing to check against.
 - **Failure policy.** `default_failure_mode` decides what happens to a request
   the proxy cannot read as JSON-RPC, and so cannot check against the rules
   above: `fail_closed` (the default) refuses it with `400`, `fail_open` forwards

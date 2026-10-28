@@ -329,6 +329,42 @@ export const FilterToASsoProviderChange: Story = {
   },
 };
 
+// the rows for scoped API tokens (#3289) and LDAP directories (#3261) link to
+// the screens that own them
+export const ApiTokenAndLdapRowsLinkToTheirScreens: Story = {
+  render: () => (
+    <Screen
+      fetchStub={scoped(async (input) =>
+        String(input).includes("/audit-log")
+          ? json(
+              page([
+                entry({
+                  id: "t-1",
+                  action: "api_token.create",
+                  target_type: "api_token",
+                  target_id: "7a7a7a7a-0000-0000-0000-000000000000",
+                }),
+                entry({
+                  id: "t-2",
+                  action: "ldap_directory.update",
+                  target_type: "ldap_directory",
+                  target_id: "8b8b8b8b-0000-0000-0000-000000000000",
+                }),
+              ]),
+            )
+          : json([]),
+      )}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const token = await canvas.findByText("api_token/7a7a7a7a");
+    await expect(token.closest("a")).toHaveAttribute("href", "/api-tokens");
+    const directory = await canvas.findByText("ldap_directory/8b8b8b8b");
+    await expect(directory.closest("a")).toHaveAttribute("href", "/ldap");
+  },
+};
+
 export const TargetFilterOffersIdentityTypes: Story = {
   render: () => <Screen fetchStub={loaded} />,
   play: async ({ canvasElement }) => {

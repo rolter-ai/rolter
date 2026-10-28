@@ -73,13 +73,29 @@ const LIMITS: &[&str] = &[
      whether that model answers as well, so it is a shortlist to test, never a recommendation \
      to switch.",
     "Only models already configured in the same route's pool are considered.",
-    "The request log does not record whether a request carried tools, images, audio, several \
-     turns or a structured-output schema, so substitutability is judged on the outcome, the \
-     token counts and the size thresholds alone.",
     "A request or a candidate whose price is unknown is excluded and counted, never priced at \
      zero.",
     "Counts and costs are scaled by the request log's sampling weight, so under sampling they \
      are estimates.",
+];
+
+/// What the report adds to its `limits` while the request log cannot say what
+/// a request asked for: the table lacks `clickhouse/031_request_shape.sql`, so
+/// no row carries the shape flags the `uses_tools`, `image_input`,
+/// `audio_input`, `structured_output` and `multi_turn` exclusions read (#3317).
+const NO_SHAPE_LIMIT: &str = "The request log does not record whether a request carried tools, \
+     images, audio, several turns or a structured-output schema (clickhouse/031_request_shape.sql \
+     is not applied), so substitutability is judged on the outcome, the token counts and the size \
+     thresholds alone.";
+
+/// The request-shape columns `clickhouse/031_request_shape.sql` adds, each a
+/// reason a request is not substitutable when set (#3317).
+const SHAPE_COLUMNS: [&str; 5] = [
+    "has_tools",
+    "has_image_input",
+    "has_audio_input",
+    "has_response_schema",
+    "turns",
 ];
 
 /// Query string of `GET /api/v1/analytics/savings`.
@@ -187,14 +203,29 @@ const ORG_FILTER: &str = "({org:String} = '' or org_id = {org:String})";
 /// The token columns are qualified because [`groups_sql`] also selects their
 /// sums under the same names, and ClickHouse resolves a bare name to a select
 /// alias before a column: unqualified, the grouping key would hold aggregates.
+///
+/// The shape reasons (#3317) come after the outcome and before the sizes: a
+/// request that needed tools, an image, audio, a schema or a conversation
+/// needs a model that does those, whatever its token counts. A table without
+/// the shape columns reads them as `0`, so no request is excluded for them.
 fn reason_expr(columns: &Columns) -> String {
     let lifecycle = columns.expr("lifecycle_operation");
+    let has_tools = columns.expr("has_tools");
+    let has_image_input = columns.expr("has_image_input");
+    let has_audio_input = columns.expr("has_audio_input");
+    let has_response_schema = columns.expr("has_response_schema");
+    let turns = columns.expr("turns");
     format!(
         "multiIf(unpriced = 1, 'unpriced', \
                  status >= 400, 'failed', \
                  cache_hit = 1, 'cache_hit', \
                  usage_unknown = 1, 'usage_unknown', \
                  {lifecycle} != '', 'not_a_model_call', \
+                 {has_tools} = 1, 'uses_tools', \
+                 {has_image_input} = 1, 'image_input', \
+                 {has_audio_input} = 1, 'audio_input', \
+                 {has_response_schema} = 1, 'structured_output', \
+                 {turns} > 1, 'multi_turn', \
                  request_logs.prompt_tokens = 0, 'no_token_usage', \
                  request_logs.prompt_tokens > {{max_prompt_tokens:UInt32}}, 'prompt_too_large', \
                  request_logs.completion_tokens > {{max_completion_tokens:UInt32}}, 'output_too_large', \
@@ -284,7 +315,13 @@ async fn report(access: &AnalyticsAccess, state: &ControlState, q: &SavingsQuery
         Err(err) => return query_failed("savings query failed", &err),
     };
     let groups: Vec<Group> = groups.iter().map(Group::from_row).collect();
-    Json(analyse(&groups, &callers, &config, thresholds)).into_response()
+    let mut report = analyse(&groups, &callers, &config, thresholds);
+    if !SHAPE_COLUMNS.iter().all(|column| columns.has(column)) {
+        if let Some(limits) = report["limits"].as_array_mut() {
+            limits.push(json!(NO_SHAPE_LIMIT));
+        }
+    }
+    Json(report).into_response()
 }
 
 /// Token totals over a set of requests, already scaled by the sampling weight
@@ -763,6 +800,53 @@ mod tests {
             .iter()
             .filter_map(Value::as_str)
             .any(|l| l.contains("does not evaluate") && l.contains("never a recommendation")));
+    }
+
+    /// #3317: a request that needed tools, an image, audio, a schema or a
+    /// conversation is excluded under its own reason, ahead of the sizes, and
+    /// a table without the shape columns excludes nothing for them.
+    #[test]
+    fn the_request_shape_excludes_under_its_own_reasons() {
+        let sql = reason_expr(&Columns::default());
+        for (predicate, reason) in [
+            ("has_tools = 1, 'uses_tools'", "uses_tools"),
+            ("has_image_input = 1, 'image_input'", "image_input"),
+            ("has_audio_input = 1, 'audio_input'", "audio_input"),
+            (
+                "has_response_schema = 1, 'structured_output'",
+                "structured_output",
+            ),
+            ("turns > 1, 'multi_turn'", "multi_turn"),
+        ] {
+            assert!(sql.contains(predicate), "{reason}: {sql}");
+            assert!(
+                sql.find(predicate) < sql.find("'prompt_too_large'"),
+                "{reason} must be judged before the sizes"
+            );
+        }
+        let old = reason_expr(&Columns::lacking(&SHAPE_COLUMNS));
+        assert!(!old.contains("has_tools"), "{old}");
+        assert!(old.contains("toUInt8(0) = 1, 'uses_tools'"), "{old}");
+        assert!(old.contains("toUInt16(0) > 1, 'multi_turn'"), "{old}");
+    }
+
+    #[test]
+    fn a_shape_reason_is_counted_as_excluded() {
+        let report = analyse(
+            &[
+                eligible("chat", "large"),
+                excluded("chat", "uses_tools", 7.0, 0.5),
+                excluded("chat", "multi_turn", 3.0, 0.25),
+            ],
+            &[],
+            &config(),
+            Thresholds::default(),
+        );
+        assert_eq!(report["excluded"]["requests"]["uses_tools"], 7.0);
+        assert_eq!(report["excluded"]["requests"]["multi_turn"], 3.0);
+        // the report no longer says the shape is unrecorded unless it is
+        let limits = report["limits"].as_array().expect("limits are listed");
+        assert!(!limits.contains(&json!(NO_SHAPE_LIMIT)));
     }
 
     #[test]

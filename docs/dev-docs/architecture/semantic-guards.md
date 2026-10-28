@@ -1,0 +1,63 @@
+# Semantic guard policies
+
+Issue [#459](https://github.com/rolter-ai/rolter/issues/459). User-facing page: `docs/user-docs/security/semantic-guard-policies.mdx`. Streaming decision: [ADR-0037](../adr/2026-10-27-semantic-guard-streaming.md).
+
+## What it is
+
+A semantic guard is an external classifier spoken to over the guardrail webhook contract (`rolter_core::guardrail_webhook`): it judges a request (`pre_call`) or a response (`post_call`) by meaning and answers `allow`, `block`, `transform` or `annotate`, optionally with scored `categories`. Several providers can be enabled; a **policy** scoped to the deployment, an org, a project, a route or a virtual key picks which of them judge a request and holds their scores to thresholds.
+
+Guards decide; sanitizers transform. The boundary with the neighbouring subsystems:
+
+| Subsystem                                          | Does                                             | Runs                          |
+| -------------------------------------------------- | ------------------------------------------------ | ----------------------------- |
+| built-in rules (`rolter_core::guardrails`)         | regex/builtin detectors: annotate, block, redact | in process, first             |
+| semantic guards (this page)                        | decide by meaning: allow, block, flag, transform | external, after the rules     |
+| PII sanitizer (`rolter_core::pii_sanitizer`, #848) | replace entities with placeholders, restore them | external, after the guards    |
+| payload-capture redaction (#1835)                  | mask secrets in captured log payloads            | at capture, never on the wire |
+
+The guards never see restored PII on the response side (the sanitizer's response leg runs last in `DeliveryPolicy::apply`), and the sanitizer never receives content a guard blocked.
+
+## Layout
+
+- `crates/rolter-core/src/semantic_guards.rs` — the model: `SemanticGuardsConfig` (`[semantic_guards]`: `providers`, `policies`), `GuardrailPolicy`, `PolicyScope`, `ViolationAction`, `StreamingStrategy`, validation (`SemanticGuardsConfig::validate`, `policy_field_problems` shared with the control plane), `CompiledSemanticGuards` (built once per snapshot) and `ScoredDecision` (the strict answer parser).
+- `crates/rolter-gateway/src/guardrail_webhook.rs` — the transport: one bounded call with retries, and `CallFailure` naming every way a call can produce no verdict.
+- `crates/rolter-gateway/src/semantic_guards.rs` — the runtime: `SemanticGuard::check` runs one stage of a resolved policy and folds the answers into a `Verdict`; `stream_text` assembles a buffered SSE response for the providers.
+- `crates/rolter-gateway/src/handlers.rs` — the pre-call stage in `proxy`, the stream refusal, and `SemanticLeg` in `DeliveryPolicy` / `stream_response` for the response stage (live, cached and buffered-stream bodies alike).
+- `crates/rolter-gateway/src/realtime.rs`, `realtime_guard.rs` — client events go through the `pre_call` providers; a session whose policy has a `post_call` provider is refused.
+- `crates/rolter-control/src/guardrail_policies.rs` — CRUD, `guardrail_policy` capability; `guardrails.rs` serves the `semantic` view in `GET /api/v1/guardrails/effective` and refuses deleting a provider a policy lists.
+- Store: `guardrail_policies`, `guardrail_policy_providers` (`0133`–`0135`), `GuardrailRepo::*_policy`, `PostgresConfigStore::load_semantic_guards`, `merge_semantic_guards` in `rolter-store/src/lib.rs`.
+- Dashboard: `ui/src/pages/GuardrailPolicies.tsx`, `GuardrailProviders.tsx`, `ui/src/lib/guardrail-enforcement.ts`.
+
+## Resolution
+
+`CompiledSemanticGuards::from_config(semantic_guards, guardrail_webhook)` keeps the enabled providers (the legacy webhook first, when enabled) and indexes enabled policies by `(scope, scope_id)`. `resolve` walks `PolicyScope::PRECEDENCE` (key, route, project, org, deployment) against the request's `ScopeIds` and route model and returns the first hit. The winner **replaces** the broader policies — no merging — so the policy in force is one row, and thresholds, `on_violation` and `streaming` come from it alone. This mirrors plugin precedence in other gateways (Kong applies the single most specific plugin configuration).
+
+No hit falls back to the implicit policy of the **unattached** providers: enabled providers that no policy lists, enabled or paused. "Paused" counts so that pausing a policy cannot widen its providers to every request. The implicit policy has no thresholds and blocks only on an explicit `block`, which is exactly the pre-#459 single-webhook behaviour; it is labelled `default`.
+
+The store keeps one enabled policy per scope (`guardrail_policies_one_enabled_per_scope`), and `SemanticGuardsConfig::validate` checks the same for the file, so the index is never ambiguous.
+
+## One stage
+
+`SemanticGuard::check` runs the policy's providers for the stage in their listed order:
+
+1. Bound the body (`bounded_payload`, `max_body_bytes`) and post the envelope with `policy` and, for a buffered stream, `streamed: true`.
+2. No verdict (`CallFailure`: refused, timeout, connect, overloaded `429`/`503`, other status, unreadable or **unparsable** body) → that provider's `failure_mode`: `fail_open` continues, `fail_closed` returns `Block`. An unparsable answer used to read as `allow`; it now follows the failure mode, so a fail-closed provider that breaks refuses rather than waves through. Only timeout, connect, overload and body failures are retried.
+3. An explicit `block` blocks.
+4. Scores are judged before a transform: a violation blocks under `on_violation = block`, or adds one `policy_flagged:<policy>` event under `annotate`.
+5. A `transform` replaces the body the next provider sees — except on a buffered stream, which is withheld (it cannot be re-encoded).
+
+Every call records `rolter_guardrail_provider_latency_ms{provider}` and one `rolter_guardrail_policy_decisions_total{policy,provider,stage,outcome}`; every violation one `rolter_guardrail_policy_violations_total{policy,category,action}` with the category bounded by `CompiledPolicy::category_label` (a configured name or `other`). The events `check` appends land in the row's `guardrail_events` on both stages: the request stage's directly, the response stage's through `DeliveryPolicy::apply`'s `PolicyEvents` (#3330, see [observability.md](observability.md)). Nothing in this path logs, counts or returns content.
+
+## Streams (ADR-0037)
+
+In `proxy`, after the built-in output rules' stream check: a streamed request whose policy runs `post_call` providers is refused with `400 guardrail_streaming_unsupported` under `streaming = "reject"` (before the upstream call). Under `"buffer"`, `stream_response` reads the upstream body with `read_bounded` (16 MiB, `MAX_BUFFERED_STREAM_BYTES`; over the cap is withheld), translates it as a whole SSE body, shows the providers `stream_content` and then hands it to `buffered_response(.., is_sse = true)` or `withheld_response`. The `SemanticLeg`'s `stream` flag is reset to what actually came back, so a JSON answer to a streamed request is judged as JSON.
+
+## Audio transcriptions (#3331)
+
+`proxy_multipart` serves `/v1/audio/transcriptions` and `/v1/audio/translations`. The request is audio, so no request-stage subsystem runs on it; the response is small text, so it builds the same response stage as `proxy` — the `OutputGuard`, a `SemanticLeg` for a policy that `runs_at(PostCall)`, the `post_response` plugins and a `PiiResponseLeg` with no ticket — and passes them to `stream_response` with `transcript = true`. `DeliveryPolicy::apply` then shows every leg a `text`, `srt` or `vtt` answer as `{"text": …}` and unwraps the delivered body again (`transcript_text`); a successful body that is not a JSON object and not UTF-8 is withheld as `unreadable_transcript`, so a covering policy never lets a transcript through unjudged. `apply_output` scans `text` and `segments[].text` on the two paths, and once anything was redacted removes `words` and `logprobs`, whose one-token entries no rule can match a multi-token value in. `proxy_multipart` passes `is_sse = false`, so a `stream=true` transcription is buffered and judged as its raw event text and `streaming = "reject"` is not honoured yet. The audio units are read from the upstream body before the policy runs (`RequestLog::billed_units`), so a withheld or rewritten transcript is billed by the duration the provider stated. The decision against refusing these requests, as a realtime session is refused, is that nothing here prevents buffering.
+
+## Tests
+
+- `rolter-core`: `semantic_guards::tests` — precedence, replace-not-merge, unattached and paused policies, thresholds and `"*"`, validation, strict parsing, TOML round trip.
+- `rolter-gateway`: `guardrail_webhook::tests` (timeout, connect, overload retried, client error and unparsable not retried, egress refusal), `semantic_guards::tests` (failure modes under failure, overload and garbage; thresholds block and annotate; bounded category labels; block wins and transforms chain; stream text for OpenAI, Anthropic and Responses), and `tests/semantic_guards.rs` end to end (the response stage's `policy_flagged:` and `provider_error:` on the row included) on `/v1/chat/completions` and `/v1/messages` for blocking, redaction (transform) and pass-through, both stages, both stream strategies, failure modes and scope precedence, plus the transcript in `verbose_json` and `text` on both audio paths and the built-in output rules on it; `tests/unit_pricing.rs::a_withheld_transcription_is_billed_its_minutes`. The 16 MiB buffer cap has no end-to-end test (it would need a 16 MiB upstream body).
+- `rolter-control`: `guardrail_policies::tests` (validation) and `tests/control/guardrails.rs::scoped_policies_select_several_enabled_providers` (several enabled providers, ordered policy providers, one enabled policy per scope, snapshot, the delete guard).

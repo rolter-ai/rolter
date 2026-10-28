@@ -35,6 +35,11 @@ export interface InvocationRow {
   /// missing field as 0 and says nothing extra
   upstream_status?: number | string;
   attempts?: number | string;
+  /// the failure class that sent the request on to the target that answered
+  /// it (#1584): `throttled`, `refusal:content_policy_violation` and so on.
+  /// "" when the first dial answered, and absent from a control plane that
+  /// predates it, so a reader shows the row only when it is non-empty
+  fallback_reason?: string;
   cache_read_tokens: number | string;
   cache_write_tokens: number | string;
   /// the part of `cache_write_tokens` Anthropic reports as written to its
@@ -85,7 +90,42 @@ export interface InvocationRow {
   /// `error:<slug>:<kind>` entries (#2243); absent from a control plane that
   /// predates it, empty for a request no plugin touched
   plugin_events?: string[];
+  /**
+   * Where the request began in its gateway process's order of starts (#1392), which
+   * `ts` cannot say inside one millisecond. Meaningful only among the rows of one
+   * gateway instance; `0` on a row older than `clickhouse/021_request_log_seq.sql`.
+   * ClickHouse quotes a 64-bit integer, so it may arrive as a string
+   */
+  seq?: number | string;
+  /// the request parameters dialect translation did not forward as sent, as
+  /// `<disposition>:<param>` entries (`dropped:top_k`, #1586, #3323); absent
+  /// from a control plane that predates it, empty when every parameter went
+  /// through
+  param_adjustments?: string[];
+  /// what happened to the request, by the name the gateway recorded (#3307):
+  /// `served`, `upstream_error`, `withheld`, `cancelled` or a `refused_*`
+  /// reason; `unknown` on a row older than the column, and absent from a
+  /// control plane that predates it
+  outcome?: string;
 }
+
+/** The outcomes a gateway records, in the order the filter lists them (#3307). */
+export const REQUEST_OUTCOMES = [
+  "served",
+  "upstream_error",
+  "withheld",
+  "cancelled",
+  "refused_budget",
+  "refused_rate_limit",
+  "refused_guardrail",
+  "refused_plugin",
+  "refused_access",
+  "refused_invalid",
+  "refused",
+  "unknown",
+] as const;
+
+export type RequestOutcome = (typeof REQUEST_OUTCOMES)[number];
 
 export interface InvocationsQuery extends AnalyticsWindow, AnalyticsRowFilters {
   /**
@@ -100,6 +140,8 @@ export interface InvocationsQuery extends AnalyticsWindow, AnalyticsRowFilters {
    * `error:<slug>:<kind>` (#2243)
    */
   plugin?: string;
+  /** only the requests the gateway recorded with this outcome (#3307) */
+  outcome?: RequestOutcome;
   status?: "all" | "error" | "success";
   /**
    * The `x-request-id` the gateway returned to the client, matched exactly
@@ -160,6 +202,7 @@ export function fetchInvocationsPage(query: InvocationsQuery = {}): Promise<Invo
   if (query.usage_unknown) params.set("usage_unknown", "true");
   if (query.guardrail) params.set("guardrail", query.guardrail);
   if (query.plugin) params.set("plugin", query.plugin);
+  if (query.outcome) params.set("outcome", query.outcome);
   if (query.limit != null) params.set("limit", String(query.limit));
   if (query.cursor) params.set("cursor", query.cursor);
   const qs = params.toString();

@@ -467,6 +467,19 @@ mod tests {
         assert!(config.contains("# --- per-model token pricing"));
     }
 
+    /// `rolter check --strict` gates the Helm and compose rollouts, and it
+    /// runs the gateway's own validation since #3320, so the config `rolter
+    /// init` writes for either profile (the bundled `rolter.example.toml`,
+    /// hardened or not) must pass it, or a fresh install could not roll out.
+    #[test]
+    fn every_profile_writes_a_config_the_gateway_validates() {
+        for profile in [Profile::Production, Profile::Local] {
+            let config =
+                rolter_core::GatewayConfig::from_toml_str(&render_config(profile)).expect("parses");
+            assert_eq!(config.validate(), Ok(()), "{profile:?}");
+        }
+    }
+
     #[test]
     fn the_local_profile_keeps_the_example_key() {
         assert!(render_config(Profile::Local).contains("[[virtual_keys]]"));

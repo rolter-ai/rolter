@@ -30,7 +30,7 @@ Valid range is 1–1000000. A request that sets `max_tokens` explicitly always w
 
 ## API
 
-Both endpoints are **superadmin only**, and every update is audited.
+Reading is for a **superadmin** or a **security auditor** (a [deployment role](/security/rbac#deployment-roles)); updating is **superadmin only**. Every update is audited.
 
 ```bash
 curl -H "Authorization: Bearer $ROLTER_ADMIN_TOKEN" \

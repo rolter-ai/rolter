@@ -855,6 +855,13 @@ fn holds_deployment_role(principal: &Principal, roles: &[DeploymentRole]) -> boo
             .is_some_and(|held| roles.contains(&held))
 }
 
+/// Whether `principal` is a superadmin or a deployment operator (#1834): the
+/// callers who run every alert rule and channel, whichever org owns it, since
+/// alerting was the operator's before it was delegated to scoped admins (#1829).
+pub(crate) fn is_deployment_operator(principal: &Principal) -> bool {
+    holds_deployment_role(principal, &[DeploymentRole::Operator])
+}
+
 /// Guard for a capability with no tenancy scope to resolve a role in.
 ///
 /// `requirement` comes from [`crate::rbac_matrix::superadmin_cap`], which is a

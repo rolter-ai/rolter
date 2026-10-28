@@ -109,6 +109,7 @@ fn config(
             provider: "up".into(),
             model: Some("test-model".into()),
             weight: 1,
+            takes_over: Vec::new(),
         }],
         params: Default::default(),
         param_policy: Default::default(),
@@ -118,6 +119,7 @@ fn config(
         tenancy: None,
     });
     config.db_virtual_keys.push(VirtualKeyRecord {
+        previous: None,
         access_policy: None,
         key_hash: rolter_auth::hash_key(&config.server.resolve_key_pepper(), KEY),
         id: "key-guardrails".into(),
@@ -188,6 +190,8 @@ async fn a_pre_call_block_leaves_a_row_naming_the_rule_and_never_the_text() {
     assert_eq!(status, 400);
     assert_eq!(row["status"], 400, "{row}");
     assert_eq!(row["guardrail_events"], json!(["blocked:email"]), "{row}");
+    // refused before routing, and named for why (#3307)
+    assert_eq!(row["outcome"], "refused_guardrail", "{row}");
     assert!(!row.to_string().contains("secret.example"), "{row}");
 }
 
@@ -201,6 +205,7 @@ async fn a_pre_call_redaction_is_recorded_on_the_delivered_request() {
     .await;
     assert_eq!(status, 200);
     assert_eq!(row["guardrail_events"], json!(["redacted:email"]), "{row}");
+    assert_eq!(row["outcome"], "served", "{row}");
 }
 
 #[tokio::test]
@@ -228,6 +233,22 @@ async fn a_post_call_block_names_the_rule_on_the_withheld_row() {
     assert_eq!(status, 403);
     assert_eq!(row["withheld"], 1, "{row}");
     assert_eq!(row["guardrail_events"], json!(["blocked:email"]), "{row}");
+    assert_eq!(row["outcome"], "withheld", "{row}");
+}
+
+#[tokio::test]
+async fn a_post_call_redaction_and_annotation_are_on_the_delivered_row() {
+    // the upstream answers with an address, so the output rule matches (#3330)
+    for (action, event) in [
+        (GuardAction::Redact, "redacted:email"),
+        (GuardAction::Annotate, "annotated:email"),
+    ] {
+        let (status, row) = run(GuardStage::PostCall, action, "ping").await;
+        assert_eq!(status, 200, "{action:?}");
+        assert_eq!(row["withheld"], 0, "{row}");
+        assert_eq!(row["guardrail_events"], json!([event]), "{row}");
+        assert!(!row.to_string().contains("ops@corp.com"), "{row}");
+    }
 }
 
 /// Runs one request against `config` and returns the status and the one row.

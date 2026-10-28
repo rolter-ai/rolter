@@ -382,6 +382,34 @@ async fn check_reachability(env: &dyn Env, out: &mut Vec<Finding>) {
     }
 }
 
+/// The finding for a relay check that failed (#3304): a warning, since mail is
+/// optional and a failing relay only costs the convenience of emailed links.
+/// The stage and a fixed sentence; never the relay's address or credential.
+#[cfg(feature = "postgres")]
+fn mail_relay_finding(failure: &rolter_control::mail::RelayFailure) -> Finding {
+    Finding::warn(
+        format!("the mail relay failed its {} check", failure.stage.as_str()),
+        format!(
+            "{} (ROLTER_SMTP_URL). Invitations are still created and their links returned; \
+             they are just not emailed until this is fixed.",
+            failure.reason
+        ),
+    )
+}
+
+/// Connect, set up TLS and authenticate against the configured mail relay,
+/// without sending a message (#3304). Behind `--connect` because it opens a
+/// socket, and behind the `postgres` feature because the mailer is part of the
+/// control plane's database-backed build. The relay is held to the egress policy
+/// of the file given with `--config`, the one the control plane runs with, so an
+/// address the operator allowed is not reported as denied.
+#[cfg(feature = "postgres")]
+async fn check_mail_relay(egress: &rolter_core::EgressPolicy, out: &mut Vec<Finding>) {
+    if let Some(Err(failure)) = rolter_control::mail::check_env_relay(egress).await {
+        out.push(mail_relay_finding(&failure));
+    }
+}
+
 /// Does the KEK in the environment open the secrets this store already holds?
 /// (#923)
 ///
@@ -660,6 +688,36 @@ fn mixed_decision_route_findings(config: &rolter_core::GatewayConfig) -> Vec<Fin
         .collect()
 }
 
+/// Every problem the gateway's own validation finds in the file (#3320).
+///
+/// `GatewayConfig::load` parses the file and checks only its CA bundles; the
+/// gateway then runs the strict [`rolter_core::GatewayConfig::validate`] at
+/// startup, and every route, provider, budget or cache setting it names fails
+/// to serve. Running it here is what makes a file that passes `rolter check`
+/// one the gateway accepts. A route header problem is left out: the finding
+/// above already reports it, by the route's name.
+fn validation_findings(config: &rolter_core::GatewayConfig) -> Vec<Finding> {
+    let Err(problems) = config.validate() else {
+        return Vec::new();
+    };
+    let reported: std::collections::HashSet<String> = config
+        .routes
+        .iter()
+        .flat_map(|route| {
+            route
+                .advanced
+                .header_problems()
+                .into_iter()
+                .map(move |problem| format!("route '{}': {problem}", route.model))
+        })
+        .collect();
+    problems
+        .into_iter()
+        .filter(|problem| !reported.contains(problem))
+        .map(|detail| Finding::error("config fails the gateway's validation", detail))
+        .collect()
+}
+
 /// Render the migration plan for a config file, and the finding that goes with it.
 ///
 /// This is a preview, not an action: nothing is written, here or at load time.
@@ -745,6 +803,13 @@ pub async fn run(args: CheckArgs) -> anyhow::Result<()> {
         #[cfg(feature = "postgres")]
         if args.role == Role::Control {
             check_kek_opens_the_store(&ProcessEnv, &mut findings).await;
+            let egress = args
+                .config
+                .as_deref()
+                .and_then(|path| rolter_core::GatewayConfig::load(std::path::Path::new(path)).ok())
+                .map(|config| config.egress)
+                .unwrap_or_default();
+            check_mail_relay(&egress, &mut findings).await;
         }
     }
 
@@ -764,6 +829,7 @@ pub async fn run(args: CheckArgs) -> anyhow::Result<()> {
                 findings.extend(example_key_findings(&config));
                 findings.extend(project_scoped_findings(&config));
                 findings.extend(mixed_decision_route_findings(&config));
+                findings.extend(validation_findings(&config));
             }
             Err(error) => findings.push(Finding::error(
                 format!("config file {path} is not usable"),
@@ -784,6 +850,102 @@ pub async fn run(args: CheckArgs) -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    /// #1584: `rolter check` refuses a route whose every target is a
+    /// restricted fallback, by the name the gateway's own validation uses.
+    #[test]
+    fn a_route_of_only_restricted_targets_is_an_error() {
+        let config = rolter_core::GatewayConfig::from_toml_str(
+            r#"
+[[providers]]
+name = "premium"
+kind = "openai"
+api_base = "https://api.openai.com"
+
+[[routes]]
+model = "stranded"
+[[routes.targets]]
+provider = "premium"
+takes_over = ["refusal"]
+"#,
+        )
+        .expect("parses");
+        let findings = validation_findings(&config);
+        assert_eq!(findings.len(), 1);
+        let (text, failed) = report(&findings, false);
+        assert!(failed, "{text}");
+        assert!(text.contains("all_targets_restricted"), "{text}");
+    }
+
+    /// #3320: a file that parses but that the gateway's validation refuses
+    /// fails `rolter check`, one error finding per problem.
+    #[test]
+    fn a_file_that_parses_but_fails_validation_is_an_error() {
+        let config = rolter_core::GatewayConfig::from_toml_str(
+            r#"
+[[providers]]
+name = "openai"
+kind = "openai"
+api_base = "https://api.openai.com"
+
+[[routes]]
+model = "chat"
+[[routes.targets]]
+provider = "missing"
+
+[[routes]]
+model = "chat"
+[[routes.targets]]
+provider = "openai"
+weight = 0
+"#,
+        )
+        .expect("parses");
+        let findings = validation_findings(&config);
+        let (text, failed) = report(&findings, false);
+        assert!(failed, "{text}");
+        for problem in [
+            "targets unknown provider 'missing'",
+            "duplicate route model 'chat'",
+            "weight",
+        ] {
+            assert!(text.contains(problem), "{problem} missing from {text}");
+        }
+        assert!(findings.len() >= 3, "one finding per problem: {findings:?}");
+    }
+
+    /// A valid file adds no finding, and a route header problem is reported
+    /// once, by its own finding, not again as a validation problem.
+    #[test]
+    fn validation_adds_nothing_to_a_valid_file_or_a_header_problem() {
+        let valid = rolter_core::GatewayConfig::from_toml_str(
+            r#"
+[[providers]]
+name = "openai"
+kind = "openai"
+api_base = "https://api.openai.com"
+
+[[routes]]
+model = "chat"
+[[routes.targets]]
+provider = "openai"
+"#,
+        )
+        .expect("parses");
+        assert!(validation_findings(&valid).is_empty());
+
+        let mut header = valid.clone();
+        header.routes[0]
+            .advanced
+            .headers
+            .insert("authorization".into(), "Bearer x".into());
+        assert_eq!(route_header_findings(&header).len(), 1);
+        assert!(
+            validation_findings(&header).is_empty(),
+            "{:?}",
+            validation_findings(&header)
+        );
+    }
 
     #[derive(Default)]
     struct FakeEnv(HashMap<String, String>);
@@ -1215,6 +1377,20 @@ mod tests {
             .expect("missing redis not reported");
         // a single-replica deployment is legitimately fine without redis
         assert!(!redis.fatal);
+    }
+
+    #[cfg(feature = "postgres")]
+    #[test]
+    fn a_failing_mail_relay_is_a_warning_that_names_the_stage_only() {
+        use rolter_control::mail::{RelayFailure, RelayStage};
+        let failure = RelayFailure {
+            stage: RelayStage::Auth,
+            reason: "the mail server refused the credential in the relay url".to_string(),
+        };
+        let finding = mail_relay_finding(&failure);
+        assert!(!finding.fatal, "mail is optional");
+        assert_eq!(finding.title, "the mail relay failed its auth check");
+        assert!(finding.detail.contains("refused the credential"));
     }
 
     #[cfg(feature = "postgres")]

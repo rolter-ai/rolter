@@ -52,6 +52,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use anyhow::Context as _;
 use argon2::password_hash::PasswordHasher;
 use argon2::Argon2;
 use rolter_core::{
@@ -81,8 +82,17 @@ pub struct SeedArgs {
     /// admin user email; combined with --admin-password to create an admin user
     #[arg(long)]
     pub admin_email: Option<String>,
-    #[arg(long)]
+    /// admin password. Visible to every user of the host through `ps` while the
+    /// command runs and kept in shell history: prefer --admin-password-stdin or
+    /// --admin-password-file
+    #[arg(long, conflicts_with_all = ["admin_password_stdin", "admin_password_file"])]
     pub admin_password: Option<String>,
+    /// read the admin password from standard input (one line)
+    #[arg(long, conflicts_with = "admin_password_file", requires = "admin_email")]
+    pub admin_password_stdin: bool,
+    /// read the admin password from a file (first line)
+    #[arg(long, value_name = "PATH", requires = "admin_email")]
+    pub admin_password_file: Option<PathBuf>,
     /// bootstrap rolter.toml to import providers/routes from. The file is the
     /// desired state: re-importing an edited file updates the rows it already
     /// created. Never overwrites a credential sealed through the dashboard,
@@ -94,6 +104,7 @@ pub struct SeedArgs {
 /// Connect, migrate and [`seed`] from command-line arguments, then print which
 /// org was seeded. Shared by `rolter seed` and `rolter-seed`.
 pub async fn run(args: SeedArgs) -> anyhow::Result<()> {
+    let admin_password = resolve_admin_password(&args, &mut std::io::stdin().lock())?;
     let pool = rolter_store::postgres::connect(&args.database_url).await?;
     rolter_store::postgres::run_migrations(&pool).await?;
 
@@ -103,7 +114,7 @@ pub async fn run(args: SeedArgs) -> anyhow::Result<()> {
             org: args.org,
             org_slug: args.org_slug,
             admin_email: args.admin_email,
-            admin_password: args.admin_password,
+            admin_password,
             import: args.import,
         },
     )
@@ -114,6 +125,33 @@ pub async fn run(args: SeedArgs) -> anyhow::Result<()> {
         summary.org_name, summary.org_slug
     );
     Ok(())
+}
+
+/// The admin password from whichever source the arguments name: the flag
+/// itself, a file, or `stdin`. A password is the first line of its source, so a
+/// trailing newline is not part of it, and an empty one is refused rather than
+/// seeded.
+fn resolve_admin_password(
+    args: &SeedArgs,
+    stdin: &mut impl std::io::BufRead,
+) -> anyhow::Result<Option<String>> {
+    let raw = if args.admin_password_stdin {
+        let mut line = String::new();
+        stdin
+            .read_line(&mut line)
+            .context("failed to read the admin password from stdin")?;
+        line
+    } else if let Some(path) = &args.admin_password_file {
+        let text = std::fs::read_to_string(path).with_context(|| {
+            format!("failed to read the admin password file {}", path.display())
+        })?;
+        text.lines().next().unwrap_or_default().to_string()
+    } else {
+        return Ok(args.admin_password.clone());
+    };
+    let password = raw.trim_end_matches(['\r', '\n']).to_string();
+    anyhow::ensure!(!password.is_empty(), "the admin password source is empty");
+    Ok(Some(password))
 }
 
 /// Options controlling what [`seed`] creates. `org` defaults to `default` when
@@ -287,7 +325,12 @@ const MANAGED_IN: &[ManagedIn] = &[
         endpoint: None,
     },
     ManagedIn {
-        sections: &["guardrails", "guardrail_webhook", "pii_sanitizer"],
+        sections: &[
+            "guardrails",
+            "guardrail_webhook",
+            "semantic_guards",
+            "pii_sanitizer",
+        ],
         screen: "dashboard Guardrails",
         endpoint: None,
     },
@@ -757,6 +800,17 @@ async fn import_config(
         provider_ids.insert(p.name.clone(), row.id);
     }
 
+    // a route that could never dial anything is refused before any row is
+    // written, as `rolter.toml` validation and the routes API refuse it (#1584)
+    let problems: Vec<String> = config
+        .routes
+        .iter()
+        .flat_map(|r| r.takes_over_problems())
+        .collect();
+    if !problems.is_empty() {
+        return Err(anyhow::anyhow!(problems.join("; ")));
+    }
+
     for r in &config.routes {
         let strategy = strategy_column(r.strategy);
         let existing = routes
@@ -832,17 +886,33 @@ async fn import_config(
                 row.provider_id == provider_id
                     && row.upstream_model.as_deref() == t.model.as_deref()
             });
+            // the failure classes are desired state too, so an edited
+            // `takes_over` is applied like an edited weight (#1584)
+            let takes_over: Vec<String> = t.takes_over.iter().map(|c| c.to_string()).collect();
             match existing_target {
-                Some(row) if row.weight == t.weight as i32 => continue,
+                Some(row) if row.weight == t.weight as i32 && row.takes_over == takes_over => {
+                    continue
+                }
                 Some(row) => {
-                    targets.set_weight(row.id, t.weight as i32).await?;
-                    tracing::info!(
-                        model = %r.model,
-                        target_provider = %t.provider,
-                        from = row.weight,
-                        to = t.weight,
-                        "updated target weight from file"
-                    );
+                    if row.weight != t.weight as i32 {
+                        targets.set_weight(row.id, t.weight as i32).await?;
+                        tracing::info!(
+                            model = %r.model,
+                            target_provider = %t.provider,
+                            from = row.weight,
+                            to = t.weight,
+                            "updated target weight from file"
+                        );
+                    }
+                    if row.takes_over != takes_over {
+                        targets.set_takes_over(row.id, &takes_over).await?;
+                        tracing::info!(
+                            model = %r.model,
+                            target_provider = %t.provider,
+                            takes_over = ?takes_over,
+                            "updated target takes_over from file"
+                        );
+                    }
                 }
                 None => {
                     targets
@@ -851,6 +921,7 @@ async fn import_config(
                             provider_id,
                             t.model.as_deref(),
                             t.weight as i32,
+                            &takes_over,
                         )
                         .await?;
                     tracing::info!(
@@ -928,6 +999,8 @@ async fn import_route_variants(
                 provider_id,
                 upstream_model: target.model.clone(),
                 weight: i32::try_from(target.weight)?,
+                // desired state like the weight (#3373)
+                takes_over: target.takes_over.iter().map(|c| c.to_string()).collect(),
             });
         }
         specs.push(RouteVariantSpec {
@@ -1093,6 +1166,15 @@ async fn resolve_cap_scope(
     if Uuid::parse_str(reference).is_ok() {
         return Ok(None);
     }
+    // a person is named by the account's email, which is no path (#3311). An
+    // account that does not exist here is never created for a cap
+    if scope == BudgetScope::User {
+        let found: Option<Uuid> = sqlx::query_scalar("select id from users where email = $1")
+            .bind(reference)
+            .fetch_optional(pool)
+            .await?;
+        return Ok(found.map(|id| ("user", id)));
+    }
     let parts: Vec<&str> = reference.split('/').collect();
     let (scope_type, found): (&'static str, Option<Uuid>) = match (scope, parts.as_slice()) {
         (BudgetScope::Org, [org]) => (
@@ -1153,13 +1235,36 @@ async fn resolve_cap_scope(
     Ok(found.map(|id| (scope_type, id)))
 }
 
+/// The place a person's cap is narrowed to, resolved from the slug path the
+/// export writes: `{ org = "acme" }` or `{ project = "acme/platform/api" }`
+/// (#3311). `Ok(None)` when it names nothing on this deployment.
+async fn resolve_within(
+    pool: &PgPool,
+    within: Option<&rolter_core::ScopeWithin>,
+) -> anyhow::Result<Option<Within>> {
+    use rolter_core::ScopeWithin;
+    Ok(match within {
+        None => Some(Within::default()),
+        Some(ScopeWithin::Org(reference)) => resolve_cap_scope(pool, BudgetScope::Org, reference)
+            .await?
+            .map(|(_, id)| Within::org(id)),
+        Some(ScopeWithin::Project(reference)) => {
+            resolve_cap_scope(pool, BudgetScope::Project, reference)
+                .await?
+                .map(|(_, id)| Within::project(id))
+        }
+    })
+}
+
 /// Upsert `[[budgets]]` and `[[rate_limits]]` (#1312).
 ///
 /// A cap's identity is its scope plus, for a budget, its window; two caps that
 /// share one are matched to the file's entries in order, oldest first, so the
 /// export of a deployment that has two re-imports as two. An entry whose scope
 /// does not resolve here is left alone and reported, never half applied: the
-/// same rule as a provider group with a member the file cannot name. Rows the
+/// same rule as a provider group with a member the file cannot name. A person's
+/// cap is found by the account's email, and by its `within` place, and an
+/// account that does not exist here is skipped, never created (#3311). Rows the
 /// file does not mention are not deleted. A value outside what the column or
 /// the gateway can hold fails the import before it writes anything, as a
 /// negative price does.
@@ -1185,19 +1290,47 @@ async fn import_caps(pool: &PgPool, config: &GatewayConfig) -> anyhow::Result<()
         }
     }
 
+    for (scope, id, within) in config
+        .budgets
+        .iter()
+        .map(|b| (b.scope, &b.id, &b.within))
+        .chain(
+            config
+                .rate_limits
+                .iter()
+                .map(|l| (l.scope, &l.id, &l.within)),
+        )
+    {
+        if within.is_some() && scope != BudgetScope::User {
+            anyhow::bail!(
+                "cap on {scope:?} '{id}': within narrows a person's cap and means nothing on \
+                 any other scope"
+            );
+        }
+    }
+
     let budgets = BudgetRepo(pool);
-    let mut taken: HashMap<(&'static str, Uuid, BudgetPeriod), usize> = HashMap::new();
+    let mut taken: HashMap<(&'static str, Uuid, Within, BudgetPeriod), usize> = HashMap::new();
     for b in &config.budgets {
         let Some((scope_type, scope_id)) = resolve_cap_scope(pool, b.scope, &b.id).await? else {
             tracing::warn!(scope = ?b.scope, id = %b.id, "budget scope does not resolve on this deployment; left alone");
             continue;
         };
-        let nth = taken.entry((scope_type, scope_id, b.period)).or_default();
+        let Some(within) = resolve_within(pool, b.within.as_ref()).await? else {
+            tracing::warn!(scope = ?b.scope, id = %b.id, "budget's within does not resolve on this deployment; left alone");
+            continue;
+        };
+        let nth = taken
+            .entry((scope_type, scope_id, within, b.period))
+            .or_default();
         let same_window: Vec<_> = budgets
             .list_for_scope(scope_type, scope_id)
             .await?
             .into_iter()
             .filter(|row| BudgetPeriod::parse(&row.period) == Some(b.period))
+            .filter(|row| {
+                (row.within_org_id, row.within_project_id) == (within.org, within.project)
+            })
             .collect();
         let limit = b.limit_usd.to_string();
         let policy = b.unpriced_policy.map(|p| match p {
@@ -1224,14 +1357,7 @@ async fn import_caps(pool: &PgPool, config: &GatewayConfig) -> anyhow::Result<()
                     BudgetPeriod::Total => "total",
                 };
                 budgets
-                    .create(
-                        scope_type,
-                        scope_id,
-                        &limit,
-                        period,
-                        policy,
-                        Within::default(),
-                    )
+                    .create(scope_type, scope_id, &limit, period, policy, within)
                     .await?;
                 tracing::info!(scope = ?b.scope, id = %b.id, "created budget");
             }
@@ -1240,14 +1366,25 @@ async fn import_caps(pool: &PgPool, config: &GatewayConfig) -> anyhow::Result<()
     }
 
     let limits = RateLimitRepo(pool);
-    let mut taken: HashMap<(&'static str, Uuid), usize> = HashMap::new();
+    let mut taken: HashMap<(&'static str, Uuid, Within), usize> = HashMap::new();
     for l in &config.rate_limits {
         let Some((scope_type, scope_id)) = resolve_cap_scope(pool, l.scope, &l.id).await? else {
             tracing::warn!(scope = ?l.scope, id = %l.id, "rate limit scope does not resolve on this deployment; left alone");
             continue;
         };
-        let nth = taken.entry((scope_type, scope_id)).or_default();
-        let existing = limits.list_for_scope(scope_type, scope_id).await?;
+        let Some(within) = resolve_within(pool, l.within.as_ref()).await? else {
+            tracing::warn!(scope = ?l.scope, id = %l.id, "rate limit's within does not resolve on this deployment; left alone");
+            continue;
+        };
+        let nth = taken.entry((scope_type, scope_id, within)).or_default();
+        let existing: Vec<_> = limits
+            .list_for_scope(scope_type, scope_id)
+            .await?
+            .into_iter()
+            .filter(|row| {
+                (row.within_org_id, row.within_project_id) == (within.org, within.project)
+            })
+            .collect();
         let rpm = l.rpm.map(i32::try_from).transpose()?;
         let tpm = l.tpm.map(i32::try_from).transpose()?;
         match existing.get(*nth) {
@@ -1259,7 +1396,7 @@ async fn import_caps(pool: &PgPool, config: &GatewayConfig) -> anyhow::Result<()
             }
             None => {
                 limits
-                    .create(scope_type, scope_id, rpm, tpm, Within::default())
+                    .create(scope_type, scope_id, rpm, tpm, within)
                     .await?;
                 tracing::info!(scope = ?l.scope, id = %l.id, "created rate limit");
             }
@@ -1507,6 +1644,98 @@ async fn import_prompt_template(
 
 #[cfg(test)]
 mod tests {
+    use super::resolve_admin_password;
+    use super::SeedArgs;
+    use clap::Parser;
+    use std::io::Cursor;
+
+    #[derive(Parser)]
+    struct Cli {
+        #[command(flatten)]
+        seed: SeedArgs,
+    }
+
+    fn parse(extra: &[&str]) -> Result<SeedArgs, clap::Error> {
+        let mut argv = vec!["seed", "--database-url", "postgres://u@h/db"];
+        argv.extend_from_slice(extra);
+        Cli::try_parse_from(argv).map(|cli| cli.seed)
+    }
+
+    #[test]
+    fn the_admin_password_comes_from_the_flag_stdin_or_a_file() {
+        let args = parse(&["--admin-password", "from-flag"]).unwrap();
+        let got = resolve_admin_password(&args, &mut Cursor::new(Vec::new())).unwrap();
+        assert_eq!(got.as_deref(), Some("from-flag"));
+
+        let args = parse(&["--admin-email", "a@example.com", "--admin-password-stdin"]).unwrap();
+        let got = resolve_admin_password(&args, &mut Cursor::new(b"from-stdin\r\nrest".to_vec()))
+            .unwrap();
+        assert_eq!(got.as_deref(), Some("from-stdin"));
+
+        let path = std::env::temp_dir().join(format!("rolter-seed-pw-{}", std::process::id()));
+        std::fs::write(&path, "from-file\n").unwrap();
+        let args = parse(&[
+            "--admin-email",
+            "a@example.com",
+            "--admin-password-file",
+            path.to_str().unwrap(),
+        ])
+        .unwrap();
+        let got = resolve_admin_password(&args, &mut Cursor::new(Vec::new())).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(got.as_deref(), Some("from-file"));
+
+        let args = parse(&[]).unwrap();
+        let got = resolve_admin_password(&args, &mut Cursor::new(Vec::new())).unwrap();
+        assert_eq!(got, None);
+    }
+
+    #[test]
+    fn an_empty_or_missing_password_source_is_refused() {
+        let args = parse(&["--admin-email", "a@example.com", "--admin-password-stdin"]).unwrap();
+        assert!(resolve_admin_password(&args, &mut Cursor::new(b"\n".to_vec())).is_err());
+        let args = parse(&[
+            "--admin-email",
+            "a@example.com",
+            "--admin-password-file",
+            "/nonexistent/rolter-pw",
+        ])
+        .unwrap();
+        assert!(resolve_admin_password(&args, &mut Cursor::new(Vec::new())).is_err());
+    }
+
+    #[test]
+    fn the_password_sources_exclude_one_another() {
+        assert!(parse(&[
+            "--admin-email",
+            "a@example.com",
+            "--admin-password",
+            "x",
+            "--admin-password-stdin"
+        ])
+        .is_err());
+        assert!(parse(&[
+            "--admin-email",
+            "a@example.com",
+            "--admin-password",
+            "x",
+            "--admin-password-file",
+            "f"
+        ])
+        .is_err());
+        assert!(parse(&[
+            "--admin-email",
+            "a@example.com",
+            "--admin-password-stdin",
+            "--admin-password-file",
+            "f"
+        ])
+        .is_err());
+        // a password with no account to give it to would be read and dropped
+        assert!(parse(&["--admin-password-stdin"]).is_err());
+        assert!(parse(&["--admin-password-file", "f"]).is_err());
+    }
+
     use super::{
         declares_payload_capture, declares_ui_events, import_bootstrap_toml,
         import_prompt_template, lint_import_file, slugify,
@@ -2152,6 +2381,111 @@ weight = 7
         assert_eq!(RouteRepo(&pool).list(project_id).await.unwrap().len(), 1);
     }
 
+    /// #1584: a target's `takes_over` is desired state like its weight: the
+    /// import stores it, a re-import applies an edit to it in place, and a
+    /// route whose every target is restricted is refused before any row is
+    /// written.
+    #[tokio::test]
+    async fn the_import_applies_takes_over_and_refuses_an_all_restricted_route() {
+        let Some(db) = scratch_db().await else {
+            return;
+        };
+        let pool = db.pool().clone();
+        let (org_id, project_id) = bootstrap_org(&pool).await;
+
+        let dir = tempdir("takes-over");
+        let path = dir.join("rolter.toml");
+        let file = |classes: &str| {
+            format!(
+                r#"
+[[providers]]
+name = "cheap"
+kind = "openai_compatible"
+api_base = "http://cheap:80"
+
+[[providers]]
+name = "premium"
+kind = "openai_compatible"
+api_base = "http://premium:80"
+
+[[routes]]
+model = "guarded"
+[[routes.targets]]
+provider = "cheap"
+[[routes.targets]]
+provider = "premium"
+takes_over = {classes}
+"#
+            )
+        };
+        let stored = |pool: sqlx::PgPool| async move {
+            let route = RouteRepo(&pool)
+                .list(project_id)
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|row| row.model == "guarded")
+                .expect("the route is imported");
+            let mut targets = RouteTargetRepo(&pool).list(route.id).await.unwrap();
+            targets.sort_by_key(|t| t.takes_over.len());
+            targets
+                .into_iter()
+                .map(|t| t.takes_over)
+                .collect::<Vec<_>>()
+        };
+
+        std::fs::write(&path, file(r#"["refusal"]"#)).unwrap();
+        import_bootstrap_toml(&pool, org_id, project_id, &path)
+            .await
+            .unwrap();
+        assert_eq!(
+            stored(pool.clone()).await,
+            vec![vec![], vec!["refusal".to_string()]]
+        );
+
+        std::fs::write(&path, file(r#"["refusal:hate", "throttled"]"#)).unwrap();
+        import_bootstrap_toml(&pool, org_id, project_id, &path)
+            .await
+            .unwrap();
+        assert_eq!(
+            stored(pool.clone()).await,
+            vec![
+                vec![],
+                vec!["refusal:hate".to_string(), "throttled".to_string()]
+            ],
+            "the edit was not applied in place"
+        );
+
+        let restricted = dir.join("restricted.toml");
+        std::fs::write(
+            &restricted,
+            r#"
+[[providers]]
+name = "premium"
+kind = "openai_compatible"
+api_base = "http://premium:80"
+
+[[routes]]
+model = "stranded"
+[[routes.targets]]
+provider = "premium"
+takes_over = ["refusal"]
+"#,
+        )
+        .unwrap();
+        let refused = import_bootstrap_toml(&pool, org_id, project_id, &restricted)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(refused.contains("all_targets_restricted"), "{refused}");
+        assert!(RouteRepo(&pool)
+            .list(project_id)
+            .await
+            .unwrap()
+            .iter()
+            .all(|row| row.model != "stranded"));
+    }
+
     /// #954: presence, not value, is what makes the import touch capture. A
     /// parsed [`GatewayConfig`] always carries a `payload_capture` block, so
     /// only the raw text can say whether the operator wrote one.
@@ -2730,6 +3064,120 @@ weight = 1
             "re-importing the export rewrote the variants"
         );
         assert_eq!(after.len(), 3);
+    }
+
+    /// #3373: a variant target's `takes_over` is stored by the import,
+    /// reaches the snapshot, is written by the export, and re-importing that
+    /// export writes nothing. A classic target's survives the export too.
+    #[tokio::test]
+    async fn variant_takes_over_round_trips_through_import_and_export() {
+        let Some(db) = scratch_db().await else {
+            return;
+        };
+        let pool = db.pool().clone();
+        let (org_id, project_id) = bootstrap_org(&pool).await;
+        let dir = tempdir("variants-takes-over");
+        let path = dir.join("rolter.toml");
+        std::fs::write(
+            &path,
+            r#"
+[[providers]]
+name = "primary"
+kind = "openai"
+api_base = "https://api.openai.com"
+
+[[providers]]
+name = "burst"
+kind = "openai_compatible"
+api_base = "http://vllm:8000"
+
+[[routes]]
+model = "pooled"
+[[routes.targets]]
+provider = "primary"
+[[routes.targets]]
+provider = "burst"
+takes_over = ["timeout"]
+
+[[routes]]
+model = "split"
+[[routes.variants]]
+name = "stable"
+[[routes.variants.targets]]
+provider = "primary"
+[[routes.variants.targets]]
+provider = "burst"
+takes_over = ["throttled", "refusal:violence"]
+"#,
+        )
+        .unwrap();
+        import_bootstrap_toml(&pool, org_id, project_id, &path)
+            .await
+            .unwrap();
+        let route = RouteRepo(&pool)
+            .list(project_id)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|r| r.model == "split")
+            .unwrap();
+        let stored = rolter_store::postgres::repo::RouteVariantRepo(&pool)
+            .list(route.id)
+            .await
+            .unwrap();
+        assert_eq!(
+            stored[0].targets[1].takes_over,
+            ["throttled", "refusal:violence"]
+        );
+        assert!(stored[0].targets[0].takes_over.is_empty());
+
+        use rolter_store::ConfigStore;
+        let store = rolter_store::PostgresConfigStore::with_kek(pool.clone(), None);
+        let served = store.load().await.unwrap();
+        let split = served.routes.iter().find(|r| r.model == "split").unwrap();
+        assert_eq!(split.variants[0].targets[1].takes_over.len(), 2);
+
+        let exported = crate::config_export::export_document(&pool, &served)
+            .await
+            .unwrap();
+        assert!(
+            exported.contains(r#"takes_over = ["throttled", "refusal:violence"]"#),
+            "{exported}"
+        );
+        assert!(
+            exported.contains(r#"takes_over = ["timeout"]"#),
+            "{exported}"
+        );
+
+        std::fs::write(&path, &exported).unwrap();
+        import_bootstrap_toml(&pool, org_id, project_id, &path)
+            .await
+            .unwrap();
+        let again = rolter_store::postgres::repo::RouteVariantRepo(&pool)
+            .list(route.id)
+            .await
+            .unwrap();
+        assert_eq!(
+            again.iter().map(|v| v.id).collect::<Vec<_>>(),
+            stored.iter().map(|v| v.id).collect::<Vec<_>>(),
+            "re-importing the export rewrote the variants"
+        );
+        let pooled = RouteRepo(&pool)
+            .list(project_id)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|r| r.model == "pooled")
+            .unwrap();
+        let targets = rolter_store::postgres::repo::RouteTargetRepo(&pool)
+            .list(pooled.id)
+            .await
+            .unwrap();
+        assert_eq!(targets.len(), 2);
+        assert!(
+            targets.iter().any(|t| t.takes_over == ["timeout"]),
+            "{targets:?}"
+        );
     }
 
     /// A scratch directory for the bootstrap toml a test writes.

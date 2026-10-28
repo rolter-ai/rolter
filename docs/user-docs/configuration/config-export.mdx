@@ -79,15 +79,29 @@ rpm = 600
 | `team`                      | `org-slug/team-name`    |
 | `project`                   | `org-slug/team/project` |
 | `business_unit`, `customer` | `org-slug/their-slug`   |
+| `user`                      | the account's email     |
 
-On import each reference is looked up on the receiving deployment. A cap whose scope does not exist there, or whose `id` is a database id, is left alone and reported in the log; it is never half applied. A cap is matched to an existing row by its scope (and, for a budget, its window), so re-importing an edited file changes the cap instead of adding another, and an unchanged file writes nothing. Caps the file does not mention are not deleted. Caps on a virtual key or on a person have no name that survives a move, and the export counts them in a comment instead. A team or project whose name contains `/` is not portable for the same reason and is counted the same way.
+A cap on a **person** is named by the account's email, so the file carries the addresses of the people who hold a cap and nobody else's. It counts every key that person minted; to narrow it to the keys minted in one org or project, add `within` with the same slug path as above:
+
+```toml
+[[budgets]]
+scope = "user"
+id = "alice@example.com"
+within = { project = "acme/platform/api" }   # or { org = "acme" }
+limit_usd = 50.0
+period = "monthly"
+```
+
+On import the email is looked up among the receiving deployment's accounts. An account that does not exist there is **never created**: the cap is skipped and reported in the log, like a scope that names nothing. A `within` that names nothing there skips the cap the same way. Keep the account list and the file in step by inviting or provisioning the person first.
+
+On import each reference is looked up on the receiving deployment. A cap whose scope does not exist there, or whose `id` is a database id, is left alone and reported in the log; it is never half applied. A cap is matched to an existing row by its scope, its `within` place and, for a budget, its window, so re-importing an edited file changes the cap instead of adding another, and an unchanged file writes nothing. Caps the file does not mention are not deleted. A cap on a virtual key is not exported: keys are never exported, so it would name nothing on the other side, and the export counts it in a comment instead. A team or project whose name contains `/` is not portable for the same reason and is counted the same way.
 
 ### What is deliberately left out
 
 An export that carried rows the importer ignores would promise more than a re-import delivers, so those rows are not written at all. The emitted file states this in a header comment, so the omission is visible in the artifact rather than only in this page.
 
 - **Virtual keys.** Only a one-way digest of a key is stored; there is nothing to export that would work on the receiving side.
-- **Caps on a virtual key or a person.** Neither has a name that survives a move to another deployment.
+- **Caps on a virtual key.** Keys are never exported, so the cap would have nothing to attach to. A cap on a person does travel, by email (see above).
 - **MCP servers and OAuth sessions, guardrails, SSO and SCIM configuration.**
 - **Users, teams, projects and memberships.** `rolter-seed` creates the org, team and project it imports into.
 - **Operational tables** — request logs, sessions, audit records and usage. These are history, not configuration.
@@ -148,7 +162,7 @@ Identity is always a slug or a public model name, never a database id, which is 
 
 **Settings → Effective Config** carries an **Export rolter.toml** button beside the header. It calls the same endpoint and saves the document as `rolter-config-YYYY-MM-DD.toml`, dated so successive exports of one deployment sit side by side instead of overwriting each other.
 
-The button is superadmin-only, matching the endpoint. A scoped role sees it disabled with a tooltip saying so rather than a "forbidden" error after the click. If the export fails, the dashboard says why in a notification — a browser download that produces nothing has no other way to report it.
+The button is for a superadmin or a security auditor (a [deployment role](/security/rbac#deployment-roles)), matching the endpoint. Any other role sees it disabled with a tooltip saying so rather than a "forbidden" error after the click. If the export fails, the dashboard says why in a notification — a browser download that produces nothing has no other way to report it.
 
 ---
 
@@ -165,6 +179,6 @@ curl -H "Authorization: Bearer $ROLTER_ADMIN_TOKEN" \
   http://localhost:4001/api/v1/config/export -o rolter.toml
 ```
 
-The response is `application/toml` with a `rolter.toml` download filename. The endpoint is whole-deployment and superadmin-only: one document spans every org's providers, groups and routes, so there is no tenancy scope narrow enough to delegate it.
+The response is `application/toml` with a `rolter.toml` download filename. The endpoint is whole-deployment and read-only for a superadmin or a security auditor ([deployment role](/security/rbac#deployment-roles)): one document spans every org's providers, groups and routes, so there is no tenancy scope narrow enough to delegate it.
 
 The CLI does not call this endpoint — it reads the store directly, the same way `rolter-seed` writes to it directly, so an export works during a bootstrap or an incident when the control plane is not serving. Both paths render through the same code, so they cannot drift.

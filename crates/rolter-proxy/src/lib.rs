@@ -15,6 +15,7 @@
 
 pub mod adjustments;
 pub mod egress_resolver;
+pub mod hop_by_hop;
 mod infinity;
 pub mod pool;
 pub mod route;

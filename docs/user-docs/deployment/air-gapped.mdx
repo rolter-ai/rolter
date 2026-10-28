@@ -109,7 +109,7 @@ These do not make an outbound call:
 - **Built-in guardrails** and the `fake-llm` model run inside the gateway process.
 
 `rolter check --connect` opens a TCP connection to the hosts in `ROLTER_DATABASE_URL`
-and `ROLTER_REDIS_URL`. It is a command you run, not a background task.
+and `ROLTER_REDIS_URL`, and to the mail relay in `ROLTER_SMTP_URL` when one is set. It is a command you run, not a background task.
 
 ### The dashboard and the API reference
 

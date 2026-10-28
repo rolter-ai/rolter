@@ -13,6 +13,7 @@ import {
   Harness,
   json,
   openOptions,
+  pickOption,
   pending,
   recording,
   routes,
@@ -133,7 +134,9 @@ export const FormatsFiguresAndOffersTheIds: Story = {
     const canvas = within(canvasElement);
     await canvas.findByText("12,345");
     await expect(canvas.getByText("1,234")).toBeInTheDocument();
-    await expect(canvas.getByText(en.pages.mcpLogs.window)).toBeInTheDocument();
+    await expect(canvas.getByRole("combobox", { name: "Time window" })).toHaveValue(
+      "Last 24 hours",
+    );
     await userEvent.click(
       await canvas.findByRole("button", { name: /Open call details for search_issues/ }),
     );
@@ -836,5 +839,64 @@ export const ServerFilterInRussian: Story = {
     await expect(
       canvas.getByRole("combobox", { name: ru.pages.mcpLogs.toolFilterAria }),
     ).toBeVisible();
+  },
+};
+
+/** the whole days a bound reaches back from now, so a story does not depend on the clock to the second */
+const daysBack = (url: string) => {
+  const since = new URL(url, "http://x").searchParams.get("since");
+  return since ? Math.round((Date.now() - Date.parse(since)) / 86_400_000) : null;
+};
+
+const windowed = recording(loaded);
+
+/**
+ * #3300: the window is a name the address carries. A link to `?window=7d`
+ * reads both the tiles and the list over seven days, and the picker says so.
+ */
+export const TheWindowComesFromTheAddress: Story = {
+  render: () => (
+    <Harness fetchStub={windowed.stub} route="/mcp-logs?window=7d">
+      <McpLogs />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByRole("combobox", { name: "Time window" })).toHaveValue(
+      "Last 7 days",
+    );
+    await waitFor(() => {
+      const summary = windowed.calls.find((c) => c.url.includes("/mcp/logs/summary"));
+      const list = windowed.calls.find((c) => c.url.includes("/mcp/logs?"));
+      expect(summary && daysBack(summary.url)).toBe(7);
+      expect(list && daysBack(list.url)).toBe(7);
+    });
+  },
+};
+
+const picking = recording(loaded);
+
+/** #3300: picking another window writes the address and reads it again, from the first page. */
+export const PickingAWindowWritesTheAddress: Story = {
+  render: () => (
+    <Harness fetchStub={picking.stub} route="/mcp-logs?server=github">
+      <McpLogs />
+      <Where />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await pickOption(await canvas.findByRole("combobox", { name: "Time window" }), "Last 30 days");
+    await waitFor(() =>
+      expect(canvas.getByTestId("where")).toHaveTextContent("server=github&window=30d"),
+    );
+    await waitFor(() =>
+      expect(
+        picking.calls.some((c) => c.url.includes("/mcp/logs?") && daysBack(c.url) === 30),
+      ).toBe(true),
+    );
+    // back on the default, the parameter leaves the address
+    await pickOption(canvas.getByRole("combobox", { name: "Time window" }), "Last 24 hours");
+    await waitFor(() => expect(canvas.getByTestId("where")).toHaveTextContent(/^\?server=github$/));
   },
 };

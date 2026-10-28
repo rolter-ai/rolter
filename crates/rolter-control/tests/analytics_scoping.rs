@@ -375,6 +375,44 @@ async fn each_role_reads_its_own_tenancy_and_bodies_only_where_it_may() {
         rows(&[("acme-a", true, false)])
     );
 
+    // an API token reads the chain it holds by the rules of a person with that
+    // role, the body floor included (#3291): a project member token sees the
+    // project with its bodies, an org viewer token the org's rows without them
+    let mint = |scope: Value| {
+        let http = http.clone();
+        async move {
+            let minted: Value = http
+                .post(format!("http://{addr}/api/v1/orgs/{}/api-tokens", acme.org))
+                .bearer_auth(ADMIN_TOKEN)
+                .json(&scope)
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            minted["secret"]
+                .as_str()
+                .expect("a minted secret")
+                .to_string()
+        }
+    };
+    let project_token = mint(json!({
+        "name": "reporting",
+        "project_id": acme.project_a,
+        "role": "member",
+    }))
+    .await;
+    assert_eq!(
+        visible(&http, addr, &project_token, &ids).await,
+        rows(&[("acme-a", true, false)])
+    );
+    let org_token = mint(json!({"name": "org reporting", "role": "viewer"})).await;
+    assert_eq!(
+        visible(&http, addr, &org_token, &ids).await,
+        rows(&[("acme-a", false, true), ("acme-b", false, true)])
+    );
+
     // a team member reaches both of the team's projects
     let team_member = seed_user(&pool, None, Some(umbrella.team), None, "member").await;
     assert_eq!(
@@ -1469,6 +1507,161 @@ async fn withheld_and_unknown_usage_filters_narrow_inside_the_callers_scope() {
     );
 }
 
+/// The request ids a caller's CSV export of the log carries, among `ids`.
+async fn exported(
+    client: &reqwest::Client,
+    addr: SocketAddr,
+    token: &str,
+    ids: &[(String, String)],
+) -> Vec<String> {
+    let response = client
+        .get(format!("http://{addr}/api/v1/analytics/invocations/export"))
+        .bearer_auth(token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200, "export");
+    let csv = response.text().await.unwrap();
+    // metadata only: whatever the caller's role, no captured body is in the file
+    assert!(
+        !csv.contains("prompt-") && !csv.contains("completion-"),
+        "{csv}"
+    );
+    let mut labels: Vec<String> = ids
+        .iter()
+        .filter(|(_, id)| csv.contains(id.as_str()))
+        .map(|(label, _)| label.clone())
+        .collect();
+    labels.sort();
+    labels
+}
+
+/// A caller exports exactly the rows they can list, never one outside their
+/// scope (#1838): the export binds the same predicate as the JSON read.
+#[tokio::test]
+async fn the_export_returns_only_the_rows_the_caller_can_list() {
+    let ch = skip_without_stack!();
+    let http = reqwest::Client::new();
+    ensure_schema(&http, &ch).await;
+
+    let db = TestSchema::create(&test_database::url().await.unwrap()).await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_clickhouse_and_admin_token(
+        pool.clone(),
+        &ch,
+        Some(ADMIN_TOKEN.to_string()),
+    )
+    .await
+    .unwrap();
+    let addr = serve(app).await;
+    let acme = seed_tenant(&pool, "acme").await;
+    let umbrella = seed_tenant(&pool, "umbrella").await;
+    let ids = seed_logs(&http, &ch, &[("acme", &acme), ("umbrella", &umbrella)]).await;
+
+    let everything = exported(&http, addr, ADMIN_TOKEN, &ids).await;
+    assert_eq!(everything.len(), 5, "{everything:?}");
+
+    let project_member = seed_user(&pool, None, None, Some(acme.project_a), "member").await;
+    assert_eq!(
+        exported(&http, addr, &project_member, &ids).await,
+        ["acme-a"]
+    );
+    let org_viewer = seed_user(&pool, Some(acme.org), None, None, "viewer").await;
+    assert_eq!(
+        exported(&http, addr, &org_viewer, &ids).await,
+        ["acme-a", "acme-b"]
+    );
+    let team_member = seed_user(&pool, None, Some(umbrella.team), None, "member").await;
+    assert_eq!(
+        exported(&http, addr, &team_member, &ids).await,
+        ["umbrella-a", "umbrella-b"]
+    );
+    // the rollup exports are scoped the same way: another org's spend is not in
+    // a caller's chargeback file
+    let rollup = http
+        .get(format!(
+            "http://{addr}/api/v1/analytics/by-attribution/export?include_unattributed=true"
+        ))
+        .bearer_auth(&project_member)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(rollup.status(), 200);
+}
+
+/// Requests that began inside one millisecond are listed in the order they
+/// began, and paging through them neither repeats nor skips one (#1392). The
+/// `ts` of all three is identical, their request ids sort the opposite way to
+/// their start sequence, and a page holds one row, so every step of the walk
+/// is decided by `seq` alone.
+#[tokio::test]
+async fn requests_in_one_millisecond_list_by_their_start_sequence() {
+    let ch = skip_without_stack!();
+    let http = reqwest::Client::new();
+    ensure_schema(&http, &ch).await;
+
+    let db = TestSchema::create(&test_database::url().await.unwrap()).await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_clickhouse_and_admin_token(
+        pool.clone(),
+        &ch,
+        Some(ADMIN_TOKEN.to_string()),
+    )
+    .await
+    .unwrap();
+    let addr = serve(app).await;
+    let tenant = seed_tenant(&pool, "seq").await;
+    let ts = chrono::Utc::now()
+        .format("%Y-%m-%d %H:%M:%S%.3f")
+        .to_string();
+    let tag = Uuid::new_v4().simple().to_string();
+    // started first to last: first (seq 10), second (seq 20), third (seq 30)
+    let started = [("zzz-first", 10u64), ("mmm-second", 20), ("aaa-third", 30)];
+    let rows: Vec<Value> = started
+        .iter()
+        .map(|(name, seq)| {
+            json!({
+                "ts": ts, "seq": seq, "request_id": format!("{name}-{tag}"),
+                "org_id": tenant.org.to_string(), "team_id": tenant.team.to_string(),
+                "project_id": tenant.project_a.to_string(),
+                "model": "fake-llm", "status": 200,
+            })
+        })
+        .collect();
+    insert_rows(&http, &ch, "request_logs", &rows).await;
+
+    let mut seen = Vec::new();
+    let mut cursor = String::new();
+    for _ in 0..5 {
+        let response = http
+            .get(format!("http://{addr}/api/v1/analytics/invocations"))
+            .query(&[
+                ("limit", "1"),
+                ("model", "fake-llm"),
+                ("cursor", cursor.as_str()),
+            ])
+            .bearer_auth(ADMIN_TOKEN)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let body: Value = response.json().await.unwrap();
+        let page = body["data"].as_array().unwrap();
+        let Some(row) = page.first() else { break };
+        if row["request_id"].as_str().unwrap().ends_with(&tag) {
+            seen.push(
+                row["request_id"]
+                    .as_str()
+                    .unwrap()
+                    .replace(&format!("-{tag}"), ""),
+            );
+        }
+        cursor = body["next_cursor"].as_str().unwrap().to_string();
+    }
+    // newest start first, each exactly once
+    assert_eq!(seen, ["aaa-third", "mmm-second", "zzz-first"]);
+}
+
 /// The savings advisor's queries against the real engine (#1581). Its unit
 /// tests answer them from a fake, which cannot show that ClickHouse resolves a
 /// bare column name to a select alias first: a summed column read inside the
@@ -1532,4 +1725,237 @@ async fn the_savings_advisor_reads_real_request_logs() {
     assert_eq!(status, 200, "{report}");
     assert_eq!(report["spend"]["requests"], 3.0, "{report}");
     assert_eq!(report["spend"]["cost_usd"], 3.5, "{report}");
+}
+
+/// The per-variant rollup (#3342) groups one route's requests by the variant
+/// that served them, weighted by the sampling weight, and reads only what the
+/// caller's roles reach: a project member sees their own project's share of a
+/// route that two orgs both call by the same name.
+#[tokio::test]
+async fn by_variant_groups_one_route_inside_the_callers_scope() {
+    let ch = skip_without_stack!();
+    let http = reqwest::Client::new();
+    ensure_schema(&http, &ch).await;
+
+    let db = TestSchema::create(&test_database::url().await.unwrap()).await;
+    let pool = db.pool().clone();
+    let app = rolter_control::test_app_with_clickhouse_and_admin_token(
+        pool.clone(),
+        &ch,
+        Some(ADMIN_TOKEN.to_string()),
+    )
+    .await
+    .unwrap();
+    let addr = serve(app).await;
+    let acme = seed_tenant(&pool, "variant-acme").await;
+    let umbrella = seed_tenant(&pool, "variant-umbrella").await;
+
+    let route = format!("variant-route-{}", Uuid::new_v4().simple());
+    let other_route = format!("variant-other-{}", Uuid::new_v4().simple());
+    let ts = chrono::Utc::now()
+        .format("%Y-%m-%d %H:%M:%S%.3f")
+        .to_string();
+    let row = |tenant: &Tenant,
+               project: Uuid,
+               model: &str,
+               variant: &str,
+               status: u32,
+               latency: u32,
+               cost: f64,
+               weight: f64| {
+        json!({
+            "ts": ts, "request_id": format!("variant-{}", Uuid::new_v4().simple()),
+            "org_id": tenant.org.to_string(), "team_id": tenant.team.to_string(),
+            "project_id": project.to_string(),
+            "model": model, "variant": variant, "status": status,
+            "latency_ms": latency, "total_tokens": 10, "cost_usd": cost,
+            "sample_weight": weight,
+        })
+    };
+    insert_rows(
+        &http,
+        &ch,
+        "request_logs",
+        &[
+            // acme project a: variant "canary" is sampled one in two, one of its two
+            // kept rows failed; "stable" and the classic path ("") are unsampled
+            row(&acme, acme.project_a, &route, "stable", 200, 100, 1.0, 1.0),
+            row(&acme, acme.project_a, &route, "stable", 200, 300, 1.0, 1.0),
+            row(&acme, acme.project_a, &route, "canary", 200, 200, 0.5, 2.0),
+            row(&acme, acme.project_a, &route, "canary", 500, 200, 0.0, 2.0),
+            row(&acme, acme.project_a, &route, "", 200, 100, 2.0, 1.0),
+            // another project of the same org, and another org, call the route too
+            row(&acme, acme.project_b, &route, "stable", 200, 100, 4.0, 1.0),
+            row(
+                &umbrella,
+                umbrella.project_a,
+                &route,
+                "stable",
+                200,
+                100,
+                8.0,
+                1.0,
+            ),
+            // a different route's variant never joins this route's rows
+            row(
+                &acme,
+                acme.project_a,
+                &other_route,
+                "stable",
+                200,
+                100,
+                16.0,
+                1.0,
+            ),
+        ],
+    )
+    .await;
+
+    let read = |token: &'static str, query: String| {
+        let http = http.clone();
+        async move {
+            let response = http
+                .get(format!("http://{addr}/api/v1/analytics/by-variant?{query}"))
+                .bearer_auth(token)
+                .send()
+                .await
+                .unwrap();
+            (response.status(), response.json::<Value>().await.unwrap())
+        }
+    };
+    let by_variant = |body: &Value| -> Vec<(String, f64, f64, f64)> {
+        let mut out: Vec<_> = body["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| {
+                (
+                    r["variant"].as_str().unwrap().to_string(),
+                    number(&r["requests"]),
+                    number(&r["errors"]),
+                    number(&r["cost_usd"]),
+                )
+            })
+            .collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
+    };
+
+    // the admin token reads every org: requests and cost are weighted, errors count
+    // the weight of the failed row, and the empty variant is the classic pool
+    let (status, body) = read(ADMIN_TOKEN, format!("model={route}")).await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        by_variant(&body),
+        vec![
+            ("".to_string(), 1.0, 0.0, 2.0),
+            ("canary".to_string(), 4.0, 2.0, 1.0),
+            ("stable".to_string(), 4.0, 0.0, 14.0),
+        ]
+    );
+    // the percentiles are read off the kept rows, not scaled
+    let stable = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["variant"] == "stable")
+        .unwrap();
+    assert!(number(&stable["p50_latency_ms"]) >= 100.0);
+    assert!(number(&stable["p95_latency_ms"]) <= 300.0);
+
+    // a project member reads that project only, however the route is shared
+    let member: &'static str = Box::leak(
+        seed_user(&pool, None, None, Some(acme.project_a), "member")
+            .await
+            .into_boxed_str(),
+    );
+    let (status, body) = read(member, format!("model={route}")).await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        by_variant(&body),
+        vec![
+            ("".to_string(), 1.0, 0.0, 2.0),
+            ("canary".to_string(), 4.0, 2.0, 1.0),
+            ("stable".to_string(), 2.0, 0.0, 2.0),
+        ]
+    );
+    // and a project filter cannot reach past what the member already reads
+    let (_, body) = read(member, format!("model={route}&project={}", acme.project_b)).await;
+    assert!(body["data"].as_array().unwrap().is_empty());
+
+    // without a route the rows carry their route, so no two routes' variants merge
+    let (status, body) = read(ADMIN_TOKEN, String::new()).await;
+    assert_eq!(status, 200);
+    let both: std::collections::BTreeSet<&str> = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|r| r["variant"] == "stable")
+        .filter_map(|r| r["model"].as_str())
+        .filter(|m| *m == route || *m == other_route)
+        .collect();
+    assert_eq!(both.len(), 2, "{body}");
+
+    // anonymous callers are refused before any query runs
+    let anonymous = http
+        .get(format!(
+            "http://{addr}/api/v1/analytics/by-variant?model={route}"
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(anonymous.status(), 401);
+}
+
+/// The summary carries the weighted prompt-cache read tokens beside the prompt
+/// tokens (#3356), so a read share is one division, and a row logged before the
+/// provider reported any reads as zero.
+#[tokio::test]
+async fn summary_reports_weighted_prompt_cache_reads_beside_prompt_tokens() {
+    let ch = skip_without_stack!();
+    let http = reqwest::Client::new();
+    ensure_schema(&http, &ch).await;
+
+    let db = TestSchema::create(&test_database::url().await.unwrap()).await;
+    let app = rolter_control::test_app_with_clickhouse_and_admin_token(
+        db.pool().clone(),
+        &ch,
+        Some(ADMIN_TOKEN.to_string()),
+    )
+    .await
+    .unwrap();
+    let addr = serve(app).await;
+
+    let model = format!("promptcache-{}", Uuid::new_v4().simple());
+    let ts = chrono::Utc::now()
+        .format("%Y-%m-%d %H:%M:%S%.3f")
+        .to_string();
+    // each kept row stands for three requests: 600 of 1000 prompt tokens were read
+    // from the cache on one, none on the other
+    let rows: Vec<Value> = [(1000, 600), (1000, 0)]
+        .iter()
+        .enumerate()
+        .map(|(i, (prompt, read))| {
+            json!({
+                "ts": ts, "request_id": format!("pc-{i}-{}", Uuid::new_v4().simple()),
+                "model": model, "status": 200, "prompt_tokens": prompt,
+                "cache_read_tokens": read, "sample_weight": 3.0,
+            })
+        })
+        .collect();
+    insert_rows(&http, &ch, "request_logs", &rows).await;
+
+    let response = http
+        .get(format!(
+            "http://{addr}/api/v1/analytics/summary?model={model}"
+        ))
+        .bearer_auth(ADMIN_TOKEN)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let body: Value = response.json().await.unwrap();
+    let row = &body["data"][0];
+    assert_eq!(number(&row["prompt_tokens"]), 6000.0);
+    assert_eq!(number(&row["cache_read_tokens"]), 1800.0);
 }

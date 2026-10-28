@@ -247,6 +247,11 @@
       "provisioningTokens": "provisioning tokens",
       "publicUrl": "the public URL",
       "ssoProviders": "identity providers",
+      "mfaStatus": "the second-factor roster",
+      "logErasure": "the erasure record",
+      "logErasures": "recent erasures",
+      "ldapDirectories": "LDAP directories",
+      "apiTokens": "API tokens",
       "signInPolicy": "the sign-in policy",
       "budgets": "budgets",
       "rateLimits": "rate limits",
@@ -299,6 +304,9 @@
       "mcpLogDetail": "this MCP tool call",
       "mcpLogs": "MCP tool-call logs",
       "mcpSummary": "MCP call summary",
+      "variantTraffic": "the variants' observed traffic",
+      "providerHealth": "provider health",
+      "savings": "the savings report",
       "mcpServers": "MCP servers",
       "mcpSettings": "MCP settings",
       "modelSettings": "model settings",
@@ -325,10 +333,14 @@
       "yourProfile": "your profile",
       "auditLogExport": "the audit log export",
       "unpricedModels": "unpriced models",
+      "attributionExport": "cost attribution export",
+      "requestLogExport": "request log export",
       "mcpServerTools": "tools of the MCP server",
       "priceCatalogue": "price catalogue",
+      "guardrailPolicies": "guardrail policies",
       "yourBudget": "your budget",
-      "routeVariants": "route variants"
+      "routeVariants": "route variants",
+      "paramAdjustments": "parameter adjustments"
     },
     "requestFailed": "request failed: {{status}}",
     "gateway": {
@@ -488,7 +500,9 @@
       "vision": "Vision / images",
       "json": "JSON mode",
       "reasoning": "Reasoning",
-      "reasoningInfo": "Extended-thinking model (o-series, R1). Enables the reasoning_effort parameter."
+      "reasoningInfo": "Extended-thinking model (o-series, R1). Enables the reasoning_effort parameter.",
+      "contextLength": "Context length (tokens)",
+      "contextLengthHint": "The size of the model’s context window. It is served on GET /v1/models so clients can size their prompts; the gateway does not enforce it. Blank = not advertised."
     },
     "pricing": {
       "hint": "Optional prices for cost tracking — fields shown match the model type. Leave them all blank and the model stays unpriced: its traffic is recorded without a cost, not as free.",
@@ -571,6 +585,7 @@
       "retries": "Retries are a whole number from 0 to {{max}}. Leave blank to use the gateway's setting.",
       "rpm": "Requests per minute is a whole number from 1 to {{max}}. Leave blank for no cap.",
       "tpm": "Tokens per minute is a whole number of 1 or more. Leave blank for no cap.",
+      "contextLength": "Context length is a whole number of tokens, 1 or more. Leave blank to advertise none.",
       "concurrency": "Concurrent requests is a whole number from 1 to {{max}}. Leave blank for no cap.",
       "param": "One or more custom parameters have a value but no name — name them or clear the value.",
       "header": "One or more custom headers have a value but no name — name them or clear the value.",
@@ -593,6 +608,24 @@
       "summary_other": "{{count}} fields need attention before this route can be saved."
     },
     "variants": {
+      "observed": {
+        "title": "Observed traffic",
+        "variant": "Variant",
+        "configured": "Configured",
+        "share": "Observed",
+        "requests": "Requests",
+        "errors": "Errors",
+        "latency": "p50 / p95",
+        "latencyValue": "{{p50}} / {{p95}} ms",
+        "empty": "No variant served a request in the {{window}}. Traffic appears here once the route has been called with the variants saved.",
+        "note": "Observed is each variant's share of the requests the variants served, counting failovers as well as first attempts, so a variant that others fail over to reads higher than its weight.",
+        "unattributed_one": "{{requests}} request in this window was served without a variant.",
+        "unattributed_other": "{{requests}} requests in this window were served without a variant.",
+        "noAnalytics": {
+          "title": "Observed traffic needs ClickHouse",
+          "body": "Per-variant traffic is read from the request log in ClickHouse. Set <0>CLICKHOUSE_URL</0> on the control plane to see each variant's share here."
+        }
+      },
       "title": "Variants",
       "info": "Named buckets that split this route's traffic by weight, for A/B tests and canaries. Each request samples one variant by weight; if it fails, the others are tried in the order listed. Request logs record which variant served a request.",
       "add": "Add variant",
@@ -652,6 +685,25 @@
     "failures_other": "{{count}} consecutive failures",
     "retryIn": "retries in {{duration}}"
   },
+  "fallbackTargets": {
+    "badge": "fallback",
+    "badgeTitle": "A fallback target: never dialled first, and reached only after another target failed with {{classes}}. It takes no ordinary traffic.",
+    "summaryOrdinary": "Ordinary target",
+    "summaryRestricted": "Fallback for {{classes}}",
+    "label": "Fallback for",
+    "groupAria": "Fallback classes of target {{n}}",
+    "variantGroupAria": "Fallback classes of target {{m}} of variant {{n}}",
+    "category": "Refusal category",
+    "categoryInfo": "Narrows a refusal fallback to one category the provider names, such as content_policy_violation. Lowercase letters, digits, _ and -.",
+    "categoryPlaceholder": "content_policy_violation",
+    "addCategory": "Add",
+    "hint": "Pick nothing to keep this an ordinary target. Pick classes and it becomes a fallback: never dialled first, and tried only after another target failed with one of them.",
+    "errors": {
+      "category": "A category is 1 to 64 lowercase letters, digits, _ or -.",
+      "allRestricted": "Every target is a fallback, so the route could never dial anything. Leave at least one target ordinary.",
+      "refused": "The control plane refused this set: a class it does not know, or one listed twice."
+    }
+  },
   "routeTargets": {
     "count_one": "{{count}} target",
     "count_other": "{{count}} targets",
@@ -671,8 +723,10 @@
     "dashboard": "Dashboard",
     "logs": "LLM Logs",
     "mcp-logs": "MCP Logs",
+    "savings": "Savings",
     "connectors": "Connectors",
     "logs-settings": "Logs Settings",
+    "log-erasure": "Log Erasure",
     "models": "Models",
     "model-catalog": "Model Catalog",
     "providers": "Model Providers",
@@ -703,6 +757,8 @@
     "customers": "Customers",
     "user-provisioning": "User Provisioning",
     "sso": "Single Sign-On",
+    "ldap": "LDAP",
+    "api-tokens": "API Tokens",
     "rbac": "Roles & Permissions",
     "access-profiles": "Access Profiles",
     "audit-logs": "Audit Logs",
@@ -723,7 +779,8 @@
     "api-keys": "Account & keys",
     "performance": "Performance Tuning",
     "feature-flags": "Feature Flags",
-    "preferences": "Preferences"
+    "preferences": "Preferences",
+    "guardrail-policies": "Policies"
   },
   "pages": {
     "gettingStarted": {
@@ -777,7 +834,23 @@
       "statSpend": "Spend",
       "statP95": "p95 latency",
       "statCacheHit": "Response-cache hit rate",
+      "statPromptCache": "Prompt-cache read share",
+      "promptCacheTokens": "{{read}} of {{prompt}} prompt tokens",
+      "promptCacheNone": "No provider reported cached prompt tokens",
       "statFleet": "Gateways",
+      "statProviders": "Providers",
+      "providers": {
+        "ofTotal": "of {{total}} up",
+        "worst": "Lowest uptime: {{provider}} {{uptime}}",
+        "worstBreaching": "Below the SLA: {{provider}} {{uptime}}",
+        "more_one": "and {{count}} more",
+        "more_other": "and {{count}} more",
+        "none": "No provider has reported health yet",
+        "noAnalytics": {
+          "title": "Provider health needs ClickHouse",
+          "body": "Provider health is read from the events the gateways record in ClickHouse. Set <0>CLICKHOUSE_URL</0> on the control plane and the providers that meet their SLA are counted here."
+        }
+      },
       "statErrorRate": "Error rate",
       "notMeasured": "—",
       "noRequestsInWindow": "No requests in this window",
@@ -1080,6 +1153,11 @@
       "healthUnavailable": "Target health is unavailable here, so the cards show none. It needs the analytics store and analytics access.",
       "targetCount_one": "{{count}} target",
       "targetCount_other": "{{count}} targets",
+      "variantCount_one": "{{count}} variant",
+      "variantCount_other": "{{count}} variants",
+      "variantsLabel": "Variants of {{model}}, in fallback order",
+      "targetsUnused_one": "This route has variants, so its own {{count}} target is not used.",
+      "targetsUnused_other": "This route has variants, so its own {{count}} targets are not used.",
       "emptyTitle": "No routes yet",
       "emptyBody": "A route is the public model name clients call, resolved to one or more upstream targets by its strategy.",
       "noMatchTitle": "No routes match",
@@ -1588,10 +1666,10 @@
     "tool-groups": {
       "confirm": {
         "title": "Delete tool group {{name}}?",
-        "body": "The bundle is removed. Groups are not an access boundary yet, so no client gains or loses access to a tool by this."
+        "body": "The bundle is removed and its restriction is lifted on the next snapshot. Its assignments are removed with it, so a team, project or key that was assigned only to this group goes back to the organization's other groups."
       },
       "emptyTitle": "No tool groups",
-      "lead": "Bundle exact server/tool pairs into reusable policy manifests. Groups define intended access; project assignment and gateway enforcement remain separate policy work.",
+      "lead": "Bundle exact server/tool pairs into policy manifests. The gateway enforces them: a server that a group names serves only the tools its groups list, and a group can be assigned to teams or projects to narrow them.",
       "create": "Create group",
       "emptyBody": "Create a governed bundle from registered server tools.",
       "emptyNoServers": "Register MCP servers and declare their tools before creating a group.",
@@ -1601,6 +1679,17 @@
       "enabled": "enabled",
       "paused": "paused",
       "enabledLabel": "Enabled",
+      "assign": {
+        "title": "Who it applies to",
+        "hint": "Leave both empty and the group applies to everyone in the organization. Choose teams or projects and the callers they cover are held to the groups assigned to them instead of the whole set.",
+        "teams": "Teams",
+        "projects": "Projects",
+        "keysKept": "Assignments to single virtual keys, set through the API, are kept as they are.",
+        "loading": "Reading the current assignments…",
+        "unavailable": "The assignments could not be read, so they are not editable here. Close and reopen to retry.",
+        "everyone": "Everyone in the organization",
+        "narrowed": "Assigned callers only"
+      },
       "dialog": {
         "titleAdd": "Create tool group",
         "titleEdit": "Configure tool group",
@@ -1650,9 +1739,30 @@
       "confirm": {
         "deleteTitle": "Delete virtual key {{name}}?",
         "deleteBody": "<0>{{prefix}}</0> stops authenticating immediately, so every client still sending it is refused. This cannot be undone.",
-        "deleteConfirm": "Delete key"
+        "deleteConfirm": "Delete key",
+        "rotateTitle": "Rotate virtual key {{name}}?",
+        "rotateBody": "A new secret is issued for this key. Its models, providers, limits and attribution stay as they are. Clients must switch to the new secret.",
+        "rotateConfirm": "Rotate key",
+        "overlapLabel": "Keep the old secret working for",
+        "overlap": {
+          "none": "Not at all, revoke it now",
+          "hour": "1 hour",
+          "day": "24 hours",
+          "week": "7 days"
+        },
+        "revokePreviousTitle": "Revoke the old secret of {{name}}?",
+        "revokePreviousBody": "<0>{{prefix}}</0> stops authenticating immediately, so every client still sending it is refused. The new secret is unaffected.",
+        "revokePreviousConfirm": "Revoke old secret"
       },
-      "exportCsvFiltered": "Export matching keys as CSV"
+      "exportCsvFiltered": "Export matching keys as CSV",
+      "rotate": "Rotate key",
+      "rotateKey": "Rotate key {{name}}",
+      "previousSecret": "old secret {{prefix}}… valid until {{date}}",
+      "revokePrevious": "Revoke now",
+      "revokePreviousAria": "Revoke the old secret of {{name}} now",
+      "rotatedTitle": "Key rotated",
+      "rotatedBody": "This is the only time the new key is shown. Copy it now. The old secret stopped authenticating immediately.",
+      "rotatedBodyOverlap": "This is the only time the new key is shown. Copy it now. The old secret keeps working until {{date}}, or until you revoke it."
     },
     "acceptInvite": {
       "invalidLink": "This invitation link is not valid. It may have been used, revoked or expired. If you already accepted it, sign in; otherwise ask whoever invited you for a new link.",
@@ -1721,7 +1831,13 @@
         "secretSet": "secret set",
         "kinds": {
           "webhook": "Webhook"
-        }
+        },
+        "addressHidden": "address withheld (deployment channel)",
+        "ownerDeployment": "Deployment",
+        "ownerOrg": "Org: {{name}}",
+        "fieldOwner": "Owner",
+        "ownerDeploymentHint": "A deployment channel is managed by superadmins and any rule can notify it.",
+        "ownerOrgHint": "Only rules of this organization can notify it. Organization admins manage it."
       },
       "rules": {
         "emptyTitle": "No alert rules",
@@ -1781,7 +1897,16 @@
           "above": "above {{value}}",
           "below": "below {{value}}"
         },
-        "noDataReading": "No data"
+        "noDataReading": "No data",
+        "statScope": "Scope",
+        "scopeDeployment": "Whole deployment",
+        "fieldScopeType": "Watches",
+        "fieldScope": "Scope",
+        "scopePlaceholder": "Pick one",
+        "scopeNone": "Nothing to pick here",
+        "scopeHint": "The rule evaluates only this scope's requests. It cannot be changed later. Creating it takes admin at the scope.",
+        "scopeDeploymentHint": "Reads every tenant's traffic, so only a superadmin can create it.",
+        "scopeFixed": "Watches {{scope}}. The scope is fixed when the rule is created."
       },
       "signals": {
         "error_rate": {
@@ -1893,6 +2018,17 @@
           "query_failed": "the analytics query failed; the control plane log has the cause",
           "unknown_signal": "this build does not know the signal {{signal}}"
         }
+      },
+      "scope": {
+        "types": {
+          "org": "Organization",
+          "team": "Team",
+          "project": "Project",
+          "virtual_key": "Virtual key",
+          "business_unit": "Business unit",
+          "customer": "Customer"
+        },
+        "named": "{{type}}: {{name}}"
       }
     },
     "connectors": {
@@ -2791,53 +2927,50 @@
     "guardrailProviders": {
       "confirm": {
         "title": "Delete {{name}}?",
-        "body": "External enforcement through this provider stops immediately; traffic it was screening is no longer sent to it.",
+        "body": "This provider stops being consulted immediately, for every policy that lists it and for the requests it covers on its own. Policies that list it keep their other providers.",
         "activateTitle": "Activate {{name}}?",
-        "activateReplaces": "It takes enforcement over from {{current}}, which is paused.",
-        "activateNoneActive": "No provider is active now, so none is paused.",
-        "activateOwnerUnknown": "The provider list did not load, so this screen cannot say which provider it replaces.",
         "activateFailClosed": "Every request then waits for {{name}} before it goes upstream. It fails closed: when {{name}} times out or errors, the request is refused with <0>guardrail_blocked</0>.",
         "activateFailOpen": "Every request then waits for {{name}} before it goes upstream. It fails open: when {{name}} times out or errors, the request goes upstream unchecked.",
-        "activatePostCall": "It runs before the response, a stage the gateway does not run yet, so no request is sent to it and its failure policy never applies.",
-        "activateFileWins": "The config-file webhook stays in force while it is enabled, so {{name}} is ignored until that webhook is turned off.",
+        "activatePostCall": "It checks the response body. A streamed response is held or refused according to the policy's streaming setting.",
+        "activateFileWins": "A provider named {{name}} from the config file is already running and wins the name, so this one is ignored until that name is free.",
         "activateConfirm": "Save and activate",
         "pauseTitle": "Pause {{name}}?",
-        "pauseUnchecked": "No other provider takes its place, so no external guardrail checks requests afterwards. Every request goes upstream without one.",
-        "pauseFileStays": "The config-file webhook stays in force while it is enabled. It already overrides {{name}}, so pausing it changes nothing for requests.",
-        "pauseUnknown": "The effective configuration did not confirm which webhook is in force, so this screen cannot say whether a config-file webhook checks requests afterwards. If none is enabled, no external guardrail does.",
-        "pauseConfirm": "Save and pause"
+        "pauseUnchecked": "No other provider is active, so no external guardrail checks requests afterwards. Every request goes upstream without one.",
+        "pauseUnknown": "The effective configuration did not say which other providers are running, so this screen cannot say whether any still checks requests afterwards.",
+        "pauseConfirm": "Save and pause",
+        "activateOthersUnknown": "The effective configuration did not say which providers are running, so this screen cannot name the ones that stay active.",
+        "activateAlone": "No other provider is active now. This one is added and nothing is paused.",
+        "activateAlongside": "It is added to the active providers ({{names}}). None of them is paused.",
+        "reachUnknown": "The policies did not load, so this screen cannot say which requests it will see.",
+        "reachUnattached": "No policy lists it, so it will check every request that no policy covers (reported as \"default\").",
+        "reachPaused": "Policies list it, but all of them are paused, so it checks no request until one is enabled.",
+        "reachScoped": "Policies list it, so it will check only the requests they apply to: {{scopes}}.",
+        "pauseOthersKeep": "The other active providers keep running: {{names}}.",
+        "pausePolicies": "These policies lose it and stop consulting it: {{policies}}."
       },
       "deleteAria": "Delete provider {{name}}",
       "editAria": "Edit provider {{name}}",
-      "intro": "Register services freely; activate one at a time. Enabling a provider atomically hands enforcement over from the current service.",
+      "intro": "Register as many services as you need and enable any number of them; saving one never changes another. Which requests a provider sees is decided by guardrail policies: one that policies list runs only for the requests they apply to, and an enabled provider no policy lists runs on every request no policy covers.",
       "addProvider": "Add provider",
-      "activeBanner": "{{name}} owns external enforcement",
-      "activeFailClosed": "Requests stop when the service cannot decide.",
-      "activeFailOpen": "Requests continue when the service cannot decide.",
-      "inertBanner": "{{name}} is not enforcing",
-      "inertBody": "It runs before the response, a stage the gateway does not run yet, so no request is sent to it. Switch it to Before upstream, or activate a provider that runs before upstream.",
-      "fileBanner": "The config-file webhook owns external enforcement",
-      "fileInertBanner": "The config-file webhook is not enforcing",
-      "fileInertBody": "It sets stage = \"post_call\", which the gateway does not run yet, so no request is sent to it. Set stage = \"pre_call\" in the config file to enforce it.",
-      "fileNote": "Registry providers are ignored while the config-file webhook is enabled.",
-      "overriddenNote": "{{name}} is active here but ignored while the config-file webhook is enabled.",
+      "activeBanner": "Running: {{names}}",
+      "activeFailClosed": "{{names}}: requests stop when the service cannot decide.",
+      "activeFailOpen": "{{names}}: requests continue when the service cannot decide.",
+      "fileNote": "Defined in the config file: {{names}}. A file provider wins a name shared with a registry row.",
       "offBanner": "No external guardrail is enforcing",
-      "offBody": "No provider is active and the config file enables no webhook, so no request is sent to a guardrail service.",
+      "offBody": "No provider is enabled and the config file defines none, so no request is sent to a guardrail service.",
       "unknownBanner": "External enforcement status unknown",
-      "unknownBody": "The control plane's effective configuration did not confirm which webhook is in force, so this screen cannot say what the gateway enforces.",
+      "unknownBody": "The control plane's effective configuration did not say which providers the gateways run, so this screen cannot say what is enforced.",
       "emptyTitle": "No guardrail providers",
       "emptyBody": "Register a self-hosted HTTP guardrail service. Credentials remain environment references, never stored secret values.",
       "emptyAction": "Register first provider",
       "detailLine_one": "{{timeout}} ms timeout · {{count}} retry · {{kib}} KiB cap",
       "detailLine_other": "{{timeout}} ms timeout · {{count}} retries · {{kib}} KiB cap",
-      "postCallCardNote": "Runs before the response, a stage the gateway does not run yet, so it checks nothing.",
-      "statusInert": "not enforcing",
       "statusOverridden": "overridden by config file",
       "statusUnknown": "status unknown",
       "editProvider": "Edit provider",
       "dialogEditTitle": "Edit guardrail provider",
       "dialogAddTitle": "Register guardrail provider",
-      "dialogBody": "Use an HTTP endpoint and reference credentials by environment variable. Activating this provider pauses the current one.",
+      "dialogBody": "Use an HTTP endpoint and reference credentials by environment variable. Enabling this provider adds it to the active ones without pausing any other.",
       "fieldName": "Provider name",
       "nameInfo": "Recorded on the request log beside this provider's outcomes, so choose a name you will recognise there.",
       "fieldUrl": "Evaluation URL",
@@ -2845,11 +2978,9 @@
       "urlRequired": "Enter the URL the gateway posts each request to.",
       "urlInvalid": "Start the URL with http:// or https://.",
       "fieldStage": "Stage",
-      "stageInfo": "When the gateway asks this service for a decision. Only Before upstream, the prompt before it reaches the model provider, is enforced today.",
+      "stageInfo": "When the gateway asks this service for a decision: on the request body before it goes upstream, or on the response body before it reaches the client.",
       "stagePre": "Before upstream",
       "stagePost": "Before response",
-      "stagePostUnsupported": "Not enforced yet",
-      "postCallDialogNote": "The gateway does not run the Before response stage yet, so this provider checks nothing, and activating it pauses the provider that enforces now. Choose Before upstream to enforce it.",
       "fieldFailure": "Failure policy",
       "failureInfo": "What happens to a request when this service times out or errors. Fail closed refuses it; fail open lets it through unchecked.",
       "failClosed": "Fail closed",
@@ -2867,11 +2998,10 @@
       "authSharedSecret": "Shared secret header",
       "fieldEnv": "Secret environment variable",
       "envHint": "Only the variable name is stored.",
-      "activateLabel": "Activate provider",
-      "activateHint": "Takes enforcement ownership from the currently active provider.",
-      "activateHintReplaces": "Takes enforcement over from {{name}}, which is then paused.",
-      "activateHintNone": "No provider is active now, so this one would be the only one.",
-      "activateHintSelf": "This provider is active. Turning it off pauses it, and no other provider takes its place.",
+      "activateLabel": "Enable provider",
+      "activateHint": "Adds this provider to the active ones; no other provider is paused.",
+      "activateHintNone": "No other provider is active now, so this one would be the only one.",
+      "activateHintSelf": "This provider is enabled. Turning it off pauses only this one; the other active providers keep running.",
       "failOpenWarning": "Fail-open favors availability: traffic continues if this provider times out or errors.",
       "publishing": "Publishing…",
       "save": "Save provider",
@@ -2916,7 +3046,9 @@
           "failOpen": "On live traffic this failure lets the request through (fail open).",
           "failClosed": "On live traffic this failure rejects the request (fail closed)."
         }
-      }
+      },
+      "unattachedNote": "Not listed by any policy, so they check every request no policy covers: {{names}}.",
+      "activateHintAlongside": "Runs alongside {{names}}. None of them is paused."
     },
     "adaptiveDashboard": {
       "reportingGateways_one": "{{count}} reporting gateway",
@@ -3143,8 +3275,10 @@
         "mfaConfirm": {
           "title": "Require a second factor to sign in?",
           "body": "Members who have not set up an authenticator app are asked to set one up at their next password sign-in, before they get a session.",
-          "bodyWithCount_one": "This organization has {{count}} member. Without an authenticator app set up, they are asked to set one up at their next password sign-in, before they get a session.",
-          "bodyWithCount_other": "This organization has {{count}} members. Any of them without an authenticator app set up is asked to set one up at their next password sign-in, before they get a session.",
+          "gap_one": "{{missing}} of {{count}} member has no second factor. Anyone without one is asked to set up an authenticator app at their next password sign-in, before they get a session.",
+          "gap_other": "{{missing}} of {{count}} members have no second factor. Each of them is asked to set up an authenticator app at their next password sign-in, before they get a session.",
+          "gapSuperadmin_one": "{{missing}} of {{count}} superadmin has no second factor. Anyone without one is asked to set up an authenticator app at their next password sign-in, before they get a session.",
+          "gapSuperadmin_other": "{{missing}} of {{count}} superadmins have no second factor. Each of them is asked to set up an authenticator app at their next password sign-in, before they get a session.",
           "confirm": "Require it",
           "grace": "It starts on {{date}}. Until then, members without one sign in as before and are told by when to set one up.",
           "breakGlass": "Someone who loses their device is cleared on the host with `rolter mfa reset`, which is audited.",
@@ -3265,6 +3399,186 @@
         "grantTiming": "Each member gets it at their next sign-in.",
         "removeBody": "Members of that group stop being granted {{role}} on {{scope}} at their next sign-in. Roles they already hold are not withdrawn."
       }
+    },
+    "ldap": {
+      "directory": {
+        "title": "Directory",
+        "count_one": "{{count}} registered",
+        "count_other": "{{count}} registered",
+        "add": "Add directory",
+        "oneOnly": "An organization has one directory. Edit or delete the existing one first.",
+        "enabled": "Enabled",
+        "disabled": "Disabled",
+        "noTls": "No TLS required",
+        "noTlsHint": "Plain ldap:// is allowed for this directory, so the bind password and every user's password cross the network in cleartext.",
+        "defaultRole": "Signs in as {{role}} when no group mapping matches.",
+        "noDefaultRole": "No default role: a user in no mapped group is refused, rather than admitted with nothing.",
+        "toggleNamed": "Enable directory {{name}}",
+        "edit": "Edit directory",
+        "editNamed": "Edit directory {{name}}",
+        "delete": "Delete directory",
+        "deleteNamed": "Delete directory {{name}}",
+        "clearPassword": "Remove stored bind password",
+        "clearPasswordNamed": "Remove the stored bind password for {{name}}",
+        "url": "URL",
+        "bindDn": "Bind DN",
+        "bindPassword": "Bind password",
+        "passwordStored": "Stored",
+        "passwordMissing": "Not set (anonymous search)",
+        "baseDn": "Base DN",
+        "userFilter": "User filter",
+        "emailAttr": "Email attribute",
+        "groupAttr": "Group attribute",
+        "enabledToast": "{{name}} is now accepting sign-ins",
+        "disabledToast": "{{name}} is out of service",
+        "passwordClearedToast": "{{name}} no longer has a stored bind password"
+      },
+      "empty": {
+        "title": "No LDAP directory registered yet",
+        "body": "Register your LDAP or Active Directory server and members sign in with the login and password they already use. rolter maps their directory groups to roles at each sign-in."
+      },
+      "create": {
+        "title": "Add directory",
+        "subtitle": "Register the LDAP or Active Directory server this organization signs in against.",
+        "save": "Add directory",
+        "name": "Name",
+        "nameHint": "How the directory is listed here and in the audit log.",
+        "namePlaceholder": "Corporate directory",
+        "url": "URL",
+        "urlHint": "ldaps:// or ldap:// address of the directory.",
+        "urlPlaceholder": "ldaps://dir.example.com",
+        "requireTls": "Require TLS",
+        "requireTlsHint": "Refuse a plain ldap:// address, so the bind password is never sent in cleartext.",
+        "plainWithTls": "This address is plain ldap://, which the control plane refuses while TLS is required. Use ldaps://, or turn this off.",
+        "bindDn": "Bind DN",
+        "bindDnHint": "The read-only service account that finds users.",
+        "bindDnPlaceholder": "cn=svc-rolter,dc=example,dc=com",
+        "bindPassword": "Bind password",
+        "bindPasswordHint": "The service account's password. Leave it empty for an anonymous search.",
+        "passwordWriteOnly": "The bind password is sealed when saved and cannot be read back, here or anywhere else.",
+        "baseDn": "Base DN",
+        "baseDnHint": "The subtree searched for users.",
+        "baseDnPlaceholder": "ou=people,dc=example,dc=com",
+        "userFilter": "User filter",
+        "userFilterHint": "The search filter. {login} is replaced with what the user typed, escaped.",
+        "emailAttr": "Email attribute",
+        "emailAttrHint": "The attribute holding a user's email address.",
+        "displayNameAttr": "Display name attribute",
+        "displayNameAttrHint": "The attribute holding a user's display name.",
+        "groupAttr": "Group attribute",
+        "groupAttrHint": "The attribute on the user entry that lists their groups. Nested groups are not expanded.",
+        "defaultRole": "Default role",
+        "defaultRoleHint": "Granted to a user in no mapped group. Leave it unset to refuse those users.",
+        "defaultRoleNone": "None: refuse unmapped users"
+      },
+      "edit": {
+        "title": "Edit directory",
+        "subtitle": "Change how this organization signs in against the directory.",
+        "save": "Save directory",
+        "bindPasswordHint": "Leave empty to keep the stored password; type one to replace it.",
+        "bindPasswordNoneHint": "No bind password is stored. Type one to start binding as the service account."
+      },
+      "mappings": {
+        "title": "Group mappings",
+        "empty": "No group is mapped yet, so a user in no group is refused.",
+        "emptyWithDefault": "No group is mapped yet, so every directory user signs in as {{role}}.",
+        "grantTiming": "A mapping grants its role the next time each member signs in.",
+        "removeBody": "Members of the group lose {{role}} on {{scope}} the next time they sign in, unless another mapping grants it.",
+        "addNamed": "Map a group in {{directory}}"
+      },
+      "clearPassword": {
+        "title": "Remove the stored bind password of {{name}}?",
+        "body": "From the next sign-in the directory is searched anonymously. If your server refuses anonymous searches, every directory sign-in fails until you enter a new password, and a removed password cannot be read back.",
+        "confirm": "Remove password"
+      },
+      "disable": {
+        "title": "Take {{name}} out of service?",
+        "body": "Directory users can no longer sign in. The registration, bind password and group mappings stay, so turning it back on restores sign-in. Local accounts keep working.",
+        "confirm": "Take out of service"
+      },
+      "confirm": {
+        "title": "Delete directory {{name}}?",
+        "body": "Directory users can no longer sign in, and its group mappings are deleted with it. Accounts already created keep the roles they have.",
+        "confirm": "Delete directory"
+      }
+    },
+    "apiTokens": {
+      "title": "API tokens",
+      "count_one": "{{count}} token",
+      "count_other": "{{count}} tokens",
+      "customRole": "Custom role",
+      "colName": "Name",
+      "colScope": "Scope",
+      "colRole": "Role",
+      "colPrefix": "Prefix",
+      "colExpires": "Expires",
+      "colLastUsed": "Last used",
+      "colState": "State",
+      "noExpiry": "Never",
+      "neverUsed": "Never used",
+      "state": {
+        "active": "Active",
+        "expired": "Expired",
+        "revoked": "Revoked"
+      },
+      "rotate": "Rotate token {{name}}",
+      "inactiveHint": "A revoked or expired token cannot be rotated; mint a new one.",
+      "revoke": "Revoke token {{name}}",
+      "alreadyRevoked": "This token is already revoked.",
+      "revokedToast": "{{name}} is revoked and stops working on its next request",
+      "empty": {
+        "title": "No API tokens yet",
+        "body": "A token is a named service account that holds one role at one organization, team or project, for the CI jobs and scripts that should not run as the admin token or as a person."
+      },
+      "mint": {
+        "open": "Mint token",
+        "title": "Mint an API token",
+        "subtitle": "A named token that holds one role at the scope you choose.",
+        "save": "Mint token",
+        "name": "Name",
+        "nameHint": "What the audit log shows for this token's changes. At most 80 characters.",
+        "namePlaceholder": "ci-deploy",
+        "scope": "Scope",
+        "scopeHint": "The token reaches this scope and everything below it, never a sibling or the level above.",
+        "role": "Role",
+        "roleHint": "Give automation the narrowest role that does the job. A token never holds more than you do at this scope.",
+        "builtInRoles": "Built-in roles",
+        "customRoles": "Custom roles",
+        "expiry": "Expires",
+        "expiryHint": "The token stops working after this long. 90 days unless you choose otherwise.",
+        "days_one": "In {{count}} day",
+        "days_other": "In {{count}} days",
+        "never": "Never expires",
+        "neverWarning": "A token that never expires stays valid until someone revokes it. Prefer an expiry and rotate it."
+      },
+      "confirm": {
+        "rotateTitle": "Rotate token {{name}}?",
+        "rotateBody": "A new secret is shown once, and the current one stops working in the same instant. Anything still using it fails until it is given the new one.",
+        "rotate": "Rotate token",
+        "revokeTitle": "Revoke token {{name}}?",
+        "revokeBody": "The token stops working on its next request and cannot be restored. It stays in the list as revoked, so the audit trail keeps its name.",
+        "revoke": "Revoke token"
+      },
+      "revealed": {
+        "title": "Token {{name}} is ready",
+        "body": "This is the only time the secret is shown. rolter keeps only a digest of it, so a lost secret is rotated, not looked up.",
+        "rotatedTitle": "Token {{name}} was rotated",
+        "rotatedBody": "This is the only time the new secret is shown. The previous secret no longer works.",
+        "copy": "Copy token",
+        "nextStep": "Send it as Authorization: Bearer <token> on control-plane requests."
+      }
+    },
+    "mcpStepUp": {
+      "action": "Reconnect with more access",
+      "actionNamed": "Reconnect {{name}} with more access",
+      "missing_one": "Your connection lacks the scope {{scopes}} that this server requires.",
+      "missing_other": "Your connection lacks the scopes {{scopes}} that this server requires.",
+      "logTitle": "Authorization refused",
+      "logBody": "{{server}} refused this call for authorization. If it wanted a scope your connection does not hold, consent again with more access; your current scopes are kept.",
+      "notOwner": "Only the key's owner can reconnect with more access.",
+      "scopesLabel": "Scopes to add",
+      "scopesHint": "Separate scopes with spaces. The log records the refusal, not the scope the server asked for, so name it here.",
+      "scopesPlaceholder": "repo read:org"
     },
     "auditLog": {
       "emptyTitle": "No audit entries yet",
@@ -3474,6 +3788,7 @@
       },
       "selectBusinessUnit": "Select a business unit",
       "selectCustomer": "Select a customer",
+      "selectUser": "Select a person",
       "unpriced": {
         "inherit": "Inherit deployment setting",
         "ignore": "Serve and ignore",
@@ -3506,6 +3821,22 @@
         "tpm": "tpm"
       },
       "scopeNamed": "{{type}} {{name}}",
+      "userScopeNamed": "{{name}} ({{reach}})",
+      "reachLabel": "Counts",
+      "reachHint": "Which of the person's keys this cap counts. The place also decides who may manage it: only a superadmin may leave it un-narrowed.",
+      "reachOptions": {
+        "all": "Every key they minted",
+        "org": "Keys minted in one organization",
+        "project": "Keys minted in one project"
+      },
+      "reachPlace": {
+        "org": "Organization",
+        "project": "Project"
+      },
+      "reachPlacePlaceholder": {
+        "org": "Select an organization",
+        "project": "Select a project"
+      },
       "scopeBlocked": "Scope defaults are unavailable: {{detail}}. Pick a scope manually below.",
       "scopeTitle": "Scope",
       "scopeBody": "Budgets and rate limits below apply to this scope.",
@@ -3589,6 +3920,22 @@
       "cost": "Cost",
       "guardrail": "Guardrail",
       "plugin": "Plugin",
+      "outcome": "Outcome",
+      "outcomeAny": "Any outcome",
+      "outcomes": {
+        "served": "Served",
+        "upstream_error": "Upstream error",
+        "withheld": "Withheld after billing",
+        "cancelled": "Caller went away",
+        "refused_budget": "Refused: budget spent",
+        "refused_rate_limit": "Refused: rate limit",
+        "refused_guardrail": "Refused: guardrail",
+        "refused_plugin": "Refused: plugin",
+        "refused_access": "Refused: model not allowed",
+        "refused_invalid": "Refused: invalid request",
+        "refused": "Refused: other reason",
+        "unknown": "Not recorded"
+      },
       "unpricedOnly": "Unpriced only",
       "withheldOnly": "Withheld responses only",
       "usageUnknownOnly": "Unknown usage only",
@@ -3631,6 +3978,7 @@
         "providerTarget": "Provider → target",
         "providerToTarget": "{{provider}} → {{target}}",
         "variant": "Variant",
+        "fallbackReason": "Fallback reason",
         "responseCache": "Response cache",
         "cacheHit": "Hit",
         "cacheMiss": "Miss",
@@ -3656,7 +4004,9 @@
             "compact": "Compact",
             "input_tokens": "Count input tokens"
           }
-        }
+        },
+        "paramAdjustments": "Parameters not sent as given",
+        "paramAdjustment": "{{param}}: {{disposition}}"
       },
       "payloadWithheld": "A body was captured for this request, but it is hidden for your role: on this project, request and response bodies are shown to its members and admins. A project admin can let viewers read them too, in the project's settings.",
       "feed": {
@@ -3682,6 +4032,87 @@
         "body": "This control plane runs without <0>CLICKHOUSE_URL</0>, or is older than the endpoint this screen reads, so it has no request log to show. Set <0>CLICKHOUSE_URL</0> and restart the control plane: gateways with no address of their own inherit it, and every request they serve from then on is logged here."
       }
     },
+    "savings": {
+      "limitsTitle": "A shortlist to test, not a recommendation",
+      "limitsLead": "The advisor re-prices recorded traffic at another model's price. It does not evaluate whether that model answers as well, and it never changes a route.",
+      "org": "Organization",
+      "allOrgs": "All organizations",
+      "project": "Project",
+      "allProjects": "All projects",
+      "route": "Route",
+      "allRoutes": "All routes",
+      "key": "Virtual key",
+      "allKeys": "All keys",
+      "model": "Model",
+      "thresholdsTitle": "Substitutability thresholds",
+      "maxPrompt": "Longest prompt (tokens)",
+      "maxPromptHint": "Longer prompts are not counted. Blank = 4000.",
+      "maxCompletion": "Longest answer (tokens)",
+      "maxCompletionHint": "Longer answers are not counted. Blank = 1000.",
+      "margin": "Output margin",
+      "marginHint": "How much longer a cheaper model's answers may run at the pessimistic end. Blank = 0.25.",
+      "recalculate": "Recalculate",
+      "errors": {
+        "whole": "Enter a whole number of 1 or more, or leave it blank.",
+        "margin": "Enter a number from 0 to {{max}}, or leave it blank."
+      },
+      "spendTitle": "Where the money went",
+      "requests": "Requests",
+      "spend": "Spend",
+      "unpriced_one": "{{count}} request unpriced",
+      "unpriced_other": "{{count}} requests unpriced",
+      "unpricedNote": "Unpriced requests ran against a model with no price, so their recorded cost is not a cost. Figures are scaled by the request log's sampling weight and are estimates under sampling.",
+      "unpricedColumn": "Unpriced",
+      "multiAttempt": "Retried or failed over",
+      "failed": "Failed",
+      "spentAnyway": "{{amount}} spent anyway",
+      "cacheHits": "Response-cache hits",
+      "cacheMisses": "Cache misses",
+      "byRoute": "Spend by route",
+      "byModel": "Spend by upstream model",
+      "byCaller": "Spend by caller (50 costliest)",
+      "candidatesTitle": "What could have run cheaper",
+      "candidatesBody": "Each figure is a range. The low end keeps the same token counts and prompt-cache reuse at the candidate's price; the high end assumes longer answers and a cold prompt cache. A saving's low end is the pessimistic one and can be negative.",
+      "substitutable_one": "{{requests}} request could have gone to a cheaper model in its route's pool. It cost {{cost}}; saving {{range}}.",
+      "substitutable_other": "{{requests}} requests could have gone to a cheaper model in their route's pool. They cost {{cost}}; saving {{range}}.",
+      "range": "{{low}} to {{high}}",
+      "currentCost": "{{requests}} requests, {{cost}} recorded",
+      "projected": "Projected cost",
+      "saving": "Saving",
+      "noCandidatesTitle": "No cheaper model would have fit",
+      "noCandidatesBody": "No request in this window had a cheaper, priced model in its route's pool within the thresholds above.",
+      "excludedTitle": "What was left out",
+      "excludedBody": "Requests that were not re-priced, by reason. A request or a candidate whose price is unknown is counted here, never priced at zero.",
+      "reason": "Reason",
+      "reasons": {
+        "unpriced": "No price for the model it ran on",
+        "failed": "Ended in an error",
+        "cache_hit": "Answered from the response cache",
+        "usage_unknown": "The upstream reported no usage",
+        "uses_tools": "Used tools",
+        "image_input": "Carried images",
+        "audio_input": "Carried audio",
+        "structured_output": "Asked for structured output",
+        "multi_turn": "Was part of a conversation",
+        "not_a_model_call": "Not a model call",
+        "no_token_usage": "No token usage recorded",
+        "prompt_too_large": "Prompt over the threshold",
+        "output_too_large": "Answer over the threshold",
+        "route_not_configured": "Route no longer configured",
+        "no_cheaper_candidate": "No cheaper priced model in the pool"
+      },
+      "unknownPricesTitle": "Models left out for lack of a price",
+      "unknownPricesBody": "These models are in a route's pool but have no price, so they could not be considered. Set a price and they will be.",
+      "emptyTitle": "No requests in this window",
+      "emptyBody": "The request log holds nothing to re-price for this window. Widen it to read more traffic.",
+      "noMatchTitle": "No requests match",
+      "noMatchBody": "Nothing in this window matches the scope or thresholds you set.",
+      "widen": "Look at the last 30 days",
+      "noAnalytics": {
+        "title": "The savings advisor needs ClickHouse",
+        "body": "It reads the request log, which is stored in ClickHouse. Set <0>CLICKHOUSE_URL</0> on the control plane and the report appears here."
+      }
+    },
     "mcpLogs": {
       "noAnalytics": {
         "title": "MCP tool-call logs need ClickHouse",
@@ -3695,7 +4126,6 @@
       "statusFilterAria": "Filter by status",
       "transportFilterAria": "Filter by transport",
       "calls": "Calls",
-      "window": "Last 24 hours",
       "emptyAction": "Browse the MCP catalog",
       "copyRequest": "Copy request id",
       "copyTrace": "Copy trace id",
@@ -3878,6 +4308,31 @@
       "colRoles": "Roles",
       "colProfiles": "Access profiles",
       "colStatus": "Status",
+      "colSecondFactor": "Second factor",
+      "deploymentRole": {
+        "set": "Set the deployment role of {{email}}",
+        "title": "Deployment role",
+        "subtitle": "What {{email}} can reach across the whole deployment.",
+        "label": "Deployment role",
+        "hint": "An account holds at most one. It takes effect on the account's next request.",
+        "none": "None",
+        "noneBody": "No deployment-wide access beyond the roles held in organizations.",
+        "operator": "Operator",
+        "operatorBody": "Maintains the platform: cluster, runtime policy, feature flags, alerting and connectors, read and change.",
+        "securityAuditor": "Security auditor",
+        "securityAuditorBody": "Reviews how it is secured, read only: security, logging, compatibility and guardrail settings, the deployment audit log and the config export.",
+        "scopeNote": "A deployment role gives nothing inside an organization, team or project: it reads no tenant request logs or payloads, mints no credentials and grants no roles.",
+        "badgeHint": "Holds a deployment role: reaches deployment-wide settings, nothing inside an organization.",
+        "toastSet": "{{email}} is now {{role}}",
+        "toastCleared": "{{email}} no longer holds a deployment role"
+      },
+      "factorArmed": "Armed",
+      "factorNone": "Not set up",
+      "factorNotListed": "Not listed",
+      "factorArmedHint_one": "An authenticator app is set up; {{count}} recovery code left.",
+      "factorArmedHint_other": "An authenticator app is set up; {{count}} recovery codes left.",
+      "factorNoneHint": "No authenticator app is set up for this account.",
+      "factorNotListedHint": "This account is not an active member of the organization, so the enrolment roster does not list it.",
       "colCreated": "Created",
       "noRoles": "no role in this org",
       "statusFilterAria": "Filter users by status",
@@ -3935,6 +4390,7 @@
       },
       "viaSso": "from SSO",
       "viaScim": "from SCIM",
+      "viaLdap": "from LDAP",
       "changeRole": "Change {{email}}'s {{role}} role on {{scope}}",
       "revokeRole": "Revoke {{role}} on {{scope}} from {{email}}",
       "lastAdminHint": "{{email}}'s {{role}} role on {{scope}} is the organization's last admin grant. Grant admin to someone else first.",
@@ -3969,7 +4425,10 @@
         "emptyTitle": "No pending invitations",
         "emptyBody": "An invitation waits here until it is accepted, expires or is revoked.",
         "revoke": "Revoke the invitation for {{email}}",
-        "toastRevoked": "Revoked the invitation for {{email}}"
+        "toastRevoked": "Revoked the invitation for {{email}}",
+        "resend": "Email the link to {{email}} again",
+        "toastResent": "Emailed the link to {{email}} again",
+        "toastResendFailed": "The link to {{email}} could not be emailed"
       },
       "confirm": {
         "revokeTitle": "Revoke {{role}} on {{scope}} from {{email}}?",
@@ -3980,6 +4439,7 @@
         "revokeLast": "It is their last role in this organization, so they leave this list. The account itself is kept.",
         "revokeFromSso": "The role came from an SSO group mapping, which grants it again the next time they sign in unless the mapping changes.",
         "revokeFromScim": "The role came from a SCIM group, which grants it again at the next sync unless the group mapping changes.",
+        "revokeFromLdap": "The role came from an LDAP group mapping, which grants it again the next time they sign in unless the mapping changes.",
         "revokeSelf": "It is your own role, so you may lose access you are using right now.",
         "revokeConfirm": "Revoke role",
         "revokeRefused": "Revoking a role on {{scope}} takes Admin there or on a scope above it.",
@@ -3988,6 +4448,7 @@
         "changeBody": "They hold {{role}} there now. The role you pick replaces it in one step, so they are never left without a role there.",
         "changeFromSso": "{{role}} came from an SSO group mapping, which grants it again the next time they sign in; change the mapping for the new role to stick.",
         "changeFromScim": "{{role}} came from a SCIM group, which grants it again at the next sync; change the group mapping for the new role to stick.",
+        "changeFromLdap": "{{role}} came from an LDAP group mapping, which grants it again the next time they sign in; change the mapping for the new role to stick.",
         "changeSelf": "It is your own role, so a lower one may take away access you are using right now.",
         "changeConfirm": "Change role",
         "resetTitle": "Reset the password of {{email}}?",
@@ -4120,7 +4581,7 @@
       "failClosed": "Fail closed",
       "failOpen": "Fail open",
       "allowUnlisted": "Allow unlisted tools",
-      "allowUnlistedHint": "Permit calls to tools the server’s manifest does not declare. Off, the proxy refuses them. On until you save it off.",
+      "allowUnlistedHint": "Permit calls to tools the server’s manifest does not declare. Off, the proxy refuses them. An organization created before manifests were enforced stays on until you save it off; a newer one starts off.",
       "requestControls": "Request controls",
       "connectTimeout": "Connect timeout (ms)",
       "requestTimeout": "Request timeout (ms)",
@@ -4204,6 +4665,89 @@
       "noAnalytics": {
         "title": "No ClickHouse receives the log",
         "body": "This control plane has no ClickHouse, so no request is written to the log. Sample rate, payload capture and retention are still saved and apply once ClickHouse is added: set <0>CLICKHOUSE_URL</0> (the clickhouse_url key in the config file) and restart the control plane."
+      }
+    },
+    "logErasure": {
+      "intro": "Retention is a clock; erasure is a command. It deletes what rolter holds about one subject now and is irreversible. ClickHouse applies it in the background, so a request is pending until the record says it is completed.",
+      "submittedToast": "Erasure submitted. It is pending until ClickHouse has finished.",
+      "form": {
+        "title": "Erase a subject's logs",
+        "hint": "Deletes the request logs and captured prompt bodies of one virtual key, user or organization, and records that it did.",
+        "scope": "Subject",
+        "subject": "Subject id",
+        "subjectPlaceholder": "00000000-0000-0000-0000-000000000000",
+        "subjectInvalid": "This is not an id. Paste the full UUID.",
+        "includeLogs": "Delete the log rows too",
+        "includeLogsOn": "Deletes the request metadata (model, tokens, cost, status) and the captured bodies, so the figures built from them go too.",
+        "includeLogsOff": "Deletes the captured prompt and response bodies only and keeps the request metadata.",
+        "submit": "Erase…"
+      },
+      "scope": {
+        "virtual_key": "Virtual key",
+        "user": "User",
+        "org": "Organization",
+        "request": "One request"
+      },
+      "scopeBody": {
+        "virtual_key": "Every request sent with that key.",
+        "user": "Every request sent with a key that user created and that still exists.",
+        "org": "Every request of that organization."
+      },
+      "subjectHint": {
+        "virtual_key": "The virtual key's id, from Virtual Keys.",
+        "user": "The user's id, from Users. A key that was since deleted leaves nothing to resolve; erase by organization or key id for those.",
+        "org": "The organization's id."
+      },
+      "reason": "Reason",
+      "reasonHint": "Stored and audited. Write the ticket or request reference, not the content.",
+      "reasonPlaceholder": "erasure request DSR-1042",
+      "confirm": {
+        "titleLogs": "Erase the logs of {{noun}} {{id}}?",
+        "titleBodies": "Erase the captured bodies of {{noun}} {{id}}?",
+        "noun": {
+          "virtual_key": "virtual key",
+          "user": "user",
+          "org": "organization"
+        },
+        "bodyAll": "The request logs and captured bodies are deleted for good. This cannot be undone.",
+        "bodyBodies": "The captured prompt and response bodies are deleted for good; the request metadata stays. This cannot be undone.",
+        "confirm": "Erase",
+        "notInstant": "ClickHouse deletes in the background. The record stays pending until it reports every deletion done."
+      },
+      "recent": "Recent erasures",
+      "count_one": "{{count}} erasure",
+      "count_other": "{{count}} erasures",
+      "colRequested": "Requested",
+      "colScope": "Subject",
+      "colReason": "Reason",
+      "colRemoves": "Removes",
+      "colStatus": "Status",
+      "removesAll": "Logs and bodies",
+      "removesBodies": "Bodies only",
+      "empty": {
+        "title": "Nothing has been erased",
+        "body": "Erasures you request here are listed with their status, and the record of each outlives the data it removed."
+      },
+      "status": {
+        "pending": "Pending",
+        "completed": "Erased",
+        "failed": "Failed",
+        "unverified": "Unverified"
+      },
+      "statusHint": {
+        "pending": "Submitted. Treat the data as still present until this reads erased.",
+        "completed": "ClickHouse reports every deletion done. The rows are gone.",
+        "failed": "ClickHouse refused a statement at submission. Earlier ones may be queued; submit again, which is safe to repeat.",
+        "unverified": "No deletion was visible in ClickHouse an hour after submission, so completion cannot be confirmed. Check by querying."
+      },
+      "progress": "{{done}} of {{total}} deletions done",
+      "action": {
+        "erase": "Erase captured payload",
+        "noOrg": "This request records no organization, so it cannot be addressed by request. Erase by virtual key instead.",
+        "noTime": "This row's time could not be read, so the request cannot be told apart from others that reuse its id. Erase by virtual key instead.",
+        "confirmTitle": "Erase the captured payload of {{id}}?",
+        "confirmBody": "Deletes the request and response bodies captured for the call at {{time}}. The request's metadata stays. This cannot be undone.",
+        "confirm": "Erase payload"
       }
     },
     "clientSettings": {
@@ -4453,7 +4997,25 @@
         "anthropicVersion": "Anthropic version must be a dated release like 2023-06-01.",
         "defaultMaxTokens": "Default max tokens must be a whole number between 1 and 1000000."
       },
-      "restart": "Restart"
+      "restart": "Restart",
+      "adjustments": {
+        "title": "Parameters not forwarded as sent",
+        "desc": "Over the last 7 days, the request parameters each route's translation dropped, clamped or approximated for an upstream that speaks another dialect, and the share of that route's traffic to the provider it touched.",
+        "colRoute": "Route",
+        "colProvider": "Provider",
+        "colParam": "Parameter",
+        "colDisposition": "What happened",
+        "colShare": "Share of traffic",
+        "share": "{{share}} ({{requests}} of {{total}})",
+        "emptyTitle": "Every parameter went through",
+        "emptyBody": "No request in the last 7 days had a parameter dropped, clamped or approximated by translation.",
+        "notRecordedTitle": "Parameter adjustments are not recorded",
+        "notRecordedBody": "The request log has no column for them yet. Apply <0>clickhouse/022_param_adjustments.sql</0> to keep them.",
+        "noAnalytics": {
+          "title": "Parameter adjustments need the analytics store",
+          "body": "They are read from the request log, which this deployment does not keep. Set <0>CLICKHOUSE_URL</0> and this panel lists, per route, the parameters translation did not forward as sent."
+        }
+      }
     },
     "featureFlags": {
       "confirm": {
@@ -4527,6 +5089,90 @@
         "unknown": "This browser does not know the zone “{{zone}}”, so times follow its own zone instead."
       },
       "discard": "Discard changes"
+    },
+    "guardrailPolicies": {
+      "intro": "A policy pins a set of guardrail providers, score thresholds and a violation action to a scope: the whole deployment, an organization, a project, a route or a virtual key.",
+      "precedence": "Exactly one policy applies to a request: the most specific enabled one that matches it (key, then route, project, organization, deployment). It replaces the broader ones rather than merging with them, so a narrower policy must list every provider it wants. A request no policy matches is checked only by providers no policy lists, with no thresholds. Thresholds act only on the scored categories a provider returns; a provider's own block always blocks.",
+      "addPolicy": "Add policy",
+      "columns": {
+        "name": "Policy",
+        "scope": "Scope",
+        "providers": "Providers",
+        "thresholds": "Thresholds",
+        "onViolation": "On violation",
+        "streaming": "Streaming",
+        "state": "State"
+      },
+      "noProviders": "No providers",
+      "noThresholds": "No thresholds",
+      "scopes": {
+        "deployment": "Deployment",
+        "org": "Organization",
+        "project": "Project",
+        "route": "Route",
+        "key": "Virtual key"
+      },
+      "onViolationValues": {
+        "block": "Block",
+        "annotate": "Annotate"
+      },
+      "streamingValues": {
+        "reject": "Reject streams",
+        "buffer": "Buffer streams"
+      },
+      "enabled": "Enabled",
+      "paused": "Paused",
+      "edit": "Edit",
+      "editOne": "Edit policy {{name}}",
+      "deleteOne": "Delete policy {{name}}",
+      "emptyTitle": "No guardrail policies",
+      "emptyBody": "Without a policy, every enabled provider runs on every request. Add one to scope providers to a route, project or key, or to set score thresholds.",
+      "emptyAction": "Add first policy",
+      "confirm": {
+        "deleteTitle": "Delete {{name}}?",
+        "deleteBody": "Requests in this {{scope}} scope stop following this policy and fall back to the next broader enabled policy, or to the providers no policy lists."
+      },
+      "sheet": {
+        "titleAdd": "Add guardrail policy",
+        "titleEdit": "Edit {{name}}",
+        "subtitle": "One policy applies per request",
+        "name": "Name",
+        "description": "Description (optional)",
+        "scope": "Scope",
+        "scopeInfo": "Which requests the policy applies to. Only one enabled policy may exist per scope and scope id.",
+        "scopeId": {
+          "org": "Organization id",
+          "project": "Project id",
+          "route": "Public model name",
+          "key": "Virtual key id"
+        },
+        "scopeIdRequired": "Enter the id this scope is pinned to.",
+        "providers": "Providers",
+        "providersHint": "Pick the providers this policy consults. A narrower policy replaces broader ones, so list every provider it needs.",
+        "order": "Providers in the order they are consulted",
+        "moveUp": "Move {{name}} up",
+        "moveDown": "Move {{name}} down",
+        "thresholds": "Thresholds",
+        "thresholdsInfo": "Category to score in 0 to 1. A provider score at or above the threshold is a violation. Use * for any category not listed. Only scored categories a provider returns are compared.",
+        "addThreshold": "Add threshold",
+        "noThresholds": "No thresholds. Only a provider's own block decision blocks.",
+        "category": "Category",
+        "threshold": "Threshold",
+        "removeThreshold": "Remove threshold",
+        "problem": {
+          "category": "Name the category, or * for any other.",
+          "duplicate": "This category is already listed.",
+          "range": "Enter a number from 0 to 1."
+        },
+        "onViolation": "On violation",
+        "onViolationInfo": "Block refuses the request. Annotate records the violation in the log and metrics without blocking.",
+        "streaming": "Streaming",
+        "streamingInfo": "Matters only when the policy lists a post-call provider. Reject refuses requests with stream set to true (400). Buffer holds the whole stream, checks it once, then delivers or withholds it: nothing is delivered incrementally.",
+        "enabled": "Enabled",
+        "enabledHint": "A paused policy applies to nothing, and its providers do not fall back to all traffic.",
+        "save": "Save policy",
+        "create": "Create policy"
+      }
     }
   },
   "playground": {
@@ -4972,6 +5618,10 @@
       "title": "LLM Logs",
       "subtitle": "Every request through the gateway, streaming in real time."
     },
+    "savings": {
+      "title": "Savings advisor",
+      "subtitle": "What the window's spend would have cost at the cheaper models already in each route's pool. A shortlist to test."
+    },
     "mcp-logs": {
       "title": "MCP Logs",
       "subtitle": "Tool-call execution logs across your MCP servers."
@@ -4983,6 +5633,10 @@
     "logs-settings": {
       "title": "Logs Settings",
       "subtitle": "Retention, sampling, and PII redaction for request logs."
+    },
+    "log-erasure": {
+      "title": "Log Erasure",
+      "subtitle": "Delete one subject's request logs and captured payloads now, and follow ClickHouse until it has finished."
     },
     "model-catalog": {
       "title": "Model Catalog",
@@ -5100,6 +5754,14 @@
       "title": "Single Sign-On",
       "subtitle": "Register an identity provider, map its groups to roles, and choose how this organization signs in."
     },
+    "ldap": {
+      "title": "LDAP",
+      "subtitle": "Register a directory, map its groups to roles, and let its users sign in with their directory password."
+    },
+    "api-tokens": {
+      "title": "API Tokens",
+      "subtitle": "Scoped tokens for CI jobs and scripts: mint, rotate and revoke them, and see what each holds and when it last ran."
+    },
     "rbac": {
       "title": "Roles & Permissions",
       "subtitle": "Fine-grained role-based access control."
@@ -5183,6 +5845,10 @@
     "preferences": {
       "title": "Preferences",
       "subtitle": "Your language, default scope, Playground model and time zone, kept with your account."
+    },
+    "guardrail-policies": {
+      "title": "Guardrail Policies",
+      "subtitle": "Decide which guardrail providers check which traffic, and at what score."
     }
   },
   "shell": {
@@ -5567,9 +6233,19 @@
     "ms": "{{value}} ms",
     "unpriced": "unpriced",
     "unpricedHint": "No price is configured for this model, so this request was recorded as unpriced rather than as free.",
+    "export": {
+      "csv": "Export CSV",
+      "pending": "Exporting…",
+      "downloaded": "Export downloaded. Its name gives the window and currency; a row marked partial holds unpriced requests."
+    },
     "withheld": "withheld",
     "withheldHint": "The provider answered and billed for this response, but an output guardrail or plugin refused to deliver it: the caller received a 403. The cost is real; the policy that refused is named in the error.",
-    "usageUnknownHint": "The upstream answered but reported no usage, so the tokens and cost are unknown, not zero."
+    "usageUnknownHint": "The upstream answered but reported no usage, so the tokens and cost are unknown, not zero.",
+    "paramAdjustments": {
+      "dropped": "dropped",
+      "clamped": "clamped",
+      "translated": "approximated"
+    }
   },
   "savedViews": {
     "open": "Saved views",

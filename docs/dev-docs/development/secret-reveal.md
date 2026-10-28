@@ -1,8 +1,8 @@
 # Dashboard one-time secrets
 
-Three values are on screen exactly once: a virtual key, a SCIM bearer token and
-an invitation link. The control plane keeps a digest of the first two and nothing
-of the third, so the dialog that shows the value is the last time it exists, and
+Four values are on screen exactly once: a virtual key, a SCIM bearer token, a
+scoped API token (a mint or a rotation) and an invitation link. The control
+plane keeps a digest of the first three and nothing of the last, so the dialog that shows the value is the last time it exists, and
 "I pressed Copy and it worked" has to be true before that dialog is closed.
 
 Each screen used to lay the reveal out by hand (#2217). All three copied

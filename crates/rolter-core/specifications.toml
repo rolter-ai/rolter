@@ -440,10 +440,12 @@ modules = ["crates/rolter-proxy/src/infinity.rs"]
 supported = [
   "embeddings: OpenAI's own shape, forwarded unchanged",
   "rerank: `{\"text\": ...}` documents flattened on the way up and bare-string documents wrapped on the way back",
+  "every other endpoint refused with `400 unsupported_endpoint` before the upstream on a route that reaches only embedding servers",
 ]
 tests = [
   "crates/rolter-proxy/src/infinity.rs::documents_come_back_in_the_cohere_shape",
   "crates/rolter-gateway/tests/infinity.rs",
+  "crates/rolter-gateway/tests/embedding_only.rs",
 ]
 
 [[spec]]
@@ -458,8 +460,12 @@ conformance = "native-passthrough"
 modules = ["crates/rolter-core/src/upstream.rs"]
 supported = [
   "the OpenAI-compatible `/v1/embeddings` route, and `/health` as the liveness probe",
+  "every other endpoint, `/v1/rerank` included (TEI has no rerank mapping), refused with `400 unsupported_endpoint` before the upstream on a route that reaches only embedding servers, none of them Infinity",
 ]
-tests = ["crates/rolter-gateway/tests/tei.rs"]
+tests = [
+  "crates/rolter-gateway/tests/tei.rs",
+  "crates/rolter-gateway/tests/embedding_only.rs",
+]
 
 [[spec]]
 id = "system-one"
@@ -498,12 +504,19 @@ supported = [
   "messages, system and developer instructions, images, documents, tools and tool results, in both directions",
   "SSE translated incrementally in both directions",
   "`max_tokens` injected from `[compatibility] default_max_tokens` when an OpenAI request sets none",
+  "Anthropic `tool_choice.disable_parallel_tool_use: true` carried as Chat `parallel_tool_calls: false` on a request with tools (#3325)",
 ]
 omissions = [
   "fields with no counterpart in the target dialect are dropped, never forwarded",
 ]
+deviations = [
+  "an OpenAI `temperature` above Anthropic's maximum of 1 is sent as 1 and reported as `temperature=clamped` (#3324)",
+]
 tests = [
   "crates/rolter-proxy/src/translation.rs::openai_multimodal_and_tools_become_anthropic_blocks",
+  "crates/rolter-proxy/src/translation.rs::chat_to_anthropic_clamps_a_temperature_above_one",
+  "crates/rolter-proxy/src/translation.rs::anthropic_disable_parallel_tool_use_becomes_chat_parallel_tool_calls",
+  "crates/rolter-gateway/tests/integration.rs::a_chat_temperature_above_one_is_clamped_for_an_anthropic_upstream",
   "crates/rolter-proxy/src/translation.rs::anthropic_response_becomes_openai_response",
   "crates/rolter-proxy/src/translation.rs::anthropic_sse_translates_across_chunk_boundaries",
   "crates/rolter-gateway/tests/integration.rs::cross_protocol_sse_is_translated_incrementally_both_ways",
@@ -636,14 +649,16 @@ conformance = "partial"
 modules = [
   "crates/rolter-control/src/proxy.rs",
   "crates/rolter-gateway/src/mcp_proxy.rs",
+  "crates/rolter-proxy/src/hop_by_hop.rs",
 ]
 supported = [
-  "a fixed list of hop-by-hop fields (RFC 9110 §7.6.1) is stripped before a request or response is relayed",
-]
-omissions = [
-  "fields a `Connection` header nominates are not removed, and the control plane's `/gw` relay lists `trailers` where the field is `Trailer` (#3338)",
+  "`Connection`, every field its value nominates and the fixed hop-by-hop set (`Keep-Alive`, `Proxy-Connection`, `TE`, `Trailer`, `Transfer-Encoding`, `Upgrade` and the proxy-auth fields, RFC 9110 §7.6.1) are stripped by one shared helper before a request or response is relayed",
 ]
 tests = [
+  "crates/rolter-proxy/src/hop_by_hop.rs::removes_connection_and_the_fields_it_nominates",
+  "crates/rolter-proxy/src/hop_by_hop.rs::removes_trailer_and_the_fixed_set",
+  "crates/rolter-control/src/proxy.rs::the_relay_drops_nominated_and_trailer_headers_both_ways",
+  "crates/rolter-gateway/src/mcp_proxy.rs::the_relay_drops_nominated_and_trailer_headers",
   "crates/rolter-gateway/src/mcp_proxy.rs::proxy_replaces_client_auth_and_preserves_path_query_and_body",
 ]
 
@@ -700,12 +715,17 @@ contract = "rfc"
 version = "RFC 9745"
 reviewed_at = "2026-10-27"
 conformance = "native-passthrough"
-modules = ["crates/rolter-control/src/deprecation.rs"]
+modules = [
+  "crates/rolter-control/src/deprecation.rs",
+  "crates/rolter-control/src/snapshot_negotiation.rs",
+]
 supported = [
   "`Deprecation: @<unix seconds>` on a deprecated control-plane operation",
+  "`Deprecation` on every `/internal/snapshot` answer served in a deprecated snapshot format (ADR-0038)",
 ]
 tests = [
   "crates/rolter-control/src/deprecation.rs::headers_follow_rfc_9745_and_rfc_8594",
+  "crates/rolter-control/src/snapshot_negotiation.rs::a_deprecated_format_carries_the_headers_and_only_it",
 ]
 
 [[spec]]
@@ -718,12 +738,17 @@ contract = "rfc"
 version = "RFC 8594"
 reviewed_at = "2026-10-27"
 conformance = "native-passthrough"
-modules = ["crates/rolter-control/src/deprecation.rs"]
+modules = [
+  "crates/rolter-control/src/deprecation.rs",
+  "crates/rolter-control/src/snapshot_negotiation.rs",
+]
 supported = [
   "`Sunset` as an IMF-fixdate on every deprecated control-plane operation",
+  "`Sunset` on every `/internal/snapshot` answer served in a deprecated snapshot format (ADR-0038)",
 ]
 tests = [
   "crates/rolter-control/src/deprecation.rs::headers_follow_rfc_9745_and_rfc_8594",
+  "crates/rolter-control/src/snapshot_negotiation.rs::a_deprecated_format_carries_the_headers_and_only_it",
 ]
 
 [[spec]]

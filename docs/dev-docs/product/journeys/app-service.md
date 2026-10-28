@@ -37,10 +37,10 @@ rejections while P5 runs.
 
 ## P3 — rotate its key without an outage
 
-| #    | step                                   | where                                                                   | expect                                                                    | status      |
-| ---- | -------------------------------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------- | ----------- |
-| P3.1 | rotate in place with an overlap window | —                                                                       | a new secret on the same key, the old one honoured until the rollout ends | gap — #1837 |
-| P3.2 | the workaround                         | mint a second key with the same settings, roll it out, delete the first | no outage — as long as every setting was copied by hand                   | partial     |
+| #    | step                                   | where                                                                   | expect                                                                    | status           |
+| ---- | -------------------------------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------- | ---------------- |
+| P3.1 | rotate in place with an overlap window | **Governance → Virtual Keys → Rotate**                                  | a new secret on the same key, the old one honoured until the rollout ends | verified (#1837) |
+| P3.2 | the workaround                         | mint a second key with the same settings, roll it out, delete the first | no outage — as long as every setting was copied by hand                   | partial          |
 
 ## P4 — be managed by automation
 

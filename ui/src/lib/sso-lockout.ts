@@ -1,16 +1,4 @@
-import type { MembershipRow, OrgAuthPolicy, SsoProviderRow } from "@/lib/api";
-
-/**
- * How many people a list of membership rows stands for.
- *
- * `GET /api/v1/orgs/{id}/memberships` answers with one row per grant anywhere
- * in the org's tree, so a person holding a role on the org and another on one
- * of its teams is two rows. A count that reads "this organization has N
- * members" has to count them once.
- */
-export function distinctPeople(rows: Pick<MembershipRow, "user_id">[]): number {
-  return new Set(rows.map((row) => row.user_id)).size;
-}
+import type { OrgAuthPolicy, SsoProviderRow } from "@/lib/api";
 
 /**
  * Whether taking `target` out of service, or deleting it, leaves the org with

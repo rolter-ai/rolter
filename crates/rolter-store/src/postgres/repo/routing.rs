@@ -10,14 +10,15 @@ use super::providers::ProviderRepo;
 use super::support::{fetch_optional_or_not_found, require_affected, store_err};
 
 /// Every column of `route_targets` that its row type reads.
-const ROUTE_TARGET_COLUMNS: &str = "id, route_id, provider_id, upstream_model, weight, created_at";
+const ROUTE_TARGET_COLUMNS: &str =
+    "id, route_id, provider_id, upstream_model, weight, takes_over, created_at";
 
 /// Every column of `route_variants` that its row type reads.
 const ROUTE_VARIANT_COLUMNS: &str = "id, route_id, name, weight, position, params, created_at";
 
 /// Every column of `route_variant_targets` that its row type reads.
 const ROUTE_VARIANT_TARGET_COLUMNS: &str =
-    "id, variant_id, provider_id, upstream_model, weight, position";
+    "id, variant_id, provider_id, upstream_model, weight, position, takes_over";
 
 /// Every column of `routes` that its row type reads.
 const ROUTE_COLUMNS: &str =
@@ -249,18 +250,20 @@ impl RouteRepo<'_> {
                     .await
                     .map_err(store_err)?;
             }
-            for (target, weight) in plan.reweight {
+            for (target, spec) in plan.reweight {
                 let updated: RouteTarget = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-                    "update route_targets set weight = $2 where id = $1
+                    "update route_targets set weight = $2, takes_over = $3 where id = $1
                      returning {ROUTE_TARGET_COLUMNS}"
                 )))
                 .bind(target.id)
-                .bind(weight)
+                .bind(spec.weight)
+                .bind(&spec.takes_over)
                 .fetch_one(&mut *tx)
                 .await
                 .map_err(store_err)?;
                 changes.reweighted.push(ReweightedTarget {
                     previous_weight: target.weight,
+                    previous_takes_over: target.takes_over.clone(),
                     target: updated,
                 });
             }
@@ -270,14 +273,15 @@ impl RouteRepo<'_> {
                 // the new targets listed in the order the caller sent them
                 let created: RouteTarget = sqlx::query_as(sqlx::AssertSqlSafe(format!(
                     "insert into route_targets (route_id, \
-                        provider_id, upstream_model, weight, created_at)
-                     values ($1, $2, $3, $4, clock_timestamp())
+                        provider_id, upstream_model, weight, takes_over, created_at)
+                     values ($1, $2, $3, $4, $5, clock_timestamp())
                      returning {ROUTE_TARGET_COLUMNS}"
                 )))
                 .bind(id)
                 .bind(spec.provider_id)
                 .bind(spec.upstream_model.as_deref())
                 .bind(spec.weight)
+                .bind(&spec.takes_over)
                 .fetch_one(&mut *tx)
                 .await
                 .map_err(store_err)?;
@@ -326,7 +330,8 @@ impl RouteTargetRepo<'_> {
     /// creation order inside it, the order [`RouteTargetRepo::list`] gives.
     pub async fn list_for_project(&self, project_id: Uuid) -> Result<Vec<RouteTarget>> {
         sqlx::query_as(
-            "select t.id, t.route_id, t.provider_id, t.upstream_model, t.weight, t.created_at
+            "select t.id, t.route_id, t.provider_id, t.upstream_model, t.weight, t.takes_over,
+                    t.created_at
              from route_targets t join routes r on r.id = t.route_id
              where r.project_id = $1 order by t.route_id, t.created_at, t.id",
         )
@@ -404,16 +409,18 @@ impl RouteTargetRepo<'_> {
         provider_id: Uuid,
         upstream_model: Option<&str>,
         weight: i32,
+        takes_over: &[String],
     ) -> Result<RouteTarget> {
         sqlx::query_as(sqlx::AssertSqlSafe(format!(
-            "insert into route_targets (route_id, provider_id, upstream_model, weight)
-             values ($1, $2, $3, $4)
+            "insert into route_targets (route_id, provider_id, upstream_model, weight, takes_over)
+             values ($1, $2, $3, $4, $5)
              returning {ROUTE_TARGET_COLUMNS}"
         )))
         .bind(route_id)
         .bind(provider_id)
         .bind(upstream_model)
         .bind(weight)
+        .bind(takes_over)
         .fetch_one(self.0)
         .await
         .map_err(store_err)
@@ -432,6 +439,23 @@ impl RouteTargetRepo<'_> {
             )))
             .bind(id)
             .bind(weight),
+            self.0,
+            || format!("route target {id}"),
+        )
+        .await
+    }
+
+    /// Replace the failure classes an existing target takes over (#1584), so
+    /// a re-imported `rolter.toml` applies an edited `takes_over` the way it
+    /// applies an edited weight.
+    pub async fn set_takes_over(&self, id: Uuid, takes_over: &[String]) -> Result<RouteTarget> {
+        fetch_optional_or_not_found(
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "update route_targets set takes_over = $2 where id = $1
+             returning {ROUTE_TARGET_COLUMNS}"
+            )))
+            .bind(id)
+            .bind(takes_over),
             self.0,
             || format!("route target {id}"),
         )
@@ -474,7 +498,8 @@ impl RouteVariantRepo<'_> {
         .await
         .map_err(store_err)?;
         let targets: Vec<RouteVariantTarget> = sqlx::query_as(
-            "select t.id, t.variant_id, t.provider_id, t.upstream_model, t.weight, t.position
+            "select t.id, t.variant_id, t.provider_id, t.upstream_model, t.weight, t.position,
+                    t.takes_over
              from route_variant_targets t
              join route_variants v on v.id = t.variant_id
              join routes r on r.id = v.route_id
@@ -542,8 +567,8 @@ impl RouteVariantRepo<'_> {
             for (position, target) in spec.targets.iter().enumerate() {
                 let row: RouteVariantTarget = sqlx::query_as(sqlx::AssertSqlSafe(format!(
                     "insert into route_variant_targets \
-                        (variant_id, provider_id, upstream_model, weight, position)
-                     values ($1, $2, $3, $4, $5)
+                        (variant_id, provider_id, upstream_model, weight, position, takes_over)
+                     values ($1, $2, $3, $4, $5, $6)
                      returning {ROUTE_VARIANT_TARGET_COLUMNS}"
                 )))
                 .bind(variant.id)
@@ -551,6 +576,7 @@ impl RouteVariantRepo<'_> {
                 .bind(target.upstream_model.as_deref())
                 .bind(target.weight)
                 .bind(position as i32)
+                .bind(&target.takes_over)
                 .fetch_one(&mut *tx)
                 .await
                 .map_err(store_err)?;
@@ -575,7 +601,8 @@ async fn variants_of(conn: &mut sqlx::PgConnection, route_id: Uuid) -> Result<Ve
     .await
     .map_err(store_err)?;
     let targets: Vec<RouteVariantTarget> = sqlx::query_as(
-        "select t.id, t.variant_id, t.provider_id, t.upstream_model, t.weight, t.position
+        "select t.id, t.variant_id, t.provider_id, t.upstream_model, t.weight, t.position,
+                    t.takes_over
          from route_variant_targets t join route_variants v on v.id = t.variant_id
          where v.route_id = $1 order by t.variant_id, t.position",
     )
@@ -618,6 +645,7 @@ fn specs_match(stored: &[RouteVariant], desired: &[RouteVariantSpec]) -> bool {
                     t.provider_id == s.provider_id
                         && t.upstream_model == s.upstream_model
                         && t.weight == s.weight
+                        && t.takes_over == s.takes_over
                 })
         })
 }
@@ -640,6 +668,9 @@ pub struct RouteVariantTargetSpec {
     /// the model name sent upstream; `None` forwards the route's public name
     pub upstream_model: Option<String>,
     pub weight: i32,
+    /// the failure class tokens the target takes over; empty makes it an
+    /// ordinary member of the variant (#3373)
+    pub takes_over: Vec<String>,
 }
 
 /// One target of a route as [`RouteRepo::update`] is asked to leave it.
@@ -649,6 +680,9 @@ pub struct RouteTargetSpec {
     /// the model name sent upstream; `None` forwards the route's public name
     pub upstream_model: Option<String>,
     pub weight: i32,
+    /// the failure class tokens the target takes over; empty makes it an
+    /// ordinary member of the pool (#1584)
+    pub takes_over: Vec<String>,
 }
 
 /// The parts of a route [`RouteRepo::update`] changes. A field left `None`
@@ -661,13 +695,15 @@ pub struct RouteUpdate<'a> {
     pub targets: Option<&'a [RouteTargetSpec]>,
 }
 
-/// A stored target whose weight [`RouteRepo::update`] changed.
+/// A stored target whose weight or `takes_over` set [`RouteRepo::update`]
+/// changed.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ReweightedTarget {
     /// the target as stored afterwards
     #[serde(flatten)]
     pub target: RouteTarget,
     pub previous_weight: i32,
+    pub previous_takes_over: Vec<String>,
 }
 
 /// What [`RouteRepo::update`] did to a route's targets. All three are empty
@@ -676,7 +712,8 @@ pub struct ReweightedTarget {
 pub struct RouteTargetChanges {
     /// entries that matched no stored target, as inserted
     pub added: Vec<RouteTarget>,
-    /// stored targets that matched an entry with a different weight
+    /// stored targets that matched an entry with a different weight or
+    /// `takes_over` set
     pub reweighted: Vec<ReweightedTarget>,
     /// stored targets the list no longer names, as they were before deletion
     pub removed: Vec<RouteTarget>,
@@ -691,8 +728,9 @@ impl RouteTargetChanges {
 /// How a desired target list maps onto a route's stored targets.
 #[derive(Debug, Default)]
 pub(super) struct TargetPlan<'a> {
-    /// matched stored targets whose weight changes, with the new weight
-    pub(super) reweight: Vec<(&'a RouteTarget, i32)>,
+    /// matched stored targets whose weight or `takes_over` set changes, with
+    /// the entry that changes them
+    pub(super) reweight: Vec<(&'a RouteTarget, &'a RouteTargetSpec)>,
     /// entries with no stored match, in the order they were given
     pub(super) insert: Vec<&'a RouteTargetSpec>,
     /// stored targets no entry matched
@@ -723,8 +761,8 @@ pub(super) fn plan_target_changes<'a>(
         match found {
             Some((i, target)) => {
                 claimed[i] = true;
-                if target.weight != spec.weight {
-                    plan.reweight.push((target, spec.weight));
+                if target.weight != spec.weight || target.takes_over != spec.takes_over {
+                    plan.reweight.push((target, spec));
                 }
             }
             None => plan.insert.push(spec),
