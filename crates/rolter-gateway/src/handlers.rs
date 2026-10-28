@@ -2664,9 +2664,9 @@ async fn proxy(
             // parked on a cooldown (single-key providers yield their one key)
             let multi_key = provider.api_keys.len() > 1;
             let key_ns = key_pool_key(&target.provider);
-            let picked_key = provider.pick_api_key_indexed(jitter(started), |i| {
-                multi_key && state.cooldowns.is_parked(&key_ns, i)
-            });
+            let parked_keys = parked_keys(&state, provider, &key_ns);
+            let picked_key =
+                provider.pick_api_key_indexed(jitter(started), |i| parked_keys.contains(i));
             let api_key = picked_key.as_ref().map(|(_, k)| k.as_str());
             last_key_fingerprint = api_key.map(provider_key_fingerprint);
             let upstream_model = target.model.as_deref();
@@ -3509,9 +3509,9 @@ async fn proxy_multipart(
         cancel.attribute(&last_provider, &last_target, "");
         let multi_key = provider.api_keys.len() > 1;
         let key_ns = key_pool_key(&target.provider);
-        let picked_key = provider.pick_api_key_indexed(jitter(started), |i| {
-            multi_key && state.cooldowns.is_parked(&key_ns, i)
-        });
+        let parked_keys = parked_keys(&state, provider, &key_ns);
+        let picked_key =
+            provider.pick_api_key_indexed(jitter(started), |i| parked_keys.contains(i));
         let api_key = picked_key.as_ref().map(|(_, k)| k.as_str());
 
         // per-attempt clock: `started` is the whole request, and a superseded
@@ -3834,6 +3834,21 @@ pub(crate) fn key_pool_key(provider: &str) -> String {
     format!("key::{provider}")
 }
 
+/// Which of `provider`'s keys are parked on a cooldown under `key_ns`, read in
+/// one lock acquisition rather than one per key (#3249). A single-key provider
+/// has nothing to choose between, so it reads nothing.
+pub(crate) fn parked_keys(
+    state: &AppState,
+    provider: &rolter_core::ProviderConfig,
+    key_ns: &str,
+) -> crate::target_mask::TargetMask {
+    if provider.api_keys.len() > 1 {
+        state.cooldowns.parked_mask(key_ns, provider.api_keys.len())
+    } else {
+        Default::default()
+    }
+}
+
 /// The order a variant's targets are tried: the variant balancer's pick leads
 /// (fed the same live in-flight + upstream queue-depth signal as the classic
 /// pool, and told which targets are `eligible` as the classic pool's balancer
@@ -4001,20 +4016,53 @@ async fn forward_variants(
         attempts: 0,
     };
     let mut tried: Vec<usize> = Vec::with_capacity(candidates.len());
+    // each variant's registry key, built once per request rather than once per
+    // candidate per attempt (#3249)
+    let variant_keys: Vec<String> = route
+        .variants
+        .iter()
+        .map(|v| variant_key(model, &v.name))
+        .collect();
+    // each variant's blocked targets, read from the registries at most once
+    // per attempt and only for a variant a candidate is asked about
+    let mut blocked: Vec<std::cell::OnceCell<Blocked>> =
+        route.variants.iter().map(|_| Default::default()).collect();
 
     for attempt in 0..=max_retries {
-        // a candidate is skippable when its target is parked, its provider is
-        // unhealthy, or its breaker is open — keyed per variant
-        let skip = |&(vi, ti): &(usize, usize)| {
-            let v = &route.variants[vi];
-            let key = variant_key(model, &v.name);
-            (cd_enabled && state.cooldowns.is_parked(&key, ti))
-                || !state.health.is_healthy(&v.targets[ti].provider)
-                || !state.breaker.allows(&key, ti)
+        for cell in &mut blocked {
+            cell.take();
+        }
+        // scoped so the borrow of the non-`Sync` cells ends before any await
+        let fresh = {
+            // a candidate is skippable when its target is parked, its provider is
+            // unhealthy, or its breaker is open (or probing) — keyed per variant
+            let skip = |&(vi, ti): &(usize, usize)| {
+                let v = &route.variants[vi];
+                blocked[vi]
+                    .get_or_init(|| {
+                        Blocked::read(
+                            &state.cooldowns,
+                            &state.health,
+                            &state.breaker,
+                            &variant_keys[vi],
+                            cd_enabled,
+                            v.targets.len(),
+                            v.targets.iter().map(|t| t.provider.as_str()),
+                        )
+                    })
+                    .contains(ti)
+            };
+            // prefer an untried, non-skipped candidate whose breaker admits it (the
+            // read above leaves an elapsed open window to `allows`, which takes the
+            // one half-open probe); fail open to any untried one when every
+            // remaining candidate is parked/unhealthy/open
+            (0..candidates.len()).find(|&ci| {
+                let (vi, ti) = candidates[ci];
+                !tried.contains(&ci)
+                    && !skip(&candidates[ci])
+                    && state.breaker.allows(&variant_keys[vi], ti)
+            })
         };
-        // prefer an untried, non-skipped candidate; fail open to any untried one
-        // when every remaining candidate is parked/unhealthy/open
-        let fresh = (0..candidates.len()).find(|ci| !tried.contains(ci) && !skip(&candidates[*ci]));
         let ci = match fresh.or_else(|| (0..candidates.len()).find(|ci| !tried.contains(ci))) {
             Some(ci) => ci,
             None => break, // no untried candidate left to fail over to
@@ -4023,7 +4071,7 @@ async fn forward_variants(
         let (vi, ti) = candidates[ci];
         let v = &route.variants[vi];
         let target = &v.targets[ti];
-        let key = variant_key(model, &v.name);
+        let key = variant_keys[vi].as_str();
         // let learning strategies (cache-aware) see which target actually served
         if let Some(b) = entry.variant_balancers.get(vi) {
             b.observe(ti, ctx);
@@ -4050,7 +4098,7 @@ async fn forward_variants(
             .unwrap_or_else(|_| body.clone());
 
         // count this attempt as in-flight under the variant's key
-        let mut guard = state.loads.begin(&key, ti);
+        let mut guard = state.loads.begin(key, ti);
         // the latency model learns cost as a function of prompt size, so it
         // needs this request's size before the guard's drop folds in the
         // sample (#853). inert on every other strategy
@@ -4059,9 +4107,9 @@ async fn forward_variants(
         // on a cooldown — same policy as the classic path
         let multi_key = provider.api_keys.len() > 1;
         let key_ns = key_pool_key(&target.provider);
-        let picked_key = provider.pick_api_key_indexed(jitter(started), |i| {
-            multi_key && state.cooldowns.is_parked(&key_ns, i)
-        });
+        let parked_keys = parked_keys(state, provider, &key_ns);
+        let picked_key =
+            provider.pick_api_key_indexed(jitter(started), |i| parked_keys.contains(i));
         let api_key = picked_key.as_ref().map(|(_, k)| k.as_str());
         out.provider_key_fingerprint = api_key.map(provider_key_fingerprint);
         let upstream_model = target.model.as_deref();
@@ -4131,10 +4179,10 @@ async fn forward_variants(
                 } else if is_retryable_status(status) {
                     if cd_enabled {
                         let secs = cooldown.duration_secs(retry_after_secs(&response));
-                        state.cooldowns.park(&key, ti, secs);
+                        state.cooldowns.park(key, ti, secs);
                         state.metrics.cooldowns_tripped_total.fetch_add(1, Relaxed);
                     }
-                    if state.breaker.on_failure(&key, ti) {
+                    if state.breaker.on_failure(key, ti) {
                         state.metrics.breaker_opened_total.fetch_add(1, Relaxed);
                     }
                     if attempt < max_retries {
@@ -4164,7 +4212,7 @@ async fn forward_variants(
                         back_off(delay, retrying).await;
                         continue;
                     }
-                } else if state.breaker.on_success(&key, ti) {
+                } else if state.breaker.on_success(key, ti) {
                     state.metrics.breaker_closed_total.fetch_add(1, Relaxed);
                 }
                 let is_sse = response
@@ -4188,10 +4236,10 @@ async fn forward_variants(
                 }
                 out.last_error = Some(message);
                 if cd_enabled {
-                    state.cooldowns.park(&key, ti, cooldown.duration_secs(None));
+                    state.cooldowns.park(key, ti, cooldown.duration_secs(None));
                     state.metrics.cooldowns_tripped_total.fetch_add(1, Relaxed);
                 }
-                if state.breaker.on_failure(&key, ti) {
+                if state.breaker.on_failure(key, ti) {
                     state.metrics.breaker_opened_total.fetch_add(1, Relaxed);
                 }
                 if attempt < max_retries {

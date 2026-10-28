@@ -329,12 +329,10 @@ async fn connect_selected(
             last_error = "configured target provider not found".to_string();
             continue;
         };
-        let multi_key = provider.api_keys.len() > 1;
         let key_namespace = key_pool_key(&target.provider);
+        let parked_keys = crate::handlers::parked_keys(state, provider, &key_namespace);
         let api_key = provider
-            .pick_api_key_indexed(0.0, |i| {
-                multi_key && state.cooldowns.is_parked(&key_namespace, i)
-            })
+            .pick_api_key_indexed(0.0, |i| parked_keys.contains(i))
             .map(|(_, key)| key);
         let upstream_model = target.model.as_deref().unwrap_or(model);
         let url = realtime_url(&provider.api_base, upstream_model);
