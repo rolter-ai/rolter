@@ -14,6 +14,8 @@ export interface DraftVariantTarget {
   /** the model id sent upstream; blank forwards the route's public name */
   upstream: string;
   weight: string;
+  /** the failure classes the target is a fallback for (#3373); empty for an ordinary target */
+  takesOver: string[];
 }
 
 export interface DraftVariant {
@@ -31,8 +33,19 @@ const nextKey = (prefix: string) => {
   return `${prefix}${keys}`;
 };
 
-export function newVariantTarget(providerId: string, upstream = "", weight = "1") {
-  return { key: nextKey("vt"), providerId, upstream, weight } satisfies DraftVariantTarget;
+export function newVariantTarget(
+  providerId: string,
+  upstream = "",
+  weight = "1",
+  takesOver: string[] = [],
+) {
+  return {
+    key: nextKey("vt"),
+    providerId,
+    upstream,
+    weight,
+    takesOver,
+  } satisfies DraftVariantTarget;
 }
 
 export function newVariant(name: string, providerId: string): DraftVariant {
@@ -60,7 +73,12 @@ export function variantsFromRows(rows: RouteVariantRow[]): DraftVariant[] {
     weight: String(row.weight),
     params: row.params ?? {},
     targets: row.targets.map((tg) =>
-      newVariantTarget(tg.provider_id, tg.upstream_model ?? "", String(tg.weight)),
+      newVariantTarget(
+        tg.provider_id,
+        tg.upstream_model ?? "",
+        String(tg.weight),
+        tg.takes_over ?? [],
+      ),
     ),
   }));
 }
@@ -74,6 +92,7 @@ export function variantsToApi(variants: DraftVariant[]): RouteVariantInput[] {
       provider_id: tg.providerId,
       upstream_model: tg.upstream.trim() === "" ? null : tg.upstream.trim(),
       weight: Number(tg.weight),
+      takes_over: tg.takesOver,
     })),
   }));
 }
@@ -189,7 +208,15 @@ export interface VariantRefusal {
   /** absent for the set as a whole */
   variantKey?: string;
   targetKey?: string;
-  field: "variants" | "name" | "weight" | "targets" | "params" | "targetWeight" | "provider";
+  field:
+    | "variants"
+    | "name"
+    | "weight"
+    | "targets"
+    | "params"
+    | "targetWeight"
+    | "provider"
+    | "takesOver";
 }
 
 export function variantRefusalOf(
@@ -199,7 +226,7 @@ export function variantRefusalOf(
 ): VariantRefusal | null {
   if (field === "variants") return { field: "variants", message };
   const match =
-    /^variants\[(\d+)\]\.(name|weight|params|targets)(?:\[(\d+)\]\.(weight|provider_id))?$/.exec(
+    /^variants\[(\d+)\]\.(name|weight|params|targets)(?:\[(\d+)\]\.(weight|provider_id|takes_over))?$/.exec(
       field,
     );
   if (!match) return null;
@@ -213,6 +240,7 @@ export function variantRefusalOf(
   return {
     variantKey: variant.key,
     targetKey: target.key,
-    field: match[4] === "weight" ? "targetWeight" : "provider",
+    field:
+      match[4] === "weight" ? "targetWeight" : match[4] === "takes_over" ? "takesOver" : "provider",
   };
 }

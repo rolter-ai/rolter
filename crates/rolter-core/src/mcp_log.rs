@@ -4,6 +4,8 @@
 
 use serde_json::Value;
 
+use crate::payload_redaction::{PayloadRedactor, RedactionReport};
+
 /// The closed set of `status` values the `mcp_tool_call_logs` table accepts.
 pub const MCP_STATUSES: &[&str] = &[
     "success",
@@ -33,15 +35,24 @@ pub fn redact(value: &mut Value, fields: &[String]) {
 
 /// Render a payload for storage: empty unless capture is `enabled` with a
 /// non-zero `max_bytes`, redacted before it is truncated so a secret can never
-/// survive at the edge of the retained prefix.
-pub fn capture(value: Option<Value>, enabled: bool, max_bytes: usize, fields: &[String]) -> String {
+/// survive at the edge of the retained prefix. `redactor` is the
+/// `[logging.payload_capture]` policy the request log applies too (#3277): the
+/// named keys are blanked and every remaining string is scanned for credential
+/// shapes, so a secret pasted into a tool argument or returned in a result is
+/// replaced by its typed marker.
+pub fn capture(
+    value: Option<Value>,
+    enabled: bool,
+    max_bytes: usize,
+    redactor: &PayloadRedactor,
+) -> String {
     if !enabled || max_bytes == 0 {
         return String::new();
     }
     let Some(mut value) = value else {
         return String::new();
     };
-    redact(&mut value, fields);
+    redactor.redact_json(&mut value, &mut RedactionReport::default());
     let mut rendered = serde_json::to_string(&value).unwrap_or_default();
     if rendered.len() > max_bytes {
         let end = rendered.floor_char_boundary(max_bytes);
@@ -81,22 +92,59 @@ mod tests {
             Some(json!({"nested": {"token": "secret"}, "query": "hello"})),
             true,
             1024,
-            &["token".to_string()],
+            &PayloadRedactor::fields_only(&["token".to_string()]),
         );
         assert!(captured.contains("[REDACTED]"));
         assert!(!captured.contains("secret"));
     }
 
+    fn default_policy() -> PayloadRedactor {
+        let (redactor, error) = crate::PayloadCaptureConfig::default().redactor();
+        assert!(error.is_none());
+        redactor
+    }
+
+    #[test]
+    fn capture_replaces_a_credential_pasted_into_free_text() {
+        let key = format!("sk-ant-{}", "a1B2c3D4".repeat(4));
+        let captured = capture(
+            Some(json!({"query": format!("use {key} to log in"), "nested": [format!("x {key}")]})),
+            true,
+            1024,
+            &default_policy(),
+        );
+        assert!(!captured.contains(&key), "{captured}");
+        assert!(captured.contains("[redacted:anthropic_key]"), "{captured}");
+    }
+
+    #[test]
+    fn capture_applies_an_operator_pattern() {
+        let redactor = PayloadRedactor::compile(
+            &[],
+            &[],
+            &[crate::payload_redaction::RedactPattern {
+                name: "ticket".into(),
+                pattern: r"TKT-\d{6}".into(),
+            }],
+        )
+        .unwrap();
+        let captured = capture(Some(json!("see TKT-123456")), true, 1024, &redactor);
+        assert_eq!(captured, "\"see [redacted:ticket]\"");
+    }
+
     #[test]
     fn capture_is_empty_when_disabled_or_zero_sized() {
         let value = Some(json!({"a": 1}));
-        assert_eq!(capture(value.clone(), false, 1024, &[]), "");
-        assert_eq!(capture(value, true, 0, &[]), "");
+        assert_eq!(
+            capture(value.clone(), false, 1024, &PayloadRedactor::default()),
+            ""
+        );
+        assert_eq!(capture(value, true, 0, &PayloadRedactor::default()), "");
     }
 
     #[test]
     fn capture_truncates_on_a_char_boundary() {
-        let captured = capture(Some(json!("ééééé")), true, 5, &[]);
+        let captured = capture(Some(json!("ééééé")), true, 5, &PayloadRedactor::default());
         assert!(captured.ends_with("…[truncated]"));
     }
 

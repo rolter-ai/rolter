@@ -274,6 +274,8 @@ pub(crate) struct CallContext<'a> {
     pub user_id: &'a str,
     pub request_id: &'a str,
     pub capture: &'a rolter_core::PayloadCaptureConfig,
+    /// the compiled `capture` redaction policy (#3277)
+    pub redactor: &'a Arc<rolter_core::payload_redaction::PayloadRedactor>,
 }
 
 /// What a finished call amounts to, before it is rendered into a row.
@@ -293,7 +295,7 @@ pub(crate) struct PendingCall {
     event: McpEvent,
     capture_enabled: bool,
     capture_max: usize,
-    capture_fields: Vec<String>,
+    redactor: Arc<rolter_core::payload_redaction::PayloadRedactor>,
 }
 
 impl PendingCall {
@@ -370,10 +372,10 @@ impl PendingCall {
             event,
             capture_enabled: context.capture.enabled,
             capture_max: context.capture.max_bytes,
-            capture_fields: if capturing {
-                context.capture.redact_fields.clone()
+            redactor: if capturing {
+                Arc::clone(context.redactor)
             } else {
-                Vec::new()
+                Arc::default()
             },
         })
     }
@@ -432,13 +434,13 @@ impl PendingCall {
             self.arguments.take(),
             self.capture_enabled,
             self.capture_max,
-            &self.capture_fields,
+            &self.redactor,
         );
         self.event.result = capture(
             payload,
             self.capture_enabled,
             self.capture_max,
-            &self.capture_fields,
+            &self.redactor,
         );
         self.sink.emit(self.event);
     }
@@ -602,7 +604,10 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn context<'a>(capture: &'a rolter_core::PayloadCaptureConfig) -> CallContext<'a> {
+    fn context<'a>(
+        capture: &'a rolter_core::PayloadCaptureConfig,
+        redactor: &'a Arc<rolter_core::payload_redaction::PayloadRedactor>,
+    ) -> CallContext<'a> {
         CallContext {
             server: "docs",
             transport: "streamable_http",
@@ -613,7 +618,14 @@ mod tests {
             user_id: "user-1",
             request_id: "req-1",
             capture,
+            redactor,
         }
+    }
+
+    fn redactor(
+        capture: &rolter_core::PayloadCaptureConfig,
+    ) -> Arc<rolter_core::payload_redaction::PayloadRedactor> {
+        Arc::new(capture.redactor().0)
     }
 
     fn sink() -> (McpEventSink, mpsc::Receiver<McpEvent>) {
@@ -641,7 +653,8 @@ mod tests {
     fn only_a_tools_call_request_with_an_id_is_recorded() {
         let (sink, _rx) = sink();
         let capture = rolter_core::PayloadCaptureConfig::default();
-        let ctx = context(&capture);
+        let redactor = redactor(&capture);
+        let ctx = context(&capture, &redactor);
         assert!(PendingCall::parse(&sink, &request("tools/call", Some(1)), &ctx).is_some());
         assert!(PendingCall::parse(&sink, &request("tools/list", Some(1)), &ctx).is_none());
         assert!(PendingCall::parse(&sink, &request("initialize", Some(1)), &ctx).is_none());
@@ -740,8 +753,12 @@ mod tests {
             redact_fields: vec!["token".to_string()],
             ..Default::default()
         };
-        let call =
-            PendingCall::parse(&sink, &request("tools/call", Some(1)), &context(&capture)).unwrap();
+        let call = PendingCall::parse(
+            &sink,
+            &request("tools/call", Some(1)),
+            &context(&capture, &redactor(&capture)),
+        )
+        .unwrap();
         let body = futures_util::stream::iter([Ok::<_, std::io::Error>(Bytes::from_static(
             br#"{"jsonrpc":"2.0","id":1,"result":{"content":[]}}"#,
         ))]);
@@ -763,12 +780,49 @@ mod tests {
         assert_eq!(event.result, r#"{"content":[]}"#);
     }
 
+    /// #3277: a credential inside a tool argument or a tool result never reaches
+    /// the stored row, whichever key it sits under.
+    #[tokio::test]
+    async fn a_secret_in_an_argument_or_a_result_never_reaches_the_row() {
+        use futures_util::StreamExt;
+        let key = format!("sk-ant-{}", "a1B2c3D4".repeat(4));
+        let (sink, mut rx) = sink();
+        let capture = rolter_core::PayloadCaptureConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        let request = serde_json::to_vec(&json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "search", "arguments": {"query": format!("log in with {key}")}},
+        }))
+        .unwrap();
+        let call =
+            PendingCall::parse(&sink, &request, &context(&capture, &redactor(&capture))).unwrap();
+        let reply = serde_json::to_vec(&json!({
+            "jsonrpc": "2.0", "id": 1,
+            "result": {"content": [{"type": "text", "text": format!("found {key}")}]},
+        }))
+        .unwrap();
+        let body = futures_util::stream::iter([Ok::<_, std::io::Error>(Bytes::from(reply))]);
+        let mut observed = call.observe(200, false, body);
+        while observed.next().await.is_some() {}
+        let event = rx.try_recv().unwrap();
+        for stored in [&event.arguments, &event.result] {
+            assert!(!stored.contains(&key), "{stored}");
+            assert!(stored.contains("[redacted:anthropic_key]"), "{stored}");
+        }
+    }
+
     #[tokio::test]
     async fn capture_off_keeps_payloads_out_of_the_row() {
         let (sink, mut rx) = sink();
         let capture = rolter_core::PayloadCaptureConfig::default();
-        let call =
-            PendingCall::parse(&sink, &request("tools/call", Some(1)), &context(&capture)).unwrap();
+        let call = PendingCall::parse(
+            &sink,
+            &request("tools/call", Some(1)),
+            &context(&capture, &redactor(&capture)),
+        )
+        .unwrap();
         call.fail("auth_denied");
         let event = rx.try_recv().unwrap();
         assert_eq!((event.arguments.as_str(), event.result.as_str()), ("", ""));
@@ -787,9 +841,11 @@ mod tests {
         );
         let capture = rolter_core::PayloadCaptureConfig::default();
         for _ in 0..200 {
-            if let Some(call) =
-                PendingCall::parse(&sink, &request("tools/call", Some(1)), &context(&capture))
-            {
+            if let Some(call) = PendingCall::parse(
+                &sink,
+                &request("tools/call", Some(1)),
+                &context(&capture, &redactor(&capture)),
+            ) {
                 call.fail("error");
             }
         }

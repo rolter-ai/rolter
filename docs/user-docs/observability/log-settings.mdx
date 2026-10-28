@@ -20,7 +20,7 @@ The dashboard reads this from the analytics endpoints, which answer `503` when n
 
 `sample_rate` is the fraction of requests written to the log, from `0` to `1`. The dashboard shows it as a percentage. Lowering it cuts what lands in the log store on a high-volume deployment, and it cuts the raw row count read back out of that store by the same share.
 
-The gateway decides per request, from a hash of the request id, and drops an unsampled row before it is written. Each kept row records its weight, `sample_weight`, which is `1 / sample_rate` at the moment it was written (`4` at `0.25`; rows written unsampled, or before the column existed, weigh `1`). The analytics endpoints (`/api/v1/analytics/summary`, `timeseries`, `by-model`, `by-attribution`), the usage panel (`/api/v1/me/usage`) and the `request_volume`, `spend_velocity` and `error_rate` alert signals multiply every count and sum by it, so below `1`:
+The gateway decides per request, from a hash of the request id, and drops an unsampled row before it is written. Each kept row records its weight, `sample_weight`, which is `1 / sample_rate` at the moment it was written (`4` at `0.25`; rows written unsampled, or before the column existed, weigh `1`). The analytics endpoints (`/api/v1/analytics/summary`, `timeseries`, `by-model`, `by-variant`, `by-attribution`), the usage panel (`/api/v1/me/usage`) and the `request_volume`, `spend_velocity` and `error_rate` alert signals multiply every count and sum by it, so below `1`:
 
 - request counts, spend and token totals on the **Dashboard** and the [cost attribution](/security/cost-attribution) screens (**Business Units** and **Customers**) are scaled estimates of the real traffic, not the raw logged share. At `0.25` the Dashboard still shows about the real spend, with sampling noise that shrinks as volume grows. Averages and latency percentiles are not scaled, since a uniform sample already estimates them. Changing the rate does not distort history, because each row keeps the weight it was written with;
 - the usage panel on **Account** gets the same scaling per key: requests, tokens, cost and errors are estimates of the real totals;
@@ -80,7 +80,7 @@ A key name cannot match a secret that sits inside free text: a key pasted into a
 
 All are on by default. Add patterns of your own as `name=regular expression` lines under **Custom patterns**; the name becomes the marker. The engine runs in time linear in the input, so a pattern cannot be made to stall capture, and it has no look-around or backreferences. A policy holds at most 16 patterns of at most 256 bytes, and a pattern that does not compile is refused with a `422` naming the field. Detectors are heuristics: they catch the common shapes, not every secret, so keep `payload_capture_redact_fields` for keys you know by name.
 
-Both kinds of redaction run on the gateway before the body is truncated and handed to the log writer, so no unredacted copy reaches ClickHouse. Streamed (SSE) responses are scanned as text rather than frame by frame.
+Both kinds of redaction run on the gateway before the body is truncated and handed to the log writer, so no unredacted copy reaches ClickHouse. Streamed (SSE) responses are scanned as text rather than frame by frame. The MCP tool-call log applies the same policy, key names, detectors and your patterns alike, to the arguments and result it stores, so a credential pasted into a tool argument or returned by a tool is stored as its marker.
 
 ### Previewing redaction
 

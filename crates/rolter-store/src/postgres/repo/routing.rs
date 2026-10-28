@@ -18,7 +18,7 @@ const ROUTE_VARIANT_COLUMNS: &str = "id, route_id, name, weight, position, param
 
 /// Every column of `route_variant_targets` that its row type reads.
 const ROUTE_VARIANT_TARGET_COLUMNS: &str =
-    "id, variant_id, provider_id, upstream_model, weight, position";
+    "id, variant_id, provider_id, upstream_model, weight, position, takes_over";
 
 /// Every column of `routes` that its row type reads.
 const ROUTE_COLUMNS: &str =
@@ -505,7 +505,8 @@ impl RouteVariantRepo<'_> {
         .await
         .map_err(store_err)?;
         let targets: Vec<RouteVariantTarget> = sqlx::query_as(
-            "select t.id, t.variant_id, t.provider_id, t.upstream_model, t.weight, t.position
+            "select t.id, t.variant_id, t.provider_id, t.upstream_model, t.weight, t.position,
+                    t.takes_over
              from route_variant_targets t
              join route_variants v on v.id = t.variant_id
              join routes r on r.id = v.route_id
@@ -573,8 +574,8 @@ impl RouteVariantRepo<'_> {
             for (position, target) in spec.targets.iter().enumerate() {
                 let row: RouteVariantTarget = sqlx::query_as(sqlx::AssertSqlSafe(format!(
                     "insert into route_variant_targets \
-                        (variant_id, provider_id, upstream_model, weight, position)
-                     values ($1, $2, $3, $4, $5)
+                        (variant_id, provider_id, upstream_model, weight, position, takes_over)
+                     values ($1, $2, $3, $4, $5, $6)
                      returning {ROUTE_VARIANT_TARGET_COLUMNS}"
                 )))
                 .bind(variant.id)
@@ -582,6 +583,7 @@ impl RouteVariantRepo<'_> {
                 .bind(target.upstream_model.as_deref())
                 .bind(target.weight)
                 .bind(position as i32)
+                .bind(&target.takes_over)
                 .fetch_one(&mut *tx)
                 .await
                 .map_err(store_err)?;
@@ -606,7 +608,8 @@ async fn variants_of(conn: &mut sqlx::PgConnection, route_id: Uuid) -> Result<Ve
     .await
     .map_err(store_err)?;
     let targets: Vec<RouteVariantTarget> = sqlx::query_as(
-        "select t.id, t.variant_id, t.provider_id, t.upstream_model, t.weight, t.position
+        "select t.id, t.variant_id, t.provider_id, t.upstream_model, t.weight, t.position,
+                    t.takes_over
          from route_variant_targets t join route_variants v on v.id = t.variant_id
          where v.route_id = $1 order by t.variant_id, t.position",
     )
@@ -649,6 +652,7 @@ fn specs_match(stored: &[RouteVariant], desired: &[RouteVariantSpec]) -> bool {
                     t.provider_id == s.provider_id
                         && t.upstream_model == s.upstream_model
                         && t.weight == s.weight
+                        && t.takes_over == s.takes_over
                 })
         })
 }
@@ -671,6 +675,9 @@ pub struct RouteVariantTargetSpec {
     /// the model name sent upstream; `None` forwards the route's public name
     pub upstream_model: Option<String>,
     pub weight: i32,
+    /// the failure class tokens the target takes over; empty makes it an
+    /// ordinary member of the variant (#3373)
+    pub takes_over: Vec<String>,
 }
 
 /// One target of a route as [`RouteRepo::update`] is asked to leave it.

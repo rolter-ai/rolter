@@ -44,6 +44,7 @@ pub mod health;
 mod health_events;
 mod load;
 mod logging;
+mod mcp_list_filter;
 mod mcp_log;
 mod mcp_policy;
 mod mcp_proxy;

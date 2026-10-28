@@ -4,6 +4,8 @@ export interface TargetDto {
   provider: string;
   model?: string | null;
   weight: number;
+  /** the failure classes this target is a fallback for (#1584); absent for an ordinary target */
+  takes_over?: string[];
 }
 
 export interface RouteDto {

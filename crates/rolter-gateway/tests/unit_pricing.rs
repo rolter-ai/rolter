@@ -366,6 +366,64 @@ async fn a_translation_reads_a_duration_usage_object() {
     assert_eq!(row["usage_unknown"], 0, "{row}");
 }
 
+/// A transcript an output guardrail withholds was still transcribed, and its
+/// minutes are billed from the upstream's answer, not the refusal (#3331).
+#[tokio::test]
+async fn a_withheld_transcription_is_billed_its_minutes() {
+    use rolter_core::{BuiltinRule, GuardAction, GuardStage, GuardrailRule, GuardrailsConfig};
+    let upstream = upstream(
+        "application/json",
+        r#"{"text":"card 4111 1111 1111 1111","duration":90.0}"#,
+    )
+    .await;
+    let rows = Rows::default();
+    let clickhouse = rows.serve().await;
+    let mut config = config(
+        upstream,
+        clickhouse,
+        "org-unit-pricing",
+        Some(json!({"audio_input_per_minute": 0.006})),
+    );
+    config.guardrails = GuardrailsConfig {
+        enabled: true,
+        rules: vec![GuardrailRule {
+            name: "card".into(),
+            builtin: Some(BuiltinRule::PaymentCard),
+            pattern: None,
+            stage: GuardStage::PostCall,
+            action: GuardAction::Block,
+            replacement: None,
+            include_system: false,
+        }],
+        ..Default::default()
+    };
+    let gw = gateway_for(&config, None).await;
+    let boundary = "UNITBOUND";
+    let response = reqwest::Client::new()
+        .post(format!("http://{gw}/v1/audio/transcriptions"))
+        .bearer_auth(key())
+        .header("x-request-id", "up-transcribe-withheld")
+        .header(
+            header::CONTENT_TYPE,
+            format!("multipart/form-data; boundary={boundary}"),
+        )
+        .body(format!(
+            "--{b}\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\ntest-model\r\n\
+             --{b}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.wav\"\r\n\
+             Content-Type: audio/wav\r\n\r\nRIFFxxxxWAVE\r\n--{b}--\r\n",
+            b = boundary
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 403);
+    let _ = response.bytes().await.unwrap();
+    let row = rows.row_for("up-transcribe-withheld").await;
+    assert_eq!(row["withheld"], 1, "{row}");
+    assert_eq!(row["cost_usd"], 0.009, "{row}");
+    assert_eq!(row["usage_unknown"], 0, "{row}");
+}
+
 /// A `json` transcription carries the text and nothing else: the minutes are
 /// not known, which is not the same as free.
 #[tokio::test]

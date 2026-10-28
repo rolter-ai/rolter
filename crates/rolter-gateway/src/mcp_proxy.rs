@@ -15,8 +15,11 @@ use serde::Deserialize;
 use rolter_core::{McpAuthKind, McpOrgSettingsConfig, McpServerConfig};
 use rolter_proxy::{McpTransportOverrides, McpUpstreamAuth};
 
+use std::sync::Arc;
+
+use crate::mcp_list_filter::{FilteredSse, ListFilter, MAX_LIST_REPLY};
 use crate::mcp_log::{CallContext, PendingCall};
-use crate::mcp_policy::Verdict;
+use crate::mcp_policy::{ambiguous_message, Verdict};
 use crate::state::AppState;
 use crate::trace::RequestId;
 
@@ -149,6 +152,7 @@ async fn proxy(
                 user_id: &key.user_id,
                 request_id: request_id.as_str(),
                 capture: &snapshot.logging.payload_capture,
+                redactor: &snapshot.payload_redactor,
             },
         )
     } else {
@@ -247,34 +251,33 @@ async fn proxy(
     // the tool groups an organization enabled are an access boundary: a call
     // naming a tool outside them is refused before anything is forwarded, and
     // recorded in the MCP log like any other denial (#1403)
+    let mut list_filter = None;
+    let caller = crate::mcp_policy::Caller {
+        org_id: &key.org_id,
+        key_id: &key.id,
+        project_id: &key.project_id,
+        team_id: &key.team_id,
+    };
+    if method == Method::GET {
+        // a stream the caller opens can carry the reply to a `tools/list`
+        // posted elsewhere: a legacy `sse` server answers every POST with 202
+        // and delivers the reply here, and a streamable-HTTP stream can be
+        // replayed (#3297)
+        list_filter = crate::mcp_policy::stream_filter(&snapshot, server, &caller).map(Arc::new);
+    }
     if method == Method::POST {
-        match crate::mcp_policy::enforce(&snapshot, server, &body) {
-            Verdict::Allow => {}
+        let decision = crate::mcp_policy::evaluate(&snapshot, server, &caller, &body);
+        list_filter = decision.list_filter.map(Arc::new);
+        let (refused, message) = match decision.verdict {
+            Verdict::Allow => (None, String::new()),
             Verdict::Denied(refused) => {
-                let context = CallContext {
-                    server: &server.slug,
-                    transport: &server.transport,
-                    org_id: &key.org_id,
-                    team_id: &key.team_id,
-                    project_id: &key.project_id,
-                    virtual_key_id: &key.id,
-                    user_id: &key.user_id,
-                    request_id: request_id.as_str(),
-                    capture: &snapshot.logging.payload_capture,
-                };
                 let message = refused
                     .first()
                     .map(|call| call.message(&server.slug))
                     .unwrap_or_default();
-                for call in refused {
-                    if let Some(call) =
-                        PendingCall::from_request(&state.mcp_events, call.request, &context)
-                    {
-                        call.fail("auth_denied");
-                    }
-                }
-                return error(StatusCode::FORBIDDEN, message, "mcp_tool_denied");
+                (Some(refused), message)
             }
+            Verdict::Ambiguous(refused) => (Some(refused), ambiguous_message(&server.slug)),
             Verdict::Unreadable => {
                 return error(
                     StatusCode::BAD_REQUEST,
@@ -286,6 +289,28 @@ async fn proxy(
                     "mcp_request_unreadable",
                 );
             }
+        };
+        if let Some(refused) = refused {
+            let context = CallContext {
+                server: &server.slug,
+                transport: &server.transport,
+                org_id: &key.org_id,
+                team_id: &key.team_id,
+                project_id: &key.project_id,
+                virtual_key_id: &key.id,
+                user_id: &key.user_id,
+                request_id: request_id.as_str(),
+                capture: &snapshot.logging.payload_capture,
+                redactor: &snapshot.payload_redactor,
+            };
+            for call in refused {
+                if let Some(call) =
+                    PendingCall::from_request(&state.mcp_events, call.request, &context)
+                {
+                    call.fail("auth_denied");
+                }
+            }
+            return error(StatusCode::FORBIDDEN, message, "mcp_tool_denied");
         }
     }
 
@@ -296,12 +321,21 @@ async fn proxy(
             "mcp_server_invalid",
         );
     };
+    let is_post = method == Method::POST;
+    let mut headers = end_to_end_headers(headers);
+    if list_filter.is_some() {
+        // a compressed reply cannot be narrowed
+        headers.insert(
+            header::ACCEPT_ENCODING,
+            HeaderValue::from_static("identity"),
+        );
+    }
     match state
         .forwarder
         .forward_mcp(
             method,
             &url,
-            end_to_end_headers(headers),
+            headers,
             body,
             auth,
             transport_overrides(server, snapshot.mcp_org_settings.get(&server.org_id)),
@@ -319,7 +353,7 @@ async fn proxy(
                     return step_up;
                 }
             }
-            upstream_response(response, call)
+            upstream_response(response, call, list_filter, is_post).await
         }
         Err(upstream) => {
             let detail = upstream.to_string();
@@ -479,23 +513,73 @@ fn end_to_end_headers(mut headers: HeaderMap) -> HeaderMap {
     headers
 }
 
-fn upstream_response(response: reqwest::Response, call: Option<PendingCall>) -> Response {
+async fn upstream_response(
+    response: reqwest::Response,
+    call: Option<PendingCall>,
+    list_filter: Option<Arc<ListFilter>>,
+    method_is_post: bool,
+) -> Response {
     let status =
         StatusCode::from_u16(response.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
     let mut headers = end_to_end_headers(response.headers().clone());
     let is_sse = headers
         .get(header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| value.starts_with("text/event-stream"));
+        .is_some_and(|value| {
+            // a media type is case-insensitive
+            value
+                .trim_start()
+                .get(.."text/event-stream".len())
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("text/event-stream"))
+        });
     if !headers.contains_key(header::CONTENT_TYPE) {
         headers.insert(
             header::CONTENT_TYPE,
             HeaderValue::from_static("application/json"),
         );
     }
+    let encoded = headers
+        .get(header::CONTENT_ENCODING)
+        .is_some_and(|value| value != "identity");
     let mut builder = Response::builder().status(status);
     if let Some(response_headers) = builder.headers_mut() {
         *response_headers = headers;
+    }
+    // a reply that lists tools is narrowed to what the caller may call
+    // (#3297). `202`, `204` and an empty body carry nothing to narrow: a legacy
+    // `sse` server answers the POST that way and sends the list on its stream
+    let carries_body = status.is_success() && !matches!(status.as_u16(), 202 | 204);
+    if let Some(filter) = list_filter.filter(|_| carries_body) {
+        if encoded {
+            return unfilterable_list();
+        }
+        if is_sse {
+            let stream = FilteredSse::new(Box::pin(response.bytes_stream()), filter);
+            return builder
+                .body(Body::from_stream(stream))
+                .unwrap_or_else(|_| unfilterable_list());
+        }
+        // a stream the caller opened that is not an event stream cannot be shown
+        // to hold no tool list, and only a POST reply is buffered and narrowed
+        if !method_is_post {
+            return unfilterable_list();
+        }
+        {
+            let Some(bytes) = read_limited(response, MAX_LIST_REPLY).await else {
+                return unfilterable_list();
+            };
+            if bytes.iter().all(u8::is_ascii_whitespace) {
+                return builder
+                    .body(Body::from(bytes))
+                    .unwrap_or_else(|_| unfilterable_list());
+            }
+            let Some(filtered) = filter.filter_json(&bytes) else {
+                return unfilterable_list();
+            };
+            return builder
+                .body(Body::from(filtered))
+                .unwrap_or_else(|_| unfilterable_list());
+        }
     }
     let body = match call {
         // recorded when the body has been read, without touching a byte of it
@@ -511,6 +595,28 @@ fn upstream_response(response: reqwest::Response, call: Option<PendingCall>) -> 
             "mcp_response_error",
         )
     })
+}
+
+/// The reply to a `tools/list` that could not be narrowed. Forwarding it as it
+/// came would show the caller tools the policy refuses, so it is not forwarded.
+fn unfilterable_list() -> Response {
+    error(
+        StatusCode::BAD_GATEWAY,
+        "the MCP server's tool list could not be filtered to the tools this key may call",
+        "mcp_upstream_error",
+    )
+}
+
+/// The body of `response`, or `None` once it is longer than `limit` or breaks off.
+async fn read_limited(mut response: reqwest::Response, limit: usize) -> Option<Vec<u8>> {
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.ok()? {
+        if body.len() + chunk.len() > limit {
+            return None;
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Some(body)
 }
 
 fn error(status: StatusCode, message: impl Into<String>, code: &'static str) -> Response {
@@ -752,6 +858,7 @@ mod tests {
                         tool: (*tool).to_string(),
                     })
                     .collect(),
+                ..Default::default()
             });
         config
     }
@@ -849,6 +956,225 @@ mod tests {
             (status, code.as_str()),
             (StatusCode::BAD_REQUEST, "mcp_request_unreadable")
         );
+    }
+
+    /// #3298: a repeated key is refused like a forbidden tool, and nothing is
+    /// forwarded.
+    #[tokio::test]
+    async fn a_body_repeating_the_tool_name_is_refused_like_a_forbidden_tool() {
+        let mut state = AppState::new(&with_group(&["get_issue"]));
+        let (sink, mut events) =
+            crate::mcp_log::McpEventSink::capturing(std::sync::Arc::new(Default::default()));
+        state.mcp_events = sink;
+        let body = Bytes::from_static(
+            br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"drop","name":"get_issue"}}"#,
+        );
+        let (status, code) = code_of(post(state, body).await).await;
+        assert_eq!(
+            (status, code.as_str()),
+            (StatusCode::FORBIDDEN, "mcp_tool_denied")
+        );
+        // logged like any other refusal (#3381)
+        let event = events.try_recv().expect("the refusal is recorded");
+        assert_eq!(
+            (event.status, event.tool.as_str()),
+            ("auth_denied", "get_issue")
+        );
+    }
+
+    /// #3297 with a legacy `sse` server: the POST is answered `202`, which is
+    /// forwarded as it is, and the reply on the GET stream is the one narrowed
+    #[tokio::test]
+    async fn a_legacy_sse_servers_stream_is_narrowed_and_its_202_passes() {
+        use axum::routing::get;
+        use axum::Router;
+
+        let app = Router::new().route(
+            "/rpc",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "text/event-stream")],
+                    format!("event: message\ndata: {LIST_REPLY}\n\n"),
+                )
+            })
+            .post(|| async { (StatusCode::ACCEPTED, "Accepted") }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let mut config = with_group(&["get_issue"]);
+        config.mcp_servers[0].url = format!("http://{addr}/rpc");
+        config.mcp_servers[0].transport = "sse".to_string();
+
+        let list = Bytes::from_static(br#"{"jsonrpc":"2.0","id":1.0,"method":"tools/list"}"#);
+        let posted = post(AppState::new(&config), list).await;
+        assert_eq!(posted.status(), StatusCode::ACCEPTED);
+        let bytes = axum::body::to_bytes(posted.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        assert_eq!(&bytes[..], b"Accepted");
+
+        let streamed = proxy(
+            AppState::new(&config),
+            "github".to_string(),
+            None,
+            None,
+            Method::GET,
+            bearer(),
+            RequestId::default(),
+            Bytes::new(),
+        )
+        .await;
+        assert_eq!(streamed.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(streamed.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let text = String::from_utf8(bytes.to_vec()).unwrap();
+        assert!(
+            text.contains("get_issue") && !text.contains("drop"),
+            "{text}"
+        );
+    }
+
+    async fn get_with(content_type: &'static str) -> (StatusCode, String) {
+        use axum::routing::get;
+        use axum::Router;
+
+        let app = Router::new().route(
+            "/rpc",
+            get(move || async move {
+                (
+                    [(header::CONTENT_TYPE, content_type)],
+                    format!("event: message\ndata: {LIST_REPLY}\n\n"),
+                )
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let mut config = with_group(&["get_issue"]);
+        config.mcp_servers[0].url = format!("http://{addr}/rpc");
+        let response = proxy(
+            AppState::new(&config),
+            "github".to_string(),
+            None,
+            None,
+            Method::GET,
+            bearer(),
+            RequestId::default(),
+            Bytes::new(),
+        )
+        .await;
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        (status, String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    /// a media type is case-insensitive, and a stream that is not an event
+    /// stream cannot be shown to hold no tool list
+    #[tokio::test]
+    async fn a_stream_is_filtered_whatever_the_case_and_refused_when_it_is_not_sse() {
+        let (status, text) = get_with("Text/Event-Stream; charset=utf-8").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            text.contains("get_issue") && !text.contains("drop"),
+            "{text}"
+        );
+        let (status, text) = get_with("application/json").await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY, "{text}");
+        assert!(!text.contains("drop"));
+    }
+
+    const LIST_REPLY: &str = r#"{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"get_issue"},{"name":"drop"}],"nextCursor":"p2"}}"#;
+
+    async fn list_through(config: &mut GatewayConfig, sse: bool) -> (StatusCode, String) {
+        use axum::routing::any;
+        use axum::Router;
+
+        let app = Router::new().route(
+            "/{*path}",
+            any(move || async move {
+                if sse {
+                    (
+                        [(header::CONTENT_TYPE, "text/event-stream")],
+                        format!("event: message\ndata: {LIST_REPLY}\n\n"),
+                    )
+                } else {
+                    (
+                        [(header::CONTENT_TYPE, "application/json")],
+                        LIST_REPLY.to_string(),
+                    )
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        config.mcp_servers[0].url = format!("http://{addr}/rpc");
+        let body = Bytes::from_static(br#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#);
+        let response = post(AppState::new(config), body).await;
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        (status, String::from_utf8(bytes.to_vec()).unwrap())
+    }
+
+    /// #3297: a client is shown only the tools it may call, in a JSON reply and
+    /// in an SSE one.
+    #[tokio::test]
+    async fn a_tools_list_reply_is_narrowed_to_the_callable_tools() {
+        for sse in [false, true] {
+            let mut config = with_group(&["get_issue"]);
+            let (status, body) = list_through(&mut config, sse).await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(body.contains("get_issue"), "{body}");
+            assert!(!body.contains("drop"), "{body}");
+            assert!(body.contains("nextCursor"), "{body}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_tools_list_reply_from_an_ungoverned_server_is_forwarded_as_is() {
+        let mut config = config("user-1", &["tools:execute"]);
+        let (_, body) = list_through(&mut config, false).await;
+        assert_eq!(body, LIST_REPLY);
+    }
+
+    /// #3295: a group assigned to the key's project narrows that key below the
+    /// organization-wide groups.
+    #[tokio::test]
+    async fn a_group_assigned_to_the_keys_project_narrows_the_key() {
+        let mut config = with_group(&["get_issue", "list_issues"]);
+        config
+            .mcp_tool_groups
+            .push(rolter_core::McpToolGroupConfig {
+                id: "group-2".to_string(),
+                org_id: "org-1".to_string(),
+                slug: "readers".to_string(),
+                tools: vec![rolter_core::McpToolRefConfig {
+                    server_id: "server-1".to_string(),
+                    tool: "get_issue".to_string(),
+                }],
+                assignments: vec![rolter_core::McpToolGroupSubjectConfig {
+                    kind: "project".to_string(),
+                    id: "project-1".to_string(),
+                }],
+                ..Default::default()
+            });
+        let (status, code) =
+            code_of(post(AppState::new(&config), call_body("list_issues")).await).await;
+        assert_eq!(
+            (status, code.as_str()),
+            (StatusCode::FORBIDDEN, "mcp_tool_denied")
+        );
+        // the same tool, with the assignment pointed at someone else
+        config.mcp_tool_groups[1].assignments[0].id = "project-2".to_string();
+        let (status, _) =
+            code_of(post(AppState::new(&config), call_body("list_issues")).await).await;
+        assert_ne!(status, StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]
