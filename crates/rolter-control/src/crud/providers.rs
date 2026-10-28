@@ -777,9 +777,8 @@ fn validate_kind(kind: &str) -> ApiResult<()> {
 /// provider opts out, as `provider_problems` refuses it in a file (#1133).
 /// Without this the row saves and the snapshot then omits the provider.
 fn require_pinned_api_base(kind: &str, api_base: &str, allow_custom: bool) -> ApiResult<()> {
-    let Ok(parsed) = serde_json::from_value::<rolter_core::ProviderKind>(
-        serde_json::Value::String(kind.to_string()),
-    ) else {
+    let Ok(parsed) = known_kind(kind) else {
+        // an unknown kind is validate_kind's error to report, not this one's
         return Ok(());
     };
     match parsed.host_pin_problem(api_base, allow_custom) {

@@ -3294,8 +3294,6 @@ fn config_problem_schemas(p: &Prim) -> Value {
     })
 }
 
-/// The stability marker (#1385). `stable` is in the enum for completeness, but
-/// the endpoint never emits it: absence from the array is what "stable" means.
 /// One node of the cluster inventory (#543), with the snapshot formats it reads
 /// and was last served (ADR-0038, #3351).
 fn cluster_schemas(p: &Prim) -> Value {
@@ -3343,6 +3341,8 @@ fn cluster_schemas(p: &Prim) -> Value {
     })
 }
 
+/// The stability marker (#1385). `stable` is in the enum for completeness, but
+/// the endpoint never emits it: absence from the array is what "stable" means.
 fn stability_schemas(p: &Prim) -> Value {
     let string = &p.string;
     json!({
