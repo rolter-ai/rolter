@@ -488,7 +488,9 @@
       "vision": "Vision / images",
       "json": "JSON mode",
       "reasoning": "Reasoning",
-      "reasoningInfo": "Extended-thinking model (o-series, R1). Enables the reasoning_effort parameter."
+      "reasoningInfo": "Extended-thinking model (o-series, R1). Enables the reasoning_effort parameter.",
+      "contextLength": "Context length (tokens)",
+      "contextLengthHint": "The size of the model’s context window. It is served on GET /v1/models so clients can size their prompts; the gateway does not enforce it. Blank = not advertised."
     },
     "pricing": {
       "hint": "Optional prices for cost tracking — fields shown match the model type. Leave them all blank and the model stays unpriced: its traffic is recorded without a cost, not as free.",
@@ -571,6 +573,7 @@
       "retries": "Retries are a whole number from 0 to {{max}}. Leave blank to use the gateway's setting.",
       "rpm": "Requests per minute is a whole number from 1 to {{max}}. Leave blank for no cap.",
       "tpm": "Tokens per minute is a whole number of 1 or more. Leave blank for no cap.",
+      "contextLength": "Context length is a whole number of tokens, 1 or more. Leave blank to advertise none.",
       "concurrency": "Concurrent requests is a whole number from 1 to {{max}}. Leave blank for no cap.",
       "param": "One or more custom parameters have a value but no name — name them or clear the value.",
       "header": "One or more custom headers have a value but no name — name them or clear the value.",
