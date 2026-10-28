@@ -192,8 +192,16 @@ streamed, buffered and cached-store paths alike. The log row writes
 `<disposition>:<param>` entries to `request_logs.param_adjustments`
 (`clickhouse/022_param_adjustments.sql`, `Array(String)`, serialized only when
 non-empty, so a ClickHouse without the column keeps accepting every other row).
-A response served from the response cache did not go through translation and
-carries neither (#3326).
+A response served from the response cache did not go through translation, so
+the store keeps the record instead (#3326): `CachedResponse::param_adjustments`
+holds the miss's `log_entries()` (`#[serde(default)]` and skipped when empty, so
+an entry an older gateway stored reads as nothing adjusted and an unadjusted one
+is byte for byte what it was), and `cached_response` rebuilds it with
+`ParamAdjustments::from_log_entries`, which keeps only `<disposition>:<known
+parameter>` entries, onto the hit's log row and its header. The miss path does
+no extra work beyond rendering the entries it already writes to the log row. A
+semantic hit replays the adjustments of the request that produced the stored
+answer, which is what that answer was generated under.
 
 The common path pays nothing: a plan that does not translate returns an empty
 record, an empty `Vec` does not allocate, nothing is inserted into the response

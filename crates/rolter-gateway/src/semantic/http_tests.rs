@@ -421,6 +421,7 @@ async fn entries_written_under_the_old_layout_are_never_replayed() {
         content_type: "text/event-stream".to_string(),
         body: b"data: {\"choices\":[{\"delta\":{\"content\":\"stale\"}}]}\n\ndata: [DONE]\n\n"
             .to_vec(),
+        param_adjustments: Vec::new(),
     };
     h.cache
         .semantic_put(

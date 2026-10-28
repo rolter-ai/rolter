@@ -3059,6 +3059,7 @@ async fn proxy(
                                     status,
                                     content_type: content_type.clone(),
                                     body: bytes.to_vec(),
+                                    param_adjustments: log.param_adjustments.log_entries(),
                                 };
                                 state.response_cache.put(&key, &cached, cache_ttl).await;
                                 if let Some((index, entry_id, embedding, max_candidates)) =
@@ -5264,6 +5265,11 @@ async fn cached_response(
     let log = RequestLog {
         status: hit.status,
         cache_hit: 1,
+        // the answer was produced by a request translated this way, so a hit
+        // says so as the miss did (#3326)
+        param_adjustments: rolter_proxy::ParamAdjustments::from_log_entries(
+            hit.param_adjustments.iter().map(String::as_str),
+        ),
         plugin_events: ctx
             .plugin_events
             .iter()
