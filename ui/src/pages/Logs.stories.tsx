@@ -14,6 +14,8 @@ import {
   expectSkeleton,
   expectUxEvent,
   json,
+  Toasted,
+  expectToast,
   pending,
   recordUxEvents,
   recording,
@@ -3865,5 +3867,100 @@ export const AUsageUnknownRequestIsNotShownAsZero: Story = {
     const panel = await canvas.findByRole("complementary", { name: "Details" });
     await waitFor(() => expect(panel).toBeVisible());
     await expect(await within(panel).findAllByText(/reported no usage/i)).toHaveLength(2);
+  },
+};
+
+async function captureDownload(names: string[], run: () => Promise<void>): Promise<void> {
+  const original = HTMLAnchorElement.prototype.click;
+  HTMLAnchorElement.prototype.click = function capture(this: HTMLAnchorElement) {
+    names.push(this.download);
+  };
+  try {
+    await run();
+  } finally {
+    HTMLAnchorElement.prototype.click = original;
+  }
+}
+
+const csvFile = (name: string) =>
+  new Response("a,b\r\n", {
+    headers: {
+      "content-type": "text/csv; charset=utf-8",
+      "content-disposition": `attachment; filename="${name}"`,
+    },
+  });
+
+/**
+ * The Export button asks the control plane for the log under the filters on
+ * screen (#1838): the file is built there, under the caller's own row scope,
+ * so the request carries the filters and no page cursor, and the file keeps
+ * the name the server gave it (window and currency).
+ */
+let logExport: Recorder;
+export const ExportSendsTheFiltersOnScreenAndKeepsTheServersFileName: Story = {
+  parameters: {
+    address:
+      "/logs?status=error&unpriced=true&model=internal-llama&guardrail=blocked:pii&plugin=blocked:acme",
+  },
+  render: () => {
+    logExport = recording(
+      scoped(async (input) =>
+        String(input).includes("/analytics/invocations/export")
+          ? csvFile("request-log_2026-10-01_to_now_EUR.csv")
+          : ((await withLogs(ROWS)(input)) as Response),
+      ),
+    );
+    return (
+      <Harness fetchStub={logExport.stub}>
+        <Toasted>
+          <Logs />
+        </Toasted>
+      </Harness>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const names: string[] = [];
+    await captureDownload(names, async () => {
+      await userEvent.click(await canvas.findByRole("button", { name: "Export CSV" }));
+      await waitFor(() => expect(names).toHaveLength(1));
+    });
+    await expect(names[0]).toBe("request-log_2026-10-01_to_now_EUR.csv");
+    await expectToast(canvasElement, /Export downloaded/, "success");
+    const call = logExport.calls.find((c) => c.url.includes("/invocations/export"))!;
+    const params = new URL(call.url, "http://localhost").searchParams;
+    await expect(params.get("status")).toBe("error");
+    await expect(params.get("unpriced")).toBe("true");
+    await expect(params.get("model")).toBe("internal-llama");
+    // the guardrail and plugin filters travel too, or the file would hold the unfiltered log
+    await expect(params.get("guardrail")).toBe("blocked:pii");
+    await expect(params.get("plugin")).toBe("blocked:acme");
+    await expect(params.has("cursor")).toBe(false);
+    await expect(params.has("limit")).toBe(false);
+  },
+};
+
+export const AFailedExportIsAToastNotAHalfDownload: Story = {
+  render: () => (
+    <Harness
+      fetchStub={scoped(async (input) =>
+        String(input).includes("/invocations/export")
+          ? json({ error: { message: "analytics query failed" } }, 502)
+          : ((await withLogs(ROWS)(input)) as Response),
+      )}
+    >
+      <Toasted>
+        <Logs />
+      </Toasted>
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const names: string[] = [];
+    await captureDownload(names, async () => {
+      await userEvent.click(await canvas.findByRole("button", { name: "Export CSV" }));
+      await expectToast(canvasElement, /Could not export request log export/, "error");
+    });
+    await expect(names).toHaveLength(0);
   },
 };

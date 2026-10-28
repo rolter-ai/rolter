@@ -77,6 +77,16 @@ pub(crate) const OPTIONAL_COLUMNS: &[OptionalColumn] = &[
         name: "plugin_events",
         default: "emptyArrayString()",
     },
+    // 021_request_log_seq.sql
+    OptionalColumn {
+        name: "seq",
+        default: "toUInt64(0)",
+    },
+    // 023_fallback_reason.sql
+    OptionalColumn {
+        name: "fallback_reason",
+        default: "''",
+    },
     // 022_param_adjustments.sql: what translation did to the request's
     // parameters (#1586), read by the invocation list and its rollup (#3323)
     OptionalColumn {
@@ -346,6 +356,8 @@ mod tests {
             "lifecycle_operation",
             "guardrail_events",
             "plugin_events",
+            "seq",
+            "fallback_reason",
             "param_adjustments",
             "outcome",
             "has_tools",

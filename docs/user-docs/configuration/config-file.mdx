@@ -444,6 +444,10 @@ See [Load balancing](/concepts/load-balancing) for when to pick each.
   The relative traffic weight for `weighted` and `pipeline` strategies. Ignored by other strategies.
 </ParamField>
 
+<ParamField path="takes_over" default="[]" type="string[]">
+  The failures this target is a fallback for: any of `throttled`, `timeout`, `transport`, `server_error`, `refusal` and `refusal:<category>`. A target with classes is never dialled first and takes no ordinary traffic; it is tried only after another target failed with one of them. Empty, the default, makes it an ordinary member of the pool. A route whose every target sets it is rejected (`all_targets_restricted`). See [Fallback targets](/reliability/fallback-targets). Also valid on a variant's targets.
+</ParamField>
+
 #### \[routes.params\]
 
 An optional table of admin-set default inference parameters injected into the request body. Any key accepted by the upstream provider is valid here (`temperature`, `max_tokens`, `stop`, etc.). A parameter you do not set here is passed through from the client untouched.
@@ -770,7 +774,7 @@ disabled = false
 
 ### \[\[db_virtual_keys\]\]
 
-Not a `rolter.toml` table. Virtual keys created on the dashboard or through the API live in the database, and the control plane puts them in the snapshot as `db_virtual_keys`. Each entry carries the key's peppered digest, never the plaintext, with its id, the scope its usage is attributed to (organization, team, project, creator, business unit and customer) and the same `models`, `providers`, `disabled`, `expires_at` and `cache` settings as a `[[virtual_keys]]` entry. A gateway matches a presented key against those digests alongside the keys of `[[virtual_keys]]`, which stay the file's own list. See [Virtual keys](/concepts/virtual-keys).
+Not a `rolter.toml` table. Virtual keys created on the dashboard or through the API live in the database, and the control plane puts them in the snapshot as `db_virtual_keys`. Each entry carries the key's peppered digest, never the plaintext, with its id, the scope its usage is attributed to (organization, team, project, creator, business unit and customer) and the same `models`, `providers`, `disabled`, `expires_at` and `cache` settings as a `[[virtual_keys]]` entry. While a rotation's overlap is running (see [Virtual keys](/concepts/virtual-keys)), an entry also carries `previous`: the digest of the replaced secret and the `valid_until` instant up to which it still authenticates as the same key. A gateway matches a presented key against those digests alongside the keys of `[[virtual_keys]]`, which stay the file's own list. See [Virtual keys](/concepts/virtual-keys).
 
 ---
 
@@ -1759,7 +1763,7 @@ allow_hosts = ["vllm.internal.example.com"]  # the one private upstream we mean 
 
 ### \[guardrail_webhook\]
 
-A vendor-neutral hook to a self-hosted semantic guardrail service, such as Guardrails AI or LLM Guard. Before it proxies a request, the gateway POSTs a JSON envelope to your endpoint, and the service answers with a decision. Disabled by default, and it complements the built-in [`[guardrails]`](/security/guardrails) rather than replacing them. [Guardrails](/security/guardrails#external-providers) describes registering a provider on the dashboard instead, and how a webhook written here takes precedence over it.
+A vendor-neutral hook to a self-hosted semantic guardrail service, such as Guardrails AI or LLM Guard. Before it proxies a request, the gateway POSTs a JSON envelope to your endpoint, and the service answers with a decision. Disabled by default, and it complements the built-in [`[guardrails]`](/security/guardrails) rather than replacing them. [Guardrails](/security/guardrails#external-providers) describes registering providers on the dashboard instead. Since [semantic guard policies](/security/semantic-guard-policies) this hook is one provider among those of `[semantic_guards]` and the dashboard: it runs beside them rather than displacing one, and a policy can list it by `name`.
 
 <ParamField path="enabled" default="false" type="boolean">
   The master switch. A disabled block is never a problem, whatever else is unset.
@@ -1774,7 +1778,7 @@ A vendor-neutral hook to a self-hosted semantic guardrail service, such as Guard
 </ParamField>
 
 <ParamField path="stage" default="pre_call" type="string">
-  When the service is consulted. `pre_call` inspects the request. `post_call` is accepted and validated, but the gateway does not run the output stage yet.
+  When the service is consulted. `pre_call` inspects the request before it goes upstream; `post_call` inspects the response before it is delivered. A streamed response is refused or buffered for a `post_call` provider, per the policy's `streaming`.
 </ParamField>
 
 <ParamField path="timeout_ms" default="2000" type="integer">
@@ -1782,11 +1786,11 @@ A vendor-neutral hook to a self-hosted semantic guardrail service, such as Guard
 </ParamField>
 
 <ParamField path="max_retries" default="0" type="integer">
-  Extra attempts after a transient failure: a connect error, a timeout or an error status.
+  Extra attempts after a transient failure: a connect error, a timeout, an unreadable body, or a `429` / `503`. Another error status and an answer that is not a decision are not retried.
 </ParamField>
 
 <ParamField path="failure_mode" default="fail_open" type="string">
-  What happens when the service is unreachable, times out or errors. `fail_open` forwards the content unchanged, favouring availability. `fail_closed` rejects the request with an OpenAI-compatible error, favouring enforcement.
+  What happens when the service gives no verdict: it is unreachable, times out, is overloaded, errors, or answers something that is not a decision. `fail_open` forwards the content unchanged, favouring availability. `fail_closed` rejects the request with an OpenAI-compatible error (or withholds the response), favouring enforcement.
 </ParamField>
 
 <ParamField path="max_body_bytes" default="65536" type="integer">
@@ -1797,7 +1801,7 @@ A vendor-neutral hook to a self-hosted semantic guardrail service, such as Guard
   An optional credential, resolved from the environment at call time and never written inline. `{ bearer = { token_env = "GUARD_TOKEN" } }` sends `Authorization: Bearer <value of GUARD_TOKEN>`, and `{ shared_secret = { secret_env = "GUARD_SECRET" } }` sends the value in an `X-Rolter-Guardrail-Secret` header.
 </ParamField>
 
-**The contract.** The envelope is `{ direction, stage, model, route, trace_id, tenant: { org, team, project, key }, truncated, content }`, and only those fields are sent; the gateway never logs the prompt. The service answers `{ "action": "allow" | "block" | "transform" | "annotate", "content"?, "reason"?, "annotations"? }`. An unrecognised or malformed decision is treated as `allow`, and transport failures follow `failure_mode`. The trace id travels in the `X-Rolter-Trace-Id` header.
+**The contract.** The envelope is `{ direction, stage, model, route, trace_id, tenant: { org, team, project, key }, truncated, content, policy?, streamed? }`, and only those fields are sent; the gateway never logs the prompt. `policy` names the [policy](/security/semantic-guard-policies) that selected the provider, and `streamed: true` marks a buffered stream, sent as `content: { "stream": true, "text": … }`. The service answers `{ "action": "allow" | "block" | "transform" | "annotate", "content"?, "reason"?, "annotations"?, "categories"? }`, where `categories` maps category names to scores from 0 to 1; a body with `categories` and no `action` is an allow carrying scores. An answer that is not a decision follows `failure_mode`, like a transport failure. The trace id travels in the `X-Rolter-Trace-Id` header.
 
 ```toml
 [guardrail_webhook]
@@ -1805,6 +1809,110 @@ enabled = true
 url = "https://guard.internal/check"
 failure_mode = "fail_closed"
 auth = { bearer = { token_env = "GUARD_TOKEN" } }
+```
+
+---
+
+### \[semantic_guards\]
+
+Several guardrail providers side by side, and the scoped policies that pick which of them judge a request (#459). Empty by default. [Semantic guard policies](/security/semantic-guard-policies) explains the precedence, thresholds, failure handling and streaming in full. The dashboard's **Guardrails → Providers** and **Guardrails → Policies** add to what the file sets; the file wins a name, and an enabled file policy wins its scope.
+
+<ParamField path="providers" type="array of tables">
+  The providers, each a `[[semantic_guards.providers]]` table below.
+</ParamField>
+
+<ParamField path="policies" type="array of tables">
+  The policies, each a `[[semantic_guards.policies]]` table below.
+</ParamField>
+
+#### \[\[semantic_guards.providers\]\]
+
+The same keys as [`[guardrail_webhook]`](#guardrail_webhook), one table per provider. Only enabled providers run.
+
+<ParamField path="enabled" default="false" type="boolean">
+  Whether the provider runs.
+</ParamField>
+
+<ParamField path="name" type="string">
+  Required and unique, including against `[guardrail_webhook]`'s name. Policies list providers by it, and it labels the provider's metrics and log events.
+</ParamField>
+
+<ParamField path="url" type="string">
+  The `http://` or `https://` endpoint, checked against the [egress policy](/configuration/egress) at load and before every call.
+</ParamField>
+
+<ParamField path="stage" default="pre_call" type="string">
+  `pre_call` judges the request, `post_call` the response.
+</ParamField>
+
+<ParamField path="timeout_ms" default="2000" type="integer">
+  The per-call timeout in milliseconds.
+</ParamField>
+
+<ParamField path="max_retries" default="0" type="integer">
+  Extra attempts after a transient failure.
+</ParamField>
+
+<ParamField path="failure_mode" default="fail_open" type="string">
+  `fail_open` or `fail_closed`, applied when this provider gives no verdict.
+</ParamField>
+
+<ParamField path="max_body_bytes" default="65536" type="integer">
+  The most content forwarded, in bytes.
+</ParamField>
+
+<ParamField path="auth" type="table">
+  An optional credential, in the same two forms as `[guardrail_webhook]`.
+</ParamField>
+
+#### \[\[semantic_guards.policies\]\]
+
+<ParamField path="name" type="string">
+  Required and unique. It labels the policy's metrics and log events.
+</ParamField>
+
+<ParamField path="enabled" default="true" type="boolean">
+  A paused policy matches nothing, but its providers stay confined to policies.
+</ParamField>
+
+<ParamField path="scope" default="deployment" type="string">
+  `deployment`, `org`, `project`, `route` or `key`. The most specific enabled match wins, in the order key, route, project, org, deployment, and replaces the broader ones.
+</ParamField>
+
+<ParamField path="scope_id" type="string">
+  The org, project or key id, or the route's public model name. Required for every scope but `deployment`, which takes none. One enabled policy per scope.
+</ParamField>
+
+<ParamField path="providers" default="[]" type="array of strings">
+  Provider names, consulted in this order at each stage.
+</ParamField>
+
+<ParamField path="thresholds" default="{}" type="table">
+  Category name to a score from 0 to 1; a score at or above it violates the policy. `"*"` covers every category not named.
+</ParamField>
+
+<ParamField path="on_violation" default="block" type="string">
+  `block` refuses the request or withholds the response; `annotate` only records the violation.
+</ParamField>
+
+<ParamField path="streaming" default="reject" type="string">
+  What a streamed request gets when the policy has a `post_call` provider: `reject` refuses it with `400 guardrail_streaming_unsupported`, `buffer` holds the whole stream, checks it once and then replays or withholds it. No value skips the check.
+</ParamField>
+
+```toml
+[[semantic_guards.providers]]
+name = "toxicity"
+enabled = true
+url = "https://guard.internal/toxicity"
+stage = "post_call"
+
+[[semantic_guards.policies]]
+name = "support-bot"
+scope = "project"
+scope_id = "1f0e…"
+providers = ["toxicity"]
+thresholds = { violence = 0.8, "*" = 0.95 }
+streaming = "buffer"
 ```
 
 ---

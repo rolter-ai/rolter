@@ -36,6 +36,7 @@ fn config(addr: SocketAddr) -> GatewayConfig {
             provider: "local-llama".into(),
             model: Some("tiny.gguf".into()),
             weight: 1,
+            takes_over: Vec::new(),
         }],
         params: Default::default(),
         param_policy: Default::default(),

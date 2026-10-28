@@ -169,6 +169,7 @@ async fn upstream(status: StatusCode) -> SocketAddr {
 
 fn key(config: &GatewayConfig) -> VirtualKeyRecord {
     VirtualKeyRecord {
+        previous: None,
         access_policy: None,
         key_hash: rolter_auth::hash_key(&config.server.resolve_key_pepper(), KEY),
         id: KEY_ID.into(),
@@ -206,6 +207,7 @@ fn config_over(clickhouse: SocketAddr, kind: ProviderKind, api_base: SocketAddr)
             provider: "native".into(),
             model: Some("upstream-model".into()),
             weight: 1,
+            takes_over: Vec::new(),
         }],
         params: Default::default(),
         param_policy: Default::default(),

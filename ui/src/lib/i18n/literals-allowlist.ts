@@ -35,6 +35,10 @@ export const NOT_COPY: AllowList = {
   "src/components/ui/auth-card.tsx": {
     rolter: "the product's name in the wordmark, spelled the same in every locale",
   },
+  "src/pages/GuardrailPolicies.tsx": {
+    violence:
+      "an example category name in the threshold field's placeholder: a key the provider returns, typed verbatim",
+  },
   "src/pages/Connectors.tsx": {
     datadog:
       "an example connector name in the name field's placeholder: the vendor's own name, spelled the same in every locale",

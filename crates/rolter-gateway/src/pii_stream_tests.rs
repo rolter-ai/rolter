@@ -1194,6 +1194,7 @@ impl Gateway {
                     provider: provider.to_string(),
                     model: None,
                     weight: 1,
+                    takes_over: Vec::new(),
                 }],
                 params: Default::default(),
                 param_policy: Default::default(),

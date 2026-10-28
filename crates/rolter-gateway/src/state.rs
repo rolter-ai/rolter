@@ -277,9 +277,10 @@ pub struct Snapshot {
     /// built-in regex guardrails / PII redaction, compiled once per snapshot and
     /// shared across requests; inert unless enabled (ROL-261)
     pub guardrails: Arc<rolter_core::CompiledGuardrails>,
-    /// custom guardrail webhook config, swapped atomically with the snapshot;
-    /// inert unless enabled (ROL-257)
-    pub guardrail_webhook: rolter_core::GuardrailWebhookConfig,
+    /// semantic guardrail providers — `[guardrail_webhook]` among them — and
+    /// the scoped policies that pick them, compiled once per snapshot so a
+    /// request only resolves; empty unless a provider is enabled (#459)
+    pub semantic_guards: Arc<rolter_core::CompiledSemanticGuards>,
     /// external PII sanitizer config, swapped atomically with the snapshot;
     /// inert unless enabled (#848)
     pub pii_sanitizer: rolter_core::PiiSanitizerConfig,
@@ -432,6 +433,7 @@ impl Snapshot {
                     provider: m.provider.clone(),
                     model: m.model.clone(),
                     weight: m.weight,
+                    takes_over: Vec::new(),
                 })
                 .collect();
             let weights: Vec<u32> = targets.iter().map(|t| t.weight).collect();
@@ -571,25 +573,39 @@ impl Snapshot {
         }
         // database-defined keys: digest already stored, carry scope identity
         for k in &config.db_virtual_keys {
-            keys.insert(
-                k.key_hash.clone(),
-                KeyMeta {
-                    tenant_key: k.key_hash.clone(),
-                    id: k.id.clone(),
-                    org_id: k.org_id.clone(),
-                    team_id: k.team_id.clone(),
-                    project_id: k.project_id.clone(),
-                    user_id: k.user_id.clone(),
-                    models: k.models.clone(),
-                    providers: k.providers.clone(),
-                    disabled: k.disabled,
-                    expires_at: k.expires_at,
-                    cache_override: k.cache,
-                    business_unit_id: k.business_unit_id.clone(),
-                    customer_id: k.customer_id.clone(),
-                    access_policy: k.access_policy.clone(),
-                },
-            );
+            let meta = KeyMeta {
+                tenant_key: k.key_hash.clone(),
+                id: k.id.clone(),
+                org_id: k.org_id.clone(),
+                team_id: k.team_id.clone(),
+                project_id: k.project_id.clone(),
+                user_id: k.user_id.clone(),
+                models: k.models.clone(),
+                providers: k.providers.clone(),
+                disabled: k.disabled,
+                expires_at: k.expires_at,
+                cache_override: k.cache,
+                business_unit_id: k.business_unit_id.clone(),
+                customer_id: k.customer_id.clone(),
+                access_policy: k.access_policy.clone(),
+            };
+            // a rotated key's previous secret authenticates as the same key
+            // until its overlap ends: same id, limits and tenant isolation (so
+            // a rate limit is not doubled by the second secret), but never
+            // longer than the key itself lives
+            if let Some(previous) = &k.previous {
+                keys.insert(
+                    previous.key_hash.clone(),
+                    KeyMeta {
+                        expires_at: Some(
+                            k.expires_at
+                                .map_or(previous.valid_until, |exp| exp.min(previous.valid_until)),
+                        ),
+                        ..meta.clone()
+                    },
+                );
+            }
+            keys.insert(k.key_hash.clone(), meta);
         }
         let mcp_servers = config
             .mcp_servers
@@ -674,7 +690,10 @@ impl Snapshot {
             },
             realtime: config.realtime.clone(),
             guardrails: compiled_guardrails,
-            guardrail_webhook: config.guardrail_webhook.clone(),
+            semantic_guards: Arc::new(rolter_core::CompiledSemanticGuards::from_config(
+                &config.semantic_guards,
+                &config.guardrail_webhook,
+            )),
             pii_sanitizer: config.pii_sanitizer.clone(),
             prompt_templates: Arc::new(rolter_core::CompiledTemplates::from_config(
                 &config.prompt_templates,
@@ -733,6 +752,7 @@ impl Snapshot {
                 provider: provider_name.clone(),
                 model: Some(upstream.to_string()),
                 weight: 1,
+                takes_over: Vec::new(),
             };
             let strategy = rolter_core::BalancingStrategy::default();
             // the address inherits the provider's org, so the route gate refuses
@@ -758,6 +778,7 @@ impl Snapshot {
                     provider: m.provider.clone(),
                     model: Some(m.model.clone().unwrap_or_else(|| upstream.to_string())),
                     weight: m.weight,
+                    takes_over: Vec::new(),
                 })
                 .collect();
             if targets.is_empty() {
@@ -1085,6 +1106,8 @@ impl AppState {
         rate_limiter: RateLimiter,
         response_cache: ResponseCache,
     ) -> Self {
+        // before any request can start, so no start sequence precedes its epoch
+        crate::logging::init_start_sequence();
         // created before the snapshot so the fastest strategy's latency
         // sources can hold a handle to the same tracker the guards record into
         let loads = crate::load::LoadTracker::new();
@@ -1210,6 +1233,46 @@ impl AppState {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
+    /// Record the snapshot format of the snapshot just applied, which also
+    /// ends any format refusal (ADR-0038).
+    pub fn record_snapshot_format(&self, format: u32) {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.metrics
+            .snapshot_format
+            .store(u64::from(format), Relaxed);
+        self.metrics.snapshot_format_refused.store(0, Relaxed);
+    }
+
+    /// The control plane answered in a snapshot format this gateway reads,
+    /// so any earlier refusal is over.
+    pub fn clear_snapshot_format_refusal(&self) {
+        self.metrics
+            .snapshot_format_refused
+            .store(0, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The control plane serves no snapshot format this gateway reads. Returns
+    /// whether this is a transition into that state, which is when the
+    /// watcher says so at `error`.
+    pub fn refuse_snapshot_format(&self) -> bool {
+        self.metrics
+            .snapshot_format_refused
+            .swap(1, std::sync::atomic::Ordering::Relaxed)
+            == 0
+    }
+
+    /// Whether `/readyz` should hold this gateway out of service for its
+    /// snapshot format: it has never applied a snapshot, and the control
+    /// plane's last answer was one it cannot read. A gateway that holds a
+    /// snapshot stays ready on its last config, since flipping it would turn
+    /// one out-of-order control-plane upgrade into an outage of every gateway
+    /// at once (ADR-0038 section 3).
+    pub fn unready_for_snapshot_format(&self) -> bool {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.metrics.snapshot_format_refused.load(Relaxed) == 1
+            && self.metrics.snapshot_format.load(Relaxed) == 0
+    }
+
     /// Close every live `/v1/realtime` session and wait, at most `grace`, for
     /// each one's meter to run its last flush. Returns whether every session
     /// finished inside `grace`.
@@ -1295,6 +1358,7 @@ mod tests {
             provider: provider.to_string(),
             model: model.map(str::to_string),
             weight: 1,
+            takes_over: Vec::new(),
         }
     }
 

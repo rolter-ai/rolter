@@ -331,14 +331,16 @@ response payload.
 `deprecation-header` · IETF · [primary source](https://www.rfc-editor.org/rfc/rfc9745)
 
 - **Supported:** `Deprecation: @<unix seconds>` on a deprecated control-plane operation
-- **Evidence:** `crates/rolter-control/src/deprecation.rs::headers_follow_rfc_9745_and_rfc_8594`
+- **Supported:** `Deprecation` on every `/internal/snapshot` answer served in a deprecated snapshot format (ADR-0038)
+- **Evidence:** `crates/rolter-control/src/deprecation.rs::headers_follow_rfc_9745_and_rfc_8594`<br />`crates/rolter-control/src/snapshot_negotiation.rs::a_deprecated_format_carries_the_headers_and_only_it`
 
 #### The Sunset HTTP Header Field
 
 `sunset-header` · IETF · [primary source](https://www.rfc-editor.org/rfc/rfc8594)
 
 - **Supported:** `Sunset` as an IMF-fixdate on every deprecated control-plane operation
-- **Evidence:** `crates/rolter-control/src/deprecation.rs::headers_follow_rfc_9745_and_rfc_8594`
+- **Supported:** `Sunset` on every `/internal/snapshot` answer served in a deprecated snapshot format (ADR-0038)
+- **Evidence:** `crates/rolter-control/src/deprecation.rs::headers_follow_rfc_9745_and_rfc_8594`<br />`crates/rolter-control/src/snapshot_negotiation.rs::a_deprecated_format_carries_the_headers_and_only_it`
 
 #### JSON-RPC 2.0
 

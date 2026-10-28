@@ -14,7 +14,7 @@ A core requirement: operators change routes, providers, keys, limits and pricing
 | Fields                                                                                                                                                                            | Owner in merged mode                                                                                                                                                                                                                         |
 | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `providers`, `routes`, `provider_groups`, `virtual_keys` / `db_virtual_keys`, `model_prices`, `budgets`, `rate_limits`                                                            | both: the file's rows win a name collision and the store's rows extend them; the CRUD API refuses to edit a file provider, route or group (ADR-0022)                                                                                         |
-| `guardrails`, `guardrail_webhook`                                                                                                                                                 | both: file rules win a name collision, registry rules extend them; an enabled file webhook wins, else the registry's                                                                                                                         |
+| `guardrails`, `guardrail_webhook`, `semantic_guards`                                                                                                                              | both: file rules win a name collision, registry rules extend them; the file webhook runs beside the registry's providers                                                                                                                     |
 | `mcp_servers`, `mcp_oauth_sessions`, `feature_flags`                                                                                                                              | the store only (the flags are control-plane gates, and a file that sets one is ignored)                                                                                                                                                      |
 | `retry`, `timeouts`, `queue`, `compatibility`, `adaptive_routing`                                                                                                                 | the store, **unless it still holds its seeded defaults**, in which case the file's value stands (#2931)                                                                                                                                      |
 | `client`, `security`, `model_defaults` (Client Settings, Security, Model Settings)                                                                                                | the store, **unless it still holds its seeded defaults**, in which case the file's value stands (#2922)                                                                                                                                      |
@@ -59,6 +59,58 @@ sequenceDiagram
   - the Effective config screen (`ui/src/pages/Config.tsx`) lists the same lines above its tables and marks each provider and route row the snapshot leaves out, with the reason (#2085). The endpoint also answers `omitted: [{kind, name, reason, index}]`, built where `sanitize_for_snapshot_report` (and, for the public example key, `prune_public_example_key`) drops the entry, so no client parses a sentence (#1876). `index` is the row's position in the list the store loaded, which is its position in the matching list of `GET /api/v1/config`; that response strips tenancy, so two scopes' routes can share a model and two file keys a name, and only the row at `index` is marked (the dashboard also checks that it still carries `name`). `ui/src/lib/api/config.ts` reads it through `omittedRows()` (the Config tables) and `unservedModels()` (the Playground). The screen asks for the problems even when the config read fails, since an unreadable `security_settings.required_headers` fails `load` while the problems endpoint still answers (#2943). For a caller with `cluster_node:read` it also reads `GET /api/v1/cluster/nodes` through `gatewayPickup()` and says how many live gateways run the current config version, with a link to Cluster; no other caller gets that line, and nothing renders in a success colour while the config read is failed or pending.
   - that endpoint also appends `ConfigStore::load_problems`: rows the store's loader could only map onto the config by guessing, such as a budget whose stored `period` it does not recognise and enforces as monthly (#1902). The snapshot carries the guess rather than the row, so only the store can say where one was made. Those lines are not in the snapshot's `problems`, because nothing was dropped: the gateway serves the row, just not as the row says.
 - `GET /api/v1/config` is the dashboard's read-only view of the same document. It needs a session of any role (or the admin token, or open mode; #1840), and is still **redacted before it leaves the control plane** (`redact_config_for_dashboard`): provider credentials, the plaintext of `[[virtual_keys]]`, the digests of database keys and every MCP OAuth session are removed, and userinfo is stripped from the ClickHouse and egress-proxy URLs. Anything a gateway needs to authenticate with comes only through the token-guarded `/internal/snapshot` (#1212).
+
+## Snapshot format
+
+The snapshot's `version` says when the config last moved; its `format` says
+what shape the payload has ([ADR-0038](../adr/2026-10-27-snapshot-format-version.md), #1512).
+The constants and the negotiation live in `rolter_core::snapshot_format`, which
+both binaries share: `SNAPSHOT_FORMAT` (what this build writes and reads),
+`MIN_SERVED_FORMAT` (the oldest format a control plane of this build serves)
+and `FormatRange`.
+
+- **The request.** The gateway sends `formats=SNAPSHOT_FORMAT` beside
+  `version` on every poll, and on the early log-destination read. An absent
+  `formats` is a gateway that predates negotiation, which reads format 1 only.
+- **The control plane** (`build_snapshot`, with the helpers in
+  `crates/rolter-control/src/snapshot_negotiation.rs`) records the heartbeat,
+  then negotiates _before_ the `304` and before the store is read: a value that
+  does not parse is `400 invalid_query`, and a range with nothing in common
+  with what it serves is `406 snapshot_format_unsupported`, so a gateway that
+  cannot be served learns it on its next poll even when nothing changed, at no
+  database cost. Otherwise it serves the highest common format. When that is
+  older than its own, the `DownStep` chain converts: each step's `omit` runs on
+  the typed config before `sanitize_for_snapshot`, so the cascade removes what
+  referenced an omitted entity and the lines ride out in `problems`; each
+  step's `rewrite` runs on the serialized config. A step that cannot express a
+  deployment-wide setting answers `406 snapshot_format_inexpressible`. The
+  answer carries `format`, and `Deprecation` and `Sunset` when the format is a
+  `Target::SnapshotFormat` entry in `DEPRECATIONS` (the `304` included). A
+  refusal is logged at `warn` once per node, range and code in each process,
+  and recorded as `outcome = refused` on `rolter_snapshot_build_ms`.
+- **The gateway** (`watcher::poll_once`) reads `format` over the reply's bytes
+  before it decodes `config` (`FormatHead`; absent is 1), so a mismatch is
+  reported as one rather than as a serde error. A `406`, or a `200` in a format
+  it does not read, applies nothing: it sets `rolter_snapshot_format_refused`,
+  logs one `error` on the transition into that state, and the poll fails as
+  any failed poll does. A compatible `200` or `304` clears the gauge, and an
+  applied snapshot sets `rolter_snapshot_format`. A `Deprecation` header is
+  warned about once per process. `/readyz` answers
+  `503 snapshot_format_unsupported` only while no snapshot was ever applied
+  (see [Health and readiness](health-and-readiness.md)).
+
+This release writes format 1 and serves only format 1, so `DOWN_STEPS` is
+empty; the tests in `snapshot_negotiation.rs` and `watcher.rs` pass a served
+range and a test-only chain to stand in for a second format. A change to the
+payload is classified under ADR-0038 section 2; the `Changed the snapshot
+payload` row of the AGENTS.md maintenance matrix is the checklist, and the
+shape guard in `snapshot_format.rs` (`crates/rolter-core/tests/fixtures/snapshot_shape.json`,
+regenerated with `ROLTER_TEST_UPDATE_SNAPSHOT_SHAPE=1`) fails on a removed path
+or a changed JSON type within one format. It reads the shape off
+`tests/fixtures/snapshot_representative.json`, a config with at least one
+element in every list, and `the_representative_config_populates_every_list`
+fails when a list serializes empty, so a new `Vec` field needs an element there
+before the guard can see what it holds.
 
 ## Why this design
 

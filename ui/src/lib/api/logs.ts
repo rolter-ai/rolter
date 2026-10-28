@@ -85,6 +85,13 @@ export interface InvocationRow {
   /// `error:<slug>:<kind>` entries (#2243); absent from a control plane that
   /// predates it, empty for a request no plugin touched
   plugin_events?: string[];
+  /**
+   * Where the request began in its gateway process's order of starts (#1392), which
+   * `ts` cannot say inside one millisecond. Meaningful only among the rows of one
+   * gateway instance; `0` on a row older than `clickhouse/021_request_log_seq.sql`.
+   * ClickHouse quotes a 64-bit integer, so it may arrive as a string
+   */
+  seq?: number | string;
   /// the request parameters dialect translation did not forward as sent, as
   /// `<disposition>:<param>` entries (`dropped:top_k`, #1586, #3323); absent
   /// from a control plane that predates it, empty when every parameter went

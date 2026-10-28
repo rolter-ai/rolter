@@ -209,6 +209,7 @@ fn route_config(routes: usize) -> GatewayConfig {
                     provider: format!("provider-{}", (r + t) % 8),
                     model: Some(format!("upstream-model-{r}")),
                     weight: 1,
+                    takes_over: Vec::new(),
                 })
                 .collect(),
             params: Default::default(),

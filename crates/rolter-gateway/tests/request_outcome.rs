@@ -112,6 +112,7 @@ fn config(upstream: SocketAddr, clickhouse: SocketAddr) -> GatewayConfig {
             provider: "up".into(),
             model: Some("test-model".into()),
             weight: 1,
+            takes_over: Vec::new(),
         }],
         params: Default::default(),
         param_policy: Default::default(),
@@ -135,6 +136,7 @@ fn config(upstream: SocketAddr, clickhouse: SocketAddr) -> GatewayConfig {
         cache: None,
         business_unit_id: String::new(),
         customer_id: String::new(),
+        previous: None,
     });
     config
 }

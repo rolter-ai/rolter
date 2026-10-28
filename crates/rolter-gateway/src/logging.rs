@@ -76,6 +76,34 @@ pub fn started_at(started: Instant) -> DateTime<Utc> {
         .unwrap_or(now)
 }
 
+/// The instant this process began counting request starts from. Forced when the
+/// log sink is built, before any request can start, so no request begins ahead
+/// of it.
+static SEQ_EPOCH: std::sync::LazyLock<Instant> = std::sync::LazyLock::new(Instant::now);
+
+/// Fix the sequence's epoch. Called when the gateway state is built, before any
+/// request can start, so every start is at or after it.
+pub fn init_start_sequence() {
+    std::sync::LazyLock::force(&SEQ_EPOCH);
+}
+
+/// Where a request began in this process's order of starts (#1392).
+///
+/// `request_logs.ts` is a millisecond, so requests that begin inside one share
+/// it. This is the sequence that tells them apart: nanoseconds on the monotonic
+/// clock since the process began, counted from 1, so a later start is always a
+/// larger number and `0` stays the "no sequence" a row older than the column
+/// reads as. It is taken from the same `Instant` as [`started_at`], so it needs
+/// no counter threaded through the forwarding paths and cannot drift from `ts`.
+///
+/// Only meaningful within one gateway process: another instance's sequence is
+/// unrelated and a restart begins again.
+pub fn start_seq(started: Instant) -> u64 {
+    started
+        .checked_duration_since(*SEQ_EPOCH)
+        .map_or(1, |since| (since.as_nanos() as u64).saturating_add(1))
+}
+
 /// Bounded, lock-free reuse for the response bytes retained only long enough
 /// to extract token usage. Oversized buffers are deliberately not retained so
 /// one unusually large completion cannot inflate the steady-state footprint.
@@ -156,6 +184,11 @@ pub struct RequestLog {
     /// batch lands on one millisecond and ordering within it is lost
     #[serde(serialize_with = "clickhouse_ts::serialize")]
     pub ts: DateTime<Utc>,
+    /// where the request began in this process's order of starts, which `ts`
+    /// cannot say inside one millisecond (#1392); see [`start_seq`]. `0`, left
+    /// out of the row, when the writer did not stamp one
+    #[serde(skip_serializing_if = "is_zero_seq")]
+    pub seq: u64,
     pub request_id: String,
     /// the gateway's own key for this row, minted when the row is queued. the
     /// caller picks `request_id`, so only this names one request: the control
@@ -240,6 +273,17 @@ pub struct RequestLog {
     /// How many upstream attempts the request made, the one that answered
     /// included; `0` when it never reached an upstream. Saturates at 255.
     pub attempts: u8,
+    /// The failure that sent the request on to the last target it tried, as
+    /// its class token (`throttled`, `timeout`, `transport`, `server_error`,
+    /// `refusal` or `refusal:<category>`, see `rolter_core::failover`). Empty
+    /// when the first dial answered, so a row that never failed over reads as
+    /// it did before the column (#1584). It is what tells a request that
+    /// reached a fallback target because of a content refusal from one that
+    /// reached it because of load. Not serialized when empty, so a ClickHouse
+    /// without `clickhouse/023_fallback_reason.sql` keeps accepting every row
+    /// that has none
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub fallback_reason: String,
     /// Which call on a stored response this row records: `retrieve`, `delete`,
     /// `cancel`, `input_items`, or one of the two the gateway does not serve
     /// (`compact`, `input_tokens`). Empty for a request that ran a model,
@@ -352,6 +396,10 @@ fn serialize_outcome<S: serde::Serializer>(
     serializer.serialize_str(outcome.map_or("", |outcome| outcome.as_str()))
 }
 
+fn is_zero_seq(seq: &u64) -> bool {
+    *seq == 0
+}
+
 /// How a withheld row's `error` begins when an output guardrail rule refused
 /// the response; the rest of it is the rule's name.
 pub const GUARDRAIL_WITHHELD_PREFIX: &str = "guardrail_blocked: ";
@@ -363,6 +411,7 @@ impl Default for RequestLog {
             // slightly late, where a zero would land in a 1970 partition and
             // fall straight past the table's ttl
             ts: Utc::now(),
+            seq: 0,
             request_id: String::new(),
             log_id: Uuid::nil(),
             trace_id: String::new(),
@@ -394,6 +443,7 @@ impl Default for RequestLog {
             error: String::new(),
             upstream_status: 0,
             attempts: 0,
+            fallback_reason: String::new(),
             lifecycle_operation: String::new(),
             guardrail_events: Vec::new(),
             plugin_events: Vec::new(),
@@ -3470,6 +3520,57 @@ data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\
         // no queue, nothing written or dropped
         assert_eq!(metrics.logs_dropped_total.load(Relaxed), 0);
         assert_eq!(metrics.logs_written_total.load(Relaxed), 0);
+    }
+
+    #[test]
+    fn requests_that_start_inside_one_millisecond_are_ordered_by_start() {
+        init_start_sequence();
+        let first = Instant::now();
+        let second = first + Duration::from_nanos(700);
+        let third = first + Duration::from_nanos(900_000);
+        // the wall clock cannot tell them apart: one millisecond stamp for all
+        let ts = started_at(first);
+        // the sequence can, and it is never 0 (that is "no sequence")
+        let (a, b, c) = (start_seq(first), start_seq(second), start_seq(third));
+        assert!(a > 0 && a < b && b < c, "{a} {b} {c}");
+        // so rows written in the opposite order still sort by when they began
+        let mut rows = [
+            RequestLog {
+                ts,
+                seq: c,
+                request_id: "zzz-third".into(),
+                ..Default::default()
+            },
+            RequestLog {
+                ts,
+                seq: a,
+                request_id: "mmm-first".into(),
+                ..Default::default()
+            },
+            RequestLog {
+                ts,
+                seq: b,
+                request_id: "aaa-second".into(),
+                ..Default::default()
+            },
+        ];
+        rows.sort_by_key(|row| (row.ts.timestamp_millis(), row.seq));
+        let order: Vec<&str> = rows.iter().map(|r| r.request_id.as_str()).collect();
+        assert_eq!(order, ["mmm-first", "aaa-second", "zzz-third"]);
+    }
+
+    #[test]
+    fn the_sequence_is_written_when_stamped_and_left_out_otherwise() {
+        init_start_sequence();
+        let stamped = serde_json::to_value(RequestLog {
+            seq: start_seq(Instant::now()),
+            ..Default::default()
+        })
+        .unwrap();
+        assert!(stamped["seq"].as_u64().unwrap() > 0);
+        // an unstamped row omits the field, so ClickHouse fills in the default
+        let unstamped = serde_json::to_value(RequestLog::default()).unwrap();
+        assert!(unstamped.get("seq").is_none());
     }
 
     #[test]

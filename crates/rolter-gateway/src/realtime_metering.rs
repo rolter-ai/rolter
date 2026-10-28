@@ -958,6 +958,7 @@ impl Runner {
         let meter = &self.meter;
         RequestLog {
             ts: crate::logging::started_at(started),
+            seq: crate::logging::start_seq(started),
             request_id: format!("{}:{seq}", meter.request_id),
             trace_id: meter.trace_id.clone(),
             org_id: meter.scope.org.clone(),

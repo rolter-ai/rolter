@@ -98,6 +98,7 @@
             "group": "Reliability",
             "pages": [
               "reliability/retries-and-cooldowns",
+              "reliability/fallback-targets",
               "reliability/circuit-breakers",
               "reliability/health-checks",
               "reliability/performance-tuning"
@@ -115,6 +116,7 @@
               "security/user-provisioning",
               "security/mcp-oauth",
               "security/guardrails",
+              "security/semantic-guard-policies",
               "security/pii-sanitizer",
               "security/budgets-and-rate-limits",
               "security/cost-attribution"

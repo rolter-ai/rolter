@@ -20,6 +20,11 @@ CLAUDE.md
 # a short array such as `chain_at`'s would fail cargo test
 crates/rolter-control/rbac-matrix.json
 
+# rewritten by rolter-core's snapshot shape guard with serde_json whenever
+# ROLTER_TEST_UPDATE_SNAPSHOT_SHAPE is set (ADR-0038); a regeneration that had
+# to be followed by a prettier run would fail the docs gate every time
+crates/rolter-core/tests/fixtures/snapshot_shape.json
+
 # helm chart templates are go templates that happen to end in .yaml, and the
 # yaml parser cannot read `{{- if ... }}` at all
 charts/rolter/templates/

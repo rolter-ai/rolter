@@ -38,6 +38,7 @@ fn config(providers: Vec<ProviderConfig>) -> GatewayConfig {
             provider: provider.name.clone(),
             model: Some("anthropic/claude-sonnet-4".into()),
             weight: 1,
+            takes_over: Vec::new(),
         })
         .collect();
     config.providers = providers;
