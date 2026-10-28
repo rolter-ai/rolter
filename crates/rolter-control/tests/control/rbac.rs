@@ -251,6 +251,33 @@ async fn tenancy_guards_refuse_cross_org_references_but_not_shared_names() {
         .unwrap()
         .iter()
         .any(|p| p["name"] == "edge-b"));
+
+    // deleting a model two orgs share names the org, and removes its rows only
+    let delete = |query: String| {
+        let client = client.clone();
+        let url = format!("{base}/api/v1/models/gpt-4o{query}");
+        async move { client.delete(&url).send().await.unwrap().status().as_u16() }
+    };
+    assert_eq!(delete(String::new()).await, 400, "an ambiguous delete");
+    assert_eq!(delete(format!("?org_id={org_b}")).await, 204);
+    let served: Value = client
+        .get(format!("{base}/internal/snapshot?formats=1"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let left: Vec<&str> = served["config"]["routes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|r| r["model"] == "gpt-4o")
+        .filter_map(|r| r["tenancy"]["org_id"].as_str())
+        .collect();
+    assert_eq!(left, [org_a.as_str()], "{served}");
+    // with one org left holding the name, the org may be left out again
+    assert_eq!(delete(String::new()).await, 204);
     let edge_b = config["providers"]
         .as_array()
         .unwrap()
