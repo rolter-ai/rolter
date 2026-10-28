@@ -111,36 +111,38 @@ async fn test_connection(
             }),
             checked_at,
         },
-        Ok(auth) => match McpClient::connect(&state.egress, &server.url, auth).await {
-            Ok(client) => {
-                record_reached(&repo, id, &client).await;
-                ConnectionStatus {
-                    status: "reachable",
-                    reachable: true,
-                    handshake_completed: true,
-                    protocol_version: Some(client.handshake.protocol_version.clone()),
-                    server_name: client.handshake.server_name.clone(),
-                    server_version: client.handshake.server_version.clone(),
-                    latency_ms: elapsed_ms(started),
-                    message: None,
-                    checked_at,
+        Ok(auth) => {
+            match McpClient::connect(&state.egress, &server.url, auth, &server.transport).await {
+                Ok(client) => {
+                    record_reached(&repo, id, &client).await;
+                    ConnectionStatus {
+                        status: "reachable",
+                        reachable: true,
+                        handshake_completed: true,
+                        protocol_version: Some(client.handshake.protocol_version.clone()),
+                        server_name: client.handshake.server_name.clone(),
+                        server_version: client.handshake.server_version.clone(),
+                        latency_ms: elapsed_ms(started),
+                        message: None,
+                        checked_at,
+                    }
+                }
+                Err(failure) => {
+                    record_failed(&repo, id, failure.kind).await;
+                    ConnectionStatus {
+                        status: outcome_of(&failure),
+                        reachable: failure.kind.reached_server(),
+                        handshake_completed: false,
+                        protocol_version: None,
+                        server_name: None,
+                        server_version: None,
+                        latency_ms: elapsed_ms(started),
+                        message: Some(failure.message),
+                        checked_at,
+                    }
                 }
             }
-            Err(failure) => {
-                record_failed(&repo, id, failure.kind).await;
-                ConnectionStatus {
-                    status: outcome_of(&failure),
-                    reachable: failure.kind.reached_server(),
-                    handshake_completed: false,
-                    protocol_version: None,
-                    server_name: None,
-                    server_version: None,
-                    latency_ms: elapsed_ms(started),
-                    message: Some(failure.message),
-                    checked_at,
-                }
-            }
-        },
+        }
     };
     log_audit(
         &state,
@@ -222,7 +224,8 @@ async fn call_tool(
         },
         Ok(auth) => {
             let attempt = async {
-                let mut client = McpClient::connect(&state.egress, &server.url, auth).await?;
+                let mut client =
+                    McpClient::connect(&state.egress, &server.url, auth, &server.transport).await?;
                 record_reached(&repo, id, &client).await;
                 client.call_tool(&body.tool, arguments).await
             }

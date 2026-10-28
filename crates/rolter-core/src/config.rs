@@ -2211,6 +2211,12 @@ pub struct McpServerConfig {
     /// means it declares none, which leaves nothing to check a call against
     #[serde(default)]
     pub tools: Vec<String>,
+    /// whether the server's organization enforces manifests until it saves MCP
+    /// settings of its own (#3334): true for an organization created after the
+    /// change, false for one that existed before it. A saved settings row
+    /// decides for itself and overrides this
+    #[serde(default)]
+    pub enforce_manifest_by_default: bool,
 }
 
 impl std::fmt::Debug for McpServerConfig {
@@ -2282,6 +2288,24 @@ pub struct McpToolGroupConfig {
     pub slug: String,
     #[serde(default)]
     pub tools: Vec<McpToolRefConfig>,
+    /// who the group is assigned to (#3295). A caller whose key, project or team
+    /// appears in the assignments of any enabled group is held to the groups
+    /// assigned to it; a caller named by none keeps the organization-wide set
+    #[serde(default)]
+    pub assignments: Vec<McpToolGroupSubjectConfig>,
+    /// a disabled group is carried only for the callers assigned to it (#3295):
+    /// it governs no one else, but those callers stay narrowed on the servers it
+    /// names and get none of its tools
+    #[serde(default)]
+    pub disabled: bool,
+}
+
+/// A virtual key, project or team an MCP tool group is assigned to (#3295).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+pub struct McpToolGroupSubjectConfig {
+    /// `virtual_key`, `project` or `team`; any other value matches no caller
+    pub kind: String,
+    pub id: String,
 }
 
 /// A live OAuth session the gateway may spend for one user and MCP server.

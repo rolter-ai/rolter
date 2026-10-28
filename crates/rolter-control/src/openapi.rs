@@ -2195,6 +2195,16 @@ fn operations() -> Vec<Op> {
                 "Delete an MCP tool group",
             ),
             Op::get(
+                "/api/v1/orgs/{org_id}/mcp/tool-group-assignments",
+                "listMcpToolGroupAssignments",
+                "List the keys, projects and teams MCP tool groups are assigned to",
+            ),
+            Op::put(
+                "/api/v1/mcp/tool-groups/{id}/assignments",
+                "replaceMcpToolGroupAssignments",
+                "Replace the keys, projects and teams an MCP tool group is assigned to",
+            ),
+            Op::get(
                 "/api/v1/orgs/{org_id}/mcp/grants",
                 "listMcpGrants",
                 "List MCP consent grants",

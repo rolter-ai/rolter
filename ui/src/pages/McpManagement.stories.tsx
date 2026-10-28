@@ -251,6 +251,126 @@ export const ToolGroupSelectsTools: Story = {
   },
 };
 
+// #3295: a group can be narrowed to teams or projects. The whole set is sent
+// on save, with a virtual-key assignment set through the API carried along
+const assignmentsRecorded = recording(
+  routed({
+    groups: async (_input, init) => json(init?.method === "PUT" ? GROUPS[0] : GROUPS),
+    assignments: async (_input, init) =>
+      init?.method === "PUT"
+        ? json([])
+        : json([
+            {
+              group_id: "group-1",
+              subject_kind: "virtual_key",
+              subject_id: "key-9",
+              created_at: "2026-01-01T00:00:00Z",
+            },
+          ]),
+  }),
+);
+export const ToolGroupAssignsTeamsAndKeepsKeyAssignments: Story = {
+  render: () => (
+    <Harness fetchStub={assignmentsRecorded.stub}>
+      <ToolGroups />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const narrowed = await canvas.findByText("Assigned callers only");
+    await waitFor(() => expect(narrowed).toBeVisible());
+    await userEvent.click(
+      await canvas.findByRole("button", { name: "Configure tool group Triage" }),
+    );
+    const body = within(document.body);
+    const kept = await body.findByText(/set through the API/);
+    await waitFor(() => expect(kept).toBeVisible());
+    await userEvent.click(await body.findByRole("button", { name: "Platform" }));
+    await userEvent.click(body.getByRole("button", { name: "Save group" }));
+    await expect(
+      await assignmentsRecorded.expectSentBody("PUT", "/tool-groups/group-1/assignments"),
+    ).toEqual({
+      assignments: [
+        { kind: "team", id: "team-1" },
+        { kind: "virtual_key", id: "key-9" },
+      ],
+    });
+  },
+};
+// an unreadable assignment list must not turn into an editor that saves an
+// empty set over the stored one
+export const ToolGroupWithoutReadableAssignmentsOffersNoEditor: Story = {
+  render: () => (
+    <Harness
+      fetchStub={routed({
+        assignments: async () => json({ error: { message: "boom" } }, 500),
+      })}
+    >
+      <ToolGroups />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(
+      await canvas.findByRole("button", { name: "Configure tool group Triage" }),
+    );
+    const body = within(document.body);
+    const unread = await body.findByText(/could not be read/);
+    await waitFor(() => expect(unread).toBeVisible());
+    await expect(body.queryByRole("button", { name: "Platform" })).toBeNull();
+  },
+};
+
+// the editor must not start from an empty set while the stored one is still on
+// its way: saving then would store nothing and hand a narrowed group to the
+// whole organization
+let releaseAssignments: () => void = () => {};
+const slowAssignments = recording(
+  routed({
+    groups: async (_input, init) => json(init?.method === "PUT" ? GROUPS[0] : GROUPS),
+    assignments: async (_input, init) => {
+      if (init?.method === "PUT") return json([]);
+      await new Promise<void>((resolve) => {
+        releaseAssignments = resolve;
+      });
+      return json([
+        {
+          group_id: "group-1",
+          subject_kind: "team",
+          subject_id: "team-1",
+          created_at: "2026-01-01T00:00:00Z",
+        },
+      ]);
+    },
+  }),
+);
+export const ToolGroupSaveBeforeAssignmentsLoadLeavesThemAlone: Story = {
+  render: () => (
+    <Harness fetchStub={slowAssignments.stub}>
+      <ToolGroups />
+    </Harness>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(
+      await canvas.findByRole("button", { name: "Configure tool group Triage" }),
+    );
+    const body = within(document.body);
+    // still reading: no editor, and the copy says so rather than "could not be read"
+    const reading = await body.findByText("Reading the current assignments…");
+    await waitFor(() => expect(reading).toBeVisible());
+    await expect(body.queryByText(/could not be read/)).toBeNull();
+    await expect(body.queryByRole("button", { name: "Platform" })).toBeNull();
+    await userEvent.click(body.getByRole("button", { name: "Save group" }));
+    await slowAssignments.expectSent("PUT", "/mcp/tool-groups/group-1");
+    releaseAssignments();
+    // the save is over once the dialog has closed; only then can a follow-up
+    // assignments call have been made, so only then does its absence mean anything
+    await waitFor(() => expect(within(document.body).queryByRole("dialog")).toBeNull());
+    await waitFor(() => slowAssignments.expectNotSent("PUT", "/tool-groups/group-1/assignments"));
+  },
+};
+
 // the group delete was the last window.confirm on this screen, and it could not
 // even name the group it was about (#1179)
 //
@@ -381,6 +501,21 @@ export const ToolGroupsAllowedForAdmin: Story = {
     await expectAllowed(canvasElement, "Create group");
     await expectAllowed(canvasElement, "Delete tool group Triage");
     await expectAllowed(canvasElement, "Configure tool group Triage");
+  },
+};
+// the assignment chips are gated by their own resource, which an admin holds
+export const ToolGroupAssignmentsAllowedForAdmin: Story = {
+  render: () => (
+    <GatedHarness role="admin" fetchStub={routed()}>
+      <ToolGroups />
+    </GatedHarness>
+  ),
+  play: async ({ canvasElement }) => {
+    await userEvent.click(
+      await within(canvasElement).findByRole("button", { name: "Configure tool group Triage" }),
+    );
+    await within(document.body).findByRole("button", { name: "Platform" });
+    await expectAllowed(document.body, "Platform");
   },
 };
 export const LibraryGatedForMember: Story = {
