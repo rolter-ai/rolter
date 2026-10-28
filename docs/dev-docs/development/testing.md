@@ -125,6 +125,8 @@ eval "$(just test-pg)"   # starts rolter-test-pg on 127.0.0.1:55433 if needed, e
 cargo nextest run -p rolter-store -p rolter-control --features postgres
 ```
 
+The server url may name a Unix socket instead of a host (`postgres://root@%2Fvar%2Frun%2Fpostgresql/postgres`): every suite, including the out-of-slots test of `test_schema.rs`, derives its urls from the parsed options rather than rebuilding `host:port` by hand (#3257). A socket still has to accept the role without a password prompt that peer authentication would refuse (`trust`, or a role matching the OS user).
+
 The recipe is idempotent: it creates the `rolter-test-pg` container the first
 time, starts it again after a reboot, and otherwise only prints the export line,
 so every session on the machine runs the same command and lands on the same

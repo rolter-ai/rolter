@@ -739,22 +739,38 @@ mod tests {
         );
     }
 
-    /// `url` with `role` and `password` in place of its credentials.
+    /// `url` with `role` and `password` in place of its credentials. The url is
+    /// rebuilt by sqlx from the parsed options, so a server reached over a Unix
+    /// socket keeps its (percent-encoded) socket directory as the host instead
+    /// of losing it to a hand-written `host:port` authority (#3257).
     fn url_as(url: &str, role: &str, password: &str) -> String {
-        let options = url
-            .parse::<PgConnectOptions>()
-            .expect("the test url parses");
-        let host = options.get_host();
-        let host = if host.contains(':') {
-            format!("[{host}]")
-        } else {
-            host.to_string()
-        };
-        format!(
-            "postgres://{role}:{password}@{host}:{}/{}",
-            options.get_port(),
-            options.get_database().unwrap_or("postgres")
-        )
+        use sqlx::ConnectOptions;
+        url.parse::<PgConnectOptions>()
+            .expect("the test url parses")
+            .username(role)
+            .password(password)
+            .to_url_lossy()
+            .to_string()
+    }
+
+    #[test]
+    fn url_as_keeps_a_socket_host_and_a_tcp_one() {
+        for (url, host) in [
+            ("postgres://root@%2Fvar%2Frun%2Fpostgresql/postgres", None),
+            ("postgres://u:p@127.0.0.1:5433/db", Some("127.0.0.1")),
+            ("postgres://u:p@[::1]:5433/db", Some("[::1]")),
+        ] {
+            let rebuilt = url_as(url, "slotless", "pw");
+            let options = rebuilt.parse::<PgConnectOptions>().expect("reparses");
+            let original = url.parse::<PgConnectOptions>().expect("parses");
+            assert_eq!(options.get_socket(), original.get_socket(), "{rebuilt}");
+            assert_eq!(options.get_port(), original.get_port(), "{rebuilt}");
+            assert_eq!(options.get_database(), original.get_database(), "{rebuilt}");
+            assert_eq!(options.get_username(), "slotless", "{rebuilt}");
+            if let Some(host) = host {
+                assert!(rebuilt.contains(host), "{rebuilt}");
+            }
+        }
     }
 
     /// Postgres refuses a role over its `connection limit` with the same
