@@ -457,4 +457,8 @@ function ListCard({
 // deployment-scoped settings: superadmin-only in the capability table, so a
 // lesser caller sees the refusal instead of a screen that loads and then 403s
 // (#1183)
-export default superadminOnly(SecurityScreen, "errors.resources.securitySettings");
+export default superadminOnly(
+  SecurityScreen,
+  "errors.resources.securitySettings",
+  "security_settings:read",
+);

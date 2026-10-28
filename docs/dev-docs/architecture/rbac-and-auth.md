@@ -561,6 +561,27 @@ flowchart LR
   Caps --> Action{allowed?}
 ```
 
+### Deployment roles: an operator and a security auditor (#1834)
+
+Everything deployment-scoped used to be `Authority::Superadmin`, and `custom_grants_allow` refuses a superadmin requirement on purpose: a deployment setting has no org to define a role in, so a custom role reaching one would be an escalation path out of the tenant. Two real jobs still forced a superadmin account, which also reads every tenant, so the table gained a third kind of deployment authority beside it.
+
+- **`users.deployment_role`** (migration `0100`, a nullable column with a check constraint) holds `operator` or `security_auditor`. One role per account, set only through `PUT /api/v1/users/{id}/deployment-role` (`crud::users::set_deployment_role`), whose capability `deployment_role:update` is `Authority::Superadmin`, so neither role can grant itself or the other. `UserRepo::set_deployment_role` is its own statement and stays out of `update_account`, whose `set` list fires the `users` `config_version` trigger; the gateway never reads the column, so no trigger is needed.
+- **`Authority::Deployment(&[DeploymentRole])`** names the roles that reach a row besides a superadmin. `authorize`, `authorize_superadmin` and `ScopeFilter::allows_as` answer it from the account row the extractor already loaded (`Principal::deployment_role`), never from memberships or custom grants, so a scoped admin and a custom role still cannot reach it. An unrecognised stored value reads as no role. `superadmin_cap!` accepts both kinds, because both are guards with no scope to resolve a role in, which is why the 86 existing handlers changed nothing.
+- **The rows.** `OPERATOR` covers `cluster_node`, `runtime_policy`, `feature_flags`, `alert_channel`, `alert_rule`, `alert_history` and `connector`, every action they define. `AUDITOR` covers the reads of `security_settings`, `logging_settings`, `compatibility_policy`, `guardrail_rule`, `guardrail_provider`, `deployment_audit_log`, `deployment_user` (the audit log names an actor from any org by that list) and `config_export`. Tests pin the split: the auditor is named only on reads, the roles do not overlap, no row names a tenant or credential resource (`request_payload`, `virtual_key`, `provider`, `membership`, `custom_role`, ...) and a deployment row is `deployment`-scoped.
+- **What the API publishes.** The matrix carries `deployment_roles` per action and for the table as a whole, and a `Deployment` action has `superadmin_only: false` and no `minimum_role`, so a client that predates the field reads it as unreachable at any scope. `rbac/effective` carries `deployment_role` and puts the pairs the role opens in `allowed`, decided by the same rule as the guard (`allowed_for`).
+- **The dashboard.** `superadminOnly(Screen, key, gate)` takes the screen's `resource:read` pair and blocks on an explicit `no` for it, so the operator opens Cluster, Performance, Feature flags, Alerting and Connectors, and the auditor opens Security, Logs settings, Compatibility, Guardrails and the audit log. The Roles & Permissions screen draws a row a deployment role reaches like a superadmin row, and a custom role cannot tick it. Assigning the role from a screen is not built: use the endpoint.
+
+### Scoped API tokens for automation (#1836)
+
+`api_tokens` (migration `0101`) holds a service account: a name, one role at one org, team or project, an expiry, and a peppered sha-256 of a `rolter_api_<64 hex>` secret (`session_pepper()`, like sessions and SCIM tokens). The plaintext is returned once, by the mint (`POST /api/v1/orgs/{org_id}/api-tokens`) or a rotation (`POST /api/v1/api-tokens/{id}/rotate`), and is nowhere else, including the audit log. The role is a built-in one or a custom role of the org, exactly one of the two by a check constraint; neither column can express superadmin or a deployment role. The scope is stored as the whole chain (`org_id` always, `team_id` for a team or project token, `project_id` for a project token), so a row names the chain it is checked at without a lookup. The gateway never reads the table, so it has no `bump_config_version()` trigger.
+
+- **Resolution.** `Principal::from_request_parts` tries the admin token first, then, for a bearer starting with `rolter_api_`, `api_tokens::resolve`, then the session lookup. The prefix only picks the table: a session never has it, and a token that is not live is `401`, never retried as a session. `find_active_by_hash` filters `revoked_at is null and (expires_at is null or expires_at > now())`, so revocation and expiry take effect on the next request with no cache. A custom role's grants are read per request, so editing the role changes its tokens at once, and deleting it deletes them (`on delete cascade`).
+- **Authorization.** `Principal::Token` carries the token and the memberships and grants it stands for: one synthetic membership for a built-in role, or the role's grants as `EffectiveGrant` rows. `authorize`, `ScopeFilter`, `PolicyContext`, `holds_admin` and `rbac/effective` read them through the same pure functions as for a user, so every existing check applies unchanged. `authorize_token` and `authorize_superadmin` refuse `Authority::Superadmin` and `Authority::Deployment` for a token, which is what keeps it out of everything deployment-wide. `authorize_token` also refuses every write to a resource in `TOKEN_REFUSED_WRITES` (memberships, invitations, custom roles and their assignments, password resets, accounts, SSO providers and group mappings, LDAP directories and group mappings, SCIM tokens and group mappings, the org's sign-in policy, tokens themselves), whatever role the token holds: access a token grants would outlive its revocation, so granting stays with people. Reads are unaffected, and `every_write_refused_to_a_token_names_a_resource_with_writes` keeps the list in step with the matrix.
+- **Where a token deliberately gets nothing.** It has no account, so the request-log and analytics access (`analytics_access.rs`) refuses it, MCP OAuth sessions are not its to list or revoke, and access profiles (assigned to people and teams) apply none. A token cannot manage tokens: the four handlers call `refuse_tokens` first, so a leaked token cannot mint a successor that outlives its own revocation.
+- **Minting.** The minter needs `api_token:create` (admin) at the token's own chain, so a project admin mints for that project only and a token never holds more than its maker. A custom role must belong to the token's org. The expiry defaults to 90 days (`1..=730`), and `never_expires: true` is an explicit opt-out.
+- **Audit.** `log_audit` merges `detail.api_token = {id, name}` into every row a token writes, and a token has no `actor_user_id`, so an automation's changes are told apart from a person's and from another token's. `api_token.create`, `.rotate` and `.revoke` are written at the org. `created_by` names the minting account, and survives as null if it is deleted: a token outlives its maker, so offboarding includes revoking theirs.
+- **The row.** `api_token` is a `project` row in the capability table that may be listed from a shallower chain (`MULTI_SCOPE`), like `membership`. The dashboard screen for listing, rotating and revoking is not built yet; the API is complete.
+
 ### The capability table is the only source of truth
 
 `CAPABILITIES` in `crates/rolter-control/src/rbac_matrix.rs` records, for every resource, what each of `read` / `create` / `update` / `delete` takes — a minimum scoped role, superadmin-only, or that the resource has no such action at all. **Both** the published matrix and the guard read it, so they cannot drift.
@@ -573,7 +594,7 @@ authorize(&state, &principal, ScopeChain::org(org_id), cap!("provider", Create))
 authorize_superadmin(&principal, superadmin_cap!("feature_flags", Update))?;
 ```
 
-`cap!` resolves the requirement through a `const fn`, so naming a resource the table does not define — or an action it marks as unsupported — is a **compile error**, and `superadmin_cap!` additionally fails to compile unless the table says the pair is superadmin-only. No handler names a `Role`; unit tests in `rbac_matrix.rs` scan every control-plane module to keep it that way, check the module list against `src/` so a new file cannot slip past, and assert that every row in the table is claimed by at least one guard.
+`cap!` resolves the requirement through a `const fn`, so naming a resource the table does not define — or an action it marks as unsupported — is a **compile error**, and `superadmin_cap!` additionally fails to compile unless the table says the pair has no scoped role to resolve: superadmin-only, or superadmin plus a deployment role (below). No handler names a `Role`; unit tests in `rbac_matrix.rs` scan every control-plane module to keep it that way, check the module list against `src/` so a new file cannot slip past, and assert that every row in the table is claimed by at least one guard.
 
 Two read-only endpoints publish that table, so a dashboard never assembles a permission matrix of its own:
 
@@ -584,7 +605,7 @@ Two read-only endpoints publish that table, so a dashboard never assembles a per
 
 Read access is a viewer's and mutations are an admin's, with three deliberate exceptions:
 
-- **deployment-wide policy** (feature flags, runtime/compatibility/adaptive policy, logging settings, cluster nodes, security settings, alerting, MCP tool-call logs) has no tenancy scope to be a member of, so it is superadmin-only;
+- **deployment-wide policy** (feature flags, runtime/compatibility/adaptive policy, logging settings, cluster nodes, security settings, alerting, MCP tool-call logs) has no tenancy scope to be a member of, so it is superadmin-only, except for the rows an operator or a security auditor reaches (#1834, above);
 - **global account lifecycle** — creating an org, editing or deleting a user account, and the model/pricing catalog — reaches across orgs, so it is superadmin-only too, while inviting a user _into_ an org stays an org admin's;
 - **a user's own things** — minting a virtual key for yourself takes `member` (a viewer cannot), and revoking your own MCP OAuth grant or session takes only a viewer membership plus ownership, which the handler checks after the guard.
 
@@ -641,8 +662,7 @@ an account with such a row is `display_name_managed` and the route answers
 first sign-in of an account with no name writes it through
 `UserRepo::default_display_name` (`where display_name is null`, so it never
 replaces a name), and the account stays unmanaged and edits it freely. LDAP's
-name attribute is read into `Identity` but the LDAP provider is not yet wired
-into a sign-in route, so nothing persists it today. The audit row
+name attribute is persisted the same way on a directory user's first sign-in. The audit row
 `user.profile.update` carries `{"fields": [...]}` and never the bio.
 
 A handler that starts from the session (`CurrentUser`) and then authorizes
@@ -777,10 +797,9 @@ group → role reconciliation, audit logging) is unchanged.
 
 ## Roadmap
 
-- **LDAP** — bind + group mapping for enterprise directories. The provider
-  implements `IdentityProvider` (#241) but no configuration, route or screen
-  reaches it, so LDAP sign-in is not shipped; wiring it is #1826. See
-  [LDAP authentication](ldap.md).
+- **LDAP** — shipped (#241, #1826): a directory per org, configured through the
+  API, reached from the password login. A dashboard screen next to Single
+  Sign-On is still to come. See [LDAP authentication](ldap.md).
 - **JWT** service auth and short-lived tokens.
 - **Audit log** surfaced in the UI.
 - Optional **constant-time map** / pepper for virtual-key lookup hardening.

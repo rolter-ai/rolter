@@ -98,7 +98,8 @@ export function requirementFor(
   const view = matrix?.resources.find((r) => r.resource === resource);
   const entry = view?.actions.find((a) => a.action === action);
   if (!entry) return null;
-  if (entry.superadmin_only) return "superadmin";
+  // a row a deployment role reaches is still a superadmin's: nobody holds it at a scope
+  if (entry.superadmin_only || entry.deployment_roles?.length) return "superadmin";
   return entry.minimum_role;
 }
 
@@ -294,13 +295,17 @@ export function useIsSuperadmin(): Permission {
 /**
  * The gate a deployment-scoped settings screen puts in front of itself.
  *
- * `blocked` is only ever true on an explicit "not a superadmin", so a screen
- * whose gate could not be answered still loads and still gets its 403 the old
- * way. `error` is the value to hand `LoadError`, which classifies it as
- * `forbidden` exactly as a real refusal would be.
+ * It asks for the screen's own `resource:read`, so a superadmin passes and so
+ * does the deployment role (operator, security auditor, #1834) that the
+ * capability table gives that read; everyone else is blocked. `blocked` is only
+ * ever true on an explicit "no", so a screen whose gate could not be answered
+ * still loads and still gets its 403 the old way. `error` is the value to hand
+ * `LoadError`, which classifies it as `forbidden` exactly as a real refusal
+ * would be.
  */
-export function useSuperadminGate(): { blocked: boolean; error: unknown } {
-  return { blocked: useIsSuperadmin() === false, error: FORBIDDEN };
+export function useDeploymentGate(gate: Capability): { blocked: boolean; error: unknown } {
+  const [resource, action] = splitCapability(gate);
+  return { blocked: useCan()(resource, action) === false, error: FORBIDDEN };
 }
 
 /**

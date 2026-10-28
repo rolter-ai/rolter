@@ -53,21 +53,150 @@ empty (#1252) an install produced a server that declared nothing at all.
 
 Two properties are worth stating plainly:
 
-- **The lists are a hand-taken snapshot, not discovery.** Nothing re-checks them
-  against the live server, so a tool renamed upstream is stale here until
-  someone edits the file. Calling `tools/list` on the server after install is
-  the real fix and is tracked separately; this is the cheap step that stops the
-  catalog from asserting something false.
+- **The lists are the fallback, not the source of truth.** An installed server
+  is asked for its tools with `tools/list` (see
+  [Tool discovery](#tool-discovery)) and what it answers replaces this list on
+  the row. The snapshot is what a server carries until then, and what stays if
+  the server cannot be reached; nothing re-checks it against the live server on
+  its own, so a tool renamed upstream is stale here until someone edits the
+  file.
 - **An empty `required_scopes` can be the accurate answer.** Notion's remote
   server grants access to the pages the user picks on its consent screen rather
   than to named scopes, so it asks for none. Every other entry declaring an
   empty list would be an unfilled row, and a test enforces that distinction.
 
+## Tool discovery
+
+`crates/rolter-control/src/mcp_discovery.rs` asks a registered server what
+tools it has, through the small client in `mcp_client.rs` (`initialize`,
+`notifications/initialized`, then `tools/list` following `nextCursor`; JSON or
+SSE replies). The answer is written back to the server row (#1283):
+
+- **When.** Best effort and never blocking: in the background after a server is
+  installed, after a `bearer`/`header` credential is set, and after an OAuth
+  consent produces a session; and on demand with
+  `POST /api/v1/mcp-servers/{id}/discover`.
+- **As whom.** A static-credential server is asked with its credential. A server
+  behind OAuth is asked with the _caller's own_ live session on it, so discovery
+  there is per grant and borrows nobody else's token. With no session the row
+  stays `pending` with `tools_discovery_error = needs_session`.
+- **Reconciliation.** Discovered tools come first, in the server's order. A tool
+  the row already had that the server no longer returns is **kept** and listed
+  in `tools_stale`, never pruned, so a tool group that names it still validates
+  and an operator decides what to do. A tool that returns is unflagged.
+- **Status.** `tools_discovery_status` is `pending` (never answered, so `tools`
+  is the catalog's fallback or whatever the operator typed), `discovered` (the
+  server answered, possibly with no tools, which is "declares no tools") or
+  `failed` (a later attempt got no answer; the last manifest is kept).
+  `tools_discovery_error` carries a bounded code (`unreachable`,
+  `auth_rejected`, `handshake_failed`, `egress_denied`, `needs_session`,
+  `credential_unavailable`), never the upstream's text. `tools_discovered_at`
+  is the last success.
+- **Egress.** The address is checked against the egress policy before any
+  connection and again at connect time, and no redirect is followed, exactly as
+  for the OAuth client.
+- **Schemas.** Descriptions and input schemas are stored beside the manifest and
+  served by `GET /api/v1/mcp-servers/{id}/tools`, not by the listing.
+
+The `streamable_http` transport is what is spoken; a server registered as `sse`
+is asked the same way, since the gateway proxies both as plain HTTP.
+
+## Connection status and try-it
+
+`crates/rolter-control/src/mcp_probe.rs` (#951) lets an operator see whether a
+server works, and run its tools, without reading gateway logs. Both endpoints
+need the capability to update the server (`mcp_server` / `update`), since a tool
+call has consequences and spends the operator's credential; both speak MCP
+through the same client and egress rules as discovery, and a server behind OAuth
+is spoken to with the _caller's own_ session, so the admin token and open mode
+(which are nobody) get `needs_session`.
+
+- `POST /api/v1/mcp-servers/{id}/test` runs the `initialize` handshake and
+  answers `status`: `reachable`, or the failure it was — `unreachable` (no
+  answer: refused, DNS, timeout), `handshake_failed` (it answered, not as an MCP
+  server does), `auth_rejected` (`401`/`403`), `egress_denied` (policy refused
+  the address), or `needs_session` / `credential_unavailable` when there was
+  nothing to authenticate with. It also returns `reachable`,
+  `handshake_completed`, the negotiated `protocol_version`, the server's name
+  and version and the latency.
+- `POST /api/v1/mcp-servers/{id}/tools/call` takes `{tool, arguments}` and
+  returns the raw JSON-RPC `request` and `response`. The tool must be in the
+  server's manifest and `arguments` an object. `outcome` is `success`,
+  `tool_errored` (the server answered and the tool reported `isError` or a
+  JSON-RPC error: a fifth state, because the server did answer), or a failure
+  state above. A reply over 256 KiB is returned as a marked preview. The call is
+  audited as `mcp_server.tool_call` with the tool and the outcome, never the
+  arguments, and does not appear in the MCP tool-call log because it does not go
+  through the gateway.
+- **What the row remembers** (migration `0115`): `last_contact_at`,
+  `last_protocol_version` and `last_server_name` from the last completed
+  handshake, and `last_error_kind` / `last_error_at` from the last failed one.
+  Discovery records them too. The failure is **kept after a later success**, so
+  a status can say both "reachable" and "it last broke at". Which is current is
+  whichever of `last_contact_at` and `last_error_at` is later.
+- **`config_version`.** `0115` also narrows the `mcp_servers` update trigger to
+  the columns the gateway reads (`org_id`, `slug`, `url`, `transport`,
+  `enabled`, `tools`, `required_scopes`, the auth and credential columns and the
+  three transport overrides); insert and delete still bump. Probes, discovery
+  bookkeeping and OAuth-client edits therefore no longer wake every gateway for a
+  snapshot that did not change. A new column the snapshot starts reading must be
+  added to that list.
+
+## Tool groups as an access boundary
+
+The gateway enforces enabled tool groups (#1403) in `crates/rolter-gateway/src/mcp_policy.rs`,
+after the caller is authenticated and before anything is forwarded.
+
+- **Snapshot.** Enabled groups travel as `mcp_tool_groups`; `mcp_tool_groups`
+  carries a `bump_config_version()` statement trigger (migration `0113`), so an
+  edit reaches a running gateway. The gateway indexes them into
+  `Snapshot::mcp_governed_tools`, server id to allowed tool names, counting only
+  references whose server is in the group's own organization.
+- **Rule.** A server named by at least one enabled group is governed: a
+  `tools/call` is forwarded only for a tool in the union of those groups, and
+  anything else (including a call that names no tool) is refused `403`
+  `mcp_tool_denied`. A server no group names is not governed here. "The caller's
+  effective groups" is the organization's enabled set, since groups have no
+  per-key or per-project assignment.
+- **Parsing.** When the rule applies the body is parsed in full, as one message
+  or a batch, with no substring shortcut: `tools\/call` and `\u`-escaped spellings
+  are the same JSON string, so a byte search would be a bypass. A batch is
+  refused whole if any call in it is. A `tools/call` notification (no id) is
+  refused too. A body that is not JSON is refused `400`
+  `mcp_request_unreadable`; an empty body is not a call and is forwarded.
+- **Logging.** Each refused call becomes an `auth_denied` row in
+  `mcp_tool_call_logs` with the tool name and the caller's attribution, via
+  `PendingCall::from_request`; the closed status set is unchanged.
+
+## Organization settings in the proxy
+
+The proxy applies `mcp_gateway_settings` (#1404). Saved rows travel in the
+snapshot as `mcp_settings` (migration `0114` adds the `bump_config_version()`
+trigger); an organization with no row is absent and gets the defaults.
+
+- **Precedence** for connect timeout, request timeout and retries: the server's
+  own column, then the organization's row, then the deployment-level default the
+  forwarder uses for `None` (`transport_overrides` in `mcp_proxy.rs`).
+- **Declared manifest.** `McpServerConfig::tools` carries the manifest. A server
+  with a non-empty one serves only those tools when the organization's saved
+  settings have `allow_unlisted_tools` off; an empty manifest checks nothing.
+  An organization with no settings row allows unlisted tools, and migration
+  `0137` set every row saved before enforcement to allow them: the column was
+  stored but never read until #1404, so an upgrade must not start refusing
+  calls. This sits beside the tool-group rule and both must pass.
+- **Failure policy.** `fail_open` / `fail_closed` governs a body the policy
+  cannot parse (the only failure of the policy check itself). It never lets a
+  call to a refused tool through, and it has no say over an upstream that fails.
+- **Transport.** The server row is authoritative at request time; the org
+  `default_transport` is applied by `create_server` when the request names none.
+
 ## Endpoints
 
 - `GET`/`POST /api/v1/orgs/{org_id}/mcp-servers`, `PATCH`/`DELETE /api/v1/mcp-servers/{id}` — viewer reads, admin writes. A server URL must be `http(s)`; the transport must be one of `stdio`, `sse`, `streamable_http`, `websocket`. `PATCH` updates registry metadata, enabled state, declared tools and required scopes without destroying grants or sessions.
+- `POST /api/v1/mcp-servers/{id}/discover`, `GET /api/v1/mcp-servers/{id}/tools` — ask the server for its tools now (admin), and read the manifest with schemas and stale flags (viewer). See [Tool discovery](#tool-discovery).
+- `POST /api/v1/mcp-servers/{id}/oauth/authorize` — body `{scopes?, step_up_scopes?}`; see [Scope selection](#scope-selection-and-insufficient_scope-step-up-1417).
 - `GET /api/v1/orgs/{org_id}/mcp/library` — curated definitions annotated with whether the slug is installed. Installing one uses the ordinary server create endpoint, so the registry remains the source of truth. See [The curated catalog](#the-curated-catalog) for what an entry declares.
-- `GET`/`POST /api/v1/orgs/{org_id}/mcp/tool-groups`, `PUT`/`DELETE /api/v1/mcp/tool-groups/{id}` — exact server/tool policy manifests. These definitions are not yet enforced by the proxy, which is why `mcp_tool_groups` carries the `experimental` [stability marker](../development/stability-markers.md).
+- `GET`/`POST /api/v1/orgs/{org_id}/mcp/tool-groups`, `PUT`/`DELETE /api/v1/mcp/tool-groups/{id}` — exact server/tool policy manifests, enforced by the proxy as an access boundary (see [Tool groups](#tool-groups-as-an-access-boundary)).
 - `GET`/`PUT /api/v1/orgs/{org_id}/mcp/settings` — organization transport and request defaults. The current HTTP proxy still uses deployment-level transport timeouts, which is why `mcp_settings` carries the `experimental` [stability marker](../development/stability-markers.md).
 - `GET /api/v1/orgs/{org_id}/mcp/grants`, `DELETE /api/v1/mcp/grants/{id}`
 - `GET /api/v1/orgs/{org_id}/mcp/sessions`, `DELETE /api/v1/mcp/sessions/{id}`
@@ -216,6 +345,50 @@ did. But an `iss` that arrives for such a row is **refused**, because there is
 nothing authentic to compare it against and accepting it would be validation in
 name only. The fix an operator is told about is to pin `issuer` on the OAuth
 client, or to let discovery resolve one.
+
+### Scope selection and `insufficient_scope` step-up (#1417)
+
+The three MUSTs above are not the whole of the specification's scope guidance.
+The SHOULD requirements are implemented too, and are not fail-closed: they choose what to
+ask for, and a resource that publishes nothing leaves the operator's
+configuration in charge.
+
+**Which scopes an authorization request asks for**, highest precedence first
+(`select_scopes` in `mcp_oauth_flow.rs`, recorded as `scope_source` in the
+`mcp_oauth_grant.authorize` audit row):
+
+1. `scopes` in the request body, used exactly as given (`explicit`).
+2. `scope` from the `WWW-Authenticate` challenge of an unauthenticated request
+   to the resource, plus the server's `required_scopes` (`challenge`). This is
+   what the resource itself says the request needed, and it outranks whatever
+   the operator configured.
+3. The server's `default_scopes` (`configured`).
+4. `scopes_supported` from the protected resource metadata, plus
+   `required_scopes` (`supported`). It is the resource's whole vocabulary, not
+   a statement of need, so it only answers when nothing more specific does.
+5. `required_scopes` alone (`required`), which can be empty.
+
+The challenge and metadata are read at authorize time only, by the person who
+is waiting; they are not cached on the row and the refresher never probes for
+them. Every scope token from either source is validated (RFC 6749 §3.3
+charset, at most 128 bytes, at most 32 tokens), so a hostile resource cannot
+smuggle a quote or a space into the authorization URL. Challenge parsing lives
+in `rolter_core::mcp_challenge`, shared with the gateway.
+
+**Step-up.** When an upstream answers a proxied call `403` with
+`WWW-Authenticate: Bearer error="insufficient_scope"`, the gateway, for an
+`oauth` server only, replies `403` with the code `mcp_insufficient_scope`, the
+scopes it named (validated) in `error.required_scopes`, and a rebuilt
+`WWW-Authenticate` challenge without the upstream's `resource_metadata`. The
+call is logged as `auth_denied`. The gateway cannot consent on anyone's
+behalf, so it does not try: the owner of the key re-consents with
+`POST /api/v1/mcp-servers/{id}/oauth/authorize` and `step_up_scopes`, which asks
+for the live grant's scopes, the new ones and the server's `required_scopes`
+together so the re-consent widens the grant rather than replacing it. Until they
+do, every such call fails the same way, which is also what an operator who is
+not present sees: no scope is ever added without a person consenting to it. A
+server with a static credential has no consent to repeat, so its `403` is
+relayed as the upstream sent it.
 
 ### Fetching from the control plane, and SSRF
 
