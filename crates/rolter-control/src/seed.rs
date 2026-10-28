@@ -1131,6 +1131,15 @@ async fn resolve_cap_scope(
     if Uuid::parse_str(reference).is_ok() {
         return Ok(None);
     }
+    // a person is named by the account's email, which is no path (#3311). An
+    // account that does not exist here is never created for a cap
+    if scope == BudgetScope::User {
+        let found: Option<Uuid> = sqlx::query_scalar("select id from users where email = $1")
+            .bind(reference)
+            .fetch_optional(pool)
+            .await?;
+        return Ok(found.map(|id| ("user", id)));
+    }
     let parts: Vec<&str> = reference.split('/').collect();
     let (scope_type, found): (&'static str, Option<Uuid>) = match (scope, parts.as_slice()) {
         (BudgetScope::Org, [org]) => (
@@ -1191,13 +1200,36 @@ async fn resolve_cap_scope(
     Ok(found.map(|id| (scope_type, id)))
 }
 
+/// The place a person's cap is narrowed to, resolved from the slug path the
+/// export writes: `{ org = "acme" }` or `{ project = "acme/platform/api" }`
+/// (#3311). `Ok(None)` when it names nothing on this deployment.
+async fn resolve_within(
+    pool: &PgPool,
+    within: Option<&rolter_core::ScopeWithin>,
+) -> anyhow::Result<Option<Within>> {
+    use rolter_core::ScopeWithin;
+    Ok(match within {
+        None => Some(Within::default()),
+        Some(ScopeWithin::Org(reference)) => resolve_cap_scope(pool, BudgetScope::Org, reference)
+            .await?
+            .map(|(_, id)| Within::org(id)),
+        Some(ScopeWithin::Project(reference)) => {
+            resolve_cap_scope(pool, BudgetScope::Project, reference)
+                .await?
+                .map(|(_, id)| Within::project(id))
+        }
+    })
+}
+
 /// Upsert `[[budgets]]` and `[[rate_limits]]` (#1312).
 ///
 /// A cap's identity is its scope plus, for a budget, its window; two caps that
 /// share one are matched to the file's entries in order, oldest first, so the
 /// export of a deployment that has two re-imports as two. An entry whose scope
 /// does not resolve here is left alone and reported, never half applied: the
-/// same rule as a provider group with a member the file cannot name. Rows the
+/// same rule as a provider group with a member the file cannot name. A person's
+/// cap is found by the account's email, and by its `within` place, and an
+/// account that does not exist here is skipped, never created (#3311). Rows the
 /// file does not mention are not deleted. A value outside what the column or
 /// the gateway can hold fails the import before it writes anything, as a
 /// negative price does.
@@ -1223,19 +1255,47 @@ async fn import_caps(pool: &PgPool, config: &GatewayConfig) -> anyhow::Result<()
         }
     }
 
+    for (scope, id, within) in config
+        .budgets
+        .iter()
+        .map(|b| (b.scope, &b.id, &b.within))
+        .chain(
+            config
+                .rate_limits
+                .iter()
+                .map(|l| (l.scope, &l.id, &l.within)),
+        )
+    {
+        if within.is_some() && scope != BudgetScope::User {
+            anyhow::bail!(
+                "cap on {scope:?} '{id}': within narrows a person's cap and means nothing on \
+                 any other scope"
+            );
+        }
+    }
+
     let budgets = BudgetRepo(pool);
-    let mut taken: HashMap<(&'static str, Uuid, BudgetPeriod), usize> = HashMap::new();
+    let mut taken: HashMap<(&'static str, Uuid, Within, BudgetPeriod), usize> = HashMap::new();
     for b in &config.budgets {
         let Some((scope_type, scope_id)) = resolve_cap_scope(pool, b.scope, &b.id).await? else {
             tracing::warn!(scope = ?b.scope, id = %b.id, "budget scope does not resolve on this deployment; left alone");
             continue;
         };
-        let nth = taken.entry((scope_type, scope_id, b.period)).or_default();
+        let Some(within) = resolve_within(pool, b.within.as_ref()).await? else {
+            tracing::warn!(scope = ?b.scope, id = %b.id, "budget's within does not resolve on this deployment; left alone");
+            continue;
+        };
+        let nth = taken
+            .entry((scope_type, scope_id, within, b.period))
+            .or_default();
         let same_window: Vec<_> = budgets
             .list_for_scope(scope_type, scope_id)
             .await?
             .into_iter()
             .filter(|row| BudgetPeriod::parse(&row.period) == Some(b.period))
+            .filter(|row| {
+                (row.within_org_id, row.within_project_id) == (within.org, within.project)
+            })
             .collect();
         let limit = b.limit_usd.to_string();
         let policy = b.unpriced_policy.map(|p| match p {
@@ -1262,14 +1322,7 @@ async fn import_caps(pool: &PgPool, config: &GatewayConfig) -> anyhow::Result<()
                     BudgetPeriod::Total => "total",
                 };
                 budgets
-                    .create(
-                        scope_type,
-                        scope_id,
-                        &limit,
-                        period,
-                        policy,
-                        Within::default(),
-                    )
+                    .create(scope_type, scope_id, &limit, period, policy, within)
                     .await?;
                 tracing::info!(scope = ?b.scope, id = %b.id, "created budget");
             }
@@ -1278,14 +1331,25 @@ async fn import_caps(pool: &PgPool, config: &GatewayConfig) -> anyhow::Result<()
     }
 
     let limits = RateLimitRepo(pool);
-    let mut taken: HashMap<(&'static str, Uuid), usize> = HashMap::new();
+    let mut taken: HashMap<(&'static str, Uuid, Within), usize> = HashMap::new();
     for l in &config.rate_limits {
         let Some((scope_type, scope_id)) = resolve_cap_scope(pool, l.scope, &l.id).await? else {
             tracing::warn!(scope = ?l.scope, id = %l.id, "rate limit scope does not resolve on this deployment; left alone");
             continue;
         };
-        let nth = taken.entry((scope_type, scope_id)).or_default();
-        let existing = limits.list_for_scope(scope_type, scope_id).await?;
+        let Some(within) = resolve_within(pool, l.within.as_ref()).await? else {
+            tracing::warn!(scope = ?l.scope, id = %l.id, "rate limit's within does not resolve on this deployment; left alone");
+            continue;
+        };
+        let nth = taken.entry((scope_type, scope_id, within)).or_default();
+        let existing: Vec<_> = limits
+            .list_for_scope(scope_type, scope_id)
+            .await?
+            .into_iter()
+            .filter(|row| {
+                (row.within_org_id, row.within_project_id) == (within.org, within.project)
+            })
+            .collect();
         let rpm = l.rpm.map(i32::try_from).transpose()?;
         let tpm = l.tpm.map(i32::try_from).transpose()?;
         match existing.get(*nth) {
@@ -1297,7 +1361,7 @@ async fn import_caps(pool: &PgPool, config: &GatewayConfig) -> anyhow::Result<()
             }
             None => {
                 limits
-                    .create(scope_type, scope_id, rpm, tpm, Within::default())
+                    .create(scope_type, scope_id, rpm, tpm, within)
                     .await?;
                 tracing::info!(scope = ?l.scope, id = %l.id, "created rate limit");
             }

@@ -62,12 +62,32 @@ value no column or gateway could hold fails the whole import before any write.
 `ScopeRefs::insert` drops a name containing `/` rather than export an ambiguous
 path.
 
+### Per-person caps (#3305, #3311)
+
+A `user` cap travels by the account's email, decided on #3305 and built in #3311.
+`load_scope_refs` reads the email of the accounts that hold a cap, and only
+those, so the file carries no address that is not a cap's own; `ScopeRefs::insert`
+records one only when it is a single token. `ScopeRefs::within` turns a narrowed
+cap's `within` into the same slug paths the other caps use, `{ org = "acme" }` or
+`{ project = "acme/platform/api" }`, and a cap whose place has no name stays out
+of the file and is counted in the trailing comment.
+
+`resolve_cap_scope` finds the account by `users.email` and `resolve_within` the
+place. Neither creates anything: an account or place that does not exist on the
+receiving deployment skips the cap with a warning, the rule every unresolved
+scope already follows. A cap is matched to its row by scope, window **and**
+place, so one person's un-narrowed cap and their cap in a project are two rows
+that each re-import as themselves, and an unchanged import still writes nothing.
+`within` on any other scope is refused before the first write, as the store
+refuses it. Tests: `config_export::tests::round_trip`, whose fixture carries a
+person's caps and one for an account that does not exist.
+
 ## Why some tables are out
 
-- **Caps on a virtual key or a person** (`BudgetScope::Key`, `User`) have no
-  identity that survives a move: a key is a digest and its name is not unique, a
-  person's email would put accounts in a committed file. They are counted in a
-  trailing comment rather than written (#1312).
+- **Caps on a virtual key** (`BudgetScope::Key`) have no identity that survives a
+  move, and the keys they would attach to are never exported: a key is a digest
+  and its name is not unique. They are counted in a trailing comment rather than
+  written (#1312, #3305).
 - **Virtual keys** exist in the store only as a one-way digest.
 - **Prompt-template activation scopes** are database ids too. Only the
   route-model bindings survive; an org-wide template exports with no `routes`
