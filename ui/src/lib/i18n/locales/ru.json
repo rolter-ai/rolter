@@ -3982,7 +3982,6 @@
       "statusFilterAria": "Фильтр по статусу",
       "transportFilterAria": "Фильтр по транспорту",
       "calls": "Вызовы",
-      "window": "Последние 24 часа",
       "emptyAction": "Открыть каталог MCP",
       "copyRequest": "Копировать id запроса",
       "copyTrace": "Копировать id трассы",

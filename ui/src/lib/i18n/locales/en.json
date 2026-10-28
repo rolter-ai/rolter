@@ -3762,7 +3762,6 @@
       "statusFilterAria": "Filter by status",
       "transportFilterAria": "Filter by transport",
       "calls": "Calls",
-      "window": "Last 24 hours",
       "emptyAction": "Browse the MCP catalog",
       "copyRequest": "Copy request id",
       "copyTrace": "Copy trace id",
