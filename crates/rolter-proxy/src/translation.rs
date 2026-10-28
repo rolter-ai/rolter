@@ -844,6 +844,7 @@ fn openai_request(mut v: Value, adjustments: &mut ParamAdjustments) -> Value {
     if obj.remove("max_completion_tokens").is_some() {
         adjustments.record("max_completion_tokens", Disposition::Dropped);
     }
+    clamp_temperature(obj, adjustments);
     if let Some(stop) = obj.remove("stop") {
         obj.insert(
             "stop_sequences".into(),
@@ -890,7 +891,33 @@ fn openai_request(mut v: Value, adjustments: &mut ParamAdjustments) -> Value {
     v
 }
 
-fn anthropic_request(mut v: Value, adjustments: &mut ParamAdjustments) -> Value {
+/// The highest `temperature` Anthropic Messages accepts. OpenAI's Chat
+/// Completions and Responses accept up to 2.
+const ANTHROPIC_MAX_TEMPERATURE: f64 = 1.0;
+
+/// Clamp a chat `temperature` above Anthropic's range down to its maximum and
+/// report it as `clamped`, so a request that is valid in the dialect the caller
+/// speaks is not refused by the upstream for it (#3324, maintainer's decision:
+/// clamp rather than forward or scale). Scaling (`t / 2`) was weighed and not
+/// taken: it would change every request's temperature, in range or not, where
+/// a clamp changes only the ones Anthropic would refuse. A value at or below 1,
+/// or one that is not a number, is left for the upstream to judge.
+fn clamp_temperature(obj: &mut serde_json::Map<String, Value>, adjustments: &mut ParamAdjustments) {
+    let Some(temperature) = obj.get_mut("temperature") else {
+        return;
+    };
+    if temperature
+        .as_f64()
+        .is_some_and(|t| t > ANTHROPIC_MAX_TEMPERATURE)
+    {
+        *temperature = json!(ANTHROPIC_MAX_TEMPERATURE);
+        adjustments.record("temperature", Disposition::Clamped);
+    }
+}
+
+// the shared translator signature; since #3325 carries `disable_parallel_tool_use`
+// to chat, nothing in this direction is reported
+fn anthropic_request(mut v: Value, _adjustments: &mut ParamAdjustments) -> Value {
     let Some(obj) = v.as_object_mut() else {
         return v;
     };
@@ -958,11 +985,23 @@ fn anthropic_request(mut v: Value, adjustments: &mut ParamAdjustments) -> Value 
             *tool = translated;
         }
     }
+    // chat carries anthropic's per-choice switch as a top-level flag (#3325).
+    // `false` is chat's default and is left unset, and so is `true` on a
+    // request with no tools, which openai refuses the flag on and which has no
+    // call to parallelise anyway
+    let serial_calls = obj
+        .get("tool_choice")
+        .and_then(|choice| choice.get("disable_parallel_tool_use"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let has_tools = obj
+        .get("tools")
+        .and_then(Value::as_array)
+        .is_some_and(|tools| !tools.is_empty());
+    if serial_calls && has_tools {
+        obj.insert("parallel_tool_calls".into(), Value::Bool(false));
+    }
     if let Some(choice) = obj.get_mut("tool_choice") {
-        // chat has no per-choice switch for parallel calls
-        if choice.get("disable_parallel_tool_use").is_some() {
-            adjustments.record("tool_choice", Disposition::Translated);
-        }
         *choice = match choice.take() {
             Value::Object(m) if m.get("type") == Some(&json!("any")) => json!("required"),
             Value::Object(m) if m.get("type") == Some(&json!("tool")) => {
@@ -1940,8 +1979,23 @@ fn openai_to_gemini(mut v: Value, adjustments: &mut ParamAdjustments) -> Result<
 }
 
 fn anthropic_to_gemini(v: Value, adjustments: &mut ParamAdjustments) -> Result<Value> {
-    let chat = anthropic_request(v, adjustments);
+    let mut chat = anthropic_request(v, adjustments);
+    lose_the_parallel_switch(&mut chat, adjustments);
     openai_to_gemini(chat, adjustments)
+}
+
+/// Take back the `parallel_tool_calls` that `anthropic_request` carried an
+/// Anthropic `disable_parallel_tool_use` into, for a dialect with no such
+/// switch (#3325). The caller never sent `parallel_tool_calls`, so the loss is
+/// reported against the `tool_choice` it came in on, as before the switch was
+/// carried to Chat.
+fn lose_the_parallel_switch(chat: &mut Value, adjustments: &mut ParamAdjustments) {
+    let carried = chat
+        .as_object_mut()
+        .and_then(|obj| obj.remove("parallel_tool_calls"));
+    if carried.is_some() {
+        adjustments.record("tool_choice", Disposition::Translated);
+    }
 }
 
 fn responses_to_gemini(v: Value, adjustments: &mut ParamAdjustments) -> Result<Value> {
@@ -2232,7 +2286,8 @@ fn openai_to_interactions(mut v: Value, adjustments: &mut ParamAdjustments) -> R
 }
 
 fn anthropic_to_interactions(v: Value, adjustments: &mut ParamAdjustments) -> Result<Value> {
-    let chat = anthropic_request(v, adjustments);
+    let mut chat = anthropic_request(v, adjustments);
+    lose_the_parallel_switch(&mut chat, adjustments);
     openai_to_interactions(chat, adjustments)
 }
 
@@ -6068,6 +6123,43 @@ data: [DONE]
     }
 
     #[test]
+    fn chat_to_anthropic_clamps_a_temperature_above_one() {
+        for path in ["/v1/chat/completions", "/v1/responses"] {
+            let body = if path == "/v1/responses" {
+                json!({"model": "m", "input": "hi", "temperature": 1.3})
+            } else {
+                json!({"model": "m", "messages": [{"role": "user", "content": "hi"}],
+                       "temperature": 1.3})
+            };
+            let (sent, entries) = reported(path, ProviderKind::Anthropic, body);
+            assert_eq!(sent["temperature"], 1.0, "{path}");
+            assert_eq!(entries, ["clamped:temperature"], "{path}");
+        }
+    }
+
+    #[test]
+    fn a_temperature_anthropic_accepts_is_forwarded_as_sent() {
+        for temperature in [json!(0), json!(0.7), json!(1), json!(1.0), json!("hot")] {
+            let (sent, entries) = reported(
+                "/v1/chat/completions",
+                ProviderKind::Anthropic,
+                json!({"model": "m", "messages": [{"role": "user", "content": "hi"}],
+                       "temperature": temperature}),
+            );
+            assert_eq!(sent["temperature"], temperature);
+            assert!(entries.is_empty(), "{temperature}: {entries:?}");
+        }
+        // and a chat upstream, whose range is OpenAI's, keeps 1.3
+        let (sent, entries) = reported(
+            "/v1/chat/completions",
+            ProviderKind::Openai,
+            json!({"model": "m", "messages": [], "temperature": 1.3}),
+        );
+        assert_eq!(sent["temperature"], 1.3);
+        assert!(entries.is_empty());
+    }
+
+    #[test]
     fn a_renamed_parameter_is_not_an_adjustment() {
         let (sent, entries) = reported(
             "/v1/chat/completions",
@@ -6084,17 +6176,87 @@ data: [DONE]
     }
 
     #[test]
-    fn anthropic_to_chat_reports_a_tool_choice_it_cannot_carry_whole() {
-        let (_, entries) = reported(
-            "/v1/messages",
-            ProviderKind::Openai,
-            json!({
-                "model": "m", "max_tokens": 5,
-                "messages": [{"role": "user", "content": "hi"}],
-                "tool_choice": {"type": "auto", "disable_parallel_tool_use": true}
-            }),
-        );
-        assert_eq!(entries, ["translated:tool_choice"]);
+    fn anthropic_disable_parallel_tool_use_becomes_chat_parallel_tool_calls() {
+        let tools = json!([{"name": "lookup", "input_schema": {"type": "object"}}]);
+        for (kind, choice) in [
+            (
+                "auto",
+                json!({"type": "auto", "disable_parallel_tool_use": true}),
+            ),
+            (
+                "any",
+                json!({"type": "any", "disable_parallel_tool_use": true}),
+            ),
+            (
+                "tool",
+                json!({"type": "tool", "name": "lookup", "disable_parallel_tool_use": true}),
+            ),
+        ] {
+            let (sent, entries) = reported(
+                "/v1/messages",
+                ProviderKind::Openai,
+                json!({
+                    "model": "m", "max_tokens": 5, "tools": tools,
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "tool_choice": choice
+                }),
+            );
+            assert_eq!(sent["parallel_tool_calls"], false, "{kind}");
+            assert!(
+                entries.is_empty(),
+                "{kind}: carried, not translated: {entries:?}"
+            );
+            assert!(
+                sent["tool_choice"]
+                    .get("disable_parallel_tool_use")
+                    .is_none(),
+                "{kind}: {sent}"
+            );
+        }
+    }
+
+    /// Gemini has no parallel-calls switch: the loss is still named against the
+    /// `tool_choice` the caller sent, never as a `parallel_tool_calls` it did not
+    #[test]
+    fn a_dialect_without_the_switch_reports_tool_choice_translated() {
+        for kind in [ProviderKind::GeminiNative, ProviderKind::GeminiInteractions] {
+            let (sent, entries) = reported(
+                "/v1/messages",
+                kind,
+                json!({
+                    "model": "m", "max_tokens": 5,
+                    "tools": [{"name": "lookup", "input_schema": {"type": "object"}}],
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "tool_choice": {"type": "auto", "disable_parallel_tool_use": true}
+                }),
+            );
+            assert!(
+                entries.contains(&"translated:tool_choice".to_string()),
+                "{kind:?}: {entries:?}"
+            );
+            assert!(
+                !entries.iter().any(|e| e.contains("parallel_tool_calls")),
+                "{kind:?}: {entries:?}"
+            );
+            assert!(!sent.to_string().contains("parallel"), "{kind:?}: {sent}");
+        }
+    }
+
+    #[test]
+    fn a_disable_parallel_tool_use_of_false_or_without_tools_leaves_chat_unset() {
+        let tools = json!([{"name": "lookup", "input_schema": {"type": "object"}}]);
+        for body in [
+            json!({"model": "m", "max_tokens": 5, "tools": tools,
+                   "messages": [{"role": "user", "content": "hi"}],
+                   "tool_choice": {"type": "auto", "disable_parallel_tool_use": false}}),
+            json!({"model": "m", "max_tokens": 5,
+                   "messages": [{"role": "user", "content": "hi"}],
+                   "tool_choice": {"type": "auto", "disable_parallel_tool_use": true}}),
+        ] {
+            let (sent, entries) = reported("/v1/messages", ProviderKind::Openai, body);
+            assert!(sent.get("parallel_tool_calls").is_none(), "{sent}");
+            assert!(entries.is_empty(), "{entries:?}");
+        }
     }
 
     #[test]

@@ -51,10 +51,11 @@ use serde_json::Value;
 
 use crate::analytics::{
     attribution_column, bucket_expr, client_or_503, invocations_keyset_predicate,
-    next_invocations_cursor, query_failed, row_filter_params, split_invocations_cursor,
-    status_predicate, window_params, with_access, AttributionQuery, ClickHouseClient,
-    DashboardQuery, InvocationsQuery, WindowQuery, COMPLETION_TOKENS, COST, ERRORS, PROMPT_TOKENS,
-    REQUESTS, ROW_FILTERS, TOKENS, UNPRICED, WHERE_WINDOW,
+    is_outcome_filter, next_invocations_cursor, outcome_filter_values, query_failed,
+    row_filter_params, split_invocations_cursor, status_predicate, window_params, with_access,
+    AttributionQuery, ClickHouseClient, DashboardQuery, InvocationsQuery, WindowQuery,
+    COMPLETION_TOKENS, COST, ERRORS, PROMPT_TOKENS, REQUESTS, ROW_FILTERS, TOKENS, UNPRICED,
+    WHERE_WINDOW,
 };
 use crate::analytics_access::{AnalyticsAccess, ROW_VISIBLE};
 use crate::request_log_columns::Columns;
@@ -632,6 +633,8 @@ fn log_sql(status_expr: &str, columns: &Columns) -> String {
     // was ever recorded there
     let guardrail_filter = columns.expr("guardrail_events");
     let plugin_filter = columns.expr("plugin_events");
+    // without the column every row reads `unknown`, which the filter matches
+    let outcome_filter = columns.expr("outcome");
     format!(
         "select ts, request_id, trace_id, org_id, team_id, project_id, virtual_key_id, \
                 business_unit_id, customer_id, model, provider, target, variant, status, \
@@ -643,8 +646,11 @@ fn log_sql(status_expr: &str, columns: &Columns) -> String {
            and {ROW_VISIBLE} \
            and {ROW_FILTERS} \
            and ({{unpriced:UInt8}} = 0 or unpriced = 1) \
+           and ({{withheld:UInt8}} = 0 or withheld = 1) \
+           and ({{usage_unknown:UInt8}} = 0 or usage_unknown = 1) \
            and ({{guardrail:String}} = '' or has({guardrail_filter}, {{guardrail:String}})) \
            and ({{plugin:String}} = '' or has({plugin_filter}, {{plugin:String}})) \
+           and ({{outcome:String}} = '' or {outcome_filter} = {{outcome:String}}) \
            and {status_expr} \
            and {cursor} \
          order by ts desc, {seq_order} desc, request_id desc \
@@ -769,7 +775,9 @@ impl LogWalk {
 
 /// `GET /api/v1/analytics/invocations/export`: the LLM Logs list as a file,
 /// metadata only, under the filters the screen applies (window, model, key,
-/// project, business unit, customer, status, unpriced, guardrail and plugin).
+/// project, business unit, customer, status, unpriced, withheld, unknown
+/// usage, guardrail, plugin and outcome), the same set the JSON list takes, so
+/// a filtered view never exports unfiltered (#3386).
 async fn export_invocations(
     principal: Caller,
     access: AnalyticsAccess,
@@ -784,6 +792,13 @@ async fn export_invocations(
     let Some(status_expr) = status_predicate(status) else {
         return bad_request("status must be one of all|error|success");
     };
+    let outcome = q.outcome.clone().unwrap_or_default();
+    if !is_outcome_filter(&outcome) {
+        return bad_request(&format!(
+            "outcome must be one of {}",
+            outcome_filter_values().join("|")
+        ));
+    }
     let mut params = window_params(&WindowQuery {
         since: q.since.clone(),
         until: q.until.clone(),
@@ -793,6 +808,13 @@ async fn export_invocations(
         "param_unpriced".to_string(),
         u8::from(q.unpriced.unwrap_or(false)).to_string(),
     ));
+    for (name, on) in [("withheld", q.withheld), ("usage_unknown", q.usage_unknown)] {
+        params.push((
+            format!("param_{name}"),
+            u8::from(on.unwrap_or(false)).to_string(),
+        ));
+    }
+    params.push(("param_outcome".to_string(), outcome));
     params.push((
         "param_guardrail".to_string(),
         q.guardrail.clone().unwrap_or_default(),
@@ -1147,5 +1169,46 @@ mod tests {
             .await
             .unwrap();
         assert!(String::from_utf8_lossy(&body).contains("already have"));
+    }
+
+    /// The query parameters a statement binds, `{name:Type}`.
+    fn bound(sql: &str) -> std::collections::BTreeSet<String> {
+        sql.split('{')
+            .skip(1)
+            .filter_map(|part| part.split_once('}').map(|(inside, _)| inside))
+            .filter(|inside| inside.contains(':'))
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// #3386: an export under a filtered LLM Logs view came back unfiltered for
+    /// `withheld`, `usage_unknown` and `outcome`. The export binds every filter
+    /// the JSON list binds, apart from the two that look one request up and
+    /// the payload-visibility bindings of a file that carries no body, so a
+    /// filter added to one cannot be missing from the other.
+    #[test]
+    fn the_log_export_takes_every_filter_the_list_takes() {
+        let list = bound(&crate::analytics::invocations_sql("1", &Columns::default()));
+        let export = bound(&log_sql("1", &Columns::default()));
+        let missing: Vec<_> = list
+            .difference(&export)
+            .filter(|p| {
+                ![
+                    "request_id:",
+                    "trace_id:",
+                    "payload_rank:",
+                    "viewer_payload_projects:",
+                ]
+                .iter()
+                .any(|own| p.starts_with(own))
+            })
+            .collect();
+        assert!(missing.is_empty(), "the export does not bind {missing:?}");
+        for filter in ["withheld:UInt8", "usage_unknown:UInt8", "outcome:String"] {
+            assert!(export.contains(filter), "{filter}");
+        }
+        // a table without 030 reads every row as unknown, which the filter matches
+        let old = log_sql("1", &Columns::lacking(&["outcome"]));
+        assert!(old.contains("'unknown' = {outcome:String}"), "{old}");
     }
 }
