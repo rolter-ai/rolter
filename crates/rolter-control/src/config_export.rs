@@ -719,6 +719,8 @@ async fn with_stored_variants(
                         provider: provider.clone(),
                         model: model.clone(),
                         weight: (*weight).max(0) as u32,
+                        // variant targets store no failure classes yet (#3373)
+                        takes_over: Vec::new(),
                     })
                     .collect(),
             });
