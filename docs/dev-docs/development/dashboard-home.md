@@ -30,16 +30,17 @@ the requests their roles can read.
 
 ## What it shows
 
-| Block                        | Source                                                   | Why                                                                                      |
-| ---------------------------- | -------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| Gateways tile                | `GET /api/v1/cluster/summary`, falling back to `/readyz` | The fleet, and whether the latest config reached it. The same hook as the header's pill. |
-| p95 latency tile             | `p95_latency_ms` on `GET /api/v1/analytics/summary`      | A mean hides the tail. The by-model table already returned p95; the overall one is new.  |
-| Error rate tile              | `errors / requests`                                      | Kept.                                                                                    |
-| Response-cache hit rate tile | `cache_hit_requests / requests`                          | How much traffic rolter's own response cache absorbs. Not prompt caching: see below.     |
-| Requests, Spend              | `requests`, `cost_usd`                                   | Kept, last in the strip: they follow traffic, they are not an alarm.                     |
-| Spend over time              | `GET /api/v1/analytics/timeseries`                       | Kept.                                                                                    |
-| By model                     | `GET /api/v1/analytics/by-model`                         | One view for what the donut and the bars showed twice: share, p95 and spend per model.   |
-| Recent requests              | `GET /api/v1/analytics/invocations`                      | Each row opens its request; a link under it opens the whole log with the same filters.   |
+| Block                        | Source                                                        | Why                                                                                                                                              |
+| ---------------------------- | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Gateways tile                | `GET /api/v1/cluster/summary`, falling back to `/readyz`      | The fleet, and whether the latest config reached it. The same hook as the header's pill.                                                         |
+| Providers tile               | `GET /api/v1/health/uptime` (the Health screen's cached read) | Of the providers that reported, how many meet the SLA, and the worst by name. Mid-incident the upstream is as likely to be down as the gateways. |
+| p95 latency tile             | `p95_latency_ms` on `GET /api/v1/analytics/summary`           | A mean hides the tail. The by-model table already returned p95; the overall one is new.                                                          |
+| Error rate tile              | `errors / requests`                                           | Kept.                                                                                                                                            |
+| Response-cache hit rate tile | `cache_hit_requests / requests`                               | How much traffic rolter's own response cache absorbs. Not prompt caching: see below.                                                             |
+| Requests, Spend              | `requests`, `cost_usd`                                        | Kept, last in the strip: they follow traffic, they are not an alarm.                                                                             |
+| Spend over time              | `GET /api/v1/analytics/timeseries`                            | Kept.                                                                                                                                            |
+| By model                     | `GET /api/v1/analytics/by-model`                              | One view for what the donut and the bars showed twice: share, p95 and spend per model.                                                           |
+| Recent requests              | `GET /api/v1/analytics/invocations`                           | Each row opens its request; a link under it opens the whole log with the same filters.                                                           |
 
 **The cache tile is the response cache, not prompt caching.** `cache_hit` on a log row is a rolter
 response-cache hit, which the gateway records apart from `cache_read_tokens` (the provider's prompt
@@ -78,7 +79,13 @@ rather than showing the mean as a p95 or a rate of zero.
 
 ## Not in this home
 
-Provider and target health per upstream (`fetchUptime`, `fetchHealthTimeline`) stay on the Health
-screen; the home carries the fleet roll-up, not a per-provider grid. Withheld spend and unknown-usage
+Per-target health and the failure timeline (`fetchHealthTimeline`) stay on the Health screen; the
+home carries the fleet roll-up and one provider roll-up (#3344: `rollUpProviders` in
+`ui/src/lib/provider-health.ts`, the same headline figures the Health cards use), not a per-provider
+grid. The provider tile needs no read of its own beyond `GET /api/v1/health/uptime`, which already
+answers every provider the caller's roles reach in one rollup, so there is no fan-out to replace;
+it counts a provider as up unless it breaches the SLA over the window (the "at risk" state needs the
+timeline and stays on Health), leaves out a provider that reported nothing, and states a 503 as the
+no-ClickHouse panel of its own. Withheld spend and unknown-usage
 counts (#3302) are a notice under the strip, the way unpriced spend already is, each linking to
 LLM Logs narrowed to those rows by `withheld=true` or `usage_unknown=true`.

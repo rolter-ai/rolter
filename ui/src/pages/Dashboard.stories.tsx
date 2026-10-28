@@ -15,6 +15,7 @@ import { ScreenHeader } from "@/components/ScreenHeader";
 import {
   Harness,
   LOADING_LABEL,
+  expectAnalyticsUnavailable,
   expectGateAnswered,
   expectLoadError,
   expectNoFalseEmpty,
@@ -36,6 +37,7 @@ import {
 import { formattersFor } from "@/lib/i18n/format";
 import en from "@/lib/i18n/locales/en.json";
 import ru from "@/lib/i18n/locales/ru.json";
+import type { UptimeRow } from "@/lib/api";
 import { atMobile, atTablet, expectNoHorizontalOverflow } from "@/lib/story-viewport";
 import { resolveColorToken } from "@/lib/story-tokens";
 import { UxScreenProvider } from "@/lib/ux-react";
@@ -49,6 +51,24 @@ const SPEND_CHART = en.pages.dashboard.spendChartAria.replace(
 );
 
 /** a summary read of the window before the one on screen: it is the one with an `until` (#2010) */
+/** a provider-grain row of the health rollup: `uptime` of 1 is a provider that never failed */
+const uptimeRow = (provider: string, uptime: number, breached = false): UptimeRow => ({
+  provider,
+  target_id: provider,
+  grain: "provider",
+  sources: ["probe"],
+  events: 1000,
+  ok: Math.round(uptime * 1000),
+  errors: Math.round((1 - uptime) * 1000),
+  timeouts: 0,
+  uptime,
+  failure_rate: 1 - uptime,
+  error_budget_burn: breached ? 4 : 0.1,
+  sla_breached: breached ? 1 : 0,
+  last_event: "2026-08-06T10:00:00Z",
+});
+const UPTIME: UptimeRow[] = [uptimeRow("openai-prod", 0.9995), uptimeRow("anthropic-prod", 0.9991)];
+
 const isPreviousWindow = (input: RequestInfo | URL) => {
   const url = new URL(String(input), "http://localhost");
   return url.pathname === "/api/v1/analytics/summary" && url.searchParams.has("until");
@@ -66,6 +86,7 @@ const loadedWith = (summary: typeof SUMMARY, previous?: typeof SUMMARY): FetchSt
     ["/api/v1/analytics/by-model", () => ({ data: BY_MODEL })],
     ["/api/v1/analytics/invocations", () => ({ data: RECENT })],
     ["/api/v1/cluster/summary", () => CLUSTER_SUMMARY],
+    ["/api/v1/health/uptime", () => ({ data: UPTIME })],
     ["/api/v1/currency", () => ({ base: "USD", codes: ["USD"], rates: {} })],
   ]);
   return scoped(async (input, init) =>
@@ -283,6 +304,116 @@ export const AnOlderControlPlaneLeavesP95AndCacheHitsUnmeasured: Story = {
  * control plane's config, read as the count with "live" after it and a line
  * saying none is behind.
  */
+/** the same stub with the health read answered by `answer` */
+const withHealth = (answer: () => Response | Promise<Response>): FetchStub =>
+  scoped(async (input, init) =>
+    pathOf(input) === "/api/v1/health/uptime" ? answer() : loaded(input, init),
+  );
+
+/**
+ * #3344: one tile says how many providers meet the SLA of those that reported,
+ * names the worst, and links to Health; the read is the rollup the Health screen
+ * shares, not one per provider.
+ */
+export const TheProviderTileCountsTheProvidersMeetingTheirSla: Story = {
+  render: () =>
+    render(
+      withHealth(() =>
+        json({
+          data: [
+            uptimeRow("openai-prod", 0.9995),
+            uptimeRow("azure-west", 0.96, true),
+            uptimeRow("bedrock-east", 0.9, true),
+          ],
+        }),
+      ),
+    ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const providers = await canvas.findByTestId("dashboard-providers");
+    await waitFor(() => expect(providers).toHaveTextContent(`${fmt.number(1)}of 3 up`));
+    // the worst provider is named with its uptime, and the others counted
+    await expect(providers).toHaveTextContent("Below the SLA: bedrock-east 90.00%");
+    await expect(providers).toHaveTextContent("and 1 more");
+    await expect(within(providers).getByRole("link", { name: "Providers" })).toHaveAttribute(
+      "href",
+      "/circuit-breaker",
+    );
+    // part of the fleet is down: amber, and not the red of "nothing is up"
+    await expect(getComputedStyle(within(providers).getByText(/Below the SLA/)).color).toBe(
+      resolveColorToken("--status-warning-text"),
+    );
+  },
+};
+
+export const EveryProviderWithinItsSlaReadsGood: Story = {
+  render: () => render(loaded),
+  play: async ({ canvasElement }) => {
+    const providers = await within(canvasElement).findByTestId("dashboard-providers");
+    await waitFor(() => expect(providers).toHaveTextContent("2of 2 up"));
+    await expect(providers).toHaveTextContent("Lowest uptime: anthropic-prod 99.91%");
+    await expect(getComputedStyle(within(providers).getByText(/Lowest uptime/)).color).toBe(
+      resolveColorToken("--status-success-text"),
+    );
+  },
+};
+
+export const NoProviderHasReportedHealthYet: Story = {
+  render: () => render(withHealth(() => json({ data: [] }))),
+  play: async ({ canvasElement }) => {
+    const providers = await within(canvasElement).findByTestId("dashboard-providers");
+    await expect(providers).toHaveTextContent(en.pages.dashboard.providers.none);
+    await expect(providers).toHaveTextContent(en.pages.dashboard.notMeasured);
+    // nothing reported is not an outage: no figure, and no red
+    await expect(providers).not.toHaveTextContent("of 0");
+  },
+};
+
+export const TheProviderTileIsASkeletonWhileTheRollupLoads: Story = {
+  render: () => render(withHealth(() => new Promise<Response>(() => {}))),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    // the rest of the strip is up: the slow read holds back one tile only
+    await expect(await canvas.findAllByText(fmt.number(132))).not.toHaveLength(0);
+    await expect(canvas.queryByTestId("dashboard-providers")).toBeNull();
+    await expect(
+      within(canvas.getByTestId("dashboard-figures")).getAllByLabelText(LOADING_LABEL),
+    ).not.toHaveLength(0);
+  },
+};
+
+export const AFailedProviderReadIsTheTilesOwnError: Story = {
+  render: () => render(withHealth(() => json({ error: { message: "boom" } }, 500))),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expectLoadError(canvasElement, /provider health/i);
+    // the other figures are not taken down with it
+    await expect(await canvas.findAllByText(fmt.number(132))).not.toHaveLength(0);
+    await expectNoFalseEmpty(canvasElement, /No provider has reported health yet/);
+  },
+};
+
+export const ProviderHealthNeedsClickHouse: Story = {
+  render: () => render(withHealth(() => json({ error: { message: "no clickhouse_url" } }, 503))),
+  play: async ({ canvasElement }) => {
+    await expectAnalyticsUnavailable(
+      canvasElement,
+      en.pages.dashboard.providers.noAnalytics.title,
+      "no clickhouse_url",
+    );
+  },
+};
+
+export const TheProviderTileInRussian: Story = {
+  globals: { locale: "ru" },
+  render: () => render(loaded),
+  play: async ({ canvasElement }) => {
+    const providers = await within(canvasElement).findByTestId("dashboard-providers");
+    await waitFor(() => expect(providers).toHaveTextContent("из 2 работают"));
+    await expect(providers).toHaveTextContent("Наименьшая доступность");
+  },
+};
+
 export const TheFleetTileCountsTheLiveGateways: Story = {
   render: () => render(loaded),
   play: async ({ canvasElement }) => {

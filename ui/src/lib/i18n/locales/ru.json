@@ -318,6 +318,7 @@
       "mcpLogs": "журнал вызовов MCP-инструментов",
       "mcpSummary": "сводка по вызовам MCP",
       "variantTraffic": "наблюдаемый трафик вариантов",
+      "providerHealth": "состояние провайдеров",
       "savings": "отчёт об экономии",
       "mcpServers": "MCP-серверы",
       "mcpSettings": "настройки MCP",
@@ -842,6 +843,21 @@
       "statP95": "Задержка p95",
       "statCacheHit": "Доля ответов из кэша ответов",
       "statFleet": "Шлюзы",
+      "statProviders": "Провайдеры",
+      "providers": {
+        "ofTotal": "из {{total}} работают",
+        "worst": "Наименьшая доступность: {{provider}} {{uptime}}",
+        "worstBreaching": "Ниже SLA: {{provider}} {{uptime}}",
+        "more_one": "и ещё {{count}}",
+        "more_few": "и ещё {{count}}",
+        "more_many": "и ещё {{count}}",
+        "more_other": "и ещё {{count}}",
+        "none": "Ни один провайдер ещё не сообщил о состоянии",
+        "noAnalytics": {
+          "title": "Для состояния провайдеров нужен ClickHouse",
+          "body": "Состояние провайдеров читается из событий, которые шлюзы записывают в ClickHouse. Задайте <0>CLICKHOUSE_URL</0> в control plane, и здесь будут считаться провайдеры, укладывающиеся в SLA."
+        }
+      },
       "statErrorRate": "Доля ошибок",
       "notMeasured": "—",
       "noRequestsInWindow": "За этот период запросов не было",

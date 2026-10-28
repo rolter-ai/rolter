@@ -300,6 +300,7 @@
       "mcpLogs": "MCP tool-call logs",
       "mcpSummary": "MCP call summary",
       "variantTraffic": "the variants' observed traffic",
+      "providerHealth": "provider health",
       "savings": "the savings report",
       "mcpServers": "MCP servers",
       "mcpSettings": "MCP settings",
@@ -806,6 +807,19 @@
       "statP95": "p95 latency",
       "statCacheHit": "Response-cache hit rate",
       "statFleet": "Gateways",
+      "statProviders": "Providers",
+      "providers": {
+        "ofTotal": "of {{total}} up",
+        "worst": "Lowest uptime: {{provider}} {{uptime}}",
+        "worstBreaching": "Below the SLA: {{provider}} {{uptime}}",
+        "more_one": "and {{count}} more",
+        "more_other": "and {{count}} more",
+        "none": "No provider has reported health yet",
+        "noAnalytics": {
+          "title": "Provider health needs ClickHouse",
+          "body": "Provider health is read from the events the gateways record in ClickHouse. Set <0>CLICKHOUSE_URL</0> on the control plane and the providers that meet their SLA are counted here."
+        }
+      },
       "statErrorRate": "Error rate",
       "notMeasured": "—",
       "noRequestsInWindow": "No requests in this window",

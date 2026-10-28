@@ -7,6 +7,7 @@ import { Link, useLocation } from "react-router";
 import { AnalyticsUnavailable } from "@/components/AnalyticsUnavailable";
 import { PageBody } from "@/components/screen";
 import { FleetHealthTile } from "@/components/FleetHealthTile";
+import { ProviderHealthTile } from "@/components/ProviderHealthTile";
 import { GettingStarted } from "@/components/GettingStarted";
 import { IncompleteSpendNotice } from "@/components/IncompleteSpendNotice";
 import { SampledLogNotice } from "@/components/SampledLogNotice";
@@ -95,8 +96,8 @@ const pollEvery =
 // categorical colour sequence, so no two rows share a colour
 const MODELS_SHOWN = 8;
 
-// six tiles read as three across and two down; the shared strip is four across
-const FIGURES_GRID = cn(STAT_GRID, "xl:grid-cols-3");
+// the fleet, the providers and the six figures of the window: the shared strip is four across
+const FIGURES_GRID = STAT_GRID;
 
 // the models in the order the card colours them by (#1994): the read arrives
 // by cost, and the card ranks it by requests
@@ -425,6 +426,7 @@ export default function Dashboard({ pollMs }: { pollMs?: number }) {
               (the heaviest read on the screen) does not take it away; the other
               five tiles, or their skeleton or alert, fill the rest of the grid */}
           <FleetHealthTile />
+          <ProviderHealthTile pollMs={pollMs} />
           <CardRead
             read={summary}
             resource={t("errors.resources.dashboardFigures")}
