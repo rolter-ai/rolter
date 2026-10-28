@@ -98,8 +98,16 @@ SSE replies). The answer is written back to the server row (#1283):
 - **Schemas.** Descriptions and input schemas are stored beside the manifest and
   served by `GET /api/v1/mcp-servers/{id}/tools`, not by the listing.
 
-The `streamable_http` transport is what is spoken; a server registered as `sse`
-is asked the same way, since the gateway proxies both as plain HTTP.
+Both HTTP transports are spoken (#3299). A `streamable_http` server is asked with
+`POST`s whose reply is JSON or an SSE body. A server registered as `sse` (legacy
+HTTP+SSE) gets the older handshake in `McpClient::open_legacy_stream`: `GET` the
+registered address as an event stream, wait for the `endpoint` event, `POST` every
+message there and read each reply off the stream, since the `POST`s answer `202`.
+The endpoint has to be on the origin the server was registered with (otherwise the
+handshake fails and nothing is sent to it), so a server cannot steer the control
+plane to an address the egress policy never checked. Discovery, the connection
+probe and the try-it call all go through the client, so all three follow the
+server's `transport`.
 
 ## Connection status and try-it
 

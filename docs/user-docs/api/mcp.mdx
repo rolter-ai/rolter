@@ -136,6 +136,12 @@ with `tools/list` in the background after you install it, after you set its
 credential, and after a user completes OAuth consent; **Discover now** on the
 card (or `POST /api/v1/mcp-servers/{id}/discover`) asks again. The list a
 catalog entry ships with is only the fallback until the server has answered.
+Discovery, the connection status check and **Try it** follow the server's
+transport: a `streamable_http` server is asked over `POST`, and a legacy `sse`
+server over its own handshake (open the event stream, wait for the `endpoint`
+event, `POST` there and read the replies off the stream). The endpoint the server
+names must be on the address you registered; one on another host fails the
+handshake.
 
 A server that is down never blocks the install: the card says when it was last
 discovered, or that it has not been discovered yet and why. A tool the server
